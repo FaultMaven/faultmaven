@@ -26,7 +26,7 @@ import builtins
 import json
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 from uuid import uuid4
 
 from sqlalchemy import bindparam, text
@@ -1351,6 +1351,42 @@ class SQLiteCaseRepository(CaseRepository):
             return [row[0] for row in result.fetchall()]
         except Exception as e:
             raise RepositoryException(f"Failed to list case ids: {e}") from e
+
+    async def list_all_storage_refs(self) -> Set[str]:
+        """Every non-null uploaded_files.storage_ref (see CaseRepository).
+
+        One scan into a set, not N point lookups: ``storage_ref`` carries no
+        index (unlike ``content_hash``), so per-candidate lookups would each
+        be a full scan. DISTINCT because the set is what the caller wants and
+        duplicates only cost transfer.
+
+        Two things a future optimiser must not "fix":
+
+        **Never add a LIMIT.** A truncated reference set is indistinguishable
+        from a smaller one, and every row it drops becomes a file the sweep
+        believes is unreferenced — so capping this query converts a memory
+        concern into silent data loss. If the set ever outgrows the job pod,
+        the answer is to stream it into the membership test, not to shorten
+        it. (The sweep's disjoint guard catches a set that misses EVERY
+        candidate; it cannot catch one that misses some.)
+
+        **Do not filter to case-bound rows.** ``case_id`` is nullable — KB
+        conversion uploads carry none — and those rows still reference stored
+        objects. Excluding them would shrink the protected set, which is a
+        deletion, not a tidy-up. It does mean the operator-facing count
+        includes rows no case owns; that is the honest number for "rows that
+        reference storage".
+        """
+        try:
+            result = await self.db.execute(
+                text(
+                    "SELECT DISTINCT storage_ref FROM uploaded_files "
+                    "WHERE storage_ref IS NOT NULL"
+                )
+            )
+            return {row[0] for row in result.fetchall() if row[0]}
+        except Exception as e:
+            raise RepositoryException(f"Failed to list storage refs: {e}") from e
 
     async def delete(self, case_id: str) -> bool:
         """Delete case by ID."""

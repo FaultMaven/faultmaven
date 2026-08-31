@@ -623,6 +623,36 @@ class TestListAndSearch:
         assert sorted(ids) == sorted([c1.case_id, c2.case_id])
 
     @pytest.mark.asyncio
+    async def test_list_all_storage_refs_returns_every_referenced_object(
+        self, repository
+    ):
+        # The orphan-file sweep's AUTHORITY (#1232): every non-null
+        # uploaded_files.storage_ref, across every case and owner. An object
+        # named here is live no matter what its storage sidecar claims, so a
+        # missing entry here is a deletion.
+        c1 = _make_case(user_id="user_a")
+        f1 = _make_uploaded_file(filename="a.log")
+        f1.storage_ref = "org_a/case_1/2026/01/01/aaa_a.log"
+        c1.uploaded_files.append(f1)
+
+        c2 = _make_case(user_id="user_b")
+        f2 = _make_uploaded_file(filename="b.log")
+        f2.storage_ref = "org_b/case_2/2026/01/02/bbb_b.log"
+        # A row with no storage_ref at all (paste-only intake) must not land in
+        # the set as a None — a None member would make `key in refs` noise.
+        f3 = _make_uploaded_file(filename="c.log")
+        f3.storage_ref = None
+        c2.uploaded_files.extend([f2, f3])
+
+        await repository.save(c1)
+        await repository.save(c2)
+
+        refs = await repository.list_all_storage_refs()
+
+        assert refs == {f1.storage_ref, f2.storage_ref}
+        assert None not in refs
+
+    @pytest.mark.asyncio
     async def test_list_ignores_organization_filter(self, repository):
         # ADR-010: standalone is single-tenant; the organization_id param does
         # NOT scope reads (multi-tenant isolation is RLS, not per-query filters).
@@ -2048,3 +2078,111 @@ class TestMessageAuthorship:
 
         again = await repository.get_messages(case.case_id)
         assert [m["author_id"] for m in again] == ["user_teammate"]
+
+
+class TestReferenceSetAcrossImplementations:
+    """F12: the SQLite implementation was the only one under test.
+
+    The cloud path is PostgreSQL, and that is where the deletion this set
+    guards is irreversible against a shared multi-tenant store. A behavioural
+    PG test needs a live server, so the two things that CAN be checked without
+    one are, and they are the two that actually drift: every implementation
+    provides the method, and the SQL the two dialect repositories issue is the
+    same string.
+    """
+
+    def test_every_repository_implementation_provides_it(self):
+        from faultmaven.modules.case.contracts import ICaseRepository
+        from faultmaven.modules.case.infrastructure.case_repository import (
+            CaseRepository,
+            InMemoryCaseRepository,
+        )
+        from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (  # noqa: E501
+            PostgreSQLHybridCaseRepository,
+        )
+        from faultmaven.modules.case.infrastructure.sessionless_case_repository import (
+            SessionlessCaseRepository,
+        )
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
+        )
+
+        for cls in (
+            CaseRepository,
+            InMemoryCaseRepository,
+            SQLiteCaseRepository,
+            PostgreSQLHybridCaseRepository,
+            SessionlessCaseRepository,
+        ):
+            assert hasattr(cls, "list_all_storage_refs"), (
+                f"{cls.__name__} has no list_all_storage_refs — the sweep "
+                "resolves it off the container and would refuse (or, worse, "
+                "a partial implementation would answer wrongly)"
+            )
+        assert hasattr(ICaseRepository, "list_all_storage_refs")
+
+    def test_storage_ref_sql_is_identical_across_dialects(self):
+        """A divergence here is a divergence in which files cloud protects.
+
+        Compared as normalised text rather than by running both, because the
+        failure being guarded is someone editing one implementation and not
+        the other — which shows up in the source, not in a live query.
+        """
+        import inspect
+        import re
+
+        from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (  # noqa: E501
+            PostgreSQLHybridCaseRepository,
+        )
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
+        )
+
+        def _sql(cls):
+            src = inspect.getsource(cls.list_all_storage_refs)
+            match = re.search(r'"(SELECT[^"]*)"\s*\n\s*"([^"]*)"', src)
+            assert match, f"could not find the SELECT in {cls.__name__}"
+            return re.sub(r"\s+", " ", match.group(1) + match.group(2)).strip()
+
+        sqlite_sql = _sql(SQLiteCaseRepository)
+        pg_sql = _sql(PostgreSQLHybridCaseRepository)
+
+        assert sqlite_sql == pg_sql, (
+            f"dialect drift: SQLite issues {sqlite_sql!r}, PostgreSQL issues "
+            f"{pg_sql!r}"
+        )
+        assert "LIMIT" not in sqlite_sql.upper(), (
+            "a LIMIT on the reference set silently converts a memory concern "
+            "into data loss — every dropped row becomes a file the sweep "
+            "believes is unreferenced"
+        )
+        assert "case_id" not in sqlite_sql, (
+            "filtering to case-bound rows would shrink the protected set; "
+            "case_id is nullable and KB conversion uploads carry none"
+        )
+
+    @pytest.mark.asyncio
+    async def test_in_memory_implementation_matches_the_contract(self):
+        """The ephemeral path, which is what a DATABASE_URL-less install gets."""
+        from faultmaven.modules.case.infrastructure.case_repository import (
+            InMemoryCaseRepository,
+        )
+
+        repo = InMemoryCaseRepository()
+
+        # Built through the same helper the persistent tests use, so the id
+        # satisfies the domain model's own constraints.
+        case = _make_case()
+        ref = f"org1/{case.case_id}/2026/01/01/a.log"
+        stored = _make_uploaded_file(filename="a.log")
+        stored.storage_ref = ref
+        # A paste-only row: no storage_ref, and it must not surface as None.
+        paste_only = _make_uploaded_file(filename="b.log")
+        paste_only.storage_ref = None
+        case.uploaded_files.extend([stored, paste_only])
+        await repo.save(case)
+
+        refs = await repo.list_all_storage_refs()
+
+        assert refs == {ref}
+        assert None not in refs

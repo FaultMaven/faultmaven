@@ -23,6 +23,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from faultmaven.config.settings import FaultMavenSettings
+from faultmaven.jobs.reference_set import assess_reference_set
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 async def run(
     settings: FaultMavenSettings,
     container: Any,
+    allow_disjoint_reference_set: bool = False,
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """Run case cleanup job.
@@ -40,6 +42,10 @@ async def run(
     Args:
         settings: FaultMaven settings instance
         container: DI container with initialized services
+        allow_disjoint_reference_set: The operator's explicit assertion that a
+            case-id set sharing NOTHING with the existing collections is
+            expected here. Off by default — see
+            ``faultmaven.jobs.reference_set``.
         **kwargs: Additional job parameters (unused)
 
     Returns:
@@ -56,6 +62,8 @@ async def run(
         "status": "completed",
         "deleted_count": 0,
         "active_cases": 0,
+        "collections": 0,
+        "reference_overlap": 0,
     }
 
     try:
@@ -63,15 +71,28 @@ async def run(
         case_vector_store = getattr(container, "case_vector_store", None)
         case_repository = getattr(container, "case_repository", None)
 
+        # "failed", not "skipped" (#1232). The runner maps completed/skipped to
+        # exit 0, so a job that can NEVER reach its dependencies would exit
+        # cleanly every night and look like a CronJob with nothing to do —
+        # the same invisibility that let the storage sweep's hazard stand for
+        # months. Neither of these is a configured refusal; both are the job
+        # being unable to do its work.
         if not case_vector_store:
-            logger.warning("CaseVectorStore not available, skipping cleanup")
-            result["status"] = "skipped"
+            logger.error(
+                "Case cleanup REFUSED: CaseVectorStore unavailable, so the "
+                "candidate set cannot be read. Nothing was deleted."
+            )
+            result["status"] = "failed"
             result["reason"] = "case_vector_store_unavailable"
             return result
 
         if not case_repository:
-            logger.warning("Case repository not available, skipping cleanup")
-            result["status"] = "skipped"
+            logger.error(
+                "Case cleanup REFUSED: case repository unavailable, so the "
+                "authority cannot be asked which collections are still "
+                "referenced. Nothing was deleted."
+            )
+            result["status"] = "failed"
             result["reason"] = "case_repository_unavailable"
             return result
 
@@ -83,6 +104,32 @@ async def run(
         active_case_ids = await case_repository.list_all_case_ids()
         result["active_cases"] = len(active_case_ids)
         logger.debug(f"Found {len(active_case_ids)} case rows in the database")
+
+        # Same fail-closed guard the storage sweep uses, from the same module
+        # (#1232). Without it, `list_all_case_ids()` returning [] makes
+        # `expected_collections` empty inside cleanup_orphaned_collections and
+        # EVERY case collection is classified orphaned — and the per-candidate
+        # `case_exists` re-check reads the same scoped repository, so it
+        # answers "no" too and rescues nothing. An RLS-scoped session on
+        # `cases` produces exactly that.
+        collection_case_ids = await case_vector_store.list_case_collection_ids()
+        result["collections"] = len(collection_case_ids)
+        verdict = assess_reference_set(
+            candidates=collection_case_ids,
+            referenced=active_case_ids,
+            # This job has no dry-run mode, so every run is a live one.
+            dry_run=False,
+            acknowledged=allow_disjoint_reference_set,
+            authority="the cases table",
+            candidate_noun="case collection",
+        )
+        result["reference_overlap"] = verdict.overlap_count
+        if verdict.disjoint:
+            logger.error("Case cleanup: %s", verdict.message)
+        if verdict.refuse:
+            result["status"] = "failed"
+            result["reason"] = verdict.reason
+            return result
 
         # Clean up orphaned collections. The per-candidate re-check closes the
         # snapshot race (a case created after list_all_case_ids() must not

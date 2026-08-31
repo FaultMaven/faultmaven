@@ -22,12 +22,15 @@ Names follow the `faultmaven_` prefix convention shared with
 | `faultmaven_evidence_dedup_hits_total` | counter | — | `InvestigationService._preprocess_attachment` | **Live** |
 | `faultmaven_evidence_orphan_files_found_total` | counter | — | `faultmaven.modules.agent.jobs.storage_cleanup` | **Live** |
 | `faultmaven_evidence_orphan_files_deleted_total` | counter | — | `faultmaven.modules.agent.jobs.storage_cleanup` | **Live** |
+| `faultmaven_evidence_orphan_files_rescued_total` | counter | — | `faultmaven.modules.agent.jobs.storage_cleanup` | **Live** — files the DB cross-check saved (#1232). Not scrapable in practice: see the note below |
+| `faultmaven_evidence_mark_linked_failures_total` | counter | `outcome` | `InvestigationService._preprocess_attachment` | **Live** — API process, so genuinely scraped |
 | `faultmaven_evidence_turn_async_retry_enqueued_total` | counter | `reason` | Turn retry path (async-turn-retry plan, deferred) | Scaffolded only; no emit sites (async retry plan deferred 2026-04-19) |
 | `faultmaven_evidence_turn_async_retry_outcome_total` | counter | `outcome` | Turn retry path (async-turn-retry plan, deferred) | Scaffolded only; no emit sites |
 | `faultmaven_evidence_turn_async_retry_latency_seconds` | histogram | — | Turn retry path (async-turn-retry plan, deferred) | Scaffolded only; no emit sites |
 
 **Label values:**
 
+- `mark_linked_failures_total{outcome}`: `returned_false | raised` — `mark_linked` reports failure by RETURNING False rather than raising, so both arms are counted; the returning arm is the commoner one.
 - `async_retry_enqueued_total{reason}`: `timeout | 5xx | rate_limit | network_error | other`
 - `async_retry_outcome_total{outcome}`: `success | failure | timeout | superseded | cancelled`
 
@@ -56,6 +59,47 @@ never linked to an Evidence row.
       investigation_service.py::_preprocess_attachment` for errors between
       `store_file` and Evidence persistence.
     runbook_url: "https://docs.faultmaven.internal/runbooks/orphan-files"
+```
+
+> **⚠ The sweep's three counters are not scrapable as deployed.** They live in
+> a CronJob process that exits in ~25s, the pod carries no
+> `prometheus.io/scrape` annotation, and there is no pushgateway — so the alert
+> above cannot fire from the sweep, however it is written. Until that is fixed
+> (pushgateway, or alerting on the Kubernetes Job / its logs), the sweep's
+> observable channel is its **run summary log line**, which carries `found=`,
+> `deleted=`, `skipped_db_referenced=` and an `authority:` block with
+> `referenced_refs`, `referenced_by_db` and `unreferenced_by_db`. This is why
+> #1232 also added `faultmaven_evidence_mark_linked_failures_total` on the API
+> side: the drift that produces a stale sidecar is detectable there, in a
+> process Prometheus actually scrapes.
+
+### `evidence_mark_linked_failures`
+
+**Fires when:** the best-effort sidecar flip fails after an upload is already
+persisted. Post-#1232 the stale flag is **harmless**, and self-healing rather
+than merely tolerated: the object is protected exactly while its `uploaded_files` row exists, and once the case is deleted the row goes with it (`uploaded_files.case_id` is `ON DELETE CASCADE`, enforced on both backends — SQLite runs with `PRAGMA foreign_keys=ON`), leaving an ordinary unreferenced orphan the sweep reclaims normally. Nothing leaks and nothing is lost.
+
+So this alert is about the **cause**, not the consequence: a failure here means
+the storage backend erred on a small write. It is also the measurement that
+would justify retrying the call (#1232 direction 3, deliberately not taken).
+
+```promql
+- alert: evidence_mark_linked_failures
+  expr: increase(faultmaven_evidence_mark_linked_failures_total[1h]) > 0
+  for: 15m
+  labels:
+    severity: warning
+    team: platform
+  annotations:
+    summary: "Sidecar mark_linked failing — {{ $value }} in the last hour"
+    description: |
+      An upload was persisted but its storage sidecar was left at
+      linked=false. Since #1232 that is harmless — the orphan sweep asks
+      uploaded_files.storage_ref, and the row's ON DELETE CASCADE lifetime
+      reclaims the object normally once the case is deleted — so this is a
+      signal about the STORAGE BACKEND, not about data at risk. Check
+      `investigation_service.py::_preprocess_attachment` and the backend for
+      errors on the mark_linked write.
 ```
 
 ### `evidence_turn_terminal_failure`

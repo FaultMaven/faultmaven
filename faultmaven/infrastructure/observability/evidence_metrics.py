@@ -65,6 +65,29 @@ if PROMETHEUS_AVAILABLE:
         "orphan-cleanup sweep. Emitted by the M1 orphan cleanup job.",
     )
 
+    EVIDENCE_ORPHAN_FILES_RESCUED_TOTAL = Counter(
+        "faultmaven_evidence_orphan_files_rescued_total",
+        "Number of files the database cross-check saved during an "
+        "orphan-cleanup sweep: the sidecar said linked=False past the TTL, but "
+        "an uploaded_files row still referenced the object. Non-zero means "
+        "sidecar drift is live and the pre-#1232 sweep would have destroyed "
+        "referenced evidence.",
+    )
+
+    EVIDENCE_MARK_LINKED_FAILURES_TOTAL = Counter(
+        "faultmaven_evidence_mark_linked_failures_total",
+        "Number of times the best-effort sidecar mark_linked step failed after "
+        "an upload was already persisted, leaving the sidecar stale at "
+        "linked=False. Labeled by outcome (returned_false | raised). Since "
+        "#1232 the stale flag is harmless — the sweep asks the database, and "
+        "the row's ON DELETE CASCADE lifetime makes it self-healing — so this "
+        "counts the CAUSE (a failed storage write) rather than a data-loss "
+        "window, and is the measurement that would justify retrying the call. "
+        "Emitted from the API process, which is scraped; the sweep's own "
+        "counters are not.",
+        labelnames=["outcome"],
+    )
+
     EVIDENCE_TURN_ASYNC_RETRY_ENQUEUED_TOTAL = Counter(
         "faultmaven_evidence_turn_async_retry_enqueued_total",
         "Number of turns whose LLM call hit a transient failure and were "
@@ -174,6 +197,8 @@ else:
     EVIDENCE_DEDUP_HITS_TOTAL = _NoOpMetric()
     EVIDENCE_ORPHAN_FILES_FOUND_TOTAL = _NoOpMetric()
     EVIDENCE_ORPHAN_FILES_DELETED_TOTAL = _NoOpMetric()
+    EVIDENCE_ORPHAN_FILES_RESCUED_TOTAL = _NoOpMetric()
+    EVIDENCE_MARK_LINKED_FAILURES_TOTAL = _NoOpMetric()
     EVIDENCE_TURN_ASYNC_RETRY_ENQUEUED_TOTAL = _NoOpMetric()
     EVIDENCE_TURN_ASYNC_RETRY_OUTCOME_TOTAL = _NoOpMetric()
     EVIDENCE_TURN_ASYNC_RETRY_LATENCY_SECONDS = _NoOpMetric()
@@ -188,6 +213,8 @@ __all__ = [
     "EVIDENCE_DEDUP_HITS_TOTAL",
     "EVIDENCE_ORPHAN_FILES_FOUND_TOTAL",
     "EVIDENCE_ORPHAN_FILES_DELETED_TOTAL",
+    "EVIDENCE_ORPHAN_FILES_RESCUED_TOTAL",
+    "EVIDENCE_MARK_LINKED_FAILURES_TOTAL",
     "EVIDENCE_TURN_ASYNC_RETRY_ENQUEUED_TOTAL",
     "EVIDENCE_TURN_ASYNC_RETRY_OUTCOME_TOTAL",
     "EVIDENCE_TURN_ASYNC_RETRY_LATENCY_SECONDS",

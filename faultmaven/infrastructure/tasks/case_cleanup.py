@@ -25,6 +25,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
 from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
+from faultmaven.jobs.reference_set import assess_reference_set
 from faultmaven.modules.case.contracts import ICaseRepository
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,38 @@ async def cleanup_orphaned_collections_task(
             logger.debug(f"Found {len(active_case_ids)} case rows in the database")
         except Exception as e:
             logger.error(f"Failed to get case IDs: {e}")
+            return
+
+        # The SAME fail-closed guard the CLI job and the storage sweep use
+        # (#1232). This in-process path carried the identical hazard: an empty
+        # or non-overlapping id set makes `expected_collections` empty inside
+        # cleanup_orphaned_collections, so EVERY case collection is classified
+        # orphaned — and `_case_exists` below re-reads the same repository, so
+        # it answers "no" too and rescues nothing.
+        #
+        # There is no operator acknowledgment here by design: this task runs
+        # unattended inside the API process, so it only ever refuses. An
+        # operator who has confirmed the emptiness is real runs the CLI job
+        # with --allow-disjoint-reference-set instead.
+        try:
+            collection_case_ids = await case_vector_store.list_case_collection_ids()
+        except Exception as e:
+            logger.error(f"Failed to list case collections: {e}")
+            return
+
+        verdict = assess_reference_set(
+            candidates=collection_case_ids,
+            referenced=active_case_ids,
+            dry_run=False,
+            authority="the cases table",
+            candidate_noun="case collection",
+            acknowledge_flag=(
+                "the CLI job's --allow-disjoint-reference-set "
+                "(python -m faultmaven.jobs.run case_cleanup)"
+            ),
+        )
+        if verdict.refuse:
+            logger.error(f"Case cleanup task REFUSED: {verdict.message}")
             return
 
         # Clean up orphaned collections. The per-candidate re-check closes the

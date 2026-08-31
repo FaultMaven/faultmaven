@@ -1,13 +1,17 @@
-"""Unit tests for the sidecar-based storage cleanup job.
+"""Unit tests for the sidecar + database-backed storage cleanup job.
 
 Covers per evidence-failure-modes.md:
 
 1. Sidecar writing on `FileStorageService.store_file()`.
 2. `mark_linked()` flips the sidecar to linked=True.
-3. `cleanup_orphaned_files()` deletes only unlinked + past-TTL files,
-   preserves linked or young files, skips files without sidecars.
+3. `cleanup_orphaned_files()` deletes only unlinked + past-TTL files that the
+   database does not reference, preserves linked or young files, skips files
+   without sidecars.
 4. `dry_run=True` logs without deleting.
 5. `run()` respects the `orphan_cleanup_enabled` settings gate.
+6. The database cross-check (#1232): a file whose sidecar says `linked: false`
+   past the TTL is NOT deleted while an `uploaded_files` row still names it,
+   and the sweep refuses to run at all when it cannot ask the authority.
 
 The sweep enumerates sidecars through the storage backend rather than walking
 a directory, so these tests drive it through a filesystem-backed service and
@@ -24,7 +28,7 @@ import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -39,6 +43,22 @@ from faultmaven.modules.evidence.domain.services.file_storage_service import (
 # ============================================================
 # Fixtures
 # ============================================================
+
+
+# A reference set that matches nothing these tests store — an all-orphan
+# corpus, which is a real deployment shape (every case deleted, objects
+# remain) and the one the sweep exists for.
+#
+# Call sites pair it with allow_disjoint_reference_set=True, because that is
+# exactly what an operator must pass to sweep such a deployment: no candidate
+# overlaps the reference set, and the guard cannot tell that apart from an
+# RLS-scoped view. Tests using it are about the classification chain, not the
+# guard; the guard has its own tests in TestDisjointReferenceSet.
+#
+# Note it is NOT empty. It used to be non-empty specifically to dodge an
+# earlier guard that only checked emptiness — which is precisely the hole
+# that guard left open, so this fixture was itself the F1 shape.
+UNRELATED_REFS = {"org_other/case_other/2020/01/01/never-a-candidate.log"}
 
 
 @pytest.fixture
@@ -233,7 +253,11 @@ class TestCleanupOrphanedFiles:
         target_sidecar = Path(f"{target}{SIDECAR_SUFFIX}")
 
         result = await cleanup_orphaned_files(
-            storage=storage_service, ttl_hours=24, dry_run=False
+            storage=storage_service,
+            ttl_hours=24,
+            dry_run=False,
+            referenced_refs=UNRELATED_REFS,
+            allow_disjoint_reference_set=True,
         )
 
         assert result["scanned"] == 3
@@ -256,7 +280,11 @@ class TestCleanupOrphanedFiles:
         sidecar = Path(f"{target}{SIDECAR_SUFFIX}")
 
         result = await cleanup_orphaned_files(
-            storage=storage_service, ttl_hours=24, dry_run=True
+            storage=storage_service,
+            ttl_hours=24,
+            dry_run=True,
+            referenced_refs=UNRELATED_REFS,
+            allow_disjoint_reference_set=True,
         )
 
         assert result["found"] == 1
@@ -271,7 +299,11 @@ class TestCleanupOrphanedFiles:
         orphan_no_sidecar.write_bytes(b"no sidecar here")
 
         result = await cleanup_orphaned_files(
-            storage=storage_service, ttl_hours=24, dry_run=False
+            storage=storage_service,
+            ttl_hours=24,
+            dry_run=False,
+            referenced_refs=UNRELATED_REFS,
+            allow_disjoint_reference_set=True,
         )
 
         assert result["scanned"] == 0  # no sidecars to scan
@@ -287,7 +319,11 @@ class TestCleanupOrphanedFiles:
         Path(f"{full_path}{SIDECAR_SUFFIX}").write_text("not valid json {")
 
         result = await cleanup_orphaned_files(
-            storage=storage_service, ttl_hours=24, dry_run=False
+            storage=storage_service,
+            ttl_hours=24,
+            dry_run=False,
+            referenced_refs=UNRELATED_REFS,
+            allow_disjoint_reference_set=True,
         )
 
         assert result["errors"] == 1
@@ -311,7 +347,11 @@ class TestCleanupOrphanedFiles:
         )
 
         result = await cleanup_orphaned_files(
-            storage=service, ttl_hours=24, dry_run=False
+            storage=service,
+            ttl_hours=24,
+            dry_run=False,
+            referenced_refs=UNRELATED_REFS,
+            allow_disjoint_reference_set=True,
         )
         assert result["status"] == "completed"
         assert result["scanned"] == 0
@@ -335,6 +375,19 @@ class TestRunSettingsGate:
             storage_cleanup, "FileStorageService", lambda: storage_service
         )
 
+    @pytest.fixture
+    def container(self):
+        """A DI container whose case repository answers the reference query.
+
+        Since #1232 the sweep refuses to run without one — these tests are
+        about the settings gate, so they supply a working authority and let
+        the authority-refusal tests below own that behaviour.
+        """
+        repo = SimpleNamespace(
+            list_all_storage_refs=AsyncMock(return_value=set(UNRELATED_REFS))
+        )
+        return SimpleNamespace(case_repository=repo)
+
     def _settings(
         self,
         *,
@@ -350,42 +403,42 @@ class TestRunSettingsGate:
         return SimpleNamespace(evidence_storage=ev)
 
     @pytest.mark.asyncio
-    async def test_skipped_when_disabled_and_not_dry_run(self):
+    async def test_skipped_when_disabled_and_not_dry_run(self, container):
         settings = self._settings(enabled=False, dry_run=False)
-        result = await run(settings=settings)
+        result = await run(settings=settings, container=container)
         assert result["status"] == "skipped"
         assert result["reason"] == "orphan_cleanup_disabled"
 
     @pytest.mark.asyncio
-    async def test_runs_when_enabled(self):
+    async def test_runs_when_enabled(self, container):
         settings = self._settings(enabled=True, dry_run=False)
-        result = await run(settings=settings)
+        result = await run(settings=settings, container=container)
         assert result["status"] == "completed"
 
     @pytest.mark.asyncio
-    async def test_runs_when_dry_run_even_if_disabled(self):
+    async def test_runs_when_dry_run_even_if_disabled(self, container):
         # dry_run=True is safe, so we run even with enabled=False
         settings = self._settings(enabled=False, dry_run=True)
-        result = await run(settings=settings)
+        result = await run(settings=settings, container=container)
         assert result["status"] == "completed"
         assert result["dry_run"] is True
 
     @pytest.mark.asyncio
-    async def test_caller_dry_run_override_wins(self):
+    async def test_caller_dry_run_override_wins(self, container):
         # Settings say live mode, but caller explicitly asks for dry-run
         settings = self._settings(enabled=True, dry_run=False)
-        result = await run(settings=settings, dry_run=True)
+        result = await run(settings=settings, container=container, dry_run=True)
         assert result["status"] == "completed"
         assert result["dry_run"] is True
 
     @pytest.mark.asyncio
-    async def test_caller_ttl_override_wins(self):
+    async def test_caller_ttl_override_wins(self, container):
         settings = self._settings(enabled=True, dry_run=True, ttl_hours=24)
-        result = await run(settings=settings, ttl_hours=72)
+        result = await run(settings=settings, container=container, ttl_hours=72)
         assert result["ttl_hours"] == 72
 
     @pytest.mark.asyncio
-    async def test_explicit_dry_run_false_does_not_enable_cleanup(self):
+    async def test_explicit_dry_run_false_does_not_enable_cleanup(self, container):
         """An override is a lever, not an enabler (issue #923).
 
         `dry_run=False` — what `--no-dry-run` delivers — asks for deletion. It
@@ -393,13 +446,13 @@ class TestRunSettingsGate:
         run is refused exactly as a settings-level dry_run=False is.
         """
         settings = self._settings(enabled=False, dry_run=True)
-        result = await run(settings=settings, dry_run=False)
+        result = await run(settings=settings, container=container, dry_run=False)
         assert result["status"] == "skipped"
         assert result["reason"] == "orphan_cleanup_disabled"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("ttl_hours", [0, -1, 721])
-    async def test_out_of_range_ttl_override_refused(self, ttl_hours):
+    async def test_out_of_range_ttl_override_refused(self, container, ttl_hours):
         """The kwarg must not be a way around the setting's own bound.
 
         ttl_hours=0 puts every unlinked file past the cutoff, in-flight
@@ -407,13 +460,13 @@ class TestRunSettingsGate:
         """
         settings = self._settings(enabled=True, dry_run=False)
         with pytest.raises(ValueError, match="ttl_hours must be between"):
-            await run(settings=settings, ttl_hours=ttl_hours)
+            await run(settings=settings, container=container, ttl_hours=ttl_hours)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("ttl_hours", [1, 720])
-    async def test_ttl_override_at_the_bounds_accepted(self, ttl_hours):
+    async def test_ttl_override_at_the_bounds_accepted(self, container, ttl_hours):
         settings = self._settings(enabled=True, dry_run=True)
-        result = await run(settings=settings, ttl_hours=ttl_hours)
+        result = await run(settings=settings, container=container, ttl_hours=ttl_hours)
         assert result["ttl_hours"] == ttl_hours
 
     def test_ttl_bounds_track_the_settings_field(self):
@@ -455,7 +508,11 @@ class TestCleanupErrorAccounting:
         )
 
         result = await cleanup_orphaned_files(
-            storage=storage_service, ttl_hours=24, dry_run=False
+            storage=storage_service,
+            ttl_hours=24,
+            dry_run=False,
+            referenced_refs=UNRELATED_REFS,
+            allow_disjoint_reference_set=True,
         )
 
         assert result["found"] == 1
@@ -480,7 +537,11 @@ class TestCleanupErrorAccounting:
         )
 
         result = await cleanup_orphaned_files(
-            storage=storage_service, ttl_hours=24, dry_run=False
+            storage=storage_service,
+            ttl_hours=24,
+            dry_run=False,
+            referenced_refs=UNRELATED_REFS,
+            allow_disjoint_reference_set=True,
         )
 
         assert result["errors"] == 1
@@ -506,9 +567,812 @@ class TestStraySidecarReporting:
         )
 
         result = await cleanup_orphaned_files(
-            storage=storage_service, ttl_hours=24, dry_run=False
+            storage=storage_service,
+            ttl_hours=24,
+            dry_run=False,
+            referenced_refs=UNRELATED_REFS,
+            allow_disjoint_reference_set=True,
         )
 
         assert result["stray_sidecars"] == 1
         assert result["deleted"] == 0
         assert stray.exists()  # left in place, but reported
+
+
+# ============================================================
+# The database cross-check — issue #1232
+# ============================================================
+
+
+class TestDatabaseCrossCheck:
+    """The sweep asks the authority; the sidecar is only a hint.
+
+    The state under test is the one #1232 describes and that no test could
+    reach before it: an `uploaded_files` row exists and the case references
+    the file, but `mark_linked` failed at upload so the sidecar still says
+    `linked: false`. Past the TTL, the pre-fix sweep deleted it.
+
+    Note that `test_deletes_only_unlinked_and_past_ttl` passes with the
+    cross-check removed — nothing in it is referenced — which is exactly why
+    it pins nothing here.
+    """
+
+    @pytest.mark.asyncio
+    async def test_referenced_file_is_never_deleted_despite_unlinked_sidecar(
+        self, storage_service, storage_root
+    ):
+        """THE regression test: row present, sidecar unflipped, past TTL.
+
+        Remove the `is_referenced` gate in cleanup_orphaned_files and this
+        reds — the file is deleted and skipped_db_referenced stays 0.
+        """
+        old = datetime.now(UTC) - timedelta(hours=48)
+
+        at_risk = _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/case/1/mark_linked_failed.log",
+            linked=False,
+            uploaded_at=old,
+        )
+        at_risk_key = str(at_risk.relative_to(storage_root))
+
+        # Genuinely unreferenced, same age and same sidecar state — the
+        # positive control. Without it a sweep that simply stopped deleting
+        # anything would also pass.
+        genuine_orphan = _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/case/2/genuine_orphan.log",
+            linked=False,
+            uploaded_at=old,
+        )
+
+        result = await cleanup_orphaned_files(
+            storage=storage_service,
+            ttl_hours=24,
+            dry_run=False,
+            referenced_refs={at_risk_key},
+        )
+
+        # The live file survives, and the count says WHY it survived.
+        assert at_risk.exists(), (
+            "a file the database still references was deleted — this is the "
+            "irreversible data loss #1232 describes"
+        )
+        assert Path(f"{at_risk}{SIDECAR_SUFFIX}").exists()
+        assert result["skipped_db_referenced"] == 1
+        assert result["skipped_linked"] == 0, (
+            "the rescue must not be folded into skipped_linked — that would "
+            "make the count lie about why the file survived"
+        )
+
+        # The positive control: the sweep still works.
+        assert not genuine_orphan.exists()
+        assert result["found"] == 1
+        assert result["deleted"] == 1
+
+    @pytest.mark.asyncio
+    async def test_dry_run_does_not_report_a_referenced_file_as_found(
+        self, storage_service, storage_root
+    ):
+        """A dry run is what an operator reads before arming the sweep.
+
+        Reporting a live file as `would delete` is how a wrong deletion gets
+        approved by a human, so the cross-check must apply in dry-run too.
+        """
+        old = datetime.now(UTC) - timedelta(hours=48)
+        at_risk = _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/case/1/at_risk.log",
+            linked=False,
+            uploaded_at=old,
+        )
+
+        result = await cleanup_orphaned_files(
+            storage=storage_service,
+            ttl_hours=24,
+            dry_run=True,
+            referenced_refs={str(at_risk.relative_to(storage_root))},
+        )
+
+        assert result["found"] == 0
+        assert result["skipped_db_referenced"] == 1
+
+    @pytest.mark.asyncio
+    async def test_unreferenced_but_linked_file_is_still_kept(
+        self, storage_service, storage_root
+    ):
+        """The mirror-image hazard, pinned so a later 'tidy-up' cannot land it.
+
+        The tidier-sounding rewrite — "the DB is the authority, delete what it
+        does not reference" — is a data-loss change wearing a data-safety
+        label. On the measured production corpus 160 of 850 candidates had no
+        row and EVERY one of them said linked=true; that rewrite destroys all
+        160 on its first armed run. Deletion requires BOTH signals to agree.
+        """
+        old = datetime.now(UTC) - timedelta(hours=48)
+        no_row_but_linked = _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/case/1/row_deleted_later.log",
+            linked=True,
+            uploaded_at=old,
+        )
+
+        result = await cleanup_orphaned_files(
+            storage=storage_service,
+            ttl_hours=24,
+            dry_run=False,
+            referenced_refs=UNRELATED_REFS,
+            allow_disjoint_reference_set=True,
+        )
+
+        assert no_row_but_linked.exists()
+        assert result["deleted"] == 0
+        assert result["skipped_linked"] == 1
+        assert result["unreferenced_by_db"] == 1
+
+    @pytest.mark.asyncio
+    async def test_classification_counters_report_the_referenced_fraction(
+        self, storage_service, storage_root
+    ):
+        """Standing report, not a one-off probe.
+
+        referenced_by_db / unreferenced_by_db classify EVERY candidate against
+        the authority, independent of which deletion branch it lands in — so
+        the referenced fraction of the corpus is in every night's run summary.
+        """
+        now = datetime.now(UTC)
+        old = now - timedelta(hours=48)
+        recent = now - timedelta(hours=1)
+
+        referenced_old_linked = _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/case/1/a.log",
+            linked=True,
+            uploaded_at=old,
+        )
+        referenced_recent = _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/case/2/b.log",
+            linked=False,
+            uploaded_at=recent,
+        )
+        _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/case/3/c.log",
+            linked=False,
+            uploaded_at=old,
+        )
+
+        refs = {
+            str(referenced_old_linked.relative_to(storage_root)),
+            str(referenced_recent.relative_to(storage_root)),
+        }
+
+        result = await cleanup_orphaned_files(
+            storage=storage_service, ttl_hours=24, dry_run=True, referenced_refs=refs
+        )
+
+        assert result["scanned"] == 3
+        assert result["referenced_by_db"] == 2
+        assert result["unreferenced_by_db"] == 1
+        assert result["referenced_by_db"] + result["unreferenced_by_db"] == (
+            result["scanned"]
+        )
+        assert result["referenced_refs_count"] == 2
+
+
+class TestFailsClosedWithoutTheAuthority:
+    """A zero-row answer reads as "cannot decide", never "nothing is live"."""
+
+    @pytest.fixture(autouse=True)
+    def _bind_temp_storage(self, monkeypatch, storage_service):
+        monkeypatch.setattr(
+            storage_cleanup, "FileStorageService", lambda: storage_service
+        )
+
+    def _settings(self, *, enabled=True, dry_run=False, ttl_hours=24):
+        return SimpleNamespace(
+            evidence_storage=SimpleNamespace(
+                orphan_cleanup_enabled=enabled,
+                orphan_cleanup_dry_run=dry_run,
+                orphan_file_ttl_hours=ttl_hours,
+            )
+        )
+
+    @pytest.mark.asyncio
+    async def test_empty_reference_set_with_candidates_refuses_the_run(
+        self, storage_service, storage_root
+    ):
+        """The RLS shape: uploaded_files is tenanted and fail-closed, so an
+        unbound session sees ZERO rows — under which EVERY live file reads as
+        an orphan. Refuse, do not reclassify the whole corpus.
+
+        An empty reference set is one instance of the general condition the
+        guard tests for (no overlap with the candidates); the non-empty
+        instance is in TestDisjointReferenceSet below, and is the one the
+        first version of this guard missed."""
+        old = datetime.now(UTC) - timedelta(hours=48)
+        live = _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/case/1/live.log",
+            linked=False,
+            uploaded_at=old,
+        )
+
+        result = await cleanup_orphaned_files(
+            storage=storage_service, ttl_hours=24, dry_run=False, referenced_refs=set()
+        )
+
+        assert result["status"] == "failed"
+        assert result["reason"] == storage_cleanup.REASON_REFERENCE_SET_DISJOINT
+        assert result["deleted"] == 0
+        assert live.exists()
+
+    @pytest.mark.asyncio
+    async def test_empty_reference_set_with_no_candidates_is_not_an_error(
+        self, storage_service
+    ):
+        """A genuinely empty deployment has nothing to refuse — the guard is
+        about candidates existing while the authority reports none."""
+        result = await cleanup_orphaned_files(
+            storage=storage_service, ttl_hours=24, dry_run=False, referenced_refs=set()
+        )
+
+        assert result["status"] == "completed"
+        assert result["scanned"] == 0
+
+    @pytest.mark.asyncio
+    async def test_run_refuses_without_a_container(self, monkeypatch, storage_root):
+        """`container` used to be accepted and ignored. It is the authority
+        now, so a run without one is refused rather than degraded to the
+        pre-#1232 sidecar-only decision.
+
+        ⚠️ ``live.exists()`` would be vacuous on its own — the refusal happens
+        before ``FileStorageService`` is constructed, so nothing could have
+        deleted the file whatever the code did. The real property is that the
+        run short-circuits BEFORE enumerating anything, so that is what is
+        asserted: the storage service is never even built.
+        """
+        old = datetime.now(UTC) - timedelta(hours=48)
+        live = _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/case/1/live.log",
+            linked=False,
+            uploaded_at=old,
+        )
+
+        built = []
+
+        def _tripwire():
+            built.append(1)
+            raise AssertionError(
+                "the sweep constructed its storage service despite having no "
+                "authority to consult — it must refuse before enumerating"
+            )
+
+        monkeypatch.setattr(storage_cleanup, "FileStorageService", _tripwire)
+
+        result = await run(settings=self._settings(), container=None)
+
+        assert result["status"] == "failed"
+        assert result["reason"] == storage_cleanup.REASON_AUTHORITY_UNAVAILABLE
+        assert built == [], "storage service must not be constructed"
+        assert live.exists()
+
+    @pytest.mark.asyncio
+    async def test_run_refuses_when_the_repository_query_raises(self, storage_root):
+        """A DB error is 'cannot decide', not 'nothing is referenced'."""
+        old = datetime.now(UTC) - timedelta(hours=48)
+        live = _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/case/1/live.log",
+            linked=False,
+            uploaded_at=old,
+        )
+        container = SimpleNamespace(
+            case_repository=SimpleNamespace(
+                list_all_storage_refs=AsyncMock(
+                    side_effect=RuntimeError("connection refused")
+                )
+            )
+        )
+
+        result = await run(settings=self._settings(), container=container)
+
+        assert result["status"] == "failed"
+        assert result["reason"] == storage_cleanup.REASON_AUTHORITY_UNAVAILABLE
+        assert live.exists()
+
+    @pytest.mark.asyncio
+    async def test_dry_run_is_refused_too_when_the_authority_is_unreachable(
+        self, storage_root
+    ):
+        """A dry run without the authority prints a classification nobody
+        should act on — refuse it rather than publish a fiction."""
+        result = await run(
+            settings=self._settings(enabled=False, dry_run=True), container=None
+        )
+
+        assert result["status"] == "failed"
+        assert result["reason"] == storage_cleanup.REASON_AUTHORITY_UNAVAILABLE
+
+    @pytest.mark.asyncio
+    async def test_run_passes_the_reference_set_through_to_the_sweep(
+        self, storage_service, storage_root
+    ):
+        """run() must feed the DB answer to the sweep, not a fresh empty set.
+
+        Without this, wiring the query in and then dropping it on the floor
+        would leave every other test in this class green.
+        """
+        old = datetime.now(UTC) - timedelta(hours=48)
+        at_risk = _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/case/1/at_risk.log",
+            linked=False,
+            uploaded_at=old,
+        )
+        key = str(at_risk.relative_to(storage_root))
+        container = SimpleNamespace(
+            case_repository=SimpleNamespace(
+                list_all_storage_refs=AsyncMock(return_value={key})
+            )
+        )
+
+        result = await run(settings=self._settings(), container=container)
+
+        assert result["status"] == "completed"
+        assert result["skipped_db_referenced"] == 1
+        assert result["deleted"] == 0
+        assert at_risk.exists()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "make_container,expected_reason",
+        [
+            (lambda: None, storage_cleanup.REASON_AUTHORITY_UNAVAILABLE),
+            (
+                lambda: SimpleNamespace(
+                    case_repository=SimpleNamespace(
+                        list_all_storage_refs=AsyncMock(return_value=set())
+                    )
+                ),
+                storage_cleanup.REASON_REFERENCE_SET_DISJOINT,
+            ),
+        ],
+    )
+    async def test_a_refusal_exits_non_zero_so_the_cronjob_alert_fires(
+        self, storage_root, make_container, expected_reason
+    ):
+        """A fail-closed nobody hears about is half a fail-closed.
+
+        The runner maps status="skipped" to exit 0, which is exactly the "a
+        CronJob that refuses at boot looks like a CronJob with nothing to do"
+        shape that hid #1232. These two refusals are the job wanting to run and
+        being unable to decide, so they must exit non-zero.
+        """
+        _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/case/1/live.log",
+            linked=False,
+            uploaded_at=datetime.now(UTC) - timedelta(hours=48),
+        )
+
+        result = await run(settings=self._settings(), container=make_container())
+
+        assert result["reason"] == expected_reason
+        assert result["status"] not in ("completed", "skipped"), (
+            "faultmaven.jobs.run.main() maps completed/skipped to exit 0, so "
+            "this refusal would be silent forever"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_configured_refusal_still_exits_zero(self, container):
+        """The positive control, and the line the split is drawn on.
+
+        ORPHAN_CLEANUP_ENABLED=false is a refusal the DEPLOYMENT asked for; it
+        happens every night by design and must stay a clean exit. Without this,
+        a blanket "refusals are failures" change would page nightly on every
+        deployment that has not opted in.
+        """
+        result = await run(
+            settings=self._settings(enabled=False, dry_run=False), container=container
+        )
+
+        assert result["status"] == "skipped"
+        assert result["reason"] == storage_cleanup.REASON_CLEANUP_DISABLED
+
+    @pytest.fixture
+    def container(self):
+        repo = SimpleNamespace(
+            list_all_storage_refs=AsyncMock(return_value=set(UNRELATED_REFS))
+        )
+        return SimpleNamespace(case_repository=repo)
+
+
+class TestDriftIsSelfHealing:
+    """The operator runbook promises this; a promise nobody tests rots.
+
+    `docs/operations/evidence-job-scheduling.md` tells an operator NOT to go
+    hunting for leaked objects after sidecar drift, because the object is
+    protected only while its `uploaded_files` row lives and is reclaimed
+    normally once the row goes. Both halves of that are pinned here: the
+    sweep's own behaviour, and the two facts the claim rests on.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_same_file_is_protected_then_reclaimed(
+        self, storage_service, storage_root
+    ):
+        """Protected while the row exists; an ordinary orphan once it does not.
+
+        Two sweeps over the SAME file, differing only in whether the database
+        still names it. Asserting protection alone (as the other tests do)
+        would leave "and then it leaks forever" indistinguishable from "and
+        then it is reclaimed on schedule" — which is precisely the sentence
+        the runbook now puts in front of an operator.
+        """
+        old = datetime.now(UTC) - timedelta(hours=48)
+        drifted = _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/case/1/mark_linked_failed.log",
+            linked=False,
+            uploaded_at=old,
+        )
+        key = str(drifted.relative_to(storage_root))
+
+        # Row alive: the sidecar says orphan, the database disagrees, the
+        # database wins.
+        first = await cleanup_orphaned_files(
+            storage=storage_service,
+            ttl_hours=24,
+            dry_run=False,
+            referenced_refs={key},
+        )
+        assert drifted.exists()
+        assert first["skipped_db_referenced"] == 1
+        assert first["deleted"] == 0
+
+        # Case deleted -> the row cascades away -> nothing references the
+        # object. The sidecar is STILL stale at linked=False; that is the
+        # point. It is now an ordinary orphan and is reclaimed.
+        second = await cleanup_orphaned_files(
+            storage=storage_service,
+            ttl_hours=24,
+            dry_run=False,
+            referenced_refs=UNRELATED_REFS,
+            allow_disjoint_reference_set=True,
+        )
+        assert not drifted.exists(), (
+            "a drifted object must not be protected forever — the runbook "
+            "tells operators it is reclaimed once its row is gone"
+        )
+        assert second["deleted"] == 1
+        assert second["skipped_db_referenced"] == 0
+
+    def test_the_row_lifetime_the_claim_rests_on(self):
+        """`uploaded_files.case_id` is ON DELETE CASCADE.
+
+        Structural, not behavioural, and deliberately so: the unit fixture in
+        the repository tests builds its own engine without the production
+        PRAGMA, so a "delete the case, watch the row vanish" test there would
+        pass or fail for reasons unrelated to the schema. What the runbook
+        claim actually needs is this constraint plus the pragma below.
+        """
+        from faultmaven.infrastructure.persistence.models import UploadedFileModel
+
+        case_fk = [
+            fk
+            for fk in UploadedFileModel.__table__.foreign_keys
+            if fk.column.table.name == "cases"
+        ]
+        assert case_fk, "uploaded_files no longer references cases"
+        assert all(fk.ondelete == "CASCADE" for fk in case_fk), (
+            "uploaded_files.case_id lost ON DELETE CASCADE — a drifted object "
+            "would now be protected forever, and the operator runbook says "
+            "the opposite"
+        )
+
+    def test_sqlite_actually_enforces_that_cascade(self):
+        """SQLite ignores FKs unless told otherwise, so the pragma is load-bearing.
+
+        Asserted against the engine-setup source rather than a live engine:
+        the listener fires on connect, and the claim is about what production
+        wiring does, not about whatever engine a test happens to build.
+        """
+        import inspect
+
+        from faultmaven.infrastructure.persistence import database
+
+        source = inspect.getsource(database)
+        assert "PRAGMA foreign_keys=ON" in source, (
+            "the SQLite engine no longer enables foreign_keys, so ON DELETE "
+            "CASCADE is silently a no-op there and drifted objects WOULD leak"
+        )
+
+
+class TestDisjointReferenceSet:
+    """The hole the first version of this guard left open.
+
+    That guard asked "is the reference set EMPTY?". A **non-empty** set sharing
+    nothing with the candidates sails past it, every candidate then scores
+    unreferenced, and the sweep deletes all of them — the same irreversible
+    loss #1232 exists to prevent.
+
+    Not theoretical. `knowledge_service.py` and `conversion_service.py` both
+    write filesystem paths into `uploaded_files.storage_ref`, and a path can
+    never equal a backend key, so a conversion-heavy deployment has a
+    populated reference set that overlaps nothing. A changed STORAGE_BACKEND
+    or key prefix does the same. The test is the OVERLAP.
+    """
+
+    @pytest.mark.asyncio
+    async def test_non_empty_but_disjoint_reference_set_refuses(
+        self, storage_service, storage_root
+    ):
+        """THE F1 regression: refs populated, overlap zero, live run.
+
+        Revert the guard to `if candidates and not referenced_refs` and this
+        reds with the file deleted.
+        """
+        old = datetime.now(UTC) - timedelta(hours=48)
+        live = _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/case/1/live_evidence.log",
+            linked=False,
+            uploaded_at=old,
+        )
+
+        result = await cleanup_orphaned_files(
+            storage=storage_service,
+            ttl_hours=24,
+            dry_run=False,
+            # Shaped like real conversion-sourced rows: absolute filesystem
+            # paths, which can never match a backend key.
+            referenced_refs={
+                "/var/data/knowledge/conversions/runbook-src.md",
+                "/srv/uploads/retained/import-2026.csv",
+            },
+        )
+
+        assert result["status"] == "failed"
+        assert result["reason"] == storage_cleanup.REASON_REFERENCE_SET_DISJOINT
+        assert result["deleted"] == 0
+        assert live.exists(), (
+            "a non-empty reference set that overlaps nothing must not license "
+            "deleting every candidate — this is the F1 data-loss hole"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_single_overlapping_ref_is_enough_to_proceed(
+        self, storage_service, storage_root
+    ):
+        """The positive control, and the boundary.
+
+        Without it, a guard that refused every run would pass the test above.
+        One candidate in the reference set proves the two namespaces
+        correspond, which is all the guard is asking.
+        """
+        old = datetime.now(UTC) - timedelta(hours=48)
+        referenced = _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/case/1/referenced.log",
+            linked=False,
+            uploaded_at=old,
+        )
+        orphan = _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/case/2/orphan.log",
+            linked=False,
+            uploaded_at=old,
+        )
+
+        result = await cleanup_orphaned_files(
+            storage=storage_service,
+            ttl_hours=24,
+            dry_run=False,
+            referenced_refs={
+                str(referenced.relative_to(storage_root)),
+                "/var/data/knowledge/conversions/unrelated.md",
+            },
+        )
+
+        assert result["status"] == "completed"
+        assert result["reference_overlap"] == 1
+        assert referenced.exists()
+        assert not orphan.exists()
+        assert result["deleted"] == 1
+
+
+class TestDisjointDoesNotDeadlockTheDeployment:
+    """F1's guard must not strand the deployments the sweep exists for.
+
+    Two of them pull against the guard, and both are legitimate:
+
+    - an install whose cases were ALL deleted genuinely references nothing,
+      and still needs its objects reclaimed;
+    - the mandatory pre-arming canary (evidence-failure-modes.md step 3) seeds
+      ONE orphan on an otherwise-empty staging install, which is by
+      construction a disjoint reference set.
+
+    Resolved by separating reporting from deleting rather than by weakening
+    the guard: a dry run always proceeds (it deletes nothing), and a live run
+    takes an explicit operator acknowledgment.
+    """
+
+    @pytest.mark.asyncio
+    async def test_dry_run_proceeds_and_reports_instead_of_refusing(
+        self, storage_service, storage_root
+    ):
+        """The canary must be completable — and the dry run is the diagnostic.
+
+        It deletes nothing, so it cannot lose anything, and its counters are
+        how an operator tells an RLS-scoped view from a real empty install.
+        Refusing it would make the documented pre-arming procedure impossible.
+        """
+        old = datetime.now(UTC) - timedelta(hours=48)
+        seeded = _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/canary/1/seeded-orphan.txt",
+            linked=False,
+            uploaded_at=old,
+        )
+
+        result = await cleanup_orphaned_files(
+            storage=storage_service, ttl_hours=24, dry_run=True, referenced_refs=set()
+        )
+
+        assert result["status"] == "completed", (
+            "a dry run must not be refused — it deletes nothing, and it is "
+            "the documented way to diagnose a disjoint reference set"
+        )
+        assert result["found"] == 1
+        assert result["deleted"] == 0
+        assert seeded.exists()
+
+    @pytest.mark.asyncio
+    async def test_explicit_acknowledgment_unblocks_a_live_run(
+        self, storage_service, storage_root
+    ):
+        """An install that genuinely references nothing must not deadlock.
+
+        Without an override it would fail every night forever while its
+        orphans accumulate — the exact state the sweep exists for.
+        """
+        old = datetime.now(UTC) - timedelta(hours=48)
+        orphan = _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/case/1/genuine_orphan.log",
+            linked=False,
+            uploaded_at=old,
+        )
+
+        result = await cleanup_orphaned_files(
+            storage=storage_service,
+            ttl_hours=24,
+            dry_run=False,
+            referenced_refs=set(),
+            allow_disjoint_reference_set=True,
+        )
+
+        assert result["status"] == "completed"
+        assert result["deleted"] == 1
+        assert not orphan.exists()
+
+    @pytest.mark.asyncio
+    async def test_the_acknowledgment_is_off_by_default(
+        self, storage_service, storage_root
+    ):
+        """The override must be opt-in, or it is not a guard at all."""
+        old = datetime.now(UTC) - timedelta(hours=48)
+        live = _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/case/1/live.log",
+            linked=False,
+            uploaded_at=old,
+        )
+
+        result = await cleanup_orphaned_files(
+            storage=storage_service, ttl_hours=24, dry_run=False, referenced_refs=set()
+        )
+
+        assert result["status"] == "failed"
+        assert live.exists()
+
+
+class TestRescueSignalsArePinned:
+    """F4: both rescue signals were publishable but unpinned.
+
+    `docs/operations/monitoring/evidence-metrics.md` lists
+    `faultmaven_evidence_orphan_files_rescued_total` as **Live**, and
+    `evidence-job-scheduling.md`'s runbook keys an operator procedure on the
+    `Sidecar drift: … NOT deleting` WARNING. Both could be deleted outright
+    with every other test in this file still green — a documented operator
+    signal that nothing holds in place is a signal that quietly stops
+    arriving.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_rescue_increments_the_counter(self, storage_service, storage_root):
+        old = datetime.now(UTC) - timedelta(hours=48)
+        at_risk = _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/case/1/at_risk.log",
+            linked=False,
+            uploaded_at=old,
+        )
+
+        with patch.object(
+            storage_cleanup, "EVIDENCE_ORPHAN_FILES_RESCUED_TOTAL"
+        ) as counter:
+            result = await cleanup_orphaned_files(
+                storage=storage_service,
+                ttl_hours=24,
+                dry_run=False,
+                referenced_refs={str(at_risk.relative_to(storage_root))},
+            )
+
+        assert result["skipped_db_referenced"] == 1
+        counter.inc.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_a_clean_sweep_does_not_increment_it(
+        self, storage_service, storage_root
+    ):
+        """Positive control: a counter fired unconditionally would make the
+        assertion above pass for the wrong reason."""
+        old = datetime.now(UTC) - timedelta(hours=48)
+        referenced = _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/case/1/linked.log",
+            linked=True,
+            uploaded_at=old,
+        )
+
+        with patch.object(
+            storage_cleanup, "EVIDENCE_ORPHAN_FILES_RESCUED_TOTAL"
+        ) as counter:
+            await cleanup_orphaned_files(
+                storage=storage_service,
+                ttl_hours=24,
+                dry_run=False,
+                referenced_refs={str(referenced.relative_to(storage_root))},
+            )
+
+        counter.inc.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_rescue_warning_names_the_file(
+        self, storage_service, storage_root, caplog
+    ):
+        """The runbook tells an operator to grep for this line and act on the
+        key in it, so both the phrase and the key are load-bearing."""
+        import logging
+
+        old = datetime.now(UTC) - timedelta(hours=48)
+        at_risk = _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/case/1/drifted.log",
+            linked=False,
+            uploaded_at=old,
+        )
+        key = str(at_risk.relative_to(storage_root))
+
+        with caplog.at_level(
+            logging.WARNING, logger="faultmaven.modules.agent.jobs.storage_cleanup"
+        ):
+            await cleanup_orphaned_files(
+                storage=storage_service,
+                ttl_hours=24,
+                dry_run=False,
+                referenced_refs={key},
+            )
+
+        drift = [r for r in caplog.records if "Sidecar drift" in r.getMessage()]
+        assert (
+            len(drift) == 1
+        ), "the runbook's 'Sidecar drift: … NOT deleting' signal is missing"
+        assert key in drift[0].getMessage(), (
+            "the warning must name the file — an operator cannot act on a "
+            "count alone"
+        )

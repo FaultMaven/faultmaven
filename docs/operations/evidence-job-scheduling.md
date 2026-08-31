@@ -19,9 +19,93 @@ These jobs support the failure mode handling infrastructure documented in:
 
 ### 1. Storage Cleanup Job
 
-**Purpose:** Delete orphaned files >24h old with no evidence record
+**Purpose:** Delete orphaned files >24h old that **no `uploaded_files` row
+references** and whose sidecar says `linked: false`.
 
 **Implementation:** `faultmaven/modules/agent/jobs/storage_cleanup.py`
+
+**Both signals must agree before anything is deleted (#1232).** The sidecar is
+a cache of the database's linkage state, written once at upload and never
+revisited, and it goes stale in *both* directions:
+
+- stale `linked: false` beside a live row (a failed best-effort `mark_linked`)
+  — the sweep used to delete a file the case still referenced. The DB
+  cross-check makes that impossible; the rescue is counted as
+  `skipped_db_referenced` and logged with the file's key. The drift is then
+  self-healing: the object is protected exactly while its `uploaded_files` row exists, and once the case is deleted the row goes with it (`uploaded_files.case_id` is `ON DELETE CASCADE`, enforced on both backends — SQLite runs with `PRAGMA foreign_keys=ON`), leaving an ordinary unreferenced orphan the sweep reclaims normally.
+- stale `linked: true` with no row behind it. On a measured production corpus
+  of 850 candidates, 160 had no row and **every one of them** said
+  `linked: true`. So the tidier-sounding inverse — "the DB is the authority,
+  delete what it does not reference" — is a data-loss change wearing a
+  data-safety label: it destroys all 160 on its first armed run.
+
+**Fail-closed refusals.** The run deletes nothing and reports
+`status="failed"` when it cannot ask the authority (no DI container, no case
+repository, or the query raised → `reason="reference_authority_unavailable"`),
+and when the authority's answer shares NOTHING with the sweep candidates
+(`reason="reference_set_disjoint"`) — under which every candidate would be
+deleted.
+
+The disjoint test is the **overlap**, not emptiness. A *non-empty* reference
+set that overlaps nothing passes an emptiness check and then deletes
+everything, and that shape is reachable: `knowledge_service` and
+`conversion_service` write filesystem paths into `storage_ref`, and a path can
+never equal a backend key. A changed `STORAGE_BACKEND` or key prefix does the
+same, and an RLS-scoped session produces the empty instance.
+
+The authority-unreachable refusal covers dry runs too — a classification
+computed without the authority is a fiction someone might act on. The
+**disjoint** refusal does not: a dry run deletes nothing, its counters are how
+you diagnose which of the three causes you have, and refusing it would make
+the mandatory pre-arming canary impossible (seeding one orphan on an otherwise
+empty staging install *is* a disjoint reference set). A live run refuses
+unless `--allow-disjoint-reference-set` is passed, which exists so a
+deployment that genuinely references nothing is not deadlocked — it still
+needs its orphans reclaimed.
+
+`"failed"` rather than `"skipped"` is deliberate, and the split is worth
+knowing:
+
+| refusal | `status` | exit code | why |
+|---|---|---|---|
+| `orphan_cleanup_disabled` | `skipped` | 0 | the deployment ASKED for it; expected every night on the shipped defaults |
+| `reference_authority_unavailable` | `failed` | 1 | the job wanted to run and could not decide |
+| `reference_set_disjoint` | `failed` | 1 | no candidate is referenced; likeliest causes are a misprovisioned DB role or a keyspace mismatch. Not applied to dry runs; overridable with `--allow-disjoint-reference-set` |
+
+`faultmaven.jobs.run.main()` maps `completed`/`skipped` to exit 0, so a
+refusal reported as `skipped` would be invisible for as long as it lasted —
+"a CronJob that refuses at boot looks like a CronJob with nothing to do",
+which is the shape that hid #1232. On Kubernetes the non-zero exit fails the
+Job and `FaultMavenCronJobRunFailed` fires.
+
+**`case_cleanup` carries the same guard.** It is the other reference-set
+sweep — ChromaDB case collections weighed against the `cases` id set — and it
+had the identical hazard: an empty or non-overlapping id set made
+`expected_collections` empty inside `cleanup_orphaned_collections`, so every
+collection became an orphan, and the per-candidate `case_exists` re-check
+reads the same scoped repository and would answer "no" too. Both jobs now call
+`faultmaven.jobs.reference_set.assess_reference_set`, report the same
+`reference_set_disjoint` reason, and take the same
+`--allow-disjoint-reference-set` acknowledgment. `case_cleanup` has no
+dry-run mode, so for it every run is a live one. Its missing-dependency exits
+were also `skipped` (exit 0) and are now `failed`, for the same reason the
+storage sweep's are.
+
+**Tenant scope: `cross_tenant`.** A storage key carries no tenant the backend
+enforces, so "unreferenced" is only decidable against the `storage_ref` set of
+ALL organizations. Under `TENANT_PROVIDER=multi` this job runs only on the
+audited maintenance path (`--cross-tenant-maintenance` + the
+`faultmaven_maintenance` BYPASSRLS role) — see [Tenant Scope](#tenant-scope-multi-tenant--cloud)
+below. In single-tenant deployments the scope is a runtime no-op and the flag
+is refused.
+
+**Run-summary counters.** Beyond `found`/`deleted`, each run reports
+`skipped_db_referenced` (files the cross-check saved — non-zero means sidecar
+drift is live) and an `authority:` block with `referenced_refs`,
+`referenced_by_db` and `unreferenced_by_db`. The last two classify every
+candidate against the database regardless of which branch it lands in, so the
+referenced fraction of the stored corpus is a standing nightly report rather
+than a one-off probe.
 
 **Execution:**
 ```bash
@@ -124,8 +208,10 @@ There is no per-file deletion-failure counter; failures are logged
 Every run ends with one summary line at INFO, whatever the outcome:
 
 ```text
-Storage cleanup DRY RUN — scanned=N, found=N, deleted=N, skipped_linked=N,
-skipped_within_ttl=N, skipped_no_sidecar=N, stray_sidecars=N, errors=N
+Storage cleanup DRY RUN — scanned=N, found=N, deleted=N,
+skipped_db_referenced=N, skipped_linked=N, skipped_within_ttl=N,
+skipped_no_sidecar=N, stray_sidecars=N, errors=N | authority:
+referenced_refs_count=N, referenced_by_db=N, unreferenced_by_db=N
 ```
 
 Alert on these lines via the log pipeline (Loki queries below):
@@ -133,10 +219,18 @@ Alert on these lines via the log pipeline (Loki queries below):
 | Signal | Level | Meaning |
 |--------|-------|---------|
 | `found=` high in the summary line | INFO | Systematic link/store failure upstream |
+| `skipped_db_referenced=` non-zero | INFO (+ a WARNING per file) | **The cross-check saved a live file.** Sidecar drift is happening — the pre-#1232 sweep would have deleted referenced evidence here. Investigate the `mark_linked` path |
+| `Sidecar drift: … NOT deleting` | WARNING | The same event, naming the file |
+| `referenced_by_db=0` with `scanned` non-zero | INFO | The authority is answering, but references nothing it enumerated — on a live deployment this usually means an RLS-scoped view, not the truth. (A total zero refuses the run outright; this is the partial case, which cannot be distinguished automatically) |
+| `Storage cleanup REFUSED: …` | ERROR | Zero referenced refs beside live candidates — nothing deleted, exit 1 |
 | `Failed to delete orphan …` | ERROR | Storage backend rejecting deletes |
 | `Unreadable sidecar for … — skipping` | WARNING | Corrupt or unreachable sidecar |
 | `sidecar(s) have no corresponding file` | WARNING | Stray sidecars nothing will ever sweep |
 | No summary line at all for a scheduled run | — | Job never reached the sweep (see boot gates) |
+
+The two refusals also exit **non-zero**, so on Kubernetes they surface without
+the log pipeline at all: the Job fails and `FaultMavenCronJobRunFailed` fires.
+That is the only sweep signal today that reaches alerting without a log query.
 
 [`docs/operations/monitoring/evidence-metrics.md`](monitoring/evidence-metrics.md)
 remains the canonical home for the metric and alert *definitions*; its
@@ -189,9 +283,9 @@ The CLI runner (`faultmaven.jobs.run`) enforces a declared tenant scope per job
 
 | Scope | Meaning | Under `TENANT_PROVIDER=multi` |
 |-------|---------|-------------------------------|
-| `tenant_neutral` | No tenanted DB access (e.g. `storage_cleanup`, a sidecar-driven filesystem sweep) | Runs as-is |
+| `tenant_neutral` | No tenanted DB access | Runs as-is |
 | `org` | Operates on one organization's rows | Requires explicit `--organization-id`; the runner binds it to the tenant context so all DB access is RLS-scoped to that org |
-| `cross_tenant` | Touches all organizations' data (e.g. `case_cleanup`, which diffs the DB case-id set against non-partitioned ChromaDB collections; `kb_seed`, which writes the org-free global KB tier served to every tenant, #770) | **Refused by default** — RLS scopes every DB transaction to the single org bound in the tenant context; a partial view would delete other tenants' data. Runs ONLY on the audited maintenance path below |
+| `cross_tenant` | Touches all organizations' data (e.g. `case_cleanup`, which diffs the DB case-id set against non-partitioned ChromaDB collections; `storage_cleanup`, which diffs the DB `uploaded_files.storage_ref` set against stored objects whose keys carry no tenant the backend enforces, #1232; `kb_seed`, which writes the org-free global KB tier served to every tenant, #770) | **Refused by default** — RLS scopes every DB transaction to the single org bound in the tenant context; a partial view would delete other tenants' data. Runs ONLY on the audited maintenance path below |
 
 The runner also runs the same boot gates as the API lifespan: the deployment
 coherence gate, and (under multi) the RLS role guard — a CronJob with a
@@ -662,6 +756,17 @@ spec:
 > stop happening on every invocation. The illustration above matches the file as
 > deployed; do not "fix" it here.
 
+> **⚠ Under `TENANT_PROVIDER=multi` the base invocation above fails closed.**
+> Since #1232 `storage_cleanup` declares `JOB_TENANT_SCOPE="cross_tenant"`, so
+> the runner refuses it unless the run also carries `--cross-tenant-maintenance`
+> and connects as the `faultmaven_maintenance` role. That is supplied by the
+> overlay patch `overlays/onprem/storage-cleanup-maintenance.yaml`
+> (`faultmaven-enterprise-infra`), the exact mirror of the case-cleanup patch
+> beside it, and it must be applied **in the same change** as the image that
+> carries the new scope — either ordering leaves the nightly job failing and
+> `FaultMavenCronJobRunFailed` firing. Nothing is deleted in the failure window
+> (both refusals are pre-sweep), but it is a page.
+
 **Deploy:** the CronJobs are part of the `faultmaven` kustomize base and are
 applied by the CD pipeline, not by hand. To apply from a workstation, run this
 from a `faultmaven-enterprise-infra` checkout:
@@ -921,6 +1026,60 @@ metrics note under [Storage Cleanup Job](#1-storage-cleanup-job)):
 - If DB failures high: Check database health, connection pool
 - If storage issues: Check S3 permissions, disk space
 
+### Sidecar Drift (`skipped_db_referenced` non-zero)
+
+**Symptoms:** the summary line reports `skipped_db_referenced=N` with `N > 0`,
+and one `Sidecar drift: <key> … NOT deleting` WARNING per file.
+
+**What it means:** the cross-check saved a live file. Its `uploaded_files` row
+exists and the case references it, but its sidecar still says `linked: false`
+past the TTL — so `mark_linked` failed for that upload. Before #1232 the sweep
+would have **deleted** it. Nothing is wrong with the sweep; something is wrong
+upstream.
+
+**Investigation:**
+1. `faultmaven_evidence_mark_linked_failures_total{outcome}` on the **API**
+   pod (that one IS scraped) — `returned_false` means the sidecar was missing
+   when the flip was attempted; `raised` means the storage backend errored.
+2. The API logs for `mark_linked returned False for <key>` / `mark_linked
+   failed for <key>` around that upload's time.
+3. Storage backend health at that moment (the flip is a small write; a
+   transient 5xx is enough).
+
+**Resolution:** fix the upstream storage flakiness. Nothing needs doing to the
+affected objects themselves — the object is protected exactly while its `uploaded_files` row exists, and once the case is deleted the row goes with it (`uploaded_files.case_id` is `ON DELETE CASCADE`, enforced on both backends — SQLite runs with `PRAGMA foreign_keys=ON`), leaving an ordinary unreferenced orphan the sweep reclaims normally. There is no leak and no loss to
+clean up; the urgency is entirely about the backend write that failed.
+
+### Sweep Refused (`status="failed"`, exit 1)
+
+**Symptoms:** the Job fails, `FaultMavenCronJobRunFailed` fires, and the logs
+carry `reason=reference_authority_unavailable` or a
+`Storage cleanup REFUSED: … ZERO referenced storage refs` ERROR.
+
+**What it means:** the sweep could not decide safely and deleted nothing. This
+is the designed behaviour, not a bug — but it also means orphan reclamation is
+not happening, so it needs fixing rather than silencing.
+
+**Investigation:**
+1. `reference_authority_unavailable` — the DI container had no case
+   repository, or the query raised. Check DB reachability from the job pod and
+   the container-init logs above the refusal.
+2. `reference_set_disjoint` — the DB answered, but no candidate was in its
+   answer. First check whether the reference set is *empty* or merely
+   *non-overlapping*: the run summary's `referenced_refs_count` distinguishes
+   them, and they have different causes. A non-zero count with zero overlap
+   points at a keyspace mismatch (conversion-sourced rows hold filesystem
+   paths; a changed `STORAGE_BACKEND`/prefix does it too). A zero count under
+   `TENANT_PROVIDER=multi` overwhelmingly means the run is **not** on the
+   maintenance DB role:
+   `uploaded_files` is RLS-tenanted and fail-closed, so an app-role session
+   with no org bound sees zero rows. Confirm the CronJob carries
+   `--cross-tenant-maintenance` **and** the `MAINTENANCE_DATABASE_URL`
+   override (`overlays/onprem/storage-cleanup-maintenance.yaml` in
+   `faultmaven-enterprise-infra`).
+3. Only if both are ruled out: the deployment genuinely references no stored
+   objects, which on a live install means something deleted the rows.
+
 ### Cleanup Job Failures
 
 **Symptoms:**
@@ -996,7 +1155,7 @@ counters have no emit sites; keep this as the intended procedure):
 | Job | Schedule | Executor | Log Location | Detection |
 |-----|----------|----------|--------------|-----------|
 | case_cleanup | Daily 2 AM UTC | k8s CronJob | kubectl logs / Loki | log-based |
-| storage_cleanup | Daily 3 AM UTC (after case_cleanup) | cron/systemd/k8s | journalctl / kubectl logs / Loki | log-based — `found=` in the run summary; counters are not scrapable from a CronJob |
+| storage_cleanup | Daily 3 AM UTC (after case_cleanup) | cron/systemd/k8s | journalctl / kubectl logs / Loki | log-based — `found=`, `skipped_db_referenced=` and the `authority:` block in the run summary; counters are not scrapable from a CronJob |
 | retry_monitoring | Every 5min | (future) | journalctl / kubectl logs | (future) |
 
 ---
