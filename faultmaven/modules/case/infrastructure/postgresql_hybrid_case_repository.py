@@ -1117,13 +1117,35 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         session with no org bound sees ZERO rows. For the delete-deciding
         orphan sweep that is the worst possible failure — every live object
         would read as unreferenced — so the sweep runs on the audited
-        maintenance path (BYPASSRLS role), and refuses to delete on an empty
-        answer regardless.
+        maintenance path (BYPASSRLS role), and refuses to delete when the
+        answer overlaps none of its candidates.
+
+        The SQL is deliberately character-identical to the SQLite
+        implementation — ``test_storage_ref_sql_is_identical_across_dialects``
+        pins that, because a divergence here is a divergence in which files
+        the cloud path protects.
+
+        Two things a future optimiser must not "fix":
+
+        **Never add a LIMIT.** A truncated reference set is indistinguishable
+        from a smaller one, and every row it drops becomes a file the sweep
+        believes is unreferenced — so capping this query converts a memory
+        concern into silent data loss. If the set ever outgrows the job pod,
+        the answer is to stream it into the membership test, not to shorten
+        it. (The sweep's disjoint guard catches a set that misses EVERY
+        candidate; it cannot catch one that misses some.)
+
+        **Do not filter to case-bound rows.** ``case_id`` is nullable — KB
+        conversion uploads carry none — and those rows still reference stored
+        objects. Excluding them would shrink the protected set, which is a
+        deletion, not a tidy-up. It does mean the operator-facing count
+        includes rows no case owns; that is the honest number for "rows that
+        reference storage".
         """
         try:
             result = await self.db.execute(
                 text(
-                    "SELECT storage_ref FROM uploaded_files "
+                    "SELECT DISTINCT storage_ref FROM uploaded_files "
                     "WHERE storage_ref IS NOT NULL"
                 )
             )

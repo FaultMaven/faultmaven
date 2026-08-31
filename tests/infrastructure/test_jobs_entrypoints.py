@@ -41,9 +41,15 @@ def mock_container():
     """Create mock DI container with in-memory providers."""
     container = MagicMock()
 
-    # Mock case_vector_store
+    # Mock case_vector_store. list_case_collection_ids is the CANDIDATE set for
+    # the reference-set guard (#1232); it overlaps list_all_case_ids below, which
+    # is the normal healthy shape — a disjoint pair is refused, and has its own
+    # tests.
     mock_vector_store = AsyncMock()
     mock_vector_store.cleanup_orphaned_collections = AsyncMock(return_value=5)
+    mock_vector_store.list_case_collection_ids = AsyncMock(
+        return_value=["case_1", "case_2", "case_gone"]
+    )
     container.case_vector_store = mock_vector_store
 
     # Mock case_repository (the reference sets for the two sweeps: case ids for
@@ -91,10 +97,16 @@ class TestCaseCleanupJob:
         assert result["active_cases"] == 3
 
     @pytest.mark.asyncio
-    async def test_case_cleanup_skips_when_vector_store_unavailable(
+    async def test_case_cleanup_fails_when_vector_store_unavailable(
         self, mock_settings
     ):
-        """Test job skips gracefully when case_vector_store is not available."""
+        """A missing dependency is a FAILURE, not a clean night (#1232).
+
+        The runner maps completed/skipped to exit 0, so reporting "skipped"
+        here meant a job that could never reach its dependencies exited
+        cleanly every night and looked like a CronJob with nothing to do —
+        the same invisibility that let the storage sweep's hazard stand.
+        """
         from faultmaven.jobs.case_cleanup import run
 
         container = MagicMock()
@@ -103,14 +115,18 @@ class TestCaseCleanupJob:
 
         result = await run(settings=mock_settings, container=container)
 
-        assert result["status"] == "skipped"
+        assert result["status"] == "failed"
         assert result["reason"] == "case_vector_store_unavailable"
+        assert result["status"] not in (
+            "completed",
+            "skipped",
+        ), "faultmaven.jobs.run.main() maps completed/skipped to exit 0"
 
     @pytest.mark.asyncio
-    async def test_case_cleanup_skips_when_case_repository_unavailable(
+    async def test_case_cleanup_fails_when_case_repository_unavailable(
         self, mock_settings
     ):
-        """Test job skips gracefully when case_repository is not available."""
+        """Same: the authority being unreachable must exit non-zero."""
         from faultmaven.jobs.case_cleanup import run
 
         container = MagicMock()
@@ -119,8 +135,111 @@ class TestCaseCleanupJob:
 
         result = await run(settings=mock_settings, container=container)
 
-        assert result["status"] == "skipped"
+        assert result["status"] == "failed"
         assert result["reason"] == "case_repository_unavailable"
+
+
+class TestCaseCleanupReferenceSetGuard:
+    """case_cleanup carries the same hazard the storage sweep did (#1232).
+
+    `cleanup_orphaned_collections` builds `expected_collections` from
+    `active_case_ids`; an empty or disjoint id set makes EVERY case collection
+    an orphan and deletes them all. The per-candidate `case_exists` re-check
+    reads the same scoped repository, so it answers "no" too and rescues
+    nothing — an RLS-scoped session on `cases` produces exactly that.
+    """
+
+    def _container(self, *, collections, case_ids):
+        container = MagicMock()
+        store = AsyncMock()
+        store.cleanup_orphaned_collections = AsyncMock(return_value=len(collections))
+        store.list_case_collection_ids = AsyncMock(return_value=collections)
+        container.case_vector_store = store
+        repo = AsyncMock()
+        repo.list_all_case_ids = AsyncMock(return_value=case_ids)
+        repo.get = AsyncMock(return_value=None)
+        container.case_repository = repo
+        return container, store
+
+    @pytest.mark.asyncio
+    async def test_disjoint_case_id_set_refuses(self, mock_settings):
+        """THE regression: collections exist, the id set names none of them."""
+        from faultmaven.jobs.case_cleanup import run
+
+        container, store = self._container(
+            collections=["case_a", "case_b"], case_ids=["case_zzz"]
+        )
+
+        result = await run(settings=mock_settings, container=container)
+
+        assert result["status"] == "failed"
+        assert result["reason"] == "reference_set_disjoint"
+        store.cleanup_orphaned_collections.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_empty_case_id_set_refuses(self, mock_settings):
+        """The RLS shape: the authority answers with nothing at all."""
+        from faultmaven.jobs.case_cleanup import run
+
+        container, store = self._container(
+            collections=["case_a", "case_b"], case_ids=[]
+        )
+
+        result = await run(settings=mock_settings, container=container)
+
+        assert result["status"] == "failed"
+        assert result["reason"] == "reference_set_disjoint"
+        store.cleanup_orphaned_collections.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_one_overlapping_id_is_enough_to_proceed(self, mock_settings):
+        """Positive control — a guard that refused everything would also pass
+        the two tests above."""
+        from faultmaven.jobs.case_cleanup import run
+
+        container, store = self._container(
+            collections=["case_a", "case_orphan"], case_ids=["case_a"]
+        )
+
+        result = await run(settings=mock_settings, container=container)
+
+        assert result["status"] == "completed"
+        assert result["reference_overlap"] == 1
+        store.cleanup_orphaned_collections.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_acknowledgment_unblocks_a_genuinely_empty_deployment(
+        self, mock_settings
+    ):
+        """An install whose cases were all deleted still needs its collections
+        reclaimed; it must not deadlock."""
+        from faultmaven.jobs.case_cleanup import run
+
+        container, store = self._container(
+            collections=["case_a", "case_b"], case_ids=[]
+        )
+
+        result = await run(
+            settings=mock_settings,
+            container=container,
+            allow_disjoint_reference_set=True,
+        )
+
+        assert result["status"] == "completed"
+        store.cleanup_orphaned_collections.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_no_collections_is_not_a_refusal(self, mock_settings):
+        """Nothing enumerated means no decision to make — an empty candidate
+        set is trivially disjoint from everything, and refusing THAT would
+        fail every clean deployment nightly."""
+        from faultmaven.jobs.case_cleanup import run
+
+        container, store = self._container(collections=[], case_ids=[])
+
+        result = await run(settings=mock_settings, container=container)
+
+        assert result["status"] == "completed"
 
     @pytest.mark.asyncio
     async def test_case_cleanup_handles_errors(self, mock_settings):

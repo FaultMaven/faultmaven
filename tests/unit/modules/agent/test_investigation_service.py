@@ -352,10 +352,17 @@ class TestMarkLinkedFailureIsCounted:
     Before #1232 a failed ``mark_linked`` left a live file eligible for
     reclamation at TTL, and the ONLY signal was a warning discoverable by
     grep. The sweep now asks the database, so a stale sidecar cannot cause
-    deletion — what it causes instead is a permanent LEAK (the object is
-    protected forever and never reclaimed), which is worth a counter of its
-    own. It is emitted from the API process, which Prometheus scrapes; the
-    sweep's own counters die with the CronJob pod.
+    deletion — and it does not leak either: the object is protected exactly
+    while its ``uploaded_files`` row lives, and ``uploaded_files.case_id`` is
+    ``ON DELETE CASCADE``, so deleting the case leaves an ordinary orphan the
+    sweep reclaims on schedule (``TestDriftIsSelfHealing`` pins that).
+
+    So this counter is about the CAUSE, not a consequence: a failure here
+    means the storage backend errored on a small write, which is worth
+    surfacing on its own — and it is the measurement that would justify
+    retrying the call (#1232 direction 3, deliberately not taken). It is
+    emitted from the API process, which Prometheus scrapes; the sweep's own
+    counters die with the CronJob pod.
     """
 
     def _service(self, repository, storage):
@@ -438,7 +445,14 @@ class TestMarkLinkedFailureIsCounted:
     @pytest.mark.asyncio
     async def test_a_broken_metric_never_fails_the_turn(self):
         """The upload is already persisted by this point; an observability
-        side-channel must not turn a completed turn into a 500."""
+        side-channel must not turn a completed turn into a 500.
+
+        ⚠️ The positive control is load-bearing. "await it; it did not raise"
+        asserts nothing on its own: a change that returns before the metric
+        call touches no exploding mock, raises nothing, and passes this test
+        while the property it names goes untested. Asserting the raising path
+        was ENTERED is what makes the absence of an exception mean something.
+        """
         storage = AsyncMock()
         storage.store_file = AsyncMock(return_value={"storage_key": "blob/abc123"})
         storage.mark_linked = AsyncMock(return_value=False)
@@ -449,6 +463,10 @@ class TestMarkLinkedFailureIsCounted:
         ) as counter:
             counter.labels.side_effect = RuntimeError("registry exploded")
             await self._upload(storage)  # must not raise
+
+        # The positive control: the code really did reach the metric that
+        # raised. Without this the test is vacuous.
+        counter.labels.assert_called_once_with(outcome="returned_false")
 
 
 class TestAuthenticatedPrincipalReachesTheEngine:

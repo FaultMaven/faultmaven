@@ -506,12 +506,12 @@ The sidecar is written once at upload and never revisited, and it goes stale in 
 - **stale `linked=false` beside a live row.** `mark_linked` is best-effort — a transient storage failure at exactly that step leaves the flag unflipped while the row exists and the case references the file. The original sidecar-only sweep deleted it at TTL: irreversible loss of user-uploaded evidence, detectable only by a user reporting a missing upload. The DB cross-check makes that class impossible; each rescue is counted (`skipped_db_referenced`) and logged with the file's key, which is also the operator signal the `mark_linked` path never had.
 - **stale `linked=true` with no row behind it.** On a measured production corpus of 850 sweep candidates, 160 had no `uploaded_files` row and **every one of them** said `linked=true`. So the tidier-sounding inverse — "the DB is the authority, delete what it does not reference" — is a data-loss change wearing a data-safety label: it destroys all 160 on its first armed run. That is why the cross-check is strictly **additive** (it only ever protects) rather than a replacement for the sidecar test.
 
-**Fail-closed refusals.** For a delete-deciding sweep, "I could not ask" and "nothing is referenced" are indistinguishable at the point of decision, so both refuse the run — nothing deleted, dry runs included, because a classification computed without the authority is a fiction someone might act on. All three refusals are listed together with their exit codes, rather than summarised in prose first, so the summary cannot drift from the split:
+**Fail-closed refusals.** For a delete-deciding sweep, "I could not ask" and "the answer does not correspond to what I enumerated" are indistinguishable from "there is genuinely nothing" at the point of decision. Every refusal deletes nothing; they differ in how loudly they say so and in whether a dry run is exempt. All three are listed together with their exit codes, rather than summarised in prose first, so the summary cannot drift from the split:
 
 | `reason` | `status` | exit | Trigger |
 |----------|----------|------|---------|
 | `reference_authority_unavailable` | `failed` | 1 | No DI container, no case repository, or the query raised |
-| `reference_set_empty` | `failed` | 1 | The authority returned ZERO refs while sweep candidates exist. This is the shape an RLS-scoped session produces — `uploaded_files` is tenanted and fail-closed (migration 018) — under which every live file would read as an orphan |
+| `reference_set_disjoint` | `failed` | 1 | The authority answered, but NOT ONE candidate is in its answer — so every candidate would be deleted. Three routes reach it and none is distinguishable here: an RLS-scoped session (`uploaded_files` is tenanted and fail-closed, migration 018), a keyspace that stopped corresponding (`storage_ref` holds filesystem paths for conversion-sourced rows, and a changed `STORAGE_BACKEND`/prefix does the same), or a deployment that genuinely references nothing. **Overridable per run** with `--allow-disjoint-reference-set`, and **never applied to a dry run** |
 | `orphan_cleanup_disabled` | `skipped` | 0 | The pre-existing settings gate, unchanged |
 
 The exit codes are the substance, not bookkeeping. `faultmaven.jobs.run.main()`
@@ -526,15 +526,22 @@ who has not opted in.
 
 ```python
 # Simplified sweep — full implementation in faultmaven/modules/agent/jobs/storage_cleanup.py
-async def cleanup_orphaned_files(storage, ttl_hours, dry_run, referenced_refs):
+async def cleanup_orphaned_files(
+    storage, ttl_hours, dry_run, referenced_refs, allow_disjoint_reference_set
+):
     cutoff = datetime.now(UTC) - timedelta(hours=ttl_hours)
     candidates, strays = await storage.survey_sidecars()   # strays: file already gone
 
-    # A zero-row answer beside live candidates is "authority unreachable or
-    # suspect", never "nothing is referenced" — refuse rather than reclassify
-    # every live file as an orphan.
-    if candidates and not referenced_refs:
-        return {"status": "skipped", "reason": "reference_set_empty"}
+    # OVERLAP, not emptiness. A non-empty reference set that shares nothing
+    # with the candidates scores every one of them "unreferenced" and deletes
+    # the lot — the same irreversible loss, and reachable (conversion-sourced
+    # rows hold filesystem paths, which can never equal a backend key).
+    #
+    # A dry run is exempt: it deletes nothing, and its counters are how an
+    # operator diagnoses this. A live run refuses unless acknowledged.
+    if candidates and not (set(candidates) & referenced_refs):
+        if not dry_run and not allow_disjoint_reference_set:
+            return {"status": "failed", "reason": "reference_set_disjoint"}
 
     for storage_key in candidates:
         is_referenced = storage_key in referenced_refs   # standing classification

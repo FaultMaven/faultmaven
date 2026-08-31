@@ -107,6 +107,7 @@ class JobArgumentError(RuntimeError):
 JOB_SPECIFIC_FLAGS: Dict[str, str] = {
     "dry_run": "--dry-run/--no-dry-run",
     "ttl_hours": "--ttl-hours",
+    "allow_disjoint_reference_set": "--allow-disjoint-reference-set",
 }
 
 
@@ -570,6 +571,19 @@ Examples:
         ),
     )
     parser.add_argument(
+        "--allow-disjoint-reference-set",
+        action="store_true",
+        help=(
+            "storage_cleanup / case_cleanup. Proceed with deletion even when "
+            "NOT ONE candidate is referenced by the authority. Off by "
+            "default, because that shape is also what an RLS-scoped session "
+            "and a changed keyspace produce - and deleting on it destroys "
+            "every candidate. Pass it only after a --dry-run has shown you "
+            "the classification and you have confirmed the deployment really "
+            "does reference none of them (issue #1232)."
+        ),
+    )
+    parser.add_argument(
         "--ttl-hours",
         type=_ttl_hours_arg,
         default=None,
@@ -619,6 +633,12 @@ def main(args: Optional[List[str]] = None) -> int:
         kwargs["organization_id"] = parsed_args.organization_id
     if parsed_args.cross_tenant_maintenance:
         kwargs["cross_tenant_maintenance"] = True
+
+    # Job-specific, so forwarded only when actually passed: every job absorbs
+    # runner-global kwargs via **kwargs, and a job-specific one arriving at a
+    # job that does not declare it must be refused rather than swallowed.
+    if parsed_args.allow_disjoint_reference_set:
+        kwargs["allow_disjoint_reference_set"] = True
     # Only a flag that was actually given becomes a kwarg: absent means the
     # job defers to settings, which is not the same as passing their value.
     if parsed_args.dry_run is not None:

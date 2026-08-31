@@ -42,13 +42,26 @@ revisited, and it goes stale in *both* directions:
 **Fail-closed refusals.** The run deletes nothing and reports
 `status="failed"` when it cannot ask the authority (no DI container, no case
 repository, or the query raised → `reason="reference_authority_unavailable"`),
-and when the authority answers with ZERO referenced refs while sweep
-candidates exist (`reason="reference_set_empty"`). The second is the shape an
-RLS-scoped session produces — `uploaded_files` is tenanted and fail-closed
-(migration 018) — and reading it as "nothing is referenced" would classify
-every live file as an orphan. Dry runs are refused on the same terms: a
-classification computed without the authority is a fiction someone might act
-on.
+and when the authority's answer shares NOTHING with the sweep candidates
+(`reason="reference_set_disjoint"`) — under which every candidate would be
+deleted.
+
+The disjoint test is the **overlap**, not emptiness. A *non-empty* reference
+set that overlaps nothing passes an emptiness check and then deletes
+everything, and that shape is reachable: `knowledge_service` and
+`conversion_service` write filesystem paths into `storage_ref`, and a path can
+never equal a backend key. A changed `STORAGE_BACKEND` or key prefix does the
+same, and an RLS-scoped session produces the empty instance.
+
+The authority-unreachable refusal covers dry runs too — a classification
+computed without the authority is a fiction someone might act on. The
+**disjoint** refusal does not: a dry run deletes nothing, its counters are how
+you diagnose which of the three causes you have, and refusing it would make
+the mandatory pre-arming canary impossible (seeding one orphan on an otherwise
+empty staging install *is* a disjoint reference set). A live run refuses
+unless `--allow-disjoint-reference-set` is passed, which exists so a
+deployment that genuinely references nothing is not deadlocked — it still
+needs its orphans reclaimed.
 
 `"failed"` rather than `"skipped"` is deliberate, and the split is worth
 knowing:
@@ -57,13 +70,26 @@ knowing:
 |---|---|---|---|
 | `orphan_cleanup_disabled` | `skipped` | 0 | the deployment ASKED for it; expected every night on the shipped defaults |
 | `reference_authority_unavailable` | `failed` | 1 | the job wanted to run and could not decide |
-| `reference_set_empty` | `failed` | 1 | same, and the likeliest cause is a misprovisioned DB role |
+| `reference_set_disjoint` | `failed` | 1 | no candidate is referenced; likeliest causes are a misprovisioned DB role or a keyspace mismatch. Not applied to dry runs; overridable with `--allow-disjoint-reference-set` |
 
 `faultmaven.jobs.run.main()` maps `completed`/`skipped` to exit 0, so a
 refusal reported as `skipped` would be invisible for as long as it lasted —
 "a CronJob that refuses at boot looks like a CronJob with nothing to do",
 which is the shape that hid #1232. On Kubernetes the non-zero exit fails the
 Job and `FaultMavenCronJobRunFailed` fires.
+
+**`case_cleanup` carries the same guard.** It is the other reference-set
+sweep — ChromaDB case collections weighed against the `cases` id set — and it
+had the identical hazard: an empty or non-overlapping id set made
+`expected_collections` empty inside `cleanup_orphaned_collections`, so every
+collection became an orphan, and the per-candidate `case_exists` re-check
+reads the same scoped repository and would answer "no" too. Both jobs now call
+`faultmaven.jobs.reference_set.assess_reference_set`, report the same
+`reference_set_disjoint` reason, and take the same
+`--allow-disjoint-reference-set` acknowledgment. `case_cleanup` has no
+dry-run mode, so for it every run is a live one. Its missing-dependency exits
+were also `skipped` (exit 0) and are now `failed`, for the same reason the
+storage sweep's are.
 
 **Tenant scope: `cross_tenant`.** A storage key carries no tenant the backend
 enforces, so "unreferenced" is only decidable against the `storage_ref` set of
@@ -185,7 +211,7 @@ Every run ends with one summary line at INFO, whatever the outcome:
 Storage cleanup DRY RUN — scanned=N, found=N, deleted=N,
 skipped_db_referenced=N, skipped_linked=N, skipped_within_ttl=N,
 skipped_no_sidecar=N, stray_sidecars=N, errors=N | authority:
-referenced_refs=N, referenced_by_db=N, unreferenced_by_db=N
+referenced_refs_count=N, referenced_by_db=N, unreferenced_by_db=N
 ```
 
 Alert on these lines via the log pipeline (Loki queries below):
@@ -1038,9 +1064,14 @@ not happening, so it needs fixing rather than silencing.
 1. `reference_authority_unavailable` — the DI container had no case
    repository, or the query raised. Check DB reachability from the job pod and
    the container-init logs above the refusal.
-2. `reference_set_empty` — the DB answered with zero referenced refs while
-   sweep candidates exist. Under `TENANT_PROVIDER=multi` the overwhelmingly
-   likely cause is that the run is **not** on the maintenance DB role:
+2. `reference_set_disjoint` — the DB answered, but no candidate was in its
+   answer. First check whether the reference set is *empty* or merely
+   *non-overlapping*: the run summary's `referenced_refs_count` distinguishes
+   them, and they have different causes. A non-zero count with zero overlap
+   points at a keyspace mismatch (conversion-sourced rows hold filesystem
+   paths; a changed `STORAGE_BACKEND`/prefix does it too). A zero count under
+   `TENANT_PROVIDER=multi` overwhelmingly means the run is **not** on the
+   maintenance DB role:
    `uploaded_files` is RLS-tenanted and fail-closed, so an app-role session
    with no org bound sees zero rows. Confirm the CronJob carries
    `--cross-tenant-maintenance` **and** the `MAINTENANCE_DATABASE_URL`

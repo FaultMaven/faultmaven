@@ -263,6 +263,34 @@ class CaseVectorStore(BaseExternalClient):
             retry_delay=1.0,
         )
 
+    async def list_case_collection_ids(self) -> List[str]:
+        """Case ids of every case collection that currently exists.
+
+        The *candidate* set for the orphaned-collection sweep, exposed so the
+        job can weigh it against its reference set BEFORE asking for any
+        deletion (issue #1232). ``cleanup_orphaned_collections`` derives the
+        same set internally, but by the time it does so it is already deleting,
+        which is too late for a safety check to be worth anything.
+
+        Returns:
+            Case ids (collection prefix stripped), unordered.
+        """
+
+        async def _list_wrapper():
+            return [
+                collection.name[len(self.COLLECTION_PREFIX) :]
+                for collection in self.client.list_collections()
+                if collection.name.startswith(self.COLLECTION_PREFIX)
+            ]
+
+        return await self.call_external(
+            operation_name="list_case_collection_ids",
+            call_func=_list_wrapper,
+            timeout=30.0,
+            retries=1,
+            retry_delay=2.0,
+        )
+
     async def cleanup_orphaned_collections(
         self, active_case_ids: List[str], case_exists=None
     ) -> int:

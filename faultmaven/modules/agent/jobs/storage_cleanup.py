@@ -67,11 +67,21 @@ each one rather than summarised separately, because a summary is what drifts:
 1. **No authority reachable** — no DI container, no case repository, or the
    query raised. ``status="failed"`` (exit 1). A dry run is refused too: its
    classification would be a fiction someone might act on.
-2. **Empty reference set while candidates exist** — reads as "authority
-   unreachable or suspect", never as "nothing is referenced". This is the
-   specific shape RLS produces: `uploaded_files` is tenanted and fail-closed
-   (migration 018), so a session with no org bound sees ZERO rows.
-   ``status="failed"`` (exit 1).
+2. **Reference set disjoint from the candidates** — the authority answered,
+   but not one candidate is in its answer, so every one of them would be
+   deleted. ``status="failed"`` (exit 1), overridable per run with
+   ``--allow-disjoint-reference-set``, and **never applied to a dry run**
+   (which deletes nothing and is how you diagnose this).
+
+   The test is the OVERLAP, not emptiness. Guarding on "the reference set is
+   empty" leaves the worse half open: a *non-empty* set that shares nothing
+   with the candidates passes such a guard and then deletes all of them. That
+   is reachable rather than theoretical — `knowledge_service` and
+   `conversion_service` write filesystem paths into `storage_ref`, and a path
+   can never equal a backend key, so a conversion-heavy deployment has exactly
+   that shape. A changed `STORAGE_BACKEND` or key prefix does too. RLS is the
+   third route: `uploaded_files` is tenanted and fail-closed (migration 018),
+   so a session with no org bound sees ZERO rows.
 3. The pre-existing `orphan_cleanup_enabled` gate (below).
    ``status="skipped"`` (exit 0), unchanged.
 
@@ -124,18 +134,45 @@ values — the plain invocation above is what the deployed CronJob runs.
 
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Any, Optional, Set
+from typing import TYPE_CHECKING, Any, Set
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    # Declared rather than duck-typed. The call below reaches the repository
+    # off the DI container, which is invisible to import-linter — so without
+    # this the agent module would carry a hard dependency on a Case-module
+    # method while the contract check still reported 13/13 kept. Contract 12
+    # forbids case.INFRASTRUCTURE; the contract module is the sanctioned
+    # surface, which is exactly what this names.
+    from faultmaven.modules.case.contracts import ICaseRepository
 
 from faultmaven.infrastructure.observability.evidence_metrics import (
     EVIDENCE_ORPHAN_FILES_DELETED_TOTAL,
     EVIDENCE_ORPHAN_FILES_FOUND_TOTAL,
     EVIDENCE_ORPHAN_FILES_RESCUED_TOTAL,
 )
+from faultmaven.jobs.reference_set import (
+    REASON_REFERENCE_SET_DISJOINT,
+    assess_reference_set,
+)
 from faultmaven.modules.evidence.domain.services.file_storage_service import (
     FileStorageService,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _inc(counter: Any) -> None:
+    """Increment a Prometheus counter, never letting it break the sweep.
+
+    Three copies of ``try: c.inc() except Exception: pass`` used to sit inline.
+    A metric is a side-channel on a deletion decision that has already been
+    made; a broken or absent registry must not change what the sweep does.
+    """
+    try:
+        counter.inc()
+    except Exception:  # pragma: no cover - metrics must never break a sweep
+        pass
+
 
 JOB_DESCRIPTION = (
     "Delete stored files that no uploaded_files row references, whose sidecar "
@@ -160,7 +197,8 @@ JOB_TENANT_SCOPE = "cross_tenant"
 # authority refusals are `failed` (exit 1).
 REASON_CLEANUP_DISABLED = "orphan_cleanup_disabled"
 REASON_AUTHORITY_UNAVAILABLE = "reference_authority_unavailable"
-REASON_REFERENCE_SET_EMPTY = "reference_set_empty"
+# REASON_REFERENCE_SET_DISJOINT is owned by faultmaven.jobs.reference_set and
+# imported above; both sweeps must report the same reason for the same shape.
 
 
 def ttl_hours_bounds() -> tuple[int, int]:
@@ -226,7 +264,9 @@ async def load_referenced_storage_refs(container: Any) -> Set[str]:
             caller must treat this as "cannot decide", never as "nothing is
             referenced" — that distinction is the whole point of #1232.
     """
-    case_repository = getattr(container, "case_repository", None) if container else None
+    case_repository: "ICaseRepository | None" = (
+        getattr(container, "case_repository", None) if container else None
+    )
     if case_repository is None:
         raise RuntimeError(
             "No case repository available: the orphan sweep cannot ask the "
@@ -241,6 +281,7 @@ async def cleanup_orphaned_files(
     ttl_hours: int,
     dry_run: bool,
     referenced_refs: Set[str],
+    allow_disjoint_reference_set: bool = False,
 ) -> dict[str, Any]:
     """Sweep stored files and delete orphans.
 
@@ -277,8 +318,9 @@ async def cleanup_orphaned_files(
         ``dry_run``, ``scanned``, ``skipped_no_sidecar``,
         ``skipped_linked``, ``skipped_within_ttl``, ``skipped_db_referenced``,
         ``referenced_by_db``, ``unreferenced_by_db``, ``stray_sidecars``,
-        ``found``, ``deleted``, ``errors``. A refused run additionally carries
-        ``reason``.
+        ``found``, ``deleted``, ``errors``, plus the three set sizes
+        ``referenced_refs_count`` / ``reference_overlap`` (both ints, not
+        the sets themselves). A refused run additionally carries ``reason``.
     """
     result: dict[str, Any] = {
         "status": "completed",
@@ -303,7 +345,11 @@ async def cleanup_orphaned_files(
         "found": 0,
         "deleted": 0,
         "errors": 0,
-        "referenced_refs": len(referenced_refs),
+        # Sizes of the two sets and how they intersect. The overlap is the
+        # quantity the safety guard actually keys on, so it belongs in the
+        # run summary rather than only in a log line.
+        "referenced_refs_count": len(referenced_refs),
+        "reference_overlap": 0,
     }
 
     cutoff = datetime.now(UTC) - timedelta(hours=ttl_hours)
@@ -323,27 +369,33 @@ async def cleanup_orphaned_files(
             strays[:5],
         )
 
-    # Fail-closed guard on the reference set itself. "The authority returned
-    # nothing" and "nothing is referenced" are the same bytes and opposite
-    # instructions, and the first is what an RLS-scoped session produces on the
-    # fail-closed `uploaded_files` table (migration 018). Candidates exist and
-    # not one of them is referenced is pathological on any live deployment, so
-    # refuse the run rather than reclassify every live file as an orphan.
-    if candidates and not referenced_refs:
-        logger.error(
-            "Storage cleanup REFUSED: %d sweep candidate(s) but the database "
-            "reports ZERO referenced storage refs. Treating this as an "
-            "unreachable/suspect authority, not as 'nothing is referenced' — "
-            "under the multi-tenant provider an RLS-scoped session on "
-            "uploaded_files returns exactly this. Nothing was deleted. Check "
-            "that the run holds the maintenance DB role.",
-            len(candidates),
-        )
+    # Fail-closed guard on how the reference set lines up with the candidates.
+    # OVERLAP is the test, not emptiness: a non-empty reference set that is
+    # disjoint from the candidates scores every one of them "unreferenced" and
+    # deletes the lot, which is the same irreversible loss. That shape is
+    # reachable — `knowledge_service` and `conversion_service` write filesystem
+    # paths into `storage_ref`, and a path can never equal a backend key. See
+    # faultmaven/jobs/reference_set.py for the full reasoning.
+    verdict = assess_reference_set(
+        candidates=candidates,
+        referenced=referenced_refs,
+        dry_run=dry_run,
+        acknowledged=allow_disjoint_reference_set,
+        authority="uploaded_files.storage_ref",
+        candidate_noun="stored object",
+    )
+    result["reference_overlap"] = verdict.overlap_count
+    if verdict.disjoint:
+        # ERROR even when the run continues: a dry run reaching here is the
+        # diagnostic, and it should be as loud as the refusal it replaces.
+        logger.error("Storage cleanup: %s", verdict.message)
+    if verdict.refuse:
         # "failed", not "skipped": the runner maps skipped to exit 0, and a
         # sweep that silently exits 0 forever is how nobody finds out.
         result["status"] = "failed"
-        result["reason"] = REASON_REFERENCE_SET_EMPTY
-        result["scanned"] = 0
+        result["reason"] = verdict.reason
+        # `scanned` is still 0 here — the guard sits before the loop — so it
+        # is left alone rather than re-zeroed, which only implied otherwise.
         return result
 
     for storage_key in candidates:
@@ -411,10 +463,7 @@ async def cleanup_orphaned_files(
         # path never had — the WARNING names the file.
         if is_referenced:
             result["skipped_db_referenced"] += 1
-            try:
-                EVIDENCE_ORPHAN_FILES_RESCUED_TOTAL.inc()
-            except Exception:
-                pass
+            _inc(EVIDENCE_ORPHAN_FILES_RESCUED_TOTAL)
             logger.warning(
                 "Sidecar drift: %s is past TTL with linked=False, but an "
                 "uploaded_files row still references it — NOT deleting "
@@ -428,10 +477,7 @@ async def cleanup_orphaned_files(
         # Candidate for deletion: unreferenced by the DB AND unlinked AND
         # past TTL.
         result["found"] += 1
-        try:
-            EVIDENCE_ORPHAN_FILES_FOUND_TOTAL.inc()
-        except Exception:
-            pass
+        _inc(EVIDENCE_ORPHAN_FILES_FOUND_TOTAL)
 
         if dry_run:
             logger.info(
@@ -449,10 +495,7 @@ async def cleanup_orphaned_files(
         try:
             await storage.delete_file(storage_key)
             result["deleted"] += 1
-            try:
-                EVIDENCE_ORPHAN_FILES_DELETED_TOTAL.inc()
-            except Exception:
-                pass
+            _inc(EVIDENCE_ORPHAN_FILES_DELETED_TOTAL)
             logger.info(
                 "Deleted orphan: %s (uploaded=%s)",
                 storage_key,
@@ -466,7 +509,7 @@ async def cleanup_orphaned_files(
         "Storage cleanup %s — scanned=%d, found=%d, deleted=%d, "
         "skipped_db_referenced=%d, skipped_linked=%d, skipped_within_ttl=%d, "
         "skipped_no_sidecar=%d, stray_sidecars=%d, errors=%d | authority: "
-        "referenced_refs=%d, referenced_by_db=%d, unreferenced_by_db=%d",
+        "referenced_refs_count=%d, referenced_by_db=%d, unreferenced_by_db=%d",
         "DRY RUN" if dry_run else "live",
         result["scanned"],
         result["found"],
@@ -477,7 +520,7 @@ async def cleanup_orphaned_files(
         result["skipped_no_sidecar"],
         result["stray_sidecars"],
         result["errors"],
-        result["referenced_refs"],
+        result["referenced_refs_count"],
         result["referenced_by_db"],
         result["unreferenced_by_db"],
     )
@@ -489,6 +532,7 @@ async def run(
     container: Any = None,
     ttl_hours: int | None = None,
     dry_run: bool | None = None,
+    allow_disjoint_reference_set: bool = False,
     **kwargs: Any,
 ) -> dict[str, Any]:
     """CLI entry point invoked by ``faultmaven.jobs.run``.
@@ -501,6 +545,14 @@ async def run(
         dry_run: Override for ``evidence_storage.orphan_cleanup_dry_run``.
             Caller-supplied overrides win over settings — useful for manual
             testing / one-shot invocations.
+        allow_disjoint_reference_set: The operator's explicit assertion that a
+            reference set sharing NOTHING with the sweep candidates is expected
+            on this deployment. Off by default: that shape is what an
+            RLS-scoped session and a changed keyspace also produce, and it is
+            not distinguishable from a genuinely empty install. It exists so
+            case 3 does not deadlock — an install whose cases were all deleted
+            still needs its objects reclaimed. It has no effect on a dry run,
+            which proceeds regardless.
 
     ``None`` means "defer to settings" for both, which is distinct from
     passing the setting's current value: it is what the flagless CronJob
@@ -558,7 +610,6 @@ async def run(
 
     # Ask the authority BEFORE constructing the storage service, so a run that
     # cannot decide never enumerates anything it might be tempted to act on.
-    referenced_refs: Optional[Set[str]] = None
     try:
         referenced_refs = await load_referenced_storage_refs(container)
     except Exception as e:
@@ -594,4 +645,5 @@ async def run(
         ttl_hours=effective_ttl_hours,
         dry_run=effective_dry_run,
         referenced_refs=referenced_refs,
+        allow_disjoint_reference_set=allow_disjoint_reference_set,
     )
