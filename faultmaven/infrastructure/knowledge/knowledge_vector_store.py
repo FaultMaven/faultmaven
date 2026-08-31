@@ -17,11 +17,23 @@ Hybrid search: Two-stage retrieval + reranking pipeline:
     b) Keyword-constrained vector search (exact identifier matches), one
        ChromaDB query per keyword, up to 3
   Stage 2 — Rerank: Scores candidates using multiple signals:
-    - Term overlap (how many query terms appear in the chunk)
+    - Term overlap, IDF-weighted (how much of the query's DISCRIMINATING
+      vocabulary appears in the chunk — see :class:`CorpusTermStats`)
     - Metadata match (domain/service alignment with query context)
     - Status signal (lifecycle: verified > in-review > draft > stale > deprecated)
     - Staleness penalty (older content scores lower)
     - Scope preference (personal > team > global tiebreaking)
+
+Two scores, deliberately different, both returned (#1272):
+  ``score``         the raw cosine similarity from ChromaDB. ABSOLUTE and
+                    comparable across queries, so it is the scale every
+                    admission floor is calibrated in.
+  ``rerank_score``  the Stage-2 blend that DETERMINED THE ORDER. Relative to
+                    this candidate set only; comparing it across queries is
+                    meaningless. It used to be computed, sorted on, and then
+                    thrown away, so the ordering of a hybrid result could not
+                    be explained from the results themselves.
+Never filter on ``rerank_score`` and never rank on ``score`` alone.
 """
 
 import logging
@@ -46,8 +58,26 @@ logger = logging.getLogger(__name__)
 # Minimum keyword length for extraction
 MIN_KEYWORD_LENGTH = 3
 
+# A query term occurring in at most this FRACTION of indexed chunks counts as
+# identifier-like. Rarity, not spelling: the shape patterns below catch
+# CamelCase and numeric codes but miss the lowercase technical nouns that carry
+# the most information in this domain (`qemu`, `enospc`, `libvirt`), while
+# happily matching ordinary prose. Expressed as a ratio rather than an IDF
+# value so it does not silently re-tune itself as the corpus grows. Measured on
+# the shipped pack (1297 chunks): 2% ≈ 25 chunks, which admits `enospc`
+# (11 chunks), `binary` (23) and every unseen term, and excludes `pid` (84).
+IDENTIFIER_DF_RATIO = 0.02
+
+# Upper bound on the corpus the term index is built over. Beyond it the index
+# is skipped and every consumer falls back to its pre-IDF behaviour — degraded
+# ranking is survivable, a multi-minute blocking scan on the KB read path is
+# not.
+MAX_TERM_INDEX_CHUNKS = 50_000
+
 # Patterns that indicate identifier-like tokens — these benefit most from
-# exact keyword matching because embeddings often miss them
+# exact keyword matching because embeddings often miss them. Kept as the
+# FALLBACK for when no term index is available; ``IDENTIFIER_DF_RATIO`` is the
+# primary test wherever corpus statistics exist.
 IDENTIFIER_PATTERNS = [
     re.compile(r"[A-Z]{2,}[-_]\d+"),  # Error codes: ERR-500, SQLSTATE-42000
     re.compile(r"\d{3,}"),  # Status codes: 503, 404
@@ -75,6 +105,11 @@ RERANK_WEIGHT_FRESHNESS_ID = 0.15
 
 # Staleness decay: score = 1 / (1 + days/HALF_LIFE)
 STALENESS_HALF_LIFE_DAYS = 365
+
+# Most negative sum ``_compute_metadata_score`` can reach (deprecated, no
+# domain/service match). The signal is mapped from [this, 1.0] onto [0, 1]
+# instead of being truncated at zero, so demotion survives.
+_METADATA_SCORE_MIN = -0.3
 
 # Collection name that requires scope filtering
 KB_COLLECTION = "faultmaven_kb"
@@ -150,13 +185,70 @@ def _flatten_filter_keys(where: dict) -> set:
     return keys
 
 
+# Token separators. Includes the markdown/code punctuation the KB is written in
+# (backticks, pipes, slashes, `=`, `+`, `*`, `#`): without them ``df`` inside
+# "`df -h`" tokenizes as "`df" and never matches the query term ``df``, and
+# every path component in `/var/log/syslog` is lost inside one token. The
+# corpus is markdown, so this is not an edge case — it is most of the corpus.
+_TOKEN_SEPARATORS = re.compile(r"[\s,;:!?.()\[\]{}<>\"'`|/\\=+*#]+")
+
+
 def _tokenize(text: str) -> List[str]:
     """Split text into lowercased tokens, stripping punctuation."""
-    return [
-        t
-        for t in re.split(r"[\s,;:!?.()\[\]{}<>\"']+", text.lower())
-        if t and len(t) >= 2
-    ]
+    return [t for t in _TOKEN_SEPARATORS.split(text.lower()) if t and len(t) >= 2]
+
+
+class CorpusTermStats:
+    """Document frequencies over one collection — the IDF the reranker lacked.
+
+    ``_compute_term_overlap`` used to weigh every query term the same, so on the
+    shipped pack ``pid`` (84 of 1297 chunks) counted exactly as much as
+    ``enospc`` (11). That is the mechanism behind #1272: a query is scored on
+    how many of its words appear rather than on whether the words that
+    *identify the problem* appear, and in a corpus of operational prose the
+    generic words appear everywhere.
+
+    A minimal inverted index — term → the rows containing it — built once per
+    collection and reused. Only document frequency is read out of it, so a
+    plain ``Counter`` would do; postings are kept because they cost the same to
+    build and leave the door open to per-chunk questions without a second scan.
+
+    Cheap to be wrong about: every consumer treats ``None`` as "no statistics"
+    and falls back to its pre-IDF behaviour. A failed build degrades ranking;
+    it never fails a search.
+    """
+
+    __slots__ = ("n_chunks", "_postings", "_signature")
+
+    def __init__(self, documents: List[str], signature: Any = None) -> None:
+        self.n_chunks = len(documents)
+        self._signature = signature
+        postings: Dict[str, Set[int]] = {}
+        for row, doc in enumerate(documents):
+            for term in set(_tokenize(doc or "")):
+                postings.setdefault(term, set()).add(row)
+        self._postings = postings
+
+    @property
+    def signature(self) -> Any:
+        """Value the cache compares to decide whether this index is still current."""
+        return self._signature
+
+    def document_frequency(self, term: str) -> int:
+        """How many chunks contain ``term``."""
+        return len(self._postings.get(term, ()))
+
+    def idf(self, term: str) -> float:
+        """Smoothed inverse document frequency, always >= 1.0.
+
+        ``log((N+1)/(df+1)) + 1``. The +1s keep an unseen term finite and keep
+        every weight positive, so a term can never subtract from an overlap.
+        """
+        return math.log((self.n_chunks + 1) / (self.document_frequency(term) + 1)) + 1.0
+
+    def is_identifier(self, term: str) -> bool:
+        """Is this term rare enough in THIS corpus to behave like an identifier?"""
+        return self.document_frequency(term) <= IDENTIFIER_DF_RATIO * self.n_chunks
 
 
 class KnowledgeVectorStore(BaseExternalClient):
@@ -189,7 +281,67 @@ class KnowledgeVectorStore(BaseExternalClient):
         )
 
         self.client = client
+        # Per-collection term index, rebuilt when the collection's size changes.
+        # Never a correctness dependency: a miss degrades ranking to the
+        # pre-IDF blend, it does not fail a search.
+        self._term_stats: Dict[str, CorpusTermStats] = {}
         self.logger.info("KnowledgeVectorStore initialized (permanent KB collections)")
+
+    def _invalidate_term_stats(self, collection_name: str) -> None:
+        """Drop the cached term index for a collection after a write.
+
+        Called on every path that adds or deletes chunks. The size signature
+        below would catch an add and a delete of different sizes on its own,
+        but not a same-size replace — and a replace is exactly what re-ingesting
+        an edited runbook does.
+        """
+        self._term_stats.pop(collection_name, None)
+
+    def _corpus_term_stats(self, collection_name: str) -> Optional[CorpusTermStats]:
+        """Term index for a collection, built once and reused.
+
+        Synchronous and blocking by design: it is called from inside the
+        ``call_external`` wrapper of ``hybrid_search``'s own recall pass, where
+        the ChromaDB round-trips already are. Bounded by
+        ``MAX_TERM_INDEX_CHUNKS`` and cheap to lose — every caller handles
+        ``None``.
+        """
+        try:
+            collection = self._get_or_create_collection(collection_name)
+            size = collection.count()
+        except Exception as e:  # noqa: BLE001
+            self.logger.debug(f"Term index unavailable for {collection_name}: {e}")
+            return None
+
+        cached = self._term_stats.get(collection_name)
+        if cached is not None and cached.signature == size:
+            return cached
+
+        if size > MAX_TERM_INDEX_CHUNKS:
+            self.logger.warning(
+                f"KB term index skipped: collection '{collection_name}' holds "
+                f"{size} chunks, over the {MAX_TERM_INDEX_CHUNKS} cap — "
+                f"reranking falls back to unweighted term overlap"
+            )
+            return None
+
+        try:
+            payload = collection.get(include=["documents"])
+            stats = CorpusTermStats(
+                documents=payload.get("documents") or [], signature=size
+            )
+        except Exception as e:  # noqa: BLE001
+            self.logger.warning(
+                f"KB term index build failed for '{collection_name}': {e} — "
+                f"reranking falls back to unweighted term overlap"
+            )
+            return None
+
+        self._term_stats[collection_name] = stats
+        self.logger.info(
+            f"KB term index built for '{collection_name}': {stats.n_chunks} chunks"
+        )
+        return stats
 
     def _get_or_create_collection(self, collection_name: str):
         """Get or create a KB collection by exact name."""
@@ -365,6 +517,7 @@ class KnowledgeVectorStore(BaseExternalClient):
         where: Optional[Dict[str, Any]] = None,
         context_metadata: Optional[Dict[str, str]] = None,
         filter_mode: str = "soft",
+        min_score: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         """Two-stage hybrid search: broad recall followed by reranking.
 
@@ -395,6 +548,15 @@ class KnowledgeVectorStore(BaseExternalClient):
                 "hard" — add domain/service to the ChromaDB where clause
                 as a pre-filter, so non-matching chunks never enter Stage 1.
                 Use "hard" when extension context is high-confidence.
+            min_score: Minimum raw cosine a candidate must carry to be
+                returned. Applied BEFORE the top-k cut, which is the only place
+                it can go without quietly shortening the result: this list is
+                ordered by the reranker's blend, so a caller filtering the
+                returned k on cosine afterwards discards from the middle of its
+                own window and can be left with two results where it asked for
+                ten — enough to fail a downstream corroboration guard on a
+                document that was retrieved perfectly well. A floor is an
+                admission criterion, so it belongs at admission.
 
         Returns:
             Top-k results sorted by reranked score.
@@ -415,6 +577,11 @@ class KnowledgeVectorStore(BaseExternalClient):
         # model call (~1.2-2.3s each on CPU) and dominated Stage-1 latency.
         query_embedding = await self._embed_query_or_raise(query, "hybrid search")
 
+        # Corpus statistics for BOTH stages: which query terms are rare enough
+        # to be worth an exact-match probe (Stage 1), and how much each one
+        # weighs when scoring overlap (Stage 2). ``None`` is a supported state.
+        stats = self._corpus_term_stats(collection_name)
+
         vector_results = await self.search(
             collection_name=collection_name,
             query=query,
@@ -424,7 +591,7 @@ class KnowledgeVectorStore(BaseExternalClient):
         )
 
         # Keyword-constrained retrieval for identifier-heavy queries
-        keywords = self._extract_search_keywords(query)
+        keywords = self._extract_search_keywords(query, stats=stats)
         keyword_results: List[Dict[str, Any]] = []
         if keywords:
             keyword_results = await self._keyword_constrained_search(
@@ -438,6 +605,9 @@ class KnowledgeVectorStore(BaseExternalClient):
         # Deduplicate: merge keyword results into vector results (keep higher score)
         candidates = self._deduplicate_candidates(vector_results, keyword_results)
 
+        if min_score is not None:
+            candidates = [c for c in candidates if c.get("score", 0.0) >= min_score]
+
         if not candidates:
             return []
 
@@ -448,22 +618,25 @@ class KnowledgeVectorStore(BaseExternalClient):
             query_terms=query_terms,
             query=query,
             context_metadata=context_metadata or {},
+            stats=stats,
         )
+
+        top_k = reranked[:k]
 
         self.logger.debug(
             f"Hybrid search: {len(vector_results)} vector + "
             f"{len(keyword_results)} keyword → {len(candidates)} candidates "
-            f"→ {min(k, len(reranked))} reranked",
+            f"→ {len(top_k)} reranked",
             extra={
                 "collection": collection_name,
                 "vector_count": len(vector_results),
                 "keyword_count": len(keyword_results),
                 "candidate_count": len(candidates),
-                "final_count": min(k, len(reranked)),
+                "final_count": len(top_k),
             },
         )
 
-        return reranked[:k]
+        return top_k
 
     # ---- Stage 1 helpers ----
 
@@ -554,6 +727,7 @@ class KnowledgeVectorStore(BaseExternalClient):
         embedder-unavailable failure now surfaces from the single embed in
         :meth:`hybrid_search`, before any keyword is probed.
         """
+        where_document = self._where_document_for_keyword(keyword)
 
         async def _search_wrapper():
             collection = self._get_or_create_collection(collection_name)
@@ -562,7 +736,7 @@ class KnowledgeVectorStore(BaseExternalClient):
                 "query_embeddings": [query_embedding],
                 "n_results": k,
                 "include": ["documents", "metadatas", "distances"],
-                "where_document": {"$contains": keyword},
+                "where_document": where_document,
             }
 
             if where:
@@ -598,13 +772,25 @@ class KnowledgeVectorStore(BaseExternalClient):
         )
 
     @staticmethod
-    def _extract_search_keywords(query: str) -> List[str]:
+    def _extract_search_keywords(
+        query: str, stats: Optional[CorpusTermStats] = None
+    ) -> List[str]:
         """Extract meaningful keywords for keyword-constrained search.
 
-        Prioritizes identifier-like tokens (error codes, service names, paths)
-        which benefit most from exact matching. Filters stop words and short tokens.
+        Only the first three survive into probes, so the ORDER is the whole
+        decision. With corpus statistics the order is by IDF — the rarest term
+        first, because that is the one an embedding is most likely to have
+        smoothed away — and terms the corpus has never indexed are dropped
+        outright: a probe for them is guaranteed to return nothing and would
+        spend one of the three slots proving it. On "qemu cannot write its PID
+        file" the shape-based order spends its slots on ``qemu`` (0 chunks),
+        ``cannot`` (241) and ``write`` (98); the IDF order spends them on
+        ``PID``, ``write`` and ``file``, and that is what puts the right runbook
+        back in the candidate set.
+
+        Without statistics, falls back to the shape patterns as before.
         """
-        tokens = re.split(r"[\s,;]+", query)
+        tokens = _TOKEN_SEPARATORS.split(query)
         keywords = []
 
         for token in tokens:
@@ -615,12 +801,40 @@ class KnowledgeVectorStore(BaseExternalClient):
                 continue
             keywords.append(clean)
 
+        if stats is not None:
+            keywords = [k for k in keywords if stats.document_frequency(k.lower()) > 0]
+            keywords.sort(key=lambda t: stats.idf(t.lower()), reverse=True)
+            return keywords
+
         # Sort: identifier-like tokens first (highest keyword search value)
         def identifier_score(token: str) -> int:
             return sum(1 for p in IDENTIFIER_PATTERNS if p.search(token))
 
         keywords.sort(key=identifier_score, reverse=True)
         return keywords
+
+    @staticmethod
+    def _where_document_for_keyword(keyword: str) -> Dict[str, Any]:
+        """Build a CASE-INSENSITIVE ``where_document`` clause for one keyword.
+
+        ChromaDB's ``$contains`` is a case-sensitive substring test, and the
+        keyword handed to it is whatever the user typed. Measured on the shipped
+        pack: ``ENOSPC`` matches 11 chunks and ``enospc`` matches 0; ``PID``
+        matches 42 and ``pid`` matches 98. So the yield of the exact-match arm —
+        the arm that exists precisely to catch identifiers embeddings miss —
+        depended on the reporter's shift key, and silently: a probe that matches
+        nothing is indistinguishable from a term the corpus does not hold.
+
+        Expressed as an ``$or`` over the case variants rather than a regex: the
+        keyword is user input, and a regex would make its punctuation meaningful.
+        """
+        variants: List[str] = []
+        for variant in (keyword, keyword.lower(), keyword.upper(), keyword.title()):
+            if variant not in variants:
+                variants.append(variant)
+        if len(variants) == 1:
+            return {"$contains": variants[0]}
+        return {"$or": [{"$contains": v} for v in variants]}
 
     @staticmethod
     def _deduplicate_candidates(
@@ -647,6 +861,62 @@ class KnowledgeVectorStore(BaseExternalClient):
         """Extract non-stop-word terms from query for term overlap scoring."""
         return [t for t in _tokenize(query) if t not in _STOP_WORDS]
 
+    @staticmethod
+    def _document_identity_terms(metadata: Dict[str, Any]) -> Set[str]:
+        """Terms that name the DOCUMENT itself: its title's words plus its service.
+
+        The document's side of a two-way grounding test. Retrieval only ever
+        asks whether a chunk answers the query; it never asks whether the query
+        was about this document, and those are different questions — "Failed to
+        start QEMU, cannot create PID file" is answered plausibly by a
+        Kubernetes CrashLoopBackOff runbook and is not about Kubernetes at all.
+        Both are read from chunk metadata, which is the only place the KB's
+        front matter survives into retrieval.
+        """
+        terms = set(_tokenize(str(metadata.get("title") or "")))
+        service = str(metadata.get("service") or "").strip().lower()
+        if service:
+            terms |= set(_tokenize(service.replace("-", " ")))
+        return {t for t in terms if t not in _STOP_WORDS and len(t) >= 3}
+
+    @classmethod
+    def _identity_terms_in_query(
+        cls, metadata: Dict[str, Any], query_lower: str
+    ) -> List[str]:
+        """Which of the document's own identity terms the query actually used.
+
+        Substring rather than token containment, and deliberately in this
+        direction: it lets the runbook's ``Connection`` be named by a user who
+        typed "connections", which is the common shape. The reverse direction
+        would let a runbook titled ``Pod`` be named by "podman".
+        """
+        if not query_lower:
+            return []
+        return sorted(
+            t for t in cls._document_identity_terms(metadata) if t in query_lower
+        )
+
+    @staticmethod
+    def _query_has_identifier(
+        query: str,
+        query_terms: List[str],
+        stats: Optional[CorpusTermStats],
+    ) -> bool:
+        """Does this query name something specific enough to rank lexically on?
+
+        Rarity IN THIS CORPUS when statistics exist, spelling otherwise. The
+        shape patterns answer a different question than the one being asked:
+        they recognise how identifiers are conventionally WRITTEN (CamelCase,
+        ``ERR-500``, dotted names), and the terms that discriminate hardest in
+        operational text are ordinary-looking lowercase words — ``qemu``,
+        ``enospc``, ``libvirt`` — that no shape rule separates from ``cannot``.
+        Document frequency separates them exactly, and it needs no list to be
+        kept up to date as the KB grows new vocabulary.
+        """
+        if stats is not None and query_terms:
+            return any(stats.is_identifier(t) for t in query_terms)
+        return any(p.search(query) for p in IDENTIFIER_PATTERNS) if query else False
+
     @classmethod
     def _rerank(
         cls,
@@ -654,27 +924,41 @@ class KnowledgeVectorStore(BaseExternalClient):
         query_terms: List[str],
         context_metadata: Dict[str, str],
         query: str = "",
+        stats: Optional[CorpusTermStats] = None,
     ) -> List[Dict[str, Any]]:
         """Score and sort candidates using multiple retrieval signals.
 
         Signals:
           1. Vector similarity (original cosine score from ChromaDB)
-          2. Term overlap (fraction of query terms found in chunk content)
+          2. Term overlap (IDF-weighted share of the query's discriminating
+             vocabulary found in the chunk)
           3. Metadata match (domain/service alignment + verification level)
           4. Freshness (staleness penalty based on last_updated)
 
-        Dynamic weights: When the query contains identifier-like tokens
-        (error codes, CamelCase, dotted names), term overlap weight shifts
-        from 25% to 40% and vector similarity drops from 40% to 25%. This
-        makes lexical matches dominate for exact-identifier queries.
+        Dynamic weights: When the query names something rare in the corpus (or,
+        with no statistics, something that LOOKS like an identifier), term
+        overlap weight shifts from 25% to 40% and vector similarity drops from
+        40% to 25%. This makes lexical matches dominate for exact-identifier
+        queries.
 
-        Final score = weighted sum of all signals.
+        The blend is written back as ``rerank_score`` — the number this list is
+        ORDERED by. It used to be discarded at the return, leaving every
+        consumer reading ``score`` (the raw cosine) and unable to see, or act
+        on, the quantity that had actually decided the ranking. The two are
+        kept as separate fields rather than reconciled into one because they are
+        answers to different questions: ``score`` is absolute and calibrated, so
+        admission floors belong on it; ``rerank_score`` is relative to this
+        candidate set, so ordering belongs on it. See the module docstring.
+
+        ``term_coverage`` and ``identity_terms_in_query`` are written back for
+        the same reason: a consumer that must decide whether to ACT on a result
+        (rather than merely show it) needs the lexical evidence, and only this
+        function holds both the corpus statistics and the full chunk text.
+
         Ties broken by scope priority: personal > team > global.
         """
         # Select weights based on query characteristics
-        has_identifiers = (
-            any(p.search(query) for p in IDENTIFIER_PATTERNS) if query else False
-        )
+        has_identifiers = cls._query_has_identifier(query, query_terms, stats)
         if has_identifiers:
             w_vector = RERANK_WEIGHT_VECTOR_ID
             w_term = RERANK_WEIGHT_TERM_OVERLAP_ID
@@ -687,6 +971,7 @@ class KnowledgeVectorStore(BaseExternalClient):
             w_fresh = RERANK_WEIGHT_FRESHNESS
 
         scored: List[tuple] = []
+        query_lower = query.lower()
 
         for candidate in candidates:
             content = candidate.get("content", "")
@@ -703,8 +988,9 @@ class KnowledgeVectorStore(BaseExternalClient):
             # back here.
             vector_score = candidate.get("score", 0.0)
 
-            # Signal 2: Term overlap — what fraction of query terms are in this chunk
-            term_overlap = cls._compute_term_overlap(query_terms, content)
+            # Signal 2: Term overlap — what share of the query's DISCRIMINATING
+            # vocabulary is in this chunk
+            term_overlap = cls._compute_term_overlap(query_terms, content, stats=stats)
 
             # Signal 3: Metadata match — domain/service alignment + verification
             metadata_score = cls._compute_metadata_score(metadata, context_metadata)
@@ -720,6 +1006,24 @@ class KnowledgeVectorStore(BaseExternalClient):
                 + w_fresh * freshness_score
             )
 
+            # The number the sort is about to happen on, kept ON the candidate.
+            # Discarding it made the ordering of a hybrid result unexplainable
+            # from the result itself, and left every downstream threshold
+            # filtering a different quantity than the one that had ranked the
+            # list (#1272).
+            candidate["rerank_score"] = final_score
+
+            # The two halves of the grounding question, carried out with the
+            # result so a consumer deciding whether to ACT on it does not have
+            # to re-derive them (and cannot re-derive them: the corpus
+            # statistics and the full chunk text live only here).
+            #   term_coverage           — does this chunk cover the query?
+            #   identity_terms_in_query — was the query about this document?
+            candidate["term_coverage"] = term_overlap
+            candidate["identity_terms_in_query"] = cls._identity_terms_in_query(
+                metadata, query_lower
+            )
+
             # Scope priority for tiebreaking (lower = better)
             scope = metadata.get("scope", "global")
             scope_tiebreak = -SCOPE_PRIORITY.get(scope, 2)
@@ -732,19 +1036,45 @@ class KnowledgeVectorStore(BaseExternalClient):
         return [entry[2] for entry in scored]
 
     @staticmethod
-    def _compute_term_overlap(query_terms: List[str], content: str) -> float:
-        """Fraction of query terms that appear in the chunk content.
+    def _compute_term_overlap(
+        query_terms: List[str],
+        content: str,
+        stats: Optional[CorpusTermStats] = None,
+    ) -> float:
+        """Share of the query's IDF mass that appears in the chunk content.
 
-        Not BM25 — no term frequency or inverse document frequency.
-        Simple binary overlap: each query term is either present or absent.
-        This is a lightweight reranking signal, not a retrieval method.
+        With corpus statistics this is the inverse-document-frequency half of
+        BM25 (there is still no term-frequency component, deliberately: a
+        runbook that says ``enospc`` six times is not six times more about it).
+        Without them it degrades to the binary fraction it used to be always —
+        which counted ``pid`` (84 of 1297 chunks) exactly as much as ``enospc``
+        (11), so a query was scored on how many of its words appeared rather
+        than on whether the words that identify the problem appeared. In prose
+        where every document says "service", "error" and "failed", that is the
+        difference between a relevance signal and a language model of the
+        corpus.
+
+        Terms are tested as case-insensitive substrings of the chunk text, which
+        is what this signal has always done. That is deliberately NOT the
+        token-level test :meth:`CorpusTermStats.overlap_baseline` uses: this is
+        a per-candidate RANKING signal, where a substring hit on a longer word
+        is a mild inaccuracy, while the baseline is one half of a RATIO whose
+        other half must be measured the same way or the ratio means nothing.
         """
         if not query_terms:
             return 0.0
 
         content_lower = content.lower()
-        hits = sum(1 for term in query_terms if term in content_lower)
-        return hits / len(query_terms)
+        if stats is None:
+            hits = sum(1 for term in query_terms if term in content_lower)
+            return hits / len(query_terms)
+
+        unique = set(query_terms)
+        total = sum(stats.idf(term) for term in unique)
+        if total <= 0:
+            return 0.0
+        hit = sum(stats.idf(term) for term in unique if term in content_lower)
+        return hit / total
 
     @staticmethod
     def _compute_metadata_score(
@@ -764,6 +1094,15 @@ class KnowledgeVectorStore(BaseExternalClient):
         the case-side value is free-text (e.g. the LLM's ``affected_services``
         entry "PostgreSQL"), while chunk frontmatter is curated ("postgresql").
         A raw ``==`` would miss the most common real-world alignment.
+
+        The components sum on [-0.3, 1.0] and are mapped onto [0, 1] rather than
+        truncated at zero. Truncation destroyed the demotion half of the signal
+        outright: with no case context, ``draft`` (-0.1), ``stale`` (-0.2) and
+        ``deprecated`` (-0.3) all clamped to 0.0, so a runbook its author had
+        marked DEPRECATED scored exactly as well as one merely unreviewed, and
+        the lifecycle ordering this function documents held only above zero.
+        The map is affine, so every relative gap between the documented
+        components is preserved — only the floor moves.
         """
         score = 0.0
 
@@ -795,7 +1134,9 @@ class KnowledgeVectorStore(BaseExternalClient):
         elif status == "deprecated":
             score -= 0.3
 
-        return max(0.0, min(1.0, score))
+        return (max(_METADATA_SCORE_MIN, min(1.0, score)) - _METADATA_SCORE_MIN) / (
+            1.0 - _METADATA_SCORE_MIN
+        )
 
     @staticmethod
     def _compute_freshness_score(metadata: Dict[str, Any]) -> float:
@@ -927,6 +1268,13 @@ class KnowledgeVectorStore(BaseExternalClient):
                 },
             )
 
+        # Invalidated BEFORE the write, not after: the write may raise partway
+        # through a retry ladder having already added rows, and a stats object
+        # kept because the call "failed" would then describe a corpus that no
+        # longer exists. Dropping it early costs one rebuild and can never be
+        # stale.
+        self._invalidate_term_stats(collection_name)
+
         await self.call_external(
             operation_name="add_documents",
             call_func=_add_wrapper,
@@ -989,6 +1337,8 @@ class KnowledgeVectorStore(BaseExternalClient):
             )
             return len(chunk_ids)
 
+        self._invalidate_term_stats(collection_name)
+
         return await self.call_external(
             operation_name="delete_documents_by_parent_id",
             call_func=_delete_wrapper,
@@ -1030,6 +1380,8 @@ class KnowledgeVectorStore(BaseExternalClient):
                 f"from KB collection '{collection_name}'"
             )
             return len(chunk_ids)
+
+        self._invalidate_term_stats(collection_name)
 
         return await self.call_external(
             operation_name="delete_documents_by_parents",

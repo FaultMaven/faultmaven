@@ -149,6 +149,27 @@ def _read_total_chunks(chunk_metadata: Optional[Dict[str, Any]]) -> Optional[int
     return total if total > 0 else None
 
 
+def _read_tags(
+    result: Dict[str, Any], chunk_metadata: Optional[Dict[str, Any]]
+) -> List[str]:
+    """Tags for a hit, from wherever they actually are.
+
+    ChromaDB metadata values must be scalars, so the write path joins the tag
+    list into one comma-separated string; reading it back as a list is this
+    function's whole job. Returns ``[]`` for an absent or unparseable value —
+    tags are a display and filtering aid, never an admission input, so an empty
+    list is a safe answer and an exception is not.
+    """
+    raw = result.get("tags")
+    if raw is None and chunk_metadata:
+        raw = chunk_metadata.get("tags")
+    if isinstance(raw, str):
+        return [t.strip() for t in raw.split(",") if t.strip()]
+    if isinstance(raw, (list, tuple)):
+        return [str(t).strip() for t in raw if str(t).strip()]
+    return []
+
+
 def _letter_can_head_a_cause(letter: str) -> bool:
     """Could a ``### Cause X:`` heading for this letter exist at all?
 
@@ -572,7 +593,12 @@ class KnowledgeService:
         self._llm = llm_provider
 
     async def search_knowledge(
-        self, query: str, limit: int = 10, filters: Optional[Dict[str, Any]] = None
+        self,
+        query: str,
+        limit: int = 10,
+        filters: Optional[Dict[str, Any]] = None,
+        use_hybrid: bool = False,
+        min_score: Optional[float] = None,
     ) -> List[SearchResult]:
         """
         Search knowledge base using interface dependencies
@@ -581,6 +607,19 @@ class KnowledgeService:
             query: Search query text
             limit: Maximum number of results to return
             filters: Optional filters for search refinement
+            use_hybrid: Retrieve through the store's hybrid pipeline (vector +
+                keyword-constrained recall, then reranking) instead of pure
+                vector search. Off by default so existing callers are unchanged;
+                the KB pre-fetch that feeds the investigation prompt and the
+                cause seeder passes True, because the terms that identify an
+                incident are exactly the ones an embedding smooths away. Falls
+                back to pure vector search on a store without ``hybrid_search``.
+            min_score: Minimum raw cosine a hit must carry. Honoured only on
+                the hybrid path, where results are ordered by the reranker's
+                blend and a caller's own post-filter would therefore thin its
+                window from the middle. The pure-vector path is ordered BY
+                score, so filtering its output is equivalent and the caller's
+                own filter remains the authority there.
 
         Returns:
             List of SearchResult models
@@ -604,12 +643,21 @@ class KnowledgeService:
                         # Default to global scope when caller provides no filter —
                         # prevents unintentional cross-tenant reads.
                         effective_filters = filters if filters else {"scope": "global"}
-                        results = await self._vector_store.search(
-                            collection_name=KB_COLLECTION,
-                            query=sanitized_query,
-                            k=limit,
-                            where=effective_filters,
-                        )
+                        if use_hybrid and hasattr(self._vector_store, "hybrid_search"):
+                            results = await self._vector_store.hybrid_search(
+                                collection_name=KB_COLLECTION,
+                                query=sanitized_query,
+                                k=limit,
+                                where=effective_filters,
+                                min_score=min_score,
+                            )
+                        else:
+                            results = await self._vector_store.search(
+                                collection_name=KB_COLLECTION,
+                                query=sanitized_query,
+                                k=limit,
+                                where=effective_filters,
+                            )
 
                     # Convert to SearchResult models
                     search_results = []
@@ -632,13 +680,31 @@ class KnowledgeService:
                         matched_cause_letters = _read_stamped_cause_letters(
                             result_meta, result.get("content") or ""
                         )
+                        # Title, type and tags live in the CHUNK METADATA — the
+                        # vector store's formatted hit carries only
+                        # id/content/metadata/score, so reading them off the top
+                        # level meant every hit came back titled "Untitled",
+                        # typed "general" and untagged. That reached the model:
+                        # `case.kb_context` stores `r.title`, and the prompt
+                        # renders it as "MATCH 1: Untitled", so the LLM was shown
+                        # runbook prose with no way to tell which runbook it was
+                        # reading or to cite it back. Top level is still
+                        # preferred, so a store that does supply these wins.
                         search_result = SearchResult(
                             document_id=result.get(
                                 "document_id", result.get("id", "unknown")
                             ),
-                            title=result.get("title", "Untitled"),
-                            document_type=result.get("document_type", "general"),
-                            tags=result.get("tags", []),
+                            title=(
+                                result.get("title")
+                                or result_meta.get("title")
+                                or "Untitled"
+                            ),
+                            document_type=(
+                                result.get("document_type")
+                                or result_meta.get("document_type")
+                                or "general"
+                            ),
+                            tags=_read_tags(result, result_meta),
                             score=result.get("score", 0.0),
                             snippet=result.get("snippet", result.get("content", ""))[
                                 :200
@@ -647,6 +713,11 @@ class KnowledgeService:
                             parent_document_id=parent_document_id,
                             total_chunks=_read_total_chunks(result_meta),
                             matched_cause_letters=matched_cause_letters,
+                            rerank_score=result.get("rerank_score"),
+                            term_coverage=result.get("term_coverage"),
+                            identity_terms_in_query=list(
+                                result.get("identity_terms_in_query") or []
+                            ),
                         )
                         search_results.append(search_result)
 

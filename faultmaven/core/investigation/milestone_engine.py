@@ -94,6 +94,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     kb_cause_seed_attempt_total,
     kb_cause_seed_letter_mismatch_total,
     kb_cause_seed_uncorroborated_total,
+    kb_cause_seed_ungrounded_total,
     narration_overclaim_total,
     pending_action_superseded_stale_total,
     prompt_context_recovery_total,
@@ -299,6 +300,67 @@ KB_CONTEXT_MAX_ENTRIES = 3
 # measurement itself is re-runnable:
 # ``tests/eval/kb_cause_seeder/run_corroboration_eval.py``.
 KB_SEED_MIN_CORROBORATING_CHUNKS = 2
+
+# Share of the query's IDF-weighted vocabulary a runbook must carry to be
+# seedable WITHOUT the query having named it (#1272). See the grounding rule in
+# ``_seed_candidate_causes_from_kb``.
+#
+# The rule is: a runbook may seed only if the query NAMED it (one of its title
+# or ``service`` terms appears in the query) or it COVERS the query at this
+# level. Two grounds because there are two legitimate shapes of a correct
+# match, and each arm alone loses one of them:
+#
+#   named    "Nginx is returning 502 Bad Gateway" -> NGINX 502 Bad Gateway.
+#            The user says what system is broken. Coverage alone is weak here
+#            (0.21-0.52 measured) because such statements carry incident
+#            specifics — percentages, timestamps — no runbook can contain.
+#   covers   "Services fail to start or crash with write errors referencing
+#            ENOSPC" -> Linux Disk Full, which the query never names but whose
+#            symptom section states verbatim (coverage 1.00). Symptom-phrased
+#            queries are the normal shape for this product, so an arm for them
+#            is not optional.
+#
+# What passes NEITHER is exactly #1272's failure: "Failed to start QEMU binary
+# cannot create PID file" retrieves Kubernetes CrashLoopBackOff (coverage 0.53,
+# names nothing) because the one word identifying the system, `qemu`, appears
+# in none of the 91 shipped runbooks, so every candidate matched on "failed",
+# "start" and "file" alone. Retrieval only ever asks whether a chunk answers
+# the query; the missing question is whether the query was about that document.
+#
+# The obvious guards were measured against this and do not work:
+#
+#   * A higher SIMILARITY floor cannot separate them, re-confirming #1144 from
+#     a different direction: correct seeds ran 0.571-0.780 and the confidently
+#     wrong ones 0.509-0.673, overlapping.
+#   * A CONFIDENCE test on the cosine actively backfires. A flat distribution
+#     still has a top standard deviations above its own median: the wrong
+#     answer measured ~3.0 sigma above its corpus median and a correct one
+#     ~1.9, so "is the leader confident?" rates the wrong answer higher.
+#   * "The query names something the corpus never indexed" false-blocks
+#     ordinary prose — measured on "postgres connections exhausted since
+#     Tuesday afternoon", where the unseen words are `tuesday`/`afternoon`.
+#   * A lexical-distinctiveness RATIO (best chunk vs the corpus percentile)
+#     measures query specificity, not answer correctness: the QEMU queries
+#     score ABOVE the generic-but-correctly-answered ones.
+#
+# The value is deliberately not fine-tuned: measured over 34 statements against
+# the shipped pack (the 24 labelled ones in tests/eval/kb_cause_seeder plus
+# #1272's queries and adversarial variants), every value from 0.80 to 0.95
+# gives an identical outcome — 22 of 23 correct seeds kept, all 20 statements
+# that had a correct seed still have one, and wrong seeds down from 27 to 10.
+# ``kb_cause_seed_ungrounded_total`` is how it gets re-sized on evidence.
+#
+# Deliberately a SEEDING gate, not a retrieval one: the runbooks still reach
+# the model as prose in `kb_context`, where they are suggestions it may ignore.
+# What is withheld is the assertion "this may be why your system is broken",
+# and the specified outcome when nothing is trustworthy already exists — the
+# model forms hypotheses from the evidence (`Cause Z: Unidentified`).
+#
+# A hit carrying NO grounding evidence at all (both fields absent, as on the
+# pure-vector path or with no term index) is not judged: an absent measurement
+# must never authorise what it was added to withhold, but neither may it
+# silently disable seeding wholesale.
+KB_SEED_MIN_TERM_COVERAGE = 0.90
 
 # Cosine floor a pre-fetched runbook must clear to enter `case.kb_context` (and
 # to reach the KB cause seeder). Same scale, corpus and calibration as
@@ -11631,15 +11693,42 @@ class MilestoneEngine:
             # the top chunk slots; render only the top KB_CONTEXT_MAX_ENTRIES into
             # the prompt. The returned `relevant` (full ranked list) is what the
             # seeder's parent-dedup consumes.
+            #
+            # HYBRID, not pure vector (#1272). An operator writes what they
+            # SAW — "cannot write its PID file", "qemu failed to start" — and
+            # those words are precisely what an embedding smooths into the
+            # neighbourhood of every other "process won't start" runbook. On
+            # the shipped pack that put the runbook covering the failure at
+            # rank 70 of 91 while the top ten were all Kubernetes. Adding the
+            # keyword-constrained arm and the IDF-weighted reranker moves it to
+            # rank 1 for the same query, and pure vector search cannot: the
+            # fetch limit is applied to CHUNKS before any floor, so no
+            # threshold value can admit a chunk ranked 369th.
             results = await self.knowledge_service.search_knowledge(
-                query=query, limit=KB_PREFETCH_FETCH_LIMIT, filters=scope_filter
+                query=query,
+                limit=KB_PREFETCH_FETCH_LIMIT,
+                filters=scope_filter,
+                use_hybrid=True,
+                # The floor goes in at ADMISSION, not after ranking. Hybrid
+                # results are ordered by the reranker's blend, so the filter
+                # below would thin this window from the middle: on a measured
+                # query it left 2 hits where 10 were asked for, and the seeder's
+                # corroboration guard then declined a runbook that had been
+                # retrieved perfectly well. The filter below stays as the
+                # authority (and still governs the pure-vector fallback).
+                min_score=KB_PREFETCH_RELEVANCE_THRESHOLD,
             )
             relevant = [
                 r for r in results or [] if r.score >= KB_PREFETCH_RELEVANCE_THRESHOLD
             ]
             if relevant:
-                # Score-ranked, so this top slice is byte-identical to the old
-                # limit-3 fetch — the rendered prompt surface is unchanged.
+                # `results` is ordered by the reranker's blend; the floor below
+                # is applied to `score`, which stays the raw cosine on every
+                # path. Two quantities on purpose — an absolute one to admit
+                # with, a relative one to order by — so this slice is the top of
+                # the RANKING and the filter is a statement about ABSOLUTE
+                # similarity. Ordering by cosine instead would discard the
+                # keyword and term-overlap evidence that produced the ranking.
                 case.kb_context = [
                     {
                         "title": r.title,
@@ -11683,6 +11772,67 @@ class MilestoneEngine:
             return
         if not self.knowledge_service or not kb_hits:
             return  # no retrieval this turn — a legitimate no-match, not a failure
+
+        # #1272 grounding gate. A hit may back a seed only if the query NAMED
+        # its runbook or that runbook COVERS the query — see
+        # KB_SEED_MIN_TERM_COVERAGE for why both arms are needed and what was
+        # measured against the alternatives. Applied here, before the
+        # per-runbook fold below, so an ungrounded hit contributes nothing to
+        # any of it: not a cause letter, not a corroborating chunk, not a rank.
+        #
+        # Hits carrying no grounding evidence at all (`term_coverage is None`
+        # and no identity terms — the pure-vector path, or no term index) are
+        # NOT judged and pass through: an absent measurement must not authorise
+        # what it was added to withhold, but it must not silently disable
+        # seeding either.
+        def _is_grounded(hit) -> bool:
+            coverage = getattr(hit, "term_coverage", None)
+            named = getattr(hit, "identity_terms_in_query", None) or []
+            if coverage is None and not named:
+                return True  # unmeasured, not ungrounded
+            return bool(named) or coverage >= KB_SEED_MIN_TERM_COVERAGE
+
+        # Grounded PER RUNBOOK, not per chunk. Grounding answers "does this
+        # runbook belong to this case at all?", which is a property of the
+        # document; corroboration answers "did it match broadly?", which is a
+        # property of the chunk set. Judging each chunk separately makes
+        # grounding do corroboration's job a second time and silently tightens
+        # it: a runbook whose symptom section states the query verbatim is
+        # admitted on that chunk and then declined for want of a second, even
+        # though its other retrieved chunks are the very breadth #1144 asks
+        # for. Measured — it cost exactly that case.
+        grounded_parents = {
+            getattr(h, "parent_document_id", None) for h in kb_hits if _is_grounded(h)
+        }
+        grounded_hits = [
+            h
+            for h in kb_hits
+            if getattr(h, "parent_document_id", None) in grounded_parents
+        ]
+        if not grounded_hits:
+            kb_cause_seed_ungrounded_total.inc()
+            kb_cause_seed_attempt_total.labels(outcome="not_lexically_grounded").inc()
+            logger.info(
+                "KB cause seeder: none of the %d retrieved chunks for case %s is "
+                "grounded in the query (the query names no retrieved runbook, and "
+                "none covers the query at %.2f) — seeding nothing; the runbook "
+                "prose still reaches the LLM via kb_context and the model forms "
+                "hypotheses from the evidence instead",
+                len(kb_hits),
+                case.case_id,
+                KB_SEED_MIN_TERM_COVERAGE,
+            )
+            return
+        if len(grounded_hits) < len(kb_hits):
+            kb_cause_seed_ungrounded_total.inc()
+            logger.info(
+                "KB cause seeder: %d of %d retrieved chunks for case %s are not "
+                "grounded in the query and were excluded from seeding",
+                len(kb_hits) - len(grounded_hits),
+                len(kb_hits),
+                case.case_id,
+            )
+        kb_hits = grounded_hits
 
         try:
             from faultmaven.core.investigation.kb_cause_seeder import (

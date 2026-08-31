@@ -214,6 +214,41 @@ class SearchResult(BaseModel):
         ),
     )
 
+    rerank_score: Optional[float] = Field(
+        default=None,
+        description=(
+            "The blended reranker score this hit was ORDERED by, when it came "
+            "from a hybrid search. Relative to one candidate set, so it is not "
+            "comparable across queries and no admission floor may be expressed "
+            "in it — that is what ``score`` (raw cosine) is for. None on the "
+            "pure-vector path, where ordering IS ``score``."
+        ),
+    )
+    term_coverage: Optional[float] = Field(
+        default=None,
+        description=(
+            "Share of the query's IDF-weighted discriminating vocabulary that "
+            "THIS hit's chunk carries, in [0, 1]. Answers 'does this chunk "
+            "cover the query?' — the half of relevance a cosine cannot "
+            "separate from topical adjacency. None on the pure-vector path and "
+            "whenever no corpus term index was available; consumers must read "
+            "None as 'unknown', never as 'high'."
+        ),
+    )
+    identity_terms_in_query: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Words naming the hit's own document — its title's terms and its "
+            "``service`` — that appear in the query. Answers the CONVERSE "
+            "question to ``term_coverage``: was the query about this document? "
+            "Retrieval never asks it, which is how a Kubernetes runbook comes "
+            "back for a QEMU incident and looks plausible (#1272). Empty on "
+            "the pure-vector path and for a genuinely unnamed document, so "
+            "emptiness alone is not evidence against a hit — it is one of two "
+            "grounds a consumer may seed on."
+        ),
+    )
+
     matched_cause_letters: List[str] = Field(
         default_factory=list,
         description=(
