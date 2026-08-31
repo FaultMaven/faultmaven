@@ -17,7 +17,7 @@
 | Scenario 4 — DB insert fails after LLM / storage | **Partial** | Orphan-file cleanup (below) handles the "storage succeeded, evidence didn't persist" case. Idempotency on evidence creation itself is not implemented. |
 | Content-hash deduplication — hash consistency | **Done** | `PreprocessingService.classify_and_extract` computes `SHA-256(UTF-8 text)` uniformly for file uploads and pasted content. Both paths produce the same hash for the same content. |
 | Content-hash deduplication — repository lookup | **Done** | `ICaseRepository.find_by_content_hash()` live on all bound implementations (`SessionlessCaseRepository`, `SQLiteCaseRepository`, `PostgreSQLHybridCaseRepository`, `InMemoryCaseRepository`). `_preprocess_attachment` short-circuits on match, skipping storage write and evidence creation. See [data-preprocessing-design-specification.md](./data-preprocessing-design-specification.md) §2.4. Emits `faultmaven_evidence_dedup_hits_total`. |
-| Storage cleanup — TTL-based orphan sweep | **Done** | `faultmaven.modules.agent.jobs.storage_cleanup` with sidecar-metadata approach: `FileStorageService.store_file()` writes `{filename}.meta.json` with `{case_id, uploaded_at, linked=false}`; `mark_linked()` flips `linked=true` after Evidence creation; sweep deletes a file only when the DATABASE does not reference it (`uploaded_files.storage_ref`, #1232) AND its sidecar says `linked=false` AND `uploaded_at` is past the TTL. Gated on `ORPHAN_CLEANUP_ENABLED` + `ORPHAN_CLEANUP_DRY_RUN` (default dry-run=true); refuses the run outright when the authority is unreachable or answers with zero refs beside live candidates. `JOB_TENANT_SCOPE="cross_tenant"`. 48h dry-run canary required before enabling real deletes. |
+| Storage cleanup — TTL-based orphan sweep | **Done** | `faultmaven.modules.agent.jobs.storage_cleanup` with sidecar-metadata approach: `FileStorageService.store_file()` writes `{filename}.meta.json` with `{case_id, uploaded_at, linked=false}`; `mark_linked()` flips `linked=true` after Evidence creation; sweep deletes a file only when the DATABASE does not reference it (`uploaded_files.storage_ref`, #1232) AND its sidecar says `linked=false` AND `uploaded_at` is past the TTL. Gated on `ORPHAN_CLEANUP_ENABLED` + `ORPHAN_CLEANUP_DRY_RUN` (default dry-run=true); refuses the run outright (`status="failed"`, exit 1 — the CronJob alert fires) when the authority is unreachable or answers with zero refs beside live candidates. `JOB_TENANT_SCOPE="cross_tenant"`. 48h dry-run canary required before enabling real deletes. |
 | Storage cleanup — Reference counting | **Rejected** | Approach 2 (below) was considered and rejected: reference counting requires a `file_references` table + maintaining the reference graph on every evidence create/delete, a meaningful surface area for bugs. TTL was chosen for simplicity and because orphan rate is near-zero by design. |
 | Monitoring + alerts | **Done** | Eight Prometheus metrics defined in `infrastructure/observability/evidence_metrics.py`: `evidence_dedup_hits_total`, `evidence_orphan_files_{found,deleted,rescued}_total`, `evidence_mark_linked_failures_total`, `evidence_turn_async_retry_{enqueued,outcome}_total`, `evidence_turn_async_retry_latency_seconds`. Live emitters: dedup + orphan cleanup. Scaffolded emitters: async retry (will emit if that plan is ever justified). Canonical alert definitions in [docs/operations/monitoring/evidence-metrics.md](../../operations/monitoring/evidence-metrics.md). |
 | `file_references` table | **Rejected** | Would be needed only for Approach 2 (reference counting) which was rejected. |
@@ -508,10 +508,17 @@ The sidecar is written once at upload and never revisited, and it goes stale in 
 
 **Fail-closed refusals.** For a delete-deciding sweep, "I could not ask" and "nothing is referenced" are indistinguishable at the point of decision, so both refuse the run (`status="skipped"`, nothing deleted, dry runs included — a classification computed without the authority is a fiction someone might act on):
 
-| `reason` | Trigger |
-|----------|---------|
-| `reference_authority_unavailable` | No DI container, no case repository, or the query raised |
-| `reference_set_empty` | The authority returned ZERO refs while sweep candidates exist. This is the shape an RLS-scoped session produces — `uploaded_files` is tenanted and fail-closed (migration 018) — under which every live file would read as an orphan |
+| `reason` | `status` | Trigger |
+|----------|----------|---------|
+| `reference_authority_unavailable` | `failed` | No DI container, no case repository, or the query raised |
+| `reference_set_empty` | `failed` | The authority returned ZERO refs while sweep candidates exist. This is the shape an RLS-scoped session produces — `uploaded_files` is tenanted and fail-closed (migration 018) — under which every live file would read as an orphan |
+
+Both report `failed` (exit 1), not `skipped` (exit 0): the job wanted to run
+and could not decide safely, and `faultmaven.jobs.run.main()` maps `skipped`
+to a clean exit — under which a permanently-refusing sweep is indistinguishable
+from a clean night. The pre-existing `orphan_cleanup_disabled` gate keeps its
+`skipped`/exit-0 behaviour, because that refusal is what the deployment asked
+for.
 
 **Tenant scope.** A storage key carries no tenant the backend enforces, so "unreferenced" is only decidable against the `storage_ref` set of ALL organizations. The job therefore declares `JOB_TENANT_SCOPE="cross_tenant"` and, under `TENANT_PROVIDER=multi`, runs only on the audited maintenance path (`--cross-tenant-maintenance` + the `faultmaven_maintenance` BYPASSRLS role). See [evidence-job-scheduling.md](../../operations/evidence-job-scheduling.md).
 

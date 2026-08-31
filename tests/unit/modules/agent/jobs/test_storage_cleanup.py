@@ -781,7 +781,7 @@ class TestFailsClosedWithoutTheAuthority:
             storage=storage_service, ttl_hours=24, dry_run=False, referenced_refs=set()
         )
 
-        assert result["status"] == "skipped"
+        assert result["status"] == "failed"
         assert result["reason"] == storage_cleanup.REASON_REFERENCE_SET_EMPTY
         assert result["deleted"] == 0
         assert live.exists()
@@ -814,7 +814,7 @@ class TestFailsClosedWithoutTheAuthority:
 
         result = await run(settings=self._settings(), container=None)
 
-        assert result["status"] == "skipped"
+        assert result["status"] == "failed"
         assert result["reason"] == storage_cleanup.REASON_AUTHORITY_UNAVAILABLE
         assert live.exists()
 
@@ -838,7 +838,7 @@ class TestFailsClosedWithoutTheAuthority:
 
         result = await run(settings=self._settings(), container=container)
 
-        assert result["status"] == "skipped"
+        assert result["status"] == "failed"
         assert result["reason"] == storage_cleanup.REASON_AUTHORITY_UNAVAILABLE
         assert live.exists()
 
@@ -852,7 +852,7 @@ class TestFailsClosedWithoutTheAuthority:
             settings=self._settings(enabled=False, dry_run=True), container=None
         )
 
-        assert result["status"] == "skipped"
+        assert result["status"] == "failed"
         assert result["reason"] == storage_cleanup.REASON_AUTHORITY_UNAVAILABLE
 
     @pytest.mark.asyncio
@@ -884,3 +884,66 @@ class TestFailsClosedWithoutTheAuthority:
         assert result["skipped_db_referenced"] == 1
         assert result["deleted"] == 0
         assert at_risk.exists()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "make_container,expected_reason",
+        [
+            (lambda: None, storage_cleanup.REASON_AUTHORITY_UNAVAILABLE),
+            (
+                lambda: SimpleNamespace(
+                    case_repository=SimpleNamespace(
+                        list_all_storage_refs=AsyncMock(return_value=set())
+                    )
+                ),
+                storage_cleanup.REASON_REFERENCE_SET_EMPTY,
+            ),
+        ],
+    )
+    async def test_a_refusal_exits_non_zero_so_the_cronjob_alert_fires(
+        self, storage_root, make_container, expected_reason
+    ):
+        """A fail-closed nobody hears about is half a fail-closed.
+
+        The runner maps status="skipped" to exit 0, which is exactly the "a
+        CronJob that refuses at boot looks like a CronJob with nothing to do"
+        shape that hid #1232. These two refusals are the job wanting to run and
+        being unable to decide, so they must exit non-zero.
+        """
+        _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/case/1/live.log",
+            linked=False,
+            uploaded_at=datetime.now(UTC) - timedelta(hours=48),
+        )
+
+        result = await run(settings=self._settings(), container=make_container())
+
+        assert result["reason"] == expected_reason
+        assert result["status"] not in ("completed", "skipped"), (
+            "faultmaven.jobs.run.main() maps completed/skipped to exit 0, so "
+            "this refusal would be silent forever"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_configured_refusal_still_exits_zero(self, container):
+        """The positive control, and the line the split is drawn on.
+
+        ORPHAN_CLEANUP_ENABLED=false is a refusal the DEPLOYMENT asked for; it
+        happens every night by design and must stay a clean exit. Without this,
+        a blanket "refusals are failures" change would page nightly on every
+        deployment that has not opted in.
+        """
+        result = await run(
+            settings=self._settings(enabled=False, dry_run=False), container=container
+        )
+
+        assert result["status"] == "skipped"
+        assert result["reason"] == storage_cleanup.REASON_CLEANUP_DISABLED
+
+    @pytest.fixture
+    def container(self):
+        repo = SimpleNamespace(
+            list_all_storage_refs=AsyncMock(return_value=set(UNRELATED_REFS))
+        )
+        return SimpleNamespace(case_repository=repo)

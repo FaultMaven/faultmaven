@@ -38,15 +38,31 @@ revisited, and it goes stale in *both* directions:
   delete what it does not reference" — is a data-loss change wearing a
   data-safety label: it destroys all 160 on its first armed run.
 
-**Fail-closed refusals.** The run ends `status="skipped"` and deletes nothing
-when it cannot ask the authority (no DI container, no case repository, or the
-query raised → `reason="reference_authority_unavailable"`), and when the
-authority answers with ZERO referenced refs while sweep candidates exist
-(`reason="reference_set_empty"`). The second is the shape an RLS-scoped
-session produces — `uploaded_files` is tenanted and fail-closed (migration
-018) — and reading it as "nothing is referenced" would classify every live
-file as an orphan. Dry runs are refused on the same terms: a classification
-computed without the authority is a fiction someone might act on.
+**Fail-closed refusals.** The run deletes nothing and reports
+`status="failed"` when it cannot ask the authority (no DI container, no case
+repository, or the query raised → `reason="reference_authority_unavailable"`),
+and when the authority answers with ZERO referenced refs while sweep
+candidates exist (`reason="reference_set_empty"`). The second is the shape an
+RLS-scoped session produces — `uploaded_files` is tenanted and fail-closed
+(migration 018) — and reading it as "nothing is referenced" would classify
+every live file as an orphan. Dry runs are refused on the same terms: a
+classification computed without the authority is a fiction someone might act
+on.
+
+`"failed"` rather than `"skipped"` is deliberate, and the split is worth
+knowing:
+
+| refusal | `status` | exit code | why |
+|---|---|---|---|
+| `orphan_cleanup_disabled` | `skipped` | 0 | the deployment ASKED for it; expected every night on the shipped defaults |
+| `reference_authority_unavailable` | `failed` | 1 | the job wanted to run and could not decide |
+| `reference_set_empty` | `failed` | 1 | same, and the likeliest cause is a misprovisioned DB role |
+
+`faultmaven.jobs.run.main()` maps `completed`/`skipped` to exit 0, so a
+refusal reported as `skipped` would be invisible for as long as it lasted —
+"a CronJob that refuses at boot looks like a CronJob with nothing to do",
+which is the shape that hid #1232. On Kubernetes the non-zero exit fails the
+Job and `FaultMavenCronJobRunFailed` fires.
 
 **Tenant scope: `cross_tenant`.** A storage key carries no tenant the backend
 enforces, so "unreferenced" is only decidable against the `storage_ref` set of

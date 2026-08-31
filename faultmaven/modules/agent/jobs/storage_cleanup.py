@@ -64,6 +64,14 @@ referenced" are indistinguishable at the point of decision:
    (migration 018), so a session with no org bound sees ZERO rows.
 3. The pre-existing `orphan_cleanup_enabled` gate (below).
 
+The first two report ``status="failed"``, so the runner exits non-zero and the
+CronJob alert fires. That split is deliberate: the third is a *configured*
+refusal — the deployment asked for it, it is expected every night, and it
+exits 0 as it always has. The first two are the job wanting to run and being
+unable to decide safely, which is the "a CronJob that refuses at boot looks
+like a CronJob with nothing to do" failure that hid this bug in the first
+place. A fail-closed nobody hears about is half a fail-closed.
+
 ## Safety protocol
 
 This job ships with `orphan_cleanup_enabled=False` and `dry_run=True` by
@@ -302,7 +310,9 @@ async def cleanup_orphaned_files(
             "that the run holds the maintenance DB role.",
             len(candidates),
         )
-        result["status"] = "skipped"
+        # "failed", not "skipped": the runner maps skipped to exit 0, and a
+        # sweep that silently exits 0 forever is how nobody finds out.
+        result["status"] = "failed"
         result["reason"] = REASON_REFERENCE_SET_EMPTY
         result["scanned"] = 0
         return result
@@ -484,6 +494,8 @@ async def run(
     refused rather than degraded to the pre-#1232 sidecar-only decision. The
     refusal covers dry runs too: a classification computed without the authority
     is a fiction, and the whole point of the dry run is that someone reads it.
+    Unlike the settings gate above, it reports ``status="failed"`` so the runner
+    exits non-zero and the CronJob alert fires.
 
     Raises:
         ValueError: If ``ttl_hours`` is outside the setting's own range.
@@ -528,8 +540,11 @@ async def run(
             "is exactly the failure issue #1232 closes.",
             e,
         )
+        # "failed", not "skipped": see the module docstring. Exiting 0 here
+        # would make an unreachable authority indistinguishable from a clean
+        # night, for as long as it lasted.
         return {
-            "status": "skipped",
+            "status": "failed",
             "reason": REASON_AUTHORITY_UNAVAILABLE,
             "error": str(e),
         }
