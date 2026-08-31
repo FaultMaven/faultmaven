@@ -1253,20 +1253,26 @@ def test_hedged_counterfactual_does_not_evict_root_from_block_classifier():
 
 
 # ---------------------------------------------------------------------------
-# fm#1137 — an unattached duplicate hypothesis must not hold its own root
+# fm#1137 — a restatement-held root must be NAMEABLE while it is held
+#
+# The exemplar is a DISJUNCTION root (the #656 shape): covered by the union of
+# two standing candidate causes and by neither of them alone, so the §7.1
+# attribution test (fm#1122) leaves it held. The original exemplar — the live
+# incident's unattached DUPLICATE — is no longer held and is pinned as released
+# by ``test_fm1122_incident_shape_now_validates`` below.
 # ---------------------------------------------------------------------------
 
 
 def _fm1137_case() -> tuple[Case, CausalNode]:
-    """The live incident graph (case_a3d354f08765), reduced to what the §7.1
-    bars read: a ROOT with two independent confident causal supports, its own
-    hypothesis ATTACHED, and a near-duplicate hypothesis standing UNATTACHED
-    because the fm#1091 one-cause-one-chain guard refused it the same root."""
+    """A restatement-held graph reduced to what the §7.1 bars read: a ROOT with
+    two independent confident causal supports whose statement is a DISJUNCTION
+    of the case's two standing hypotheses, both left UNATTACHED. Neither
+    hypothesis alone accounts for the root, so the hold survives attribution."""
     root = CausalNode(
         node_id=_nid(0x1137),
         statement=(
-            "JVM heap and native/non-heap memory exceed the 400Mi container "
-            "cgroup limit"
+            "JVM heap exhaustion or node memory eviction terminating the "
+            "payment-processor pods"
         ),
         node_type=NodeType.ROOT,
         node_state=NodeState.INCONCLUSIVE,
@@ -1304,22 +1310,21 @@ def _fm1137_case() -> tuple[Case, CausalNode]:
             root_node_id=root_node_id,
         )
 
-    owner = _hyp(
-        "The payment-processor v2.1.4 pods use a JVM maximum heap of 512m "
-        "under a 400Mi Kubernetes memory limit; heap plus JVM native/non-heap "
-        "memory exceeds the cgroup limit, causing OOMKilled termination and "
-        "CrashLoopBackOff.",
-        root.node_id,
+    # The two disjuncts the root OR-s together. Each is a real candidate cause
+    # with content of its own, so neither alone accounts for the root: solo
+    # residues are 4/9 and 3/9 against a 0.30 bar, while their union leaves
+    # nothing. That is what distinguishes an AGGREGATION (held) from a
+    # DUPLICATE (released) under the fm#1122 attribution test.
+    disjunct_a = _hyp(
+        "JVM heap exhaustion inside the 400Mi container drives total RSS past "
+        "the cgroup limit, so the kernel terminates the payment-processor "
+        "process with SIGKILL exit 137",
+        None,
     )
-    # Emitted four turns later; it pointed its root_node_ref at `root` and the
-    # fm#1091 guard refused the attachment, so it keeps root_node_id=None while
-    # saying exactly what `root` says — and therefore frames it (fm#1137).
-    duplicate = _hyp(
-        "The v2.1.4 JVM configuration sets a 512MB maximum heap inside a "
-        "400Mi container, leaving insufficient headroom for JVM "
-        "native/non-heap memory; total RSS reaches the cgroup limit, the "
-        "kernel kills the process with SIGKILL/exit 137, and Kubernetes "
-        "restarts it into CrashLoopBackOff.",
+    disjunct_b = _hyp(
+        "Node memory eviction removes the payment-processor pods when the "
+        "kubelet reclaims memory under node pressure, terminating them "
+        "mid-request",
         None,
     )
     case = _case(
@@ -1335,9 +1340,68 @@ def _fm1137_case() -> tuple[Case, CausalNode]:
             _evidence("heap-cap-vs-limit", EvidenceCategory.CAUSAL_EVIDENCE),
             _evidence("rss-at-limit-pre-kill", EvidenceCategory.CAUSAL_EVIDENCE),
         ],
-        hyps=[owner, duplicate],
+        hyps=[disjunct_a, disjunct_b],
     )
     return case, root
+
+
+def _fm1122_incident_case() -> tuple[Case, CausalNode]:
+    """The live incident graph (case_a3d354f08765) verbatim: a ROOT with two
+    independent confident causal supports, its own hypothesis ATTACHED, and a
+    near-duplicate hypothesis standing UNATTACHED because the fm#1091
+    one-cause-one-chain guard refused it the same root."""
+    case, root = _fm1137_case()
+    root.statement = (
+        "JVM heap and native/non-heap memory exceed the 400Mi container " "cgroup limit"
+    )
+
+    def _hyp(statement, root_node_id):
+        return Hypothesis(
+            statement=statement,
+            category=HypothesisCategory.CONFIG,
+            state=HypothesisState.ACTIVE,
+            generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+            rationale="posited",
+            generated_at_turn=5,
+            root_node_id=root_node_id,
+        )
+
+    owner = _hyp(
+        "The payment-processor v2.1.4 pods use a JVM maximum heap of 512m "
+        "under a 400Mi Kubernetes memory limit; heap plus JVM native/non-heap "
+        "memory exceeds the cgroup limit, causing OOMKilled termination and "
+        "CrashLoopBackOff.",
+        root.node_id,
+    )
+    duplicate = _hyp(
+        "The v2.1.4 JVM configuration sets a 512MB maximum heap inside a "
+        "400Mi container, leaving insufficient headroom for JVM "
+        "native/non-heap memory; total RSS reaches the cgroup limit, the "
+        "kernel kills the process with SIGKILL/exit 137, and Kubernetes "
+        "restarts it into CrashLoopBackOff.",
+        None,
+    )
+    case.hypotheses = {h.hypothesis_id: h for h in (owner, duplicate)}
+    return case, root
+
+
+def test_fm1122_incident_shape_now_validates():
+    """fm#1122 end to end at the derive layer. The incident's own graph — a root
+    carrying two independent confident causal supports, held for nine turns
+    because a standing unattached duplicate of its own hypothesis framed it —
+    now reaches VALIDATED, so ``cause_assurance`` leaves ``NO_ROOT`` and
+    ``synthesize_rcc_from_validated_root`` can run.
+
+    The §7.1 attribution test is what releases it: the problem anchors plus that
+    ONE hypothesis already account for everything the root says, which makes the
+    pair a duplicate rather than a root restating the case frame."""
+    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+
+    case, root = _fm1122_incident_case()
+    derive_node_states(case)
+    assert root.node_state is NodeState.VALIDATED
+    assert root.actionable is True
+    assert restatement_held_root_ids(case) == set()
 
 
 def test_fm1137_hold_is_reported_as_a_standing_signal():

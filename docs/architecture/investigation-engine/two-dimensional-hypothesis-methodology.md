@@ -503,6 +503,35 @@ One-way containment deliberately stays in the frame: the #656 disjunction root
 fully contains each sibling hypothesis but mutually mirrors none, which is
 what catches the incident.
 
+**Attribution (fm#1122).** Non-novelty against the frame is necessary but not
+sufficient. "The case already says this" has to be attributable to something
+the case actually *claims*, and there are two ways a root can be non-novel:
+
+- **Distributed** — no single standing hypothesis covers what the frame covers,
+  because each is missing the others' distinctive content. The root is
+  AGGREGATING the case's open candidates ("X or Y causing D") rather than
+  explaining any of them. That is the #656 shape and it stays held.
+- **Attributable to one** — the problem anchors plus ONE standing hypothesis
+  already account for everything the root says. The two are the same claim,
+  worded once as a terse cause node and once as a chain narrative. That is a
+  DUPLICATE, which is graph hygiene (one cause, one chain — fm#1091 / the
+  orphan re-attach path), not a restatement of the case frame; holding it fixes
+  nothing, because the advice a held root receives is "collect more evidence"
+  and no evidence can move a bar that measures wording. Released.
+
+The problem anchors are themselves such a claim, so a root they alone cover is
+the symptom dressed as a cause and is held unconditionally — a sibling that
+happens to cover it too does not excuse it.
+
+Deliberately a QUANTIFIER, not a threshold. fm#1137/#1140 swept "how much does
+one sibling cover" and found the classes overlap (the incident duplicate covers
+0.889 of its root, a verbose #656 disjunct 0.667, with mutual Jaccard ordering
+them the wrong way round at 0.276 vs 0.286). "Does ONE sibling account for ALL
+of it" is categorical, and a disjunct cannot account for a disjunction. The test
+is a conjunct ADDED to the novelty test, so it can only RELEASE a root the frame
+held, never hold a new one — which is what keeps the corpus FP pin at 0 and the
+dilution bound at ≤2% by construction rather than by measurement.
+
 The guard is ROOT-scoped (rungs adjacent to `D` legitimately paraphrase) and
 its bar is its own knob, decoupled from the orphan-reattach threshold. The
 calibration lives in one executable home — `test_restatement_guard_calibration.py`
@@ -512,10 +541,16 @@ sibling-frame dilution bound).
 
 *Known limits (by design):* the check is lexical — synonym paraphrases and
 filler-padded restatements read as novel and pass; a disjunction root in a
-case with no standing hypotheses passes; dense same-domain sibling frames can
-DELAY (never permanently block) a terse mechanism root's validation. The
-guard is one layer of the #656 defense, beside the independent-support bar
-(above), the assurance-grade caps (§9.5), and MECE arbitration (§7.1.2).
+case with no standing hypotheses passes; a LOPSIDED disjunction (one dominant
+disjunct plus a token second) escapes for the same reason filler padding does.
+Dense same-domain sibling frames can still DELAY a terse mechanism root's
+validation, though the attribution test above removes the case where that delay
+was permanent — a hold that one standing hypothesis fully accounts for is
+released rather than waiting for a duplicate that is true and therefore never
+refuted or retired (fm#1122; measured on the dev corpus at 4 of 5 real holds,
+including every non-seeded one). The guard is one layer of the #656 defense,
+beside the independent-support bar (above), the assurance-grade caps (§9.5),
+and MECE arbitration (§7.1.2).
 
 *Accepted recall limit — terse-only fragmentation (#695 B3, closed
 won't-fix #699).* Sibling-frame dilution only DELAYS validation while an investigation is
