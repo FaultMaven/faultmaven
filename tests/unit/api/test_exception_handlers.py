@@ -958,6 +958,67 @@ class TestLLMServiceErrorHttpException:
         assert exc.headers["x-error-code"] == "LLM_PROVIDER_UNAVAILABLE"
         assert exc.headers["Retry-After"] == "30"
 
+    def test_declared_retryable_non_llmexception_maps_to_503(self):
+        """fm#1287 follow-up — the boundary must read the DECLARATION, not the
+        concrete class.
+
+        It keyed on ``isinstance(c, LLMException)`` and nothing else, which is
+        the same class-keyed pattern #1287 was filed about one layer down.
+        ``ExternalCallTimeout`` subclasses ``TimeoutError``, not
+        ``LLMException``, so a client-side deadline reaching this boundary
+        OUTSIDE the retry loop was answered as a bare 500 SERVICE_ERROR despite
+        declaring itself retryable.
+        """
+        from faultmaven.api.exception_handlers import (
+            llm_service_error_http_exception,
+        )
+        from faultmaven.exceptions import ExternalCallTimeout, ServiceException
+
+        try:
+            try:
+                raise ExternalCallTimeout(
+                    "External call to LLM_Providers.route_llm_request timed out "
+                    "after 30.0s",
+                    service="LLM_Providers",
+                )
+            except ExternalCallTimeout as inner:
+                raise ServiceException("Turn processing failed") from inner
+        except ServiceException as outer:
+            exc = llm_service_error_http_exception(outer, "corr-t")
+
+        assert exc.status_code == 503
+        assert exc.headers["x-error-code"] == "LLM_PROVIDER_UNAVAILABLE"
+        assert exc.headers["Retry-After"] == "30"
+
+    def test_control_an_undeclared_error_still_falls_to_500(self):
+        """POSITIVE CONTROL for the declaration tier: it must not make
+        everything a 503. An exception that declares nothing and carries no
+        engine code still reaches the generic tail."""
+        from faultmaven.api.exception_handlers import (
+            llm_service_error_http_exception,
+        )
+        from faultmaven.exceptions import ServiceException
+
+        exc = llm_service_error_http_exception(
+            ServiceException("Turn processing failed: something odd"), "corr-u"
+        )
+        assert exc.status_code == 500
+        assert exc.headers["x-error-code"] == "SERVICE_ERROR"
+
+    def test_engine_config_error_is_terminal(self):
+        """fm#1287 follow-up — a missing provider configuration is PERMANENT.
+
+        It used to reach this mapping as UNKNOWN_ERROR, which is in the
+        retryable set: the user got a 503 and a Retry-After for a condition that
+        never clears until an operator edits the environment.
+        """
+        from faultmaven.exceptions import LLM_CONFIG_ERROR
+
+        exc = self._by_engine_code(LLM_CONFIG_ERROR)
+        assert exc.status_code == 502
+        assert exc.headers["x-error-code"] == "LLM_PROVIDER_ERROR"
+        assert "Retry-After" not in exc.headers
+
     def test_unknown_engine_code_still_falls_through_to_500(self):
         """POSITIVE CONTROL for the mapping tests above: a code the table does
         NOT know must still reach the generic 500, or "maps to 503" would be

@@ -291,11 +291,12 @@ class ProviderRegistry:
                 primary_provider = primary_provider.value
         else:
             # No fallback - unified settings system is mandatory
+            from faultmaven.exceptions import LLM_CONFIG_ERROR
             from faultmaven.models.exceptions import LLMProviderError
 
             raise LLMProviderError(
                 "LLM provider registry requires unified settings system to be available",
-                error_code="LLM_CONFIG_ERROR",
+                error_code=LLM_CONFIG_ERROR,
                 context={"settings_available": self.settings is not None},
             )
 
@@ -793,14 +794,27 @@ class ProviderRegistry:
             # standing in for the one diagnosis an operator actually needs,
             # which is that nothing is configured (#1287).
             if not self._fallback_chain:
+                from faultmaven.exceptions import LLM_CONFIG_ERROR
                 from faultmaven.models.exceptions import LLMProviderError
 
+                # The message states what is TRUE of this condition — the
+                # routable chain is empty — rather than "no providers are
+                # configured", which is false in the case that actually
+                # produces it most often: strict provider mode with a primary
+                # whose API key is missing, where other providers ARE
+                # initialised but deliberately off-chain. The initialised set is
+                # interpolated into the message rather than left in ``context``,
+                # because ``FaultMavenError.__str__`` renders only the message,
+                # so anything only in ``context`` never reaches a log line or
+                # the user.
+                initialized = sorted(self._providers)
                 raise LLMProviderError(
-                    "No LLM providers are configured: the fallback chain is "
-                    "empty, so there is nothing to route this request to. Set "
-                    "CHAT_PROVIDER and the matching *_API_KEY.",
-                    error_code="LLM_CONFIG_ERROR",
-                    context={"initialized_providers": sorted(self._providers)},
+                    "No LLM provider is routable: the fallback chain is empty, "
+                    "so there is nothing to send this request to. Initialized "
+                    f"providers: {initialized or 'none'}. Check CHAT_PROVIDER, "
+                    "the matching *_API_KEY, and STRICT_PROVIDER_MODE.",
+                    error_code=LLM_CONFIG_ERROR,
+                    context={"initialized_providers": initialized},
                 )
             self.logger.warning("⚠️ All providers unhealthy, forcing primary retry")
             routing_order = [self._fallback_chain[0]]

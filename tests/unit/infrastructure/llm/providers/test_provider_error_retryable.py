@@ -21,9 +21,7 @@ from faultmaven.infrastructure.llm.providers.gemini import GeminiProvider
 from faultmaven.infrastructure.llm.providers.groq_provider import GroqProvider
 from faultmaven.infrastructure.llm.providers.huggingface import HuggingFaceProvider
 from faultmaven.infrastructure.llm.providers.openai_provider import OpenAIProvider
-from faultmaven.infrastructure.llm.providers.openrouter_provider import (
-    OpenRouterProvider,
-)
+from faultmaven.infrastructure.llm.providers.registry import PROVIDER_SCHEMA
 
 
 def _mock_error_session(status: int):
@@ -85,23 +83,28 @@ _PROVIDERS = [
     (AnthropicProvider, "https://api.anthropic.com/v1", "claude-sonnet-4-6"),
 ]
 
-# Providers the HTTP-status tests above do not cover, added for the fm#1287
-# transport sweep so the "every provider types its transport failures" claim is
-# measured over every provider that has one. OpenRouter subclasses
-# OpenAIProvider, so it inherits that provider's handler and is listed to prove
-# the inheritance actually holds rather than being assumed.
-_EXTRA_PROVIDERS = [
-    (
-        GeminiProvider,
-        "https://generativelanguage.googleapis.com/v1beta",
-        "gemini-2.5-flash",
-    ),
-    (
-        HuggingFaceProvider,
-        "https://api-inference.huggingface.co/models",
-        "mistralai/Mistral-7B-Instruct-v0.3",
-    ),
-    (OpenRouterProvider, "https://openrouter.ai/api/v1", "openai/gpt-4o"),
+# fm#1287 — the transport matrix is DERIVED FROM THE REGISTRY, not hand-listed.
+#
+# "Every provider types its transport failures" is a cross-provider invariant,
+# so the set it is checked over has to be the set of providers that exists. The
+# first version of this file enumerated them by hand, and that hand-list was
+# ALREADY incomplete — Gemini, HuggingFace and OpenRouter had to be bolted on —
+# which is exactly the shape that leaves the NEXT provider silently exempt.
+# Same convention as ``test_reasoning_intent.py``, which CLAUDE.md documents.
+#
+# ``local`` is excluded here and covered by ``test_local_transport_errors.py``
+# instead: it is the one provider that picks between THREE wire transports at
+# call time, so a single ``generate("hello")`` cannot exercise it the way this
+# harness assumes.
+_SCHEMA_PROVIDERS = [
+    pytest.param(
+        schema["provider_class"],
+        f"https://{name}.test.invalid/v1",
+        schema["default_model"],
+        id=name,
+    )
+    for name, schema in sorted(PROVIDER_SCHEMA.items())
+    if name != "local"
 ]
 
 
@@ -213,7 +216,7 @@ def _transport_errors():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-@pytest.mark.parametrize("provider_class,base_url,model", _PROVIDERS + _EXTRA_PROVIDERS)
+@pytest.mark.parametrize("provider_class,base_url,model", _SCHEMA_PROVIDERS)
 @pytest.mark.parametrize("error_index", [0, 1, 2])
 async def test_transport_failure_is_typed_and_retryable(
     provider_class, base_url, model, error_index
@@ -240,7 +243,7 @@ async def test_transport_failure_is_typed_and_retryable(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-@pytest.mark.parametrize("provider_class,base_url,model", _PROVIDERS + _EXTRA_PROVIDERS)
+@pytest.mark.parametrize("provider_class,base_url,model", _SCHEMA_PROVIDERS)
 async def test_transport_handler_does_not_swallow_http_errors(
     provider_class, base_url, model
 ):

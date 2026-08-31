@@ -117,10 +117,10 @@ provider condition presented to the user as a FaultMaven bug.
 | provider status 503 | 503 | `LLM_OVER_CAPACITY` | 60 |
 | provider status 5xx (other) | 503 | `LLM_PROVIDER_UNAVAILABLE` | 60 |
 | provider status 4xx (other, e.g. Gemini 400) | 502 | `LLM_PROVIDER_ERROR` | — |
-| `LLMException`, no status, `retryable` | 503 | `LLM_PROVIDER_UNAVAILABLE` | 30 |
-| `LLMException`, no status, terminal | 502 | `LLM_PROVIDER_ERROR` | — |
+| no status, DECLARED `retryable` (any class, incl. `ExternalCallTimeout`) | 503 | `LLM_PROVIDER_UNAVAILABLE` | 30 |
+| no status, DECLARED terminal | 502 | `LLM_PROVIDER_ERROR` | — |
 | engine `RETRY_EXHAUSTED` / `PROVIDER_CIRCUIT_OPEN` / `TOKEN_LIMIT` / `UNKNOWN_ERROR` | 503 | `LLM_PROVIDER_UNAVAILABLE` | 30 |
-| engine `MODEL_NOT_FOUND` / `AUTH_FAILED` | 502 | `LLM_PROVIDER_ERROR` | — |
+| engine `MODEL_NOT_FOUND` / `AUTH_FAILED` / `LLM_CONFIG_ERROR` | 502 | `LLM_PROVIDER_ERROR` | — |
 | direct schema-parse failure (`ValidationError` / `JSONDecodeError`) | 503 | `LLM_INVALID_RESPONSE` | 30 |
 | anything else | 500 | `SERVICE_ERROR` | 10 |
 
@@ -144,7 +144,29 @@ provider got zero retries while a provider's own 504 got three (#1287). The
 ladder now reads a declared `retryable` flag anywhere on the `__cause__`
 chain, then `TimeoutError` by type (a bare `asyncio.TimeoutError` stringifies
 to the EMPTY STRING, so no phrase list can ever classify one), and only then
-falls back to phrases. Adding a phrase is almost always the wrong fix.
+falls back to phrases. Adding a phrase is almost always the wrong fix — but
+the phrase tier is not vestigial either: `httpx` and `redis` timeouts inherit
+from their own bases rather than the builtin `TimeoutError`, so the type rule
+does not reach them.
+
+**A declaration outranks prose at BOTH boundaries, and the ORDERING is what
+makes that true.** `LLMErrorHandler.handle_error` reaches three substring
+classifiers before it asks about retryability, and each matches a bare number
+anywhere in the message (`"401"`, `"403"`, `"404"`). Once providers began
+folding aiohttp's raw text into their messages that text carried `host:port` —
+so a declared-retryable connect failure to `localhost:4040` was answered as
+`MODEL_NOT_FOUND`, and one to `proxy:8401` as `AUTH_FAILED`. A declared
+**transient** failure therefore short-circuits to the retry ladder ahead of
+those classifiers; a declared **permanent** one still falls through to them,
+because they add semantics the flag does not carry. This mapping follows the
+same rule, reading the declared flag off any class rather than only off
+`LLMException`.
+
+`LLM_CONFIG_ERROR` is the engine code for "the LLM layer is not routable" —
+no provider in the fallback chain, or the registry cannot build one. It is
+TERMINAL: it will not clear until an operator edits the environment, so
+answering it with a `Retry-After` (which is what falling into `UNKNOWN_ERROR`
+did) tells the user to keep retrying something that cannot succeed.
 
 `PROVIDER_CIRCUIT_OPEN` is the engine code for a request the open LLM breaker
 stopped before it reached any provider. It is transient like `RETRY_EXHAUSTED`

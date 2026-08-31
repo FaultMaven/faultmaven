@@ -201,6 +201,17 @@ PROVIDER_AUTH_FAILED = "PROVIDER_AUTH_FAILED"
 PROVIDER_CIRCUIT_OPEN = "PROVIDER_CIRCUIT_OPEN"
 
 
+# Stable error_code for "the LLM layer is not configured": no provider in the
+# fallback chain, or the registry cannot build one. Permanent until an operator
+# edits the environment, so it is TERMINAL — the opposite of the transient codes
+# above, and the reason it needs a name rather than falling into UNKNOWN_ERROR
+# (which is mapped as retryable and hands the user a Retry-After for a condition
+# that will never clear on its own). The registry already set this string on the
+# exceptions it raises; naming it here is what let the engine and the HTTP
+# boundary read it instead of the message.
+LLM_CONFIG_ERROR = "LLM_CONFIG_ERROR"
+
+
 # error_codes whose failure is scoped to the ACCOUNT/SERVICE rather than to the
 # individual request: if this request failed for one of these reasons, so will
 # every other request until an operator acts. Only these permanent failures may

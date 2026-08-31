@@ -29,11 +29,17 @@ class CircuitBreakerError(Exception):
     though this particular request never reached the provider. Without this, the
     open-breaker message would erase the original signal and a billing failure
     would surface as a generic 500.
+
+    ``service`` names the dependency whose breaker opened. The class is shared
+    by every ``BaseExternalClient`` — ChromaDB, Redis, Presidio, the runbook KB
+    and the LLM router all raise it — so a handler that words its response in
+    terms of one of them has to be able to check which one it actually got.
     """
 
-    def __init__(self, message, error_code=None):
+    def __init__(self, message, error_code=None, service=None):
         super().__init__(message)
         self.error_code = error_code
+        self.service = service
 
 
 class CircuitBreaker:
@@ -264,6 +270,7 @@ class BaseExternalClient(ABC):
             raise CircuitBreakerError(
                 f"Circuit breaker is open for {self.service_name}",
                 error_code=self.circuit_breaker.last_failure_error_code,
+                service=self.service_name,
             )
 
         # Log external call boundary - inbound (DEBUG level to reduce verbosity)
@@ -623,6 +630,7 @@ class BaseExternalClient(ABC):
             raise CircuitBreakerError(
                 f"Circuit breaker is open for {self.service_name}",
                 error_code=self.circuit_breaker.last_failure_error_code,
+                service=self.service_name,
             )
 
         # Log external call boundary - inbound

@@ -576,20 +576,210 @@ class TestTypedRetryability:
         b.__cause__ = a
         assert handler.is_retryable_error(a) is False
 
-    def test_timeout_phrase_was_removed_not_respelled(self):
-        """The phrase list must not carry a bare timeout spelling.
+    def test_the_fix_was_not_a_respelling(self):
+        """``"timed out"`` must never be added to the phrase list.
 
         Structural, and deliberately paired with the behavioural tests above —
         on its own it would restate the patch. Its job is to fail if someone
-        "fixes" a future timeout mismatch by adding a third spelling instead of
-        typing the raise site. ``"gateway timeout"`` is exempt: it is a provider
-        BODY phrase, which is what this list is for.
+        "fixes" a future timeout mismatch by adding the missing spelling instead
+        of typing the raise site.
+
+        ``"timeout"`` itself STAYS and is asserted present. Deleting it was a
+        regression: the type rule only reaches exceptions inheriting from the
+        builtin ``TimeoutError``, and ``httpx``/``redis`` timeouts do not — see
+        ``test_third_party_timeouts_keep_their_phrase_fallback``.
         """
         cfg = RetryConfig()
-        timeout_phrases = [
-            p for p in cfg.retryable_patterns if "timeout" in p or "timed out" in p
+        assert "timeout" in cfg.retryable_patterns
+        assert "timed out" not in cfg.retryable_patterns
+
+    def test_third_party_timeouts_keep_their_phrase_fallback(self, handler):
+        """A timeout class that does NOT inherit from builtin ``TimeoutError``
+        still has to classify as retryable.
+
+        The type rule (tier 3) is not a superset of the phrase it replaced.
+        ``aiohttp.ServerTimeoutError`` does subclass the builtin, but
+        ``httpx.ReadTimeout`` and ``redis.exceptions.TimeoutError`` inherit from
+        their own bases and declare no ``retryable`` — so with ``"timeout"``
+        deleted they went from retryable to PERMANENT. Written against the real
+        classes rather than a stand-in, because the whole finding is about what
+        those libraries actually inherit from.
+        """
+        third_party = []
+        try:
+            import httpx
+
+            third_party.append(httpx.ReadTimeout("Read timeout"))
+        except ImportError:  # pragma: no cover - httpx is a hard dependency
+            pass
+        try:
+            import redis.exceptions as redis_exceptions
+
+            third_party.append(
+                redis_exceptions.TimeoutError("Timeout reading from socket")
+            )
+        except ImportError:  # pragma: no cover - redis is a hard dependency
+            pass
+
+        # A universal over an empty set proves nothing.
+        assert third_party, "neither httpx nor redis importable; cannot ask"
+
+        for error in third_party:
+            assert not isinstance(error, TimeoutError), (
+                f"{type(error).__name__} now subclasses the builtin "
+                f"TimeoutError, so this test no longer exercises the gap it "
+                f"was written for"
+            )
+            assert handler.is_retryable_error(error) is True, type(error).__name__
+
+
+class TestDeclarationOutranksProse:
+    """fm#1287 follow-up — the rule has to hold in ``handle_error``, not only
+    in ``is_retryable_error``.
+
+    ``handle_error`` reaches three SUBSTRING classifiers before it ever asks
+    about retryability: ``is_auth_error`` ("401"/"403"), then
+    ``is_model_not_found_error`` ("404"), then ``is_token_limit_error``. Typing
+    the provider transport raise sites made every provider fold aiohttp's raw
+    text into the message — and that text carries ``host:port``.
+
+    Measured before the gate existed, with ``retryable=True`` declared on every
+    one of them::
+
+        Cannot connect to host localhost:4040  -> ESCALATE MODEL_NOT_FOUND
+        Cannot connect to host 10.0.0.5:8404   -> ESCALATE MODEL_NOT_FOUND
+        Cannot connect to host proxy:8401      -> ESCALATE AUTH_FAILED
+
+    So the PR that removed the ladder's dependence on prose is also what routed
+    attacker-of-opportunity text INTO prose one layer up. Any local model server
+    or proxy on a port containing 404/401/403 became permanently unavailable on
+    its first connect failure.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "port",
+        [
+            "4040",  # contains 404 -> is_model_not_found_error
+            "8404",  # contains 404, not at the start
+            "8401",  # contains 401 -> is_auth_error
+            "4030",  # contains 403 -> is_auth_error
+        ],
+    )
+    async def test_declared_transient_survives_the_prose_classifiers(
+        self, fast_handler, port
+    ):
+        """A declared-retryable transport error must reach the ladder."""
+        from faultmaven.exceptions import LLMException
+
+        error = LLMException(
+            f"Gemini connection error: Cannot connect to host svc:{port} "
+            f"ssl:default [Connect call failed]",
+            retryable=True,
+        )
+        result = await fast_handler.handle_error(error, retry_count=0)
+        assert result.action == ErrorAction.RETRY, (
+            f"port {port} was matched as a status code and the declaration "
+            f"discarded: {result.error_code}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_control_the_prose_classifiers_still_fire(self, fast_handler):
+        """POSITIVE CONTROL. The gate must not disable the classifiers it
+        precedes — otherwise the parametrized test above would pass simply
+        because nothing classifies anything any more.
+
+        Same three conditions, UNDECLARED, so prose is still allowed to decide.
+        """
+        cases = [
+            ("model gpt-x not found (404)", "MODEL_NOT_FOUND"),
+            ("401 unauthorized: invalid api key", "AUTH_FAILED"),
         ]
-        assert timeout_phrases == ["gateway timeout"], timeout_phrases
+        for message, expected in cases:
+            result = await fast_handler.handle_error(Exception(message), 0)
+            assert result.error_code == expected, (message, result.error_code)
+
+        overflow = await fast_handler.handle_error(
+            Exception("prompt is too long: 250000 > 200000"), 0
+        )
+        assert overflow.action == ErrorAction.COMPRESS_MEMORY
+
+    @pytest.mark.asyncio
+    async def test_declared_permanent_still_falls_through_to_the_classifiers(
+        self, fast_handler
+    ):
+        """Only ``True`` short-circuits.
+
+        A declared NON-retryable error keeps flowing to the classifiers, because
+        they add SEMANTICS the flag does not carry: a 404 is MODEL_NOT_FOUND, a
+        401 is AUTH_FAILED. Short-circuiting on any declaration would flatten
+        both into UNKNOWN_ERROR.
+        """
+        from faultmaven.exceptions import LLMException
+
+        result = await fast_handler.handle_error(
+            LLMException(
+                "Gemini API error 404: model not found or inaccessible",
+                status_code=404,
+            ),
+            0,
+        )
+        assert result.error_code == "MODEL_NOT_FOUND"
+
+    @pytest.mark.asyncio
+    async def test_billing_still_outranks_the_declaration_gate(self, fast_handler):
+        """Quota exhaustion is permanent whatever the transport declared, and
+        its check sits ahead of the gate. A 429 body naming billing must still
+        ESCALATE rather than be retried into the ground."""
+        from faultmaven.exceptions import QUOTA_EXHAUSTED, LLMException
+
+        result = await fast_handler.handle_error(
+            LLMException(
+                "429 - You exceeded your current quota, please check your plan "
+                "and billing details",
+                status_code=429,
+            ),
+            0,
+        )
+        assert result.action == ErrorAction.ESCALATE
+        assert result.error_code == QUOTA_EXHAUSTED
+
+
+class TestConfigErrorClassification:
+    """fm#1287 follow-up — the empty-chain guard has to reach the user as a
+    configuration error, not as "LLM error (LLMProviderError): …".
+
+    Raising a described exception was only half the fix: ``LLMProviderError``
+    is a different family from ``LLMException``, declares no ``retryable`` and
+    matches no phrase, so it still landed on the UNKNOWN_ERROR tail — which the
+    HTTP boundary maps to a RETRYABLE 503 with a Retry-After, for a condition
+    that will never clear until an operator edits the environment.
+    """
+
+    @pytest.mark.asyncio
+    async def test_config_error_escalates_with_its_own_code(self, fast_handler):
+        from faultmaven.exceptions import LLM_CONFIG_ERROR
+        from faultmaven.models.exceptions import LLMProviderError
+
+        result = await fast_handler.handle_error(
+            LLMProviderError(
+                "No LLM provider is routable: the fallback chain is empty.",
+                error_code=LLM_CONFIG_ERROR,
+            ),
+            0,
+        )
+        assert result.action == ErrorAction.ESCALATE
+        assert result.error_code == LLM_CONFIG_ERROR
+        assert "not configured" in result.message
+
+    @pytest.mark.asyncio
+    async def test_control_an_unrelated_error_code_is_not_swallowed(self, fast_handler):
+        """POSITIVE CONTROL: the branch keys on the specific code, not on
+        merely having one."""
+        err = Exception("something else entirely")
+        err.error_code = "SOMETHING_ELSE"
+        result = await fast_handler.handle_error(err, 0)
+        assert result.error_code == "UNKNOWN_ERROR"
 
 
 class TestCircuitBreakerClassification:
@@ -660,6 +850,26 @@ class TestCircuitBreakerClassification:
         )
         assert result.action == ErrorAction.ESCALATE
         assert result.error_code == "AUTH_FAILED"
+
+    @pytest.mark.asyncio
+    async def test_another_services_breaker_is_not_reported_as_the_ai_provider(
+        self, fast_handler
+    ):
+        """``CircuitBreakerError`` is raised by EVERY ``BaseExternalClient``.
+
+        ChromaDB, Redis, Presidio and the runbook KB all use the same class, so
+        an unscoped ``isinstance`` would answer a ChromaDB outage with "The AI
+        provider failed repeatedly" — wrong, and unactionable.
+        """
+        from faultmaven.infrastructure.base_client import CircuitBreakerError
+
+        result = await fast_handler.handle_error(
+            CircuitBreakerError(
+                "Circuit breaker is open for ChromaDB", service="ChromaDB"
+            ),
+            retry_count=0,
+        )
+        assert "AI provider failed repeatedly" not in result.message
 
     @pytest.mark.asyncio
     async def test_non_breaker_error_is_untouched(self, fast_handler):

@@ -44,6 +44,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from faultmaven.exceptions import (
+    LLM_CONFIG_ERROR,
     PROVIDER_CIRCUIT_OPEN,
     QUOTA_EXHAUSTED,
     TOKEN_LIMIT,
@@ -54,6 +55,7 @@ from faultmaven.exceptions import (
     ServiceError,
     ValidationException,
     is_billing_error,
+    walk_cause_chain,
 )
 from faultmaven.models.exceptions import OAuthProtocolError
 from faultmaven.utils.serialization import to_json_safe
@@ -102,24 +104,6 @@ def quota_exhausted_http_exception(
     )
 
 
-def _walk_cause_chain(exc: BaseException) -> Iterator[BaseException]:
-    """Yield ``exc`` and each ``__cause__`` ancestor (cycle-guarded).
-
-    Service code wraps provider failures as ``ServiceException(...) from e``, so
-    the authoritative typed metadata lives on the cause, not the wrapper. Walk
-    ``__cause__`` only (the explicit ``raise ... from`` link) — the same chain
-    ``exceptions.is_billing_error`` and ``LLMErrorHandler.is_retryable_error``
-    already trust — never implicit ``__context__``, which can pull in unrelated
-    in-flight exceptions.
-    """
-    cursor: Optional[BaseException] = exc
-    seen: set = set()
-    while cursor is not None and id(cursor) not in seen:
-        yield cursor
-        seen.add(id(cursor))
-        cursor = cursor.__cause__
-
-
 def _first_engine_error_code(exc: BaseException) -> Optional[str]:
     """The semantic ``error_code`` the engine attached, if any.
 
@@ -135,7 +119,7 @@ def _first_engine_error_code(exc: BaseException) -> Optional[str]:
     threaded = (getattr(exc, "details", None) or {}).get("error_code")
     if threaded:
         return threaded
-    for c in _walk_cause_chain(exc):
+    for c in walk_cause_chain(exc):
         code = getattr(c, "error_code", None)
         if code:
             return code
@@ -152,7 +136,7 @@ _RETRYABLE_ENGINE_CODES = frozenset(
 )
 # Semantic engine codes describing a permanent provider/config rejection — the
 # model is misnamed or the credentials are bad; retrying cannot help.
-_TERMINAL_ENGINE_CODES = frozenset({"MODEL_NOT_FOUND", "AUTH_FAILED"})
+_TERMINAL_ENGINE_CODES = frozenset({"MODEL_NOT_FOUND", "AUTH_FAILED", LLM_CONFIG_ERROR})
 
 
 def _llm_http(
@@ -201,11 +185,12 @@ def llm_service_error_http_exception(
         provider status 503                    → 503  LLM_OVER_CAPACITY         (retry 60)
         provider status 5xx (other)            → 503  LLM_PROVIDER_UNAVAILABLE  (retry 60)
         provider status 4xx (other)            → 502  LLM_PROVIDER_ERROR        (no retry)
-        LLMException, no status, retryable     → 503  LLM_PROVIDER_UNAVAILABLE  (retry 30)
-        LLMException, no status, terminal      → 502  LLM_PROVIDER_ERROR        (no retry)
+        no status, DECLARED retryable          → 503  LLM_PROVIDER_UNAVAILABLE  (retry 30)
+        no status, DECLARED terminal           → 502  LLM_PROVIDER_ERROR        (no retry)
         engine RETRY_EXHAUSTED/TOKEN_LIMIT/    → 503  LLM_PROVIDER_UNAVAILABLE  (retry 30)
           PROVIDER_CIRCUIT_OPEN/UNKNOWN_ERROR
-        engine MODEL_NOT_FOUND/AUTH_FAILED     → 502  LLM_PROVIDER_ERROR        (no retry)
+        engine MODEL_NOT_FOUND/AUTH_FAILED/    → 502  LLM_PROVIDER_ERROR        (no retry)
+          LLM_CONFIG_ERROR
         schema-parse failure on the chain      → 503  LLM_INVALID_RESPONSE      (retry 30)
         anything else                          → 500  SERVICE_ERROR             (retry 10)
 
@@ -220,7 +205,7 @@ def llm_service_error_http_exception(
         return quota_exhausted_http_exception(correlation_id)
 
     # 2. Provider status on the raw LLMException (direct-propagation path).
-    llm = next((c for c in _walk_cause_chain(exc) if isinstance(c, LLMException)), None)
+    llm = next((c for c in walk_cause_chain(exc) if isinstance(c, LLMException)), None)
     sc = llm.status_code if llm is not None else None
     if sc == 429:
         return _llm_http(
@@ -265,16 +250,33 @@ def llm_service_error_http_exception(
             None,
             correlation_id,
         )
-    if llm is not None:
-        # Typed LLMException without a status code — trust its retryable flag.
-        if llm.retryable:
-            return _llm_http(
-                503,
-                "LLM_PROVIDER_UNAVAILABLE",
-                "The AI provider is temporarily unavailable. Please try again.",
-                "30",
-                correlation_id,
-            )
+    # No provider status. Fall back to the retryability the raising code
+    # DECLARED, on any exception in the chain — not only on an ``LLMException``.
+    #
+    # This used to read ``isinstance(c, LLMException)`` and nothing else, which
+    # is the same class-keyed pattern #1287 was filed about one layer down: a
+    # typed exception that is not that one concrete class has its declaration
+    # ignored. ``ExternalCallTimeout`` is exactly such an exception — it
+    # subclasses ``TimeoutError``, not ``LLMException`` — so a client-side
+    # deadline reaching this boundary OUTSIDE the retry loop was answered as a
+    # bare 500 SERVICE_ERROR despite declaring itself retryable.
+    declared = next(
+        (
+            d
+            for d in (getattr(c, "retryable", None) for c in walk_cause_chain(exc))
+            if isinstance(d, bool)
+        ),
+        None,
+    )
+    if declared is True:
+        return _llm_http(
+            503,
+            "LLM_PROVIDER_UNAVAILABLE",
+            "The AI provider is temporarily unavailable. Please try again.",
+            "30",
+            correlation_id,
+        )
+    if declared is False:
         return _llm_http(
             502,
             "LLM_PROVIDER_ERROR",
@@ -306,8 +308,7 @@ def llm_service_error_http_exception(
     # 4. Direct schema-parse failure (ValidationError / JSONDecodeError that
     #    propagated raw, not via the retry loop's UNKNOWN_ERROR).
     if any(
-        isinstance(c, (ValidationError, JSONDecodeError))
-        for c in _walk_cause_chain(exc)
+        isinstance(c, (ValidationError, JSONDecodeError)) for c in walk_cause_chain(exc)
     ):
         return _llm_http(
             503,

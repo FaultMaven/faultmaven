@@ -1406,7 +1406,7 @@ class TestErrorHandlingAndEdgeCases:
             await registry.route_request(prompt="Test prompt", max_tokens=100)
 
         message = str(exc_info.value)
-        assert "No LLM providers are configured" in message
+        assert "No LLM provider is routable" in message
         assert "CHAT_PROVIDER" in message
         # And NOT the traceback artefact it used to be.
         assert "list index out of range" not in message

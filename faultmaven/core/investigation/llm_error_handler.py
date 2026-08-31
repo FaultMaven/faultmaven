@@ -19,6 +19,7 @@ from enum import Enum
 from typing import Any, Awaitable, Callable, Optional, Tuple, TypeVar
 
 from faultmaven.exceptions import (
+    LLM_CONFIG_ERROR,
     PROVIDER_AUTH_FAILED,
     PROVIDER_CIRCUIT_OPEN,
     QUOTA_EXHAUSTED,
@@ -29,6 +30,12 @@ from faultmaven.exceptions import (
 from faultmaven.infrastructure.base_client import CircuitBreakerError
 
 logger = logging.getLogger(__name__)
+
+# ``service_name`` the LLM router gives its ``BaseExternalClient`` (router.py).
+# The open-breaker branch in ``handle_error`` keys on it so an outage of some
+# OTHER dependency that happens to reach this handler is not reported to the
+# user as an AI-provider outage.
+LLM_BREAKER_SERVICE = "LLM_Providers"
 
 T = TypeVar("T")
 
@@ -220,9 +227,21 @@ class RetryConfig:
     # the worked example — "timed out after 30.0s" against a list containing
     # ``"timeout"``, which is not a substring of ``"timed out"``. The fix was to
     # make the raising site declare ``retryable`` (``ExternalCallTimeout``) and
-    # to dispatch ``TimeoutError`` on type, so ``"timeout"`` was REMOVED rather
-    # than a second spelling added. ``"gateway timeout"`` stays: it is a
-    # provider-body phrase, and it is the kind of thing this list is for.
+    # to dispatch ``TimeoutError`` on type. What it must NOT be is a second
+    # spelling here: ``"timed out"`` is deliberately absent, and adding it would
+    # move the decision back into prose for every future reword.
+    #
+    # ``"timeout"`` itself STAYS, and deleting it was a regression caught in
+    # review. The type rule above only covers exceptions that inherit from the
+    # builtin ``TimeoutError``; several clients this process talks to do not.
+    # Measured: ``aiohttp.ServerTimeoutError`` does inherit from it, but
+    # ``httpx.TimeoutException`` and ``redis.exceptions.TimeoutError`` do not,
+    # and they declare no ``retryable`` either — so with the phrase gone,
+    # ``redis.exceptions.TimeoutError("Timeout reading from socket")`` and
+    # ``httpx.ReadTimeout("Read timeout")`` went from retryable to PERMANENT.
+    # A last-resort phrase for third-party wording is exactly what this list is
+    # for; the mistake in #1287 was relying on it for FaultMaven's OWN raise
+    # sites, not having it at all.
     #
     # Truncation is deliberately NOT extended here either. The engine raises
     # ``OutputTruncationError`` for it, which is dispatched on type before any
@@ -241,6 +260,7 @@ class RetryConfig:
         "429",
         "bad gateway",
         "gateway timeout",
+        "timeout",
         "connection",
         "temporary",
         "overloaded",
@@ -322,20 +342,42 @@ class LLMErrorHandler:
         if isinstance(error, OutputTruncationError):
             return not error.cap_reached
 
-        chain = list(walk_cause_chain(error))
-
-        for cursor in chain:
-            declared = getattr(cursor, "retryable", None)
-            if isinstance(declared, bool):
-                return declared
+        declared = self._declares_retryable(error)
+        if declared is not None:
+            return declared
 
         # A declaration outranks the type rule, so this runs only when nothing
         # on the chain declared anything.
-        if any(isinstance(cursor, TimeoutError) for cursor in chain):
+        if any(isinstance(c, TimeoutError) for c in walk_cause_chain(error)):
             return True
 
         error_str = str(error).lower()
         return any(pattern in error_str for pattern in self.config.retryable_patterns)
+
+    @staticmethod
+    def _declares_retryable(error: BaseException) -> Optional[bool]:
+        """The retryability the raising code DECLARED, or ``None`` if nobody did.
+
+        Same rule as tier 2 of :meth:`is_retryable_error`: the first genuine
+        ``bool`` on the ``__cause__`` chain. ``None`` means no declaration —
+        never "False" — so a caller can tell "said it is permanent" from "said
+        nothing", which is exactly the distinction ``handle_error`` needs in
+        order to know whether prose is still allowed to decide.
+        """
+        for cursor in walk_cause_chain(error):
+            declared = getattr(cursor, "retryable", None)
+            if isinstance(declared, bool):
+                return declared
+        return None
+
+    @staticmethod
+    def _first_error_code(error: BaseException) -> Optional[str]:
+        """The first ``error_code`` on the ``__cause__`` chain, if any."""
+        for cursor in walk_cause_chain(error):
+            code = getattr(cursor, "error_code", None)
+            if code:
+                return code
+        return None
 
     def is_billing_error(self, error: Exception) -> bool:
         """Detect a permanent billing/quota-exhaustion failure.
@@ -482,7 +524,16 @@ class LLMErrorHandler:
         # them, this must become a chain walk — a wrapped breaker error would
         # otherwise silently fall back to the UNKNOWN_ERROR tail this branch
         # exists to prevent.
-        if isinstance(error, CircuitBreakerError):
+        # Scoped to the LLM breaker by ``service``. ``CircuitBreakerError`` is
+        # raised by EVERY ``BaseExternalClient`` — ChromaDB, Redis, Presidio and
+        # the runbook KB included — so an unscoped ``isinstance`` would answer a
+        # ChromaDB outage with "The AI provider failed repeatedly", which is
+        # both wrong and unactionable. A breaker that carries no service name
+        # (an older raiser, or a hand-built one in a test) still reaches the
+        # generic branch below rather than being silently dropped.
+        if isinstance(error, CircuitBreakerError) and getattr(
+            error, "service", None
+        ) in (None, LLM_BREAKER_SERVICE):
             latched = getattr(error, "error_code", None)
             if latched == PROVIDER_AUTH_FAILED:
                 logger.error(
@@ -503,6 +554,55 @@ class LLMErrorHandler:
                     "minute."
                 ),
                 error_code=PROVIDER_CIRCUIT_OPEN,
+                retry_count=retry_count,
+            )
+
+        # A DECLARED transient failure goes straight to the ladder, without
+        # passing under the prose classifiers below (#1287 follow-up).
+        #
+        # This is where "a declaration outranks prose" actually has to hold.
+        # Putting that rule only inside ``is_retryable_error`` was not enough:
+        # ``handle_error`` reaches THREE substring classifiers first, and each
+        # matches bare numbers anywhere in the message — ``is_auth_error`` on
+        # "401"/"403", ``is_model_not_found_error`` on "404". Typing the
+        # transport raise sites made every provider fold aiohttp's raw text
+        # into the message, and that text carries ``host:port``. Measured
+        # before this gate existed:
+        #
+        #   "…Cannot connect to host localhost:4040…"  -> ESCALATE MODEL_NOT_FOUND
+        #   "…Cannot connect to host 10.0.0.5:8404…"   -> ESCALATE MODEL_NOT_FOUND
+        #   "…Cannot connect to host proxy:8401…"      -> ESCALATE AUTH_FAILED
+        #
+        # all with ``retryable=True`` declared and discarded. Any local model
+        # server or proxy on a port containing 404/401/403 became permanently
+        # unavailable on its first connect failure. Sanitising the message
+        # would only trade one prose dependency for another; the ordering is
+        # the fix.
+        #
+        # Only ``True`` short-circuits. A declared NON-retryable error still
+        # falls through, because the classifiers below carry SEMANTICS the flag
+        # does not — a 404 is MODEL_NOT_FOUND, a 401 is AUTH_FAILED, an
+        # overflow is TOKEN_LIMIT — and all three are already non-retryable.
+        #
+        # Billing stays ahead of this: quota exhaustion is permanent whatever
+        # the transport said, and ``is_billing_error`` walks the same chain.
+        if self._declares_retryable(error) is True:
+            return await self._retry_or_exhaust(retry_count)
+
+        # A configuration failure the LLM layer diagnosed for itself: no
+        # provider is configured, or the registry cannot build one. Permanent
+        # until an operator edits the environment, and the message already says
+        # what to set — but it is not an ``LLMException``, declares no
+        # ``retryable``, and matches no phrase, so it used to reach the
+        # UNKNOWN_ERROR tail and surface as "LLM error (LLMProviderError): …"
+        # with a Retry-After. Read the ``error_code`` its raiser already sets
+        # rather than adding a fourth substring test.
+        if self._first_error_code(error) == LLM_CONFIG_ERROR:
+            logger.error(f"LLM configuration error: {error}")
+            return ErrorResult(
+                action=ErrorAction.ESCALATE,
+                message=f"FaultMaven's AI provider is not configured: {error}",
+                error_code=LLM_CONFIG_ERROR,
                 retry_count=retry_count,
             )
 

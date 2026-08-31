@@ -390,8 +390,12 @@ class TestAllProvidersDown:
             await registry.route_request("test prompt")
 
         message = str(exc_info.value)
-        assert "No LLM providers are configured" in message
+        assert "No LLM provider is routable" in message
         assert "CHAT_PROVIDER" in message
+        # The initialised set must be IN THE MESSAGE, not only in ``context``:
+        # ``FaultMavenError.__str__`` renders the message alone, so anything
+        # left in ``context`` never reaches a log line or the user.
+        assert "Initialized providers" in message
 
     @pytest.mark.asyncio
     async def test_non_empty_chain_still_forces_the_primary(self, registry):
