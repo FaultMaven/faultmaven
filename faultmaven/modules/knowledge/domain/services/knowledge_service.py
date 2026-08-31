@@ -643,6 +643,25 @@ class KnowledgeService:
                         # Default to global scope when caller provides no filter —
                         # prevents unintentional cross-tenant reads.
                         effective_filters = filters if filters else {"scope": "global"}
+                        wants_hybrid = use_hybrid and not hasattr(
+                            self._vector_store, "hybrid_search"
+                        )
+                        if wants_hybrid:
+                            # Silence here would disable the #1272 seeding gate
+                            # without a trace: no hybrid means no reranker, so
+                            # no `term_coverage` and no `identity_terms_in_query`
+                            # on any hit, and the seeder reads that absence as
+                            # "unmeasured, therefore not judged" and admits
+                            # everything. The floor is dropped too. A caller
+                            # that ASKED for hybrid and did not get it must be
+                            # able to find out why.
+                            logger.warning(
+                                "KB search asked for hybrid retrieval but the "
+                                "vector store does not provide it — falling "
+                                "back to pure vector search. Hits will carry no "
+                                "grounding evidence, so any consumer gating on "
+                                "it is inactive for this search."
+                            )
                         if use_hybrid and hasattr(self._vector_store, "hybrid_search"):
                             results = await self._vector_store.hybrid_search(
                                 collection_name=KB_COLLECTION,

@@ -416,6 +416,34 @@ class TestTermIndexLifecycle:
         assert store._corpus_term_stats("faultmaven_kb") is None
         collection.get.assert_not_called()
 
+    def test_an_empty_global_tier_yields_no_statistics_not_degenerate_ones(self):
+        """n_chunks == 0 makes every idf 1.0 and every term an identifier.
+
+        That is silent corruption of all three consumers, not degradation, and
+        it is reachable: under TENANT_PROVIDER=multi the web-startup KB
+        bootstrap is skipped, so the global tier is empty until the seeding job
+        runs.
+        """
+        store = KnowledgeVectorStore(MagicMock())
+        collection = MagicMock()
+        collection.count.return_value = 42  # other tiers exist
+        collection.get.return_value = {"ids": [], "documents": []}
+        store._get_or_create_collection = MagicMock(return_value=collection)
+        assert store._corpus_term_stats("faultmaven_kb") is None
+
+    def test_an_unusual_collection_never_yields_a_degenerate_index(self):
+        """Whatever a collection returns, the result is a usable index or None.
+
+        A store handed something it does not understand must degrade, never
+        hand back an index that indexed nothing — and never raise, which would
+        surface through the KB tool as "the knowledge base failed" on a search
+        that was fine.
+        """
+        store = KnowledgeVectorStore(MagicMock())
+        store._get_or_create_collection = MagicMock(return_value=MagicMock())
+        stats = store._corpus_term_stats("faultmaven_kb")
+        assert stats is None or stats.n_chunks > 0
+
     def test_a_failed_build_degrades_rather_than_raises(self):
         store = KnowledgeVectorStore(MagicMock())
         collection = MagicMock()

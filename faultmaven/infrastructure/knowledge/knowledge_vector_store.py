@@ -367,9 +367,29 @@ class KnowledgeVectorStore(BaseExternalClient):
             # are the global ones: coarser than the thing it guards, so it
             # over-invalidates and can never serve a stale index.
             payload = collection.get(where=_GLOBAL_TIER, include=["documents"])
-            stats = CorpusTermStats(
-                documents=payload.get("documents") or [], signature=size
-            )
+            documents = payload.get("documents") or []
+            stats = CorpusTermStats(documents=documents, signature=size)
+            if stats.n_chunks == 0:
+                # An EMPTY global tier is not a corpus with no rare words — it
+                # is the absence of statistics, and the difference is not
+                # cosmetic. At n_chunks == 0 every idf collapses to exactly 1.0
+                # (uniform, so IDF weighting silently degrades to the binary
+                # overlap it replaced) and `is_identifier` returns True for
+                # every term (0 <= 0.02*0), so every query is treated as
+                # identifier-heavy. All three consumers would be quietly
+                # corrupted rather than degraded. Reachable in production:
+                # under TENANT_PROVIDER=multi the web-startup KB bootstrap is
+                # skipped, so the global tier is genuinely empty until the
+                # seeding job runs.
+                #
+                # Keyed on the CONSTRUCTED size rather than on whether the
+                # payload looked empty: the degenerate state is "this index
+                # indexed nothing", and only the built object can answer that.
+                self.logger.info(
+                    f"KB term index: '{collection_name}' has no global-tier "
+                    f"chunks yet — reranking uses unweighted term overlap"
+                )
+                return None
         except Exception as e:  # noqa: BLE001
             self.logger.warning(
                 f"KB term index unavailable for '{collection_name}': {e} — "
@@ -1026,8 +1046,18 @@ class KnowledgeVectorStore(BaseExternalClient):
         Dynamic weights: When the query names something rare in the corpus (or,
         with no statistics, something that LOOKS like an identifier), term
         overlap weight shifts from 25% to 40% and vector similarity drops from
-        40% to 25%. This makes lexical matches dominate for exact-identifier
-        queries.
+        40% to 25%.
+
+        **"Dynamic" overstates it on real input.** The trigger is ``any`` term
+        under ``IDENTIFIER_DF_RATIO``, and the longer a query is the more
+        certain it becomes that at least one of its words is rare in a
+        technical corpus — including ordinary English that simply is not
+        runbook vocabulary. Measured over 34 statements against the shipped
+        pack it fires on 30, on terms like ``getting``, ``morning``,
+        ``browsers`` and ``we``. So for narrative problem statements these
+        weights are effectively CONSTANT at the identifier profile. That
+        profile measured better than the other one on the same set, so the
+        behaviour is not a defect — the description was.
 
         The blend is written back as ``rerank_score`` — the number this list is
         ORDERED by. It used to be discarded at the return, leaving every
@@ -1146,11 +1176,12 @@ class KnowledgeVectorStore(BaseExternalClient):
         corpus.
 
         Terms are tested as case-insensitive substrings of the chunk text, which
-        is what this signal has always done. That is deliberately NOT the
-        token-level test :meth:`CorpusTermStats.overlap_baseline` uses: this is
-        a per-candidate RANKING signal, where a substring hit on a longer word
-        is a mild inaccuracy, while the baseline is one half of a RATIO whose
-        other half must be measured the same way or the ratio means nothing.
+        is what this signal has always done. Deliberately looser than the
+        token-level rule :meth:`_identity_terms_in_query` uses, and for a
+        different job: this is a per-candidate RANKING signal, where a
+        substring hit on a longer word costs a little accuracy in an ordering,
+        whereas that one ADMITS a runbook to being asserted as a candidate root
+        cause and so cannot afford `pod` to be matched by "podman".
         """
         if not query_terms:
             return 0.0
