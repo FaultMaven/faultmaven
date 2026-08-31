@@ -265,13 +265,24 @@ queries and adversarial variants):
 | "the query names something the corpus never indexed" | false-blocks ordinary prose: on "postgres connections exhausted since Tuesday afternoon" the unseen words are `tuesday` and `afternoon` |
 | a lexical-distinctiveness ratio (best chunk vs a corpus percentile) | measures query *specificity*, not answer correctness — the QEMU queries score above the generic-but-correctly-answered ones |
 
-**What it costs and buys.** Correct seeds 21 → 21 (no statement lost a correct
-seed), wrong seeds 24 → 9. `KB_SEED_MIN_TERM_COVERAGE` is insensitive: every
-value from 0.80 to 0.95 gives an identical outcome. A hit carrying no grounding
-evidence at all — the pure-vector path, or no term index — is **not judged**: an
-absent measurement must not authorise what the gate withholds, and must not
-silently disable seeding either. `kb_cause_seed_ungrounded_total` is how the
-constant gets re-sized on evidence.
+**What it costs and buys.** Against main's pure-vector seeding path, correct
+seeds 21 → 21 and wrong seeds 24 → 9. Isolating the gate alone (hybrid with it
+off vs on) it costs nothing and *gains* a statement, because excluding an
+ungrounded runbook frees a `MAX_SEEDED_RUNBOOKS` slot for a grounded one that
+was being crowded out:
+
+| | correct seeds | wrong seeds | statements with a correct seed |
+|---|---|---|---|
+| gate off | 21 | 28 | 19 / 21 |
+| gate on (any bar 0.80–1.00) | 21 | 9 | 20 / 21 |
+
+`KB_SEED_MIN_TERM_COVERAGE` is insensitive across that whole range — it is a
+shape, not a tuned number. A hit carrying no grounding evidence at all — the
+pure-vector path, or no term index — is **not judged**: an absent measurement
+must not authorise what the gate withholds, and must not silently disable
+seeding either. `kb_cause_seed_ungrounded_total` is how the constant gets
+re-sized on evidence; `run_corroboration_eval.py grounding` re-runs the
+measurement.
 
 ### Tool Path
 

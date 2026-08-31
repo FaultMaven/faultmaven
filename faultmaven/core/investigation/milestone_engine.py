@@ -343,12 +343,18 @@ KB_SEED_MIN_CORROBORATING_CHUNKS = 2
 #     measures query specificity, not answer correctness: the QEMU queries
 #     score ABOVE the generic-but-correctly-answered ones.
 #
-# The value is deliberately not fine-tuned: measured over 34 statements against
-# the shipped pack (the 24 labelled ones in tests/eval/kb_cause_seeder plus
-# #1272's queries and adversarial variants), every value from 0.80 to 0.95
-# gives an identical outcome — 22 of 23 correct seeds kept, all 20 statements
-# that had a correct seed still have one, and wrong seeds down from 27 to 10.
-# ``kb_cause_seed_ungrounded_total`` is how it gets re-sized on evidence.
+# The value is deliberately not fine-tuned, and the measurement says it need not
+# be. Over 34 statements against the shipped pack (the 24 labelled ones in
+# tests/eval/kb_cause_seeder plus #1272's queries and adversarial variants),
+# EVERY value from 0.80 to 1.00 gives an identical outcome:
+#
+#   gate off   correct 21   wrong 28   statements with a correct seed 19/21
+#   0.80-1.00  correct 21   wrong  9   statements with a correct seed 20/21
+#
+# It costs nothing and GAINS a statement — excluding an ungrounded runbook frees
+# a MAX_SEEDED_RUNBOOKS slot for a grounded one that was being crowded out.
+# ``kb_cause_seed_ungrounded_total`` is how it gets re-sized on evidence, and
+# ``run_corroboration_eval.py grounding`` re-runs the measurement.
 #
 # Deliberately a SEEDING gate, not a retrieval one: the runbooks still reach
 # the model as prose in `kb_context`, where they are suggestions it may ignore.
