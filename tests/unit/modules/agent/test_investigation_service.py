@@ -609,12 +609,33 @@ class TestInvestigationServiceProcessTurn:
             "progress_made": False,
             "next_steps": ["check db connection pool size"],
         }
-        mock_milestone_engine.process_turn = AsyncMock(
-            return_value={
-                "case_updated": sample_case,
+
+        async def _engine_that_recorded_its_turn(*, case, **_kwargs):
+            """Record the turn the way the real engine's Step 6 does.
+
+            Without it ``_backfill_consumed_turn`` treats this as one of the
+            three engine-bypassing routes and re-scores the dict (#1270), which
+            would make this test measure the backstop rather than propagation.
+            """
+            from faultmaven.core.investigation.turn_outcome import TurnOutcome
+            from faultmaven.modules.case.domain.models import TurnProgress
+
+            case.turn_history.append(
+                TurnProgress(
+                    turn_number=case.current_turn,
+                    timestamp=datetime.now(timezone.utc),
+                    progress_made=False,
+                    outcome=TurnOutcome.CONVERSATION,
+                )
+            )
+            return {
+                "case_updated": case,
                 "agent_response": "agent response text",
                 "metadata": engine_metadata,
             }
+
+        mock_milestone_engine.process_turn = AsyncMock(
+            side_effect=_engine_that_recorded_its_turn
         )
 
         await service.process_turn(

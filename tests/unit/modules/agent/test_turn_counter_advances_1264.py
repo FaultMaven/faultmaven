@@ -288,12 +288,18 @@ class TestTheRecordDoesNotDestroyWhatTurnHistoryFeeds:
 
         from faultmaven.core.investigation.milestone_engine import (
             check_if_progress_made,
+            score_progress,
         )
         from faultmaven.modules.agent.domain.services import investigation_service
 
-        assert "check_if_progress_made" in inspect.getsource(
+        # Two hops since #1270: the backfill calls ``score_progress``, the
+        # engine-side monotone write, which is itself defined in terms of the
+        # predicate. Both links are asserted so replacing either with a local
+        # copy still fails here.
+        assert "score_progress" in inspect.getsource(
             investigation_service._backfill_consumed_turn
         )
+        assert "check_if_progress_made" in inspect.getsource(score_progress)
         assert check_if_progress_made({"novel_files_uploaded": ["f"]}) is True
 
 

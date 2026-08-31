@@ -3917,6 +3917,37 @@ def check_if_progress_made(metadata: dict[str, Any]) -> bool:
     return False
 
 
+def score_progress(metadata: dict[str, Any]) -> bool:
+    """Score ``progress_made`` onto *metadata*, **monotonically** (#1270).
+
+    The one place the write is defined, because there are three of them: the
+    generation path scores twice (before and after ``_check_automatic_transitions``
+    writes the ``status_transitioned`` arm), and the service's consumed-turn
+    backstop scores once for the routes that never reach Step 6.
+
+    Monotone because :func:`check_if_progress_made` reads the nine ARMS and
+    never the ``progress_made`` key. A plain
+    ``metadata["progress_made"] = check_if_progress_made(metadata)`` therefore
+    DESTROYS a ``True`` an earlier writer put on the dict, and the generation
+    path has such a writer: ``_apply_stage_gate_side_effects`` sets
+    ``progress_made=True`` beside ``compliance_detected`` on a stage-gate
+    compliance turn, before the first score. That write is redundant TODAY (the
+    side effects run only when a gate landed in ``milestones_completed``, so
+    that arm co-fires and the predicate returns ``True`` anyway) — which is
+    exactly why a silent clobber there would go unnoticed until a compliance
+    path stopped co-firing an arm. This makes the clobber unreachable rather
+    than merely improbable.
+
+    Safe to call more than once per turn: that is the point. A later call is a
+    strict refinement of an earlier one rather than a re-decision, which is what
+    lets the generation path take a provisional reading and then correct it once
+    the last arm exists.
+    """
+    scored = bool(metadata.get("progress_made")) or check_if_progress_made(metadata)
+    metadata["progress_made"] = scored
+    return scored
+
+
 class MilestoneEngine:
     """
     Data-Driven and Opportunistic Investigation Engine.
@@ -12661,31 +12692,14 @@ class MilestoneEngine:
         return metadata
 
     def _score_progress(self, metadata: dict[str, Any]) -> bool:
-        """Score ``progress_made`` onto *metadata*, **monotonically**.
+        """Thin delegate to :func:`score_progress`, the monotone write.
 
-        Monotone because ``check_if_progress_made`` does not read the
-        ``progress_made`` key itself — it reads the nine ARMS. A plain
-        ``metadata["progress_made"] = check(...)`` therefore destroys a ``True``
-        some earlier writer already put on the dict, and the generation path has
-        such a writer: ``_apply_stage_gate_side_effects`` sets
-        ``progress_made=True`` beside ``compliance_detected`` on a stage-gate
-        compliance turn, reached from ``_process_response_structured`` — i.e.
-        before the first score. That write is redundant TODAY (the side effects
-        run only when a gate landed in ``milestones_completed``, so the
-        ``milestones_completed`` arm co-fires and the predicate returns ``True``
-        anyway), which is exactly why a silent clobber there would go unnoticed
-        until a compliance path stopped co-firing an arm. This makes the
-        clobber unreachable rather than merely improbable.
-
-        Callable more than once per turn: that is the point. The generation path
-        scores twice — provisionally before ``_check_automatic_transitions`` and
-        again after it, once the ``status_transitioned`` arm exists (#1270) —
-        and monotonicity is what makes the second call a strict refinement of
-        the first rather than a re-decision.
+        Kept as a method for the reason ``_check_if_progress_made`` is: the
+        engine's own call sites and their tests target the method. The write
+        itself lives at module scope so the service's consumed-turn backstop
+        (#1264) applies the SAME monotone rule rather than a copy of it.
         """
-        scored = bool(metadata.get("progress_made")) or check_if_progress_made(metadata)
-        metadata["progress_made"] = scored
-        return scored
+        return score_progress(metadata)
 
     def _check_if_progress_made(self, metadata: dict[str, Any]) -> bool:
         """Thin delegate to :func:`check_if_progress_made`.

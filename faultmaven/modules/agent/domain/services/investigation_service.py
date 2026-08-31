@@ -26,7 +26,7 @@ from faultmaven.core.investigation.case_telemetry import (
 from faultmaven.core.investigation.intent_resolver import IntentResolver
 from faultmaven.core.investigation.milestone_engine import (
     MilestoneEngine,
-    check_if_progress_made,
+    score_progress,
 )
 from faultmaven.core.investigation.prompts.context_builder import (
     structural_index_is_searchable,
@@ -118,13 +118,28 @@ def _backfill_consumed_turn(
     momentum and loop detection. A minimal entry is therefore not "honest but
     small" — it actively destroys what those readers need:
 
-    * ``progress_made`` comes from :func:`check_if_progress_made`, the same
-      predicate the engine's own deterministic branches use, NOT a hardcoded
-      ``False``. The turns route accepts an intent alongside files, so a
-      clarification click can carry a genuinely novel upload — and
-      ``_finish_deterministic_turn`` is explicit that such an upload counts.
-      Hardcoding False would report an inert turn on one where the user supplied
-      new data, and leave the stall counter climbing through it.
+    * ``progress_made`` comes from :func:`score_progress` — the same predicate
+      the engine's own deterministic branches use, applied with the same
+      monotone write, NOT a hardcoded ``False``. The turns route accepts an
+      intent alongside files, so a clarification click can carry a genuinely
+      novel upload — and ``_finish_deterministic_turn`` is explicit that such an
+      upload counts. Hardcoding False would report an inert turn on one where
+      the user supplied new data, and leave the stall counter climbing through
+      it.
+
+      The score is written BACK onto *metadata* (#1270), not merely consumed
+      here. All three backstopped routes hand over a dict carrying a hardcoded
+      ``progress_made: False`` beside the turn's upload keys, and that same dict
+      is what the #1142 telemetry row, ``TurnResponse.progress_made`` and the
+      persisted assistant ``case_messages`` row all read. Scoring without
+      writing back left them reporting ``progress_made: false`` beside
+      ``arms.novel_files_uploaded: 1`` and ``turns_without_progress: 0`` — one
+      turn, one decision, three surfaces disagreeing. (The GREETING handler's
+      "the flag says False and the counter is unchanged, which agree" was true
+      when written; #1264 made this function touch the counter and left the flag
+      behind.) The early return above is what keeps the write off every route
+      that reached the engine's Step 6, where ``progress_made`` is already
+      authoritative.
     * the summaries carry the real text. ``_build_graduated_history`` renders
       from the record when one exists and falls back to the message text only
       when it is MISSING, so an empty record does not leave the text alone — it
@@ -139,7 +154,7 @@ def _backfill_consumed_turn(
         return
 
     previous = case.turn_history[-1] if case.turn_history else None
-    progress_made = check_if_progress_made(metadata)
+    progress_made = score_progress(metadata)
     case.turn_history.append(
         TurnProgress(
             turn_number=case.current_turn,
@@ -2829,14 +2844,17 @@ class InvestigationService:
             "case_updated": case,
             "metadata": {
                 # These two handlers never reach the engine, so they report the
-                # turn's uploads but do not write engine-owned state: no
-                # progress flag, no ``turns_without_progress`` touch. That is
-                # self-consistent — the flag says False and the counter is
-                # unchanged, which agree — where a True flag beside an untouched
-                # counter would be the disagreement #1229 exists to remove.
-                # ``_check_if_progress_made`` is the sole writer of that
-                # counter and it lives in the engine; a service-side second
-                # writer is the two-derivations shape, not a fix for it.
+                # turn's uploads but decide nothing about progress themselves.
+                # ``False`` is the SEED, not the verdict: ``_backfill_consumed_turn``
+                # scores this dict with ``score_progress`` at the chokepoint and
+                # writes the reading back, so a greeting that carried a genuinely
+                # novel upload reports progress on every surface at once (#1270).
+                #
+                # This comment used to argue the hardcoded flag was
+                # self-consistent because the counter was untouched too. #1264
+                # made the backstop touch the counter and left the flag behind,
+                # which is the disagreement #1229 exists to remove — one
+                # decision, not two derivations.
                 "progress_made": False,
                 "milestones_completed": [],
                 **report_turn_uploads(case.case_id, case.current_turn, attachments),
