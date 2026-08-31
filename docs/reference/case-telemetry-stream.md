@@ -144,6 +144,24 @@ carrying the raw count beside the novel one is what makes that restatement
 visible — `evidence_added: 4` with `novel_evidence_added: 0` is the engine
 re-emitting what the case already holds, which no other field shows.
 
+**A row can never carry a fired predicate arm beside `progress_made: false`.**
+The predicate is a NOR over the arms, so that shape is not a judgement call the
+engine could make — it can only mean the score was read before the arm was
+written. It was emittable on two paths until #1270: the generation path scored
+five lines before `_check_automatic_transitions` wrote `status_transitioned`, and
+the three routes that bypass the engine's turn bookkeeping (`GREETING`,
+`FILE_RECLASSIFICATION`, the terminal short-circuit) scored in the consumed-turn
+backstop without writing the reading back, so their rows reported a hardcoded
+`false` beside `novel_files_uploaded: 1` and `turns_without_progress: 0`. Both
+now score through the one monotone write (`score_progress`), and the invariant is
+guarded arm-generically — the last reading of a turn must have seen every arm its
+row reports, whichever arm that is. A consumer may treat the shape as a bug
+report about the stream rather than a fact about the case.
+
+Note this is the mirror of the lying-counter rule above, and both are needed:
+`progress_made: true` with every arm 0 says the counter claimed more than the
+arms support; a fired arm with `progress_made: false` says it claimed less.
+
 Every arm is present on every row, zero rather than absent. Absent and zero read
 differently to a rule keyed on "progress was claimed and every arm was 0": an
 absent arm makes that rule silently unevaluable instead of false. For the same
