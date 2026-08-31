@@ -947,3 +947,103 @@ class TestFailsClosedWithoutTheAuthority:
             list_all_storage_refs=AsyncMock(return_value=set(UNRELATED_REFS))
         )
         return SimpleNamespace(case_repository=repo)
+
+
+class TestDriftIsSelfHealing:
+    """The operator runbook promises this; a promise nobody tests rots.
+
+    `docs/operations/evidence-job-scheduling.md` tells an operator NOT to go
+    hunting for leaked objects after sidecar drift, because the object is
+    protected only while its `uploaded_files` row lives and is reclaimed
+    normally once the row goes. Both halves of that are pinned here: the
+    sweep's own behaviour, and the two facts the claim rests on.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_same_file_is_protected_then_reclaimed(
+        self, storage_service, storage_root
+    ):
+        """Protected while the row exists; an ordinary orphan once it does not.
+
+        Two sweeps over the SAME file, differing only in whether the database
+        still names it. Asserting protection alone (as the other tests do)
+        would leave "and then it leaks forever" indistinguishable from "and
+        then it is reclaimed on schedule" — which is precisely the sentence
+        the runbook now puts in front of an operator.
+        """
+        old = datetime.now(UTC) - timedelta(hours=48)
+        drifted = _write_file_with_sidecar(
+            storage_root,
+            relative_path="org/case/1/mark_linked_failed.log",
+            linked=False,
+            uploaded_at=old,
+        )
+        key = str(drifted.relative_to(storage_root))
+
+        # Row alive: the sidecar says orphan, the database disagrees, the
+        # database wins.
+        first = await cleanup_orphaned_files(
+            storage=storage_service,
+            ttl_hours=24,
+            dry_run=False,
+            referenced_refs={key},
+        )
+        assert drifted.exists()
+        assert first["skipped_db_referenced"] == 1
+        assert first["deleted"] == 0
+
+        # Case deleted -> the row cascades away -> nothing references the
+        # object. The sidecar is STILL stale at linked=False; that is the
+        # point. It is now an ordinary orphan and is reclaimed.
+        second = await cleanup_orphaned_files(
+            storage=storage_service,
+            ttl_hours=24,
+            dry_run=False,
+            referenced_refs=UNRELATED_REFS,
+        )
+        assert not drifted.exists(), (
+            "a drifted object must not be protected forever — the runbook "
+            "tells operators it is reclaimed once its row is gone"
+        )
+        assert second["deleted"] == 1
+        assert second["skipped_db_referenced"] == 0
+
+    def test_the_row_lifetime_the_claim_rests_on(self):
+        """`uploaded_files.case_id` is ON DELETE CASCADE.
+
+        Structural, not behavioural, and deliberately so: the unit fixture in
+        the repository tests builds its own engine without the production
+        PRAGMA, so a "delete the case, watch the row vanish" test there would
+        pass or fail for reasons unrelated to the schema. What the runbook
+        claim actually needs is this constraint plus the pragma below.
+        """
+        from faultmaven.infrastructure.persistence.models import UploadedFileModel
+
+        case_fk = [
+            fk
+            for fk in UploadedFileModel.__table__.foreign_keys
+            if fk.column.table.name == "cases"
+        ]
+        assert case_fk, "uploaded_files no longer references cases"
+        assert all(fk.ondelete == "CASCADE" for fk in case_fk), (
+            "uploaded_files.case_id lost ON DELETE CASCADE — a drifted object "
+            "would now be protected forever, and the operator runbook says "
+            "the opposite"
+        )
+
+    def test_sqlite_actually_enforces_that_cascade(self):
+        """SQLite ignores FKs unless told otherwise, so the pragma is load-bearing.
+
+        Asserted against the engine-setup source rather than a live engine:
+        the listener fires on connect, and the claim is about what production
+        wiring does, not about whatever engine a test happens to build.
+        """
+        import inspect
+
+        from faultmaven.infrastructure.persistence import database
+
+        source = inspect.getsource(database)
+        assert "PRAGMA foreign_keys=ON" in source, (
+            "the SQLite engine no longer enables foreign_keys, so ON DELETE "
+            "CASCADE is silently a no-op there and drifted objects WOULD leak"
+        )
