@@ -5571,7 +5571,6 @@ class MilestoneEngine:
                         )
 
                         confirm_pending_transition(case, case.user_id)
-                        metadata["status_transitioned"] = True
 
                         logger.info(
                             f"INVESTIGATING->RESOLVED dropdown: confirmed existing pending "
@@ -5594,6 +5593,14 @@ class MilestoneEngine:
                             upload_report,
                             milestones_completed=["solution_verified"],
                             progress_made=True,
+                            # The case DID transition on this turn, so the arm
+                            # belongs on the dict the row is built from — as its
+                            # sibling branch (the pending-transition confirm
+                            # short-circuit) already passes it. This used to be
+                            # written onto the OUTER metadata, which this branch
+                            # never returns, so the arm was reported by one of
+                            # the two confirm paths and not the other.
+                            status_transitioned=True,
                         )
                         await self.repository.save(case)
 

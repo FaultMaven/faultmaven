@@ -233,6 +233,88 @@ async def test_an_ordinary_turn_is_scored_on_the_same_ordering(engine_and_llm):
     assert result["case_updated"].turns_without_progress == 1
 
 
+@pytest.mark.asyncio
+async def test_both_dropdown_confirm_branches_report_the_transition_arm():
+    """The arm must be on the dict a deterministic branch RETURNS.
+
+    Two branches confirm a standing terminal proposal without an LLM call: the
+    pending-transition short-circuit, and the status-transition dropdown. Both
+    transition the case, so both must report ``status_transitioned`` — the
+    dropdown one wrote it onto the OUTER working dict, which it never returns,
+    so its row said the case advanced with no transition recorded while its
+    sibling's said the opposite about the same event.
+    """
+    from datetime import UTC, datetime
+
+    from faultmaven.modules.case.domain.models import (
+        InvestigationProgress,
+        ProblemVerification,
+    )
+
+    repo = MagicMock()
+    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.get = AsyncMock(return_value=None)
+    engine = MilestoneEngine(_StubLLM(), repo, investigation_tools=MagicMock())
+    engine._auto_generate_report = AsyncMock(return_value=(None, False))
+    engine._remaining_regens_for = AsyncMock(return_value=1)
+    # Proves the turn short-circuited rather than reaching generation.
+    engine._generate_structured_output = AsyncMock(
+        side_effect=AssertionError("reached the LLM; not the deterministic branch")
+    )
+
+    case = Case(
+        case_id="case_1270bbbbbbbb",
+        title="Dropdown-confirmed resolution",
+        state=CaseState.INQUIRY,
+        user_id="user_123",
+        organization_id="org_123",
+        description="etcd connectivity",
+        problem_verification=ProblemVerification(
+            symptom_statement="recurring etcdInsufficientMembers alerts",
+            severity="HIGH",
+            temporal_state="ongoing",
+            urgency_level="high",
+        ),
+    )
+    case.inquiry.proposed_problem_statement = "etcd connectivity"
+    case.inquiry.problem_statement_confirmed = True
+    case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
+    case.inquiry.decided_to_investigate = True
+    case.inquiry.decision_made_at = datetime.now(UTC)
+    case.state = CaseState.INVESTIGATING
+    case.progress = InvestigationProgress()
+    case.current_turn = 7
+    case.pending_transition = {
+        "to_state": "resolved",
+        "summary": "Shall we mark this resolved?",
+        "evidence_ids": [],
+        "proposed_at": datetime.now(UTC).isoformat(),
+        # ``needs_info`` is what routes this turn PAST the step-0b confirm
+        # short-circuit (its guard is ``elif not needs_info``) and into the 0c
+        # dropdown handler — the branch under test. Without it 0b answers the
+        # click, and 0b already passes the arm, so the test would pass on both
+        # sides of the fix while exercising the wrong branch.
+        "needs_info": True,
+    }
+
+    result = await engine.process_turn(
+        case=case,
+        user_message="yes, resolved",
+        intent_type="status_transition",
+        intent_data={"to_state": "resolved"},
+    )
+
+    # Positive controls: the case transitioned, AND it did so on the dropdown
+    # branch — which is the one that composes a terminal reply through
+    # ``_auto_generate_report``.
+    assert result["case_updated"].state == CaseState.RESOLVED
+    assert engine._auto_generate_report.await_count == 1
+    metadata = result["metadata"]
+    assert metadata["progress_made"] is True
+    assert metadata["status_transitioned"] is True
+    assert metadata[TELEMETRY_HANDOFF_KEY]["arms"]["status_transitioned"] == 1
+
+
 def test_a_progress_true_already_on_the_dict_is_never_taken_back():
     """``_score_progress`` is monotone.
 
