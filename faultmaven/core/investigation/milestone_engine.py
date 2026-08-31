@@ -5959,15 +5959,46 @@ class MilestoneEngine:
             # structured response; side effects are applied in
             # _apply_investigation_updates → _apply_stage_gate_side_effects.
 
-            # Phase 1: No-Op Detection
-            progress_made = self._check_if_progress_made(metadata)
-            metadata["progress_made"] = progress_made
+            # Phase 1: No-Op Detection. Provisional — re-scored at 4b once the
+            # last arm writer has run.
+            self._score_progress(metadata)
             # Outcome is already set by _process_response_structured (default) or applied updates (LLM choice)
 
             # 4. Check for automatic status transitions
             case_updated = await self._check_automatic_transitions(
                 case_updated, metadata, user_message
             )
+
+            # 4b. Re-score progress now that EVERY arm writer has run (#1270).
+            #
+            # ``status_transitioned`` is one of the nine arms
+            # ``check_if_progress_made`` scores, and ``_check_automatic_transitions``
+            # is its only writer on this path — five lines AFTER the read above.
+            # So an automatic INQUIRY→INVESTIGATING transition never counted as
+            # progress, and ``turns_without_progress`` climbed through a turn
+            # that demonstrably advanced the case. Measured on the local corpus
+            # before this fix: 158 of 170 cases with an observable
+            # INQUIRY→INVESTIGATING turn scored that turn ``progress_made=False``,
+            # every visible arm empty. The 12 exceptions all carried an upload,
+            # so ``novel_files_uploaded`` — written back at Step 0 — fired for
+            # them independently.
+            #
+            # HERE rather than by moving the read: this is the first point at
+            # which every arm writer has run, and it precedes every reader —
+            # the stall counter at Step 5.8, the turn record at Step 6, and the
+            # #1142 telemetry handoff all re-read ``metadata`` rather than a
+            # local. ``_check_automatic_transitions`` never reads
+            # ``progress_made``, so scoring after it is not circular, and
+            # ``_perform_hypothesis_housekeeping`` (the only other thing between
+            # here and Step 5.8) reads ``metadata["system_feedback"]`` plus the
+            # ``case.turns_without_progress`` ATTRIBUTE, which Step 5.8 updates
+            # afterwards either way — so anti-anchoring sees the same value it
+            # saw before.
+            #
+            # The invariant this restores is the one the deterministic path
+            # already states: every arm is written before the read. See
+            # ``_finish_deterministic_turn``.
+            self._score_progress(metadata)
 
             # 5. Phase 4: Hypothesis Housekeeping (Decay & Anchoring)
             # This happens after transitions but before recording the turn
@@ -12628,6 +12659,33 @@ class MilestoneEngine:
             "outcome": TurnOutcome.CONVERSATION,
         }
         return metadata
+
+    def _score_progress(self, metadata: dict[str, Any]) -> bool:
+        """Score ``progress_made`` onto *metadata*, **monotonically**.
+
+        Monotone because ``check_if_progress_made`` does not read the
+        ``progress_made`` key itself — it reads the nine ARMS. A plain
+        ``metadata["progress_made"] = check(...)`` therefore destroys a ``True``
+        some earlier writer already put on the dict, and the generation path has
+        such a writer: ``_apply_stage_gate_side_effects`` sets
+        ``progress_made=True`` beside ``compliance_detected`` on a stage-gate
+        compliance turn, reached from ``_process_response_structured`` — i.e.
+        before the first score. That write is redundant TODAY (the side effects
+        run only when a gate landed in ``milestones_completed``, so the
+        ``milestones_completed`` arm co-fires and the predicate returns ``True``
+        anyway), which is exactly why a silent clobber there would go unnoticed
+        until a compliance path stopped co-firing an arm. This makes the
+        clobber unreachable rather than merely improbable.
+
+        Callable more than once per turn: that is the point. The generation path
+        scores twice — provisionally before ``_check_automatic_transitions`` and
+        again after it, once the ``status_transitioned`` arm exists (#1270) —
+        and monotonicity is what makes the second call a strict refinement of
+        the first rather than a re-decision.
+        """
+        scored = bool(metadata.get("progress_made")) or check_if_progress_made(metadata)
+        metadata["progress_made"] = scored
+        return scored
 
     def _check_if_progress_made(self, metadata: dict[str, Any]) -> bool:
         """Thin delegate to :func:`check_if_progress_made`.
