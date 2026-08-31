@@ -105,8 +105,22 @@ def mock_boto3_client():
     enforcement there rather than signature enforcement; ``generate_presigned_url``
     is a hand-written method and *is* signature-checked.
 
-    Requires boto3, so every consumer carries ``_REQUIRES_BOTO3``.
+    Requires boto3. Every consumer carries ``_REQUIRES_BOTO3``; the check
+    below is what makes that a mechanism rather than a convention kept in a
+    comment.
+
+    Deliberately NOT ``pytest.importorskip("boto3")``, which was the obvious
+    alternative: it would turn a test that forgot its guard into a SILENT SKIP
+    in Test Standalone — green, invisible, and the exact defect #1257 is about.
+    A loud failure naming the missing decorator is the outcome that gets fixed.
     """
+    if not _BOTO3_AVAILABLE:
+        raise RuntimeError(
+            "mock_boto3_client needs boto3, so the requesting test must carry "
+            "@_REQUIRES_BOTO3. Add it. (Not importorskip: a silent skip here "
+            "is the failure mode this file exists to demonstrate.)"
+        )
+
     import boto3
 
     # Explicit dummy credentials and region: client construction reads local
@@ -741,11 +755,29 @@ class TestS3StorageBackend:
     async def test_s3_store_and_retrieve(self, mock_boto3_client):
         """Bytes written under a key come back from that same key.
 
-        Both halves, as the name promises: storing without reading back would
-        leave `retrieve_file` — and the prefix agreement between the two —
-        unexercised.
+        The client double is a one-key store rather than two independent
+        canned answers, because a `get_object` that returns a FIXED payload
+        cannot tell a round-trip from a backend that reads a different key
+        entirely — assert `retrieved == <the fixture's canned value>` and the
+        write and the read never have to agree about anything. Here the read
+        resolves through the dict the write populated, so a disagreement about
+        the prefix, or about which key to read, raises KeyError.
         """
         from faultmaven.infrastructure.storage.s3 import S3StorageBackend
+
+        payload = b"kernel panic at 03:14"
+        written: dict[str, bytes] = {}
+
+        def _put(**kwargs):
+            written[kwargs["Key"]] = kwargs["Body"]
+            return {}
+
+        def _get(**kwargs):
+            body = written[kwargs["Key"]]  # KeyError if the read missed
+            return {"Body": MagicMock(read=lambda: body)}
+
+        mock_boto3_client.put_object.side_effect = _put
+        mock_boto3_client.get_object.side_effect = _get
 
         with patch("boto3.client", return_value=mock_boto3_client):
             backend = S3StorageBackend(
@@ -756,27 +788,29 @@ class TestS3StorageBackend:
 
             stored = await backend.store_file(
                 key="test/file.txt",
-                data=b"test content",
+                data=payload,
                 content_type="text/plain",
             )
             retrieved = await backend.retrieve_file("test/file.txt")
 
+        # The bytes came back through the store, not from a canned answer.
+        assert retrieved == payload
+        assert written == {"evidence/test/file.txt": payload}
+
         # The caller's key round-trips unprefixed; the prefix is S3's business.
         assert stored.key == "test/file.txt"
-        assert stored.size_bytes == len(b"test content")
+        assert stored.size_bytes == len(payload)
         assert stored.content_type == "text/plain"
 
         mock_boto3_client.put_object.assert_called_once_with(
             Bucket="test-bucket",
             Key="evidence/test/file.txt",
-            Body=b"test content",
+            Body=payload,
             ContentType="text/plain",
         )
-        # ...and the read goes to the same prefixed key the write used.
         mock_boto3_client.get_object.assert_called_once_with(
             Bucket="test-bucket", Key="evidence/test/file.txt"
         )
-        assert retrieved == b"file content"
 
     @_REQUIRES_BOTO3
     def test_s3_storage_type(self, mock_boto3_client):
