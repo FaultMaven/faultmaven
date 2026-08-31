@@ -459,7 +459,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                             'structural_index', f.structural_index,
                             'data_type', f.data_type,
                             'coverage_start_ts', f.coverage_start_ts,
-                            'coverage_end_ts', f.coverage_end_ts
+                            'coverage_end_ts', f.coverage_end_ts,
+                            'coverage_source', f.coverage_source
                         )) FILTER (WHERE f.file_id IS NOT NULL),
                         '[]'::json
                     ) as uploaded_files_data,
@@ -542,7 +543,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         ``source_file_id``, ``vectorized``, ``coverage_start_ts``,
         ``coverage_end_ts``, ``metadata``, ``created_at``,
         ``primary_purpose``, ``analysis``, ``processing_mode``,
-        ``advances_milestones``, ``collected_by``.
+        ``advances_milestones``, ``collected_by``, ``coverage_source``.
 
         File-level metadata (filename, content_hash, content_type, size,
         storage_ref) lives on ``uploaded_files``, reachable via
@@ -558,7 +559,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     coverage_start_ts, coverage_end_ts,
                     metadata, created_at,
                     primary_purpose, analysis, processing_mode,
-                    advances_milestones, collected_by
+                    advances_milestones, collected_by,
+                    coverage_source
                 FROM evidence
                 WHERE case_id = :case_id
                 ORDER BY created_at DESC
@@ -656,6 +658,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 metadata=parsed_metadata,
                 coverage_start_ts=row[11],
                 coverage_end_ts=row[12],
+                # Length-guarded for the same reason as the SQLite path: an
+                # absent provenance IS the NULL this column means.
+                coverage_source=row[20] if len(row) > 20 else None,
             )
         except Exception as ev_err:  # noqa: BLE001
             logger.warning("Failed to load evidence %s: %s", row[0], ev_err)
@@ -1147,7 +1152,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     storage_ref, upload_source, uploaded_at_turn,
                     metadata, uploaded_at,
                     summary, structural_index, data_type,
-                    coverage_start_ts, coverage_end_ts
+                    coverage_start_ts, coverage_end_ts, coverage_source
                 FROM uploaded_files
                 WHERE case_id = :case_id
                   AND content_hash = :content_hash
@@ -1176,6 +1181,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 data_type=row[15],
                 coverage_start_ts=row[16],
                 coverage_end_ts=row[17],
+                coverage_source=row[18],
             )
         except Exception as e:
             raise RepositoryException(
@@ -1219,7 +1225,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     coverage_start_ts, coverage_end_ts,
                     metadata, created_at,
                     primary_purpose, analysis, processing_mode,
-                    advances_milestones, collected_by
+                    advances_milestones, collected_by,
+                    coverage_source
                 FROM evidence
                 WHERE {' AND '.join(where_clauses)}
                 ORDER BY coverage_start_ts ASC
@@ -2113,7 +2120,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     primary_purpose, analysis, processing_mode, advances_milestones,
                     is_primary, reliability_score, tags,
                     collected_at_turn, collected_by, vectorized,
-                    coverage_start_ts, coverage_end_ts,
+                    coverage_start_ts, coverage_end_ts, coverage_source,
                     metadata, created_at, updated_at
                 ) VALUES (
                     :evidence_id, :case_id, :organization_id, :source_file_id,
@@ -2122,7 +2129,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     :primary_purpose, :analysis, :processing_mode, :advances_milestones,
                     :is_primary, :reliability_score, :tags,
                     :collected_at_turn, :collected_by, :vectorized,
-                    :coverage_start_ts, :coverage_end_ts,
+                    :coverage_start_ts, :coverage_end_ts, :coverage_source,
                     {self._cast('metadata')}, :created_at, :updated_at
                 )
                 ON CONFLICT (evidence_id) DO UPDATE SET
@@ -2143,6 +2150,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     vectorized = EXCLUDED.vectorized,
                     coverage_start_ts = EXCLUDED.coverage_start_ts,
                     coverage_end_ts = EXCLUDED.coverage_end_ts,
+                    coverage_source = EXCLUDED.coverage_source,
                     metadata = EXCLUDED.metadata,
                     updated_at = EXCLUDED.updated_at
             """)
@@ -2173,6 +2181,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "vectorized": evidence.vectorized,
                     "coverage_start_ts": evidence.coverage_start_ts,
                     "coverage_end_ts": evidence.coverage_end_ts,
+                    "coverage_source": evidence.coverage_source,
                     "metadata": json.dumps(evidence.metadata or {}),
                     "created_at": evidence.collected_at or now,
                     "updated_at": now,
@@ -2736,7 +2745,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     uploaded_at_turn, uploaded_at,
                     metadata,
                     summary, structural_index, data_type,
-                    coverage_start_ts, coverage_end_ts
+                    coverage_start_ts, coverage_end_ts, coverage_source
                 ) VALUES (
                     :file_id, :case_id, :organization_id, :uploaded_by,
                     :filename, :size_bytes, :content_type, :content_hash,
@@ -2744,7 +2753,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     :uploaded_at_turn, :uploaded_at,
                     {self._cast('metadata')},
                     :summary, :structural_index, :data_type,
-                    :coverage_start_ts, :coverage_end_ts
+                    :coverage_start_ts, :coverage_end_ts, :coverage_source
                 )
                 ON CONFLICT (file_id) DO UPDATE SET
                     uploaded_by = EXCLUDED.uploaded_by,
@@ -2763,7 +2772,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     structural_index = COALESCE(EXCLUDED.structural_index, uploaded_files.structural_index),
                     data_type = COALESCE(EXCLUDED.data_type, uploaded_files.data_type),
                     coverage_start_ts = COALESCE(EXCLUDED.coverage_start_ts, uploaded_files.coverage_start_ts),
-                    coverage_end_ts = COALESCE(EXCLUDED.coverage_end_ts, uploaded_files.coverage_end_ts)
+                    coverage_end_ts = COALESCE(EXCLUDED.coverage_end_ts, uploaded_files.coverage_end_ts),
+                    coverage_source = COALESCE(EXCLUDED.coverage_source, uploaded_files.coverage_source)
             """)
 
             await self.db.execute(
@@ -2787,6 +2797,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "data_type": file.data_type,
                     "coverage_start_ts": file.coverage_start_ts,
                     "coverage_end_ts": file.coverage_end_ts,
+                    "coverage_source": file.coverage_source,
                 },
             )
 

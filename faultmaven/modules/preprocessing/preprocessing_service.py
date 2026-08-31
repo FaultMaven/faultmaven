@@ -1002,6 +1002,7 @@ class PreprocessingService:
             extraction_metadata=merged_metadata,
             content_hash=content_hash,
             processing_time_ms=processing_time_ms,
+            coverage_source=coverage_source,
             coverage_start_ts=coverage_start_ts,
             coverage_end_ts=coverage_end_ts,
             entities=entities_payload,

@@ -102,14 +102,26 @@ class TestExtractTimeRangeTs:
     def test_syslog_bsd_source_label(self):
         """Pattern name propagation for the syslog-bsd family — distinct
         from iso8601_t so a regression that hardcodes one would be
-        caught."""
+        caught.
+
+        Yearless lines report ``syslog_bsd_noyear`` (#1274): the parser fills
+        the year from the wall clock, so the instant is a guess about which
+        year this "Mon DD HH:MM:SS" belongs to. A consumer stating it as an
+        absolute observation time would be asserting that guess, and the name
+        is what lets it decline. A line carrying an explicit year is the
+        undiluted ``syslog_bsd``.
+        """
         content = (
             "Jun 14 15:16:01 host1 sshd[1]: starting\n"
             + "\n".join([f"Jun 14 15:16:{s:02d} host1 sshd: noise" for s in range(15)])
             + "\nJun 14 15:17:30 host1 sshd[1]: stopping"
         )
         _, _, source = extract_time_range_ts(content)
-        assert source == "syslog_bsd"
+        assert source == "syslog_bsd_noyear"
+
+        dated = content.replace("Jun 14 15:16:01", "Jun 14 15:16:01 2024", 1)
+        _, _, dated_source = extract_time_range_ts(dated)
+        assert dated_source == "syslog_bsd"
 
 
 # ---------------------------------------------------------------------------

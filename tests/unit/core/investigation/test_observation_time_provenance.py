@@ -58,7 +58,7 @@ def _case(uploaded=None) -> Case:
     return case
 
 
-def _file(start=None, end=None) -> UploadedFile:
+def _file(start=None, end=None, source="caller_declared") -> UploadedFile:
     f = UploadedFile(
         file_id="file_0123456789ab",
         filename="pasted-content-20260804T193617.txt",
@@ -67,32 +67,38 @@ def _file(start=None, end=None) -> UploadedFile:
     )
     f.coverage_start_ts = start
     f.coverage_end_ts = end
+    # Provenance rides with the span (#1274). Defaulted so the span-focused
+    # fixtures above read as one fact, not two.
+    f.coverage_source = source
     return f
 
 
 # -- the writer that never existed -------------------------------------------
 def test_evidence_inherits_its_source_files_coverage():
     f = _file(_ALERT_POSTED, _ALERT_POSTED)
-    start, end = _evidence_coverage(_case([f]), f.file_id)
+    start, end, source = _evidence_coverage(_case([f]), f.file_id)
     assert (start, end) == (_ALERT_POSTED, _ALERT_POSTED)
+    # The provenance rides along: a row inheriting an epoch_s guess is exactly
+    # as unfounded as the file it came from.
+    assert source == "caller_declared"
 
 
 def test_fileless_evidence_has_unknown_coverage():
     """A chat-quoted row has no file to inherit from. Unknown must stay
     unknown — defaulting to now would assert currency nobody established."""
 
-    assert _evidence_coverage(_case(), None) == (None, None)
+    assert _evidence_coverage(_case(), None) == (None, None, None)
 
 
 def test_unresolvable_source_file_yields_unknown_coverage():
     """Mirrors the source guard: a hallucinated id must not crash the writer."""
 
-    assert _evidence_coverage(_case(), "file_ffffffffffff") == (None, None)
+    assert _evidence_coverage(_case(), "file_ffffffffffff") == (None, None, None)
 
 
 def test_file_without_parseable_timestamps_yields_unknown_coverage():
     f = _file(None, None)
-    assert _evidence_coverage(_case([f]), f.file_id) == (None, None)
+    assert _evidence_coverage(_case([f]), f.file_id) == (None, None, None)
 
 
 # -- rendering: the model has to be able to READ the age ----------------------
@@ -136,6 +142,37 @@ def test_future_coverage_withholds_the_age_instead_of_printing_a_negative():
     attr = _observed_attr(_Ev(datetime.now(timezone.utc) + timedelta(hours=1)))
     assert "observed_through=" in attr
     assert "age=" not in attr
+
+
+# -- provenance: WHICH pattern produced the span decides what may be said ------
+def test_a_fabricated_year_is_named_as_a_different_source():
+    """The BSD-syslog handler invents a year when the line has none. Reporting
+    that under the same name as a dated line is the information loss #1274 is
+    about — it happens here, at the parse."""
+
+    from faultmaven.modules.preprocessing.extractors.utils import (
+        extract_time_range_ts,
+    )
+
+    assert extract_time_range_ts("Jun 14 15:16:01 host sshd[1]: x")[2] == (
+        "syslog_bsd_noyear"
+    )
+    assert extract_time_range_ts("Jun 14 15:16:01 2024 host sshd[1]: x")[2] == (
+        "syslog_bsd"
+    )
+
+
+def test_mis_parsed_epoch_coverage_is_named_epoch_s():
+    """Pins the provenance of the 29-year config span, not just its shape."""
+
+    from faultmaven.modules.preprocessing.extractors.utils import (
+        extract_time_range_ts,
+    )
+
+    assert (
+        extract_time_range_ts("serverId: 1234567890\nmaxBytes: 2147483647\n")[2]
+        == "epoch_s"
+    )
 
 
 # -- the contract the model is given for reading any of it --------------------
@@ -255,7 +292,7 @@ def test_the_two_renders_agree_on_what_may_be_claimed():
         _file(point - timedelta(hours=7), point),
         _file(None, None),
     ):
-        inheritable = _evidence_coverage(_case([f]), f.file_id) != (None, None)
+        inheritable = _evidence_coverage(_case([f]), f.file_id)[:2] != (None, None)
         assert bool(_file_observed_attr(f)) is inheritable
 
 
