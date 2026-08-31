@@ -467,8 +467,19 @@ TIME ATTRIBUTES — arrival and age answer DIFFERENT questions:
     observed. This is the one that decides whether a symptom is current.
 An item can carry fresh_this_turn="true" and age="7h" at once — an alert
 forwarded seven hours after it fired. That is not a contradiction, and age is
-what governs: do not read "it arrived this turn" as "it is happening now", and
-do not ask the user for a firing time or duration the item already states.
+what governs: do not read "it arrived this turn" as "it is happening now".
+When observed_through IS present, the item's time is KNOWN — treat it as
+answered, not missing. The content was observed no later than that instant, so
+whatever it reports happened AT OR BEFORE it; for a forwarded alert that is the
+answer to "when did this fire", to within the forwarding delay. So:
+  • Do NOT list a timestamp, firing time, occurrence time, start time or
+    duration among the missing data, and do NOT ask the user to supply one.
+    They already did — by forwarding content whose observation time is
+    recorded. Asking again sends them for something the case already holds.
+  • DO say when it was observed and what that makes it: a small age means the
+    event is current, a large one means it may be stale.
+  • Asking for an exact `startsAt` is a REFINEMENT when a precise duration
+    matters. Never a gap, never a blocker, never a reason to withhold analysis.
 When observed_through is ABSENT the observation window is UNKNOWN — never
 assume recent. Say the window is unestablished and name what would date it.
 An item may also carry observed_basis="inferred_year". The time of day and
