@@ -23,6 +23,14 @@ So the sweep now asks the authority first: **anything named by an
 whole class impossible rather than rarer, and demotes the sidecar from a
 decision to a hint.
 
+A stale `linked: false` is then not merely tolerated but self-healing: the
+object is protected exactly while its `uploaded_files` row lives, and
+`uploaded_files.case_id` is `ON DELETE CASCADE` (enforced on SQLite too — the
+engine sets `PRAGMA foreign_keys=ON`), so deleting the case leaves an ordinary
+unreferenced orphan this sweep reclaims on schedule. Nothing leaks. That is a
+promise `docs/operations/evidence-job-scheduling.md` makes to operators, so
+`TestDriftIsSelfHealing` pins all three of its legs.
+
 The cross-check is deliberately **additive** — it only ever protects. The
 inverse rewrite ("the DB is the authority, so delete what it does not
 reference") sounds tidier and is a data-loss change wearing a data-safety
@@ -51,26 +59,31 @@ is created referencing the file (called from
 
 ## Fail-closed postures
 
-Three refusals, all of which end the run with `status="skipped"` and delete
-nothing, because for a delete-deciding sweep "I could not ask" and "nothing is
-referenced" are indistinguishable at the point of decision:
+Three refusals. All delete nothing — for a delete-deciding sweep "I could not
+ask" and "nothing is referenced" are indistinguishable at the point of
+decision. They differ in how loudly they say so, and the status is stated on
+each one rather than summarised separately, because a summary is what drifts:
 
 1. **No authority reachable** — no DI container, no case repository, or the
-   query raised. A dry run is refused too: its classification would be a
-   fiction someone might act on.
+   query raised. ``status="failed"`` (exit 1). A dry run is refused too: its
+   classification would be a fiction someone might act on.
 2. **Empty reference set while candidates exist** — reads as "authority
    unreachable or suspect", never as "nothing is referenced". This is the
    specific shape RLS produces: `uploaded_files` is tenanted and fail-closed
    (migration 018), so a session with no org bound sees ZERO rows.
+   ``status="failed"`` (exit 1).
 3. The pre-existing `orphan_cleanup_enabled` gate (below).
+   ``status="skipped"`` (exit 0), unchanged.
 
-The first two report ``status="failed"``, so the runner exits non-zero and the
-CronJob alert fires. That split is deliberate: the third is a *configured*
-refusal — the deployment asked for it, it is expected every night, and it
-exits 0 as it always has. The first two are the job wanting to run and being
-unable to decide safely, which is the "a CronJob that refuses at boot looks
-like a CronJob with nothing to do" failure that hid this bug in the first
-place. A fail-closed nobody hears about is half a fail-closed.
+The split is deliberate. The third is a *configured* refusal — the deployment
+asked for it, it is expected every night on the shipped defaults, and it exits
+0 as it always has. The first two are the job wanting to run and being unable
+to decide safely, which is the "a CronJob that refuses at boot looks like a
+CronJob with nothing to do" failure that hid this bug in the first place. The
+runner maps `completed`/`skipped` to exit 0, so reporting those two as
+`skipped` would make a sweep that cannot reach the database look like a clean
+night, for as long as it lasted. A fail-closed nobody hears about is half a
+fail-closed.
 
 ## Safety protocol
 
@@ -81,12 +94,25 @@ logs, fix any unexpected entries in the `mark_linked` path, then flip
 selection branch never executed — so seed one known orphan and confirm a
 dry run reports it before flipping (docs/operations/evidence-job-scheduling.md).
 
+Two things #1232 adds to that protocol. The "unexpected entries in the
+`mark_linked` path" step no longer needs eyeballing — `skipped_db_referenced`
+counts them and a WARNING names each file. And `referenced_by_db` should be a
+plausible fraction of `scanned`: a 0 there across a live corpus means the run
+is seeing an RLS-scoped view rather than the truth, which a total-zero answer
+would have refused outright but a partial one cannot detect.
+
 ## Usage
 
     python -m faultmaven.jobs.run storage_cleanup
     python -m faultmaven.jobs.run storage_cleanup --dry-run
     python -m faultmaven.jobs.run storage_cleanup --no-dry-run
     python -m faultmaven.jobs.run storage_cleanup --ttl-hours 72
+
+Under `TENANT_PROVIDER=multi` every one of those is refused outright: this job
+is `cross_tenant` (below), so it runs only on the audited maintenance path,
+connected as the dedicated BYPASSRLS role:
+
+    python -m faultmaven.jobs.run storage_cleanup --cross-tenant-maintenance
 
 Omitting a flag defers to settings (`ORPHAN_CLEANUP_DRY_RUN`,
 `ORPHAN_FILE_TTL_HOURS`), which is not the same as passing their current
@@ -128,7 +154,10 @@ JOB_DESCRIPTION = (
 # docs/operations/evidence-job-scheduling.md.
 JOB_TENANT_SCOPE = "cross_tenant"
 
-# Refusal reasons (also the `reason` values on a skipped result).
+# Refusal reasons, carried as the `reason` key on the refusing result. The
+# status differs per reason and is stated with each one in the module
+# docstring: the configured refusal is `skipped` (exit 0), the two
+# authority refusals are `failed` (exit 1).
 REASON_CLEANUP_DISABLED = "orphan_cleanup_disabled"
 REASON_AUTHORITY_UNAVAILABLE = "reference_authority_unavailable"
 REASON_REFERENCE_SET_EMPTY = "reference_set_empty"

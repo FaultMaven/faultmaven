@@ -506,19 +506,21 @@ The sidecar is written once at upload and never revisited, and it goes stale in 
 - **stale `linked=false` beside a live row.** `mark_linked` is best-effort — a transient storage failure at exactly that step leaves the flag unflipped while the row exists and the case references the file. The original sidecar-only sweep deleted it at TTL: irreversible loss of user-uploaded evidence, detectable only by a user reporting a missing upload. The DB cross-check makes that class impossible; each rescue is counted (`skipped_db_referenced`) and logged with the file's key, which is also the operator signal the `mark_linked` path never had.
 - **stale `linked=true` with no row behind it.** On a measured production corpus of 850 sweep candidates, 160 had no `uploaded_files` row and **every one of them** said `linked=true`. So the tidier-sounding inverse — "the DB is the authority, delete what it does not reference" — is a data-loss change wearing a data-safety label: it destroys all 160 on its first armed run. That is why the cross-check is strictly **additive** (it only ever protects) rather than a replacement for the sidecar test.
 
-**Fail-closed refusals.** For a delete-deciding sweep, "I could not ask" and "nothing is referenced" are indistinguishable at the point of decision, so both refuse the run (`status="skipped"`, nothing deleted, dry runs included — a classification computed without the authority is a fiction someone might act on):
+**Fail-closed refusals.** For a delete-deciding sweep, "I could not ask" and "nothing is referenced" are indistinguishable at the point of decision, so both refuse the run — nothing deleted, dry runs included, because a classification computed without the authority is a fiction someone might act on. All three refusals are listed together with their exit codes, rather than summarised in prose first, so the summary cannot drift from the split:
 
-| `reason` | `status` | Trigger |
-|----------|----------|---------|
-| `reference_authority_unavailable` | `failed` | No DI container, no case repository, or the query raised |
-| `reference_set_empty` | `failed` | The authority returned ZERO refs while sweep candidates exist. This is the shape an RLS-scoped session produces — `uploaded_files` is tenanted and fail-closed (migration 018) — under which every live file would read as an orphan |
+| `reason` | `status` | exit | Trigger |
+|----------|----------|------|---------|
+| `reference_authority_unavailable` | `failed` | 1 | No DI container, no case repository, or the query raised |
+| `reference_set_empty` | `failed` | 1 | The authority returned ZERO refs while sweep candidates exist. This is the shape an RLS-scoped session produces — `uploaded_files` is tenanted and fail-closed (migration 018) — under which every live file would read as an orphan |
+| `orphan_cleanup_disabled` | `skipped` | 0 | The pre-existing settings gate, unchanged |
 
-Both report `failed` (exit 1), not `skipped` (exit 0): the job wanted to run
-and could not decide safely, and `faultmaven.jobs.run.main()` maps `skipped`
-to a clean exit — under which a permanently-refusing sweep is indistinguishable
-from a clean night. The pre-existing `orphan_cleanup_disabled` gate keeps its
-`skipped`/exit-0 behaviour, because that refusal is what the deployment asked
-for.
+The exit codes are the substance, not bookkeeping. `faultmaven.jobs.run.main()`
+maps `completed`/`skipped` to a clean exit, so reporting the two authority
+refusals as `skipped` would make a permanently-refusing sweep indistinguishable
+from a clean night — the same invisibility that let #1232 stand. The third keeps
+`skipped`/exit 0 because that refusal is what the deployment asked for and
+happens every night on the shipped defaults; making it fail would page everyone
+who has not opted in.
 
 **Tenant scope.** A storage key carries no tenant the backend enforces, so "unreferenced" is only decidable against the `storage_ref` set of ALL organizations. The job therefore declares `JOB_TENANT_SCOPE="cross_tenant"` and, under `TENANT_PROVIDER=multi`, runs only on the audited maintenance path (`--cross-tenant-maintenance` + the `faultmaven_maintenance` BYPASSRLS role). See [evidence-job-scheduling.md](../../operations/evidence-job-scheduling.md).
 
