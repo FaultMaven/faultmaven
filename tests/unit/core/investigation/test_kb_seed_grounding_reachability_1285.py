@@ -35,11 +35,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import (
+from faultmaven.core.investigation.kb_grounding import (
     KBSeedGrounding,
-    MilestoneEngine,
     kb_hit_grounding,
 )
+from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     CorpusTermStats,
     KnowledgeVectorStore,
@@ -162,6 +162,7 @@ class TestTheFixtureIsAFaithfulRecording:
             (r["query"][:40], r["runbook_title"][:30], r["per_chunk"], r["named"])
             for r in measured
             if r["named"] != r["recorded_identity_terms"]
+            or abs(r["coverage"] - r["recorded_max_term_coverage"]) > 1e-9
             or any(
                 abs(got - chunk["recorded_term_coverage"]) > 1e-9
                 for got, chunk in zip(r["per_chunk"], r["chunks"])
@@ -175,23 +176,63 @@ class TestTheFixtureIsAFaithfulRecording:
             f"See tests/fixtures/kb_grounding_1285/PROVENANCE.md."
         )
 
-    def test_the_apparatus_spans_the_bar_it_is_asked_about(self, measured):
-        """A rate of zero must not be an artifact of a one-sided fixture."""
-        above = [r for r in measured if r["coverage"] >= 0.90]
-        below = [r for r in measured if r["coverage"] < 0.90]
-        assert len(above) >= 20 and len(below) >= 10, (
-            f"the fixture must exercise both sides of 0.90 or a null result is "
-            f"vacuous: {len(above)} at or above, {len(below)} below, of "
-            f"{len(measured)}"
+    def test_both_classes_span_the_bar_in_the_partition_that_is_swept(self, measured):
+        """Guards the partition the sweep RUNS on, not a wider one.
+
+        The first cut of this fixture checked ``measured`` while the sweep ran
+        over the names-silent subset, and in that subset every off-domain pair
+        sat at coverage exactly 1.000 — so the sweep's comparison was true by
+        selection at every bar and could not have failed. Both classes must have
+        members on both sides of the bar or the sweep measures the fixture.
+        """
+        silent = [r for r in measured if not r["named"]]
+        on = [r for r in silent if r["on_domain"]]
+        off = [r for r in silent if not r["on_domain"]]
+        quadrant = {
+            ("on", "above"): [r for r in on if r["coverage"] >= 0.90],
+            ("on", "below"): [r for r in on if r["coverage"] < 0.90],
+            ("off", "above"): [r for r in off if r["coverage"] >= 0.90],
+            ("off", "below"): [r for r in off if r["coverage"] < 0.90],
+        }
+        for key, rows in sorted(quadrant.items()):
+            print(f"  {key[0]:<4}{key[1]:<7}{len(rows):>4}")
+        empty = [k for k, v in quadrant.items() if not v]
+        assert not empty, (
+            f"quadrants {empty} are empty: with no off-domain pair below the bar "
+            f"(or no on-domain pair above it) the sweep below cannot distinguish "
+            f"an inverted distribution from a selected one"
+        )
+        assert len(quadrant[("off", "below")]) >= 10, (
+            f"only {len(quadrant[('off', 'below')])} off-domain pairs below the "
+            f"bar — too few for the sweep's rate to move"
         )
 
     def test_both_labels_are_present_in_quantity(self, measured):
         on = [r for r in measured if r["on_domain"]]
         off = [r for r in measured if not r["on_domain"]]
-        assert len(on) >= 15 and len(off) >= 25, (
+        assert len(on) >= 15 and len(off) >= 50, (
             f"on-domain {len(on)}, off-domain {len(off)} of {len(measured)} — "
             f"a single-element class makes every claim below a tautology"
         )
+
+    def test_kind_and_on_domain_are_independent(self, measured):
+        """``kind`` must not have collapsed into a copy of ``on_domain``.
+
+        In the first cut it had: every off-domain pair came from a labelled
+        NEGATIVE query, so the two fields agreed on all 55 rows and the fixture
+        held no off-domain pair retrieved by a query that was about something.
+        That is the same selection defect the sweep guard above now catches,
+        seen from the labelling side.
+        """
+        combos = {(r["kind"], r["on_domain"]) for r in measured}
+        assert (
+            "labelled_positive",
+            False,
+        ) in combos, (
+            f"no off-domain pair from a labelled POSITIVE query: {sorted(combos)}"
+        )
+        assert ("labelled_positive", True) in combos
+        assert ("labelled_negative", False) in combos
 
 
 class TestCoverageOrdersTheAnswersWrongly:
@@ -237,36 +278,64 @@ class TestCoverageOrdersTheAnswersWrongly:
             f"THIS measurement, not on the threshold's plausibility"
         )
 
-    def test_no_bar_admits_a_correct_pair_without_the_worst_wrong_ones(self, measured):
-        """Swept, not asserted at one point: every bar is wrong somewhere."""
+    def test_no_bar_admits_correct_pairs_at_a_better_rate_than_wrong_ones(
+        self, measured
+    ):
+        """Swept as a RATE, because the two classes are different sizes.
+
+        The first cut compared raw counts over a 12-vs-29 split in which every
+        off-domain pair sat at coverage exactly 1.000. ``n_off >= n_on`` was
+        then true at every bar no matter what the code or the data did — the
+        off-domain count was the constant 29 — so the sweep could not have
+        detected a distribution that was NOT inverted. Comparing admission
+        RATES over classes that both span the range is a claim the data can
+        falsify, and it does: at bar 0.30 the on-domain rate is the higher of
+        the two, which is exactly the kind of point the old form could not see.
+
+        What survives, and is the reason the arm is gone, is that the inversion
+        holds across the whole region where a bar could sensibly be set.
+        """
         silent = [r for r in measured if not r["named"]]
         on = [r for r in silent if r["on_domain"]]
         off = [r for r in silent if not r["on_domain"]]
-        # ``n_off >= n_on`` below is trivially true over an empty on-domain
-        # class, and an empty one is the shape this fixture was built to avoid:
-        # the first cut of this measurement had exactly ONE on-domain pair the
-        # names arm missed, which made every separation claim a tautology.
         assert len(on) >= 8 and len(off) >= 20, (
             f"COULD NOT ASK: {len(on)} on-domain and {len(off)} off-domain "
-            f"pairs where the names arm is silent — the sweep below says "
-            f"nothing unless both classes are populated"
+            f"pairs where the names arm is silent"
         )
-        worst_off = max(r["coverage"] for r in off)
-        verdicts = []
-        for bar in [i / 100 for i in range(50, 101, 5)]:
-            n_on = sum(1 for r in on if r["coverage"] >= bar)
-            n_off = sum(1 for r in off if r["coverage"] >= bar)
-            verdicts.append((bar, n_on, n_off))
-        print(f"bar    on/{len(on)}  off/{len(off)}")
-        for bar, n_on, n_off in verdicts:
-            print(f"{bar:.2f}   {n_on:>5}  {n_off:>6}")
-        assert all(n_off >= n_on for _, n_on, n_off in verdicts), (
-            f"every bar from 0.50 to 1.00 must admit at least as many "
-            f"off-domain pairs as on-domain ones: {verdicts}"
+        rates = []
+        for bar in [i / 100 for i in range(20, 101, 5)]:
+            r_on = sum(1 for r in on if r["coverage"] >= bar) / len(on)
+            r_off = sum(1 for r in off if r["coverage"] >= bar) / len(off)
+            rates.append((bar, r_on, r_off))
+        print(f"bar    on-rate (n={len(on)})   off-rate (n={len(off)})")
+        for bar, r_on, r_off in rates:
+            print(f"{bar:.2f}   {r_on:>10.2f}   {r_off:>14.2f}")
+
+        # Non-vacuity: the sweep must MOVE, or "off >= on everywhere" would be
+        # a statement about a constant.
+        assert len({round(r_off, 3) for _, _, r_off in rates}) >= 4, (
+            f"the off-domain rate barely varies across the sweep "
+            f"({sorted({round(r, 3) for _, _, r in rates})}) — the fixture, not "
+            f"the metric, is deciding this"
         )
-        assert all(
-            n_off > 0 for bar, n_on, n_off in verdicts if bar <= worst_off
-        ), "a bar under the worst off-domain pair must admit it — sanity"
+        assert len({round(r_on, 3) for _, r_on, _ in rates}) >= 4
+
+        # The claim: over the region where a usable bar could sit — one that
+        # admits fewer than everything — coverage prefers the WRONG class.
+        usable = [(bar, r_on, r_off) for bar, r_on, r_off in rates if bar >= 0.50]
+        assert usable
+        assert all(r_off >= r_on for _, r_on, r_off in usable), (
+            f"a bar at or above 0.50 admits on-domain pairs at a better rate "
+            f"than off-domain ones, which would make a second ground arguable "
+            f"again: {[(b, round(o, 2), round(f, 2)) for b, o, f in usable]}"
+        )
+        at_shipped = next(t for t in rates if t[0] == 0.90)
+        assert at_shipped[2] >= 5 * at_shipped[1], (
+            f"at the bar #1272 shipped, off-domain admission rate "
+            f"{at_shipped[2]:.2f} vs on-domain {at_shipped[1]:.2f} — the "
+            f"inversion that removed the arm has narrowed; re-measure before "
+            f"trusting either number"
+        )
 
     def test_the_same_correct_runbook_lands_on_both_sides_of_the_old_bar(
         self, measured
@@ -333,6 +402,60 @@ class TestTheGateGroundsOnNamesAlone:
         ), (
             "coverage 1.000 against unrelated runbooks must not ground a seed; "
             "this is the arm #1285 removed"
+        )
+
+    def test_the_surviving_arms_wrong_admissions_are_bounded(self, measured):
+        """The metric #1285 condemned the coverage arm with, applied to the arm
+        it kept.
+
+        A labelled NEGATIVE is a statement carrying no concrete failure
+        signature; the project's own expectation for one is to seed nothing. So
+        every pair the gate admits from such a query is a wrong admission, with
+        no labelling judgement required. The coverage arm was removed at 1
+        on-domain to 36 off-domain. This is the same measurement for what
+        remains, and until #1285 nothing asserted it — the file reported the
+        arm's MISSES (the 12 on-domain pairs it does not admit) and never its
+        wrong admissions, so a change doubling them would have passed.
+
+        This is a BOUND, not an endorsement. It is expected to be lowered.
+        """
+        neg = [r for r in measured if r["kind"] == "labelled_negative"]
+        admitted = [
+            r for r in neg if kb_hit_grounding(_hit(r)) is KBSeedGrounding.NAMED
+        ]
+        queries = {r["query"] for r in neg}
+        hit_queries = {r["query"] for r in admitted}
+        print(
+            f"labelled-negative pairs (correct outcome: seed nothing): {len(neg)}\n"
+            f"  admitted by the names arm                            : "
+            f"{len(admitted)}\n"
+            f"  distinct such queries                                : "
+            f"{len(queries)}\n"
+            f"  distinct such queries with >=1 admission             : "
+            f"{len(hit_queries)}"
+        )
+        for r in sorted(admitted, key=lambda r: (r["query"], r["runbook_title"])):
+            print(
+                f"    {r['query'][:38]!r:<42} -> {r['runbook_title'][:40]:<42}"
+                f"via {r['named']}"
+            )
+        assert len(neg) >= 40, f"COULD NOT ASK: only {len(neg)} negative pairs"
+        assert len(admitted) <= 16, (
+            f"the surviving arm admits {len(admitted)} of {len(neg)} pairs from "
+            f"queries that identify nothing, up from 16. Every one is a runbook "
+            f"asserted as a candidate root cause for a statement with no failure "
+            f"signature in it"
+        )
+        assert len(hit_queries) <= 8, (
+            f"{len(hit_queries)} of {len(queries)} content-free queries now seed "
+            f"through the names arm, up from 8"
+        )
+        # The other half of the bound: it must still be a real residue, or the
+        # ceiling above is being met by a gate that stopped admitting anything.
+        assert len(admitted) >= 10, (
+            f"only {len(admitted)} wrong admissions — if the arm genuinely "
+            f"improved, lower the ceiling deliberately rather than leaving a "
+            f"bound that no longer bounds anything"
         )
 
     def test_the_remaining_arm_has_a_residue_and_here_it_is(self, measured):
@@ -552,6 +675,28 @@ class TestTheSeederRefusesTheContentFreeQuery:
             description=description,
         )
 
+    async def _seed_hits(self, hits, monkeypatch):
+        """Drive the real seeding path with ready-made hits."""
+        seen = {}
+
+        def _capture(case, runbooks, *a, **k):
+            seen["runbooks"] = runbooks
+            return SimpleNamespace(seeded_anything=True)
+
+        monkeypatch.setattr(
+            "faultmaven.core.investigation.kb_cause_seeder.seed_candidate_causes",
+            _capture,
+        )
+        monkeypatch.setattr(
+            "faultmaven.config.settings.get_settings",
+            lambda: SimpleNamespace(
+                features=SimpleNamespace(kb_cause_seeder_enabled=True)
+            ),
+        )
+        engine = self._engine()
+        await engine._seed_candidate_causes_from_kb(self._case("q"), hits)
+        return seen.get("runbooks", [])
+
     async def _seed(self, rows, monkeypatch):
         seen = {}
 
@@ -594,18 +739,78 @@ class TestTheSeederRefusesTheContentFreeQuery:
     async def test_nothing_seeds_for_a_statement_that_identifies_nothing(
         self, measured, monkeypatch
     ):
-        rows = [
-            r for r in measured if r["query"] == CONTENT_FREE_QUERY and not r["named"]
-        ]
+        rows = [r for r in measured if r["query"] == CONTENT_FREE_QUERY]
         assert len(rows) >= 5
-        assert all(r["coverage"] == pytest.approx(1.0) for r in rows), (
+        # Every pair for this query goes in. The first cut filtered to the
+        # unnamed ones, which quietly restricted the claim to pairs the REMOVED
+        # arm handled and dropped the single pair that shows what the surviving
+        # arm does with the same statement.
+        unnamed = [r for r in rows if not r["named"]]
+        named = [r for r in rows if r["named"]]
+        assert len(unnamed) >= 5 and len(named) >= 1, (
+            f"expected both kinds for this query: {len(unnamed)} unnamed, "
+            f"{len(named)} named"
+        )
+        assert all(r["coverage"] == pytest.approx(1.0) for r in unnamed), (
             "these are the maximum-coverage pairs; if they no longer are, this "
             "test is no longer about the arm that was removed"
         )
         seeded = await self._seed(rows, monkeypatch)
         assert seeded == [], (
-            f"{len(rows)} runbooks at coverage 1.000, none of them named by the "
-            f"query, must not seed candidate root causes"
+            f"{len(rows)} runbooks retrieved for a statement that identifies "
+            f"nothing, {len(unnamed)} of them at coverage 1.000, must not seed "
+            f"candidate root causes. NOTE what is doing the work here: the "
+            f"{len(named)} NAMED pair is refused downstream by #1144's "
+            f"corroboration guard (retrieval returned one chunk of it), not by "
+            f"grounding. Grounding admits it — see "
+            f"test_the_surviving_arms_wrong_admissions_are_bounded"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_parentless_hit_does_not_admit_the_ungrounded_ones(
+        self, monkeypatch
+    ):
+        """A hit with no ``parent_document_id`` must not open the gate.
+
+        Grounding is folded per runbook through a set of admitted parent ids.
+        A parentless hit that passes the gate used to put a literal ``None`` in
+        that set, and the membership test then admitted every OTHER parentless
+        hit — UNGROUNDED ones included. Reachable: the parent id is derived
+        from chunk metadata falling back to the chunk id, and both can be
+        absent. It seeds nothing either way, so the only visible effect is that
+        ``kb_cause_seed_ungrounded_total`` stops counting what the gate turned
+        away — the number the gate is re-sized on.
+        """
+        ungrounded = MagicMock()
+        monkeypatch.setattr(
+            "faultmaven.core.investigation.milestone_engine."
+            "kb_cause_seed_ungrounded_total",
+            ungrounded,
+        )
+
+        def _mk(parent, named, doc_id):
+            return SearchResult(
+                document_id=doc_id,
+                title="t",
+                document_type="runbook",
+                tags=[],
+                score=0.7,
+                snippet="...",
+                parent_document_id=parent,
+                total_chunks=8,
+                matched_cause_letters=["A"],
+                term_coverage=0.5,
+                identity_terms_in_query=named,
+            )
+
+        # One parentless hit the gate ADMITS, beside a parentless one it refuses.
+        hits = [_mk(None, ["named"], "c1"), _mk(None, [], "c2")]
+        seeded = await self._seed_hits(hits, monkeypatch)
+        assert seeded == [], "neither hit belongs to a runbook, so nothing seeds"
+        assert ungrounded.inc.called, (
+            "the refused parentless hit was excluded, so the exclusion must be "
+            "counted; if it is not, a None in the admitted-parent set has waved "
+            "it through"
         )
 
     @pytest.mark.asyncio

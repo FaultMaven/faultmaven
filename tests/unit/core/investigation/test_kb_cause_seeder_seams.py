@@ -84,13 +84,30 @@ def _case() -> Case:
     )
 
 
-def _hit(parent_id, score, letters=("A",), total_chunks=None, chunk_id=None):
+def _hit(
+    parent_id,
+    score,
+    letters=("A",),
+    total_chunks=None,
+    chunk_id=None,
+    named=("stub",),
+    term_coverage=0.5,
+):
     """A retrieval hit as the wrapper reads it.
 
     ``.matched_cause_letters`` is the #1092 join key: which of the parent
     runbook's causes THIS chunk carries. Defaults to Cause A because most tests
     here stub a single-cause runbook; a hit carrying no letters is a non-cause
     chunk and seeds nothing.
+
+    **It carries the #1272 grounding fields, and that is load-bearing.** They
+    were absent until #1285, and ``kb_hit_grounding`` reads both through
+    ``getattr(..., None)`` — so every hit in this file was UNMEASURED and all
+    71 tests below exercised the seeder with the grounding gate NOT APPLYING.
+    A hit shape that drifts away from the production one silently switches the
+    gate off rather than failing, so the default here is a hit the gate judges
+    and admits (``named``), and ``test_the_hit_shape_keeps_the_gate_active``
+    pins that.
     """
     return SimpleNamespace(
         parent_document_id=parent_id,
@@ -98,7 +115,29 @@ def _hit(parent_id, score, letters=("A",), total_chunks=None, chunk_id=None):
         matched_cause_letters=list(letters),
         total_chunks=total_chunks,
         document_id=chunk_id,
+        identity_terms_in_query=list(named),
+        term_coverage=term_coverage,
     )
+
+
+def test_the_hit_shape_keeps_the_gate_active():
+    """Positive control on the helper above, not on the seeder.
+
+    Without this, a hit shape that stopped carrying the grounding fields would
+    make every seeding test in this file pass for the wrong reason: the gate
+    would read the absence as "unmeasured, therefore not judged" and admit
+    everything, which is exactly the state these tests are meant to run
+    downstream of.
+    """
+    from faultmaven.core.investigation.kb_grounding import (
+        KBSeedGrounding,
+        kb_hit_grounding,
+    )
+
+    assert kb_hit_grounding(_hit("kb_x", 0.7)) is KBSeedGrounding.NAMED
+    assert (
+        kb_hit_grounding(_hit("kb_x", 0.7, named=())) is KBSeedGrounding.UNGROUNDED
+    ), "a hit with no identity terms must be judged, not waved through"
 
 
 def _corroborator(parent_id, score=0.5):

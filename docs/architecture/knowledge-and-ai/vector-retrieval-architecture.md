@@ -294,7 +294,32 @@ in the first regime — admitting those 36 while refusing a correct **rank-1**
 retrieval of the same runbook phrased at 0.885. The arm was not inert and it was
 not mis-calibrated; it was measuring the wrong thing, and it is gone.
 
-What a replacement would have to be, if one is ever wanted: not a share of the
+**What the surviving ground costs.** The residue account above lists the arm's
+MISSES. Its wrong ADMISSIONS were never written down, and they are the same
+failure shape the coverage ground was removed for: over the labelled
+*negatives* — statements carrying no concrete failure signature, whose correct
+outcome is to seed nothing — the names arm admits **16 of 51** pairs, across
+**8 of 12** such queries, every one on a single generic title word:
+
+| statement | runbook admitted | on |
+|---|---|---|
+| "Latency is high." | AWS Kinesis Data Streams High Iterator Age | `high` |
+| "The service is down." | HAProxy 503 Service Unavailable | `service` |
+| "The cluster is unhealthy." | Envoy returns 503 'no healthy upstream' | `cluster` |
+| "The application is slow." | MongoDB Lock Contention and Slow Operations | `slow` |
+
+Six of those statements clear #1144's corroboration guard as well, so they seed.
+This is #1272's acknowledged residue — it measured requiring two matched terms,
+one above an IDF floor, and a share of the document's identity mass, each
+costing four to nine correct seeds — and it is now **bounded by assertion**
+(`test_the_surviving_arms_wrong_admissions_are_bounded`) rather than only
+described. A query-level precondition ("refuse when the query carries no
+corpus-identifying vocabulary at all") was measured against #1285's corpus and
+rejected on the same grounds: it costs 3 correct queries to save 6 content-free
+ones, which lands inside the same 4–9 band.
+
+What a replacement for the removed COVERAGE ground would have to be, if one is
+ever wanted: not a share of the
 query. Restricting coverage to the query's corpus-*identifying* terms (df ≤
 `IDENTIFIER_DF_RATIO`) does order them correctly — it scores those content-free
 statements 0.000 — but on this labelled set its best bar still admits 9
@@ -314,11 +339,22 @@ queries and adversarial variants):
 | "the query names something the corpus never indexed" | false-blocks ordinary prose: on "postgres connections exhausted since Tuesday afternoon" the unseen words are `tuesday` and `afternoon` |
 | a lexical-distinctiveness ratio (best chunk vs a corpus percentile) | measures query *specificity*, not answer correctness — the QEMU queries score above the generic-but-correctly-answered ones |
 
-**What it costs and buys.** Against main's pure-vector seeding path, correct
-seeds 21 → 21 and wrong seeds 24 → 9. Isolating the gate alone (hybrid with it
-off vs on) it costs nothing and *gains* a statement, because excluding an
-ungrounded runbook frees a `MAX_SEEDED_RUNBOOKS` slot for a grounded one that
-was being crowded out:
+**What it costs and buys — CURRENT (one ground, #1285).** Through
+`run_corroboration_eval.py grounding` over the 24 labelled statements, in both
+term-index states:
+
+| | on-domain seeds | off-domain seeds |
+|---|---|---|
+| pure vector | 14 | 27 |
+| hybrid, gate off | 15 | 28 |
+| hybrid + gate | **18** | **12** |
+
+Removing the coverage ground changed that from 18/14 to 18/12: no on-domain
+seed lost, two off-domain seeds withdrawn, identically with and without the
+term index.
+
+**Superseded (two grounds, #1272).** Kept because the reasoning it prompted is
+the reason #1285 happened, not because the numbers still describe the gate:
 
 | | correct seeds | wrong seeds | statements with a correct seed |
 |---|---|---|---|

@@ -450,9 +450,19 @@ async def mode_grounding(store, corpus, statements, no_term_index=False):
 
     Prints the per-ARM decision RATE with its denominator, because "the gate
     turned nothing away" and "the gate is not applying" are the same number in
-    the seed columns and different facts. Run it twice: ``--no-term-index``
-    forces the state in which ``term_coverage`` degrades to an unweighted
-    binary fraction, which is a different quantity on the same scale.
+    the seed columns and different facts.
+
+    ``--no-term-index`` runs the whole pipeline without corpus statistics. Read
+    it as an END-TO-END comparison, NOT a controlled one: dropping the index
+    also changes which keywords Stage 1 probes with
+    (``_extract_search_keywords``) and which weight profile the reranker picks
+    (``_query_has_identifier``), so the two runs differ in their candidate sets
+    as well as in what ``term_coverage`` means. That is the right question for
+    "does the gate still behave in a deployment with no index", and the wrong
+    one for "does the index change a verdict". The controlled version of the
+    latter holds the candidate set fixed and varies only ``stats``:
+    ``test_kb_seed_grounding_reachability_1285.py``
+    ::``TestATermIndexOutageCannotSwitchTheGateOff``.
 
     Guarded against the vacuous zero. A gate that turns everything away and a
     retrieval that returned nothing produce identical counts, so the corpus is
@@ -460,7 +470,7 @@ async def mode_grounding(store, corpus, statements, no_term_index=False):
     number below is printed.
     """
     from faultmaven.core.investigation.kb_cause_seeder import MAX_SEEDED_RUNBOOKS
-    from faultmaven.core.investigation.milestone_engine import (
+    from faultmaven.core.investigation.kb_grounding import (
         KBSeedGrounding,
         kb_hit_grounding,
     )
@@ -526,11 +536,32 @@ async def mode_grounding(store, corpus, statements, no_term_index=False):
     for verdict, n in verdicts.items():
         share = f"{100.0 * n / judged:.1f}%" if judged else "n/a"
         print(f"  {verdict.value:<12}{n:>6}{share:>9}")
-    if judged and verdicts[KBSeedGrounding.UNMEASURED] == judged:
+    if not judged:
+        sys.exit("COULD NOT ASK: no chunk reached the gate at all")
+    if verdicts[KBSeedGrounding.UNMEASURED] == judged:
         sys.exit(
             "COULD NOT ASK: every chunk was UNMEASURED — no reranker ran, so the "
             "gate did not apply to anything and the seed columns above say "
             "nothing about it"
+        )
+    # --- guard 3: a positive control on the GATE ---------------------------
+    # The two guards above prove the corpus loaded and that retrieval returned
+    # something. Neither says the gate DECIDED anything: a gate that grounds
+    # nothing prints a clean table of zeros and exits 0, which reads as "the
+    # guard is working" and is the failure mode this whole mode exists to make
+    # visible. The seed columns cannot distinguish it either — they fall to
+    # zero for a gate that is broken and for a corpus that covers nothing.
+    if not verdicts[KBSeedGrounding.NAMED]:
+        sys.exit(
+            "COULD NOT ASK: the gate grounded NOTHING across every statement. "
+            "Either the corpus is unrelated to them or the gate is broken, and "
+            "the numbers above cannot tell you which"
+        )
+    if not verdicts[KBSeedGrounding.UNGROUNDED]:
+        sys.exit(
+            "COULD NOT ASK: the gate turned NOTHING away, so it is not "
+            "discriminating on this input and its 'cost' below is zero by "
+            "construction"
         )
     print(
         "\nThe gate is sized on the on-domain column: it must not fall. A ground "
@@ -549,10 +580,12 @@ async def main():
     ap.add_argument(
         "--no-term-index",
         action="store_true",
-        help="grounding mode: run with the corpus term index forced off, the "
-        "state in which term_coverage degrades to an unweighted binary "
-        "fraction. A gate validated in only one of the two states is not "
-        "validated.",
+        help="grounding mode: run the whole pipeline with the corpus term "
+        "index forced off. End-to-end, not controlled — it also changes Stage-1 "
+        "keyword probes and the reranker weight profile. A gate validated in "
+        "only one of the two states is not validated, but attributing a "
+        "difference between them to term_coverage alone is not supported by "
+        "this flag.",
     )
     args = ap.parse_args()
 

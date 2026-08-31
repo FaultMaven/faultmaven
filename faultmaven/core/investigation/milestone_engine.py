@@ -81,6 +81,10 @@ from faultmaven.core.investigation.hypothesis_manager import (
     HypothesisManager,
     create_hypothesis_manager,
 )
+from faultmaven.core.investigation.kb_grounding import (
+    KBSeedGrounding,
+    kb_hit_grounding,
+)
 from faultmaven.core.investigation.lifecycle_metrics import (
     cause_identification_held_mece_total,
     engine_owned_affordance_served_total,
@@ -385,49 +389,8 @@ KB_SEED_MIN_CORROBORATING_CHUNKS = 2
 # model forms hypotheses from the evidence (`Cause Z: Unidentified`).
 
 
-class KBSeedGrounding(str, Enum):
-    """Why a retrieved hit may or may not back a seeded cause.
-
-    Three values, not a boolean, because "the query did not name this runbook"
-    and "nothing measured whether it did" are different facts that the gate
-    acts on differently — and because ``identity_terms_in_query`` is an empty
-    list in BOTH cases, so emptiness cannot tell them apart.
-    """
-
-    NAMED = "named"
-    UNGROUNDED = "ungrounded"
-    UNMEASURED = "unmeasured"
-
-
-def kb_hit_grounding(hit: Any) -> KBSeedGrounding:
-    """Grounding verdict for one retrieved hit. The single source for the gate.
-
-    Shared with ``tests/eval/kb_cause_seeder/run_corroboration_eval.py``, which
-    re-measures this gate against the shipped corpus: an eval that re-implements
-    the predicate cannot observe a defect in it, which is how #1285 stayed
-    invisible while the eval reported on it.
-
-    ``term_coverage`` is read for ONE purpose here — as the witness that the
-    reranker ran at all. Only ``KnowledgeVectorStore._rerank`` writes it, and it
-    writes a float on every path it takes, INCLUDING when no corpus term index
-    was available (there ``_compute_term_overlap`` degrades to an unweighted
-    binary fraction rather than returning None). So ``None`` means "no lexical
-    grounding evidence was computed for this hit" — the pure-vector path — and
-    never "the term index was missing". The distinction matters: it is what
-    keeps a term-index outage from silently switching this gate off.
-
-    UNMEASURED is deliberately permissive downstream: an absent measurement must
-    not authorise what the gate withholds, but neither may it disable seeding
-    wholesale. It is counted and logged rather than passed over in silence,
-    because a gate that has quietly stopped applying looks exactly like a gate
-    that is applying and finding nothing.
-    """
-    named = getattr(hit, "identity_terms_in_query", None) or []
-    if named:
-        return KBSeedGrounding.NAMED
-    if getattr(hit, "term_coverage", None) is None:
-        return KBSeedGrounding.UNMEASURED
-    return KBSeedGrounding.UNGROUNDED
+# The predicate itself lives in ``kb_grounding`` so that applying it does not
+# require importing this module; the rationale above is what it implements.
 
 
 # Cosine floor a pre-fetched runbook must clear to enter `case.kb_context` (and
@@ -11994,7 +11957,10 @@ class MilestoneEngine:
             # pure-vector path), which KnowledgeService already warns about from
             # the other side.
             kb_cause_seed_grounding_unmeasured_total.inc()
-            logger.info(
+            # WARNING, matching KnowledgeService's warning on the producing side
+            # of the same event. One of the two is the reason the other happened,
+            # and a reader filtering at WARNING must not see half of it.
+            logger.warning(
                 "KB cause seeder: %d of %d retrieved chunks for case %s carry no "
                 "lexical grounding evidence (no reranker ran for this search) — "
                 "the grounding gate does not apply to them and they pass through",
@@ -12012,15 +11978,33 @@ class MilestoneEngine:
         # chunk and then declined for want of a second, even though its other
         # retrieved chunks are the very breadth #1144 asks for. Measured — it
         # cost exactly that case.
+        # ``None`` is excluded from the parent set deliberately. A hit with no
+        # ``parent_document_id`` belongs to no runbook — ``knowledge_service``
+        # derives that id from chunk metadata falling back to the chunk id, and
+        # both can be absent — so folding it in would put a literal ``None`` in
+        # the set and then wave through every OTHER parentless hit, UNGROUNDED
+        # ones included, on a membership test that was never about them. The
+        # visible symptom would be silence: such hits seed nothing either way
+        # (the per-runbook fold below skips them), but they would inflate
+        # ``grounded_hits`` and suppress ``kb_cause_seed_ungrounded_total`` —
+        # the counter this gate is meant to be re-sized on.
         grounded_parents = {
-            getattr(h, "parent_document_id", None)
-            for h, verdict in verdicts
-            if verdict is not KBSeedGrounding.UNGROUNDED
+            parent
+            for parent, verdict in (
+                (getattr(h, "parent_document_id", None), v) for h, v in verdicts
+            )
+            if parent is not None and verdict is not KBSeedGrounding.UNGROUNDED
         }
         grounded_hits = [
             h
-            for h in kb_hits
-            if getattr(h, "parent_document_id", None) in grounded_parents
+            for h, verdict in verdicts
+            if (
+                getattr(h, "parent_document_id", None) in grounded_parents
+                # A parentless hit has no runbook to be judged with, so it is
+                # judged on its own verdict rather than borrowing one.
+                if getattr(h, "parent_document_id", None) is not None
+                else verdict is not KBSeedGrounding.UNGROUNDED
+            )
         ]
         if not grounded_hits:
             kb_cause_seed_ungrounded_total.inc()
