@@ -46,10 +46,14 @@ def mock_container():
     mock_vector_store.cleanup_orphaned_collections = AsyncMock(return_value=5)
     container.case_vector_store = mock_vector_store
 
-    # Mock case_repository (the reference case-id set for the sweep)
+    # Mock case_repository (the reference sets for the two sweeps: case ids for
+    # case_cleanup, storage refs for storage_cleanup)
     mock_case_repository = AsyncMock()
     mock_case_repository.list_all_case_ids = AsyncMock(
         return_value=["case_1", "case_2", "case_3"]
+    )
+    mock_case_repository.list_all_storage_refs = AsyncMock(
+        return_value={"org/case_1/2026/01/01/aaa_app.log"}
     )
     container.case_repository = mock_case_repository
 
@@ -617,12 +621,16 @@ class TestJobTenantScopeGates:
 
         assert case_cleanup.JOB_TENANT_SCOPE == "cross_tenant"
 
-    def test_storage_cleanup_is_tenant_neutral(self):
-        """storage_cleanup is a sidecar-driven filesystem sweep with no
-        tenanted DB reads."""
+    def test_storage_cleanup_is_cross_tenant(self):
+        """storage_cleanup asks the DB whether an object is still referenced
+        before deleting it (#1232), and a storage key carries no tenant the
+        backend enforces — so "unreferenced" is only decidable against the
+        storage_ref set of ALL orgs. An RLS-scoped partial view would report
+        every other tenant's live files as orphans, with irreversible loss at
+        the end of it. It must stay cross_tenant scoped."""
         from faultmaven.modules.agent.jobs import storage_cleanup
 
-        assert storage_cleanup.JOB_TENANT_SCOPE == "tenant_neutral"
+        assert storage_cleanup.JOB_TENANT_SCOPE == "cross_tenant"
 
 
 class TestJobsPathBootGates:

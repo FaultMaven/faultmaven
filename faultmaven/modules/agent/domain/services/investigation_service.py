@@ -57,6 +57,7 @@ from faultmaven.exceptions import (
 )
 from faultmaven.infrastructure.observability.evidence_metrics import (
     EVIDENCE_DEDUP_HITS_TOTAL,
+    EVIDENCE_MARK_LINKED_FAILURES_TOTAL,
     EVIDENCE_RECLASSIFICATION_TOTAL,
 )
 from faultmaven.infrastructure.observability.tracing import trace
@@ -88,6 +89,19 @@ from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
+
+
+def _record_mark_linked_failure(outcome: str) -> None:
+    """Count a sidecar mark_linked failure without ever failing the upload.
+
+    The metric is an observability side-channel on an already-persisted upload;
+    a broken/absent Prometheus registry must not turn a successful turn into a
+    500. Same swallow-everything posture the sweep's counters use.
+    """
+    try:
+        EVIDENCE_MARK_LINKED_FAILURES_TOTAL.labels(outcome=outcome).inc()
+    except Exception:  # pragma: no cover - metrics must never break a turn
+        pass
 
 
 def _backfill_consumed_turn(
@@ -2205,6 +2219,19 @@ class InvestigationService:
         # when storage_ref is None (no storage service or store_file
         # returned nothing); storage services without mark_linked (test
         # doubles, minimal stubs) are handled gracefully.
+        #
+        # Failing here USED to put the file at risk of reclamation: the row
+        # exists and the case references it, but the sidecar still says
+        # linked=False, and the nightly sweep decided from the sidecar alone.
+        # Since #1232 the sweep cross-checks uploaded_files.storage_ref, so a
+        # stale sidecar can no longer cause deletion — what it causes now is a
+        # LEAK: the object is permanently protected and will never be
+        # reclaimed, however long it outlives its case. That is a much better
+        # failure, and it is still worth counting, which is what
+        # EVIDENCE_MARK_LINKED_FAILURES_TOTAL does (the warning alone was
+        # discoverable only by grep). This counter is emitted from the API
+        # process, which Prometheus scrapes — unlike the sweep's own counters,
+        # which die with the CronJob pod.
         mark_linked = (
             getattr(self.file_storage_service, "mark_linked", None)
             if self.file_storage_service
@@ -2214,18 +2241,22 @@ class InvestigationService:
             try:
                 # Check the result, don't just call it: mark_linked reports
                 # failure by returning False rather than raising, so without
-                # this the warning below could never fire and an at-risk file
-                # would be reclaimed at TTL with no operator signal.
+                # this neither the warning nor the counter below could fire and
+                # the drift would be entirely invisible.
                 if not await mark_linked(storage_ref):
+                    _record_mark_linked_failure("returned_false")
                     logger.warning(
-                        "mark_linked returned False for %s (non-fatal, file "
-                        "stays as orphan candidate until TTL)",
+                        "mark_linked returned False for %s (non-fatal; the "
+                        "orphan sweep asks the database, so this leaks the "
+                        "object rather than risking it)",
                         storage_ref,
                     )
             except Exception as e:
+                _record_mark_linked_failure("raised")
                 logger.warning(
-                    "mark_linked failed for %s (non-fatal, file stays as "
-                    "orphan candidate until TTL): %s",
+                    "mark_linked failed for %s (non-fatal; the orphan sweep "
+                    "asks the database, so this leaks the object rather than "
+                    "risking it): %s",
                     storage_ref,
                     e,
                 )

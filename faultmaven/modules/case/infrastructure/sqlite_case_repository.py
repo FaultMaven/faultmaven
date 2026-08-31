@@ -26,7 +26,7 @@ import builtins
 import json
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 from uuid import uuid4
 
 from sqlalchemy import bindparam, text
@@ -1351,6 +1351,24 @@ class SQLiteCaseRepository(CaseRepository):
             return [row[0] for row in result.fetchall()]
         except Exception as e:
             raise RepositoryException(f"Failed to list case ids: {e}") from e
+
+    async def list_all_storage_refs(self) -> Set[str]:
+        """Every non-null uploaded_files.storage_ref (see CaseRepository).
+
+        One scan into a set, not N point lookups: ``storage_ref`` carries no
+        index (unlike ``content_hash``), so per-candidate lookups would each
+        be a full scan.
+        """
+        try:
+            result = await self.db.execute(
+                text(
+                    "SELECT storage_ref FROM uploaded_files "
+                    "WHERE storage_ref IS NOT NULL"
+                )
+            )
+            return {row[0] for row in result.fetchall() if row[0]}
+        except Exception as e:
+            raise RepositoryException(f"Failed to list storage refs: {e}") from e
 
     async def delete(self, case_id: str) -> bool:
         """Delete case by ID."""

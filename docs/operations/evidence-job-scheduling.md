@@ -19,9 +19,50 @@ These jobs support the failure mode handling infrastructure documented in:
 
 ### 1. Storage Cleanup Job
 
-**Purpose:** Delete orphaned files >24h old with no evidence record
+**Purpose:** Delete orphaned files >24h old that **no `uploaded_files` row
+references** and whose sidecar says `linked: false`.
 
 **Implementation:** `faultmaven/modules/agent/jobs/storage_cleanup.py`
+
+**Both signals must agree before anything is deleted (#1232).** The sidecar is
+a cache of the database's linkage state, written once at upload and never
+revisited, and it goes stale in *both* directions:
+
+- stale `linked: false` beside a live row (a failed best-effort `mark_linked`)
+  — the sweep used to delete a file the case still referenced. The DB
+  cross-check makes that impossible; the rescue is counted as
+  `skipped_db_referenced` and logged with the file's key.
+- stale `linked: true` with no row behind it. On a measured production corpus
+  of 850 candidates, 160 had no row and **every one of them** said
+  `linked: true`. So the tidier-sounding inverse — "the DB is the authority,
+  delete what it does not reference" — is a data-loss change wearing a
+  data-safety label: it destroys all 160 on its first armed run.
+
+**Fail-closed refusals.** The run ends `status="skipped"` and deletes nothing
+when it cannot ask the authority (no DI container, no case repository, or the
+query raised → `reason="reference_authority_unavailable"`), and when the
+authority answers with ZERO referenced refs while sweep candidates exist
+(`reason="reference_set_empty"`). The second is the shape an RLS-scoped
+session produces — `uploaded_files` is tenanted and fail-closed (migration
+018) — and reading it as "nothing is referenced" would classify every live
+file as an orphan. Dry runs are refused on the same terms: a classification
+computed without the authority is a fiction someone might act on.
+
+**Tenant scope: `cross_tenant`.** A storage key carries no tenant the backend
+enforces, so "unreferenced" is only decidable against the `storage_ref` set of
+ALL organizations. Under `TENANT_PROVIDER=multi` this job runs only on the
+audited maintenance path (`--cross-tenant-maintenance` + the
+`faultmaven_maintenance` BYPASSRLS role) — see [Tenant Scope](#tenant-scope-multi-tenant--cloud)
+below. In single-tenant deployments the scope is a runtime no-op and the flag
+is refused.
+
+**Run-summary counters.** Beyond `found`/`deleted`, each run reports
+`skipped_db_referenced` (files the cross-check saved — non-zero means sidecar
+drift is live) and an `authority:` block with `referenced_refs`,
+`referenced_by_db` and `unreferenced_by_db`. The last two classify every
+candidate against the database regardless of which branch it lands in, so the
+referenced fraction of the stored corpus is a standing nightly report rather
+than a one-off probe.
 
 **Execution:**
 ```bash
@@ -189,9 +230,9 @@ The CLI runner (`faultmaven.jobs.run`) enforces a declared tenant scope per job
 
 | Scope | Meaning | Under `TENANT_PROVIDER=multi` |
 |-------|---------|-------------------------------|
-| `tenant_neutral` | No tenanted DB access (e.g. `storage_cleanup`, a sidecar-driven filesystem sweep) | Runs as-is |
+| `tenant_neutral` | No tenanted DB access | Runs as-is |
 | `org` | Operates on one organization's rows | Requires explicit `--organization-id`; the runner binds it to the tenant context so all DB access is RLS-scoped to that org |
-| `cross_tenant` | Touches all organizations' data (e.g. `case_cleanup`, which diffs the DB case-id set against non-partitioned ChromaDB collections; `kb_seed`, which writes the org-free global KB tier served to every tenant, #770) | **Refused by default** — RLS scopes every DB transaction to the single org bound in the tenant context; a partial view would delete other tenants' data. Runs ONLY on the audited maintenance path below |
+| `cross_tenant` | Touches all organizations' data (e.g. `case_cleanup`, which diffs the DB case-id set against non-partitioned ChromaDB collections; `storage_cleanup`, which diffs the DB `uploaded_files.storage_ref` set against stored objects whose keys carry no tenant the backend enforces, #1232; `kb_seed`, which writes the org-free global KB tier served to every tenant, #770) | **Refused by default** — RLS scopes every DB transaction to the single org bound in the tenant context; a partial view would delete other tenants' data. Runs ONLY on the audited maintenance path below |
 
 The runner also runs the same boot gates as the API lifespan: the deployment
 coherence gate, and (under multi) the RLS role guard — a CronJob with a
@@ -662,6 +703,17 @@ spec:
 > stop happening on every invocation. The illustration above matches the file as
 > deployed; do not "fix" it here.
 
+> **⚠ Under `TENANT_PROVIDER=multi` the base invocation above fails closed.**
+> Since #1232 `storage_cleanup` declares `JOB_TENANT_SCOPE="cross_tenant"`, so
+> the runner refuses it unless the run also carries `--cross-tenant-maintenance`
+> and connects as the `faultmaven_maintenance` role. That is supplied by the
+> overlay patch `overlays/onprem/storage-cleanup-maintenance.yaml`
+> (`faultmaven-enterprise-infra`), the exact mirror of the case-cleanup patch
+> beside it, and it must be applied **in the same change** as the image that
+> carries the new scope — either ordering leaves the nightly job failing and
+> `FaultMavenCronJobRunFailed` firing. Nothing is deleted in the failure window
+> (both refusals are pre-sweep), but it is a page.
+
 **Deploy:** the CronJobs are part of the `faultmaven` kustomize base and are
 applied by the CD pipeline, not by hand. To apply from a workstation, run this
 from a `faultmaven-enterprise-infra` checkout:
@@ -996,7 +1048,7 @@ counters have no emit sites; keep this as the intended procedure):
 | Job | Schedule | Executor | Log Location | Detection |
 |-----|----------|----------|--------------|-----------|
 | case_cleanup | Daily 2 AM UTC | k8s CronJob | kubectl logs / Loki | log-based |
-| storage_cleanup | Daily 3 AM UTC (after case_cleanup) | cron/systemd/k8s | journalctl / kubectl logs / Loki | log-based — `found=` in the run summary; counters are not scrapable from a CronJob |
+| storage_cleanup | Daily 3 AM UTC (after case_cleanup) | cron/systemd/k8s | journalctl / kubectl logs / Loki | log-based — `found=`, `skipped_db_referenced=` and the `authority:` block in the run summary; counters are not scrapable from a CronJob |
 | retry_monitoring | Every 5min | (future) | journalctl / kubectl logs | (future) |
 
 ---

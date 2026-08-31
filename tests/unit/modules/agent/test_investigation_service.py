@@ -346,6 +346,111 @@ class TestUploadDurabilityIsIndependentOfTheTurn:
         assert any(f.filename == "user-service.log" for f in stored.uploaded_files)
 
 
+class TestMarkLinkedFailureIsCounted:
+    """The sidecar's best-effort flip is observable, not just a log line.
+
+    Before #1232 a failed ``mark_linked`` left a live file eligible for
+    reclamation at TTL, and the ONLY signal was a warning discoverable by
+    grep. The sweep now asks the database, so a stale sidecar cannot cause
+    deletion — what it causes instead is a permanent LEAK (the object is
+    protected forever and never reclaimed), which is worth a counter of its
+    own. It is emitted from the API process, which Prometheus scrapes; the
+    sweep's own counters die with the CronJob pod.
+    """
+
+    def _service(self, repository, storage):
+        engine = MockMilestoneEngine()
+        preprocessing = AsyncMock()
+        preprocessing.classify_and_extract = AsyncMock(
+            return_value=make_preprocessing_result()
+        )
+        return InvestigationService(
+            milestone_engine=engine,
+            case_repository=repository,
+            preprocessing_service=preprocessing,
+            file_storage_service=storage,
+        )
+
+    async def _upload(self, storage):
+        repository = MockCaseRepository()
+        service = self._service(repository, storage)
+        user_id = str(uuid4())
+        case = create_sample_case(user_id=user_id)
+        await repository.save(case)
+
+        await service.process_turn(
+            case_id=case.case_id,
+            user_id=user_id,
+            payload=TurnPayload(
+                query="here are the logs",
+                attachments=[
+                    Attachment(
+                        content=b"07:40 ERROR 503 SSLException: Connection reset",
+                        filename="user-service.log",
+                        content_type="text/plain",
+                    )
+                ],
+            ),
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "mark_linked,expected_outcome",
+        [
+            # mark_linked reports failure by RETURNING False, not by raising —
+            # both arms must count, or the commoner one is invisible.
+            (AsyncMock(return_value=False), "returned_false"),
+            (AsyncMock(side_effect=RuntimeError("s3 timeout")), "raised"),
+        ],
+    )
+    async def test_failure_increments_the_counter_with_its_outcome(
+        self, mark_linked, expected_outcome
+    ):
+        storage = AsyncMock()
+        storage.store_file = AsyncMock(return_value={"storage_key": "blob/abc123"})
+        storage.mark_linked = mark_linked
+
+        with patch(
+            "faultmaven.modules.agent.domain.services.investigation_service"
+            ".EVIDENCE_MARK_LINKED_FAILURES_TOTAL"
+        ) as counter:
+            await self._upload(storage)
+
+        counter.labels.assert_called_once_with(outcome=expected_outcome)
+        counter.labels.return_value.inc.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_success_does_not_increment_the_counter(self):
+        """The positive control: a counter that fires unconditionally would
+        make every assertion above pass for the wrong reason."""
+        storage = AsyncMock()
+        storage.store_file = AsyncMock(return_value={"storage_key": "blob/abc123"})
+        storage.mark_linked = AsyncMock(return_value=True)
+
+        with patch(
+            "faultmaven.modules.agent.domain.services.investigation_service"
+            ".EVIDENCE_MARK_LINKED_FAILURES_TOTAL"
+        ) as counter:
+            await self._upload(storage)
+
+        counter.labels.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_broken_metric_never_fails_the_turn(self):
+        """The upload is already persisted by this point; an observability
+        side-channel must not turn a completed turn into a 500."""
+        storage = AsyncMock()
+        storage.store_file = AsyncMock(return_value={"storage_key": "blob/abc123"})
+        storage.mark_linked = AsyncMock(return_value=False)
+
+        with patch(
+            "faultmaven.modules.agent.domain.services.investigation_service"
+            ".EVIDENCE_MARK_LINKED_FAILURES_TOTAL"
+        ) as counter:
+            counter.labels.side_effect = RuntimeError("registry exploded")
+            await self._upload(storage)  # must not raise
+
+
 class TestAuthenticatedPrincipalReachesTheEngine:
     """The turn's reader must arrive at the engine as its own argument.
 

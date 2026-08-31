@@ -623,6 +623,36 @@ class TestListAndSearch:
         assert sorted(ids) == sorted([c1.case_id, c2.case_id])
 
     @pytest.mark.asyncio
+    async def test_list_all_storage_refs_returns_every_referenced_object(
+        self, repository
+    ):
+        # The orphan-file sweep's AUTHORITY (#1232): every non-null
+        # uploaded_files.storage_ref, across every case and owner. An object
+        # named here is live no matter what its storage sidecar claims, so a
+        # missing entry here is a deletion.
+        c1 = _make_case(user_id="user_a")
+        f1 = _make_uploaded_file(filename="a.log")
+        f1.storage_ref = "org_a/case_1/2026/01/01/aaa_a.log"
+        c1.uploaded_files.append(f1)
+
+        c2 = _make_case(user_id="user_b")
+        f2 = _make_uploaded_file(filename="b.log")
+        f2.storage_ref = "org_b/case_2/2026/01/02/bbb_b.log"
+        # A row with no storage_ref at all (paste-only intake) must not land in
+        # the set as a None — a None member would make `key in refs` noise.
+        f3 = _make_uploaded_file(filename="c.log")
+        f3.storage_ref = None
+        c2.uploaded_files.extend([f2, f3])
+
+        await repository.save(c1)
+        await repository.save(c2)
+
+        refs = await repository.list_all_storage_refs()
+
+        assert refs == {f1.storage_ref, f2.storage_ref}
+        assert None not in refs
+
+    @pytest.mark.asyncio
     async def test_list_ignores_organization_filter(self, repository):
         # ADR-010: standalone is single-tenant; the organization_id param does
         # NOT scope reads (multi-tenant isolation is RLS, not per-query filters).

@@ -42,13 +42,15 @@ from tests.unit.modules.agent.conftest import (  # noqa: E402
 
 
 class TestEvidenceMetricsRegistration:
-    """All six metrics are importable and expose the expected API."""
+    """Every metric is importable and exposes the expected API."""
 
     def test_all_metrics_exported(self):
         for name in (
             "EVIDENCE_DEDUP_HITS_TOTAL",
             "EVIDENCE_ORPHAN_FILES_FOUND_TOTAL",
             "EVIDENCE_ORPHAN_FILES_DELETED_TOTAL",
+            "EVIDENCE_ORPHAN_FILES_RESCUED_TOTAL",
+            "EVIDENCE_MARK_LINKED_FAILURES_TOTAL",
             "EVIDENCE_TURN_ASYNC_RETRY_ENQUEUED_TOTAL",
             "EVIDENCE_TURN_ASYNC_RETRY_OUTCOME_TOTAL",
             "EVIDENCE_TURN_ASYNC_RETRY_LATENCY_SECONDS",
@@ -83,6 +85,7 @@ class TestEvidenceMetricsRegistration:
         # Smoke: calling .labels() must not raise. No-op on actual value.
         m.EVIDENCE_TURN_ASYNC_RETRY_ENQUEUED_TOTAL.labels(reason="timeout")
         m.EVIDENCE_TURN_ASYNC_RETRY_OUTCOME_TOTAL.labels(outcome="success")
+        m.EVIDENCE_MARK_LINKED_FAILURES_TOTAL.labels(outcome="raised")
 
 
 # ============================================================

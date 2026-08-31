@@ -22,12 +22,15 @@ Names follow the `faultmaven_` prefix convention shared with
 | `faultmaven_evidence_dedup_hits_total` | counter | — | `InvestigationService._preprocess_attachment` | **Live** |
 | `faultmaven_evidence_orphan_files_found_total` | counter | — | `faultmaven.modules.agent.jobs.storage_cleanup` | **Live** |
 | `faultmaven_evidence_orphan_files_deleted_total` | counter | — | `faultmaven.modules.agent.jobs.storage_cleanup` | **Live** |
+| `faultmaven_evidence_orphan_files_rescued_total` | counter | — | `faultmaven.modules.agent.jobs.storage_cleanup` | **Live** — files the DB cross-check saved (#1232). Not scrapable in practice: see the note below |
+| `faultmaven_evidence_mark_linked_failures_total` | counter | `outcome` | `InvestigationService._preprocess_attachment` | **Live** — API process, so genuinely scraped |
 | `faultmaven_evidence_turn_async_retry_enqueued_total` | counter | `reason` | Turn retry path (async-turn-retry plan, deferred) | Scaffolded only; no emit sites (async retry plan deferred 2026-04-19) |
 | `faultmaven_evidence_turn_async_retry_outcome_total` | counter | `outcome` | Turn retry path (async-turn-retry plan, deferred) | Scaffolded only; no emit sites |
 | `faultmaven_evidence_turn_async_retry_latency_seconds` | histogram | — | Turn retry path (async-turn-retry plan, deferred) | Scaffolded only; no emit sites |
 
 **Label values:**
 
+- `mark_linked_failures_total{outcome}`: `returned_false | raised` — `mark_linked` reports failure by RETURNING False rather than raising, so both arms are counted; the returning arm is the commoner one.
 - `async_retry_enqueued_total{reason}`: `timeout | 5xx | rate_limit | network_error | other`
 - `async_retry_outcome_total{outcome}`: `success | failure | timeout | superseded | cancelled`
 
@@ -56,6 +59,43 @@ never linked to an Evidence row.
       investigation_service.py::_preprocess_attachment` for errors between
       `store_file` and Evidence persistence.
     runbook_url: "https://docs.faultmaven.internal/runbooks/orphan-files"
+```
+
+> **⚠ The sweep's three counters are not scrapable as deployed.** They live in
+> a CronJob process that exits in ~25s, the pod carries no
+> `prometheus.io/scrape` annotation, and there is no pushgateway — so the alert
+> above cannot fire from the sweep, however it is written. Until that is fixed
+> (pushgateway, or alerting on the Kubernetes Job / its logs), the sweep's
+> observable channel is its **run summary log line**, which carries `found=`,
+> `deleted=`, `skipped_db_referenced=` and an `authority:` block with
+> `referenced_refs`, `referenced_by_db` and `unreferenced_by_db`. This is why
+> #1232 also added `faultmaven_evidence_mark_linked_failures_total` on the API
+> side: the drift that produces a stale sidecar is detectable there, in a
+> process Prometheus actually scrapes.
+
+### `evidence_mark_linked_failures`
+
+**Fires when:** the best-effort sidecar flip fails after an upload is already
+persisted. Post-#1232 this can no longer cause deletion — the sweep asks the
+database — so it counts a storage **leak**: the object is protected forever
+and will never be reclaimed.
+
+```promql
+- alert: evidence_mark_linked_failures
+  expr: increase(faultmaven_evidence_mark_linked_failures_total[1h]) > 0
+  for: 15m
+  labels:
+    severity: warning
+    team: platform
+  annotations:
+    summary: "Sidecar mark_linked failing — {{ $value }} in the last hour"
+    description: |
+      An upload was persisted but its storage sidecar was left at
+      linked=false. The orphan sweep will now refuse to reclaim that object
+      forever (it cross-checks uploaded_files.storage_ref), so this leaks
+      storage rather than risking data. Check
+      `investigation_service.py::_preprocess_attachment` and the storage
+      backend for errors on the mark_linked call.
 ```
 
 ### `evidence_turn_terminal_failure`

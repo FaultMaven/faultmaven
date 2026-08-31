@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Set, Tuple
 from uuid import UUID
 
 # ============================================================
@@ -97,6 +97,17 @@ class ICaseRepository(Protocol):
         a collection is orphaned only when no case row exists at all. Under
         the multi-tenant provider a complete set requires the maintenance DB
         role (the jobs runner enforces this for cross_tenant jobs).
+        """
+        ...
+
+    async def list_all_storage_refs(self) -> Set[str]:
+        """Every non-null ``uploaded_files.storage_ref``, any case, any owner.
+
+        The authority the orphan-file sweep (storage_cleanup) consults before
+        deleting a stored object. Under the multi-tenant provider a complete
+        set requires the maintenance DB role (the jobs runner enforces this
+        for cross_tenant jobs); an RLS-scoped partial view would report live
+        files as unreferenced.
         """
         ...
 

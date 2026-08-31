@@ -1,9 +1,36 @@
 """Storage Cleanup Job — TTL-Based Orphan File Removal
 
-Implements per evidence-failure-modes.md. Deletes
-files whose sidecar metadata shows `linked=False` AND whose `uploaded_at`
-is older than `orphan_file_ttl_hours`. Files without sidecars are skipped
-(unknown state is not a license to delete).
+Implements per evidence-failure-modes.md. Deletes files that the DATABASE does
+not reference AND whose sidecar metadata shows `linked=False` AND whose
+`uploaded_at` is older than `orphan_file_ttl_hours`. Files without sidecars are
+skipped (unknown state is not a license to delete).
+
+## The authority, and the cache
+
+`uploaded_files.storage_ref` is the authoritative record of whether a stored
+object is referenced. The sidecar (below) is a *cache* of that state, written
+once at upload and never revisited.
+
+Before this job cross-checked the database (issue #1232) it decided purely from
+that cache, and the cache is wrong in one direction that matters: `mark_linked`
+is best-effort in `InvestigationService._preprocess_attachment`, so a transient
+storage failure at exactly that step leaves `linked: false` beside a file the
+case genuinely references. At TTL the sweep deleted it — irreversible loss of
+user-uploaded evidence, detectable only by a user reporting a missing upload.
+
+So the sweep now asks the authority first: **anything named by an
+``uploaded_files`` row is skipped, whatever the sidecar says.** That makes the
+whole class impossible rather than rarer, and demotes the sidecar from a
+decision to a hint.
+
+The cross-check is deliberately **additive** — it only ever protects. The
+inverse rewrite ("the DB is the authority, so delete what it does not
+reference") sounds tidier and is a data-loss change wearing a data-safety
+label: the cache is *also* stale in the other direction (a `linked: true`
+sidecar outlives the row it described), so on a measured production corpus of
+850 candidates, 160 objects had no row and every one of them said
+`linked: true`. Deleting on "no row" alone would have destroyed all 160 on the
+first armed run. Both signals must agree before anything is deleted.
 
 ## Sidecar pairing
 
@@ -21,6 +48,21 @@ Every file stored via `FileStorageService.store_file()` gets a companion
 `FileStorageService.mark_linked()` flips `linked=true` once an Evidence row
 is created referencing the file (called from
 `InvestigationService._preprocess_attachment`).
+
+## Fail-closed postures
+
+Three refusals, all of which end the run with `status="skipped"` and delete
+nothing, because for a delete-deciding sweep "I could not ask" and "nothing is
+referenced" are indistinguishable at the point of decision:
+
+1. **No authority reachable** — no DI container, no case repository, or the
+   query raised. A dry run is refused too: its classification would be a
+   fiction someone might act on.
+2. **Empty reference set while candidates exist** — reads as "authority
+   unreachable or suspect", never as "nothing is referenced". This is the
+   specific shape RLS produces: `uploaded_files` is tenanted and fail-closed
+   (migration 018), so a session with no org bound sees ZERO rows.
+3. The pre-existing `orphan_cleanup_enabled` gate (below).
 
 ## Safety protocol
 
@@ -48,11 +90,12 @@ values — the plain invocation above is what the deployed CronJob runs.
 
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Optional, Set
 
 from faultmaven.infrastructure.observability.evidence_metrics import (
     EVIDENCE_ORPHAN_FILES_DELETED_TOTAL,
     EVIDENCE_ORPHAN_FILES_FOUND_TOTAL,
+    EVIDENCE_ORPHAN_FILES_RESCUED_TOTAL,
 )
 from faultmaven.modules.evidence.domain.services.file_storage_service import (
     FileStorageService,
@@ -61,12 +104,26 @@ from faultmaven.modules.evidence.domain.services.file_storage_service import (
 logger = logging.getLogger(__name__)
 
 JOB_DESCRIPTION = (
-    "Delete stored files whose sidecar metadata shows linked=False and "
-    "uploaded_at older than the TTL (PLAN-evidence-failure-modes M1)."
+    "Delete stored files that no uploaded_files row references, whose sidecar "
+    "shows linked=False, and whose uploaded_at is older than the TTL "
+    "(PLAN-evidence-failure-modes M1)."
 )
-# Backend sweep driven by sidecar metadata written at upload time — no tenanted
-# DB reads, so it runs identically in both tenancy modes.
-JOB_TENANT_SCOPE = "tenant_neutral"
+# The sweep asks the DATABASE whether an object is still referenced before
+# deleting it (issue #1232), and `uploaded_files` is not partitioned by anything
+# the storage backend exposes: a candidate key is just a key, so "referenced" is
+# only decidable against the storage_ref set of ALL organizations. An RLS-scoped
+# partial view would report every OTHER tenant's live files as unreferenced —
+# the same hazard case_cleanup carries, with irreversible loss at the end of it.
+# Under the multi-tenant provider the runner therefore refuses this job except on
+# the audited maintenance path (--cross-tenant-maintenance + the dedicated
+# BYPASSRLS role, probe-verified); see faultmaven.jobs.run and
+# docs/operations/evidence-job-scheduling.md.
+JOB_TENANT_SCOPE = "cross_tenant"
+
+# Refusal reasons (also the `reason` values on a skipped result).
+REASON_CLEANUP_DISABLED = "orphan_cleanup_disabled"
+REASON_AUTHORITY_UNAVAILABLE = "reference_authority_unavailable"
+REASON_REFERENCE_SET_EMPTY = "reference_set_empty"
 
 
 def ttl_hours_bounds() -> tuple[int, int]:
@@ -118,10 +175,35 @@ def validate_ttl_hours(value: int) -> int:
     return value
 
 
+async def load_referenced_storage_refs(container: Any) -> Set[str]:
+    """Ask the authority which stored objects are still referenced.
+
+    Mirrors ``case_cleanup``'s reference-set load: reach the repository off the
+    DI container the runner injects, and let a missing one be an error rather
+    than an empty answer. Returns every non-null ``uploaded_files.storage_ref``
+    in ONE query — ``storage_ref`` carries no index, so a per-candidate lookup
+    would be a full table scan each.
+
+    Raises:
+        RuntimeError: If no container or no case repository is available. The
+            caller must treat this as "cannot decide", never as "nothing is
+            referenced" — that distinction is the whole point of #1232.
+    """
+    case_repository = getattr(container, "case_repository", None) if container else None
+    if case_repository is None:
+        raise RuntimeError(
+            "No case repository available: the orphan sweep cannot ask the "
+            "database which stored objects are still referenced."
+        )
+    refs = await case_repository.list_all_storage_refs()
+    return set(refs or ())
+
+
 async def cleanup_orphaned_files(
     storage: FileStorageService,
     ttl_hours: int,
     dry_run: bool,
+    referenced_refs: Set[str],
 ) -> dict[str, Any]:
     """Sweep stored files and delete orphans.
 
@@ -129,23 +211,37 @@ async def cleanup_orphaned_files(
     local directory, so the sweep works whichever backend STORAGE_BACKEND
     selects.
 
+    Deletion requires BOTH signals to agree: the database must not reference
+    the object, and its sidecar must say `linked: false` past the TTL. See the
+    module docstring for why neither alone is safe.
+
     Returns a stats dict with counts for observability / CLI output.
-    Emits two Prometheus counters per run:
+    Emits three Prometheus counters per run:
       - ``faultmaven_evidence_orphan_files_found_total`` (+= found count)
       - ``faultmaven_evidence_orphan_files_deleted_total`` (+= deleted count;
         not incremented when dry_run is True)
+      - ``faultmaven_evidence_orphan_files_rescued_total`` (+= the count of
+        files the DB cross-check saved from a sweep that would otherwise have
+        selected them — a non-zero value means sidecar drift is live)
 
     Args:
         storage: FileStorageService owning the sidecar protocol.
         ttl_hours: Delete only files whose sidecar `uploaded_at` is older
             than this many hours. Younger files are always safe.
         dry_run: When True, log `would delete` without deleting.
+        referenced_refs: Every ``uploaded_files.storage_ref`` in the database
+            (see ``load_referenced_storage_refs``). Required, not optional: a
+            default would let a caller silently restore the pre-#1232
+            sidecar-only decision. An EMPTY set while candidates exist refuses
+            the run rather than deleting everything.
 
     Returns:
         Dict with keys: ``status``, ``storage_backend``, ``ttl_hours``,
         ``dry_run``, ``scanned``, ``skipped_no_sidecar``,
-        ``skipped_linked``, ``skipped_within_ttl``, ``stray_sidecars``,
-        ``found``, ``deleted``, ``errors``.
+        ``skipped_linked``, ``skipped_within_ttl``, ``skipped_db_referenced``,
+        ``referenced_by_db``, ``unreferenced_by_db``, ``stray_sidecars``,
+        ``found``, ``deleted``, ``errors``. A refused run additionally carries
+        ``reason``.
     """
     result: dict[str, Any] = {
         "status": "completed",
@@ -157,9 +253,20 @@ async def cleanup_orphaned_files(
         "stray_sidecars": 0,
         "skipped_linked": 0,
         "skipped_within_ttl": 0,
+        # Files the DB cross-check saved: the sidecar said orphan, the
+        # database said otherwise, and the database won. Non-zero means
+        # #1232's failure is live and would have destroyed data.
+        "skipped_db_referenced": 0,
+        # Standing classification of the whole candidate corpus against the
+        # authority, independent of any deletion decision. This is the
+        # referenced-fraction report: a one-off probe answers it once, these
+        # answer it every night.
+        "referenced_by_db": 0,
+        "unreferenced_by_db": 0,
         "found": 0,
         "deleted": 0,
         "errors": 0,
+        "referenced_refs": len(referenced_refs),
     }
 
     cutoff = datetime.now(UTC) - timedelta(hours=ttl_hours)
@@ -179,8 +286,39 @@ async def cleanup_orphaned_files(
             strays[:5],
         )
 
+    # Fail-closed guard on the reference set itself. "The authority returned
+    # nothing" and "nothing is referenced" are the same bytes and opposite
+    # instructions, and the first is what an RLS-scoped session produces on the
+    # fail-closed `uploaded_files` table (migration 018). Candidates exist and
+    # not one of them is referenced is pathological on any live deployment, so
+    # refuse the run rather than reclassify every live file as an orphan.
+    if candidates and not referenced_refs:
+        logger.error(
+            "Storage cleanup REFUSED: %d sweep candidate(s) but the database "
+            "reports ZERO referenced storage refs. Treating this as an "
+            "unreachable/suspect authority, not as 'nothing is referenced' — "
+            "under the multi-tenant provider an RLS-scoped session on "
+            "uploaded_files returns exactly this. Nothing was deleted. Check "
+            "that the run holds the maintenance DB role.",
+            len(candidates),
+        )
+        result["status"] = "skipped"
+        result["reason"] = REASON_REFERENCE_SET_EMPTY
+        result["scanned"] = 0
+        return result
+
     for storage_key in candidates:
         result["scanned"] += 1
+
+        # Classify against the authority for every candidate, before any
+        # decision branch can `continue` past it — otherwise the standing
+        # referenced-fraction report would only cover files that happened to
+        # reach the end of the chain.
+        is_referenced = storage_key in referenced_refs
+        if is_referenced:
+            result["referenced_by_db"] += 1
+        else:
+            result["unreferenced_by_db"] += 1
 
         try:
             payload = await storage.read_sidecar(storage_key)
@@ -222,7 +360,34 @@ async def cleanup_orphaned_files(
             result["skipped_within_ttl"] += 1
             continue
 
-        # Candidate for deletion: unlinked AND past TTL.
+        # The authority has the last word (#1232). Everything above this line
+        # is the sidecar's opinion, and the sidecar is a write-once cache that
+        # goes stale in both directions. Reaching here means it says "orphan
+        # past TTL"; if the database still references the object, the sidecar
+        # is simply wrong and the file is live.
+        #
+        # Its own bucket, not skipped_linked: this is the drift the sweep would
+        # have destroyed, and folding it into a neighbouring counter would make
+        # the count lie about why. It is also the operator signal the mark_linked
+        # path never had — the WARNING names the file.
+        if is_referenced:
+            result["skipped_db_referenced"] += 1
+            try:
+                EVIDENCE_ORPHAN_FILES_RESCUED_TOTAL.inc()
+            except Exception:
+                pass
+            logger.warning(
+                "Sidecar drift: %s is past TTL with linked=False, but an "
+                "uploaded_files row still references it — NOT deleting "
+                "(uploaded=%s). The sidecar's linked flag was never flipped; "
+                "see issue #1232.",
+                storage_key,
+                uploaded_at_str,
+            )
+            continue
+
+        # Candidate for deletion: unreferenced by the DB AND unlinked AND
+        # past TTL.
         result["found"] += 1
         try:
             EVIDENCE_ORPHAN_FILES_FOUND_TOTAL.inc()
@@ -260,17 +425,22 @@ async def cleanup_orphaned_files(
 
     logger.info(
         "Storage cleanup %s — scanned=%d, found=%d, deleted=%d, "
-        "skipped_linked=%d, skipped_within_ttl=%d, skipped_no_sidecar=%d, "
-        "stray_sidecars=%d, errors=%d",
+        "skipped_db_referenced=%d, skipped_linked=%d, skipped_within_ttl=%d, "
+        "skipped_no_sidecar=%d, stray_sidecars=%d, errors=%d | authority: "
+        "referenced_refs=%d, referenced_by_db=%d, unreferenced_by_db=%d",
         "DRY RUN" if dry_run else "live",
         result["scanned"],
         result["found"],
         result["deleted"],
+        result["skipped_db_referenced"],
         result["skipped_linked"],
         result["skipped_within_ttl"],
         result["skipped_no_sidecar"],
         result["stray_sidecars"],
         result["errors"],
+        result["referenced_refs"],
+        result["referenced_by_db"],
+        result["unreferenced_by_db"],
     )
     return result
 
@@ -308,6 +478,13 @@ async def run(
     explicit ``dry_run=False`` therefore asks for deletion without granting
     it — it satisfies neither arm while cleanup is disabled.
 
+    A second, independent gate follows it: the reference authority must answer
+    (see ``load_referenced_storage_refs``). ``container`` stops being decorative
+    here — it is where the case repository comes from — so a run without one is
+    refused rather than degraded to the pre-#1232 sidecar-only decision. The
+    refusal covers dry runs too: a classification computed without the authority
+    is a fiction, and the whole point of the dry run is that someone reads it.
+
     Raises:
         ValueError: If ``ttl_hours`` is outside the setting's own range.
     """
@@ -335,21 +512,42 @@ async def run(
         )
         return {
             "status": "skipped",
-            "reason": "orphan_cleanup_disabled",
+            "reason": REASON_CLEANUP_DISABLED,
+        }
+
+    # Ask the authority BEFORE constructing the storage service, so a run that
+    # cannot decide never enumerates anything it might be tempted to act on.
+    referenced_refs: Optional[Set[str]] = None
+    try:
+        referenced_refs = await load_referenced_storage_refs(container)
+    except Exception as e:
+        logger.error(
+            "Storage cleanup REFUSED: could not read the referenced storage "
+            "refs from the database (%s). Nothing was deleted — a sweep that "
+            "cannot ask the authority must not fall back to the sidecar, which "
+            "is exactly the failure issue #1232 closes.",
+            e,
+        )
+        return {
+            "status": "skipped",
+            "reason": REASON_AUTHORITY_UNAVAILABLE,
+            "error": str(e),
         }
 
     storage = FileStorageService()
     logger.info(
         "Storage cleanup starting (backend=%s, ttl_hours=%d, dry_run=%s, "
-        "enabled=%s)",
+        "enabled=%s, referenced_refs=%d)",
         storage.backend.get_storage_type().value,
         effective_ttl_hours,
         effective_dry_run,
         ev_settings.orphan_cleanup_enabled,
+        len(referenced_refs),
     )
 
     return await cleanup_orphaned_files(
         storage=storage,
         ttl_hours=effective_ttl_hours,
         dry_run=effective_dry_run,
+        referenced_refs=referenced_refs,
     )

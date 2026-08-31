@@ -9,7 +9,7 @@ import logging
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 from faultmaven.modules.case.domain.models import (
     Case,
@@ -104,6 +104,37 @@ class CaseRepository(ABC):
 
         Returns:
             List of case ids (unordered).
+
+        Raises:
+            RepositoryException: If the query fails
+        """
+        pass
+
+    @abstractmethod
+    async def list_all_storage_refs(self) -> Set[str]:
+        """
+        Return every non-null ``uploaded_files.storage_ref`` value.
+
+        The AUTHORITY the orphan-file sweep (storage_cleanup) consults before
+        deleting a stored object: an object named by any row here is live,
+        whatever its storage sidecar happens to say. The sidecar is a cache of
+        this state written once at upload and never revisited, so a sweep that
+        decides from the sidecar alone deletes files a case still references
+        whenever the cache is stale in that direction (issue #1232).
+
+        Deliberately unfiltered by case state or owner — a terminal case still
+        references its evidence. Under the multi-tenant provider a complete
+        (cross-tenant) result requires the maintenance DB role, which the jobs
+        runner enforces for cross_tenant jobs: ``uploaded_files`` is RLS-tenanted
+        and fail-closed, so an unbound app-role session returns ZERO rows, which
+        for a delete-deciding sweep reads as "nothing is referenced".
+
+        Returned as a set because the only supported use is membership testing
+        against a sweep candidate; ``storage_ref`` carries no index, so callers
+        must not turn this into N point lookups.
+
+        Returns:
+            Set of storage refs (nulls dropped).
 
         Raises:
             RepositoryException: If the query fails
@@ -874,6 +905,15 @@ class InMemoryCaseRepository(CaseRepository):
     async def list_all_case_ids(self) -> List[str]:
         """Every stored case id, regardless of state (see CaseRepository)."""
         return list(self._cases.keys())
+
+    async def list_all_storage_refs(self) -> Set[str]:
+        """Every stored file's storage_ref, any case (see CaseRepository)."""
+        return {
+            uploaded_file.storage_ref
+            for case in self._cases.values()
+            for uploaded_file in (getattr(case, "uploaded_files", None) or [])
+            if getattr(uploaded_file, "storage_ref", None)
+        }
 
     async def list(
         self,

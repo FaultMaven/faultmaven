@@ -124,6 +124,12 @@ class SessionlessCaseRepository(CaseRepository):
             repo = get_repository_for_session(session)
             return await repo.list_all_case_ids()
 
+    async def list_all_storage_refs(self) -> set[str]:
+        """Every non-null uploaded_files.storage_ref (see CaseRepository)."""
+        async with get_db_session() as session:
+            repo = get_repository_for_session(session)
+            return await repo.list_all_storage_refs()
+
     async def list_by_user(
         self,
         user_id: str,

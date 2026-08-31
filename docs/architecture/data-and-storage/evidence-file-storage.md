@@ -92,10 +92,20 @@ a companion **sidecar object** at key `{key}.meta.json`:
 
 `mark_linked()` flips `linked` to `true` once the referencing `Evidence` row
 exists. The `storage_cleanup` job sweeps sidecars via
-`IFileStorageBackend.list_keys()` and deletes only files that are both
-`linked=false` and older than `ORPHAN_FILE_TTL_HOURS`. A file with no sidecar
-is *never* deleted, and neither is one whose sidecar cannot be read — unknown
-state is not a licence to delete.
+`IFileStorageBackend.list_keys()` and deletes only files that are
+`linked=false`, older than `ORPHAN_FILE_TTL_HOURS`, **and not named by any
+`uploaded_files.storage_ref` row**. A file with no sidecar is *never* deleted,
+and neither is one whose sidecar cannot be read — unknown state is not a
+licence to delete.
+
+The sidecar is a **cache** of the database's linkage state, and the database
+is the authority (#1232). `mark_linked` is best-effort, so a transient failure
+there leaves `linked=false` beside a file the case still references; the
+sidecar-only sweep deleted it at TTL. The cross-check is strictly additive —
+it only ever protects — because the cache is *also* stale the other way: on a
+measured production corpus, every one of the 160 objects with no row said
+`linked=true`, so deleting on "no row" alone would destroy them all. Both
+signals must agree.
 
 The suffix is **reserved**, in two independent layers. Without them an object
 whose own key ends in `.meta.json` is enumerated as some other object's

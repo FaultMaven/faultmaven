@@ -27,7 +27,9 @@ job module declares ``JOB_TENANT_SCOPE``:
   Under single-tenant the Standalone default already scopes correctly.
 - ``cross_tenant`` — needs a view across ALL organizations (e.g. case_cleanup
   diffs the DB case-id set against ChromaDB collections, which are not
-  org-partitioned). Under multi this **fails closed by default**: RLS scopes
+  org-partitioned; storage_cleanup diffs the DB ``uploaded_files.storage_ref``
+  set against stored objects, whose keys carry no tenant the backend enforces).
+  Under multi this **fails closed by default**: RLS scopes
   every DB transaction to the single org bound in the tenant context, so a
   run under the regular app role would see a partial id set and delete other
   tenants' data. The audited maintenance path (ADR-010 / #629) is the ONLY

@@ -173,10 +173,11 @@ This document describes the complete evidence flow architecture in FaultMaven. A
 │  │                                                                     │ │
 │  │ storage_cleanup (faultmaven.modules.agent.jobs.storage_cleanup):  │ │
 │  │   - TTL-based orphan-file sweep (default 24h)                     │ │
-│  │   - Sidecar-driven: every stored file has a {name}.meta.json     │ │
-│  │     sidecar; mark_linked() flips linked=true after Evidence       │ │
-│  │     creation. Sweep deletes files whose sidecar says linked=false │ │
-│  │     AND uploaded_at > TTL ago.                                    │ │
+│  │   - Two signals must agree (#1232): the DB must not reference the │ │
+│  │     object (uploaded_files.storage_ref) AND its {name}.meta.json  │ │
+│  │     sidecar must say linked=false AND uploaded_at > TTL ago. The  │ │
+│  │     sidecar is a cache (mark_linked() is best-effort); the row is │ │
+│  │     the authority. Refuses to run if it cannot ask the DB.        │ │
 │  │   - Gated on orphan_cleanup_enabled + orphan_cleanup_dry_run      │ │
 │  │     (default dry_run=True — 48h canary protocol required before   │ │
 │  │     enabling real deletes in production)                          │ │
