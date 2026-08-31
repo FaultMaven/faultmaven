@@ -89,11 +89,13 @@ The arms run sequentially rather than concurrently. Once the embedding is shared
 
 **Query A — Pure vector search:** Retrieves `k * 3` candidates (minimum 15) ranked by cosine similarity. This is the broad semantic net.
 
-**Query B — Keyword-constrained vector search:** For each extracted keyword, runs a vector search with `where_document={"$contains": keyword}` to require that the keyword is present in the chunk text. Results are then ranked by cosine similarity within that filtered set. Up to 3 keywords are used, so this arm issues up to 3 separate ChromaDB queries; results from all keyword passes are deduplicated. Every probe reuses the one query vector — only the `where_document` filter differs between them.
+**Query B — Keyword-constrained vector search:** For each extracted keyword, runs a vector search with a `where_document` clause requiring that the keyword is present in the chunk text. Results are then ranked by cosine similarity within that filtered set. Up to 3 keywords are used, so this arm issues up to 3 separate ChromaDB queries; results from all keyword passes are deduplicated. Every probe reuses the one query vector — only the `where_document` filter differs between them.
 
-> **Important:** The keyword gate is binary `$contains`, not BM25. There is no term frequency or inverse document frequency scoring. The value of this path is catching identifier matches — error codes, service names, CamelCase tokens — that pure embedding search tends to underweight.
+> **The gate is case-insensitive by construction, because `$contains` is not.** ChromaDB's `$contains` is a case-**sensitive** substring test and the keyword handed to it is whatever the user typed. Measured on the shipped pack: `ENOSPC` matches 11 chunks and `enospc` matches 0; `PID` matches 42 and `pid` matches 98. The yield of the arm that exists to catch identifiers therefore depended on the reporter's shift key, and silently — a probe that matches nothing is indistinguishable from a term the corpus does not hold. `_where_document_for_keyword` emits an `$or` over the deduplicated case variants instead ([#1272](https://github.com/FaultMaven/faultmaven/issues/1272)). An `$or` rather than a regex, because the keyword is user input and a regex would make its punctuation meaningful.
 
-Keywords are extracted heuristically, with identifier-like tokens (error codes matching `ERR-\d+`, CamelCase names like `CrashLoopBackOff`, dotted names like `java.lang.OutOfMemoryError`) prioritized over generic terms.
+> **The gate is still binary presence, not BM25.** There is no term-frequency component anywhere in the pipeline. Inverse document frequency now exists — see Stage 2 — but it weights the reranker's overlap signal and orders these keywords; it does not score this arm.
+
+**Which keywords, and in what order — the whole decision.** Only the first three survive into probes. With a corpus term index available the order is by IDF, rarest first, and terms the corpus has never indexed are dropped outright: a probe for them is guaranteed to return nothing and would spend one of three slots proving it. On `qemu cannot write its PID file` the shape-based order spends its slots on `qemu` (0 chunks), `cannot` (241) and `write` (98); the IDF order spends them on `PID`, `write` and `file`, and that is what puts the right runbook back in the candidate set. Without an index it falls back to the shape heuristics (error codes matching `ERR-\d+`, CamelCase names like `CrashLoopBackOff`, dotted names like `java.lang.OutOfMemoryError`).
 
 Results from both queries are merged by deduplication, keeping the higher cosine score for any chunk that appears in both.
 
@@ -104,13 +106,19 @@ Each candidate chunk is scored across four weighted signals:
 | Signal | Weight | Computation |
 |--------|--------|-------------|
 | Vector similarity | 40% | Cosine score from ChromaDB, converted per §above (see note) |
-| Term overlap | 25% | Fraction of non-stop-word query terms found in chunk text (binary, not TF-IDF) |
+| Term overlap | 25% | Share of the query's **IDF-weighted** non-stop-word mass found in chunk text (no TF component) |
 | Metadata match | 20% | Domain/service alignment with `context_metadata` + verification status bonus/penalty |
 | Freshness | 15% | Half-life decay: `1 / (1 + age_days / 365)` based on `last_updated` |
 
 **The 40% is only 40% now.** Signal 1 reads the store's score directly, so before #1072 it carried `2·cos − 1`. The `−1` is constant across candidates and drops out of the ordering, but the *slope* did not: the vector signal moved the composite by `0.8·cos` while the other three — genuine 0–1 quantities — moved it by their stated weights. The vector signal was effectively double-weighted, and these four numbers never described the blend they configured. Correcting the conversion makes them accurate for the first time; measured against the shipped KB, top-5 ordering changes on roughly a third of queries, always as a reshuffle within the same document set rather than a different set of runbooks.
 
 The weights have **not** been retuned on the corrected scale, deliberately. Picking new ones without a measured relevance judgement would repeat the error #1072 was: a plausible number, reasoned rather than observed. They now mean what they say, which is the precondition for tuning them, not a substitute for it.
+
+**Term overlap is IDF-weighted (#1272).** It used to be the plain fraction of query terms present, which counted `pid` (84 of the shipped pack's 1297 chunks) exactly as much as `enospc` (11). In prose where every document says "service", "error" and "failed", that scores a query on how many of its words appear rather than on whether the words that *identify the problem* appear — which is the mechanism behind #1272, where a QEMU incident retrieved Kubernetes runbooks that matched on "failed", "start" and "file" alone. Document frequencies come from `CorpusTermStats`, a minimal inverted index built once per collection from `collection.get(include=["documents"])` and rebuilt when the collection's size changes or a write invalidates it. It is bounded by `MAX_TERM_INDEX_CHUNKS` (50 000) and every consumer treats its absence as "no statistics" and falls back to the old binary fraction — a failed build degrades ranking, it never fails a search.
+
+**Two scores are returned, deliberately different.** `score` is the raw cosine: absolute, comparable across queries, and therefore the scale every admission floor is expressed in. `rerank_score` is the Stage-2 blend that determined the order: relative to one candidate set, meaningless across queries. Before #1272 the blend was computed, sorted on, and then discarded — the candidates were returned unmodified, so every consumer read `score` while the list was ordered by something else, and no downstream threshold could filter on the quantity that had ranked it. Never filter on `rerank_score`; never rank on `score` alone.
+
+**Grounding evidence rides with each result.** `term_coverage` (this chunk's IDF-weighted coverage of the query) and `identity_terms_in_query` (the words naming this chunk's own document — its title's terms and its `service` — that appear in the query) are written back alongside the scores. They answer converse questions: does this chunk cover the query, and was the query about this document? Retrieval only ever asks the first. Only this function holds both the corpus statistics and the full chunk text, so a consumer that must decide whether to *act* on a result cannot re-derive them. See §"Grounding: seeding is not retrieval".
 
 **Metadata match scoring details:**
 
@@ -123,6 +131,8 @@ The weights have **not** been retuned on the corrected scale, deliberately. Pick
 | Status is `draft` | -0.10 |
 | Status is `stale` | -0.20 |
 | Status is `deprecated` | -0.30 |
+
+The components sum on `[-0.3, 1.0]` and are mapped **affinely** onto `[0, 1]`, not truncated at zero. Truncation destroyed the demotion half of the signal outright: with no case context (the shipped state — every pack runbook is `draft`) `draft`, `stale` and `deprecated` all clamped to `0.0`, so a runbook its author had marked DEPRECATED scored exactly as well as an unreviewed one, and the lifecycle ordering this table documents held only above zero (#1272). The map preserves every relative gap above; only the floor moves.
 
 **Context metadata: hard filter vs soft boost.** When the extension provides high-confidence context (e.g., the user is on a PostgreSQL dashboard), domain/service should be applied as a **hard pre-filter** in the ChromaDB `where` clause — like scope filtering. Irrelevant chunks (Kubernetes runbooks for a PostgreSQL issue) should never enter Stage 1. When confidence is low or context is ambiguous, fall back to the soft rerank boost (+0.30) described above. The `filter_mode` parameter on `hybrid_search()` is implemented — `"hard"` adds domain/service to the `where` clause (`_apply_hard_metadata_filter`), `"soft"` (default) applies the rerank boost only. The **soft** path is wired end-to-end: the engine feeds the case's affected service into `hybrid_search(context_metadata=…, filter_mode="soft")` on every KB retrieval, so the metadata-match signal fires on service alignment rather than status alone. What remains is the **hard** path — threading *high-confidence* context from copilot → API → `KBToolAdapter` so a caller can safely select `"hard"` and drop irrelevant chunks pre-retrieval. Today every live caller uses the soft rerank path. (Domain is not yet supplied by the engine: the case model has no domain field, and a fabricated default would create false exact-matches; only `service` is currently derived.)
 
@@ -145,7 +155,9 @@ Currently only the deep path is implemented. The fast path would be a `search_mo
 
 The natural-language reranker weights are 40/25/20/15. SRE queries vary widely: pasting `CrashLoopBackOff` is a lexical match problem (text weight should dominate), while asking "why is my service slow after deploying the new cache layer" is a semantic problem. A fixed ratio would underweight lexical match for the exact-identifier queries that are extremely common in SRE workflows.
 
-The reranker therefore detects identifier-like tokens in the query (error codes, CamelCase names, dotted names, status codes, file paths) via regex (`_rerank`, `RERANK_WEIGHT_*_ID` constants). When present, it shifts term overlap weight from 25% to 40% and reduces vector similarity from 40% to 25%. No ML needed — pattern detection is sufficient.
+The reranker therefore detects whether the query names something specific and, when it does, shifts term overlap weight from 25% to 40% and reduces vector similarity from 40% to 25% (`_rerank`, `RERANK_WEIGHT_*_ID` constants).
+
+**Specificity is decided by rarity, not by spelling (#1272).** The shape patterns answer a different question than the one being asked: they recognise how identifiers are conventionally *written* — CamelCase, `ERR-500`, dotted names — and the terms that discriminate hardest in operational text are ordinary-looking lowercase words (`qemu`, `enospc`, `libvirt`) that no shape rule separates from `cannot`. A query term occurring in at most `IDENTIFIER_DF_RATIO` (2%) of indexed chunks counts as identifier-like. Expressed as a ratio rather than an IDF value so it does not silently re-tune itself as the corpus grows; on the shipped pack 2% ≈ 25 chunks, which admits `enospc` (11) and `binary` (23) and excludes `pid` (84). The shape patterns remain as the fallback wherever no term index exists.
 
 ---
 
@@ -204,6 +216,62 @@ The `UnifiedKBConfig.format_chunk_metadata()` method computes staleness at retri
 - `deprecated` status: penalty applied in reranker; content should be excluded from the collection via lifecycle governance
 
 The synthesis LLM's system prompt (in `UnifiedKBConfig.system_prompt`) explicitly instructs the model to warn users when chunks are stale or in draft status, and to prefer verified, recently-updated content. This means staleness warnings propagate naturally to the user response without special agent-side handling.
+
+### Grounding: seeding is not retrieval
+
+Two consumers read the same results and owe the user different things. The
+prompt surface (`case.kb_context`) *shows* runbook prose the model may ignore.
+The KB cause seeder *asserts* "this may be why your system is broken" as a
+candidate root cause. The bar for showing and the bar for asserting are not the
+same bar, and until #1272 there was only one.
+
+**What retrieval cannot see.** Every signal in Stage 2 asks a version of "does
+this chunk answer the query?". None asks "was the query about this document?".
+Those come apart exactly where it hurts: `Failed to start QEMU binary cannot
+create PID file` is answered plausibly by a Kubernetes CrashLoopBackOff runbook,
+because the only word identifying the system — `qemu` — appears in none of the
+91 shipped runbooks, so every candidate matches on `failed`, `start` and `file`
+alone. Eight runbooks cleared the relevance floor on that query and every one
+was about a different platform; three of them cleared #1144's corroboration
+guard too, because that guard asks whether a runbook matched *broadly*, which a
+wrong one can.
+
+**The gate.** A runbook may seed only if **the query named it** (one of its
+title or `service` terms appears in the query) **or** **it covers the query**
+(a chunk's IDF-weighted `term_coverage` ≥ `KB_SEED_MIN_TERM_COVERAGE`). Two
+grounds because there are two legitimate shapes of a correct match, and each arm
+alone loses one:
+
+| shape | example | why the other arm fails it |
+|---|---|---|
+| named | "Nginx is returning 502 Bad Gateway" → *NGINX 502 Bad Gateway* | coverage is 0.21–0.52 here: such statements carry incident specifics (percentages, timestamps) no runbook can contain |
+| covers | "Services fail to start or crash with write errors referencing ENOSPC" → *Linux Disk Full*, whose symptom section states it verbatim (coverage 1.00) | the query names no platform — and symptom-phrased queries are the normal shape for this product |
+
+Judged **per runbook**, never per chunk: grounding decides whether the document
+belongs, corroboration decides whether it matched broadly. Judging each chunk
+separately makes grounding do corroboration's job a second time and silently
+tightens it — a runbook admitted on its verbatim symptom chunk is then declined
+for want of a second, even though its other retrieved chunks are the breadth
+#1144 asks for.
+
+**Alternatives, measured and rejected.** All against the shipped pack over 34
+statements (the 24 labelled ones in `tests/eval/kb_cause_seeder` plus #1272's
+queries and adversarial variants):
+
+| candidate gate | why not |
+|---|---|
+| a higher similarity floor | does not separate: correct seeds 0.571–0.780, confidently wrong ones 0.509–0.673 |
+| a confidence test on the cosine | actively backfires — a flat distribution still has a top standard deviations above its own median, and the wrong answer measured ~3.0σ where a correct one measured ~1.9σ |
+| "the query names something the corpus never indexed" | false-blocks ordinary prose: on "postgres connections exhausted since Tuesday afternoon" the unseen words are `tuesday` and `afternoon` |
+| a lexical-distinctiveness ratio (best chunk vs a corpus percentile) | measures query *specificity*, not answer correctness — the QEMU queries score above the generic-but-correctly-answered ones |
+
+**What it costs and buys.** Correct seeds 21 → 21 (no statement lost a correct
+seed), wrong seeds 24 → 9. `KB_SEED_MIN_TERM_COVERAGE` is insensitive: every
+value from 0.80 to 0.95 gives an identical outcome. A hit carrying no grounding
+evidence at all — the pure-vector path, or no term index — is **not judged**: an
+absent measurement must not authorise what the gate withholds, and must not
+silently disable seeding either. `kb_cause_seed_ungrounded_total` is how the
+constant gets re-sized on evidence.
 
 ### Tool Path
 
@@ -415,9 +483,12 @@ This maps onto FaultMaven's existing hypothesis lifecycle (CAPTURED → ACTIVE �
 | Feature | Status | Notes |
 |---------|--------|-------|
 | Hybrid search (Stage 1 + Stage 2) | **Implemented** | `KnowledgeVectorStore.hybrid_search()` |
-| Binary keyword search | **Implemented** | `$contains` via `where_document` — not BM25 |
-| Four-signal reranker | **Implemented** | Vector, term overlap, metadata match, freshness |
-| Dynamic hybrid weights | **Implemented** | Identifier-heavy queries shift term overlap to 40%, vector to 25% |
+| Binary keyword search | **Implemented** | `$contains` via `where_document`, case-insensitive since #1272 — presence only, not BM25 |
+| Four-signal reranker | **Implemented** | Vector, term overlap, metadata match, freshness. Blend returned as `rerank_score` beside the cosine (#1272) |
+| Corpus IDF (term index) | **Implemented** | `CorpusTermStats` — per-collection inverted index; weights term overlap, orders keyword probes, and decides query specificity (#1272) |
+| Dynamic hybrid weights | **Implemented** | Queries naming something rare (`IDENTIFIER_DF_RATIO`, 2% of chunks) shift term overlap to 40%, vector to 25% |
+| Hybrid on the seeding path | **Implemented** | `search_knowledge(use_hybrid=True, min_score=…)` from `_prefetch_kb_context`; the floor is applied at admission, before the top-k cut (#1272) |
+| Seeding grounding gate | **Implemented** | A runbook may seed a candidate cause only if the query named it or it covers the query (`KB_SEED_MIN_TERM_COVERAGE`, #1272) |
 | Hard pre-filter mode | **Implemented (mechanism only)** | `filter_mode="hard"` injects domain/service into the ChromaDB where clause (`_apply_hard_metadata_filter`). Not yet invoked end-to-end — see "Extension context → KB metadata filters" below. |
 | Fast search mode | **Not done** | Declared in the `search_mode` property docstring, but no config returns `"fast"` and nothing dispatches it. Planned low-latency path (§3 Dual Retrieval Paths). |
 | Scope tiebreaking | **Implemented** | personal > team > global secondary sort in `_rerank()` |
@@ -425,7 +496,8 @@ This maps onto FaultMaven's existing hypothesis lifecycle (CAPTURED → ACTIVE �
 | Scope safety (pre-filtering) | **Implemented** | ChromaDB `where` clause pre-filters before ANN search. `_enforce_scope_invariant()` raises `ValueError` on unscoped queries. |
 | Case context → KB soft rerank boost | **Implemented** | Engine derives the affected service (`derive_kb_context_metadata()`) onto `ToolContext.kb_context_metadata`; threaded through `KBToolAdapter` → `AnswerFromKB` → `DocumentQATool` → `hybrid_search(context_metadata=…, filter_mode="soft")`. `service` only; `domain` not yet supplied by the case model. |
 | Copilot high-confidence context → hard pre-filter | **Deferred** | `hybrid_search()` accepts `context_metadata` + `filter_mode="hard"`, but no live caller selects `"hard"`. Requires copilot page-comprehension → API → `KBToolAdapter` cross-repo wiring. |
-| True BM25 | **Not done** | ChromaDB does not expose BM25. Binary `$contains` is a partial substitute. Would need `rank_bm25` lib or separate index. |
+| True BM25 | **Partial** | The IDF half now exists (`CorpusTermStats`, weighting the reranker's overlap signal). There is still no term-frequency or length-normalisation component, and ChromaDB exposes no BM25 index — a full implementation would need `rank_bm25` or a separate index. |
+| Title in the embedded text | **Not done** | The chunker strips YAML front matter and splits at every `#{1,4}` heading, so only 16 of the shipped pack's 1297 chunks contain their own runbook's title. A query that IS a title therefore matches nothing lexically and competes on section prose alone: `"Linux Disk Full"` returns that runbook 3rd on the pure-vector path, behind `MySQL Replication Broken` §"Cause F: Disk full on replica" and `Kafka Broker Failure` §"Cause B: Disk Full or I/O Error" — both of which are, literally, more about a full disk than its own `Cause Z: Unidentified` chunk. Fixing it means prepending a contextual header to each chunk at index time, which changes what is embedded and so requires a pack rebuild in `faultmaven-kb-toolkit`. Measured in #1272; the grounding gate reads the title from metadata, so the *seeding* path already uses it. |
 | Cross-encoder reranker | **Not done** | Would add a dedicated reranking model (e.g., `ms-marco-MiniLM`) between retrieval and synthesis. Adds model dependency + latency. |
 | Citation grounding | **Not done** | No post-generation verification that cited chunks support the claims attributed to them. |
 | Result caching | **Not done** | `KBConfig.cache_ttl` exists but nothing reads it — no caching layer wraps `hybrid_search()` or `answer_question()`. |
