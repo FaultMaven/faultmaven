@@ -2677,11 +2677,19 @@ def _restatement_held_suggestions(case: "Case", *, hold=None) -> list:
             {
                 "label": "Say whether the standing explanations are the same cause",
                 "action_type": "FREE_SPEECH",
+                # The "these two may be one cause worded twice" framing was
+                # retired with fm#1122: a root whose whole overlap ONE standing
+                # explanation accounts for is now released as a duplicate, so a
+                # root that is still sibling-held is one the standing
+                # explanations SPAN — each contributing something the others do
+                # not. Ruling one out is what collapses that span; asking
+                # whether they are the same cause no longer describes the
+                # population this move is offered to.
                 "body": (
-                    "Two of the causes on the table may be one cause worded "
-                    "twice, or genuinely different. Saying which — or ruling one "
-                    "out — clears the overlap that is holding the leading "
-                    "explanation."
+                    "The leading explanation spans two of the causes on the "
+                    "table rather than picking one. Ruling one of them out — or "
+                    "saying which single mechanism is doing the work — clears "
+                    "the overlap that is holding it."
                 ),
             }
         )

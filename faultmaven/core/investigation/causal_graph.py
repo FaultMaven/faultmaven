@@ -808,13 +808,20 @@ def root_restates_case_frame(node: "CausalNode", case: Case) -> bool:
     TERSE sibling is contained in the root; both readings would excuse the
     incident shape, so neither is used (fm#1137 review).
 
-    KNOWN LIMIT (fm#1137, unfixed by design): the frame cannot tell a
-    hypothesis that DUPLICATES this root's own hypothesis from one stating a
-    genuinely different cause, so a duplicate the model leaves standing and
-    unattached frames its own root and can hold it at INCONCLUSIVE
-    indefinitely. Every lexical separator tried releases the #656 shape as
-    well; the recovery is elicited from the model instead — see
-    ``restatement_held_root_ids`` and its context annotation.
+    Non-novelty is then ATTRIBUTED (fm#1122, ``_node_restates``): a root held
+    by the anchors alone is the symptom dressed as a cause and stays held; a
+    root whose whole deficit is attributable to ONE standing hypothesis — which
+    must also be the root's PRINCIPAL source, covering at least as much of it as
+    the anchors do — is that hypothesis's own cause said twice, a duplicate,
+    released; and a root that is non-novel only against the UNION of several
+    standing causes is aggregating the case's open candidates, which is the #656
+    shape and stays held. This replaces the fm#1137 known limit (a standing duplicate framing
+    its own root and holding it at INCONCLUSIVE indefinitely, with "collect
+    more evidence" as the only advice against a bar evidence cannot move). It
+    is a quantifier, not a threshold: fm#1137/#1140 swept "how much does one
+    sibling cover" and found the classes overlap, so the question asked here is
+    whether ONE sibling accounts for ALL of it — which a disjunct cannot do for
+    a disjunction.
 
     ROOT-only by design (rungs adjacent to ``D`` legitimately paraphrase).
     Known limits (§7.1): the check is lexical — synonym paraphrases and
@@ -849,8 +856,15 @@ def _frame_components(case: Case) -> tuple:
 def _node_restates(
     statement_tokens: set, node_id: str, anchors: set, hyp_token_sets: list
 ) -> bool:
-    """Novelty core shared by the single-node and batch forms."""
-    frame = set(anchors)
+    """Novelty core shared by the single-node and batch forms.
+
+    Two questions, in order. **Is the root novel at all** against the frame
+    (problem anchors + other standing hypotheses)? If yes it is not a
+    restatement and nothing else matters. If no, **is the case really saying
+    this already, or is one claim saying it twice** — the §7.1 ATTRIBUTION test
+    below.
+    """
+    elements = []
     for rid, tokens in hyp_token_sets:
         if rid == node_id:
             continue  # attached own hypothesis
@@ -858,11 +872,91 @@ def _node_restates(
             statement_tokens, tokens, _FRAME_OWNER_JACCARD
         ):
             continue  # unattached presumptive owner (attachment lag)
+        elements.append(tokens)
+    frame = set(anchors)
+    for tokens in elements:
         frame |= tokens
     if not frame:
         return False  # no frame to restate — the guard is inert
-    novel = len(statement_tokens - frame) / len(statement_tokens)
-    return novel < ROOT_NOVELTY_MIN_FRACTION
+    residue = statement_tokens - frame
+    if len(residue) / len(statement_tokens) >= ROOT_NOVELTY_MIN_FRACTION:
+        return False  # novel against the frame — not a restatement
+    # §7.1 ATTRIBUTION (fm#1122). "The case already says this" has to be
+    # attributable to something the case actually CLAIMS. The problem anchors
+    # are such a claim on their own — a root they alone cover is the symptom
+    # dressed as a cause, and no sibling excuses it, so that arm is decided
+    # first and unconditionally.
+    if len(statement_tokens - anchors) / len(statement_tokens) < (
+        ROOT_NOVELTY_MIN_FRACTION
+    ):
+        return True
+    # Otherwise the hold comes from the hypotheses, and there are two ways it
+    # can: the root's content is DISTRIBUTED across several standing causes, or
+    # ONE of them accounts for the whole of it.
+    #
+    #   * Distributed — no single sibling covers what the frame covers, because
+    #     each is missing the others' distinctive content. That is a root
+    #     AGGREGATING the case's open candidates ("X or Y causing D") rather
+    #     than explaining any of them: the #656 shape, and the thing this guard
+    #     exists to refuse. Held.
+    #   * Attributable to one — the root says nothing the problem statement
+    #     plus that ONE hypothesis does not already say. The two are the same
+    #     claim, worded once as a terse cause node and once as a chain
+    #     narrative. That is a DUPLICATE, which is graph hygiene (one cause,
+    #     one chain — fm#1091 / the orphan re-attach path), not a restatement
+    #     of the case frame. Holding it at INCONCLUSIVE fixes nothing and costs
+    #     everything: the recovery for a restating root is "collect more
+    #     evidence", and no evidence can move a bar that measures wording.
+    #     Released — the root is judged on its evidence like any other.
+    #
+    # Deliberately a QUANTIFIER, not a threshold. fm#1137/#1140 swept "how much
+    # does one sibling cover" and found no separator: the incident duplicate
+    # covers 0.889 of its root and a verbose #656 disjunct covers 0.667, with
+    # mutual Jaccard actually ordering them the wrong way round (0.276 vs
+    # 0.286). "Does ONE sibling account for ALL of it" is categorical, and a
+    # disjunct cannot account for a disjunction.
+    #
+    # Strictly a RELAXATION of the novelty test above: every arm that returns
+    # True here is a case the plain frame test also called a restatement, so
+    # this can only release a held root, never hold a new one. The corpus FP
+    # bound and the dilution bound are therefore safe by construction
+    # (``test_attribution_only_releases_never_holds``).
+    #
+    # ``elements``, not ``hyp_token_sets``: the root's OWN hypothesis is out of
+    # the frame because it is not "other", and letting it attribute the frame's
+    # coverage away is the fm#1140 attempt-2 collapse — pinned by
+    # ``test_a_roots_own_hypothesis_cannot_attribute_the_frame_away``.
+    #
+    # ``anchors | tokens`` is a subset of ``frame``, so its residue is always a
+    # SUPERSET of ``residue``; comparing the two by length is therefore the same
+    # predicate as comparing them by identity (a known equivalent mutant — do
+    # not read a surviving length-based mutation as a missing pin).
+    anchor_cover = statement_tokens & anchors
+    for tokens in elements:
+        if statement_tokens - (anchors | tokens) != residue:
+            continue
+        # PRINCIPAL SOURCE (fm#1122 review). Subtracting the anchors is what
+        # makes the residue test above blind to a DISJUNCT the problem
+        # statement happens to pre-name — the #661 contaminated-anchor class,
+        # which is 6 of the 7 roots still held in the dev corpus. Delete that
+        # disjunct along with the anchors and the remaining fragment is covered
+        # by the other disjunct alone, so a DISTRIBUTED aggregation presents as
+        # attributable-to-one and a #656 root releases. Review caught exactly
+        # that, reproduced on both trees.
+        #
+        # So the attributing claim must be where most of the root actually
+        # comes from, measured on the root's FULL token set rather than on its
+        # non-anchor remainder: a root is a hypothesis's duplicate only when
+        # that hypothesis, not the problem statement, is its principal source.
+        # When the problem statement supplies more, the root is leaning on the
+        # problem framing — or on cause content smuggled into it — which is the
+        # restatement shape this guard exists for.
+        #
+        # A comparison between two measured quantities, not a new constant.
+        if len(statement_tokens & tokens) < len(anchor_cover):
+            continue
+        return False
+    return True
 
 
 def _mutual_mirror(a_tokens: set, b_tokens: set, threshold: float) -> bool:

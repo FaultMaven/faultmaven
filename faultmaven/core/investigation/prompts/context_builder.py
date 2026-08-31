@@ -3319,11 +3319,15 @@ def _build_causal_graph_block(case: Case) -> str:
         # supports and keeps collecting (fm#1137: nine turns of it).
         #
         # BOTH recoveries are named because the held population is not one
-        # shape. A root held by a true duplicate of its own hypothesis needs a
-        # new MECHANISM statement; a root held by frame DILUTION — a different
-        # cause's hypothesis whose verbose statement happens to cover this one,
-        # the documented <=2% FP class — validates the moment that alternative
-        # is refuted or retired. The engine cannot tell the two apart (that is
+        # shape. A root held by the problem ANCHORS alone is the symptom
+        # restated and needs a new MECHANISM statement; a root held by frame
+        # DILUTION — several different causes' hypotheses that between them
+        # cover this one, the documented <=2% FP class — validates the moment
+        # one of those alternatives is refuted or retired. (The third shape, a
+        # standing DUPLICATE of the root's own hypothesis, was the fm#1137
+        # known limit and is no longer held at all: fm#1122's §7.1 attribution
+        # test releases a root whose whole overlap ONE standing explanation
+        # accounts for.) The engine cannot tell the remaining two apart (that is
         # the fm#1137 known limit), so telling the model only the surgery half
         # would be categorically false for the dilution slice and would repeat,
         # in a new place, the wrong-recovery-advice failure this note exists to

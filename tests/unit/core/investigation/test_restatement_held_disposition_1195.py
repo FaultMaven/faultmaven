@@ -25,12 +25,14 @@ Each of those, and the sibling-overlap discrimination in the affordance, was
 added because the first cut got it wrong in a way that produced the same class
 of wrong guidance this issue exists to remove, inverted.
 
-These pins fix the contradiction ONLY. They do **not** release the held root —
-that is the open #1122 product decision — so
-``test_known_limit_unattached_duplicate_frames_its_own_root`` and
-``test_656_disjunction_root_stays_blocked_against_verbose_siblings``
-(``test_restatement_guard_calibration.py``) are untouched and still assert the
-hold, and ``ROOT_NOVELTY_MIN_FRACTION`` / ``_FRAME_OWNER_JACCARD`` are unchanged.
+These pins fixed the contradiction only; releasing the held root was left open
+as the #1122 product decision. fm#1122 has since taken it: a root whose whole
+overlap ONE standing explanation accounts for is released as a DUPLICATE
+(``test_unattached_duplicate_no_longer_frames_its_own_root``), while a root the
+standing explanations SPAN stays held (the #656 pins in
+``test_restatement_guard_calibration.py``, which are untouched). The disposition
+and closure behaviour below is unchanged — only which roots reach it. Neither
+``ROOT_NOVELTY_MIN_FRACTION`` nor ``_FRAME_OWNER_JACCARD`` moved.
 
 The fixture is the live incident's own statements: a terse ROOT, its ATTACHED
 hypothesis, and the turn-11 near-duplicate whose ``root_node_ref`` adoption the
@@ -112,14 +114,25 @@ SYMPTOM = (
     "currently unavailable or unstable because its v2.1.4 pods enter "
     "CrashLoopBackOff after 2-3 minutes, causing customer payment failures."
 )
+# The SIBLING-INVOLVING hold, in the incident's own domain: a DISJUNCTION root
+# covered by the union of the case's two standing candidate causes and by
+# neither alone (solo residues 4/9 and 3/9 against a 0.30 bar; union residue
+# empty). The incident's original shape — one unattached DUPLICATE of the
+# root's own hypothesis — is released by the fm#1122 attribution test and can
+# no longer stand in for a held root here; it is pinned as released in
+# ``test_derive_node_states.py::test_fm1122_incident_shape_now_validates``.
 ROOT_STATEMENT = (
-    "JVM heap and native/non-heap memory exceed the 400Mi container cgroup limit"
+    "JVM heap exhaustion or node memory eviction terminating the "
+    "payment-processor pods"
 )
-HYPOTHESIS_STATEMENT = (
-    "The v2.1.4 JVM configuration sets a 512MB maximum heap inside a 400Mi "
-    "container, leaving insufficient headroom for JVM native/non-heap memory; "
-    "total RSS reaches the cgroup limit, the kernel kills the process with "
-    "SIGKILL/exit 137, and Kubernetes restarts it into CrashLoopBackOff."
+DISJUNCT_A = (
+    "JVM heap exhaustion inside the 400Mi container drives total RSS past the "
+    "cgroup limit, so the kernel terminates the payment-processor process with "
+    "SIGKILL exit 137"
+)
+DISJUNCT_B = (
+    "Node memory eviction removes the payment-processor pods when the kubelet "
+    "reclaims memory under node pressure, terminating them mid-request"
 )
 ROOT_ID = "cn_597a37af74c7"
 
@@ -162,17 +175,21 @@ def _restatement_held_case(
     declared_wall: bool = False,
     anchor_only_hold: bool = False,
 ) -> Case:
-    """The incident shape: a ROOT that clears the §7.1 grounding bar (two
-    INDEPENDENT causal supports, both confident, against a bar of 2) and is held
-    at INCONCLUSIVE by the restatement guard alone.
+    """A ROOT that clears the §7.1 grounding bar (two INDEPENDENT causal
+    supports, both confident, against a bar of 2) and is held at INCONCLUSIVE by
+    the restatement guard alone: a DISJUNCTION of the case's two standing
+    candidate causes, which the fm#1122 attribution test leaves held because no
+    single sibling accounts for it.
 
     Each knob turns exactly ONE premise of the carve-out off, so every pin below
     differs from the baseline in one respect only:
 
-    - ``duplicate_attached`` — attaching the near-duplicate to the root makes it
-      the root's OWN hypothesis, which drops it out of the frame and dissolves
-      the hold, leaving an otherwise identical genuine INSUFFICIENT_EVIDENCE
-      stall.
+    - ``duplicate_attached`` — anchoring the SECOND disjunct to the root makes it
+      the root's OWN hypothesis, which drops it out of the frame. The remaining
+      sibling leaves the root 0.444 novel, so it clears the NOVELTY bar outright
+      and the guard never reaches the fm#1122 attribution test — an otherwise
+      identical genuine INSUFFICIENT_EVIDENCE stall. (Measured, not assumed: the
+      knob turns off the novelty premise, not the attribution premise.)
     - ``extra_unsettled_root`` — a second live ROOT with no evidence at all. The
       hold is still there; it is no longer the case's SOLE block.
     - ``declared_wall`` — one outstanding ``CAUSAL_VERIFICATION`` need per
@@ -261,24 +278,20 @@ def _restatement_held_case(
     hypotheses = [
         Hypothesis(
             hypothesis_id="hyp_e44ffbfe6fa4",
-            statement=(
-                UNRELATED_HYPOTHESIS_A if anchor_only_hold else HYPOTHESIS_STATEMENT
-            ),
+            statement=(UNRELATED_HYPOTHESIS_A if anchor_only_hold else DISJUNCT_A),
             category=HypothesisCategory.ENVIRONMENT,
             state=HypothesisState.ACTIVE,
             rationale="a reason",
             generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
             generated_at_turn=5,
-            root_node_id=None if anchor_only_hold else ROOT_ID,
+            root_node_id=None,
         )
     ]
     if include_second_hypothesis:
         hypotheses.append(
             Hypothesis(
                 hypothesis_id="hyp_fd24a60ab341",
-                statement=(
-                    UNRELATED_HYPOTHESIS_B if anchor_only_hold else HYPOTHESIS_STATEMENT
-                ),
+                statement=(UNRELATED_HYPOTHESIS_B if anchor_only_hold else DISJUNCT_B),
                 category=second_hypothesis_category,
                 state=HypothesisState.ACTIVE,
                 rationale="a reason",
