@@ -673,6 +673,13 @@ class GeminiProvider(BaseLLMProvider):
                 f"(model: {selected_model})",
                 status_code=504,  # gateway timeout — transient/retryable
             )
+        except aiohttp.ClientError as e:
+            # Transport failure with no HTTP status: disconnect, connect
+            # failure, incomplete body. Typed so retryability is DECLARED, not
+            # inferred downstream from aiohttp's wording — "Server
+            # disconnected" and "Cannot connect to host …" match no retry
+            # phrase, so these arrived at the engine as unretryable (#1287).
+            raise LLMException(f"Gemini connection error: {str(e)}", retryable=True)
 
         # Extract content from Gemini response format
         content = ""

@@ -137,9 +137,12 @@ class LocalProvider(BaseLLMProvider):
             or "ollama" in effective_model.lower()
         ):
             # Ollama-specific API
-            return await self._call_ollama_api(
-                prompt, effective_model, max_tokens, temperature, **kwargs
-            )
+            try:
+                return await self._call_ollama_api(
+                    prompt, effective_model, max_tokens, temperature, **kwargs
+                )
+            except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+                raise self._transport_error("Ollama", e) from e
 
         # First try OpenAI-compatible API (most common for modern local LLM servers)
         try:
@@ -147,20 +150,69 @@ class LocalProvider(BaseLLMProvider):
                 prompt, effective_model, max_tokens, temperature, **kwargs
             )
         except Exception as openai_error:
-            # If OpenAI-compatible fails, try raw llama.cpp completion endpoint as fallback
-            if "404" in str(openai_error) or "not found" in str(openai_error).lower():
-                try:
-                    return await self._call_llamacpp_api(
-                        prompt, effective_model, max_tokens, temperature, **kwargs
-                    )
-                except Exception as llamacpp_error:
-                    # If both fail, raise the more informative error
-                    raise LLMException(
-                        f"Local LLM server failed with both API formats. OpenAI-compatible: {openai_error}. Raw llama.cpp: {llamacpp_error}"
-                    )
-            else:
-                # For non-404 errors, re-raise the OpenAI error
+            # Fall back to the raw llama.cpp completion endpoint only when the
+            # server actually answered 404 — i.e. it is up, and this particular
+            # path is not the one it serves.
+            #
+            # Keyed on the STATUS, not on ``"404" in str(...)``. That substring
+            # matched the port in "Cannot connect to host localhost:4040", so an
+            # unreachable vLLM on port 4040 was read as "wrong endpoint" and
+            # sent down the fallback for a second full timeout. Same
+            # bare-number-substring defect as the classifier chain in #1287,
+            # one layer down. ``_call_*_api`` raise ``LLMException`` carrying
+            # ``status_code``; a non-HTTP failure has none and is not a 404.
+            if getattr(openai_error, "status_code", None) != 404:
+                # Not a wrong-endpoint error — the fallback cannot help.
                 raise openai_error
+            try:
+                return await self._call_llamacpp_api(
+                    prompt, effective_model, max_tokens, temperature, **kwargs
+                )
+            except Exception as llamacpp_error:
+                # Both formats failed. Report BOTH: the llama.cpp error alone
+                # never explains why llama.cpp was contacted in the first place,
+                # which is the 404 above.
+                #
+                # A transport failure on this leg is typed first so the
+                # composite has a declaration to carry forward. Retryability is
+                # taken from whichever underlying failure declared it —
+                # otherwise this composite declares nothing, defaults to
+                # non-retryable, and converts a TRANSIENT transport failure into
+                # a permanent one: the #1287 shape, one layer up.
+                if isinstance(
+                    llamacpp_error, (asyncio.TimeoutError, aiohttp.ClientError)
+                ):
+                    llamacpp_error = self._transport_error("llama.cpp", llamacpp_error)
+                raise LLMException(
+                    f"Local LLM server failed with both API formats. "
+                    f"OpenAI-compatible: {openai_error}. "
+                    f"Raw llama.cpp: {llamacpp_error}",
+                    retryable=(
+                        getattr(openai_error, "retryable", None) is True
+                        or getattr(llamacpp_error, "retryable", None) is True
+                    ),
+                ) from llamacpp_error
+
+    def _transport_error(self, transport: str, error: BaseException) -> LLMException:
+        """Type a transport-layer failure from one of the three local transports.
+
+        ``_call_ollama_api`` and ``_call_llamacpp_api`` do no error handling of
+        their own, so a hung or restarting local server surfaced as a bare
+        ``asyncio.TimeoutError`` — whose ``str()`` is the EMPTY STRING — or as
+        raw aiohttp wording. Neither can be classified downstream by message,
+        and both were therefore treated as permanent (#1287). Retryability is
+        declared here instead, matching what ``_call_openai_compatible_api``
+        already does inline for the third transport.
+        """
+        if isinstance(error, asyncio.TimeoutError):
+            return LLMException(
+                f"Local LLM ({transport}) request timed out after "
+                f"{self.config.timeout} seconds",
+                status_code=504,  # gateway timeout — transient/retryable
+            )
+        return LLMException(
+            f"Local LLM ({transport}) connection error: {str(error)}", retryable=True
+        )
 
     async def _call_ollama_api(
         self, prompt: str, model: str, max_tokens: int, temperature: float, **kwargs
@@ -355,19 +407,21 @@ class LocalProvider(BaseLLMProvider):
                         stop_reason=stop_reason,
                     )
 
-            except asyncio.TimeoutError as e:
+            except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+                # Routed through the SAME helper the other two transports use,
+                # so this file emits one message shape rather than three. It
+                # previously typed its own timeout inline and its own transport
+                # error inline, both worded differently from the helper, which
+                # made "what does a local transport failure look like" a
+                # three-way answer in a single file.
                 response_time = self._get_response_time_ms()
                 self.logger.warning(
-                    f"Timeout after {response_time}ms (limit: {self.config.timeout * 1000}ms)"
+                    f"{type(e).__name__} after {response_time}ms "
+                    f"(limit: {self.config.timeout * 1000}ms); "
+                    f"model={model}, max_tokens={max_tokens}, "
+                    f"temperature={temperature}"
                 )
-                self.logger.warning(
-                    f"Model: {model}, Max tokens: {max_tokens}, Temperature: {temperature}"
-                )
-                self.logger.debug(f"Timeout error: {e}")
-                raise LLMException(
-                    f"Local LLM request timed out after {self.config.timeout} seconds",
-                    status_code=504,  # gateway timeout — transient/retryable
-                )
+                raise self._transport_error("OpenAI-compatible", e) from e
 
             except Exception as e:
                 response_time = self._get_response_time_ms()

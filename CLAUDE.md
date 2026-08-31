@@ -377,8 +377,10 @@ but only when the same call also declares an output floor, without which the
 provider refuses the lift and warns. (On the 3.7+ surface `INFERENCE` also
 lifts the all-shape default on plain calls, floor or no floor — plain-call
 starvation is non-fatal.) So "3.x structured calls are capped" holds
-for every call that does not declare an intent, which is every call shipped
-today.
+for every structured call shipped today. Exactly two call sites declare an
+intent (see below) and both declare `EXTRACTION`, which asks for *less*
+reasoning and can never lift the cap — and both are plain calls in any case,
+so no structured call ships with an intent at all.
 
 **Every response carries a normalised stop reason.** `LLMResponse.stop_reason`
 (`STOP | MAX_TOKENS | CONTENT_FILTER | TOOL_CALLS | UNKNOWN`, with a derived
@@ -421,8 +423,23 @@ models that accept tools but time out on forced `tool_choice=required`).
 
 **A caller can declare what a call needs from reasoning, and the minimum
 output it can use.** Two optional, per-call-site knobs on `LLMRouter.route()`
-(#1118 / #1117), both absent by default — every call shipped today passes
-neither, so the shape-based provider defaults above are what runs:
+(#1118 / #1117). Both default to absent, and where a call site passes neither
+the shape-based provider defaults above are what runs. **Two call sites ship
+declaring them**, both `EXTRACTION` — the direction that asks for *less*
+reasoning, so neither lifts a starvation guard:
+
+| Call site | Declares |
+|-----------|----------|
+| `core/investigation/intent_resolver.py` (intent classifier) | `reasoning_intent=EXTRACTION`, `min_output_tokens=CLASSIFIER_MIN_OUTPUT_TOKENS` |
+| `modules/agent/tools/document_qa_tool.py` (KB/doc answer synthesis) | `reasoning_intent=EXTRACTION` |
+
+Both are grounded transformations of supplied context rather than reasoning
+over candidates. `document_qa_tool` declares the intent specifically so its
+cap is tier-independent: the shape default caps thinking only on the 3.7+
+surface, so on the shipped `gemini-3.5-flash-lite` synthesis pin that plain
+call would otherwise run uncapped.
+
+The knobs themselves:
 
 - `reasoning_intent` — `EXTRACTION` (grounded transformation of supplied
   context: ask for the provider's minimum reasoning) or `INFERENCE` (reasoning

@@ -1,7 +1,28 @@
 """Custom exceptions for FaultMaven application."""
 
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterator, Optional
+
+
+def walk_cause_chain(exc: BaseException) -> Iterator[BaseException]:
+    """Yield ``exc`` and each ``__cause__`` ancestor, cycle-guarded.
+
+    Service code wraps provider failures as ``raise ServiceException(...) from
+    e``, so the authoritative typed metadata (``retryable``, ``error_code``,
+    ``status_code``) lives on the cause rather than the wrapper. Every
+    classifier that reads that metadata walks the same chain, so the walk lives
+    here once.
+
+    ``__cause__`` only — the explicit ``raise ... from`` link. Never the
+    implicit ``__context__``, which would pull in any unrelated exception that
+    happened to be in flight.
+    """
+    cursor: Optional[BaseException] = exc
+    seen: set = set()
+    while cursor is not None and id(cursor) not in seen:
+        yield cursor
+        seen.add(id(cursor))
+        cursor = cursor.__cause__
 
 
 class ErrorSeverity(Enum):
@@ -66,6 +87,51 @@ class ExternalServiceException(FaultMavenException):
     pass
 
 
+class ExternalCallTimeout(ExternalServiceException, TimeoutError):
+    """A call to an external service exceeded its CLIENT-SIDE deadline.
+
+    Raised by ``BaseExternalClient.call_external`` when its ``asyncio.wait_for``
+    expires — the dependency never answered, so there is no provider status
+    code and no provider wording to classify from.
+
+    ``retryable`` is declared here, by the code that raises, rather than
+    inferred downstream from the message text. The site used to raise a bare
+    ``TimeoutError("… timed out after 30.0s")`` and the engine's retry ladder
+    decided retryability by substring-matching that sentence against a phrase
+    list containing ``"timeout"`` — which is not a substring of ``"timed out"``.
+    A hung provider therefore got ZERO retries while every provider's OWN
+    timeout (an ``LLMException`` with status 504) got three (#1287). The two
+    disagreed about the same condition purely because one of them was a
+    sentence. Anything that reads retryability must read this attribute, never
+    the message.
+
+    Subclasses ``TimeoutError`` (which IS ``asyncio.TimeoutError`` on 3.11+, the
+    project floor) so every existing ``except TimeoutError`` around
+    ``call_external`` keeps catching it.
+
+    Always ``True``: a deadline expiring says the call did not finish, not that
+    it would fail again. A caller that must NOT retry bounds its own attempts;
+    it cannot learn that from the timeout.
+    """
+
+    retryable = True
+
+    def __init__(
+        self,
+        message: str,
+        service: Optional[str] = None,
+        operation: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ):
+        super().__init__(
+            message,
+            details={"service": service, "operation": operation, "timeout": timeout},
+        )
+        self.service = service
+        self.operation = operation
+        self.timeout = timeout
+
+
 class SessionException(FaultMavenException):
     """Raised when session operations fail."""
 
@@ -121,6 +187,29 @@ TOKEN_LIMIT = "TOKEN_LIMIT"
 # converting it into a breaker trip would replace an actionable "model not found"
 # with an opaque outage.
 PROVIDER_AUTH_FAILED = "PROVIDER_AUTH_FAILED"
+
+
+# Stable error_code for "the LLM circuit breaker is open, so this request never
+# reached a provider". Transient like ``RETRY_EXHAUSTED`` — it clears on its own
+# once the breaker's recovery window elapses — and it maps to the same 503, but
+# it names a DIFFERENT condition and that distinction is the whole point. A
+# ``CircuitBreakerError`` carries no provider status and its message ("Circuit
+# breaker is open for LLM_Providers") matches no retry phrase, so it used to
+# fall through the engine's classifier to ``UNKNOWN_ERROR`` — telling an
+# operator "unknown" about the one failure the system understands completely
+# (#1287).
+PROVIDER_CIRCUIT_OPEN = "PROVIDER_CIRCUIT_OPEN"
+
+
+# Stable error_code for "the LLM layer is not configured": no provider in the
+# fallback chain, or the registry cannot build one. Permanent until an operator
+# edits the environment, so it is TERMINAL — the opposite of the transient codes
+# above, and the reason it needs a name rather than falling into UNKNOWN_ERROR
+# (which is mapped as retryable and hands the user a Retry-After for a condition
+# that will never clear on its own). The registry already set this string on the
+# exceptions it raises; naming it here is what let the engine and the HTTP
+# boundary read it instead of the message.
+LLM_CONFIG_ERROR = "LLM_CONFIG_ERROR"
 
 
 # error_codes whose failure is scoped to the ACCOUNT/SERVICE rather than to the
@@ -193,13 +282,9 @@ def is_billing_error(error: BaseException) -> bool:
     layer (e.g. report generation) that must distinguish billing from transient
     failures.
     """
-    cursor: Optional[BaseException] = error
-    seen: set = set()  # guard against cyclic __cause__ chains
-    while cursor is not None and id(cursor) not in seen:
+    for cursor in walk_cause_chain(error):
         if getattr(cursor, "error_code", None) == QUOTA_EXHAUSTED:
             return True
-        seen.add(id(cursor))
-        cursor = cursor.__cause__
     return is_billing_quota_error(str(error))
 
 

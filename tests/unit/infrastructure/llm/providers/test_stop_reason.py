@@ -376,11 +376,25 @@ class TestLocalProvider:
         assert result.stop_reason is StopReason.MAX_TOKENS
 
     async def test_llamacpp_stopped_limit(self):
+        from faultmaven.exceptions import LLMException
+
         provider = LocalProvider(_config("local", "http://llamacpp:8080", "local"))
         body = {"content": "partial", "tokens_predicted": 5, "stopped_limit": True}
         session = _mock_aiohttp_session(body)
+        # A REAL 404 from that transport is ``LLMException(status_code=404)`` —
+        # what ``_call_openai_compatible_api`` actually raises. The stand-in used
+        # to be ``Exception("404")``, which only worked while the fallback was
+        # selected by ``"404" in str(error)``; that substring also matched the
+        # PORT in "Cannot connect to host localhost:4040" and sent an
+        # unreachable server down the fallback for a second full timeout
+        # (fm#1287 follow-up). The selector now keys on the status, so the
+        # stand-in has to carry one.
         with patch.object(
-            LocalProvider, "_call_openai_compatible_api", side_effect=Exception("404")
+            LocalProvider,
+            "_call_openai_compatible_api",
+            side_effect=LLMException(
+                "Local OpenAI-compatible API error 404: not found", status_code=404
+            ),
         ):
             with patch("aiohttp.ClientSession", return_value=session):
                 result = await provider.generate("hi")
@@ -393,6 +407,8 @@ class TestLocalProvider:
         Reading it as an output cut would send the retry-with-a-bigger-cap
         ladder after a failure that a bigger cap makes strictly worse.
         """
+        from faultmaven.exceptions import LLMException
+
         provider = LocalProvider(_config("local", "http://llamacpp:8080", "local"))
         body = {
             "content": "answer",
@@ -401,8 +417,20 @@ class TestLocalProvider:
             "stopped_eos": True,
         }
         session = _mock_aiohttp_session(body)
+        # A REAL 404 from that transport is ``LLMException(status_code=404)`` —
+        # what ``_call_openai_compatible_api`` actually raises. The stand-in used
+        # to be ``Exception("404")``, which only worked while the fallback was
+        # selected by ``"404" in str(error)``; that substring also matched the
+        # PORT in "Cannot connect to host localhost:4040" and sent an
+        # unreachable server down the fallback for a second full timeout
+        # (fm#1287 follow-up). The selector now keys on the status, so the
+        # stand-in has to carry one.
         with patch.object(
-            LocalProvider, "_call_openai_compatible_api", side_effect=Exception("404")
+            LocalProvider,
+            "_call_openai_compatible_api",
+            side_effect=LLMException(
+                "Local OpenAI-compatible API error 404: not found", status_code=404
+            ),
         ):
             with patch("aiohttp.ClientSession", return_value=session):
                 result = await provider.generate("hi")

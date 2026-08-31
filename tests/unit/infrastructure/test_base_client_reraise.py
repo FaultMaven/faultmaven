@@ -265,3 +265,70 @@ async def test_not_found_stays_request_scoped():
 
     assert client.circuit_breaker.state == "closed"
     assert client.circuit_breaker.failure_count == 0
+
+
+# =============================================================================
+# fm#1287 — the client-side deadline DECLARES its own retryability
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_timeout_raises_typed_error_declaring_retryable():
+    """A ``call_external`` deadline expiry must raise something that SAYS it is
+    retryable, not a bare ``TimeoutError`` whose sentence has to be parsed.
+
+    This site used to raise ``TimeoutError("… timed out after 30.0s")`` and the
+    engine's ladder matched that against a phrase list containing ``"timeout"``,
+    which is not a substring of ``"timed out"`` — so a hung provider got zero
+    retries while every provider's own read timeout (a 504) got three.
+
+    Pinned here, separately from the ladder's call-count test, because the two
+    fixes are deliberately redundant: the classifier also has a
+    ``TimeoutError``-by-type rule, so the ladder still retries if this raise
+    regresses. Without this assertion that regression would be silent.
+    """
+    import asyncio
+
+    client = _Client()
+
+    async def hang():
+        await asyncio.sleep(3600)
+
+    with pytest.raises(TimeoutError) as exc_info:
+        await client.call_external(
+            operation_name="route_llm_request",
+            call_func=hang,
+            timeout=0.05,
+            retries=0,
+        )
+
+    err = exc_info.value
+    # Declared, and declared as a real bool — a truthy non-bool (a Mock's
+    # auto-attribute, a "yes") is not a declaration and the classifier
+    # deliberately ignores it.
+    assert getattr(err, "retryable", None) is True
+    # Still a TimeoutError, so existing ``except TimeoutError`` handlers around
+    # call_external are unaffected.
+    assert isinstance(err, asyncio.TimeoutError)
+    assert err.service == "TestService"
+    assert err.operation == "route_llm_request"
+    assert err.timeout == 0.05
+
+
+@pytest.mark.asyncio
+async def test_successful_call_raises_nothing():
+    """POSITIVE CONTROL for the timeout pin above: the same client, the same
+    call shape, a callable that returns — proves the timeout path is reached by
+    the timeout and not by the harness always erroring."""
+    client = _Client()
+
+    async def quick():
+        return "ok"
+
+    result = await client.call_external(
+        operation_name="route_llm_request",
+        call_func=quick,
+        timeout=5.0,
+        retries=0,
+    )
+    assert result == "ok"

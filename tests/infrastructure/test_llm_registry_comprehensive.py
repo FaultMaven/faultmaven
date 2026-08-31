@@ -1380,19 +1380,36 @@ class TestErrorHandlingAndEdgeCases:
 
     @pytest.mark.asyncio
     async def test_route_request_with_empty_fallback_chain(self, clean_env):
-        """Test request routing with empty fallback chain."""
+        """An empty fallback chain must raise something an OPERATOR can act on.
+
+        This used to assert ``"list index out of range"`` — the ``str()`` of the
+        bare ``IndexError`` that ``routing_order = [self._fallback_chain[0]]``
+        raised when the "force primary retry" last resort indexed a chain that
+        had no primary. That is a Python traceback artefact, not a diagnosis:
+        it reached the engine unclassifiable and the turn reported "LLM error
+        (IndexError)" to a user whose real problem was that no provider is
+        configured at all (fm#1287).
+
+        The assertion changed because the behaviour did. It still asserts that
+        the condition RAISES rather than silently mis-routing, which is what the
+        original test was protecting; it now also requires the message to name
+        the cause and the knob that fixes it.
+        """
+        from faultmaven.models.exceptions import LLMProviderError
+
         registry = ProviderRegistry()
         registry._fallback_chain = []  # Force empty chain
         registry._provider_states = {}  # No provider states either
         registry._initialized = True
 
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(LLMProviderError) as exc_info:
             await registry.route_request(prompt="Test prompt", max_tokens=100)
 
-        # With empty fallback chain, the forced retry will fail with IndexError
-        assert "list index out of range" in str(
-            exc_info.value
-        ) or "All providers failed" in str(exc_info.value)
+        message = str(exc_info.value)
+        assert "No LLM provider is routable" in message
+        assert "CHAT_PROVIDER" in message
+        # And NOT the traceback artefact it used to be.
+        assert "list index out of range" not in message
 
     def test_registry_with_partial_provider_failure(self):
         """Test registry behavior when some providers fail to initialize."""
