@@ -342,13 +342,31 @@ async def mode_e2e(store, corpus, statements):
     class _KS:
         """The two knowledge_service seams the engine path touches."""
 
-        async def search_knowledge(self, query, limit=10, filters=None):
-            raw = await store.search(
-                collection_name=KB_COLLECTION,
-                query=query,
-                k=limit,
-                where={"scope": "global"},
-            )
+        async def search_knowledge(
+            self, query, limit=10, filters=None, use_hybrid=False, min_score=None
+        ):
+            # The engine's prefetch asks for hybrid retrieval and passes a
+            # floor (#1272/#1282). A stub that could not accept those keywords
+            # made every prefetch raise, the wrapper swallowed it as a failed
+            # search, and this mode printed 0 seeds on BOTH arms — a clean
+            # "no junk seeded" that measured nothing. Hybrid is what carries
+            # the grounding evidence the gate reads, so it is honoured here,
+            # not merely tolerated.
+            if use_hybrid:
+                raw = await store.hybrid_search(
+                    collection_name=KB_COLLECTION,
+                    query=query,
+                    k=limit,
+                    where={"scope": "global"},
+                    min_score=min_score,
+                )
+            else:
+                raw = await store.search(
+                    collection_name=KB_COLLECTION,
+                    query=query,
+                    k=limit,
+                    where={"scope": "global"},
+                )
             out = []
             for hit in raw:
                 meta = hit.get("metadata") or {}
@@ -364,6 +382,11 @@ async def mode_e2e(store, corpus, statements):
                         total_chunks=_read_total_chunks(meta),
                         matched_cause_letters=_read_stamped_cause_letters(
                             meta, hit.get("content") or ""
+                        ),
+                        rerank_score=hit.get("rerank_score"),
+                        term_coverage=hit.get("term_coverage"),
+                        identity_terms_in_query=list(
+                            hit.get("identity_terms_in_query") or []
                         ),
                     )
                 )

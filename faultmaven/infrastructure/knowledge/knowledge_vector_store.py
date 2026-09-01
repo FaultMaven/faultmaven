@@ -994,6 +994,17 @@ class KnowledgeVectorStore(BaseExternalClient):
         cannot act on, since a runbook must still clear the similarity floor,
         name a cause, and corroborate itself on a second chunk before anything
         is seeded.
+
+        Re-measured for fm#1293 with the statistics this reranker actually
+        holds — ``stats`` is in scope where this is called, so a rarity test
+        IS reachable here — and rarity does not order the admissions. The
+        wrong seeds that survive every other guard ride on ``dashboard``, 20 of
+        1297 chunks and an identifier by ``IDENTIFIER_DF_RATIO``, while correct
+        seeds ride on ``disk`` (99) and ``connection`` (188). Title-level
+        rarity, naming the service, and the query's rarest term were measured
+        beside it and each drops 3 to 7 of 7 correct admissions. The residue is
+        semantic ("the dashboard shows…" names the instrument), pinned in
+        ``test_kb_seed_grounding_reachability_1285.py``.
         """
         if not query_lower:
             return []
