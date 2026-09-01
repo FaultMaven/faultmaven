@@ -427,6 +427,25 @@ async def mode_e2e(store, corpus, statements):
             }
         )
 
+    # --- guard: the seeding path is LIVE, in this run ---------------------
+    # A prefetch that raises is swallowed by the wrapper as a failed search,
+    # and a seeder handed no hits seeds nothing — so a broken seam here prints
+    # 0/16 on-domain and 0/8 junk on BOTH arms, which reads as "the guard is
+    # working" and measures nothing. That is exactly how this mode ran from
+    # #1282 until the stub above learned ``use_hybrid``. A positive control
+    # must seed with the corroboration guard off before any row is printed.
+    control = statements["positive"][0][0]
+    with patch.object(engine_module, "KB_SEED_MIN_CORROBORATING_CHUNKS", 1):
+        probe = await seeded_for(control)
+    print(f"[guard] positive control {control[:48]!r}... seeds {probe}")
+    if not probe:
+        sys.exit(
+            "COULD NOT ASK: the positive control seeded nothing with the "
+            "corroboration guard off — the seeding path did not run (a failed "
+            "prefetch is swallowed as a failed search), so every row below "
+            "would read 0 on both arms and mean nothing"
+        )
+
     for label, threshold in (("GUARD OFF (#1144)", 1), ("GUARD ON", None)):
         print("\n" + "=" * 96)
         print(label)
