@@ -16,6 +16,13 @@ freshly minted credential. The first test asserts it *is* cached when nothing is
 declared — the positive control, without which every "nothing was cached"
 assertion here would hold whether or not the mechanism exists.
 
+``_build_included_app`` is the same route reached the way a composition root
+actually mounts one — ``include_router`` rather than a decorator on the app.
+That distinction is not cosmetic: FastAPI 0.139 records an included router as a
+lazy object carrying no routes of its own, and every route in this file used to
+be registered with ``@app.post``, so a walk over ``app.routes`` found all of
+them and none of production's (fm#1305).
+
 Conventions follow ``test_idempotency_caller_scoping.py``: real middleware, real
 ``fakeredis``, one event loop (``TestClient`` creates a loop per request and
 async FakeRedis then raises "bound to a different event loop", which this
@@ -27,7 +34,7 @@ import logging
 import fakeredis.aioredis as fakeredis_aio
 import httpx
 import pytest
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request
 from starlette.routing import Host, Mount
 
 from faultmaven.api.middleware.idempotency import (
@@ -110,6 +117,45 @@ def _build_app():
     app.add_middleware(IdempotencyMiddleware, redis_client=fake)
     app.state.mints = mints
     return app, fake
+
+
+def _build_included_app():
+    """``_build_app``'s mint route, reached the way a composition root mounts it.
+
+    FastAPI 0.139 stopped copying an included router's routes into ``app.routes``
+    and records a lazy ``_IncludedRouter`` instead, so this app and the one above
+    are the same to a client and *not* the same to anything walking the route
+    table. ``include_router`` is what ``faultmaven_cloud.main`` does, and what
+    every module in this repository does, which is what made fm#1305 reachable
+    from a file of 25 passing tests.
+
+    Returns the router too: a declaration should be built from it rather than
+    retyped, which is what the helper's own docstring asks callers to do.
+    """
+    app = FastAPI()
+    mints = {"n": 0}
+    router = APIRouter(prefix=BIND)
+
+    @router.post("")
+    async def bind():
+        mints["n"] += 1
+        return {
+            "slack_team_id": "T0123ABCD",
+            "refresh_token": f"live-refresh-token-{mints['n']}",
+        }
+
+    app.include_router(router)
+
+    @app.post("/api/v1/cases")
+    async def create_case():
+        """Cacheable, so ``_seed_one_cache_entry``'s positive control holds here
+        too — without it, "nothing was cached" would be unfalsifiable."""
+        return {"case_id": "c-1"}
+
+    fake = fakeredis_aio.FakeRedis(decode_responses=True)
+    app.add_middleware(IdempotencyMiddleware, redis_client=fake)
+    app.state.mints = mints
+    return app, fake, router
 
 
 def _client(app):
@@ -422,6 +468,65 @@ def test_the_predicate_defaults_to_the_core_exclusions_alone():
 # ---------------------------------------------------------------------------
 # Route-table walking: a refusal a composer routes around defeats the check.
 # ---------------------------------------------------------------------------
+
+
+def test_a_router_included_rather_than_mounted_can_be_declared():
+    """fm#1305, and the one composition shape this file did not have.
+
+    A composition root mounts with ``include_router``; FastAPI 0.139 records
+    that as a lazy ``_IncludedRouter`` carrying neither ``routes`` nor ``path``
+    nor ``methods``, so the walk matched neither arm and reported **zero** POST
+    routes on the composed app — 0 of 54, measured. Every honest declaration was
+    then refused, and because the refusal is raised at composition time the cost
+    was the composed app failing to import, not a hole in Redis.
+    """
+    app, _, router = _build_included_app()
+
+    assert exclude_from_idempotency(app, router.prefix) == frozenset({BIND})
+
+
+def test_a_router_included_through_another_router_can_be_declared():
+    """Routers nest, and this repository's own modules compose exactly that way.
+
+    The lazy record of the outer inclusion contains the lazy record of the
+    inner one, so the prefixes have to be resolved through both to reach a path
+    a request can carry.
+    """
+    app, _, _ = _build_included_app()
+    inner = APIRouter(prefix="/services")
+
+    @inner.post("")
+    async def mint():
+        return {"integration_id": "pd-1"}
+
+    outer = APIRouter(prefix="/api/v1/admin/integrations/pagerduty")
+    outer.include_router(inner)
+    app.include_router(outer)
+
+    assert exclude_from_idempotency(app, PAGERDUTY) == frozenset({PAGERDUTY})
+
+
+async def test_an_included_mint_route_is_neither_cached_nor_replayed():
+    """The mechanism end to end, through the shape production composes in.
+
+    The control is inside this test rather than beside it — same app, same two
+    calls, with and without the declaration — because what is being shown is
+    that declaring changes the outcome for *this* composition shape, not merely
+    that the validator stopped objecting to it.
+    """
+    app, fake, _ = _build_included_app()
+    _, _, seeded, after = await _bind_twice(app, fake)
+    assert app.state.mints["n"] == 1, "control: undeclared, the re-bind replayed"
+    assert len(after) == len(seeded) + 1, "control: the credential reached Redis"
+
+    app, fake, router = _build_included_app()
+    exclude_from_idempotency(app, router.prefix)
+    first, second, seeded, after = await _bind_twice(app, fake)
+
+    assert first.status_code == 200 and second.status_code == 200
+    assert after == seeded, "a credential mint must never reach Redis"
+    assert app.state.mints["n"] == 2, "the re-bind must mint, not replay"
+    assert first.json()["refresh_token"] != second.json()["refresh_token"]
 
 
 def test_a_mount_carrying_middleware_is_still_walked():

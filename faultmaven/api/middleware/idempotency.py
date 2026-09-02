@@ -26,6 +26,11 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
+try:  # fastapi >= 0.139
+    from fastapi.routing import iter_route_contexts
+except ImportError:  # pragma: no cover - older fastapi copies routes eagerly
+    iter_route_contexts = None
+
 logger = logging.getLogger(__name__)
 
 # Path fragments that must never participate in idempotency replay. Replaying a
@@ -109,6 +114,11 @@ def _post_route_paths(routes) -> frozenset:
     carries ``routes`` but no ``path`` (host routing contributes no prefix), and
     a container this function has not heard of should degrade to "walk it if it
     has routes" rather than to a refusal.
+
+    A route that answers neither description is handed to
+    :func:`_lazily_included_post_paths`, which is where ``include_router``'s
+    lazy record — the way a composition root actually mounts a router — is
+    expanded (fm#1305).
     """
     found: set = set()
     for route in routes:
@@ -119,7 +129,42 @@ def _post_route_paths(routes) -> frozenset:
                 found.add(_normalize_path(prefix + path))
         elif "POST" in (getattr(route, "methods", None) or ()):
             found.add(_normalize_path(route.path))
+        else:
+            found |= _lazily_included_post_paths(route)
     return frozenset(found)
+
+
+def _lazily_included_post_paths(route) -> frozenset:
+    """POST paths inside a route object that reports none of its own.
+
+    FastAPI 0.139 stopped copying an included router's routes into ``app.routes``
+    and started recording a lazy ``fastapi.routing._IncludedRouter`` instead: a
+    ``BaseRoute`` carrying neither ``routes`` nor ``path`` nor ``methods``, with
+    the real routes behind ``original_router`` and the prefix behind
+    ``include_context``. Both arms above therefore skip it — and since
+    ``include_router`` is how a composition root mounts everything, the walk saw
+    **zero** POST routes on the composed app (0 of 54, measured) and refused
+    every honest declaration with "names no POST route on this app" (fm#1305).
+    That refusal lands at composition time, so the cost was the composed app
+    failing to boot, not a missed exclusion.
+
+    ``iter_route_contexts`` is FastAPI's own flattener for exactly this shape —
+    ``get_openapi`` iterates it to find the routes to describe — and yields the
+    effective ``path`` and ``methods`` with every enclosing prefix applied,
+    including a router included through another router.
+
+    Reached only in the arm where the walk would otherwise give up, so the
+    ``Mount``/``Host`` reasoning above is untouched: those carry ``routes`` and
+    are handled before this is called. Paths come back in the frame of the table
+    being walked, which is the frame the caller adds its own prefix in.
+    """
+    if iter_route_contexts is None:
+        return frozenset()
+    return frozenset(
+        _normalize_path(context.path)
+        for context in iter_route_contexts([route])
+        if context.path and "POST" in (context.methods or ())
+    )
 
 
 class _NormalizedExclusions(frozenset):
