@@ -3093,8 +3093,10 @@ and content, useful when semantic understanding is not required.
 - `/knowledge/search` - Semantic vector search using embeddings (similarity-based)
 - `/documents/search` - Full-text keyword search (exact/partial word matching)
 
-**How matching works.** Both the title and the body are matched. Per field the
-query scores 1.0 if it appears verbatim, otherwise the fraction of its words
+**How matching works.** Both the title and the body are matched, on **word
+boundaries** — `"timeout"` matches the word `timeout`, and matches neither
+`"timeouts"` nor the `out` inside `"about"`. Per field the query scores 1.0 if
+its words appear consecutively, otherwise the fraction of its distinct words
 present; the two are combined as `0.7 * title + 0.3 * content`, so a title hit
 outranks a body hit and a document matching both outranks either. The result is
 on a 0.0-1.0 scale, which is the scale `similarity_threshold` filters on.
@@ -3103,6 +3105,11 @@ ranked listing of the whole knowledge base.
 
 Matching is literal: `"timeout"` finds documents containing that token, and does
 not find `"unresponsive"`. Use `/knowledge/search` for meaning.
+
+**Visibility.** Results cover global runbooks, your own, and those shared with
+your teams. `content` is document body text, so it is returned only to an
+authenticated caller — an anonymous one gets titles and metadata with `content`
+empty, matching `GET /documents/{document_id}`, which requires authentication.
 
 **Use Cases:**
 - Searching for specific error codes or identifiers (these usually appear in the
@@ -3124,8 +3131,9 @@ not find `"unresponsive"`. Use `/knowledge/search` for meaning.
 ```
 
 **Returns:**
-`content` is an excerpt of the body around the match (or the head of the
-document when the query matched only the title).
+`content` is an excerpt of the body around the match — the whole phrase where
+it occurs, else the first matching word, else the head of the document (which
+is what a title-only match looks like). It is empty for anonymous callers.
 
 ```json
 {

@@ -205,55 +205,142 @@ _CONTENT_MATCH_WEIGHT = 0.3
 # How much of the body to return around a hit.
 _EXCERPT_RADIUS = 120
 
+# Upper bound on the documents whose BODY this scorer will tokenize for one
+# request. The pre-#1288 endpoint read at most 500 inventory rows and scored
+# only their titles; scoring content without a ceiling would tokenize the whole
+# visible knowledge base per call, on a route an unauthenticated caller can
+# reach. Kept at the same 500 so the bound is no looser than what it replaced.
+_MAX_SCORED_DOCUMENTS = 500
 
-def _score_field_match(query_lower: str, query_words: List[str], field: str) -> float:
+# Matching is on WORD boundaries, not substrings. The first cut of this used
+# ``word in field_lower``, which scored a document because a query's one-letter
+# word was a substring of an unrelated one: the query "how to fix a disk issue"
+# scored 0.1667 against "Kafka rebalance loop" on the strength of the ``a`` in
+# "Kafka", and the single-character query "a" scored 0.7 against it via the
+# verbatim branch below. Both contradicted the endpoint's own published text —
+# "``timeout`` finds documents containing that token" and "documents matching
+# neither field are not returned" — and with the default threshold the endpoint
+# went back to answering every query with the whole visible inventory, which is
+# the defect #1288 was opened about.
+_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
+
+
+def _may_read_document_content(user: Any) -> bool:
+    """Whether this caller may be handed runbook BODY text by a search.
+
+    Both knowledge search endpoints are optional-auth, so an unauthenticated
+    caller reaches them and — via ``_inventory_visibility_clause`` / the vector
+    scope filter — sees the global platform tier. That governs WHICH documents
+    are visible; it says nothing about how much of one may be returned.
+
+    The project already answers that separately: ``GET /documents/{id}``, the
+    canonical "read this document's body", requires authentication (#867). A
+    search that hands an anonymous caller an excerpt of the same body routes
+    around that gate, so search results carry titles and metadata for everyone
+    and body text only for callers who could have read the document directly.
+
+    #1288 introduced that exposure on ``POST /documents/search`` by populating
+    a ``content`` field that had always been ``""``; the check is applied on
+    the vector arm of ``POST /knowledge/search`` too, which had been returning
+    200 characters of chunk text to anonymous callers before this change. Both
+    arms share the rule so the answer cannot depend on whether a vector store
+    happens to be bound.
+    """
+    return bool(user is not None and getattr(user, "user_id", None))
+
+
+def _tokenize(text: str) -> List[str]:
+    """Lowercased word tokens, the same way for queries and for fields."""
+    return _TOKEN_RE.findall(text.lower())
+
+
+def _contains_phrase(field_tokens: List[str], query_tokens: List[str]) -> bool:
+    """Whether the query's tokens appear consecutively in the field's."""
+    span = len(query_tokens)
+    if not span or span > len(field_tokens):
+        return False
+    return any(
+        field_tokens[i : i + span] == query_tokens
+        for i in range(len(field_tokens) - span + 1)
+    )
+
+
+def _score_field_match(query_tokens: List[str], field: str) -> float:
     """Lexical match of a query against one field, in 0..1.
 
-    1.0 when the query appears verbatim, else the fraction of its words present.
+    1.0 when the query's tokens appear consecutively (a verbatim phrase, modulo
+    punctuation), else the fraction of the query's DISTINCT tokens present.
     """
-    if not field or not query_words:
+    if not field or not query_tokens:
         return 0.0
-    field_lower = field.lower()
-    if query_lower in field_lower:
+    field_tokens = _tokenize(field)
+    if not field_tokens:
+        return 0.0
+    if _contains_phrase(field_tokens, query_tokens):
         return 1.0
-    hits = sum(1 for word in query_words if word in field_lower)
-    return hits / len(query_words)
+    present = set(field_tokens)
+    distinct = list(dict.fromkeys(query_tokens))
+    hits = sum(1 for token in distinct if token in present)
+    return hits / len(distinct)
 
 
-def _score_text_match(
-    query_lower: str, query_words: List[str], title: str, content: str
-) -> float:
+def _score_text_match(query_tokens: List[str], title: str, content: str) -> float:
     """Combined title+content lexical relevance, in 0..1.
 
     Monotone in both fields, so a document matching title *and* body outranks
     one matching either alone.
     """
-    title_score = _score_field_match(query_lower, query_words, title)
-    content_score = _score_field_match(query_lower, query_words, content)
-    return min(
-        1.0,
-        _TITLE_MATCH_WEIGHT * title_score + _CONTENT_MATCH_WEIGHT * content_score,
-    )
+    title_score = _score_field_match(query_tokens, title)
+    content_score = _score_field_match(query_tokens, content)
+    return _TITLE_MATCH_WEIGHT * title_score + _CONTENT_MATCH_WEIGHT * content_score
 
 
-def _match_excerpt(query_lower: str, content: str) -> str:
+def _match_excerpt(query_tokens: List[str], content: str) -> str:
     """A short body excerpt around the query, for the search result card.
 
-    Returns the head of the document when the query is not present verbatim —
-    the result may have matched on the title, or on scattered words.
+    Anchors on the whole query phrase where it occurs, and otherwise on the
+    first query TOKEN present — a multi-word query rarely appears verbatim, so
+    anchoring only on the full phrase returned the head of the document for the
+    common case (the endpoint's own documented example,
+    "PostgreSQL connection timeout", never occurs verbatim). Falls back to the
+    head only when no token occurs at all, which is what a title-only match
+    looks like.
     """
-    if not content:
+    if not content or not query_tokens:
         return ""
-    position = content.lower().find(query_lower)
+
+    lowered = content.lower()
+    position = -1
+    matched_len = 0
+
+    phrase = " ".join(query_tokens)
+    if len(query_tokens) > 1:
+        position = lowered.find(phrase)
+        matched_len = len(phrase)
+
+    if position < 0:
+        for token in query_tokens:
+            found = _token_position(lowered, token)
+            if found >= 0:
+                position, matched_len = found, len(token)
+                break
+
     if position < 0:
         excerpt = content[: _EXCERPT_RADIUS * 2].strip()
         return f"{excerpt}..." if len(content) > _EXCERPT_RADIUS * 2 else excerpt
+
     start = max(0, position - _EXCERPT_RADIUS)
-    end = min(len(content), position + len(query_lower) + _EXCERPT_RADIUS)
+    end = min(len(content), position + matched_len + _EXCERPT_RADIUS)
     excerpt = content[start:end].strip()
     prefix = "..." if start > 0 else ""
     suffix = "..." if end < len(content) else ""
     return f"{prefix}{excerpt}{suffix}"
+
+
+def _token_position(lowered: str, token: str) -> int:
+    """Offset of ``token`` in ``lowered`` as a whole word, or -1."""
+    match = re.search(rf"\b{re.escape(token)}\b", lowered)
+    return match.start() if match else -1
 
 
 class KnowledgeService:
@@ -2136,11 +2223,15 @@ class KnowledgeService:
             best_chunk = None
             best_score = 0.0
             query_lower = query.lower()
-            query_words = set(query_lower.split())
+            # The same tokenizer the /documents/search scorer uses. Splitting on
+            # whitespace made "timeout." a single token, so a query for
+            # "timeout" missed the line that mentioned it — two lexical paths
+            # documented in near-identical words behaving differently.
+            query_words = set(_tokenize(query))
 
             for chunk in chunks:
                 chunk_lower = chunk["text"].lower()
-                chunk_words = set(chunk_lower.split())
+                chunk_words = set(_tokenize(chunk["text"]))
 
                 # Calculate word overlap score
                 overlap = len(query_words & chunk_words)
@@ -2162,14 +2253,19 @@ class KnowledgeService:
                     "relevance_score": min(best_score, 1.0),
                 }
 
-            # Nothing overlapped: centre a window on the last verbatim hit, or
-            # fall back to the head of the document.
+            # Nothing overlapped a whole window: centre one on the FIRST line
+            # containing the query verbatim, else fall back to the head of the
+            # document. First, not last — the score below is the constant 1.0
+            # and the guard is strict, so every later hit compares 1.0 < 1.0
+            # and loses. That is fine as behaviour (the earliest mention is as
+            # good an anchor as any) but it was previously commented as "last",
+            # which is the kind of comment-vs-code drift this whole change is
+            # about.
             best_start = 0
             best_score = 0.0
 
             for i, line in enumerate(lines):
                 if query_lower in line.lower():
-                    # Found a match, calculate a simple score
                     score = 1.0
                     if best_score < score:
                         best_score = score
@@ -2214,7 +2310,6 @@ class KnowledgeService:
             return await self.fulltext_search_documents(
                 query=query,
                 document_type=document_type,
-                category=category,
                 tags=tags,
                 limit=limit,
                 similarity_threshold=similarity_threshold,
@@ -2229,6 +2324,7 @@ class KnowledgeService:
 
         try:
             user_id = getattr(user, "user_id", None) if user else None
+            may_read_content = _may_read_document_content(user)
 
             # Resolve the "shared-to-my-teams" arm from the share table (source
             # of truth), then build the visible-id allowlist filter
@@ -2274,7 +2370,11 @@ class KnowledgeService:
                             r.get("metadata", {}).get("parent_document_id")
                             or r.get("id", "").rsplit("_chunk_", 1)[0]
                         ),
-                        "content": r.get("content", "")[:200] + "...",
+                        "content": (
+                            r.get("content", "")[:200] + "..."
+                            if may_read_content
+                            else ""
+                        ),
                         "metadata": {
                             "title": r.get("metadata", {}).get("title", "Untitled"),
                             "document_type": r.get("metadata", {}).get(
@@ -2378,6 +2478,7 @@ class KnowledgeService:
                 or SingleTenantProvider.DEFAULT_ORG_ID
             )
             user_id = getattr(user, "user_id", None) if user else None
+            may_read_content = _may_read_document_content(user)
 
             item_type = None
             if document_type:
@@ -2400,11 +2501,14 @@ class KnowledgeService:
                     item_type=item_type,
                 )
 
-            query_lower = query.lower()
-            query_words = [w for w in query_lower.split() if w]
+            query_tokens = _tokenize(query)
+            # Every score is 0 without tokens (a blank or punctuation-only
+            # query), and a search that matches nothing returns nothing.
+            if not query_tokens:
+                return {"query": query, "total_results": 0, "results": []}
 
             scored_results = []
-            for item in items:
+            for item in items[:_MAX_SCORED_DOCUMENTS]:
                 tag_list = list(item.tags) if item.tags else []
 
                 # Filters are applied over the already tenant-isolated set,
@@ -2415,7 +2519,7 @@ class KnowledgeService:
                     continue
 
                 score = _score_text_match(
-                    query_lower, query_words, item.title or "", item.content or ""
+                    query_tokens, item.title or "", item.content or ""
                 )
                 if score <= 0.0:
                     continue
@@ -2454,7 +2558,11 @@ class KnowledgeService:
                 "results": [
                     {
                         "document_id": item.item_id,
-                        "content": _match_excerpt(query_lower, item.content or ""),
+                        "content": (
+                            _match_excerpt(query_tokens, item.content or "")
+                            if may_read_content
+                            else ""
+                        ),
                         "metadata": {
                             "title": item.title or "Untitled",
                             "document_type": item.item_type.value,

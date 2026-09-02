@@ -70,7 +70,7 @@ DISCRIMINATING_DOC = "\n".join(
 
 # A document whose best-matching window does NOT start on a window boundary, so
 # the two pre-#1288 algorithms disagreed about it. Window scoring returns lines
-# 4-6; the line-substring scan centres on the LAST verbatim hit (line 5) and
+# 4-6; the line-substring scan centres on the FIRST verbatim hit (line 4) and
 # returns 3-5. The query must actually occur, or both branches fall through to
 # the same no-match path and a configuration-dependence test is vacuous.
 CONFIG_DIVERGENCE_QUERY = "connection timeout"
@@ -299,7 +299,13 @@ async def search_service():
     await engine.dispose()
 
 
-USER = SimpleNamespace(user_id=None, organization_id="org-1")
+# An AUTHENTICATED caller. It matters that ``user_id`` is set: body excerpts are
+# returned only to a caller who could have read the document directly, and the
+# first version of this fixture used ``user_id=None`` — an anonymous caller —
+# while asserting it received content, which is the exposure #1310's review
+# found.
+USER = SimpleNamespace(user_id="user-1", organization_id="org-1")
+ANONYMOUS = None
 
 
 @pytest.mark.asyncio
@@ -419,6 +425,78 @@ class TestFulltextSearchMatchesContent:
         )
 
         assert result["total_results"] > 0
+
+
+@pytest.mark.asyncio
+class TestExcerptAnchorsOnTheMatch:
+    """``content`` must show the match, not the head of the document.
+
+    The excerpt first anchored only on the WHOLE query appearing verbatim, so a
+    multi-word query — the endpoint's own documented example is
+    "PostgreSQL connection timeout" — essentially never anchored and every
+    result showed its opening lines instead.
+    """
+
+    async def test_a_multi_word_query_anchors_on_a_matching_word(self):
+        from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+            _match_excerpt,
+            _tokenize,
+        )
+
+        # Long enough that the head cannot reach the hit by accident — without
+        # this the assertion passes on the unfixed code.
+        body = "Preamble. " * 60 + "The ENOSPC alert fires here. " + "Tail. " * 60
+        assert "ENOSPC" not in body[:240], "fixture too short to discriminate"
+
+        excerpt = _match_excerpt(_tokenize("disk enospc"), body)
+
+        assert "ENOSPC" in excerpt, (
+            "a query whose words are present but not contiguous fell back to "
+            f"the document head: {excerpt[:60]!r}"
+        )
+
+    async def test_no_matching_word_still_yields_the_head(self):
+        from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+            _match_excerpt,
+            _tokenize,
+        )
+
+        body = "Preamble. " * 60 + "The ENOSPC alert fires here. "
+        excerpt = _match_excerpt(_tokenize("kafka rebalance"), body)
+
+        assert excerpt.startswith("Preamble.")
+
+
+@pytest.mark.asyncio
+class TestSearchArmsDoNotDivergeOnCategory:
+    """``POST /knowledge/search`` must answer the same with or without vectors.
+
+    Its vector arm filters only on ``document_type``; the scope filter has no
+    category term. Passing ``category`` down to the vectorless fallback — which
+    CAN filter it — made the endpoint's answer depend on whether a store
+    happened to be bound, which is the configuration-dependence #1288 removed
+    from the snippet path.
+    """
+
+    async def test_the_vectorless_fallback_ignores_category_as_the_vector_arm_does(
+        self, search_service
+    ):
+        search_service._vector_store = None
+
+        with_category = await search_service.search_documents(
+            query=SEARCH_TERM, user=USER, category="a-category-no-document-has"
+        )
+        without_category = await search_service.search_documents(
+            query=SEARCH_TERM, user=USER
+        )
+
+        assert [r["document_id"] for r in with_category["results"]] == [
+            r["document_id"] for r in without_category["results"]
+        ], (
+            "the vectorless arm filtered on category while the vector arm "
+            "cannot, so this endpoint's answer depends on configuration"
+        )
+        assert without_category["results"], "guard the guard: the query matched nothing"
 
 
 class TestSearchByTextIsGone:
