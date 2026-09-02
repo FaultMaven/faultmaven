@@ -725,34 +725,6 @@ class TestPruneOrphanBuiltins:
         del_mock.assert_not_called()
 
 
-class TestScrubRetiredChunkKeys:
-    """One-shot removal of a chunk-metadata key the schema no longer declares
-    (fm#1295: ``cause_letters``). Steady state is zero; never fails startup."""
-
-    @pytest.mark.asyncio
-    async def test_reports_the_chunks_the_store_rewrote(self):
-        svc = MagicMock()
-        svc._vector_store = MagicMock()
-        svc._vector_store.scrub_metadata_key = AsyncMock(return_value=3)
-        assert await kb_init._scrub_retired_chunk_keys(svc) == 3
-        svc._vector_store.scrub_metadata_key.assert_awaited_once_with("cause_letters")
-
-    @pytest.mark.asyncio
-    async def test_a_store_without_the_capability_is_left_alone(self):
-        svc = MagicMock()
-        svc._vector_store = MagicMock(spec=[])  # no scrub_metadata_key
-        assert await kb_init._scrub_retired_chunk_keys(svc) == 0
-
-    @pytest.mark.asyncio
-    async def test_a_failing_scrub_never_fails_startup(self):
-        svc = MagicMock()
-        svc._vector_store = MagicMock()
-        svc._vector_store.scrub_metadata_key = AsyncMock(
-            side_effect=RuntimeError("chroma down")
-        )
-        assert await kb_init._scrub_retired_chunk_keys(svc) == 0
-
-
 class TestReconcileVectors:
     """SQL <-> ChromaDB reconcile pass.
 

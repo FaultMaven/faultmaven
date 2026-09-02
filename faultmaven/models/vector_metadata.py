@@ -73,9 +73,12 @@ class VectorMetadata(BaseModel):
     # A ``cause_letters`` stamp (fm#1108) rode here for the KB cause seeder's
     # join and went with it (fm#1295). This allowlist is enforced on WRITE
     # only — reads hand back raw chunk metadata — so a chunk written before
-    # the removal still carries the key until the bootstrap's one-shot scrub
-    # (``kb_init._scrub_retired_chunk_keys``) removes it; after that nothing in
-    # the store can trip ``reject_undeclared_keys`` on it.
+    # the removal still carries the key, and nothing reads it. That residue is
+    # inert rather than scrubbed: every ``reject_undeclared_keys`` site guards
+    # metadata built fresh by ``to_chroma_metadata()``, none round-trips stored
+    # metadata, and re-ingesting a document deletes its chunks and rewrites
+    # them. A boot-time scrub would need an unfiltered metadata read of every
+    # tenant's chunks, which ``test_kb_tenant_isolation_probe`` forbids.
 
     @classmethod
     def reject_undeclared_keys(cls, md: Optional[Dict[str, Any]]) -> None:
