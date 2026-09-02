@@ -394,6 +394,58 @@ def _enable_sdk_tracing() -> None:
         logging.debug(f"Could not reset Opik SDK tracing switch: {e}")
 
 
+# Whether ``init_opik_tracing`` reached a CONFIGURED backend, recorded by the
+# function itself rather than re-derived by anyone else.
+#
+# It exists because re-deriving is what #1234 kept getting wrong. Enablement is
+# necessary but nowhere near sufficient: the SDK can be absent, no URL may be
+# configured, or configuration can raise — and each of those paths leaves the
+# @opik.track call sites live but recording nothing. A consumer that wants to
+# know "is tracing working" has to mirror EVERY one of those gates, and a
+# mirror silently goes stale the next time one is added. ``/admin/config/status``
+# reported tracing as on for exactly that reason.
+_tracing_configured = False
+
+
+def tracing_is_effective() -> bool:
+    """Will a traced call actually record a span right now?
+
+    The question ``/admin/config/status`` needs answered, kept HERE, beside the
+    function whose outcome it reports, so a new bail-out path in
+    ``init_opik_tracing`` cannot land without this answer following it.
+
+    Two terms, and neither is a copy of a setting:
+
+    * ``_tracing_configured`` — did initialisation reach a configured backend.
+      This is the recorded OUTCOME, so it covers the SDK being absent,
+      ``OPIK_ENABLED=false``, the no-URL bail, and a configuration exception,
+      without naming any of them.
+    * ``opik.is_tracing_active()`` — the SDK's own process-wide switch, which
+      is what every ``@opik.track`` wrapper consults per call before it builds
+      a client (see ``_disable_sdk_tracing``). It is what makes an operator's
+      ``OPIK_TRACK_DISABLE=true`` visible here: that is a documented way to
+      suppress spans while leaving a backend configured, so initialisation
+      succeeds and yet nothing is recorded.
+
+    The switch is read live rather than at init, because it is process-global
+    and anything may have flipped it since. If the symbol cannot be read the
+    answer falls back to the recorded outcome: the call was configured, and a
+    version-sensitive symbol going missing is not evidence that tracing stopped
+    — reporting False on it would be the #1121 defect class (a renamed symbol
+    reading as "tracing off").
+    """
+    if not (OPIK_AVAILABLE and _tracing_configured):
+        return False
+
+    try:
+        import opik as _opik
+
+        return bool(_opik.is_tracing_active())
+    except Exception as e:  # pragma: no cover - version-sensitive symbol
+        logging.debug(f"Could not read Opik tracing switch: {e}")
+        return True
+
+
 def init_opik_tracing(
     api_key: Optional[str] = None,
     project_name: str = "FaultMaven Development",
@@ -419,6 +471,11 @@ def init_opik_tracing(
     invocation via ``OpikConfig``, so these env vars are picked up
     automatically — no explicit ``configure()`` call is needed.
     """
+    global _tracing_configured
+    # Cleared FIRST, so every path below states its own outcome and a re-init
+    # can never inherit a previous run's success.
+    _tracing_configured = False
+
     if not OPIK_AVAILABLE:
         logging.warning("Opik SDK not installed, skipping tracing initialization")
         return
@@ -499,11 +556,17 @@ def init_opik_tracing(
         except Exception as e:
             logging.debug(f"Could not update Opik session config: {e}")
 
+        # The single place this is set. Everything above either returned or
+        # raised, so reaching here IS the claim "a backend is configured".
+        _tracing_configured = True
+
         logging.info(
             f"Opik tracing initialized: url={url}, project={project}, workspace={workspace}"
         )
 
     except Exception as e:
+        # Left False by the reset above: a half-configured init records
+        # nothing, and must not report itself as tracing.
         logging.error(f"Failed to initialize Opik tracing: {e}")
         logging.info("Continuing without tracing...")
 
