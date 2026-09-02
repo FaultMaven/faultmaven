@@ -142,7 +142,32 @@ def to_strict_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
             free-form field from being sent WITH a ``strict: true`` the API
             rejects outright; ``test_schema_strict_mode.py`` exercises it
             against a synthetic model.
+
+            The second construct is a **recursive** ``$ref``. The rewrite
+            inlines ``$defs`` (below) and a self-referencing definition cannot
+            be inlined, so it is refused the same way rather than escaping as a
+            bare ``ValueError`` that the caller's fallback does not catch.
+
+    **``$defs`` are inlined first, not marked in place.** Pydantic emits every
+    nested model as a ``$ref`` into a sibling ``$defs`` map. Walking only the
+    root's ``properties`` marked the root and left every definition untouched —
+    23 unmarked objects in ``InvestigationResponse_Diagnosis`` — and OpenAI
+    answers that with ``400 Invalid schema for response_format ...
+    'additionalProperties' is required to be supplied and to be false``. The
+    tool converter never hit it because :func:`pydantic_to_strict_openai_tools`
+    inlines through :func:`_inline_refs` before calling here; the single-shot
+    ``response_format`` path (:mod:`structured_output_capability`) passes the
+    raw ``model_json_schema()`` and did not. Inlining here, rather than adding a
+    second walker over ``$defs``, means both callers reach the same flat shape
+    through the same code and cannot drift again.
     """
+    try:
+        schema = _inline_refs(schema)
+    except ValueError as exc:
+        raise StrictSchemaUnsupported(
+            f"{schema.get('title', 'root')} cannot be flattened for strict "
+            f"mode: {exc}"
+        ) from exc
 
     def convert(node: Any, path: str) -> Any:
         if isinstance(node, list):
@@ -187,7 +212,8 @@ def to_strict_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
 
         return out
 
-    return convert(copy.deepcopy(schema), "")
+    # `_inline_refs` already returned a deep copy; `convert` never mutates.
+    return convert(schema, "")
 
 
 def _nullable(schema: Dict[str, Any]) -> Dict[str, Any]:

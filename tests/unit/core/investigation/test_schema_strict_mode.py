@@ -130,10 +130,13 @@ def test_the_live_response_format_path_is_also_compliant(model):
     from faultmaven.infrastructure.llm.structured_output_capability import (
         create_strategy_for_capability,
     )
-    from faultmaven.utils.schema_converter import _inline_refs
 
+    # The RAW Pydantic schema, `$defs` and all — exactly what
+    # `_generate_structured_output_inner` passes. An earlier revision of this
+    # test pre-inlined with `_inline_refs`, which is the one step production
+    # skips, so it certified a `response_format` the API rejected.
     strategy = create_strategy_for_capability(
-        StructuredOutputCapability.STRICT, _inline_refs(model.model_json_schema())
+        StructuredOutputCapability.STRICT, model.model_json_schema()
     )
     json_schema = strategy.response_format["json_schema"]
 
@@ -163,11 +166,9 @@ def test_the_live_path_drops_the_strict_claim_it_cannot_honour():
     from faultmaven.infrastructure.llm.structured_output_capability import (
         create_strategy_for_capability,
     )
-    from faultmaven.utils.schema_converter import _inline_refs
 
     strategy = create_strategy_for_capability(
-        StructuredOutputCapability.STRICT,
-        _inline_refs(_FreeForm.model_json_schema()),
+        StructuredOutputCapability.STRICT, _FreeForm.model_json_schema()
     )
 
     assert strategy.response_format["json_schema"]["strict"] is False
@@ -197,6 +198,106 @@ def test_a_nullable_nested_object_keeps_its_properties_inside_the_union():
     assert "properties" in obj, "the object branch lost its properties"
     assert obj["additionalProperties"] is False
     assert set(obj["required"]) == set(obj["properties"])
+
+
+INVESTIGATION_RESPONSES = (
+    InvestigationResponse_Diagnosis,
+    InvestigationResponse_Mitigation,
+    InvestigationResponse_Treatment,
+    InvestigationResponse_General,
+)
+
+
+def _unmarked_objects(schema) -> list[str]:
+    """Paths of every object the strict subset would reject."""
+    return [
+        path
+        for path, obj in _walk_objects(schema)
+        if obj.get("additionalProperties") is not False
+        or set(obj.get("required", [])) != set(obj.get("properties", {}))
+    ]
+
+
+@pytest.mark.parametrize("model", INVESTIGATION_RESPONSES, ids=lambda m: m.__name__)
+def test_every_object_under_defs_is_strict_in_the_single_shot_response_format(
+    model,
+):
+    """The defect, counted rather than spot-checked.
+
+    Pydantic puts every nested model under ``$defs``; the rewrite walked only
+    the root's ``properties`` and left those definitions untouched — 23 unmarked
+    objects in ``InvestigationResponse_Diagnosis``. The API's rule is stated in
+    its own 400: ``'additionalProperties' is required to be supplied and to be
+    false`` on EVERY object. This is the schema the engine's non-tool fallback
+    (``ToolCallingUnsupportedError``, or no investigation tools registered)
+    sends on an OpenAI STRICT provider, so an unmarked definition fails the
+    whole turn, not just the enforcement.
+    """
+    from faultmaven.infrastructure.llm.structured_output_capability import (
+        create_strategy_for_capability,
+    )
+
+    strategy = create_strategy_for_capability(
+        StructuredOutputCapability.STRICT, model.model_json_schema()
+    )
+    json_schema = strategy.response_format["json_schema"]
+
+    assert json_schema["strict"] is True
+    assert _unmarked_objects(json_schema["schema"]) == []
+
+
+def test_a_nested_model_reached_through_defs_is_marked_strict():
+    """The minimal reproduction: one ``$ref`` into ``$defs``, fed RAW.
+
+    Pre-inlining in the test is what let this slip — the converter was only ever
+    exercised on a shape it was never given in production. The nested object
+    must come out marked and required-complete, and the schema must leave with
+    no ``$defs``/``$ref`` at all, so the same flat shape reaches the API from
+    both the tool and the ``response_format`` converters.
+    """
+
+    class Leaf(BaseModel):
+        note: str
+        weight: float = 1.0
+
+    class Root(BaseModel):
+        leaf: Leaf
+        leaves: list[Leaf] = []
+
+    raw = Root.model_json_schema()
+    assert "$defs" in raw, "the fixture must exercise the $defs path"
+
+    strict = to_strict_schema(raw)
+
+    assert "$defs" not in strict
+    assert "$ref" not in str(strict)
+    assert _unmarked_objects(strict) == []
+    leaf = strict["properties"]["leaf"]
+    assert leaf["additionalProperties"] is False
+    assert set(leaf["required"]) == {"note", "weight"}
+    assert "default" not in leaf["properties"]["weight"]
+
+
+def test_a_recursive_definition_is_refused_not_leaked():
+    """Inlining cannot flatten a self-reference. It must surface as the refusal
+    the live caller already handles (``strict: false``), not as a bare
+    ``ValueError`` that fails the turn — and never as a ``$defs`` block sent
+    under ``strict: true``."""
+    from faultmaven.infrastructure.llm.structured_output_capability import (
+        create_strategy_for_capability,
+    )
+
+    class Node(BaseModel):
+        label: str
+        children: list["Node"] = []
+
+    with pytest.raises(StrictSchemaUnsupported, match="Recursive"):
+        to_strict_schema(Node.model_json_schema())
+
+    strategy = create_strategy_for_capability(
+        StructuredOutputCapability.STRICT, Node.model_json_schema()
+    )
+    assert strategy.response_format["json_schema"]["strict"] is False
 
 
 def test_unsupported_keywords_are_stripped():
