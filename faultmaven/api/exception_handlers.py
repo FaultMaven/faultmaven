@@ -48,6 +48,7 @@ from faultmaven.exceptions import (
     PROVIDER_CIRCUIT_OPEN,
     QUOTA_EXHAUSTED,
     TOKEN_LIMIT,
+    TURN_BUDGET_EXHAUSTED,
     AuthorizationError,
     ConflictError,
     LLMException,
@@ -128,11 +129,22 @@ def _first_engine_error_code(exc: BaseException) -> Optional[str]:
 
 # Semantic engine error codes (``LLMErrorHandler`` → ``MilestoneEngineError``)
 # that describe a transient LLM-call failure worth retrying: retries were
-# exhausted, the circuit breaker is open, the context/output hit a token limit,
-# or the failure could not be classified but still originated from an LLM call
-# (not arbitrary server logic).
+# exhausted, the turn's budget for them ran out, the circuit breaker is open,
+# the context/output hit a token limit, or the failure could not be classified
+# but still originated from an LLM call (not arbitrary server logic).
+#
+# ``TURN_BUDGET_EXHAUSTED`` belongs here and its ABSENCE would be silent: an
+# engine code this set does not recognise falls through to a bare 500
+# SERVICE_ERROR, which is a worse answer than the 504 the deadline-aware ladder
+# exists to replace.
 _RETRYABLE_ENGINE_CODES = frozenset(
-    {"RETRY_EXHAUSTED", PROVIDER_CIRCUIT_OPEN, TOKEN_LIMIT, "UNKNOWN_ERROR"}
+    {
+        "RETRY_EXHAUSTED",
+        TURN_BUDGET_EXHAUSTED,
+        PROVIDER_CIRCUIT_OPEN,
+        TOKEN_LIMIT,
+        "UNKNOWN_ERROR",
+    }
 )
 # Semantic engine codes describing a permanent provider/config rejection — the
 # model is misnamed or the credentials are bad; retrying cannot help.
@@ -188,6 +200,7 @@ def llm_service_error_http_exception(
         no status, DECLARED retryable          → 503  LLM_PROVIDER_UNAVAILABLE  (retry 30)
         no status, DECLARED terminal           → 502  LLM_PROVIDER_ERROR        (no retry)
         engine RETRY_EXHAUSTED/TOKEN_LIMIT/    → 503  LLM_PROVIDER_UNAVAILABLE  (retry 30)
+          TURN_BUDGET_EXHAUSTED/
           PROVIDER_CIRCUIT_OPEN/UNKNOWN_ERROR
         engine MODEL_NOT_FOUND/AUTH_FAILED/    → 502  LLM_PROVIDER_ERROR        (no retry)
           LLM_CONFIG_ERROR

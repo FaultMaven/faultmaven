@@ -153,6 +153,15 @@ def mock_settings():
     # MagicMock attribute would make every test here fail on the comparison
     # rather than on what it is about.
     settings.server.workers = 1
+    # Real numbers for the same reason as ``workers`` above: the endpoint models
+    # the LLM retry ladder against the turn deadline (#1278/#1292) and does
+    # arithmetic on both, so MagicMock attributes would fail every test here on
+    # a TypeError rather than on what it is about. These are the shipped code
+    # defaults, which is a FITTING configuration — 3x30 + 14 = 104s inside 120s.
+    settings.llm.request_timeout = 30
+    settings.llm.timeout_for_provider.return_value = 30
+    settings.agent.agent_request_timeout = 120
+    settings.agent.timeout_for_provider.return_value = 120
     settings.database.case_storage_type = "sqlite"
     settings.database.session_storage_type = "inmemory"
     settings.database.vector_storage_type = "chromadb"
@@ -838,6 +847,84 @@ class TestGetEnvConfigStatus:
         assert result.features["first_party_consent_skip"].enabled is True
 
     @pytest.mark.asyncio
+    async def test_retry_ladder_reports_coherent_on_the_shipped_defaults(
+        self, monkeypatch, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        """LLM_REQUEST_TIMEOUT=30 against AGENT_REQUEST_TIMEOUT=120 fits.
+
+        3x30 + 14s of backoff = 104s inside a 120s turn. The env var is cleared
+        because ``resolve_request_timeout`` honours it over the settings value,
+        and this box's own ``.env`` sets it to a breaching 90 — a test that read
+        the developer's environment would assert nothing about the code.
+        """
+        monkeypatch.delenv("LLM_REQUEST_TIMEOUT", raising=False)
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        feature = result.features["llm_retry_ladder_fits_turn_budget"]
+        assert feature.enabled is True
+        assert "3 of 3 attempts" in feature.description
+
+    @pytest.mark.asyncio
+    async def test_retry_ladder_reports_incoherent_on_the_cluster_shape(
+        self, monkeypatch, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        """The live-cluster configuration: gemini pinned to 120s / 240s.
+
+        3x120 + 14 = 374s against a 240s turn — a 134s breach. Nothing else in
+        the system reports it, which is why it sat unnoticed: turns look fine
+        until a provider hangs, and then the answer is an opaque 504.
+        """
+        monkeypatch.delenv("LLM_REQUEST_TIMEOUT", raising=False)
+        mock_settings.llm.request_timeout = 30
+        mock_settings.llm.timeout_for_provider.return_value = 120
+        mock_settings.agent.timeout_for_provider.return_value = 240
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        feature = result.features["llm_retry_ladder_fits_turn_budget"]
+        assert feature.enabled is False
+        # The number that matters to an operator: a hung provider gets ONE of
+        # its three configured attempts.
+        assert "1 of 3 attempts" in feature.description
+        assert "374s" in feature.description
+        assert "LLM_REQUEST_TIMEOUT" in feature.config_hint
+
+    @pytest.mark.asyncio
+    async def test_retry_ladder_honours_the_env_override_the_router_honours(
+        self, monkeypatch, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        """``LLM_REQUEST_TIMEOUT`` beats the settings value at the router, so it
+        must beat it here too — a report that read only the settings field would
+        certify an env-configured breach as safe."""
+        monkeypatch.setenv("LLM_REQUEST_TIMEOUT", "600")
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        assert result.features["llm_retry_ladder_fits_turn_budget"].enabled is False
+
+    def test_the_ladder_report_runs_against_the_real_settings_object(self):
+        """The other three tests drive a ``MagicMock``, which answers any
+        attribute name — including a misspelled one. This one asks the real
+        settings class, so a rename on either timeout map lands here."""
+        from faultmaven.config.retry_budget import describe_retry_ladder_budget
+        from faultmaven.config.settings import get_settings
+
+        plan = describe_retry_ladder_budget(get_settings())
+        assert plan.paid_attempts == 3
+        assert plan.attempts >= 1
+        assert plan.full_ladder_seconds > 0
+
+    @pytest.mark.asyncio
     async def test_consent_skip_matches_the_predicate_that_actually_gates_it(
         self, mock_admin_user, mock_settings, oauth_mounted_app
     ):
@@ -1461,6 +1548,36 @@ FEATURE_SCENARIOS = {
 }
 
 
+def _scenario_llm_retry_ladder_fits(settings, app, monkeypatch, reality):
+    """The two states of a claim whose SUBJECT is the configuration.
+
+    Nothing runtime is withheld here, because there is nothing to withhold:
+    the field reports whether the LLM request timeout and the turn timeout fit
+    each other, and reading those settings IS reading the reality it claims.
+    What it owes instead is a pair — the shipped defaults (3x30 + 14s inside
+    120s) and the live cluster's per-provider overrides (3x120 + 14s against
+    240s) — so the field is shown to track them rather than being a constant.
+
+    The env var is cleared because ``resolve_request_timeout`` honours it over
+    the settings field exactly as the router does, and this box's own ``.env``
+    sets it to a breaching 90.
+    """
+    monkeypatch.delenv("LLM_REQUEST_TIMEOUT", raising=False)
+    settings.llm.request_timeout = 30
+    settings.llm.timeout_for_provider.return_value = 30 if reality else 120
+    settings.agent.timeout_for_provider.return_value = 120 if reality else 240
+
+
+# Members whose subject IS the configuration (see
+# ``TestEveryFeatureReportsEffectNotIntent``, category 2). They cannot register
+# in FEATURE_SCENARIOS: that registry's premise is that a settings-only
+# implementation FAILS its OFF arm, and a settings-only implementation is
+# precisely what these members correctly are.
+CONFIGURATION_DERIVED_SCENARIOS = {
+    "llm_retry_ladder_fits_turn_budget": _scenario_llm_retry_ladder_fits,
+}
+
+
 class TestEveryFeatureReportsEffectNotIntent:
     """The population rule, swept over the whole ``features`` dict.
 
@@ -1527,7 +1644,7 @@ class TestEveryFeatureReportsEffectNotIntent:
             )
 
         reported = set(result.features)
-        classified = set(FEATURE_SCENARIOS)
+        classified = set(FEATURE_SCENARIOS) | set(CONFIGURATION_DERIVED_SCENARIOS)
         assert reported == classified, (
             "every entry in the features dict must be classified by this "
             "sweep.\n"
@@ -1535,12 +1652,46 @@ class TestEveryFeatureReportsEffectNotIntent:
             f"{sorted(reported - classified)}\n"
             f"  stale (sweep has it, endpoint does not):        "
             f"{sorted(classified - reported)}\n"
-            "A runtime-verified feature registers by adding a scenario that "
-            "withholds its capability. A feature whose subject IS the "
-            "configuration registers differently and still owes a "
-            "True-and-False pair - see this class's docstring."
+            "A runtime-verified feature registers in FEATURE_SCENARIOS by "
+            "adding a scenario that withholds its capability. A feature whose "
+            "subject IS the configuration registers in "
+            "CONFIGURATION_DERIVED_SCENARIOS and still owes a True-and-False "
+            "pair - see this class's docstring."
         )
-        assert len(result.features) >= 4
+        assert len(result.features) >= 5
+        # The two categories are disjoint by construction: a member that could
+        # satisfy both would mean its "reality" was a setting after all, which
+        # is the substitution this whole class exists to catch.
+        assert not set(FEATURE_SCENARIOS) & set(CONFIGURATION_DERIVED_SCENARIOS)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("feature", sorted(CONFIGURATION_DERIVED_SCENARIOS))
+    async def test_a_configuration_derived_feature_reports_both_verdicts(
+        self, mock_admin_user, mock_settings, rate_limited_app, monkeypatch, feature
+    ):
+        """Category 2's proof: the pair, on ONE member, in ONE test.
+
+        Splitting it into a True test and a False test would let either half
+        pass alone against a constant. What can go wrong for a
+        configuration-derived field is not echoing an instruction back — it is
+        never changing its mind, and only the pair falsifies that.
+        """
+        scenario = CONFIGURATION_DERIVED_SCENARIOS[feature]
+
+        scenario(mock_settings, rate_limited_app, monkeypatch, True)
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            coherent = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        scenario(mock_settings, rate_limited_app, monkeypatch, False)
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            incoherent = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        assert coherent.features[feature].enabled is True
+        assert incoherent.features[feature].enabled is False
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("feature", sorted(FEATURE_SCENARIOS))

@@ -14,16 +14,23 @@ Usage:
 import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Awaitable, Callable, Optional, Tuple, TypeVar
 
+from faultmaven.core.investigation.turn_budget import (
+    backstop_turn_budget,
+    can_afford_next_attempt,
+    spendable_turn_budget,
+)
 from faultmaven.exceptions import (
     LLM_CONFIG_ERROR,
     PROVIDER_AUTH_FAILED,
     PROVIDER_CIRCUIT_OPEN,
     QUOTA_EXHAUSTED,
     TOKEN_LIMIT,
+    TURN_BUDGET_EXHAUSTED,
     is_billing_error,
     walk_cause_chain,
 )
@@ -439,13 +446,24 @@ class LLMErrorHandler:
         )
         return min(delay, self.config.max_delay_seconds)
 
-    async def handle_error(self, error: Exception, retry_count: int = 0) -> ErrorResult:
+    async def handle_error(
+        self,
+        error: Exception,
+        retry_count: int = 0,
+        next_attempt_seconds: float = 0.0,
+    ) -> ErrorResult:
         """
         Handle LLM API error with appropriate recovery.
 
         Args:
             error: The exception that occurred
             retry_count: Number of retries attempted
+            next_attempt_seconds: What one more attempt is expected to cost, in
+                seconds. Only consulted inside a turn with a bound deadline (see
+                ``turn_budget``), where it decides whether the backoff and the
+                attempt after it still fit. Defaults to 0.0, which makes the
+                budget check guard the BACKOFF alone — the honest reading for a
+                caller that has no cost estimate to offer.
 
         Returns:
             ErrorResult with recovery action and message
@@ -474,7 +492,14 @@ class LLMErrorHandler:
                     error_code=TOKEN_LIMIT,
                 )
             # The cap was raised; the identical call now has room to finish.
-            return await self._retry_or_exhaust(retry_count)
+            # If the turn budget refuses that retry, report TOKEN_LIMIT rather
+            # than a budget/availability code: the engine selects its
+            # minimal-prompt degrade on that code, and swapping it out here
+            # would turn a recoverable overflow into a hard failure whose
+            # message blames the provider (#662's NO-COLLAPSE guarantee).
+            return await self._retry_or_exhaust(
+                retry_count, next_attempt_seconds, no_budget_code=TOKEN_LIMIT
+            )
 
         # Permanent billing / quota exhaustion (non-retryable). The provider
         # account is out of credits or quota; retrying or waiting cannot help —
@@ -609,7 +634,7 @@ class LLMErrorHandler:
         # Billing stays ahead of this: quota exhaustion is permanent whatever
         # the transport said, and ``is_billing_error`` walks the same chain.
         if self._declares_retryable(error) is True:
-            return await self._retry_or_exhaust(retry_count)
+            return await self._retry_or_exhaust(retry_count, next_attempt_seconds)
 
         # A configuration failure the LLM layer diagnosed for itself: no
         # provider is configured, or the registry cannot build one. Permanent
@@ -650,7 +675,7 @@ class LLMErrorHandler:
 
         # Check for retryable errors
         if self.is_retryable_error(error):
-            return await self._retry_or_exhaust(retry_count)
+            return await self._retry_or_exhaust(retry_count, next_attempt_seconds)
 
         # Unknown error — fail fast and surface details for diagnostics.
         logger.error(
@@ -668,13 +693,32 @@ class LLMErrorHandler:
             retry_count=retry_count,
         )
 
-    async def _retry_or_exhaust(self, retry_count: int) -> ErrorResult:
+    async def _retry_or_exhaust(
+        self,
+        retry_count: int,
+        next_attempt_seconds: float = 0.0,
+        no_budget_code: Optional[str] = None,
+    ) -> ErrorResult:
         """Back off and retry, or report the attempts spent.
 
         Shared by the string-classified retryable branch and the typed
         output-truncation signal, so a truncation retry honours the same
         ceiling and the same backoff as every other retry rather than getting
         its own budget.
+
+        Two ceilings apply, and BOTH are checked before the backoff is slept:
+        the configured attempt count, and — inside a turn that bound a deadline
+        — what is left of the turn budget. The second one has to be checked
+        *here*, before ``asyncio.sleep``, because the backoff is itself part of
+        what the ladder spends: deciding after the sleep would already have
+        burnt 2, 4 or 8 seconds of a budget that could not afford them.
+
+        ``no_budget_code`` lets a caller name the code to report when the turn
+        budget is what stopped the ladder. Only the truncation branch passes
+        one: its recovery is the engine's minimal-prompt degrade, which is
+        selected by ``TOKEN_LIMIT`` on the raised error, and reporting a
+        budget/availability code there would silently disable the NO-COLLAPSE
+        recovery (#662) instead of degrading.
         """
         if retry_count >= self.config.max_retries:
             return ErrorResult(
@@ -685,6 +729,74 @@ class LLMErrorHandler:
             )
 
         delay = self.calculate_delay(retry_count)
+
+        # A bounded operation must not begin a step it cannot finish inside its
+        # own bound. Being cancelled mid-attempt by the turn-wide wait_for
+        # discards the classification this handler exists to produce, and the
+        # caller gets an opaque 504 instead of the honest 503 + Retry-After
+        # (#1278, #1292).
+        spendable = spendable_turn_budget()
+        if not can_afford_next_attempt(spendable, delay, next_attempt_seconds):
+            # WHICH verdict this is depends on whether the budget actually cost
+            # the caller a provider attempt.
+            #
+            # Refusing the ladder's LAST iteration costs nothing that could have
+            # changed the answer: by then every attempt the retry policy allows
+            # has been made and failed. Reporting a budget problem there sends
+            # the operator to GET /admin/config/status, which — on a
+            # configuration whose ladder genuinely fits — tells them the
+            # timeouts are coherent. That is a diagnostic dead end, and the
+            # honest verdict is the ordinary one: the provider failed every
+            # attempt.
+            #
+            # Refusing an EARLIER iteration is different: attempts that could
+            # have succeeded were not made, the two timeouts are the reason, and
+            # the config-status remediation is exactly right.
+            #
+            # The test is structural — the ladder's own length — and deliberately
+            # NOT a question about the circuit breaker. The handler holds no
+            # breaker reference and cannot observe its state; claiming
+            # PROVIDER_CIRCUIT_OPEN here would assert something unverified, and
+            # would collide with the genuine open-breaker path, which reports
+            # that code because it actually ASKED and got CircuitBreakerError.
+            lost_a_provider_attempt = retry_count + 1 < self.config.max_retries
+            code = (
+                no_budget_code
+                if no_budget_code is not None
+                else (
+                    TURN_BUDGET_EXHAUSTED
+                    if lost_a_provider_attempt
+                    else "RETRY_EXHAUSTED"
+                )
+            )
+            logger.warning(
+                "Turn budget cannot afford retry %d/%d: %.1fs spendable, "
+                "%.1fs backoff + %.1fs estimated attempt. Reporting %s now "
+                "rather than being cancelled mid-attempt.",
+                retry_count + 1,
+                self.config.max_retries,
+                spendable,
+                delay,
+                next_attempt_seconds,
+                code,
+            )
+            return ErrorResult(
+                action=ErrorAction.FAIL,
+                # The message tracks the code. Telling an operator "the request
+                # budget is spent" while reporting RETRY_EXHAUSTED would put
+                # back, in prose, the same misdirection this branch removes
+                # from the code.
+                message=(
+                    "LLM service temporarily unavailable and the request budget "
+                    "is spent. Please try again in a few minutes."
+                    if lost_a_provider_attempt
+                    else "LLM service temporarily unavailable. Please try again "
+                    "in a few minutes."
+                ),
+                error_code=code,
+                retry_count=retry_count,
+            )
+
         logger.info(
             f"Retryable error, waiting {delay:.1f}s before retry {retry_count + 1}/{self.config.max_retries}"
         )
@@ -703,6 +815,31 @@ class LLMErrorHandler:
         """
         Execute operation with automatic retry on transient errors.
 
+        Inside a turn that bound a deadline (``turn_budget.bind_turn_deadline``,
+        applied by the route that also applies the turn-wide ``asyncio.wait_for``)
+        the ladder is budgeted against it two ways:
+
+        * **Every attempt is CLAMPED** to what is left of the turn. This is what
+          makes the invariant unconditional — the ladder physically cannot run
+          past the deadline and be cancelled mid-attempt, whatever the provider
+          timeout is configured to and however wrong the estimate below is.
+        * **A retry is REFUSED** when the backoff plus another attempt of the
+          worst cost observed so far would not fit. This is the efficiency half:
+          without it the ladder would keep starting ever-shorter clamped attempts
+          and still spend the entire turn budget before answering, which is the
+          two-minute wait #1278 reported.
+
+        The worst OBSERVED attempt cost is used as the estimate rather than the
+        configured LLM request timeout, because the handler would otherwise have
+        to re-derive the router's per-provider timeout resolution and could drift
+        from it. It is also self-calibrating in the right direction: a provider
+        failing fast (a 503 in 200ms) keeps every retry affordable, while a
+        provider that hangs is estimated at the full hang and stops the ladder.
+
+        Outside a bound turn every one of these checks is inert — the budget
+        reads ``None``, nothing is clamped and nothing is refused — which is the
+        behaviour direct-call tests, background jobs and the CLI already had.
+
         Args:
             operation: Async operation to execute
 
@@ -711,13 +848,63 @@ class LLMErrorHandler:
         """
         retry_count = 0
         last_error_result: Optional[ErrorResult] = None
+        # Worst attempt cost seen in THIS ladder. Local, not instance state: one
+        # handler serves every turn in the process, so an instance attribute
+        # would leak one case's hung provider into another case's budgeting.
+        worst_attempt_seconds = 0.0
 
         while retry_count <= self.config.max_retries:
+            spendable = spendable_turn_budget()
+            if spendable is not None and spendable <= 0:
+                # No room even to start. Reached when an earlier ladder in the
+                # same turn has already spent the budget — #1278's "each
+                # subsequent call in the turn starts its own retry ladder".
+                logger.warning(
+                    "Turn budget spent (%.1fs); not starting an LLM attempt.",
+                    spendable,
+                )
+                exhausted = ErrorResult(
+                    action=ErrorAction.FAIL,
+                    message=(
+                        "The request budget is spent. Please try again in a "
+                        "few minutes."
+                    ),
+                    error_code=TURN_BUDGET_EXHAUSTED,
+                    retry_count=retry_count,
+                )
+                # A FRESH result, never ``last_error_result``. Reaching here
+                # after an attempt means the last result was a RETRY, and a
+                # RETRY carries no ``error_code`` — returning it would hand the
+                # HTTP boundary a ``None`` code, which is not in
+                # ``_RETRYABLE_ENGINE_CODES`` and falls through to a bare 500.
+                # The provider's own wording is kept for diagnostics, which is
+                # the only part of the earlier result worth carrying.
+                if last_error_result is not None:
+                    exhausted.original_exception = last_error_result.original_exception
+                return None, exhausted
+
+            started = time.monotonic()
             try:
-                result = await operation()
+                # BACKSTOP only. A router-borne call is already bounded by
+                # LLMRouter._resolve_timeout, whose clamp expires ~0.75s
+                # earlier (see TURN_BUDGET_BACKSTOP_RESERVE_SECONDS) and, being
+                # the call's own timeout, leaves the failure on the path that
+                # records a circuit-breaker failure. This wrapper exists for the
+                # paths that reach a provider WITHOUT the router; when it fires
+                # it cancels the coroutine, which no handler below can observe.
+                backstop = backstop_turn_budget()
+                if backstop is None:
+                    result = await operation()
+                else:
+                    result = await asyncio.wait_for(operation(), timeout=backstop)
                 return result, None
             except Exception as e:
-                error_result = await self.handle_error(e, retry_count)
+                worst_attempt_seconds = max(
+                    worst_attempt_seconds, time.monotonic() - started
+                )
+                error_result = await self.handle_error(
+                    e, retry_count, worst_attempt_seconds
+                )
                 # Preserve the triggering exception so the caller can surface its
                 # real message (see ErrorResult.original_exception — callers fold
                 # it into their message text, deliberately NOT onto __cause__).

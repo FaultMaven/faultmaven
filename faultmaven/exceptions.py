@@ -201,6 +201,23 @@ PROVIDER_AUTH_FAILED = "PROVIDER_AUTH_FAILED"
 PROVIDER_CIRCUIT_OPEN = "PROVIDER_CIRCUIT_OPEN"
 
 
+# Stable error_code for "the turn ran out of budget part-way through the LLM
+# retry ladder". Transient, and it maps to the same 503 + Retry-After as
+# ``RETRY_EXHAUSTED`` because the caller's next move is identical — but it names
+# a DIFFERENT condition and that distinction is the point.
+#
+# ``RETRY_EXHAUSTED`` says the provider was given every attempt the retry
+# configuration allows and failed all of them. This says the ladder stopped
+# EARLY, because the next attempt could not have finished inside the turn-wide
+# deadline (``AGENT_REQUEST_TIMEOUT``) that would otherwise have cancelled it
+# mid-attempt and turned an honest 503 into an opaque 504 (#1278, #1292). One
+# is a verdict about the provider; the other is a verdict about the
+# configuration, and an operator seeing this one should look at
+# ``LLM_REQUEST_TIMEOUT`` against ``AGENT_REQUEST_TIMEOUT`` — which
+# ``GET /admin/config/status`` reports directly.
+TURN_BUDGET_EXHAUSTED = "TURN_BUDGET_EXHAUSTED"
+
+
 # Stable error_code for "the LLM layer is not configured": no provider in the
 # fallback chain, or the registry cannot build one. Permanent until an operator
 # edits the environment, so it is TERMINAL — the opposite of the transient codes
