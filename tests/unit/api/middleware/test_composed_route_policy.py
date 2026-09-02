@@ -27,6 +27,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from faultmaven.api.middleware import route_policy
 from faultmaven.api.middleware.deduplication import DeduplicationMiddleware
 from faultmaven.api.middleware.route_policy import (
     APP_STATE_POLICY_ATTR,
@@ -348,3 +349,175 @@ def test_the_gate_refuses_a_declaration_naming_no_route():
     problem = assert_policy_coherent(app)
 
     assert problem is not None and "/api/v1/does-not-exist" in problem
+
+
+# ---------------------------------------------------------------------------
+# Lazily-included routers (fm#1305). FastAPI >= 0.139 stopped copying an
+# included router's routes into ``app.routes``.
+#
+# The arm below cannot run against the pinned fastapi==0.136.0 — the flattener
+# does not exist there and the eager copy means nothing reaches it — so a test
+# that only drives a real app would leave the whole fix unexecuted in CI and any
+# regression would ship green. These drive the shape directly with a stand-in
+# for the placeholder record and a stub flattener, matching what
+# ``iter_route_contexts`` really yields on 0.139.2:
+#
+#   RouteContext(path='/api/v1/inner/bind', methods={'POST'}, route=APIRoute)
+#   RouteContext(path='',                   methods=set(),    route=Mount)
+#
+# The integration test at the end becomes live the moment fastapi is bumped.
+# ---------------------------------------------------------------------------
+
+
+class _Placeholder:
+    """An ``_IncludedRouter``-shaped record: no ``routes``, no ``methods``."""
+
+
+class _Context:
+    """A ``RouteContext``-shaped result from FastAPI's flattener."""
+
+    def __init__(self, path, methods=frozenset(), route=None):
+        self.path = path
+        self.methods = methods
+        self.route = route
+
+
+def _with_flattener(monkeypatch, contexts):
+    seen = []
+
+    def _stub(routes):
+        seen.append(list(routes))
+        return list(contexts)
+
+    monkeypatch.setattr(route_policy, "iter_route_contexts", _stub)
+    return seen
+
+
+def test_a_lazily_included_router_contributes_its_post_paths(monkeypatch):
+    """The fm#1305 shape: the placeholder must be flattened, not skipped."""
+    _with_flattener(monkeypatch, [_Context("/api/v1/inner/bind", {"POST"})])
+
+    table = route_policy._post_route_paths([_Placeholder()])
+
+    assert table.post_paths == frozenset({"/api/v1/inner/bind"})
+    assert table.complete
+
+
+def test_a_plain_get_route_never_reaches_the_flattener(monkeypatch):
+    """The third arm is for objects that are neither container nor route.
+
+    A ``GET`` route has ``methods``, so it is classified and dropped without the
+    expensive flattening — otherwise the helper's name misdescribes it and the
+    method filter becomes its only guard.
+    """
+    seen = _with_flattener(monkeypatch, [_Context("/anything", {"POST"})])
+
+    app = _build_app()
+
+    @app.get("/api/v1/readonly")
+    async def readonly():
+        return {}
+
+    table = route_policy._post_route_paths(app.routes)
+
+    assert seen == [], "a route with methods must not be handed to the flattener"
+    assert "/anything" not in table.post_paths
+
+
+def test_a_get_only_route_inside_an_included_router_is_not_a_post_path(monkeypatch):
+    """The negative for the included shape, which nothing else covers.
+
+    Without it, deleting the method filter leaves every test green and every GET
+    route on a composed app silently withheld from idempotency.
+    """
+    _with_flattener(monkeypatch, [_Context("/api/v1/inner/readonly", {"GET"})])
+
+    table = route_policy._post_route_paths([_Placeholder()])
+
+    assert table.post_paths == frozenset()
+    assert table.complete
+
+
+def test_enumeration_reports_itself_incomplete_when_it_cannot_flatten(monkeypatch):
+    """No flattener *and* a route that needs one is the dangerous combination.
+
+    Silence there is fm#1305 again: the walk reports nothing and the validator
+    refuses a served path. It must say it could not see.
+    """
+    monkeypatch.setattr(route_policy, "iter_route_contexts", None)
+    route_policy._REPORTED_BAD_DECLARATIONS.clear()
+
+    table = route_policy._post_route_paths([_Placeholder()])
+
+    assert table.post_paths == frozenset()
+    assert not table.complete
+
+
+def test_a_mount_inside_an_included_router_marks_enumeration_incomplete(monkeypatch):
+    """Its context carries an empty path and the router prefix is unrecoverable.
+
+    The children are served but unnameable here, so this is reported as partial
+    rather than guessed at — a guessed path would not match and would refuse.
+    """
+    from starlette.routing import Mount
+
+    inner = FastAPI()
+    _with_flattener(
+        monkeypatch, [_Context("", frozenset(), route=Mount("/m", app=inner))]
+    )
+
+    table = route_policy._post_route_paths([_Placeholder()])
+
+    assert not table.complete
+
+
+def test_an_unverifiable_path_is_accepted_rather_than_refused(monkeypatch):
+    """The cost fm#1305 actually imposed was a composed app that would not boot.
+
+    When enumeration is known partial an unmatched path is unproven, not wrong.
+    Refusing forfeits composition; accepting only forfeits the check.
+    """
+    monkeypatch.setattr(route_policy, "iter_route_contexts", None)
+    route_policy._REPORTED_BAD_DECLARATIONS.clear()
+    app = _build_app()
+    app.router.routes.append(_Placeholder())
+
+    policy = declare_credential_mint(app, "/api/v1/served/by/the/placeholder")
+
+    assert "/api/v1/served/by/the/placeholder" in policy
+
+
+def test_a_complete_enumeration_still_refuses_an_unknown_path():
+    """The relaxation above must not disarm the check where it is sound."""
+    app = _build_app()
+
+    with pytest.raises(ValueError, match="names no POST route"):
+        declare_credential_mint(app, "/api/v1/definitely-not-served")
+
+
+@pytest.mark.skipif(
+    route_policy.iter_route_contexts is None,
+    reason="fastapi < 0.139 copies included routes eagerly; nothing to flatten",
+)
+def test_a_real_included_router_is_enumerated_including_its_mount_prefix():
+    """The end-to-end version, live from the FastAPI bump onward.
+
+    ``router.prefix`` is deliberately not what is asserted: with
+    ``include_router(prefix=...)`` the served path is the mount prefix *plus*
+    the router prefix, and this repository mounts ten routers that way.
+    """
+    from fastapi import APIRouter
+
+    router = APIRouter(prefix="/inner")
+
+    @router.post("/bind")
+    async def bind():
+        return {}
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/v1")
+
+    table = route_policy._post_route_paths(app.routes)
+
+    assert "/api/v1/inner/bind" in table.post_paths
+    assert router.prefix == "/inner", "the router alone does not know its mount"

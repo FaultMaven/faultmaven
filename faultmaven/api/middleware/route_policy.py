@@ -43,7 +43,12 @@ import logging
 from collections.abc import Collection
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Dict, Mapping, Optional
+from typing import Dict, Mapping, NamedTuple, Optional
+
+try:  # pragma: no cover - exercised on FastAPI >= 0.139; see _flattened_post_paths
+    from fastapi.routing import iter_route_contexts
+except ImportError:
+    iter_route_contexts = None
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +114,62 @@ def normalize_path(path: str) -> str:
     return path.rstrip("/") or "/"
 
 
-def _post_route_paths(routes) -> frozenset:
+class RouteTable(NamedTuple):
+    """The POST paths an app serves, and whether that list is known complete.
+
+    ``complete`` is what makes refusing a declaration safe. fm#1305 was the cost
+    of getting that wrong in the other direction: the validator refused a real
+    route and the composed app could not import. So enumeration reports its own
+    reach, and only a *complete* enumeration is allowed to refuse.
+    """
+
+    post_paths: frozenset
+    complete: bool
+
+
+def _flattened_post_paths(route) -> RouteTable:
+    """POST paths inside a route object that is not itself a route or container.
+
+    FastAPI 0.139 stopped copying an included router's routes into
+    ``app.routes`` and records an ``_IncludedRouter`` placeholder instead, which
+    carries neither ``routes`` nor ``methods``. Walking it as if it did finds
+    nothing, so every ``include_router`` route vanished and
+    ``declare_route_policy`` refused paths the app really serves — fm#1305, and
+    the composed app failed to import.
+
+    ``iter_route_contexts`` is FastAPI's own flattener for exactly this, and it
+    resolves the effective path including any prefix passed to
+    ``include_router``. It does not exist before 0.139, where it is not needed;
+    the import guard below therefore only reports when this function is actually
+    *reached*, which is the honest signal — silence on an older FastAPI, a loud
+    report if a future one renames it and this arm starts finding nothing.
+
+    One shape stays out of reach: a ``Mount`` nested inside an included router.
+    Its context carries an empty ``path`` and the router prefix is not
+    recoverable from it, so the children are real but unnameable here. Reported
+    as incomplete rather than guessed at, which downgrades a refusal to a
+    warning instead of blocking composition on a path this cannot see.
+    """
+    if iter_route_contexts is None:
+        _report_once(
+            "flatten-unavailable",
+            "This FastAPI exposes routes this module cannot enumerate and "
+            "provides no fastapi.routing.iter_route_contexts to flatten them; "
+            "route-policy paths cannot be verified against the route table.",
+        )
+        return RouteTable(frozenset(), False)
+
+    found: set = set()
+    complete = True
+    for context in iter_route_contexts([route]):
+        if "POST" in (getattr(context, "methods", None) or ()):
+            found.add(normalize_path(context.path))
+        elif getattr(getattr(context, "route", None), "routes", None):
+            complete = False
+    return RouteTable(frozenset(found), complete)
+
+
+def _post_route_paths(routes) -> RouteTable:
     """Every path in a route table that answers POST, including nested ones.
 
     Nested tables are reached through ``route.routes``, never ``route.app``: a
@@ -122,17 +182,30 @@ def _post_route_paths(routes) -> frozenset:
     function has not heard of should degrade to "walk it if it has routes"
     rather than to a refusal — a refusal a composer learns to route around is
     worse than no check.
+
+    The third arm is for an object that is neither: no ``routes`` to walk and no
+    ``methods`` to read. A plain ``GET`` route is *not* that — it has methods,
+    and is correctly dropped here — so the expensive flattening below runs only
+    for something genuinely unrecognised.
     """
     found: set = set()
+    complete = True
     for route in routes:
         nested = getattr(route, "routes", None)
         if nested:
             prefix = (getattr(route, "path", "") or "").rstrip("/")
-            for path in _post_route_paths(nested):
+            inner = _post_route_paths(nested)
+            complete = complete and inner.complete
+            for path in inner.post_paths:
                 found.add(normalize_path(prefix + path))
-        elif "POST" in (getattr(route, "methods", None) or ()):
-            found.add(normalize_path(route.path))
-    return frozenset(found)
+        elif getattr(route, "methods", None):
+            if "POST" in route.methods:
+                found.add(normalize_path(route.path))
+        else:
+            table = _flattened_post_paths(route)
+            complete = complete and table.complete
+            found |= table.post_paths
+    return RouteTable(frozenset(found), complete)
 
 
 def declare_route_policy(
@@ -146,6 +219,11 @@ def declare_route_policy(
     For composition roots: call it after the routers are mounted, and build each
     path from the router that serves it rather than retyping a literal, so the
     declaration cannot drift away from the route it protects.
+
+    ``router.prefix`` alone is **not** that path when the router is mounted with
+    a prefix of its own — ``app.include_router(r, prefix="/api/v1")`` serves
+    ``/api/v1`` + ``r.prefix``, and this repository mounts ten routers that way.
+    Compose both, or read the path off the mounted app.
 
     Every path is checked against ``app``'s real route table, because the failure
     mode this guards against is silent in both directions. A declaration that
@@ -171,7 +249,7 @@ def declare_route_policy(
     if never_replayed:
         never_collapsed = True
 
-    served = _post_route_paths(app.routes)
+    table = _post_route_paths(app.routes)
     declared = RoutePolicy(
         never_replayed=never_replayed, never_collapsed=never_collapsed
     )
@@ -188,12 +266,29 @@ def declare_route_policy(
                 f"route policy {path!r} is templated; an exact-path declaration "
                 "can never equal the concrete path a request carries"
             )
-        if candidate not in served:
-            raise ValueError(
-                f"route policy {path!r} names no POST route on this app. Declare "
-                "it after the router is mounted, and derive it from the router "
-                "rather than retyping the path."
-            )
+        if candidate not in table.post_paths:
+            if not table.complete:
+                # Refusing here is what fm#1305 cost: the validator could not
+                # see an included router's routes and blocked the composed app
+                # from importing. When enumeration is known partial an
+                # unmatched path is unproven rather than wrong — say so and
+                # accept it, because a false refusal breaks composition while a
+                # missed check only forfeits the check.
+                _report_once(
+                    f"unverifiable:{candidate}",
+                    "Route policy %r could not be verified: this app serves "
+                    "routes this module cannot enumerate. The declaration is "
+                    "applied unchecked — confirm the path is served.",
+                    path,
+                )
+            else:
+                raise ValueError(
+                    f"route policy {path!r} names no POST route on this app. "
+                    "Declare it after the routers are mounted, and build the "
+                    "path from the router that serves it — including any prefix "
+                    "passed to include_router, which router.prefix does not "
+                    "carry."
+                )
         existing[candidate] = existing.get(candidate, RoutePolicy()).merged_with(
             declared
         )
@@ -413,9 +508,9 @@ def assert_policy_coherent(app) -> Optional[str]:
             f"working one from outside; use declare_route_policy()."
         )
 
-    served = _post_route_paths(app.routes)
-    unmatched = sorted(set(policy) - served)
-    if unmatched:
+    table = _post_route_paths(app.routes)
+    unmatched = sorted(set(policy) - table.post_paths)
+    if unmatched and table.complete:
         return (
             f"Route policy names no POST route on this app for: {unmatched}. "
             f"Declared but unmatched means unprotected, and it looks exactly like "
