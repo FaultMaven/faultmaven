@@ -23,7 +23,7 @@ LAYER NOTE — three grammar surfaces exist and must agree:
      no longer be looser than the parser it fronts. Only its message-oriented
      present-vs-empty wording is validator-private; the grammar is shared.
 
-The two repos cannot import one another, so (2) is a **manual mirror**. Three
+The two repos cannot import one another, so (2) is a **manual mirror**. Two
 guards keep it honest. One is in-repo and sees only this checkout:
 ``test_runbook_grammar`` (frozen-literal drift-guard — trips if a pattern here is
 edited without updating the test). It cannot see the upstream grammar, so a
@@ -266,8 +266,9 @@ def iter_cause_blocks(content: str) -> list["CauseBlock"]:
     The one place the head->terminus walk lives: the gate (``runbook_validator``)
     delegates to it. Folding the walk here is what stops the
     comment decision being re-made per call site: #1241 escaped a per-site
-    repair twice — once at the chunk-stamping path, once at a comment opening
-    before the section heading — because each site owned its own masking.
+    repair twice — once at the (since removed) chunk-stamping path, once at a
+    comment opening before the section heading — because each site owned its
+    own masking.
 
     Each block carries BOTH views, and which one a caller wants is a real
     choice: ``body`` is masked (what parsers must read) while ``raw_block`` is

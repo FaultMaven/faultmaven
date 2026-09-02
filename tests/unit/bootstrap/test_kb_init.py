@@ -240,11 +240,9 @@ async def test_second_bootstrap_over_real_sqlite_skips_everything(
     Other tests here set ``knowledge_metadata`` to a dict (the PostgreSQL
     shape); this one DERIVES the SQLite representation by writing through the
     real ``KnowledgeService`` and reading back through the real ORM, so a real
-    SQLite row is what ``kb_init`` sees. (A permanently-false idempotency axis
-    once shipped because nothing did this.)
-
-    Pinning the round trip rather than the representation also means a future
-    change to the ``JsonBlob`` variant (or a third backend) fails here instead of
+    SQLite row is what ``kb_init`` sees. The skip decision reads only the row's
+    ``content`` column now, so what this pins is the real-ORM content round
+    trip: a change to how content is stored or hashed fails here instead of
     silently re-ingesting the whole KB on every boot.
     """
     svc, factory = fk_on_ingest_service
@@ -581,6 +579,35 @@ async def test_ingest_runbook_succeeds_with_fk_enforced_fresh_install(
 
 
 @pytest.mark.asyncio
+async def test_ingest_runbook_writes_empty_metadata(fk_on_ingest_service):
+    """The row's metadata blob is written as an empty object, never NULL and
+    never the retired cause record / chunk stamp (fm#1295). The column is
+    NOT NULL with a ``{}`` server default; the service writes ``{}`` explicitly
+    so a later change to ``None`` cannot ride the default silently."""
+    from sqlalchemy import text
+
+    svc, factory = fk_on_ingest_service
+    await svc.ingest_runbook(
+        document_id="kb_metaprobe",
+        title="Probe Runbook",
+        content="# body\n\n## Causes\n\n### Cause A: x\n**Statement:** y\n",
+        organization_id="org-1",
+        scope="global",
+        verified_by=None,
+    )
+    async with factory() as session:
+        row = (
+            await session.execute(
+                text(
+                    "SELECT metadata FROM knowledge_items WHERE item_id='kb_metaprobe'"
+                )
+            )
+        ).first()
+    assert row is not None
+    assert json.loads(row[0]) == {}
+
+
+@pytest.mark.asyncio
 async def test_ingest_runbook_with_sentinel_verified_by_fails_fk(
     fk_on_ingest_service,
 ):
@@ -696,6 +723,34 @@ class TestPruneOrphanBuiltins:
             )
         assert pruned == []
         del_mock.assert_not_called()
+
+
+class TestScrubRetiredChunkKeys:
+    """One-shot removal of a chunk-metadata key the schema no longer declares
+    (fm#1295: ``cause_letters``). Steady state is zero; never fails startup."""
+
+    @pytest.mark.asyncio
+    async def test_reports_the_chunks_the_store_rewrote(self):
+        svc = MagicMock()
+        svc._vector_store = MagicMock()
+        svc._vector_store.scrub_metadata_key = AsyncMock(return_value=3)
+        assert await kb_init._scrub_retired_chunk_keys(svc) == 3
+        svc._vector_store.scrub_metadata_key.assert_awaited_once_with("cause_letters")
+
+    @pytest.mark.asyncio
+    async def test_a_store_without_the_capability_is_left_alone(self):
+        svc = MagicMock()
+        svc._vector_store = MagicMock(spec=[])  # no scrub_metadata_key
+        assert await kb_init._scrub_retired_chunk_keys(svc) == 0
+
+    @pytest.mark.asyncio
+    async def test_a_failing_scrub_never_fails_startup(self):
+        svc = MagicMock()
+        svc._vector_store = MagicMock()
+        svc._vector_store.scrub_metadata_key = AsyncMock(
+            side_effect=RuntimeError("chroma down")
+        )
+        assert await kb_init._scrub_retired_chunk_keys(svc) == 0
 
 
 class TestReconcileVectors:
@@ -1094,12 +1149,6 @@ class TestCrossStoreRepairSeam:
         assert reindexed == ["kb_bbbbbbbbbbbb"]
 
 
-# ---------------------------------------------------------------------------
-# Per-Cause graph record persistence (the app half of the cross-repo pack
-# contract)
-# ---------------------------------------------------------------------------
-
-
 def test_pack_load_rejects_mismatched_embedding_model(tmp_path, caplog):
     """A pack built with a different embedding model is refused (returns None):
     its vectors live in another space than the runtime query embedder, so every
@@ -1293,8 +1342,8 @@ def test_pack_load_baseline_vector_rows_are_unique():
 
 def test_parse_json_dict_handles_dict_and_str_inputs():
     """The knowledge-item repo read must accept BOTH a JSON string (SQLite TEXT)
-    and an already-decoded dict (PostgreSQL JSONB) — otherwise metadata['causes']
-    is silently dropped on PG. Regression guard for the unguarded json.loads."""
+    and an already-decoded dict (PostgreSQL JSONB) — otherwise stored metadata is
+    silently dropped on PG. Regression guard for the unguarded json.loads."""
     from unittest.mock import MagicMock
 
     from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
@@ -1308,50 +1357,6 @@ def test_parse_json_dict_handles_dict_and_str_inputs():
     assert repo._parse_json_dict(None) is None
     assert repo._parse_json_dict("") is None
     assert repo._parse_json_dict("[1, 2]") is None  # non-dict JSON → None
-
-
-# ---------------------------------------------------------------------------
-# fm#1108: the chunk stamp is a third idempotency axis
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@pytest.mark.asyncio
-async def test_a_content_change_still_re_ingests_an_unpublished_runbook():
-    """The converse, so the guard above cannot become a blanket exemption.
-
-    A content change IS an intentional new version — the documented behaviour
-    the unpublish contract carves out — and must still re-ingest.
-    """
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        pack_dir = _write_pack(tmp_path)
-        knowledge_service = MagicMock()
-        knowledge_service.ingest_runbook = AsyncMock(return_value=2)
-        knowledge_service._vector_store = MagicMock()
-        knowledge_service._vector_store.delete_documents_by_parent_id = AsyncMock()
-
-        existing = MagicMock()
-        existing.content = "# Something else entirely\n"  # content MOVED
-        existing.knowledge_metadata = {}
-        existing.is_published = False
-
-        result = await kb_init.bootstrap_kb(
-            knowledge_service=knowledge_service,
-            db_session_factory=_make_session_factory(existing_row=existing),
-            organization_id="org-test",
-            project_root=tmp_path,
-            pack_dir=pack_dir,
-        )
-
-        assert result.ingested == ["global/example.md"]
-
-
-# ---------------------------------------------------------------------------
-# fm#1108: authored rows converge on the current stamp
-# ---------------------------------------------------------------------------
 
 
 def test_a_pack_relpath_that_escapes_the_pack_is_refused(tmp_path, caplog):

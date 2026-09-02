@@ -123,53 +123,6 @@ def _read_tags(
     return []
 
 
-def _row_metadata(knowledge_metadata: Any) -> Dict[str, Any]:
-    """A ``knowledge_items`` metadata value as a ``.get``-safe dict.
-
-    Thin over :func:`decode_json_blob` (fm#1107) — this used to be one of three
-    near-copies of that decode. Two things are local to this caller:
-
-    * ``{}`` rather than ``None`` for "nothing usable", because every reader here
-      goes straight to ``.get``;
-    * the WARNING for a value that is present but UNUSABLE — undecodable, or
-      decoding to something that is not an object. That is the one "no metadata"
-      answer which is really "unread metadata", and it silently disables the KB
-      cause seeder's integrity check: the row reads as a prose runbook with
-      nothing to verify.
-
-    The value itself is deliberately NOT logged. It is author-supplied document
-    metadata of unbounded size, the branch fires per row inside sweeps, and the
-    only values that reach it are corrupt or truncated ones — so interpolating it
-    would put user KB content in the logs, repeatedly, to say something the shape
-    already says. The type and size identify the anomaly; the ROW is named by the
-    callers that know which row they are on.
-
-    Read-only — the dict branch is not copied, so callers must not mutate it in
-    place (copy first). The repository's ``_parse_json_dict`` is the copying
-    counterpart, for results that get handed out.
-    """
-    decoded = decode_json_blob(knowledge_metadata)
-    if decoded is None and knowledge_metadata:
-        logger.warning(
-            "Unreadable knowledge_items metadata (%s): treating the row as "
-            "carrying none, so its causes record and chunk stamp both read as "
-            "absent. The value is not logged — it is author-supplied content.",
-            _describe_unreadable(knowledge_metadata),
-        )
-    return decoded or {}
-
-
-def _describe_unreadable(value: Any) -> str:
-    """Name the SHAPE of an unusable metadata value, never its content."""
-    kind = type(value).__name__
-    try:
-        size = len(value)
-    except TypeError:
-        return kind
-    unit = "chars" if isinstance(value, (str, bytes, bytearray)) else "items"
-    return f"{kind} of {size} {unit}"
-
-
 def build_kb_scope_filter(
     owner_id: Optional[str], shared_ids: Optional[List[str]] = None
 ) -> Dict[str, Any]:

@@ -46,12 +46,10 @@ from pathlib import Path
 
 import pytest
 
-from faultmaven.modules.knowledge.domain.services import (
-    knowledge_service as knowledge_service_mod,
-)
 from faultmaven.modules.knowledge.domain.services import runbook_grammar as g
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     RunbookValidator,
+    _cause_fields,
     _iter_cause_blocks,
 )
 from faultmaven.modules.knowledge.domain.services.suggestion_service import (
@@ -146,21 +144,13 @@ _REAL_CAUSES = (
 
 
 def _cause_records(text: str) -> list[dict]:
-    """Grammar-level stand-in for the removed extractor: one record per Cause
-    block with its letter and parsed ``Statement``."""
-    from faultmaven.modules.knowledge.domain.services.cause_grammar import (
-        OPTIONAL_CAUSE_SUBFIELDS,
-        REQUIRED_CAUSE_SUBFIELDS,
-    )
-
-    names = list(REQUIRED_CAUSE_SUBFIELDS) + list(OPTIONAL_CAUSE_SUBFIELDS)
+    """One record per Cause block — letter, name and the parsed ``Statement`` —
+    through the validator's own field parser, so the boundary set is the gate's."""
     return [
         {
             "cause_letter": b.letter,
             "cause_name": b.name,
-            "cause_statement": g.parse_cause_subfields(b.body, names).get(
-                "Statement", ""
-            ),
+            "cause_statement": _cause_fields(b.body).get("Statement", ""),
         }
         for b in g.iter_cause_blocks(text)
     ]
@@ -310,7 +300,6 @@ class TestQuotedCommentTokensAreNotComments:
             1,
         )
         assert [letter for letter, _n, _b in _iter_cause_blocks(doc)] == ["A", "Z"]
-        assert [b.letter for b in g.iter_cause_blocks(doc)] == ["A", "Z"]
 
     def test_a_fenced_block_containing_markers_is_not_a_comment(self):
         doc = _wrap(
@@ -365,9 +354,6 @@ class TestCommentedCauseIsNotEnumerated:
     def test_the_validator_does_not_enumerate_it(self):
         assert [letter for letter, _n, _b in _iter_cause_blocks(self._DOC)] == ["Z"]
 
-    def test_the_extractor_does_not_write_it_to_the_corpus(self):
-        assert [b.letter for b in g.iter_cause_blocks(self._DOC)] == ["Z"]
-
     def test_a_section_holding_only_a_commented_cause_fails_the_structure_gate(self):
         only_commented = self._DOC[: self._DOC.index("### Cause Z:")]
         content = (
@@ -391,7 +377,7 @@ class TestCommentOpeningBeforeTheSectionHeading:
     """Masking the section BODY is not enough: ``CAUSES_SECTION_RE`` has to run
     over the masked document, or a comment opening earlier leaves the whole
     section live. Measured — this was a complete gate bypass, not merely an
-    extractor defect: a well-formed runbook with its entire ``## Causes``
+    enumeration defect: a well-formed runbook with its entire ``## Causes``
     section commented out returned ``passed=True, errors=[]``."""
 
     _COMMENTED = _runbook(
@@ -414,7 +400,7 @@ class TestCommentOpeningBeforeTheSectionHeading:
             in result.errors
         )
 
-    def test_the_extractor_seeds_nothing_from_it(self):
+    def test_the_enumerator_yields_nothing_from_it(self):
         assert g.iter_cause_blocks(self._COMMENTED) == []
 
 
@@ -541,7 +527,7 @@ _COMMENT_SAFE_BY_CONSTRUCTION = {
 
 # Positive control for the walk (see the vacuity test): the sites that exist
 # today. A walk that finds FEWER is broken.
-_EXPECTED_MATCHER_SITES_AT_LEAST = 2
+_EXPECTED_MATCHER_SITES_AT_LEAST = len(_COMMENT_SAFE_BY_CONSTRUCTION)
 
 _PACKAGE_ROOT = REPO_ROOT / "faultmaven"
 _GRAMMAR_MODULE = "runbook_grammar"
@@ -645,7 +631,7 @@ class TestEveryCauseHeadingConsumerMasks:
         assert not strays, (
             "CAUSES_SECTION_RE is matched outside runbook_grammar. The "
             "head->terminus walk lives once, in iter_cause_blocks, so the gate "
-            "and the extractor cannot disagree and the comment mask is applied "
+            "and the toolkit parser cannot disagree and the comment mask is applied "
             f"in exactly one place. Route through it instead. Strays: {strays}"
         )
 

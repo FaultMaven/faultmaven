@@ -1467,3 +1467,60 @@ class KnowledgeVectorStore(BaseExternalClient):
             retries=1,
             retry_delay=1.0,
         )
+
+    async def scrub_metadata_key(
+        self,
+        key: str,
+        collection_name: str = KB_COLLECTION,
+        batch_size: int = 500,
+    ) -> int:
+        """Remove ``key`` from the metadata of every chunk that carries it.
+
+        One-shot convergence for a metadata key the writer no longer emits:
+        ``VectorMetadata`` is an allowlist enforced on WRITE only, so a stored
+        chunk carrying a key the schema dropped is never validated on read — but
+        any future round-trip of stored metadata through the guarded writers
+        (``reject_undeclared_keys``) would refuse it. Scrubbing once, at boot,
+        removes the hazard instead of documenting it. Returns the number of
+        chunks rewritten; 0 when the collection is absent or nothing carries
+        the key, which is the steady state after the first boot.
+
+        Selection is a ``where`` on the key itself: ChromaDB's ``$ne`` matches
+        only documents that HAVE the key (with any value but the sentinel), so
+        the get is proportional to the stale population, not the collection.
+        Chroma's ``update`` replaces a chunk's metadata wholesale, which is what
+        makes deleting a key possible at all.
+        """
+
+        async def _scrub_wrapper() -> int:
+            try:
+                collection = self.client.get_collection(name=collection_name)
+            except NotFoundError:
+                return 0
+            results = collection.get(
+                where={key: {"$ne": "\x00faultmaven-scrub-sentinel"}},
+                include=["metadatas"],
+            )
+            ids = list(results.get("ids", []) or [])
+            metadatas = list(results.get("metadatas", []) or [])
+            if not ids:
+                return 0
+            rewritten = 0
+            for start in range(0, len(ids), batch_size):
+                batch_ids = ids[start : start + batch_size]
+                batch_meta = [
+                    {k: v for k, v in (m or {}).items() if k != key}
+                    for m in metadatas[start : start + batch_size]
+                ]
+                collection.update(ids=batch_ids, metadatas=batch_meta)
+                rewritten += len(batch_ids)
+            self._invalidate_term_stats(collection_name)
+            return rewritten
+
+        return await self.call_external(
+            operation_name="scrub_metadata_key",
+            call_func=_scrub_wrapper,
+            timeout=60.0,
+            retries=1,
+            retry_delay=1.0,
+        )

@@ -64,6 +64,7 @@ class BootstrapResult:
         self.orphaned_vectors_cleaned: list[str] = []  # parent_ids w/ no DB row
         self.repaired_rows: list[str] = []  # DB rows re-embedded this boot
         self.orphaned_rows: list[str] = []  # DB rows still w/o vectors after repair
+        self.scrubbed_chunks: int = 0  # chunks stripped of a retired metadata key
 
     def __repr__(self) -> str:
         return (
@@ -73,6 +74,7 @@ class BootstrapResult:
             f"pruned={len(self.pruned)}, "
             f"orphaned_vectors_cleaned={len(self.orphaned_vectors_cleaned)}, "
             f"repaired_rows={len(self.repaired_rows)}, "
+            f"scrubbed_chunks={self.scrubbed_chunks}, "
             f"orphaned_rows={len(self.orphaned_rows)})"
         )
 
@@ -169,6 +171,12 @@ async def bootstrap_kb(
         orphaned_rows,
     ) = await _reconcile_vectors(knowledge_service, db_session_factory)
 
+    # One-shot convergence for the retired chunk stamp (fm#1295): chunks written
+    # before #1309 carry a ``cause_letters`` key the schema no longer declares.
+    # Nothing reads it, but the allowlist enforced on write would refuse any
+    # future round-trip of that metadata, so strip it once. Steady state is 0.
+    result.scrubbed_chunks = await _scrub_retired_chunk_keys(knowledge_service)
+
     # Cross-store repair: an orphaned row (SQL row with no vectors — the
     # half-state a crash between the SQL commit and the Chroma write leaves) is
     # silently non-retrievable. Reconcile can only warn; here we re-chunk +
@@ -188,6 +196,7 @@ async def bootstrap_kb(
         f"{len(result.pruned)} pruned, "
         f"{len(result.orphaned_vectors_cleaned)} orphaned vectors cleaned, "
         f"{len(result.repaired_rows)} rows repaired, "
+        f"{result.scrubbed_chunks} chunks scrubbed, "
         f"{len(result.orphaned_rows)} orphaned rows"
     )
     return result
@@ -339,6 +348,34 @@ async def _prune_orphan_builtins(
                 f"(not in current pack)"
             )
     return pruned
+
+
+_RETIRED_CHUNK_METADATA_KEYS = ("cause_letters",)
+
+
+async def _scrub_retired_chunk_keys(knowledge_service: Any) -> int:
+    """Strip metadata keys the chunk schema no longer declares from stored chunks.
+
+    Bounded by the stale population (the store selects on the key), never by the
+    collection; a failure is logged and never fails startup — the chunks stay
+    retrievable either way, and the next boot retries.
+    """
+    vector_store = getattr(knowledge_service, "_vector_store", None)
+    if vector_store is None or not hasattr(vector_store, "scrub_metadata_key"):
+        return 0
+    scrubbed = 0
+    for key in _RETIRED_CHUNK_METADATA_KEYS:
+        try:
+            n = int(await vector_store.scrub_metadata_key(key) or 0)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"KB chunk scrub skipped for key {key!r}: {e}")
+            continue
+        if n:
+            logger.info(
+                f"KB chunk scrub: removed retired key {key!r} from {n} chunk(s)"
+            )
+        scrubbed += n
+    return scrubbed
 
 
 async def _reconcile_vectors(

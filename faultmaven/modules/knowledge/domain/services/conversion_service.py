@@ -2363,7 +2363,7 @@ class ConversionService:
 
         ``is_platform_admin`` gates publication at ``global`` scope: verifying a draft
         ingests it into the KB at ``job.scope``, and a global runbook is the
-        org-free platform corpus (readable by every tenant, seeder-consumed), so
+        org-free platform corpus (readable by every tenant), so
         publishing one is a platform-operator action. The draft's scope is only
         known once the job row is loaded, so this gate lives here rather than at
         the route. Defaults ``False`` (fail-closed) so a caller that forgets to
@@ -3089,7 +3089,7 @@ status: draft
 
             # Global-tier authoring gate: a global-inferred file mints a draft
             # into the platform corpus (verified → readable by every tenant,
-            # seeder-consumed). A caller who may not author global scope (any
+            # retrieved for every tenant). A caller who may not author global scope (any
             # tenant session under multi, or a non-admin single-tenant) skips it
             # rather than minting an ungated global draft; personal/team files
             # discovered in the same scan still proceed (#770, R4).

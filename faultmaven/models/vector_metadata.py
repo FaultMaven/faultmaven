@@ -71,8 +71,11 @@ class VectorMetadata(BaseModel):
     total_chunks: Optional[int] = None
     parent_document_id: Optional[str] = None
     # A ``cause_letters`` stamp (fm#1108) rode here for the KB cause seeder's
-    # join and went with it (fm#1295); chunks written before that still carry
-    # the key in the store, and the allowlist below drops it on read.
+    # join and went with it (fm#1295). This allowlist is enforced on WRITE
+    # only — reads hand back raw chunk metadata — so a chunk written before
+    # the removal still carries the key until the bootstrap's one-shot scrub
+    # (``kb_init._scrub_retired_chunk_keys``) removes it; after that nothing in
+    # the store can trip ``reject_undeclared_keys`` on it.
 
     @classmethod
     def reject_undeclared_keys(cls, md: Optional[Dict[str, Any]]) -> None:
@@ -172,7 +175,4 @@ class VectorMetadata(BaseModel):
             data["total_chunks"] = self.total_chunks
         if self.parent_document_id:
             data["parent_document_id"] = self.parent_document_id
-        # ``is not None``, not truthiness: "" means "stamped, no cause heading
-        # here" and must be stored, because its ABSENCE is what tells the read
-        # path a chunk predates the stamp and has to be parsed instead.
         return data
