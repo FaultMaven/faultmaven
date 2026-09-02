@@ -2907,8 +2907,7 @@ def _fallback_stub_block(
                 fence.element(
                     "uploaded_file",
                     head,
-                    attrs=f' file_id="{uf.file_id}"{_label_attr(uf)} '
-                    'searchable="true"',
+                    attrs=f' file_id="{uf.file_id}"{_label_attr(uf)} searchable="true"',
                     inline=True,
                 )
             )
@@ -3345,26 +3344,32 @@ def _select_diagnosis_block(case: Case) -> str:
     which carries the hypothesis-evidence ordering mandate
     (``_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK``).
 
-    When the KB cause seeder is enabled AND has seeded candidates into this
-    case's graph, the flat "matched Cause → create hypotheses_to_add" directive
-    is REPLACED (not appended-to) with the validate/refute-the-seeded-candidate
-    directive, so the seeded turn sees a single coherent instruction. Flag off
-    (or no seeds this case): byte-identical to before.
+    When this case's graph holds seeded candidates, the flat "matched Cause →
+    create hypotheses_to_add" directive is REPLACED (not appended-to) with the
+    validate/refute-the-seeded-candidate directive, so the seeded turn sees a
+    single coherent instruction. No seeds this case: byte-identical to before.
+
+    Gated on GRAPH STATE, not on the seeder flag. Seeds are persisted, so a
+    case seeded while the flag was on still carries them after the flag is
+    turned off (fm#1295 flipped the default) — and ``_build_causal_graph_block``
+    renders them regardless. Reading the flag here would hand exactly those
+    cases the flat "that Cause IS your hypothesis … skip independent
+    generation" directive on top of a graph that already holds the seed, which
+    is the duplicate-beside-the-seed shape the seeded directive exists to
+    prevent. With the flag off no NEW seeds are minted, so for every case
+    opened after the flip this is the flat path.
     """
     focus_emphasis = _get_diagnosis_focus_emphasis(case.progress, case)
     block = focus_emphasis + _RCA_DIAGNOSIS_BLOCK
     # Teach lazy backward expansion (the engine ingests the emitted chain).
     block += _CHAIN_EMISSION_BLOCK
 
-    from faultmaven.config.settings import get_settings
+    from faultmaven.core.investigation.kb_cause_seeder import (
+        case_has_seeded_candidates,
+    )
 
-    if get_settings().features.kb_cause_seeder_enabled:
-        from faultmaven.core.investigation.kb_cause_seeder import (
-            case_has_seeded_candidates,
-        )
-
-        if case_has_seeded_candidates(case):
-            block = block.replace(_KB_MATCHED_CAUSE_FLAT, _KB_MATCHED_CAUSE_SEEDED, 1)
+    if case_has_seeded_candidates(case):
+        block = block.replace(_KB_MATCHED_CAUSE_FLAT, _KB_MATCHED_CAUSE_SEEDED, 1)
     return block
 
 

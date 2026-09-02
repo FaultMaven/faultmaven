@@ -347,12 +347,14 @@ class TestLLMSettingsMapping:
 class TestFeatureSettingsMapping:
     """Tests for feature-flag configuration mapping."""
 
-    def test_kb_cause_seeder_enabled_default_on(self):
-        """The KB cause seeder is on by default (the flag-on decision).
+    def test_kb_cause_seeder_disabled_by_default(self):
+        """The KB cause seeder is OFF by default (fm#1295).
 
-        The env var `FAULTMAVEN_KB_CAUSE_SEEDER` is retained only as the kill
-        switch; with it unset the seeder runs. Direct instantiation bypasses the
-        preset system.
+        With `FAULTMAVEN_KB_CAUSE_SEEDER` unset the engine seeds nothing and
+        keeps the flat matched-runbook prompt path. The on-vs-off A/B recorded
+        in ``tests/eval/kb_cause_seeder/recorded-runs/2026-09-02-seeder-ab-local.md``
+        is the measurement this default rests on. Direct instantiation bypasses
+        the preset system.
         """
         from faultmaven.config.settings import FeatureSettings
 
@@ -360,11 +362,27 @@ class TestFeatureSettingsMapping:
             os.environ.pop("FAULTMAVEN_KB_CAUSE_SEEDER", None)
             features = FeatureSettings()
 
+        assert features.kb_cause_seeder_enabled is False
+
+    def test_kb_cause_seeder_enabled_from_env(self):
+        """`FAULTMAVEN_KB_CAUSE_SEEDER=true` re-enables seeding — the switch is
+        live in both directions, so a measurement run can turn it on without a
+        code change."""
+        from faultmaven.config.settings import FeatureSettings
+
+        with patch.dict(
+            os.environ,
+            {"FAULTMAVEN_KB_CAUSE_SEEDER": "true"},
+            clear=False,
+        ):
+            features = FeatureSettings()
+
         assert features.kb_cause_seeder_enabled is True
 
     def test_kb_cause_seeder_kill_switch_from_env(self):
-        """`FAULTMAVEN_KB_CAUSE_SEEDER=false` is the kill switch — disables the
-        seeder (and the AUTHORITY prompt override) without a rollback."""
+        """`FAULTMAVEN_KB_CAUSE_SEEDER=false` is explicit off — the same state as
+        the default, kept so an operator who set it during the flag-on period
+        does not silently change behaviour."""
         from faultmaven.config.settings import FeatureSettings
 
         with patch.dict(

@@ -423,6 +423,15 @@ async def mode_e2e(store, corpus, statements):
         async def get_runbook_causes(self, item_id):
             return corpus.causes.get(item_id) or None
 
+    # The wrapper is flag-gated and the flag is OFF by default (fm#1295). This
+    # mode exists to measure the seeding path, so it turns the flag on itself
+    # rather than asking every operator to export it — and rather than printing
+    # a clean zero on both arms when they forget.
+    patch(
+        "faultmaven.config.settings.get_settings",
+        lambda: SimpleNamespace(features=SimpleNamespace(kb_cause_seeder_enabled=True)),
+    ).start()
+
     async def seed_run(description):
         """One statement through the real path: what seeded, and the hits.
 
@@ -506,7 +515,8 @@ async def mode_e2e(store, corpus, statements):
             "answer (an unwarmed BGE-M3 trips KNOWLEDGE_EMBEDDER_TIMEOUT); "
             "the stub above drifted from knowledge_service.search_knowledge, "
             "so every prefetch raised and the wrapper swallowed it as a "
-            "failed search; or the gate now refuses this statement's runbooks "
+            "failed search; the seeder flag is off and this mode's own override "
+            "did not take; or the gate now refuses this statement's runbooks "
             "outright, in which case the path ran and this control is what is "
             "stale"
         )
