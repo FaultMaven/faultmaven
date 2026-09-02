@@ -35,6 +35,7 @@ from faultmaven.api.middleware.idempotency import (
     IdempotencyMiddleware,
     exclude_from_idempotency,
 )
+from faultmaven.api.middleware.route_policy import APP_STATE_POLICY_ATTR
 
 # The real Cloud path, so this file names the route it exists for.
 BIND = "/api/v1/admin/integrations/slack/workspaces"
@@ -43,14 +44,14 @@ ADMIN = "Bearer org-admin-token-aaaaaaaaaaaaaaaa"
 KEY = "d1f0c0de-0000-4000-8000-000000000000"
 OTHER_KEY = "99999999-8888-7777-6666-555555555555"
 BODY = {"slack_team_id": "T0123ABCD", "team_name": "Acme Platform"}
-_MODULE_LOGGER = "faultmaven.api.middleware.idempotency"
+_MODULE_LOGGER = "faultmaven.api.middleware.route_policy"
 
 
 def _clear_declaration_reports():
     """The once-only report latch is per process, so it must be reset
     between tests or the second test to install a given mistake sees the
     log it is asserting on already spent."""
-    from faultmaven.api.middleware.idempotency import _REPORTED_BAD_DECLARATIONS
+    from faultmaven.api.middleware.route_policy import _REPORTED_BAD_DECLARATIONS
 
     _REPORTED_BAD_DECLARATIONS.clear()
 
@@ -307,7 +308,7 @@ def test_a_path_naming_no_post_route_is_refused():
     with pytest.raises(ValueError, match="names no POST route"):
         exclude_from_idempotency(app, "/api/v1/admin/integrations/slack/workspace")
 
-    assert not getattr(app.state, APP_STATE_EXCLUSIONS_ATTR, None)
+    assert not getattr(app.state, APP_STATE_POLICY_ATTR, None)
 
 
 def test_a_templated_path_is_refused():
@@ -349,7 +350,12 @@ def test_declarations_accumulate_across_composed_units():
     final = exclude_from_idempotency(app, PAGERDUTY)
 
     assert final == frozenset({BIND, PAGERDUTY})
-    assert getattr(app.state, APP_STATE_EXCLUSIONS_ATTR) == final
+    # The declaration lands in the shared store both middlewares read
+    # (fm#1303), and carries the dedup exemption that must accompany a
+    # replay exclusion — see test_a_replay_exclusion_implies_a_dedup_exemption.
+    policy = getattr(app.state, APP_STATE_POLICY_ATTR)
+    assert set(policy) == {BIND, PAGERDUTY}
+    assert all(p.never_replayed and p.never_collapsed for p in policy.values())
 
 
 def test_a_route_served_under_a_mount_can_be_declared():
@@ -482,7 +488,9 @@ def test_a_one_shot_iterator_is_refused_rather_than_consumed():
     That is worse than never declaring: the first request demonstrates the
     exclusion working, and every later one silently caches the credential.
     """
-    from faultmaven.api.middleware.idempotency import _normalize_declared_exclusions
+    from faultmaven.api.middleware.route_policy import (
+        _read_legacy_exclusions as _normalize_declared_exclusions,
+    )
 
     generator = (path for path in [BIND])
 
@@ -498,7 +506,9 @@ def test_non_string_entries_are_reported_rather_than_silently_dropped(caplog):
     """
     from pathlib import PurePosixPath
 
-    from faultmaven.api.middleware.idempotency import _normalize_declared_exclusions
+    from faultmaven.api.middleware.route_policy import (
+        _read_legacy_exclusions as _normalize_declared_exclusions,
+    )
 
     _clear_declaration_reports()
     with caplog.at_level(logging.ERROR, logger=_MODULE_LOGGER):
@@ -513,7 +523,9 @@ def test_usable_entries_survive_alongside_an_unusable_one(caplog):
     """Reporting the bad entry must not discard the good ones."""
     from pathlib import PurePosixPath
 
-    from faultmaven.api.middleware.idempotency import _normalize_declared_exclusions
+    from faultmaven.api.middleware.route_policy import (
+        _read_legacy_exclusions as _normalize_declared_exclusions,
+    )
 
     _clear_declaration_reports()
     with caplog.at_level(logging.ERROR, logger=_MODULE_LOGGER):
@@ -525,7 +537,9 @@ def test_usable_entries_survive_alongside_an_unusable_one(caplog):
 def test_a_declaration_that_raises_on_read_does_not_break_the_request(caplog):
     """Only ``TypeError`` used to be caught, and the truthiness test sat outside
     the ``try`` — so a ``__bool__`` raising anything else 500'd every POST."""
-    from faultmaven.api.middleware.idempotency import _normalize_declared_exclusions
+    from faultmaven.api.middleware.route_policy import (
+        _read_legacy_exclusions as _normalize_declared_exclusions,
+    )
 
     class Hostile:
         def __bool__(self):
@@ -552,7 +566,9 @@ def test_a_bad_declaration_is_reported_once_not_once_per_request(caplog):
     process, flooding the error-pattern detection behind ``/health/patterns``
     with a static condition already known at composition time.
     """
-    from faultmaven.api.middleware.idempotency import _normalize_declared_exclusions
+    from faultmaven.api.middleware.route_policy import (
+        _read_legacy_exclusions as _normalize_declared_exclusions,
+    )
 
     _clear_declaration_reports()
     with caplog.at_level(logging.ERROR, logger=_MODULE_LOGGER):
@@ -563,14 +579,15 @@ def test_a_bad_declaration_is_reported_once_not_once_per_request(caplog):
 
 
 def test_a_declaration_this_module_normalised_is_not_rebuilt_per_request():
-    """The stored set is already normalised; the request path should not
-    re-derive it. ``exclude_from_idempotency`` marks its own output so the
-    per-POST read is an identity check, while a hand-assigned value still takes
-    the defensive path."""
-    from faultmaven.api.middleware.idempotency import _normalize_declared_exclusions
+    """The stored map is already normalised; the request path should not
+    re-derive it. ``declare_route_policy`` marks its own output so the per-POST
+    read is an identity check, while a hand-assigned value still takes the
+    defensive path."""
+    from faultmaven.api.middleware.route_policy import _read_policy_map
 
     app, _ = _build_app()
-    stored = exclude_from_idempotency(app, BIND)
+    exclude_from_idempotency(app, BIND)
+    stored = getattr(app.state, APP_STATE_POLICY_ATTR)
 
-    assert _normalize_declared_exclusions(stored) is stored
-    assert _normalize_declared_exclusions(frozenset({BIND})) is not stored
+    assert _read_policy_map(stored) is stored
+    assert _read_policy_map(dict(stored)) is not stored

@@ -22,6 +22,11 @@ from ...models.protection import (
     ProtectionSettings,
 )
 from ...utils.serialization import to_json_compatible
+from .route_policy import RoutePolicy, normalize_path, policy_for
+
+#: Shared default so the lookup below needs no branch. Frozen and
+#: withholding nothing, which is what an undeclared route gets.
+_NO_POLICY = RoutePolicy()
 
 
 class DeduplicationMiddleware(BaseHTTPMiddleware):
@@ -193,6 +198,11 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         ``POST /api/v1/cases`` explicitly, and the turn POST as multipart.
         ``test_idempotency_bearing_paths_are_skipped`` pins it. Removing either
         exemption means reordering the two middlewares, not just editing here.
+
+        A composed route reaches the same guarantee by declaring it: fm#1303
+        added the ``route_policy`` read below, and ``declare_credential_mint``
+        sets ``never_collapsed`` alongside ``never_replayed`` precisely so a
+        composed mint cannot be exempted from one door and stopped at the other.
         """
         if request.method == "GET":
             return True
@@ -205,6 +215,23 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         if request.method == "POST" and request.url.path == "/api/v1/cases":
             return True
         if request.method == "POST" and request.url.path == "/api/v1/sessions":
+            return True
+
+        # Exemptions this repository cannot write down. Every entry above names
+        # a route this package serves, and the served route table is larger than
+        # this package: faultmaven-cloud mounts its routers onto the same ``app``
+        # singleton, and one of them mints a service-account refresh token
+        # (ADR-012 D10). The ordering warning in this docstring is exactly what
+        # such a route cannot obtain on its own — it is "safe today" only for
+        # paths that appear in a list it cannot appear in (fm#1303).
+        #
+        # Read from the same declaration ``IdempotencyMiddleware`` reads, so the
+        # two can never disagree about what the composition root asked for.
+        if (
+            policy_for(request)
+            .get(normalize_path(request.url.path), _NO_POLICY)
+            .never_collapsed
+        ):
             return True
 
         content_type = request.headers.get("content-type", "")
