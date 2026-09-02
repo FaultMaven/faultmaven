@@ -386,8 +386,23 @@ class TestNonToolStructuredPathIsCounted:
         ]
 
     @pytest.mark.asyncio
-    async def test_schema_violation_counts_failed(self):
+    async def test_repairable_violation_counts_its_degradation_outcome(self):
+        # fm#1116: the non-tool path now validates through the same ladder as
+        # the tool path. A non-string agent_response is repaired with the
+        # placeholder and counted as such — one increment, under the ladder's
+        # own label — instead of failing the turn.
         engine = self._engine_for(json.dumps({"agent_response": 123}))
+        with patch.object(me, "schema_validation_total") as validations:
+            parsed = await engine._generate_structured_output_inner("p", SampleResponse)
+        assert isinstance(parsed, SampleResponse)
+        assert [c.kwargs for c in validations.labels.call_args_list] == [
+            {"schema": "SampleResponse", "outcome": "response_synthesized"}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_unrepairable_body_still_counts_failed_and_raises(self):
+        # A body that is not an object survives no rung of the ladder.
+        engine = self._engine_for(json.dumps([1, 2, 3]))
         with patch.object(me, "schema_validation_total") as validations:
             with pytest.raises(Exception):
                 await engine._generate_structured_output_inner("p", SampleResponse)

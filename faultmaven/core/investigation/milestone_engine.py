@@ -9495,15 +9495,18 @@ class MilestoneEngine:
                 # for a path it never observed. One increment per BODY, so a
                 # retried generation contributes one per attempt — the same
                 # unit the ladder counts in.
-                from pydantic import ValidationError as _ValidationError
-
-                try:
-                    parsed = schema_model.model_validate_json(content)
-                except _ValidationError:
-                    self._record_schema_validation(schema_model, "failed")
-                    raise
-                self._record_schema_validation(schema_model, "clean")
-                return parsed
+                # Same never-500 backstop the tool-loop path has had
+                # (``_parse_schema_tool_call``): a parse-time cross-field
+                # validator rejecting ONE list entry (a ``suggested_follow_ups``
+                # item carrying ``evidence_need_id`` with the wrong action_type,
+                # an ``evidence_to_add`` row without its file id) used to fail
+                # the WHOLE turn here, while the tool path pruned the entry and
+                # kept the turn. fm#1116 routes tool-less turns to this path,
+                # so it must degrade the same way. The helper records the
+                # validation outcome itself (one increment per body, as before)
+                # and re-raises only when nothing survives, which the
+                # truncation check below still sees.
+                return self._validate_with_degradation(content_obj, schema_model)
             except Exception as validation_error:
                 # A body that ran out is the recoverable case: raise the cap and
                 # retry. Decided POSITIONALLY against the content we just tried

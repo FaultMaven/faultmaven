@@ -234,3 +234,32 @@ async def test_turn_with_searchable_evidence_stays_on_the_tool_loop():
     kwargs = engine._generate_structured_output.call_args.kwargs
     assert kwargs.get("investigation_tools") is not None
     assert "reasoning_intent" not in kwargs
+
+
+# ---------------------------------------------------------------------------
+# The single-shot path degrades like the tool path instead of failing the turn
+# ---------------------------------------------------------------------------
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_single_shot_path_prunes_an_invalid_list_entry_instead_of_failing_the_turn():
+    engine, provider = _engine_with_recording_provider()
+    body = (
+        '{"agent_response": "Checking the mount.", "state_updates": {}, '
+        '"suggested_follow_ups": [{"label": "Run df", "action_type": "RUN", '
+        '"evidence_need_id": "eneed_06943c2b1feb"}]}'
+    )
+    provider.generate = AsyncMock(
+        return_value=LLMResponse(
+            content=body,
+            confidence=0.9,
+            provider="openai",
+            model="gpt-5.6-luna",
+            tokens_used=0,
+            response_time_ms=0,
+        )
+    )
+    parsed = await engine._generate_structured_output(
+        "prompt", InvestigationResponse_Diagnosis, case=_case(), user_message="hi"
+    )
+    assert parsed.agent_response == "Checking the mount."
+    assert not parsed.suggested_follow_ups  # the offending entry was pruned, not fatal
