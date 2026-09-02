@@ -1000,11 +1000,22 @@ class KnowledgeVectorStore(BaseExternalClient):
         IS reachable here — and rarity does not order the admissions. The
         wrong seeds that survive every other guard ride on ``dashboard``, 20 of
         1297 chunks and an identifier by ``IDENTIFIER_DF_RATIO``, while correct
-        seeds ride on ``disk`` (99) and ``connection`` (188). Title-level
-        rarity, naming the service, and the query's rarest term were measured
-        beside it and each drops 3 to 7 of 7 correct admissions. The residue is
-        semantic ("the dashboard shows…" names the instrument), pinned in
-        ``test_kb_seed_grounding_reachability_1285.py``.
+        seeds ride on ``disk`` (99) and ``connection`` (188). The residue is
+        semantic ("the dashboard shows…" names the instrument), which no
+        per-term quantity this reranker holds can see.
+
+        The rarity floor is PINNED, over recorded corpus data, in
+        ``test_kb_seed_grounding_reachability_1285.py``
+        ::``TestRarityOfTheMatchedTermDoesNotOrderTheAdmissions`` — together
+        with the query-level precondition fm#1293 proposed beside it. Three
+        further alternatives — title-level rarity (how many runbooks share the
+        word), naming the service, and the query's rarest term — were measured
+        at the same time and each drops 3 to 7 of the 7 correct admissions,
+        but they are RECORDED, in PR #1296's table, rather than pinned: that
+        fixture carries document frequencies for the query's own terms and
+        none at title level, so a test here would have to restate those
+        numbers instead of re-deriving them, which is the shape these
+        measurements exist to replace.
         """
         if not query_lower:
             return []

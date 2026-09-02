@@ -126,6 +126,7 @@ async def retrieve(store, query):
         KB_COLLECTION,
         _read_stamped_cause_letters,
         _read_total_chunks,
+        _strip_chunk_suffix,
     )
 
     raw = await store.search(
@@ -143,7 +144,13 @@ async def retrieve(store, query):
             SimpleNamespace(
                 chunk_id=hit.get("id"),
                 score=hit["score"],
-                parent_document_id=meta.get("parent_document_id"),
+                # Metadata first, else the chunk id with its "_chunk_N" suffix
+                # stripped — as knowledge_service resolves it. `candidates`
+                # drops parentless hits, so reading only the metadata key
+                # would under-count against production here too.
+                parent_document_id=(
+                    meta.get("parent_document_id") or _strip_chunk_suffix(hit.get("id"))
+                ),
                 total_chunks=_read_total_chunks(meta),
                 letters=_read_stamped_cause_letters(meta, hit.get("content") or ""),
             )
@@ -167,6 +174,7 @@ async def retrieve_hybrid(store, query):
         KB_COLLECTION,
         _read_stamped_cause_letters,
         _read_total_chunks,
+        _strip_chunk_suffix,
     )
 
     raw = await store.hybrid_search(
@@ -183,7 +191,13 @@ async def retrieve_hybrid(store, query):
             SimpleNamespace(
                 chunk_id=hit.get("id"),
                 score=hit["score"],
-                parent_document_id=meta.get("parent_document_id"),
+                # Metadata first, else the chunk id with its "_chunk_N" suffix
+                # stripped — as knowledge_service resolves it. `candidates`
+                # drops parentless hits, so reading only the metadata key
+                # would under-count against production here too.
+                parent_document_id=(
+                    meta.get("parent_document_id") or _strip_chunk_suffix(hit.get("id"))
+                ),
                 total_chunks=_read_total_chunks(meta),
                 letters=_read_stamped_cause_letters(meta, hit.get("content") or ""),
                 term_coverage=hit.get("term_coverage"),
@@ -324,6 +338,10 @@ async def mode_e2e(store, corpus, statements):
         create_hypothesis_manager,
     )
     from faultmaven.core.investigation.kb_cause_seeder import SEEDED_FROM_RUNBOOK_KEY
+    from faultmaven.core.investigation.kb_grounding import (
+        KBSeedGrounding,
+        kb_hit_grounding,
+    )
     from faultmaven.core.investigation.milestone_engine import MilestoneEngine
     from faultmaven.models.common import SearchResult
     from faultmaven.modules.case.contracts import (
@@ -337,6 +355,7 @@ async def mode_e2e(store, corpus, statements):
         KB_COLLECTION,
         _read_stamped_cause_letters,
         _read_total_chunks,
+        _strip_chunk_suffix,
     )
 
     class _KS:
@@ -370,15 +389,24 @@ async def mode_e2e(store, corpus, statements):
             out = []
             for hit in raw:
                 meta = hit.get("metadata") or {}
+                # Parent identity resolved as the real seam resolves it:
+                # metadata first, else the chunk id with its "_chunk_N" suffix
+                # stripped. Reading only the metadata key makes this driver
+                # under-seed against production for any chunk indexed without
+                # it — the driver-vs-production divergence this mode exists to
+                # close, and one its own control cannot see.
+                parent = meta.get("parent_document_id") or _strip_chunk_suffix(
+                    hit.get("id")
+                )
                 out.append(
                     SearchResult(
                         document_id=hit.get("id", "unknown"),
-                        title=corpus.title(meta.get("parent_document_id")),
+                        title=corpus.title(parent),
                         document_type="runbook",
                         tags=[],
                         score=hit["score"],
                         snippet=(hit.get("content") or "")[:200],
-                        parent_document_id=meta.get("parent_document_id"),
+                        parent_document_id=parent,
                         total_chunks=_read_total_chunks(meta),
                         matched_cause_letters=_read_stamped_cause_letters(
                             meta, hit.get("content") or ""
@@ -395,7 +423,13 @@ async def mode_e2e(store, corpus, statements):
         async def get_runbook_causes(self, item_id):
             return corpus.causes.get(item_id) or None
 
-    async def seeded_for(description):
+    async def seed_run(description):
+        """One statement through the real path: what seeded, and the hits.
+
+        The hits are returned as well as the seeds because the two guards below
+        ask different questions of them — what seeded says the path ran, and
+        only the hits say whether the GROUNDING gate judged anything.
+        """
         engine = MilestoneEngine.__new__(MilestoneEngine)
         engine.knowledge_service = _KS()
         engine.hypothesis_manager = create_hypothesis_manager()
@@ -419,31 +453,79 @@ async def mode_e2e(store, corpus, statements):
         )
         relevant = await engine._prefetch_kb_context(case, description, "symptom")
         await engine._seed_candidate_causes_from_kb(case, relevant)
-        return sorted(
+        seeded = sorted(
             {
                 corpus.title((n.metadata or {}).get(SEEDED_FROM_RUNBOOK_KEY))
                 for n in case.causal_nodes.values()
                 if (n.metadata or {}).get(SEEDED_FROM_RUNBOOK_KEY)
             }
         )
+        return seeded, relevant
 
-    # --- guard: the seeding path is LIVE, in this run ---------------------
-    # A prefetch that raises is swallowed by the wrapper as a failed search,
-    # and a seeder handed no hits seeds nothing — so a broken seam here prints
-    # 0/16 on-domain and 0/8 junk on BOTH arms, which reads as "the guard is
-    # working" and measures nothing. That is exactly how this mode ran from
-    # #1282 until the stub above learned ``use_hybrid``. A positive control
-    # must seed with the corroboration guard off before any row is printed.
+    async def seeded_for(description):
+        seeded, _ = await seed_run(description)
+        return seeded
+
+    # --- guard: the path is LIVE and the GATE decided, in this run --------
+    # TWO failures print the same clean table, and the seed columns tell them
+    # apart from neither:
+    #
+    #   (a) the path does not run. A prefetch that raises is swallowed by the
+    #       wrapper as a failed search, and a seeder handed no hits seeds
+    #       nothing, so both arms read 0/16 and 0/8 — which looks like a guard
+    #       working perfectly. That is how this mode ran from #1282 until the
+    #       stub above learned ``use_hybrid``.
+    #   (b) the path runs but GROUNDING does not decide. A hit that carries no
+    #       ``term_coverage`` is UNMEASURED, and UNMEASURED passes through by
+    #       design — so a prefetch that fell back to pure vector produces a
+    #       full, healthy-looking table in which the gate this mode reports on
+    #       admitted everything and corroboration alone did the work.
+    #
+    # A positive control must therefore seed with the corroboration guard off
+    # AND show the gate reaching a real verdict on the same hits, before any
+    # row is printed. Same shape as mode_grounding's guards, one statement
+    # instead of the whole set.
     control = statements["positive"][0][0]
     with patch.object(engine_module, "KB_SEED_MIN_CORROBORATING_CHUNKS", 1):
-        probe = await seeded_for(control)
-    print(f"[guard] positive control {control[:48]!r}... seeds {probe}")
+        probe, probe_hits = await seed_run(control)
+    verdicts = [kb_hit_grounding(h) for h in probe_hits]
+    tally = ", ".join(
+        f"{v.value} {verdicts.count(v)}" for v in KBSeedGrounding if v in verdicts
+    )
+    print(
+        f"[guard] positive control {control[:48]!r}... seeds {probe} "
+        f"from {len(probe_hits)} hits ({tally or 'no hits'})"
+    )
     if not probe:
         sys.exit(
             "COULD NOT ASK: the positive control seeded nothing with the "
-            "corroboration guard off — the seeding path did not run (a failed "
-            "prefetch is swallowed as a failed search), so every row below "
-            "would read 0 on both arms and mean nothing"
+            "corroboration guard off, so every row below would read 0 on both "
+            "arms and mean nothing. Any of these empties it, and the counts "
+            "below cannot tell them apart: the KB at --chroma/--db is "
+            "unseeded, empty or not scoped global; the embedder did not "
+            "answer (an unwarmed BGE-M3 trips KNOWLEDGE_EMBEDDER_TIMEOUT); "
+            "the stub above drifted from knowledge_service.search_knowledge, "
+            "so every prefetch raised and the wrapper swallowed it as a "
+            "failed search; or the gate now refuses this statement's runbooks "
+            "outright, in which case the path ran and this control is what is "
+            "stale"
+        )
+    unmeasured = verdicts.count(KBSeedGrounding.UNMEASURED)
+    if unmeasured:
+        sys.exit(
+            f"COULD NOT ASK: {unmeasured} of {len(verdicts)} control hits "
+            f"carry no term_coverage, so the grounding gate judged nothing "
+            f"about them — UNMEASURED passes through by design. Only the "
+            f"reranker writes that field, so the prefetch took the "
+            f"pure-vector path; the rows below would be decided by "
+            f"corroboration alone while reading as evidence about grounding"
+        )
+    if KBSeedGrounding.NAMED not in verdicts:
+        sys.exit(
+            "COULD NOT ASK: the gate grounded NOTHING on the positive "
+            "control, so nothing below was admitted BY grounding — whatever "
+            "seeds is riding on corroboration alone, and the gate's cost in "
+            "the rows below is zero by construction"
         )
 
     for label, threshold in (("GUARD OFF (#1144)", 1), ("GUARD ON", None)):
