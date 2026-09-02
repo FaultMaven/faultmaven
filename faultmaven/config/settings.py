@@ -1969,37 +1969,6 @@ class FeatureSettings(BaseSettings):
     enable_multi_agent: bool = Field(default=False)
     enable_workflow_optimization: bool = Field(default=False)
 
-    # KB cause seeder: on the symptom-verified transition, instantiate a
-    # retrieved runbook's metadata["causes"] chains as CANDIDATE causal-graph
-    # nodes/edges/hypotheses (a prior, never VALIDATED without case evidence),
-    # and switch the KNOWLEDGE & RUNBOOK AUTHORITY prompt to the
-    # validate/refute-seeded-candidates variant. When False, the engine keeps the
-    # flat "matched runbook → one hypothesis" prompt path and seeds nothing.
-    #
-    # OFF by default (fm#1295, 2026-09-02). The enabling eval proved the seeds
-    # SOUND (a wrong seed cannot reach VALIDATED on its own); the on-vs-off A/B
-    # then measured whether they HELP, and they do not: over 6 scenarios × 2
-    # arms the cause came from pasted evidence on the turn it arrived in both
-    # arms, no seeded chain was ever the cause found, and of the two seeded
-    # roots that validated one was wrong and became the recorded conclusion
-    # while the true root went unexplored. OFF resolved 3/6 vs 2/6 and
-    # identified the root 5/6 vs 3/6. Runbooks still reach the model as
-    # retrieved prose and through the KB QA tools; with the flag off, seeding
-    # and the two readers of seeded provenance (the R9 candidate_solutions
-    # handoff, the sync tier of runbook-generation dedup) stop. Set true to
-    # re-enable for measurement. See
-    # docs/architecture/knowledge-and-ai/kb-cause-seeder.md ("Status") and
-    # tests/eval/kb_cause_seeder/recorded-runs/2026-09-02-seeder-ab-local.md.
-    kb_cause_seeder_enabled: bool = Field(
-        default=False,
-        validation_alias="FAULTMAVEN_KB_CAUSE_SEEDER",
-        description=(
-            "Feature flag: seed retrieved runbook metadata['causes'] chains as "
-            "CANDIDATE causal-graph nodes/hypotheses at the symptom-verified "
-            "transition (+ the seeded-candidate AUTHORITY prompt variant)."
-        ),
-    )
-
     # Precedence between the chain-derived conclusion mirror and an LLM-authored
     # RootCauseConclusion. ON: a standing validated, uncontested chain root is the
     # surfaced conclusion — the per-turn recompute mints/refreshes the engine

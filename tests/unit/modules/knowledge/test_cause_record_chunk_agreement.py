@@ -56,8 +56,7 @@ _COUNTER = (
     "kb_cause_unseedable_at_ingest_total"
 )
 _CHECK_FAILED = (
-    "faultmaven.core.investigation.lifecycle_metrics."
-    "kb_cause_ingest_check_failed_total"
+    "faultmaven.core.investigation.lifecycle_metrics.kb_cause_ingest_check_failed_total"
 )
 _EMBED_GUARD = "faultmaven.infrastructure.embedding_guard.embed_texts_or_raise"
 
@@ -121,7 +120,7 @@ def test_missing_letters_keep_record_order_and_dedupe():
 
 def test_a_chunk_heading_absent_from_the_record_is_not_this_check():
     """The opposite direction is the seeder's own alarm
-    (``kb_cause_seed_letter_mismatch_total``) and is not double-counted here: a
+    (the removed seeder's letter-mismatch counter) and is not double-counted here: a
     stray heading costs no cause its seedability."""
     chunks = _letters(_chunk("A"), _chunk("Z"))
     assert _unrecoverable_cause_letters(chunks, [_cause("A")]) == []

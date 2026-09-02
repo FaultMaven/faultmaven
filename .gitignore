@@ -210,7 +210,8 @@ scripts/config/local_*.sh
 
 # Documentation - local working files (not tracked)
 docs/_archive/
-docs/archive/
+# docs/archive/ is TRACKED: it is the home for retired design records
+# (CLAUDE.md Documentation Rules 4). Only docs/_archive/ stays local.
 docs/working/
 **/working/
 

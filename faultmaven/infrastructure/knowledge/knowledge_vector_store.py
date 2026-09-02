@@ -199,25 +199,6 @@ def _flatten_filter_keys(where: dict) -> set:
 _TOKEN_SEPARATORS = re.compile(r"[\s,;:!?.()\[\]{}<>\"'`|/\\=+*#]+")
 
 
-_INFLECTIONAL_SUFFIXES = ("ies", "es", "s")
-
-
-def _fold_plural(term: str) -> str:
-    """Fold an English plural onto its singular, and nothing else.
-
-    Deliberately the crudest possible rule. Its whole job is to let a runbook
-    titled ``Connection`` be named by "connections" without also letting ``Pod``
-    be named by "podman" — so it must recognise inflection and must NOT
-    recognise mere shared prefixes. Anything smarter (a real stemmer) would
-    start folding unrelated words together again, which is the defect it exists
-    to close.
-    """
-    for suffix in _INFLECTIONAL_SUFFIXES:
-        if len(term) > len(suffix) + 2 and term.endswith(suffix):
-            return term[: -len(suffix)] + ("y" if suffix == "ies" else "")
-    return term
-
-
 def _tokenize(text: str) -> List[str]:
     """Split text into lowercased tokens, stripping punctuation."""
     return [t for t in _TOKEN_SEPARATORS.split(text.lower()) if t and len(t) >= 2]
@@ -938,95 +919,6 @@ class KnowledgeVectorStore(BaseExternalClient):
         return [t for t in _tokenize(query) if t not in _STOP_WORDS]
 
     @staticmethod
-    def _document_identity_terms(metadata: Dict[str, Any]) -> Set[str]:
-        """Terms that name the DOCUMENT itself: its title's words plus its service.
-
-        The document's side of a two-way grounding test. Retrieval only ever
-        asks whether a chunk answers the query; it never asks whether the query
-        was about this document, and those are different questions — "Failed to
-        start QEMU, cannot create PID file" is answered plausibly by a
-        Kubernetes CrashLoopBackOff runbook and is not about Kubernetes at all.
-        Both are read from chunk metadata, which is the only place the KB's
-        front matter survives into retrieval.
-        """
-        terms = set(_tokenize(str(metadata.get("title") or "")))
-        service = str(metadata.get("service") or "").strip().lower()
-        if service:
-            terms |= set(_tokenize(service.replace("-", " ")))
-        return {t for t in terms if t not in _STOP_WORDS and len(t) >= 3}
-
-    @classmethod
-    def _identity_terms_in_query(
-        cls, metadata: Dict[str, Any], query_lower: str
-    ) -> List[str]:
-        """Which of the document's own identity terms the query actually used.
-
-        Matched at TOKEN level, under a plural fold. This began as a raw
-        substring test — ``term in query_lower`` — which reads as generous and
-        is in fact a false-positive channel, because a title word is a
-        substring of every longer word that happens to start the same way.
-        Measured against the shipped 91-runbook pack, that grounded:
-
-            "servicenow tickets are not syncing"  -> 6 runbooks
-                                                     (`service`, `sync`)
-            "podman containers exit immediately"  -> 4 Kubernetes runbooks
-                                                     (`pod`)
-            "users cannot login to the portal"    -> 1 (`port`)
-
-        None of those queries is about the runbook it grounded, and grounding is
-        the one check standing between retrieval and asserting a candidate root
-        cause to the user — so this was the gate handing back exactly what it
-        was added to stop.
-
-        The plural fold is what the substring test was really buying: a runbook
-        titled ``Connection`` named by a user who typed "connections", or
-        ``Pod`` by "pods". Folding both sides keeps those and keeps nothing
-        else — ``podman`` does not fold to ``pod``, ``servicenow`` does not fold
-        to ``service``, ``portal`` does not fold to ``port``.
-
-        **What this deliberately does NOT do is require the matched term to be
-        discriminating.** A query that genuinely contains "node" still names
-        "Kubernetes Node NotReady". Every rule that closes that residue was
-        measured and every one is worse: requiring two matched terms, or one
-        above an IDF floor, or a share of the document's identity mass, each
-        cost between four and nine correct seeds and between four and nine
-        statements out of twenty-one — against a residue that grounding alone
-        cannot act on, since a runbook must still clear the similarity floor,
-        name a cause, and corroborate itself on a second chunk before anything
-        is seeded.
-
-        Re-measured for fm#1293 with the statistics this reranker actually
-        holds — ``stats`` is in scope where this is called, so a rarity test
-        IS reachable here — and rarity does not order the admissions. The
-        wrong seeds that survive every other guard ride on ``dashboard``, 20 of
-        1297 chunks and an identifier by ``IDENTIFIER_DF_RATIO``, while correct
-        seeds ride on ``disk`` (99) and ``connection`` (188). The residue is
-        semantic ("the dashboard shows…" names the instrument), which no
-        per-term quantity this reranker holds can see.
-
-        The rarity floor is PINNED, over recorded corpus data, in
-        ``test_kb_seed_grounding_reachability_1285.py``
-        ::``TestRarityOfTheMatchedTermDoesNotOrderTheAdmissions`` — together
-        with the query-level precondition fm#1293 proposed beside it. Three
-        further alternatives — title-level rarity (how many runbooks share the
-        word), naming the service, and the query's rarest term — were measured
-        at the same time and each drops 3 to 7 of the 7 correct admissions,
-        but they are RECORDED, in PR #1296's table, rather than pinned: that
-        fixture carries document frequencies for the query's own terms and
-        none at title level, so a test here would have to restate those
-        numbers instead of re-deriving them, which is the shape these
-        measurements exist to replace.
-        """
-        if not query_lower:
-            return []
-        folded = {_fold_plural(token) for token in _tokenize(query_lower)}
-        return sorted(
-            t
-            for t in cls._document_identity_terms(metadata)
-            if _fold_plural(t) in folded
-        )
-
-    @staticmethod
     def _query_has_identifier(
         query: str,
         query_terms: List[str],
@@ -1090,14 +982,13 @@ class KnowledgeVectorStore(BaseExternalClient):
         admission floors belong on it; ``rerank_score`` is relative to this
         candidate set, so ordering belongs on it. See the module docstring.
 
-        ``term_coverage`` and ``identity_terms_in_query`` are written back for
-        the same reason: a consumer that must decide whether to ACT on a result
-        (rather than merely show it) needs the lexical evidence, and only this
-        function holds both the corpus statistics and the full chunk text. They
-        are not interchangeable — ``identity_terms_in_query`` answers whether
-        the query was ABOUT the document and is what the cause seeder grounds
-        on; ``term_coverage`` is the ranking signal above and no admission may
-        be expressed in it, for the reason ``_compute_term_overlap`` records.
+        Only ``rerank_score`` is written back. Two further fields
+        (``term_coverage``, ``identity_terms_in_query``) were carried out for
+        the KB cause seeder's grounding gate and went with it (fm#1295): a
+        consumer that must decide whether to ACT on a hit, rather than show
+        it, needs lexical evidence the chunk alone cannot give, and none
+        remains. The measurements behind that gate are recorded in
+        ``docs/archive/2026/09/kb-cause-seeder/``.
 
         Ties broken by scope priority: personal > team > global.
         """
@@ -1160,27 +1051,6 @@ class KnowledgeVectorStore(BaseExternalClient):
             # list (#1272).
             candidate["rerank_score"] = final_score
 
-            # Carried out with the result because a consumer deciding whether
-            # to ACT on it cannot re-derive either: the corpus statistics and
-            # the full chunk text live only here.
-            #
-            #   identity_terms_in_query — was the query ABOUT this document?
-            #       The grounding question, and the one the cause seeder gates
-            #       on. Token-level under a plural fold.
-            #   term_coverage           — the ranking term-overlap signal
-            #       above, reported for diagnosis. NOT a second grounding
-            #       ground: it is a share of the QUERY, so it rises as the
-            #       query says less, and thresholding it admitted content-free
-            #       statements against every runbook at once (#1285). Written
-            #       on every path this function takes — a float even with no
-            #       term index, where the blend degrades to a binary fraction —
-            #       so ``None`` distinguishes "no reranker ran" and nothing
-            #       else.
-            candidate["term_coverage"] = term_overlap
-            candidate["identity_terms_in_query"] = cls._identity_terms_in_query(
-                metadata, query_lower
-            )
-
             # Scope priority for tiebreaking (lower = better)
             scope = metadata.get("scope", "global")
             scope_tiebreak = -SCOPE_PRIORITY.get(scope, 2)
@@ -1212,20 +1082,17 @@ class KnowledgeVectorStore(BaseExternalClient):
         corpus.
 
         Terms are tested as case-insensitive substrings of the chunk text, which
-        is what this signal has always done. Deliberately looser than the
-        token-level rule :meth:`_identity_terms_in_query` uses, and for a
-        different job: this is a per-candidate RANKING signal, where a
-        substring hit on a longer word costs a little accuracy in an ordering,
-        whereas that one ADMITS a runbook to being asserted as a candidate root
-        cause and so cannot afford `pod` to be matched by "podman".
+        is what this signal has always done: a per-candidate RANKING signal,
+        where a substring hit on a longer word costs a little accuracy in an
+        ordering and nothing more.
 
         **Nothing admits on this value, and nothing should.** It is a share of
         the QUERY's vocabulary, so it is highest for queries that identify
         least: "The application is slow." scores 1.000 against seven runbooks it
         names nothing of, above the 0.926 a specific symptom statement reaches
-        against its correct one. #1272's seeding gate thresholded it
-        and admitted 36 off-domain runbooks for 1 on-domain one before that
-        arm was removed in #1285 — see ``milestone_engine.kb_hit_grounding``.
+        against its correct one. The KB cause seeder's gate once thresholded it
+        and admitted 36 off-domain runbooks for 1 on-domain one before that arm
+        was removed (#1285; record in ``docs/archive/2026/09/kb-cause-seeder/``).
         A ranking signal is not an admission criterion, which is the same
         distinction ``rerank_score`` and ``score`` keep in the module docstring.
         """

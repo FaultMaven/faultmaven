@@ -397,14 +397,14 @@ This flow ensures team knowledge quality is governed by the team admin while ena
 
 ### Implementation Status
 
-Team KB scope filtering is **built on the seeder path, not on the tool path** — the
+Team KB scope filtering is **built on the engine prefetch path, not on the tool path** — the
 filter, the share table and the resolver all exist, but the agent's KB tool never
 receives the resolved ids (see Remaining work 1):
 
 - Team and organization models exist in the auth module (`modules/auth/domain/models/`)
 - `team_members` junction table supports multi-team membership per user
 - `TeamService.list_all_user_team_ids(user_id)` resolves all team memberships across orgs
-- `MilestoneEngine._prefetch_kb_context` resolves the **case owner's** teams (keyed on `case.user_id`, deliberately not the session user, so one user's case can never surface another's shares) to shared `knowledge_item` ids via `resolve_shared_kb_ids` against `resource_shares`, and passes them to `build_kb_scope_filter` — so the **KB cause-seeder prefetch** does see team-shared items
+- `MilestoneEngine._prefetch_kb_context` resolves the **case owner's** teams (keyed on `case.user_id`, deliberately not the session user, so one user's case can never surface another's shares) to shared `knowledge_item` ids via `resolve_shared_kb_ids` against `resource_shares`, and passes them to `build_kb_scope_filter` — so the **engine KB prefetch** does see team-shared items
 - The unified `answer_from_kb` tool builds the combined filter via `build_kb_scope_filter`, whose team arm is `{"parent_document_id": {"$in": shared_ids}}`
 - ChromaDB metadata stores only the immutable floor (`scope` = `global`/`personal` + `owner_id`) at ingestion time — never `team_id`; team visibility lives in the `resource_shares` table (ADR-013 §D4)
 - API endpoints (`GET /knowledge/documents`) support `scope=team` filter with team membership check
@@ -421,7 +421,7 @@ receives the resolved ids (see Remaining work 1):
    Deleting the dead writer did not cause this; it removed the last code that
    made the wiring look present. This **fails closed** (global ∪
    owner-personal; no cross-tenant exposure), but a team-shared runbook is
-   invisible to the agent's KB tool even though the seeder prefetch above finds
+   invisible to the agent's KB tool even though the engine prefetch above finds
    it. Fixing it means resolving the shared ids where the context is built —
    `_build_tool_context` is synchronous, so the resolution has to happen upstream
    and be threaded in.

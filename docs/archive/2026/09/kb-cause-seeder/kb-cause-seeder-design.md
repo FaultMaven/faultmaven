@@ -1,3 +1,12 @@
+> **ARCHIVED 2026-09-02.** The KB cause seeder was turned off by default in
+> fm#1295 step 4a (PR #1302) on the on-vs-off measurement recorded in
+> [`eval/seeder-on-vs-off-ab-local.md`](eval/seeder-on-vs-off-ab-local.md),
+> and removed in step 4b. This document is the design and evidence record of
+> the mechanism as it existed at commit `6b3592bf5`; nothing below describes
+> live code, and every code path, test and eval file it names was deleted
+> with the seeder. The enabling-gate eval it references is archived beside it
+> in [`eval/`](eval/).
+
 # KB Cause Seeder — structural KB → engine cohesion
 
 Every shipped runbook carries a machine-readable causal-graph record at
@@ -995,7 +1004,7 @@ The sim/eval runs strict-enforcement + averaged + a cheap model, and must includ
 a misleading-runbook scenario. Model variation never changes these engine rules.
 
 The eval is a committed, re-runnable artifact — harness, scenarios, and recorded
-transcripts at [`tests/eval/kb_cause_seeder/`](../../../tests/eval/kb_cause_seeder/)
+transcripts at [`eval/`](eval/) (archived)
 (modes `smoke` / `mislead` / `exclusion` / `postturn1`).
 
 ### Enabling gate — the passes the flag-on decision was made against
@@ -1012,7 +1021,7 @@ prompt-strength-dependent items (2, 3) are *weakest* on a BEST_EFFORT model, so 
 pass there is the binding case and a STRICT provider can only do better on them.
 Requiring green on every provider adds cost without assurance beyond the
 weakest-link pass. STRICT-provider runs stay optional cross-checks (see
-[`tests/eval/kb_cause_seeder/README.md`](../../../tests/eval/kb_cause_seeder/README.md)
+[`eval/README.md`](eval/README.md)
 for the recorded fireworks pass and the external-wall status of the others). The
 gate items:
 
@@ -1070,7 +1079,7 @@ decision was explicitly made on exposure grounds, not benefit. fm#1295 asked the
 benefit question directly: an on-vs-off A/B on the same six sim scenarios,
 main's engine code, the shipped pack, `gpt-5.6-luna`, one judge for both arms.
 The record is
-[`tests/eval/kb_cause_seeder/recorded-runs/2026-09-02-seeder-ab-local.md`](../../../tests/eval/kb_cause_seeder/recorded-runs/2026-09-02-seeder-ab-local.md).
+[`eval/seeder-on-vs-off-ab-local.md`](eval/seeder-on-vs-off-ab-local.md).
 
 | | seeder ON | seeder OFF |
 |---|---|---|

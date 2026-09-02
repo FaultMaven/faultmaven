@@ -442,42 +442,16 @@ pasted labels, Rule 5 row). Evidence needs piggyback on that surface;
 §6.1 documents the single new section the prompt gains
 (`<evidence_needs>`), slotted into INVESTIGATION_BASE.
 
-### 5.4 Trigger 3: KB Cause Seeded → Seed Rung-Needs (engine-minted)
+### 5.4 (removed) Engine-minted seed rung-needs
 
-The two triggers above are LLM-emitted. There is one narrow,
-deterministic exception: when the [KB cause seeder](../knowledge-and-ai/kb-cause-seeder.md)
-instantiates a retrieved runbook's cause chain as a CANDIDATE
-hypothesis, it also mints that cause's `rung_indicators` as needs —
-without an LLM turn.
-
-```text
-Trigger: A runbook cause is seeded (INQUIRY → INVESTIGATING transition)
-Output:  One PENDING causal_verification need per rung indicator,
-         motivating_hypothesis_ids=[seeded hypothesis], priority=LOW
-```
-
-This is a **prior, not a gate**, and every property keeps a seeded need
-mechanically identical to an LLM-emitted one (it is subject to the same
-lifecycle, surfacing, and wall rules; nothing reads its origin):
-
-- **`priority=LOW`** so it sinks in the rendered `<evidence_needs>`
-  ordering. (Surfacing *selection* itself is priority- and origin-blind —
-  it ranks by `request_text` rarity + rotation — so this is not a
-  suppression guarantee, just a rendering-order hint.)
-- **`obtainability=UNKNOWN`** (the fail-safe default), so it never
-  contributes to the §5.3 declared-data-wall on its own — but it makes
-  the wall honestly computable for the seeded candidate, which
-  previously arrived with zero discriminators.
-- **Motivated solely by the seeded hypothesis**, so §7.4
-  motivator-based supersession retires it for free when that hypothesis
-  goes terminal — the seeder adds no bespoke lifecycle.
-- **Never auto-fulfilled** — it grounds only when a real datum arrives.
-
-The engine is a bounded *creator* here rather than only a *lifecycle
-manager* (cf. §9.6): the content is copied verbatim from a curated
-runbook, not reasoned, so this does not reopen "LLM determines content."
-Seeding is feature-flagged (`FAULTMAVEN_KB_CAUSE_SEEDER`); with the flag
-off, no seed needs are minted.
+Until fm#1295 there was one deterministic, engine-minted trigger: the KB cause
+seeder minted a retrieved runbook cause's `rung_indicators` as PENDING
+`causal_verification` needs when it seeded that cause as a CANDIDATE
+hypothesis. The seeder was measured not to help diagnosis and removed
+(design and evidence record:
+[`docs/archive/2026/09/kb-cause-seeder/kb-cause-seeder-design.md`](../../archive/2026/09/kb-cause-seeder/kb-cause-seeder-design.md)).
+Every evidence need is now LLM-emitted through the two triggers above; the
+engine is a lifecycle manager only (§9.6), with no creator exception.
 
 ---
 
@@ -1078,13 +1052,8 @@ deterministic lifecycle event (motivator-based supersession when a
 hypothesis goes terminal). This division keeps the LLM focused on
 reasoning while the system enforces consistency.
 
-The one bounded exception is the KB cause seeder (§5.4): it mints seed
-rung-needs deterministically, without an LLM turn. This does not erode
-the principle — the content is copied verbatim from a curated runbook
-rather than reasoned, and the seeded needs obey every lifecycle,
-surfacing, and wall rule identically (they are prior-not-gate and
-provenance-blind to safety). The engine acts as a bounded *creator*
-only for content it did not author.
+There is no engine-side creator exception: the one that existed (the KB cause
+seeder's rung-needs, §5.4) was removed in fm#1295.
 
 ### 9.7 Stored Ask History — Engine-Enforced Decay
 

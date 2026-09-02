@@ -295,10 +295,6 @@ async def test_the_engine_passes_its_injected_kb_and_owner_resolver_to_dedup(
         "evaluate_runbook_suggestion",
         fake_evaluate,
     )
-    monkeypatch.setattr(
-        "faultmaven.core.investigation.kb_cause_seeder.confirmed_root_seed_origin",
-        lambda case: None,
-    )
 
     await engine._handle_runbook_creation(_case(), metadata={})
 

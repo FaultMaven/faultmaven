@@ -3286,7 +3286,10 @@ proposal never forecloses a live diagnostic thread.
 """
 
 
-# Seeded-candidate AUTHORITY rewrite (KB cause seeder). Rather than APPEND a
+# Seeded-candidate directive — LEGACY rows only (``seeded_provenance``): the
+# KB cause seeder that planted these candidates was removed in fm#1295, so the
+# swap below fires only for cases opened before 2026-09-02 that still carry
+# seeds, and goes with the module's sunset. Rather than appending a
 # contradicting override after the flat "matched Cause → create hypotheses_to_add"
 # directive (two directives the model must arbitrate), we conditionally REPLACE
 # that one directive when the seeder has already instantiated the matched runbook's
@@ -3333,38 +3336,32 @@ _KB_MATCHED_CAUSE_SEEDED = """  - **Exactly one Cause matches:** its chain is AL
 
 
 def _select_diagnosis_block(case: Case) -> str:
-    """DIAGNOSIS-stage prompt assembly (unified opportunistic flow).
+    """Focus emphasis + the RCA diagnosis block for a diagnosing turn.
 
-    Post-redesign there is no path fork: the diagnostic machinery
-    (hypothesis formulation + evidence-needs) runs as a single
-    opportunistic flow. Stage guidance is selected by the assessment
-    variables (``symptom_verified`` / ``cause_state`` / ``solution_proposed``)
-    via ``_get_diagnosis_focus_emphasis`` — not by a prospective path
-    choice. The focus emphasis is prepended to ``_RCA_DIAGNOSIS_BLOCK``,
-    which carries the hypothesis-evidence ordering mandate
-    (``_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK``).
+    Diagnosis has no path fork (redesign R5): hypothesis formulation and
+    evidence-needs run as a single opportunistic flow. Stage guidance is
+    selected by the assessment variables (``symptom_verified`` /
+    ``cause_state`` / ``solution_proposed``) via
+    ``_get_diagnosis_focus_emphasis`` — not by a prospective path choice. The
+    focus emphasis is prepended to ``_RCA_DIAGNOSIS_BLOCK``, which carries the
+    hypothesis-evidence ordering mandate
+    (``_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK``), then the chain-emission block
+    teaches lazy backward expansion (the engine ingests the emitted chain).
 
-    When this case's graph holds seeded candidates, the flat "matched Cause →
-    create hypotheses_to_add" directive is REPLACED (not appended-to) with the
-    validate/refute-the-seeded-candidate directive, so the seeded turn sees a
-    single coherent instruction. No seeds this case: byte-identical to before.
-
-    Gated on GRAPH STATE, not on the seeder flag. Seeds are persisted, so a
-    case seeded while the flag was on still carries them after the flag is
-    turned off (fm#1295 flipped the default) — and ``_build_causal_graph_block``
-    renders them regardless. Reading the flag here would hand exactly those
-    cases the flat "that Cause IS your hypothesis … skip independent
-    generation" directive on top of a graph that already holds the seed, which
-    is the duplicate-beside-the-seed shape the seeded directive exists to
-    prevent. With the flag off no NEW seeds are minted, so for every case
-    opened after the flip this is the flat path.
+    Legacy seeded cases (``seeded_provenance``): when this case's graph holds
+    candidates the removed KB cause seeder planted, the flat "matched Cause →
+    create hypotheses_to_add" directive is REPLACED with the
+    validate/refute-the-seeded-candidate one, so the model tests the
+    candidate it already has instead of re-creating it beside the seed. Keyed
+    on graph state, never on a flag: nothing writes seeds any more, so this
+    branch is dead for every case opened after 2026-09-02 and goes with the
+    module's sunset.
     """
     focus_emphasis = _get_diagnosis_focus_emphasis(case.progress, case)
     block = focus_emphasis + _RCA_DIAGNOSIS_BLOCK
-    # Teach lazy backward expansion (the engine ingests the emitted chain).
     block += _CHAIN_EMISSION_BLOCK
 
-    from faultmaven.core.investigation.kb_cause_seeder import (
+    from faultmaven.core.investigation.seeded_provenance import (
         case_has_seeded_candidates,
     )
 

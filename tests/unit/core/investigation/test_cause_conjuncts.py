@@ -785,15 +785,15 @@ def test_a_refused_regroup_leaves_a_witness():
     assert incoming_and_groups(_M, case.causal_edges) == {"g1": [_A, _B]}
 
 
-def test_a_numeric_and_group_is_honored_and_a_boolean_is_not():
-    """``and_group: 1`` is plausible JSON from a model numbering its groups, and
-    the key is an opaque identity token — discarding it loses a conjunction and
-    gains nothing. ``and_group: true`` is the field mistaken for a flag, and
-    honoring it would group everything that made the same mistake."""
+def test_only_a_string_names_a_group():
+    """The schema declares ``and_group: Optional[str]`` and nothing coerces, so
+    the normaliser matches that boundary: a number or a bool names no group.
+    (Numbers were honoured while the KB cause seeder could hand them in
+    directly; that caller went in fm#1295.)"""
     from faultmaven.core.investigation.causal_graph import _normalize_and_group
 
-    assert _normalize_and_group(1) == "1"
-    assert _normalize_and_group(2) != _normalize_and_group(1)
+    assert _normalize_and_group("g1") == "g1"
+    assert _normalize_and_group(1) is None
     assert _normalize_and_group(True) is None
     assert _normalize_and_group(["g1"]) is None
     assert _normalize_and_group({"k": "v"}) is None

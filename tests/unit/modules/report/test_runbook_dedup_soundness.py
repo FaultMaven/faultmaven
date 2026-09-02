@@ -352,11 +352,6 @@ async def test_a_similar_match_stops_creation_and_offers_generate_anyway(
     engine = _engine_for_creation()
     engine.runbook_kb = _similar_match_kb()
 
-    monkeypatch.setattr(
-        "faultmaven.core.investigation.kb_cause_seeder.confirmed_root_seed_origin",
-        lambda case: None,
-    )
-
     with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
         result = await engine._handle_runbook_creation(ready_case, metadata={})
 
@@ -379,10 +374,6 @@ async def test_generate_anyway_proceeds_past_the_similar_match(ready_case, monke
     engine = _engine_for_creation()
     engine.runbook_kb = _similar_match_kb()
 
-    monkeypatch.setattr(
-        "faultmaven.core.investigation.kb_cause_seeder.confirmed_root_seed_origin",
-        lambda case: None,
-    )
     monkeypatch.setattr(
         "faultmaven.modules.knowledge.domain.models.conversion."
         "CaseConversionRequest.from_case",
@@ -445,11 +436,6 @@ async def test_the_plain_generate_payload_still_stops_on_a_similar_match(
     engine = _engine_for_creation()
     engine.runbook_kb = _similar_match_kb()
     ready_case.state = CaseState.RESOLVED
-
-    monkeypatch.setattr(
-        "faultmaven.core.investigation.kb_cause_seeder.confirmed_root_seed_origin",
-        lambda case: None,
-    )
 
     with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
         result = await engine._process_terminal_turn(
@@ -550,10 +536,6 @@ async def test_the_dedup_caveat_reaches_the_user_visible_turn(ready_case, monkey
     engine = _engine_for_creation()
 
     monkeypatch.setattr(
-        "faultmaven.core.investigation.kb_cause_seeder.confirmed_root_seed_origin",
-        lambda case: None,
-    )
-    monkeypatch.setattr(
         "faultmaven.modules.knowledge.domain.models.conversion."
         "CaseConversionRequest.from_case",
         classmethod(lambda cls, case, scope="personal": MagicMock()),
@@ -573,10 +555,6 @@ async def test_a_clean_dedup_turn_carries_no_caveat(ready_case, monkeypatch):
     """The gate must be able to pass: a real, empty dedup adds no warning."""
     engine = _engine_for_creation()
 
-    monkeypatch.setattr(
-        "faultmaven.core.investigation.kb_cause_seeder.confirmed_root_seed_origin",
-        lambda case: None,
-    )
     monkeypatch.setattr(
         "faultmaven.modules.knowledge.domain.models.conversion."
         "CaseConversionRequest.from_case",

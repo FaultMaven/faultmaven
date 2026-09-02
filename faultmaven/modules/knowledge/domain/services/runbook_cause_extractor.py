@@ -2,8 +2,8 @@
 
 This is the **produce-side** counterpart of the KB pack builder's
 ``_extract_causes`` (``kb_toolkit/core/pack_builder.py``): it turns the markdown
-an author/LLM wrote into the exact ``metadata["causes"]`` shape the Phase-4
-investigation seeder (``core.investigation.kb_cause_seeder``) consumes. Built-in
+an author/LLM wrote into the exact ``metadata["causes"]`` shape the (removed,
+fm#1295) KB cause seeder consumed. Built-in
 runbooks get this record at build time (from the pack); a case→runbook
 conversion gets it here, on human verification (``ConversionService.verify_draft``),
 so a resolved case re-enters diagnosis as structured candidates — closing the

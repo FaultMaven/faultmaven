@@ -445,7 +445,7 @@ class TestRunbookCreationFollowUps:
 
 _EMBED_QUERY = "faultmaven.infrastructure.model_cache.model_cache.aembed_query"
 _SEED_ORIGIN = (
-    "faultmaven.core.investigation.kb_cause_seeder.confirmed_root_seed_origin"
+    "faultmaven.core.investigation.seeded_provenance.confirmed_root_seed_origin"
 )
 _FROM_CASE = (
     "faultmaven.modules.knowledge.domain.models.conversion."
@@ -490,10 +490,6 @@ async def _run_creation_turn(mock_llm, mock_repo, monkeypatch, scenario: str) ->
     conversion_service.get_conversion_by_case = AsyncMock(return_value=None)
     engine.conversion_service = conversion_service
 
-    # The provenance short-circuit fires before everything else, so every other
-    # scenario has to hold it off explicitly.
-    monkeypatch.setattr(_SEED_ORIGIN, lambda case: None)
-
     # `runbook_kb=None` means dedup is skipped, not clean — the honest "could
     # not check" caveat. Scenarios that need a real verdict install a KB.
     embed_patch = nullcontext()
@@ -535,10 +531,10 @@ async def _run_creation_turn(mock_llm, mock_repo, monkeypatch, scenario: str) ->
 # to be left out, which is what lets the reachability property below claim the
 # whole surface rather than a sample of it.
 _CREATION_TURN_SCENARIOS = [
-    pytest.param("seed-origin", id="seed-origin"),
     pytest.param("not-ready", id="not-ready"),
     pytest.param("similar-found", id="similar-found"),
     pytest.param("service-unavailable", id="service-unavailable"),
+    pytest.param("seed-origin", id="seed-origin"),
     pytest.param("already-exists", id="already-exists"),
     pytest.param("kickoff-clean-dedup", id="kickoff-clean-dedup"),
     pytest.param("kickoff", id="kickoff-with-caveats"),

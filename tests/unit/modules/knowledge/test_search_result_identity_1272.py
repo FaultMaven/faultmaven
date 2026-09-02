@@ -49,8 +49,6 @@ _HIT = {
         "scope": "global",
     },
     "rerank_score": 0.71,
-    "term_coverage": 0.93,
-    "identity_terms_in_query": ["linux"],
 }
 
 
@@ -85,26 +83,18 @@ class TestHitIdentity:
         assert result.tags == []
 
     @pytest.mark.asyncio
-    async def test_grounding_evidence_is_propagated(self):
+    async def test_rerank_score_is_propagated(self):
         service = _service(_Store([_HIT]))
         [result] = await service.search_knowledge("q", filters={"scope": "global"})
         assert result.rerank_score == pytest.approx(0.71)
-        assert result.term_coverage == pytest.approx(0.93)
-        assert result.identity_terms_in_query == ["linux"]
 
     @pytest.mark.asyncio
-    async def test_pure_vector_hits_carry_no_grounding_evidence(self):
+    async def test_pure_vector_hits_carry_no_rerank_score(self):
         """Absent, not defaulted — a consumer must be able to tell 'unknown'."""
-        hit = {
-            k: v
-            for k, v in _HIT.items()
-            if k not in ("rerank_score", "term_coverage", "identity_terms_in_query")
-        }
+        hit = {k: v for k, v in _HIT.items() if k != "rerank_score"}
         service = _service(_Store([hit]))
         [result] = await service.search_knowledge("q", filters={"scope": "global"})
         assert result.rerank_score is None
-        assert result.term_coverage is None
-        assert result.identity_terms_in_query == []
 
 
 class TestHybridDispatch:
