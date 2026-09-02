@@ -1081,7 +1081,15 @@ an evidence row.
    dump might produce a symptom_evidence row AND a causal_evidence
    row (different extracts, different claim links).
 
-2. Does this evidence explain WHY the problem exists (code change, config, timing)?
+2. Does this evidence bear on WHY the problem exists?
+   Causal evidence is any observation that speaks to a hypothesis's MECHANISM.
+   That is a CHANGE (deploy, config diff, code change, timing) OR a measured
+   STATE that is the mechanism itself: a filesystem at 100%, an exhausted pool,
+   quota or PID space, a limit reached, a missing path or permission, a stale
+   dependency. A state reading is not "just a symptom" because it looks like
+   monitoring output — if it is the condition a hypothesis names, it is causal.
+   A datum that shows the problem AND explains it gets BOTH rows: a symptom row
+   for the failure and a causal row linked to the hypothesis it supports.
    AND does at least one hypothesis already exist (or are you creating one this turn)?
    YES → causal_evidence; link to hypothesis
    NO (no hypothesis yet) → wait. Do NOT create a row yet — read the
@@ -2018,7 +2026,9 @@ and let TREATMENT run the failure analysis; do not keep it pending.
 **EVIDENCE TYPES FOR THIS STAGE:**
 - **symptom_evidence**: Data showing the problem exists (errors, spikes, alerts)
   → Use for verifying symptoms, scope, timeline
-- **causal_evidence**: Data explaining WHY (deploy logs, config diffs, code changes)
+- **causal_evidence**: Data bearing on WHY — a change (deploy logs, config diffs,
+  code changes) OR a measured state that IS the mechanism (a full mount, an
+  exhausted resource, a reached limit), linked to the hypothesis it supports
   → See HYPOTHESIS-EVIDENCE ORDERING — hypothesis must exist first
 
 Background/contextual material (architecture diagrams, baseline configs,
