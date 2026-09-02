@@ -23,7 +23,6 @@ from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     MAX_TERM_INDEX_CHUNKS,
     CorpusTermStats,
     KnowledgeVectorStore,
-    _fold_plural,
     _tokenize,
 )
 
@@ -183,97 +182,6 @@ class TestRerankWritesBackTheScoreItRankedBy:
             "is expressed in; the reranker must not overwrite it"
         )
         assert out[0]["rerank_score"] != out[0]["score"]
-
-    def test_grounding_evidence_is_written_back(self, stats):
-        candidates = [
-            _hit("a", 0.5, "some prose", title="Linux Disk Full", service="linux")
-        ]
-        out = KnowledgeVectorStore._rerank(
-            candidates=candidates,
-            query_terms=["disk", "full"],
-            context_metadata={},
-            query="my linux disk is full",
-            stats=stats,
-        )
-        assert out[0]["identity_terms_in_query"] == ["disk", "full", "linux"]
-        assert out[0]["term_coverage"] == pytest.approx(0.0)
-
-    def test_identity_terms_empty_when_query_does_not_name_the_document(self):
-        candidates = [
-            _hit(
-                "a",
-                0.5,
-                "prose",
-                title="Kubernetes Pod CrashLoopBackOff",
-                service="kubernetes",
-            )
-        ]
-        out = KnowledgeVectorStore._rerank(
-            candidates=candidates,
-            query_terms=["qemu", "pid"],
-            context_metadata={},
-            query="Failed to start QEMU binary cannot create PID file",
-        )
-        assert out[0]["identity_terms_in_query"] == [], (
-            "#1272's failure exactly: the runbook answers the query plausibly "
-            "and the query is not about it"
-        )
-
-
-class TestIdentityMatchingIsTokenLevel:
-    """A title word must be a WORD of the query, not a substring of one.
-
-    The substring form grounded runbooks on queries that were not about them —
-    measured against the shipped pack, "servicenow tickets are not syncing"
-    grounded 6 runbooks through `service` and `sync`, and "podman containers
-    exit immediately" grounded 4 Kubernetes runbooks through `pod`. Grounding is
-    the check standing between retrieval and asserting a candidate root cause,
-    so a false positive here is the failure the gate exists to prevent.
-    """
-
-    K8S_POD = {"title": "Kubernetes Pod CrashLoopBackOff", "service": "kubernetes"}
-    K8S_SVC = {"title": "Kubernetes Service Unreachable", "service": "kubernetes"}
-    ECS = {"title": "AWS ECS service unable to place tasks", "service": "aws-ecs"}
-    LDF = {"title": "Linux Disk Full", "service": "linux"}
-    PG = {"title": "PostgreSQL Connection Pool Exhaustion", "service": "postgresql"}
-
-    def _named(self, meta, query):
-        return KnowledgeVectorStore._identity_terms_in_query(meta, query.lower())
-
-    def test_a_longer_word_does_not_name_a_shorter_title_word(self):
-        assert self._named(self.K8S_POD, "podman containers exit immediately") == []
-        assert self._named(self.K8S_SVC, "servicenow tickets are not syncing") == []
-        assert self._named(self.ECS, "users cannot login to the portal") == []
-
-    def test_a_plural_still_names_its_singular(self):
-        """The one thing the substring form was really buying."""
-        assert "connection" in self._named(
-            self.PG, "Postgres is refusing new connections"
-        )
-        assert "pod" in self._named(self.K8S_POD, "our pods keep restarting")
-
-    def test_a_genuine_mention_still_names(self):
-        assert self._named(self.LDF, "linux disk full on the host") == [
-            "disk",
-            "full",
-            "linux",
-        ]
-
-    def test_the_issue_query_does_not_name_a_kubernetes_runbook(self):
-        for query in (
-            "qemu cannot write its PID file",
-            "Failed to start QEMU binary cannot create PID file",
-        ):
-            assert self._named(self.K8S_POD, query) == []
-            assert self._named(self.K8S_SVC, query) == []
-
-    def test_plural_fold_does_not_merge_unrelated_words(self):
-        assert _fold_plural("podman") == "podman"
-        assert _fold_plural("servicenow") == "servicenow"
-        assert _fold_plural("portal") == "portal"
-        assert _fold_plural("pods") == "pod"
-        assert _fold_plural("connections") == "connection"
-        assert _fold_plural("policies") == "policy"
 
 
 class TestIdentifierDetection:

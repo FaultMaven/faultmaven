@@ -153,7 +153,7 @@ so a retrieved Cause reads as one self-contained cause→fix unit when the model
 retrieves it. (An engine-side copy of matched Causes into the case's causal graph
 — the KB cause seeder — existed until fm#1295 and was removed after it measured
 as not helping diagnosis; record in
-[`retired/kb-cause-seeder/design.md`](../knowledge-and-ai/retired/kb-cause-seeder/design.md).)
+[`docs/archive/2026/09/kb-cause-seeder/kb-cause-seeder-design.md`](../../archive/2026/09/kb-cause-seeder/kb-cause-seeder-design.md).)
 
 **One Cause = one ROOT (no AND-sets).** Separate Causes are *mutually-exclusive
 alternatives* — the engine treats them as OR-ed candidates and demotes one when

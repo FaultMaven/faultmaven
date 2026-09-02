@@ -1,10 +1,11 @@
-> **RETIRED 2026-09-02.** The KB cause seeder was turned off by default in
+> **ARCHIVED 2026-09-02.** The KB cause seeder was turned off by default in
 > fm#1295 step 4a (PR #1302) on the on-vs-off measurement recorded in
-> [`eval/2026-09-02-seeder-ab-local.md`](eval/2026-09-02-seeder-ab-local.md),
+> [`eval/seeder-on-vs-off-ab-local.md`](eval/seeder-on-vs-off-ab-local.md),
 > and removed in step 4b. This document is the design and evidence record of
-> the mechanism as it existed; nothing below describes live code. The
-> enabling-gate eval it references is archived beside it in
-> [`eval/`](eval/).
+> the mechanism as it existed at commit `6b3592bf5`; nothing below describes
+> live code, and every code path, test and eval file it names was deleted
+> with the seeder. The enabling-gate eval it references is archived beside it
+> in [`eval/`](eval/).
 
 # KB Cause Seeder — structural KB → engine cohesion
 
@@ -1078,7 +1079,7 @@ decision was explicitly made on exposure grounds, not benefit. fm#1295 asked the
 benefit question directly: an on-vs-off A/B on the same six sim scenarios,
 main's engine code, the shipped pack, `gpt-5.6-luna`, one judge for both arms.
 The record is
-[`eval/2026-09-02-seeder-ab-local.md`](eval/2026-09-02-seeder-ab-local.md).
+[`eval/seeder-on-vs-off-ab-local.md`](eval/seeder-on-vs-off-ab-local.md).
 
 | | seeder ON | seeder OFF |
 |---|---|---|

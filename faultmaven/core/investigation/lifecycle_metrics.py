@@ -647,19 +647,14 @@ prompt_context_recovery_total = Counter(
 )
 
 
-# fm#1103 produce-side integrity signal, at WRITE time rather than read time.
-# The counter above is the same defect seen from retrieval: it can only fire
-# after a case has already lost its seeds, only once the runbook is retrieved,
-# and only for the heading-present-but-WRONG-letter shape — a cause whose
-# heading is missing from every chunk yields no letter at all, so it contributes
-# ``no_cause_chunk_matched`` and never trips that alarm.
-#
-# This one fires where the document ACQUIRES its causes record, when the chunk
-# texts and the record are both in hand: every ``cause_letter`` in the record
-# must be recoverable from at least one of that document's own chunks, because
-# that recovery IS the seeder's join. It catches both shapes — wrong letter and
-# missing heading — before the runbook can ever seed, and points at the producer
-# rather than at a case that quietly under-seeded months later.
+# fm#1103 produce-side integrity signal, at WRITE time.
+# Fires where a document ACQUIRES its causes record, when the chunk texts and
+# the record are both in hand: every ``cause_letter`` in the record must be
+# recoverable from at least one of that document's own chunks. It catches both
+# disagreement shapes — a wrong letter and a missing heading — and points at
+# the producer. (Its read-time twin, the KB cause seeder's letter-mismatch
+# counter, went with the seeder in fm#1295; this counter is retired with the
+# cause-record pipeline in the follow-on.)
 #
 # ``chunker`` says which side produced the chunks, which is the actionable bit:
 #
@@ -753,32 +748,4 @@ causal_and_group_regroup_refused_total = Counter(
     "was refused (#1096; the grouping merge is monotone), labeled by "
     "``attempt`` (regroup | ungroup).",
     ["attempt"],
-)
-
-
-# fm#1108 migration drain gauge, and the only thing that says when the last
-# read-time parse can be deleted.
-#
-# The seeder's join key is now STAMPED onto each chunk at index time
-# (``VectorMetadata.cause_letters``) instead of re-derived by re-parsing chunk
-# text on every retrieval. Chunks written before that change carry no stamp, so
-# retrieval still parses them — exactly the old behaviour, for old data only.
-#
-# Every such fallback increments this. It is not an alarm: a nonzero value is
-# the expected state immediately after the change, and it falls as content
-# re-ingests (a pack whose grammar identity or content moved, a verified
-# conversion, an edit, a boot repair). A STEADY ZERO is the signal that no live
-# retrieval depends on the derivation any more and the fallback — with it the
-# last read-time parse, and the last way a grammar change can retroactively
-# re-interpret stored chunks — can be removed.
-#
-# Watch it as a rate, not a total. A value that stops falling means some
-# population never re-ingests: authored runbooks are the expected long tail
-# (``kb_init`` re-ingests the pack, never authored rows), and that is what would
-# justify building a reindex sweep rather than waiting.
-kb_cause_letters_unstamped_total = Counter(
-    "faultmaven_kb_cause_letters_unstamped_total",
-    "A retrieval hit carried no ``cause_letters`` stamp, so its cause letters "
-    "were parsed from chunk text the old way (fm#1108). Falls to zero as "
-    "content re-ingests; a steady zero means the fallback can be deleted.",
 )

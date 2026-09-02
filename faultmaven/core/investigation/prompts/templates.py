@@ -1016,6 +1016,7 @@ STATE: INVESTIGATING
 
 {hypotheses}
 
+{candidate_solutions}
 
 {investigation_journal}
 
@@ -3285,6 +3286,55 @@ proposal never forecloses a live diagnostic thread.
 """
 
 
+# Seeded-candidate directive — LEGACY rows only (``seeded_provenance``): the
+# KB cause seeder that planted these candidates was removed in fm#1295, so the
+# swap below fires only for cases opened before 2026-09-02 that still carry
+# seeds, and goes with the module's sunset. Rather than appending a
+# contradicting override after the flat "matched Cause → create hypotheses_to_add"
+# directive (two directives the model must arbitrate), we conditionally REPLACE
+# that one directive when the seeder has already instantiated the matched runbook's
+# Cause chains as CANDIDATE hypotheses — so a seeded turn reads ONE coherent
+# instruction. The flat directive is sliced out of the assembled block by stable
+# anchors (no hand-transcription: the source of truth stays the block itself), so
+# the runtime replace is exact and guaranteed to hit once. A drift in the anchors
+# raises loudly at import.
+_MATCHED_CAUSE_ANCHOR_START = "  - **Exactly one Cause matches:**"
+_MATCHED_CAUSE_ANCHOR_END = "  - **Two or more Causes"
+
+
+def _slice_matched_cause_directive(block: str) -> str:
+    """Extract the exact 'Exactly one Cause matches' bullet from the block."""
+    start = block.index(_MATCHED_CAUSE_ANCHOR_START)
+    end = block.index(_MATCHED_CAUSE_ANCHOR_END, start)
+    return block[start:end]
+
+
+# The flat directive verbatim (flag-off / prose-only sources). Sliced, not
+# transcribed — identical bytes to what appears in _RCA_DIAGNOSIS_BLOCK.
+_KB_MATCHED_CAUSE_FLAT = _slice_matched_cause_directive(_RCA_DIAGNOSIS_BLOCK)
+
+# Its coherent replacement for a seeded turn: the matched Cause is ALREADY a
+# CANDIDATE hypothesis in the graph, so validate/refute it against evidence
+# rather than re-create it. Preserves the knowledge_match / SolutionToAdd
+# TREATMENT handoff, adds priors-to-test framing (anti over-deference) and an
+# explicit keep-your-own-hypotheses clause (anti crowd-out). Trailing blank line
+# matches the sliced directive so the surrounding list spacing is preserved.
+_KB_MATCHED_CAUSE_SEEDED = """  - **Exactly one Cause matches:** its chain is ALREADY in your `<causal_graph>`
+    as a CANDIDATE hypothesis (rationale reads "Seeded from runbook …") — a prior
+    to TEST, not an answer. Do NOT create a `hypotheses_to_add` record for it;
+    that duplicates the cause. Instead link evidence to the existing candidate
+    (`hypothesis_evidence_links` SUPPORTS/REFUTES; `causal_evidence` on its rungs).
+    Never confirm it on partial or absent evidence — a runbook match is a lead,
+    not proof; an unsupported seed decays on its own, so test it rather than
+    defend it. When evidence genuinely supports it, emit `knowledge_match` in
+    state_updates (match_type / match_likelihood / match_summary /
+    suggested_solution) so the TREATMENT-stage KB-RESOLUTION VARIANT can
+    direct-copy it, and propose its fix via a SolutionToAdd record. KEEP forming
+    your own hypotheses for any cause the runbook did NOT cover — the seeds are a
+    starting differential, not a ceiling.
+"""
+
+
 def _select_diagnosis_block(case: Case) -> str:
     """Focus emphasis + the RCA diagnosis block for a diagnosing turn.
 
@@ -3297,10 +3347,26 @@ def _select_diagnosis_block(case: Case) -> str:
     hypothesis-evidence ordering mandate
     (``_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK``), then the chain-emission block
     teaches lazy backward expansion (the engine ingests the emitted chain).
+
+    Legacy seeded cases (``seeded_provenance``): when this case's graph holds
+    candidates the removed KB cause seeder planted, the flat "matched Cause →
+    create hypotheses_to_add" directive is REPLACED with the
+    validate/refute-the-seeded-candidate one, so the model tests the
+    candidate it already has instead of re-creating it beside the seed. Keyed
+    on graph state, never on a flag: nothing writes seeds any more, so this
+    branch is dead for every case opened after 2026-09-02 and goes with the
+    module's sunset.
     """
     focus_emphasis = _get_diagnosis_focus_emphasis(case.progress, case)
     block = focus_emphasis + _RCA_DIAGNOSIS_BLOCK
     block += _CHAIN_EMISSION_BLOCK
+
+    from faultmaven.core.investigation.seeded_provenance import (
+        case_has_seeded_candidates,
+    )
+
+    if case_has_seeded_candidates(case):
+        block = block.replace(_KB_MATCHED_CAUSE_FLAT, _KB_MATCHED_CAUSE_SEEDED, 1)
     return block
 
 

@@ -404,7 +404,7 @@ receives the resolved ids (see Remaining work 1):
 - Team and organization models exist in the auth module (`modules/auth/domain/models/`)
 - `team_members` junction table supports multi-team membership per user
 - `TeamService.list_all_user_team_ids(user_id)` resolves all team memberships across orgs
-- `MilestoneEngine._prefetch_kb_context` resolves the **case owner's** teams (keyed on `case.user_id`, deliberately not the session user, so one user's case can never surface another's shares) to shared `knowledge_item` ids via `resolve_shared_kb_ids` against `resource_shares`, and passes them to `build_kb_scope_filter` — so the **KB cause-seeder prefetch** does see team-shared items
+- `MilestoneEngine._prefetch_kb_context` resolves the **case owner's** teams (keyed on `case.user_id`, deliberately not the session user, so one user's case can never surface another's shares) to shared `knowledge_item` ids via `resolve_shared_kb_ids` against `resource_shares`, and passes them to `build_kb_scope_filter` — so the **engine KB prefetch** does see team-shared items
 - The unified `answer_from_kb` tool builds the combined filter via `build_kb_scope_filter`, whose team arm is `{"parent_document_id": {"$in": shared_ids}}`
 - ChromaDB metadata stores only the immutable floor (`scope` = `global`/`personal` + `owner_id`) at ingestion time — never `team_id`; team visibility lives in the `resource_shares` table (ADR-013 §D4)
 - API endpoints (`GET /knowledge/documents`) support `scope=team` filter with team membership check

@@ -1545,7 +1545,7 @@ async def evaluate_runbook_suggestion(
             failure rather than degrading to global ∪ personal, because a
             silently narrowed search would underpin a "checked, nothing
             similar" claim it did not establish. (Deliberate divergence from
-            the KB seeder pre-fetch, which degrades — correct for seeding,
+            the engine KB pre-fetch, which degrades — correct for prompt context,
             wrong for a dedup verdict.)
     """
     # Factor 1: Content readiness (cheap, no I/O)
@@ -1664,8 +1664,7 @@ async def evaluate_runbook_suggestion(
     if not dedup_ran:
         if dedup_unreadable:
             cause = (
-                "the closest-matching runbooks could not be read and need "
-                "re-indexing"
+                "the closest-matching runbooks could not be read and need re-indexing"
             )
         elif dedup_failed:
             cause = "the knowledge base search is unavailable"

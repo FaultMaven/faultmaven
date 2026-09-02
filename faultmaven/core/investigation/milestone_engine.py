@@ -243,13 +243,14 @@ _PENDING_GATE_SUBSTANTIVE_LEN = 40
 
 # KB pre-fetch (`_prefetch_kb_context`) fetch depth vs. prompt-surface cap.
 # Retrieval returns CHUNK-level results, so a single long runbook can occupy
-# several of the top-ranked slots. The KB cause seeder's parent-runbook dedup
-# needs diversity ACROSS chunks to see more than one distinct runbook, so the
-# fetch depth is deeper than the prompt surface: fetch KB_PREFETCH_FETCH_LIMIT
-# chunks (the seeder's parent-dedup consumes the full ranked list), but render
-# only the top KB_CONTEXT_MAX_ENTRIES into `case.kb_context`. Because results are
-# score-ranked, the rendered top slice is byte-identical to the old limit-3 fetch,
-# so the prompt the LLM sees does not change.
+# several of the top-ranked slots. The fetch depth is the RERANKER'S candidate
+# pool on the hybrid path: ``hybrid_search`` recalls max(3k, 15) vector and 2k
+# keyword candidates for a fetch of k and reranks them, so k decides which
+# three runbooks can reach the prompt at all, not merely how many are kept.
+# Render only the top KB_CONTEXT_MAX_ENTRIES into `case.kb_context`. Lowering
+# the depth to the surface cap is a retrieval-quality change, not a cleanup
+# (it was sized when a deeper consumer existed; that consumer is gone, the
+# pool is what remains).
 KB_PREFETCH_FETCH_LIMIT = 10
 KB_CONTEXT_MAX_ENTRIES = 3
 
@@ -3384,12 +3385,20 @@ def _runbook_suggestion(case) -> dict | None:
     adding a redirect affordance is a separate suggestion-contract change, out of
     scope.)
 
-    Duplicate-runbook protection is the async similarity dedup at action time,
-    which surfaces a ≥70% match by title and score for the user to judge. (A
-    sync provenance tier — "the confirmed cause was seeded from runbook X" —
-    existed while the KB cause seeder did; it went with the seeder, fm#1295.)
+    Also suppressed when the confirmed cause was SEEDED from an existing runbook
+    by the removed KB cause seeder (legacy rows only — see
+    ``seeded_provenance``): generating one would only duplicate the runbook the
+    case was resolved by applying. The async similarity dedup at action time
+    (a ≥70% match by title and score for the user to judge) is the tier that
+    applies to every case.
     """
     if not runbook_conversion_ready(case):
+        return None
+    from faultmaven.core.investigation.seeded_provenance import (
+        confirmed_root_seed_origin,
+    )
+
+    if confirmed_root_seed_origin(case):
         return None
     return {
         "label": "Generate runbook from this case",
@@ -3990,7 +3999,7 @@ class MilestoneEngine:
                 reports on terminal transitions. Fire-and-forget — failure
                 does not block the transition.
             team_service: Optional team-membership resolver used by the KB
-                seeder pre-fetch to widen the case OWNER's KB read scope with
+                pre-fetch to widen the case OWNER's KB read scope with
                 the owner's team-shared runbooks (ADR-013 §D4). None in
                 standalone — the team arm then resolves empty.
             share_repository: Optional ``IShareRepository`` backing that team
@@ -4373,10 +4382,45 @@ class MilestoneEngine:
                 similar-runbook candidate on the previous turn and chosen to
                 proceed.
         """
+        from faultmaven.core.investigation.seeded_provenance import (
+            confirmed_root_seed_origin,
+        )
         from faultmaven.core.investigation.terminal_transitions import (
             RunbookSuggestion,
             evaluate_runbook_suggestion,
         )
+
+        # Step 0: Provenance-based uniqueness (Phase 5.2b), LEGACY rows only —
+        # the seeder that stamped this provenance is gone (fm#1295, see
+        # ``seeded_provenance``). A case resolved by validating a cause it had
+        # planted from an existing runbook needs no
+        # new runbook — it would duplicate that one. This is the cheap SYNC tier
+        # ABOVE the async embedding-similarity dedup (Step 2, which stops and
+        # names a ≥70% match for the user to decide on):
+        # a direct, certain "you applied runbook X" signal, so we short-circuit
+        # with the covering runbook named before spending an embedding search.
+        # (The offer gate already suppresses the affordance for these cases; this
+        # covers the residual typed-exact-payload path and names the runbook.)
+        # A knowledge-lifecycle decision, not a safety gate — the manual
+        # POST /knowledge/runbooks/create path stays open.
+        seed_origin = confirmed_root_seed_origin(case)
+        if seed_origin:
+            title = None
+            if self.knowledge_service and hasattr(
+                self.knowledge_service, "get_runbook_title"
+            ):
+                title = await self.knowledge_service.get_runbook_title(seed_origin)
+            named = f"**{title}**" if title else "an existing runbook"
+            return {
+                "agent_response": (
+                    f"This case was resolved by applying {named}, so it is already "
+                    "covered — no new runbook is needed. You can view or update it "
+                    "from the Dashboard Knowledge Base."
+                ),
+                "suggested_follow_ups": [],
+                "case_updated": case,
+                "metadata": metadata,
+            }
 
         # Step 1+2: Evaluate readiness and deduplication. The KB is injected
         # explicitly (constructor param) — the old probe here,
@@ -4580,8 +4624,8 @@ class MilestoneEngine:
         Dedup answers for the principal who will act on the answer — the case
         owner, whose Dashboard the suggestion points at (owner decision,
         fm#1030). Scope = global ∪ the owner's personal items ∪ items shared
-        to the owner's teams, the same allowlist shape as the KB seeder
-        pre-fetch (``_search_kb_for_runbooks``).
+        to the owner's teams, the same allowlist shape as the KB
+        pre-fetch (``_prefetch_kb_context``).
 
         One deliberate divergence from that pre-fetch: NO try/except around
         the team arm. The pre-fetch swallows a team-arm failure and degrades
@@ -11585,7 +11629,7 @@ class MilestoneEngine:
         case: "Case",
         query: str,
         trigger: str,
-    ) -> list:
+    ) -> None:
         """Search KB for runbooks matching the query, store on case.
 
         Args:
@@ -11593,16 +11637,16 @@ class MilestoneEngine:
             query: Search query (problem statement or root cause)
             trigger: What triggered this search ("symptom" or "root_cause")
 
-        Returns:
-            The relevance-filtered ``SearchResult`` list (empty on miss/failure),
-            so a caller can act on the matched runbooks — the KB cause seeder
-            reads ``parent_document_id`` off these hits.
+        Side effect only: writes the top ``KB_CONTEXT_MAX_ENTRIES`` admitted
+        hits to ``case.kb_context`` (or clears it on a miss) for the prompt
+        builder. Nothing consumes a return value since the KB cause seeder
+        was removed (fm#1295).
         """
         if not self.knowledge_service:
-            return []
+            return None
 
         try:
-            # Owner-aware scope. The pre-fetch (and the seeder it feeds) may
+            # Owner-aware scope. The pre-fetch may
             # read only what the case OWNER can read: global (platform-curated)
             # plus the owner's own personal KB. This completes the flywheel
             # loop — a user's resolved cases, converted to personal runbooks,
@@ -11642,14 +11686,12 @@ class MilestoneEngine:
                         getattr(case, "organization_id", None),
                     )
                 except Exception:  # noqa: BLE001
-                    # Graceful degradation — global ∪ owner-personal still seed.
+                    # Graceful degradation — global ∪ owner-personal still apply.
                     shared_kb_ids = []
             scope_filter = build_kb_scope_filter(owner_id, shared_kb_ids)
-            # Fetch deep (KB_PREFETCH_FETCH_LIMIT) so the seeder's parent-runbook
-            # dedup sees more than one distinct runbook when a long runbook fills
-            # the top chunk slots; render only the top KB_CONTEXT_MAX_ENTRIES into
-            # the prompt. The returned `relevant` (full ranked list) is what the
-            # seeder's parent-dedup consumes.
+            # Fetch KB_PREFETCH_FETCH_LIMIT chunks — the reranker's candidate
+            # pool, see the constant — and render only the top
+            # KB_CONTEXT_MAX_ENTRIES into the prompt.
             #
             # HYBRID, not pure vector (#1272). An operator writes what they
             # SAW — "cannot write its PID file", "qemu failed to start" — and
@@ -11669,9 +11711,8 @@ class MilestoneEngine:
                 # The floor goes in at ADMISSION, not after ranking. Hybrid
                 # results are ordered by the reranker's blend, so the filter
                 # below would thin this window from the middle: on a measured
-                # query it left 2 hits where 10 were asked for, and the seeder's
-                # corroboration guard then declined a runbook that had been
-                # retrieved perfectly well. The filter below stays as the
+                # query it left 2 hits where 10 were asked for. The filter
+                # below stays as the
                 # authority (and still governs the pure-vector fallback).
                 min_score=KB_PREFETCH_RELEVANCE_THRESHOLD,
             )
@@ -11723,13 +11764,13 @@ class MilestoneEngine:
                 # the search ran and produced nothing worth showing, which is
                 # precisely when stale context should go.
                 case.kb_context = None
-            return relevant
+            return None
         except Exception:
             logger.warning(
                 f"KB pre-fetch ({trigger}) failed for case {case.case_id}",
                 exc_info=True,
             )
-            return []
+            return None
 
     async def _check_automatic_transitions(
         self, case: Case, metadata: dict[str, Any], user_message: str = ""

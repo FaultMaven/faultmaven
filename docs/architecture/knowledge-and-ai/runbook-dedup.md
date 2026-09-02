@@ -52,7 +52,7 @@ Invariants:
   typed error** (`RUNBOOK_SEARCH_UNSCOPED`) rather than querying unscoped.
 - A scope that cannot be **resolved** is a failed dedup, not a narrowed one.
   The engine's resolver does not swallow a team-arm failure (deliberate
-  divergence from the KB seeder pre-fetch, which degrades — correct for
+  divergence from the engine KB pre-fetch, which degrades — correct for
   seeding, wrong for a "checked, nothing similar" claim); the route raises
   `RUNBOOK_SCOPE_RESOLUTION_FAILED`, rendered as its 503 refusal.
 - Standalone is not a failure: without a team service, teams do not exist, and

@@ -52,7 +52,6 @@ from faultmaven.modules.knowledge.domain.services import (
 from faultmaven.modules.knowledge.domain.services import runbook_grammar as g
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     _matched_cause_letters,
-    _read_stamped_cause_letters,
 )
 from faultmaven.modules.knowledge.domain.services.runbook_cause_extractor import (
     extract_causes,
@@ -232,8 +231,7 @@ class TestRealContentSurvives:
         """Pre-fix the trailing comment was appended to the value verbatim —
         ``'The pool was exhausted.\\n<!-- todo: cite the ticket -->'``."""
         fields = g.parse_cause_subfields(
-            "**Statement:** The pool was exhausted.\n"
-            "<!-- todo: cite the ticket -->\n",
+            "**Statement:** The pool was exhausted.\n<!-- todo: cite the ticket -->\n",
             ["Statement", "Indicators"],
         )
         assert fields["Statement"] == "The pool was exhausted."
@@ -489,7 +487,7 @@ def test_a_heading_the_enumerator_drops_is_never_dropped_silently():
 
 
 class TestChunkStampingIsCommentBlind:
-    """``_matched_cause_letters`` mints the join key the KB cause seeder reads.
+    """``_matched_cause_letters`` mints the ``cause_letters`` stamp on each chunk.
 
     It ran ``CAUSE_HEADING_RE.findall`` on raw chunk text, so a commented-out
     ``### Cause A:`` example beside a real Cause stamped a phantom ``A`` and the
@@ -507,8 +505,7 @@ class TestChunkStampingIsCommentBlind:
         assert _matched_cause_letters(self._CHUNK) == ["Z"]
 
     def test_a_real_heading_beside_a_comment_still_stamps(self):
-        """Masking must not cost a letter that is genuinely there, or the seeder
-        loses the join it exists to make."""
+        """Masking must not cost a letter that is genuinely there."""
         chunk = (
             "<!-- authoring note about the cause below -->\n"
             "### Cause D: OOMKilled\n**Statement:** the container exceeded its "
@@ -517,22 +514,14 @@ class TestChunkStampingIsCommentBlind:
         assert _matched_cause_letters(chunk) == ["D"]
 
     def test_the_stamp_identity_moved_so_old_stamps_are_re_derived(self):
-        """The source fix alone repairs nothing already stamped.
-
-        ``_read_stamped_cause_letters`` falls back to parsing on key ABSENCE
-        only, so a present-but-wrong ``cause_letters`` stamp is read forever.
-        ``chunk_stamp_identity`` derives from the pattern (unchanged here) plus
-        ``CHUNK_STAMP_SCHEMA``, so the schema bump is the only thing that marks
-        those rows stale for the pack gate and the fm#1108 restamp sweep.
+        """The source fix alone repairs nothing already stamped: a
+        present-but-wrong ``cause_letters`` stamp stays in the store until
+        something re-derives it. ``chunk_stamp_identity`` derives from the
+        pattern (unchanged here) plus ``CHUNK_STAMP_SCHEMA``, so the schema bump
+        is the only thing that marks those rows stale for the pack gate and the
+        fm#1108 restamp sweep.
         """
         assert knowledge_service_mod.CHUNK_STAMP_SCHEMA >= 2
-
-    def test_a_present_but_wrong_stamp_is_never_re_parsed(self):
-        """Why the bump above is load-bearing rather than tidy — pin the read
-        path's key-absence rule, which is what makes a bad stamp permanent."""
-        phantom = {"cause_letters": "Z,A"}
-        assert _read_stamped_cause_letters(phantom, self._CHUNK) == ["Z", "A"]
-        assert _read_stamped_cause_letters({}, self._CHUNK) == ["Z"]
 
 
 # =============================================================================

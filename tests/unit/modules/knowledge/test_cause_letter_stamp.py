@@ -28,16 +28,12 @@ from faultmaven.models.vector_metadata import VectorMetadata
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
     _carried_cause_letters,
-    _read_stamped_cause_letters,
     _unrecorded_chunk_letters,
 )
 
 pytestmark = [pytest.mark.unit]
 
 _EMBED_GUARD = "faultmaven.infrastructure.embedding_guard.embed_texts_or_raise"
-_UNSTAMPED = (
-    "faultmaven.core.investigation.lifecycle_metrics.kb_cause_letters_unstamped_total"
-)
 
 _RUNBOOK = (
     "# Node drain stalls\n\n"
@@ -148,94 +144,12 @@ async def test_pack_supplied_chunks_are_stamped_too():
 
 
 # ---------------------------------------------------------------------------
-# The read path prefers the stamp, and says so when it cannot
-# ---------------------------------------------------------------------------
-
-
-def test_a_stamped_hit_is_read_not_parsed():
-    """The point of the change: the text is not consulted, so the grammar in
-    force at read time cannot change the answer."""
-    with patch(_UNSTAMPED) as counter:
-        got = _read_stamped_cause_letters(
-            {"cause_letters": "A,B"}, "### Cause Z: text that disagrees"
-        )
-    assert got == ["A", "B"]
-    assert counter.inc.call_count == 0
-
-
-def test_an_empty_stamp_means_no_letters_not_go_and_parse():
-    with patch(_UNSTAMPED) as counter:
-        got = _read_stamped_cause_letters({"cause_letters": ""}, "### Cause A: x")
-    assert got == []
-    assert counter.inc.call_count == 0, "an empty stamp is an ANSWER, not a gap"
-
-
-def test_an_unstamped_hit_falls_back_to_parsing_and_is_counted():
-    """Legacy chunks keep working exactly as before — strictly better for new
-    data, worse for nothing — and each fallback is counted so the drain is
-    observable and the fallback can eventually be deleted."""
-    with patch(_UNSTAMPED) as counter:
-        got = _read_stamped_cause_letters({"title": "x"}, "### Cause A: x")
-    assert got == ["A"]
-    assert counter.inc.call_count == 1
-
-
-def test_missing_metadata_entirely_also_falls_back():
-    with patch(_UNSTAMPED) as counter:
-        assert _read_stamped_cause_letters(None, "### Cause A: x") == ["A"]
-    assert counter.inc.call_count == 1
-
-
-def test_a_broken_counter_cannot_break_retrieval():
-    with patch(_UNSTAMPED) as counter:
-        counter.inc.side_effect = RuntimeError("metrics gone")
-        assert _read_stamped_cause_letters(None, "### Cause A: x") == ["A"]
-
-
-@pytest.mark.asyncio
-async def test_a_grammar_change_cannot_reinterpret_a_stamped_chunk():
-    """The reproduction from #1108, run against the fix.
-
-    Index under today's grammar, then serve a retrieval under a TIGHTENED one.
-    Before the stamp, Cause A silently stopped being seedable. Now the answer is
-    whatever was written, because nothing re-parses.
-    """
-    service = _service()
-    authored = (
-        "# Checkout 504s\n\n## Causes\n\n"
-        "### Cause A: upstream pool exhausted\n**Statement:** all workers busy\n\n"
-        "### Cause B: DNS resolution flapping\n**Statement:** resolver timeouts\n"
-    )
-    await _index(service, _document(authored), causes=[_cause("A"), _cause("B")])
-    stamped = _written_metadata(service)
-    chunk_text = service._vector_store.add_documents.await_args.args[0][0]["content"]
-
-    from faultmaven.modules.knowledge.domain.services import runbook_grammar as g
-
-    saved = g.CAUSE_HEADING_RE
-    try:
-        # Requires a title-cased cause name; the authored runbook's are lowercase.
-        g.CAUSE_HEADING_RE = re.compile(r"^### Cause ([A-Z]): ([A-Z].*?)\s*$", re.M)
-        read_stamped = _read_stamped_cause_letters(stamped[0], chunk_text)
-        with patch(_UNSTAMPED):
-            read_legacy = _read_stamped_cause_letters({}, chunk_text)
-    finally:
-        g.CAUSE_HEADING_RE = saved
-
-    assert "A" in read_stamped, "the stamp must survive a later grammar change"
-    assert "A" not in read_legacy, (
-        "the un-stamped path must still show the old hazard — otherwise this "
-        "test proves nothing about what the stamp bought"
-    )
-
-
-# ---------------------------------------------------------------------------
 # The reverse disagreement, now decidable at write time
 # ---------------------------------------------------------------------------
 
 
 def test_a_chunk_letter_the_record_lacks_is_reported():
-    """What ``kb_cause_seed_letter_mismatch_total`` reports from the far end,
+    """What the (removed) seeder's letter-mismatch counter reported from the far end,
     after a case has already been served without those seeds."""
     assert _unrecorded_chunk_letters([["A"], ["Z"]], [_cause("A")]) == ["Z"]
 

@@ -198,12 +198,12 @@ def _letter_can_head_a_cause(letter: str) -> bool:
 #
 # 2 (#1241): the letter derivation now runs over a comment-MASKED view, so a
 # stamp written by the unmasked pass can carry a letter with no
-# ``metadata["causes"]`` record behind it. The source fix alone does NOT repair
-# those: ``_read_stamped_cause_letters`` falls back to parsing on key ABSENCE
-# only, so a present-but-wrong stamp is read forever. Bumping is what re-derives
-# them — the pack re-ingests prechunked (seconds, no embedding) and authored rows
-# are swept by the fm#1108 restamp pass. The pattern itself is unchanged, so the
-# identity would not have moved on its own.
+# ``metadata["causes"]`` record behind it. Bumping is what re-derives them —
+# the pack re-ingests prechunked (seconds, no embedding) and authored rows are
+# swept by the fm#1108 restamp pass. The pattern itself is unchanged, so the
+# identity would not have moved on its own. (The read-time consumer of the
+# stamp went with the KB cause seeder, fm#1295; the stamp and its writer are
+# retired with the rest of the cause-record pipeline in the follow-on.)
 CHUNK_STAMP_SCHEMA = 2
 
 
@@ -225,9 +225,9 @@ def chunk_stamp_identity() -> str:
     Pack re-ingest is prechunked — no embedding model, no re-chunking — so
     forcing it is seconds of boot, not the minutes the pack exists to avoid.
     It does NOT reach authored runbooks; ``kb_init`` only ever walks the pack.
-    Those re-stamp when they are next verified, edited or repaired, and
-    ``kb_cause_letters_unstamped_total`` is what says how much of live retrieval
-    is still waiting on that.
+    Those re-stamp when they are next verified, edited or repaired. (The
+    read-time drain gauge that reported unstamped hits went with the KB cause
+    seeder, fm#1295.)
     """
     from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
         CAUSE_HEADING_RE,
@@ -237,48 +237,6 @@ def chunk_stamp_identity() -> str:
         f"{CHUNK_STAMP_SCHEMA}|{CAUSE_HEADING_RE.pattern}|{CAUSE_HEADING_RE.flags}"
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
-
-
-def _read_stamped_cause_letters(
-    chunk_metadata: Optional[Dict[str, Any]], chunk_text: str
-) -> List[str]:
-    """The hit's cause letters: read the stamp, or parse if it predates one.
-
-    The stamp (``VectorMetadata.cause_letters``) is written at index time by the
-    same grammar pass that extracts the parent's ``metadata["causes"]`` record,
-    so reading it makes the seeder's join a stored fact rather than a read-time
-    re-derivation. That is the whole of fm#1108: a derivation is a function of
-    the code in force when it RUNS, and this one ran on every retrieval against
-    a grammar that is a manual mirror of kb-toolkit's and expected to change.
-    Nothing re-ingests on a grammar change, so an edit silently re-interpreted
-    chunks already in the store while their record stayed as the old grammar
-    left it.
-
-    KEY-ABSENCE, not emptiness, selects the fallback. ``""`` is a real stamp
-    meaning "no cause heading in this chunk" and is stored as such; a chunk
-    written before fm#1108 has no key at all. Only the latter is re-parsed —
-    which reproduces exactly the old behaviour for old data, so this is strictly
-    better than before for everything and worse than before for nothing.
-
-    Each fallback increments ``kb_cause_letters_unstamped_total``. It is a
-    DRAIN GAUGE: it tells you how much of live retrieval still depends on the
-    derivation, and its arrival at a steady zero is the signal that this
-    fallback — and with it the last read-time parse — can be deleted.
-    """
-    if chunk_metadata is not None and "cause_letters" in chunk_metadata:
-        raw = chunk_metadata.get("cause_letters")
-        return [letter for letter in str(raw or "").split(",") if letter]
-
-    letters = _matched_cause_letters(chunk_text)
-    try:
-        from faultmaven.core.investigation.lifecycle_metrics import (
-            kb_cause_letters_unstamped_total,
-        )
-
-        kb_cause_letters_unstamped_total.inc()
-    except Exception:  # pragma: no cover - metrics must never break retrieval
-        pass
-    return letters
 
 
 def _carried_cause_letters(letters_per_chunk: List[List[str]]) -> set:
@@ -364,10 +322,9 @@ def _unrecorded_chunk_letters(
     whole chunk), so retrieval can match a heading that names nothing.
 
     Silent when the record is absent: a document with cause headings and no
-    record is the ordinary anonymous-upload runbook, which is never seedable by
-    design rather than by defect (``upload_document`` passes no ``causes``, and
-    ``get_runbook_causes`` refuses EXPERIMENTAL rows). Alarming there would fire
-    on healthy content.
+    record is the ordinary anonymous-upload runbook, which carries no record by
+    design rather than by defect (``upload_document`` passes no ``causes``).
+    Alarming there would fire on healthy content.
     """
     declared = set(_declared_cause_letters(causes))
     if not declared:
@@ -438,8 +395,7 @@ def _describe_unreadable(value: Any) -> str:
 def _row_causes(knowledge_metadata: Any) -> Optional[List[Dict[str, Any]]]:
     """Read ``causes`` off a ``knowledge_items`` metadata value, however it arrives.
 
-    Returns None unless the value decodes to a dict whose ``causes`` is a list —
-    the same tolerance :meth:`get_runbook_causes` applies to the domain shape.
+    Returns None unless the value decodes to a dict whose ``causes`` is a list.
     """
     causes = _row_metadata(knowledge_metadata).get("causes")
     return causes if isinstance(causes, list) else None
@@ -650,7 +606,7 @@ class KnowledgeService:
                         if wants_hybrid:
                             # Silence here would disable the #1272 seeding gate
                             # without a trace: no hybrid means no reranker, so
-                            # no `term_coverage` and no `identity_terms_in_query`
+                            # no `rerank_score` on any hit. A caller that ASKED
                             # on any hit, and the seeder reads that absence as
                             # "unmeasured, therefore not judged" and admits
                             # everything. The floor is dropped too. A caller
@@ -692,16 +648,6 @@ class KnowledgeService:
                         parent_document_id = result_meta.get(
                             "parent_document_id"
                         ) or _strip_chunk_suffix(result.get("id"))
-                        # Which CAUSES of that runbook this hit matched — the
-                        # seeder's join key, READ rather than re-derived
-                        # (fm#1108). It was stamped at index time by the same
-                        # grammar pass that extracted the parent's causes record,
-                        # so the two are pinned to one another and a later change
-                        # to ``CAUSE_HEADING_RE`` cannot reach back and silently
-                        # re-interpret chunks already in the store.
-                        matched_cause_letters = _read_stamped_cause_letters(
-                            result_meta, result.get("content") or ""
-                        )
                         # Title, type and tags live in the CHUNK METADATA — the
                         # vector store's formatted hit carries only
                         # id/content/metadata/score, so reading them off the top
@@ -734,12 +680,7 @@ class KnowledgeService:
                             + "...",
                             parent_document_id=parent_document_id,
                             total_chunks=_read_total_chunks(result_meta),
-                            matched_cause_letters=matched_cause_letters,
                             rerank_score=result.get("rerank_score"),
-                            term_coverage=result.get("term_coverage"),
-                            identity_terms_in_query=list(
-                                result.get("identity_terms_in_query") or []
-                            ),
                         )
                         search_results.append(search_result)
 
@@ -1949,9 +1890,7 @@ class KnowledgeService:
         # A repair re-chunks with the RUNTIME chunker while the row keeps the
         # causes record it was ingested with — for a pack runbook that pairs our
         # chunks with kb-toolkit's record, the one place the two producers meet.
-        # Read straight off the row: get_runbook_causes applies the seeder's
-        # verification-level filter, and an EXPERIMENTAL row's record is
-        # unseedable for that reason rather than this one.
+        # Read straight off the row.
         row_causes = _row_causes(getattr(row, "knowledge_metadata", None))
         try:
             written = await self._index_document_in_vector_store(
@@ -2628,69 +2567,14 @@ class KnowledgeService:
             logger.error(f"Failed to get visible document {document_id}: {e}")
             return None
 
-    async def get_runbook_causes(self, item_id: str) -> Optional[List[Dict[str, Any]]]:
-        """Return a runbook's structured causal-graph records, or None.
-
-        Loads ``knowledge_items.metadata["causes"]`` for the given row — the
-        machine-readable per-Cause chains the KB cause seeder instantiates as
-        candidate graph nodes. Returns None when the id is unknown, the row has
-        no causes record, or lookup fails (the seeder treats None as "prose-only
-        source, nothing to seed").
-        """
-        try:
-            if not item_id:
-                return None
-
-            from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
-                DatabaseKnowledgeItemRepository,
-            )
-
-            async with self._db_session_factory() as session:
-                repo = DatabaseKnowledgeItemRepository(session)
-                item = await repo.get_by_id(item_id)
-
-            if item is None or not item.metadata:
-                return None
-
-            # Runtime trust invariant: EXPERIMENTAL (AI-generated / unreviewed /
-            # anonymous-upload) knowledge must never seed candidate causes. The
-            # call sites already extract causes only at the human-verification
-            # gate — verify_draft ingests as COMMUNITY, and the anonymous
-            # upload_document path never extracts — but enforcing it here makes
-            # it a runtime invariant: the seeder can never consume an
-            # unverified item's causes record no matter how it was written.
-            # Pack runbooks ship COMMUNITY and verified drafts are COMMUNITY, so
-            # this refuses only the EXPERIMENTAL tier.
-            from faultmaven.modules.knowledge.domain.models.knowledge_item import (
-                VerificationLevel,
-            )
-
-            if (
-                getattr(item, "verification_level", None)
-                == VerificationLevel.EXPERIMENTAL
-            ):
-                logger.debug(
-                    f"Refusing to seed causes from EXPERIMENTAL item {item_id}"
-                )
-                return None
-
-            causes = item.metadata.get("causes")
-            return causes if isinstance(causes, list) else None
-
-        except Exception as e:
-            logger.error(f"Failed to load causes for {item_id}: {e}")
-            return None
-
     async def get_runbook_title(self, item_id: str) -> Optional[str]:
         """Return a knowledge item's display title, or None.
 
-        Used to name the runbook a resolved case was seeded from when the
-        runbook-generation offer is short-circuited for provenance-based
-        uniqueness (Phase 5.2b) — so the "already covered by X" message can name
-        X. Returns None when the id is falsy, the row is unknown, or lookup fails
-        (the caller degrades to a runbook-unnamed message; unlike the seeder
-        loader this applies no verification-level filter — naming an item the
-        user already applied is not a trust-boundary crossing).
+        Names the runbook a legacy case was resolved by applying, when
+        ``_handle_runbook_creation`` short-circuits on seeded provenance
+        (``seeded_provenance``, rows written before fm#1295 removed the
+        seeder). None for a falsy id, a missing row, or a lookup error — the
+        caller degrades to an unnamed message.
         """
         try:
             if not item_id:

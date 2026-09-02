@@ -72,9 +72,7 @@ if NEW_HYPOTHESIS_MAX_PRIOR >= CAUSE_IDENTIFIED_LIKELIHOOD:  # pragma: no cover
     )
 
 # Anchoring detection condition 1: this many ACTIVE hypotheses in one category
-# reads as fixation on a single line of reasoning. Named so downstream producers
-# of hypotheses (e.g. the KB cause seeder) can bound how many candidates they
-# introduce below this threshold instead of hardcoding a copy of the number.
+# reads as fixation on a single line of reasoning.
 ANCHORING_SAME_CATEGORY_THRESHOLD = 4
 
 # Age-based stagnation sweep: an ACTIVE hypothesis that has gone this many turns
@@ -219,7 +217,6 @@ class HypothesisManager:
         current_turn: int,
         generation_mode: HypothesisGenerationMode = HypothesisGenerationMode.SYSTEMATIC,
         state: HypothesisState = HypothesisState.ACTIVE,
-        rationale: str | None = None,
     ) -> Hypothesis:
         """Create new hypothesis.
 
@@ -245,7 +242,7 @@ class HypothesisManager:
             last_updated_turn=current_turn,
             last_progress_at_turn=current_turn,
             evidence_links=[],
-            rationale=rationale or "Initial hypothesis",
+            rationale="Initial hypothesis",
         )
 
         logger.info(

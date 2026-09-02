@@ -1374,25 +1374,6 @@ def _normalize_statement(s: str | None) -> str:
     return " ".join((s or "")[:500].split()).lower()
 
 
-def find_canonical_node_id(
-    case: Case, node_type: NodeType, statement: str | None
-) -> str | None:
-    """The id of the existing node an emitted ``(node_type, statement)`` spec
-    would REUSE under ``ingest_emitted_chain``'s exact-match dedup, or ``None`` if
-    it would mint a fresh node.
-
-    Single source of the dedup key so external callers never drift from ingest's
-    own identity reconciliation. The KB cause seeder uses it to detect — *before*
-    ingesting — that a runbook's root would collapse onto an already-seeded root,
-    so it can skip that cause without first minting orphan intermediate rungs.
-    """
-    key = (node_type, _normalize_statement(statement))
-    for nid, n in case.causal_nodes.items():
-        if (n.node_type, _normalize_statement(n.statement)) == key:
-            return nid
-    return None
-
-
 def ingest_emitted_chain(
     case: Case,
     nodes_to_add: list,
@@ -2159,15 +2140,12 @@ def _normalize_and_group(and_group: object) -> str | None:
       alternatives would otherwise collapse them into one conjunction —
       silently strengthening the M7 gate and, since #1096, publishing "the
       cause required these conditions too" about causes that are alternatives.
-    - A NUMBER is honored, as its string form. ``and_group: 1`` is plausible
-      JSON from a model numbering its groups, and the key is an opaque identity
-      token — "1" groups exactly what the emitter meant to group, so there is
-      nothing to gain by discarding it and a conjunction to lose (the #1096
-      factor loss again). The schema declares ``Optional[str]`` and Pydantic v2
-      does not coerce int->str, so this reaches only duck-typed callers. Bool
-      is excluded — ``and_group: true`` is a model confusing the field for a
-      flag, not naming a group, and "True" would silently group everything
-      that made the same mistake. Any other type (list, dict) names no group.
+    - Only a STRING names a group. The schema declares ``Optional[str]`` and
+      Pydantic v2 does not coerce, so nothing else can arrive from the one
+      production caller (``ingest_emitted_chain`` on schema-validated specs);
+      the duck-typed caller that once handed numbers here — the KB cause
+      seeder — is gone (fm#1295). A bool, a number or any other type names no
+      group, matching the trust boundary rather than widening it.
     - An over-long key is folded to fit the column. A plain truncation would
       make two distinct long keys sharing a 64-char prefix into ONE group —
       the same silent M7 strengthening by another route — so the fold keeps a
@@ -2178,9 +2156,9 @@ def _normalize_and_group(and_group: object) -> str | None:
     The key is an identity token, never rendered: ``validated_and_conjuncts``
     publishes the member nodes' statements, not the group name.
     """
-    if isinstance(and_group, bool) or not isinstance(and_group, (str, int, float)):
+    if not isinstance(and_group, str):
         return None
-    and_group = str(and_group).strip()
+    and_group = and_group.strip()
     if not and_group:
         return None
     if len(and_group) <= _AND_GROUP_MAX_LEN:

@@ -449,7 +449,7 @@ seeder minted a retrieved runbook cause's `rung_indicators` as PENDING
 `causal_verification` needs when it seeded that cause as a CANDIDATE
 hypothesis. The seeder was measured not to help diagnosis and removed
 (design and evidence record:
-[`retired/kb-cause-seeder/design.md`](../knowledge-and-ai/retired/kb-cause-seeder/design.md)).
+[`docs/archive/2026/09/kb-cause-seeder/kb-cause-seeder-design.md`](../../archive/2026/09/kb-cause-seeder/kb-cause-seeder-design.md)).
 Every evidence need is now LLM-emitted through the two triggers above; the
 engine is a lifecycle manager only (§9.6), with no creator exception.
 

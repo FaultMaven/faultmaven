@@ -205,10 +205,7 @@ class SearchResult(BaseModel):
             "as stamped on THIS hit's chunk. Lets a consumer read a hit count "
             "relative to the document's own length: one hit on a one-chunk "
             "document is a COMPLETE match, while one hit on a fourteen-chunk "
-            "runbook is a marginal one. The KB cause seeder's corroboration "
-            "guard (#1144) needs exactly that distinction — without it a compact "
-            "personal runbook, which chunks whole, could never corroborate "
-            "itself and so could never seed. None when the stamp is absent "
+            "runbook is a marginal one. None when the stamp is absent "
             "(pre-stamp content), which consumers must read as 'unknown', "
             "never as 'small'."
         ),
@@ -222,56 +219,5 @@ class SearchResult(BaseModel):
             "comparable across queries and no admission floor may be expressed "
             "in it — that is what ``score`` (raw cosine) is for. None on the "
             "pure-vector path, where ordering IS ``score``."
-        ),
-    )
-    term_coverage: Optional[float] = Field(
-        default=None,
-        description=(
-            "Share of the query's vocabulary that THIS hit's chunk carries, in "
-            "[0, 1] — the reranker's own term-overlap signal, reported for "
-            "diagnosis. A RANKING quantity, and NOT an admission criterion: it "
-            "is a share OF THE QUERY, so it is maximised by queries that say "
-            "the least. 'The application is slow.' scores 1.000 against seven "
-            "runbooks it names nothing of, above anything a specific query "
-            "reaches against its correct one, which is why the #1272 seeding "
-            "gate no longer thresholds it (#1285). "
-            "Two things it is NOT: it is not IDF-weighted when no corpus term "
-            "index was available — there it silently degrades to an unweighted "
-            "binary fraction on the same [0, 1] scale, a different quantity "
-            "wearing the same units — and it is not token-level: terms are "
-            "matched as substrings, so `pod` is carried by 'podman'. None "
-            "means only that no reranker ran (the pure-vector path); consumers "
-            "must read None as 'unknown', never as 'high'."
-        ),
-    )
-    identity_terms_in_query: List[str] = Field(
-        default_factory=list,
-        description=(
-            "Words naming the hit's own document — its title's terms and its "
-            "``service`` — that appear in the query, matched at TOKEN level "
-            "under a plural fold. Answers the question retrieval never asks: "
-            "was the query ABOUT this document? Its absence is how a Kubernetes "
-            "runbook comes back for a QEMU incident and looks plausible "
-            "(#1272), and it is the sole ground the cause seeder grounds on "
-            "(#1285). Empty both on the pure-vector path and for a genuinely "
-            "unnamed document — emptiness alone cannot tell those apart, so a "
-            "consumer needing to must read ``term_coverage is None`` for the "
-            "first."
-        ),
-    )
-
-    matched_cause_letters: List[str] = Field(
-        default_factory=list,
-        description=(
-            "Cause letters whose ``### Cause X:`` heading appears in THIS hit's "
-            "chunk text — i.e. which of the parent runbook's metadata['causes'] "
-            "records retrieval actually matched. Empty for a hit on a non-cause "
-            "chunk (Symptom Recognition, Diagnostic Steps, Prevention...) or a "
-            "non-runbook document. Sibling of parent_document_id: that field says "
-            "WHICH runbook holds the causes record, this one says WHICH causes in "
-            "it the query matched. The KB cause seeder joins on it so it can seed "
-            "the causes retrieval surfaced instead of the runbook's first N in "
-            "author order (#1092). A chunk may span more than one heading, so this "
-            "is a list; attribution is to every cause the matched text covers."
         ),
     )

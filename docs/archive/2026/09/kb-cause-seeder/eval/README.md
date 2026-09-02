@@ -1,16 +1,20 @@
-> **RETIRED 2026-09-02.** The harness this README describes was deleted with
-> the KB cause seeder (fm#1295 step 4b). The recorded runs beside this file are
-> the evidence record; the design doc is [`../design.md`](../design.md).
+> **ARCHIVED 2026-09-02.** The harness this README describes was deleted with
+> the KB cause seeder (fm#1295 step 4b): every command and path below refers
+> to the tree at commit `6b3592bf5` and none of it exists on main. The
+> recorded runs beside this file are the evidence record; the design doc is
+> [`../kb-cause-seeder-design.md`](../kb-cause-seeder-design.md). The two
+> labelled corpora the harness measured retrieval with live on at
+> `tests/eval/kb_retrieval/`.
 
 # KB cause-seeder — flag-ON enabling eval
 
 The re-runnable artifact behind the KB cause seeder's **enabling gate**. The
 seeder is **off by default** (`FAULTMAVEN_KB_CAUSE_SEEDER`; set `true` to enable
 for a measurement run). This eval proved the seeds *sound*; the on-vs-off A/B in
-[`2026-09-02-seeder-ab-local.md`](2026-09-02-seeder-ab-local.md)
+[`seeder-on-vs-off-ab-local.md`](seeder-on-vs-off-ab-local.md)
 measured whether they *help* and turned the default off (fm#1295). Design + gate
 definition:
-[`../design.md`](../design.md).
+[`../kb-cause-seeder-design.md`](../kb-cause-seeder-design.md).
 
 It is **not** a CI test — it needs a live server, a real provider key, and the
 flag ON. It lives here so the enabling-gate claim rests on a runnable artifact and
@@ -238,7 +242,7 @@ reason, not an expedient one:
 
 On **fireworks `deepseek-v4-flash`** (the dev/demo default and weakest-prompt
 provider) — see
-[`2026-07-16-fireworks-deepseek-v4-flash.md`](2026-07-16-fireworks-deepseek-v4-flash.md):
+[`enabling-gate-run-fireworks-deepseek-v4-flash.md`](enabling-gate-run-fireworks-deepseek-v4-flash.md):
 
 - **Gate items 1 and 4 (structural) and the `exclusion` probe: clean pass, every
   run.** `smoke` is deterministic; `mislead`/`exclusion` never let a seeded cause
@@ -256,7 +260,7 @@ provider) — see
 **Flag-on decision (closed 2026-09-02 — superseded):** whether that ≤1-ACTIVE
 rate cleared enabling-gate item 3 was accepted as a known residual in 2026-07;
 the question is now moot, because the on-vs-off A/B
-([`2026-09-02-seeder-ab-local.md`](2026-09-02-seeder-ab-local.md))
+([`seeder-on-vs-off-ab-local.md`](seeder-on-vs-off-ab-local.md))
 turned the default off on benefit grounds (fm#1295). The paragraph below is kept
 as the record of the residual it measured.
 The design doc's intended envelope for the residual is *prompt + per-provider
