@@ -553,6 +553,14 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
         )
         app.state.conversion_service = None
 
+    # The composed web-search tool, or None when the registry did not register
+    # one (disabled by ENABLE_WEB_SEARCH, no provider key, or construction
+    # raised). Published so /admin/config/status can report the tool THIS
+    # PROCESS actually holds rather than re-deriving from settings whether one
+    # would compose — the same reason `suggestion_service` is reachable here
+    # (#1227, #1234). A settings-derived answer reports a capability the model
+    # does not have whenever startup composition failed.
+    app.state.web_search_tool = getattr(container, "web_search_tool", None)
     app.state.preprocessing_service = container.get_preprocessing_service()
     app.state.enhanced_agent_service = container.get_enhanced_agent_service()
     app.state.orchestration_service = container.get_orchestration_service()
