@@ -54,6 +54,153 @@ EXCLUDED_PATH_MARKERS = ("/auth/",)
 # minting route and nothing else.
 EXCLUDED_EXACT_PATHS = frozenset({"/api/v1/sessions"})
 
+# Exclusions this repository cannot write down, declared by whoever composes the
+# deployment. The rule above ("replaying a token mint is not idempotency") is a
+# property of *routes*, but the two constants are a property of *this package* —
+# and the served route table is larger than this package. ``faultmaven-cloud``
+# mounts its routers onto this same ``app`` singleton, one of which mints a
+# service-account refresh token (ADR-012 D10), and no literal in this file can
+# name it without putting a path this repository does not serve into this
+# repository's source.
+#
+# So the composition root that defines the route declares the exclusion, and the
+# middleware reads it off ``app.state`` — the same split this pair of
+# repositories already applies to the published OpenAPI contract, and the same
+# ``app.state`` wiring channel the auth service, the tenant services and the
+# Redis client already travel on.
+#
+# A route-level marker (``@router.post(..., idempotent=False)``) would read
+# better and cannot drift, but is not reachable: ``BaseHTTPMiddleware.dispatch``
+# runs before routing, so ``request.scope`` carries no matched route at the
+# point the exclusion is decided.
+#
+# Use ``exclude_from_idempotency`` rather than assigning this attribute by hand;
+# it is the half that makes a declaration verifiable instead of hopeful.
+APP_STATE_EXCLUSIONS_ATTR = "idempotency_excluded_paths"
+
+
+def _normalize_exclusion_path(path: str) -> str:
+    """Reduce a path to the form exclusions are compared in.
+
+    One function so a declared path and an incoming request path can never be
+    normalised by two different rules — which would be a silent non-match, and a
+    silent non-match here is an open hole rather than a visible failure.
+    """
+    return path.rstrip("/") or "/"
+
+
+def _post_route_paths(routes) -> frozenset:
+    """Every path in a route table that answers POST, including mounted ones.
+
+    Mounts are walked rather than skipped so a composed unit served under a
+    ``Mount`` can still be validated; skipping them would turn a legitimate
+    declaration into a spurious refusal, and a refusal a caller learns to work
+    around is worse than no check.
+    """
+    from starlette.routing import Mount, Route
+
+    found: set = set()
+    for route in routes:
+        if isinstance(route, Route) and "POST" in (route.methods or set()):
+            found.add(_normalize_exclusion_path(route.path))
+        elif isinstance(route, Mount):
+            prefix = route.path.rstrip("/")
+            for nested in _post_route_paths(getattr(route.app, "routes", [])):
+                found.add(_normalize_exclusion_path(prefix + nested))
+    return frozenset(found)
+
+
+def _normalize_declared_exclusions(declared) -> frozenset:
+    """Read a declaration defensively into a normalised set of exact paths.
+
+    ``app.state`` is assignable by hand, and this value is consulted with
+    ``in``, so the cost of a malformed declaration is asymmetric: a bare ``str``
+    left here instead of a set would silently turn the exact comparison into
+    substring containment — quietly excluding every prefix of the declared
+    path. A lone string is therefore read as the one path it obviously means,
+    which is the only reading that can never exclude more than was declared.
+
+    Anything that is not a string is dropped, and something not iterable at all
+    is reported and ignored: a broken declaration must not take every POST with
+    it. That fail-open half is exactly why ``exclude_from_idempotency`` refuses
+    a bad path up front rather than leaving it to be noticed at request time.
+    """
+    if not declared:
+        return frozenset()
+    if isinstance(declared, str):
+        declared = (declared,)
+    try:
+        return frozenset(
+            _normalize_exclusion_path(entry)
+            for entry in declared
+            if isinstance(entry, str)
+        )
+    except TypeError:
+        logger.error(
+            "app.state.%s is not iterable (%r); composed exclusions ignored",
+            APP_STATE_EXCLUSIONS_ATTR,
+            type(declared).__name__,
+        )
+        return frozenset()
+
+
+def exclude_from_idempotency(app, *paths: str) -> frozenset:
+    """Declare routes on ``app`` that must never participate in idempotency.
+
+    For composition roots: call it after the routers are mounted, and build each
+    path from the router that serves it rather than retyping a literal, so the
+    declaration cannot drift away from the route it protects.
+
+    Every path is checked against ``app``'s real route table, because the failure
+    mode this guards against is silent in both directions. A declaration that
+    matches nothing does not fail — it simply leaves the route cached, which
+    looks exactly like a working exclusion from the outside. So a path that names
+    no POST route is a ``ValueError`` at composition time, not a hole discovered
+    in Redis.
+
+    Templated paths are refused for the same reason: ``/orgs/{org_id}/tokens``
+    can never equal the concrete path a request carries, so accepting it would
+    return a declaration that is guaranteed never to match.
+
+    Declarations accumulate, so several composed units can each declare their
+    own without knowing about each other.
+
+    Returns the resulting exclusion set, so a caller (or a test) can assert what
+    took effect rather than trusting that it did.
+    """
+    served = _post_route_paths(app.routes)
+    normalized = set()
+    for path in paths:
+        if not isinstance(path, str) or not path.startswith("/"):
+            raise ValueError(
+                f"idempotency exclusion must be an absolute path string, got {path!r}"
+            )
+        candidate = _normalize_exclusion_path(path)
+        if "{" in candidate:
+            raise ValueError(
+                f"idempotency exclusion {path!r} is templated; an exact-path "
+                "exclusion can never equal the concrete path a request carries"
+            )
+        if candidate not in served:
+            raise ValueError(
+                f"idempotency exclusion {path!r} names no POST route on this app. "
+                "Declare it after the router is mounted, and derive it from the "
+                "router rather than retyping the path."
+            )
+        normalized.add(candidate)
+
+    existing = _normalize_declared_exclusions(
+        getattr(app.state, APP_STATE_EXCLUSIONS_ATTR, None)
+    )
+    combined = existing | normalized
+    setattr(app.state, APP_STATE_EXCLUSIONS_ATTR, combined)
+    logger.info(
+        "Idempotency exclusions declared by the composition root: %s",
+        sorted(combined),
+    )
+    return combined
+
+
 # Upper bound on a request body we are willing to buffer for fingerprinting.
 # Anything larger is left unbuffered (and unfingerprinted) rather than held in
 # memory on every request.
@@ -98,8 +245,10 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Authentication endpoints never participate: a replayed token mint
-        # hands the first caller's credential to the next one.
-        if self._is_excluded_path(request.url.path):
+        # hands the first caller's credential to the next one. The same applies
+        # to any minting route a composed deployment declares — the rule is
+        # about what the response body is, not about which repository serves it.
+        if self._is_excluded_path(request.url.path, self._declared_exclusions(request)):
             return await call_next(request)
 
         # Check for idempotency key
@@ -243,7 +392,19 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         pattern = r"^[a-zA-Z0-9_-]+$"
         return bool(re.match(pattern, key))
 
-    def _is_excluded_path(self, path: str) -> bool:
+    def _declared_exclusions(self, request: Request) -> frozenset:
+        """Exclusions the composition root declared for routes this repo lacks.
+
+        The app is read off the raw scope rather than through ``request.app``,
+        which raises ``KeyError`` when the key is absent. This is consulted
+        *outside* ``dispatch``'s ``try``, so an app-less scope would 500 every
+        POST instead of degrading to an uncached one.
+        """
+        app = request.scope.get("app")
+        declared = getattr(getattr(app, "state", None), APP_STATE_EXCLUSIONS_ATTR, None)
+        return _normalize_declared_exclusions(declared)
+
+    def _is_excluded_path(self, path: str, declared: frozenset = frozenset()) -> bool:
         """Whether this path is structurally excluded from idempotency.
 
         The trailing slash is normalised away first: this middleware is
@@ -251,9 +412,15 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         the client sent it. Without normalising, ``POST /api/v1/sessions/``
         would slip past an exact-path exclusion that ``POST /api/v1/sessions``
         is caught by.
+
+        ``declared`` carries the composition root's own exclusions (already
+        normalised). They are checked as exact paths, never as substring
+        markers: the marker tier stays owned by this file, where the reasoning
+        for why ``/sessions`` is unusable as one is written down and can be
+        weighed against the real route table.
         """
-        normalized = path.rstrip("/") or "/"
-        if normalized in EXCLUDED_EXACT_PATHS:
+        normalized = _normalize_exclusion_path(path)
+        if normalized in EXCLUDED_EXACT_PATHS or normalized in declared:
             return True
         return any(marker in path for marker in EXCLUDED_PATH_MARKERS)
 
