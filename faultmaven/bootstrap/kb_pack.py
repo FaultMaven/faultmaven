@@ -45,9 +45,9 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from faultmaven.utils.path_containment import PathEscape, resolve_within_root
 
@@ -86,10 +86,9 @@ class PackRunbook:
     owner_id: Optional[str]
     team_id: Optional[str]
     chunks: List[PackChunk]
-    # v4 per-Cause graph records (cause_letter/statement, chain_nodes/edges,
-    # rung_indicators, interventions, is_fallback_cause), stored verbatim on the
-    # knowledge item. Empty for older packs that predate the v4 record.
-    causes: List[Dict[str, Any]] = field(default_factory=list)
+    # The pack's per-runbook ``causes`` record (the toolkit's v4 graph record)
+    # is deliberately NOT loaded: its only runtime reader, the KB cause seeder,
+    # was removed in fm#1295. The toolkit still emits it; it is ignored here.
 
 
 def baseline_pack_dir(project_root: Path) -> Path:
@@ -392,7 +391,6 @@ class KbPack:
                         owner_id=rb.get("owner_id"),
                         team_id=rb.get("team_id"),
                         chunks=chunks,
-                        causes=list(rb.get("causes") or []),
                     )
                 )
 

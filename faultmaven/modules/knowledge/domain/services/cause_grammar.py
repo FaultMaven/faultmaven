@@ -20,8 +20,9 @@ vice-versa. Two guards keep them honest: each repo's frozen-literal drift-guard
 test trips if that side's literal is edited without updating its own test; and
 the kb-toolkit ``golden-cross-repo`` CI job
 (``scripts/check_vocab_cross_repo.py``) mechanically asserts the two repos'
-vocabularies are equal (the field-level pack-record golden,
-``EXPECTED_GOLDEN_SHA256``, does NOT cover the authoring vocabulary).
+vocabularies are equal. (A field-level pack-record golden once pinned the
+parsed record on both sides; the app half went with the cause record in
+fm#1295, the toolkit keeps its own.)
 
 LAYER NOTE: these are the AUTHORING markdown sub-fields — a *different layer*
 from the parsed per-cause records in the built KB pack. ``chain_edges`` is

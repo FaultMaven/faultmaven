@@ -22,8 +22,6 @@ Key Improvements over Original:
 """
 
 import asyncio
-import hashlib
-import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -86,51 +84,6 @@ def _strip_chunk_suffix(chunk_id: Optional[str]) -> Optional[str]:
     return stripped or None
 
 
-def _matched_cause_letters(chunk_text: str) -> List[str]:
-    """Cause letters whose ``### Cause X:`` heading appears in this chunk's text.
-
-    The join key the KB cause seeder needs: retrieval is chunk-level and a
-    runbook's ``## Causes`` section chunks one-Cause-per-chunk, so the headings
-    inside a matched chunk say WHICH of the parent runbook's
-    ``metadata["causes"]`` records the query actually matched. Without it the
-    seeder can only name the parent runbook, and falls back to seeding its first
-    N causes in author order — the #1092 defect, where a k8s OOM case seeded a
-    GKE runbook's three *unschedulable* causes (A/B/C) while the OOMKilled cause
-    that matched (D) sat one slot past the cap.
-
-    Uses the SHARED ``CAUSE_HEADING_RE`` (``runbook_grammar``) — the same pattern
-    the extractor and pack builder use to mint ``cause_letter`` — so the letter
-    parsed here is by construction the letter the seeder joins on. And over the
-    same comment-MASKED view the extractor enumerates on (#1241): the pattern is
-    blind to HTML comments on its own, so a commented-out ``### Cause A:``
-    example beside a real Cause stamped a phantom ``A`` here, and the seeder
-    read "retrieval surfaced Cause A" for a cause the author had explicitly
-    commented out — one with no ``metadata["causes"]`` record to join to.
-
-    Searches the whole chunk rather than anchoring at its start: a runbook's
-    first Cause commonly shares a chunk with the ``## Causes`` section header
-    (60 of 91 shipped runbooks), so an anchored match would drop Cause A on
-    two-thirds of the corpus. Returns every letter found, in appearance order —
-    a chunk spanning two headings was embedded as one text, so a hit on it is
-    evidence for both causes and attributing to only one would be arbitrary.
-
-    Returns [] for a non-cause chunk or a non-runbook document; the seeder reads
-    that as "retrieval surfaced no cause here", not as an error.
-    """
-    if not chunk_text:
-        return []
-    from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
-        CAUSE_HEADING_RE,
-        mask_html_comments,
-    )
-
-    seen: List[str] = []
-    for letter, _name in CAUSE_HEADING_RE.findall(mask_html_comments(chunk_text)):
-        if letter not in seen:
-            seen.append(letter)
-    return seen
-
-
 def _read_total_chunks(chunk_metadata: Optional[Dict[str, Any]]) -> Optional[int]:
     """How many chunks this hit's parent document was split into, or None.
 
@@ -168,237 +121,6 @@ def _read_tags(
     if isinstance(raw, (list, tuple)):
         return [str(t).strip() for t in raw if str(t).strip()]
     return []
-
-
-def _letter_can_head_a_cause(letter: str) -> bool:
-    """Could a ``### Cause X:`` heading for this letter exist at all?
-
-    Asked OF the shared grammar rather than by restating its ``[A-Z]`` character
-    class here, so the two cannot drift: a letter the grammar widens to admit
-    tomorrow is admitted here the same day.
-
-    Used only to word the alarm. A record declaring ``cause_letter: "a"`` is
-    genuinely unseedable — the seeder's join is case-sensitive — so it is still
-    reported; this just keeps the report from blaming markdown that is fine.
-    """
-    from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
-        CAUSE_HEADING_RE,
-    )
-
-    match = CAUSE_HEADING_RE.match(f"### Cause {letter}: name")
-    # The capture must be the whole letter, not a prefix of it: a record value
-    # like "A: x" builds a heading the pattern happily matches, capturing just
-    # "A" — a letter retrieval would never recover under the name declared.
-    return bool(match and match.group(1) == letter)
-
-
-# Bumped when the meaning of a chunk stamp changes in a way that makes already
-# written stamps wrong (a new stamped field, a different join key, a changed
-# encoding) — NOT for unrelated ``VectorMetadata`` additions.
-#
-# 2 (#1241): the letter derivation now runs over a comment-MASKED view, so a
-# stamp written by the unmasked pass can carry a letter with no
-# ``metadata["causes"]`` record behind it. Bumping is what re-derives them —
-# the pack re-ingests prechunked (seconds, no embedding) and authored rows are
-# swept by the fm#1108 restamp pass. The pattern itself is unchanged, so the
-# identity would not have moved on its own. (The read-time consumer of the
-# stamp went with the KB cause seeder, fm#1295; the stamp and its writer are
-# retired with the rest of the cause-record pipeline in the follow-on.)
-CHUNK_STAMP_SCHEMA = 2
-
-
-def chunk_stamp_identity() -> str:
-    """A short digest of everything a chunk's cause stamp depends on.
-
-    Stored on the runbook row (``metadata["chunk_stamp"]``) and compared by the
-    KB bootstrap's idempotency gate, so a change here forces a re-ingest of the
-    shipped pack instead of leaving stamps that no longer mean what they say.
-
-    It covers the grammar as well as the schema, and that is the load-bearing
-    half. ``CAUSE_HEADING_RE`` is a MANUAL MIRROR of kb-toolkit's, expected to
-    change (a cross-repo CI job requires it) — and before fm#1108 nothing about
-    such a change re-ingested anything, so a code-only edit silently
-    re-interpreted chunks already in the store. Deriving the identity from the
-    live pattern makes that automatic rather than a discipline someone has to
-    remember: edit the grammar, and the next boot re-stamps the pack.
-
-    Pack re-ingest is prechunked — no embedding model, no re-chunking — so
-    forcing it is seconds of boot, not the minutes the pack exists to avoid.
-    It does NOT reach authored runbooks; ``kb_init`` only ever walks the pack.
-    Those re-stamp when they are next verified, edited or repaired. (The
-    read-time drain gauge that reported unstamped hits went with the KB cause
-    seeder, fm#1295.)
-    """
-    from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
-        CAUSE_HEADING_RE,
-    )
-
-    payload = (
-        f"{CHUNK_STAMP_SCHEMA}|{CAUSE_HEADING_RE.pattern}|{CAUSE_HEADING_RE.flags}"
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
-
-
-def _carried_cause_letters(letters_per_chunk: List[List[str]]) -> set:
-    """Flatten per-chunk letter lists, refusing the one wrong shape that is silent.
-
-    Handed ``List[str]`` (chunk TEXTS) instead of ``List[List[str]]`` (parsed
-    letters), ``set.update`` would iterate each string into its CHARACTERS — and
-    since cause letters are single uppercase characters that appear in ordinary
-    prose, the result looks plausible and the callers report nothing. A wrong
-    answer that passes for a right one is precisely what this module exists to
-    prevent, so the shape is checked rather than trusted. The callers already
-    swallow-and-report, so this surfaces as a loud check failure.
-    """
-    carried: set = set()
-    for letters in letters_per_chunk:
-        if isinstance(letters, str):
-            raise TypeError(
-                "letters_per_chunk holds chunk text, not parsed letters — "
-                "iterating it would silently match individual characters"
-            )
-        carried.update(letters)
-    return carried
-
-
-def _declared_cause_letters(causes: Optional[List[Dict[str, Any]]]) -> List[str]:
-    """The letters a ``metadata["causes"]`` record declares, in record order.
-
-    Scope is deliberately the letters the record DECLARES. An entry carrying no
-    usable ``cause_letter`` is also unseedable, but it is a malformed record
-    rather than a record/chunk disagreement — the extractor and the runbook
-    validator own that, and folding it in here would fire the callers' alarms
-    for a defect their messages cannot describe.
-    """
-    declared: List[str] = []
-    for cause in causes or []:
-        if not isinstance(cause, dict):
-            continue
-        letter = str(cause.get("cause_letter") or "")
-        if letter and letter not in declared:
-            declared.append(letter)
-    return declared
-
-
-def _unrecoverable_cause_letters(
-    letters_per_chunk: List[List[str]], causes: Optional[List[Dict[str, Any]]]
-) -> List[str]:
-    """Cause letters the record declares that NO chunk carries (fm#1103).
-
-    The seeder names which of a runbook's ``metadata["causes"]`` records a hit
-    matched by joining the hit chunk's ``### Cause X:`` letters against
-    ``cause_letter``. A cause whose letter appears in no chunk is therefore
-    structurally unseedable — permanently, silently, and no matter how often the
-    runbook is retrieved.
-
-    Takes the letters ALREADY PARSED for the stamp rather than re-parsing the
-    chunk texts (fm#1108): what is checked is then literally what retrieval will
-    read, and the two cannot disagree about what a cause heading is.
-
-    Returns the missing letters in record order, or [] when the record is
-    empty/absent — the overwhelmingly common case, and the healthy one.
-    """
-    declared = _declared_cause_letters(causes)
-    if not declared:
-        return []
-    carried = _carried_cause_letters(letters_per_chunk)
-    return [letter for letter in declared if letter not in carried]
-
-
-def _unrecorded_chunk_letters(
-    letters_per_chunk: List[List[str]], causes: Optional[List[Dict[str, Any]]]
-) -> List[str]:
-    """The reverse disagreement: letters the CHUNKS carry that the record lacks.
-
-    Same defect from the other end, and until fm#1108 it was visible only from
-    retrieval — the KB cause seeder's letter-mismatch counter (removed with the
-    seeder, fm#1295) fired when a matched chunk's heading named a letter the
-    record had no entry for, by which point a
-    case has already been served without those seeds. Both directions are
-    decidable at write time, because both sides are built here.
-
-    Usually means a ``### Cause X:`` heading outside the ``## Causes`` section
-    the extractor reads (the extractor scans that section; the stamp scans the
-    whole chunk), so retrieval can match a heading that names nothing.
-
-    Silent when the record is absent: a document with cause headings and no
-    record is the ordinary anonymous-upload runbook, which carries no record by
-    design rather than by defect (``upload_document`` passes no ``causes``).
-    Alarming there would fire on healthy content.
-    """
-    declared = set(_declared_cause_letters(causes))
-    if not declared:
-        return []
-    # Case-insensitively, because a record declaring ``"a"`` against a
-    # ``### Cause A:`` heading is a MIS-CASED record, not an undeclared heading.
-    # Reporting it here too would say the markdown carries a letter the record
-    # lacks — sending a producer to inspect healthy markdown, which is the exact
-    # misdirection the ungrammatical branch of the caller exists to prevent. It
-    # is one defect and it already has a message that names the right side.
-    declared_folded = {letter.upper() for letter in declared}
-    seen: List[str] = []
-    for letter in sorted(_carried_cause_letters(letters_per_chunk)):
-        if letter not in declared and letter.upper() not in declared_folded:
-            seen.append(letter)
-    return seen
-
-
-def _row_metadata(knowledge_metadata: Any) -> Dict[str, Any]:
-    """A ``knowledge_items`` metadata value as a ``.get``-safe dict.
-
-    Thin over :func:`decode_json_blob` (fm#1107) — this used to be one of three
-    near-copies of that decode. Two things are local to this caller:
-
-    * ``{}`` rather than ``None`` for "nothing usable", because every reader here
-      goes straight to ``.get``;
-    * the WARNING for a value that is present but UNUSABLE — undecodable, or
-      decoding to something that is not an object. That is the one "no metadata"
-      answer which is really "unread metadata", and it silently disables the KB
-      cause seeder's integrity check: the row reads as a prose runbook with
-      nothing to verify. (The bootstrap's restamp sweep reads the same column
-      but does NOT come through here — it warns for itself, because it knows
-      which row it is on and this function only ever sees a value.)
-
-    The value itself is deliberately NOT logged. It is author-supplied document
-    metadata of unbounded size, the branch fires per row inside sweeps, and the
-    only values that reach it are corrupt or truncated ones — so interpolating it
-    would put user KB content in the logs, repeatedly, to say something the shape
-    already says. The type and size identify the anomaly; the ROW is named by the
-    callers that know which row they are on.
-
-    Read-only — the dict branch is not copied, so callers must not mutate it in
-    place (copy first). The repository's ``_parse_json_dict`` is the copying
-    counterpart, for results that get handed out.
-    """
-    decoded = decode_json_blob(knowledge_metadata)
-    if decoded is None and knowledge_metadata:
-        logger.warning(
-            "Unreadable knowledge_items metadata (%s): treating the row as "
-            "carrying none, so its causes record and chunk stamp both read as "
-            "absent. The value is not logged — it is author-supplied content.",
-            _describe_unreadable(knowledge_metadata),
-        )
-    return decoded or {}
-
-
-def _describe_unreadable(value: Any) -> str:
-    """Name the SHAPE of an unusable metadata value, never its content."""
-    kind = type(value).__name__
-    try:
-        size = len(value)
-    except TypeError:
-        return kind
-    unit = "chars" if isinstance(value, (str, bytes, bytearray)) else "items"
-    return f"{kind} of {size} {unit}"
-
-
-def _row_causes(knowledge_metadata: Any) -> Optional[List[Dict[str, Any]]]:
-    """Read ``causes`` off a ``knowledge_items`` metadata value, however it arrives.
-
-    Returns None unless the value decodes to a dict whose ``causes`` is a list.
-    """
-    causes = _row_metadata(knowledge_metadata).get("causes")
-    return causes if isinstance(causes, list) else None
 
 
 def build_kb_scope_filter(
@@ -642,7 +364,7 @@ class KnowledgeService:
                     for result in results:
                         result_meta = result.get("metadata") or {}
                         # Parent runbook identity lives in chunk metadata; it is
-                        # the knowledge_items row holding metadata["causes"]. Fall
+                        # the knowledge_items row. Fall
                         # back to stripping the "_chunk_N" suffix off the chunk id
                         # (id == f"{parent}_chunk_{i}") when metadata omits it.
                         parent_document_id = result_meta.get(
@@ -1094,7 +816,6 @@ class KnowledgeService:
         self,
         document: KnowledgeBaseDocument,
         prechunked: Optional[List[tuple[str, List[float]]]] = None,
-        causes: Optional[List[Dict[str, Any]]] = None,
     ) -> int:
         """Index a document's chunks + embeddings into the vector store.
 
@@ -1108,12 +829,6 @@ class KnowledgeService:
                 :class:`ContentChunker` and embedded with BGE-M3 — the
                 upload/draft path. Per-chunk metadata is derived from the
                 document frontmatter either way (it is not carried in the pack).
-            causes: The ``metadata["causes"]`` record being written alongside
-                these chunks, when there is one. Not indexed — checked. This is
-                the one moment both sides of the KB cause seeder's join exist
-                together, so it is where a record whose letters no chunk can
-                recover gets caught (fm#1103). Observed, never enforced: see
-                :meth:`_report_unseedable_causes`.
         Returns:
             Number of chunks indexed. Never 0 for a failure — see Raises.
 
@@ -1192,31 +907,6 @@ class KnowledgeService:
                     operation="index_document",
                 )
 
-            # Both sides of the seeder's join are in hand for the only time:
-            # these exact chunk texts, and the causes record about to be stored
-            # against them. Check it here (fm#1103) — after this the two are
-            # only ever re-united by a retrieval, in a case that has already
-            # lost the seeds.
-            #
-            # Ahead of the write, so an indexing failure (or the SQL rollback
-            # ingest_runbook does on one) can leave an alarm naming a document
-            # that never landed. Deliberate: the disagreement is a property of
-            # the DATA, independent of whether this attempt stored it, so the
-            # alarm is true either way and a retry at worst counts it twice.
-            # Checking after the write instead would trade that for missing the
-            # report entirely whenever indexing fails.
-            #
-            # The letters are parsed ONCE here and then both stamped onto every
-            # chunk and handed to the check — the stamp is what retrieval will
-            # read, so the thing checked is literally the thing stored (fm#1108).
-            letters_per_chunk = [_matched_cause_letters(chunk) for chunk in chunks]
-            self._report_unseedable_causes(
-                document.document_id,
-                letters_per_chunk,
-                causes,
-                chunker=("pack" if prechunked is not None else "runtime"),
-            )
-
             # Extract RAG-enrichment fields from frontmatter
             fm_meta = self._extract_frontmatter_for_rag(document.content)
 
@@ -1248,15 +938,6 @@ class KnowledgeService:
                     chunk_index=i,
                     total_chunks=len(chunks),
                     parent_document_id=document.document_id,
-                    # Stamped on EVERY chunk, including the empty stamp for a
-                    # chunk with no cause heading and for non-runbook content.
-                    # Uniformity is what makes key-absence mean exactly one
-                    # thing at read time — "indexed before fm#1108" — so the
-                    # legacy-parse fallback can be counted and eventually
-                    # retired. Stamping only cause-bearing chunks would make the
-                    # fallback fire forever on ordinary prose and tell us
-                    # nothing.
-                    cause_letters=",".join(letters_per_chunk[i]),
                 )
                 doc_dicts.append(
                     {
@@ -1308,136 +989,6 @@ class KnowledgeService:
                 f"Vector indexing failed for {document.document_id}: {e}",
                 error_code="KNOWLEDGE_INDEXING_FAILED",
             ) from e
-
-    @staticmethod
-    def _report_unseedable_causes(
-        document_id: str,
-        letters_per_chunk: List[List[str]],
-        causes: Optional[List[Dict[str, Any]]],
-        *,
-        chunker: str,
-    ) -> None:
-        """Warn + count when a stored causes record outruns its own chunks (fm#1103).
-
-        The KB cause seeder joins a retrieval hit to a cause by parsing
-        ``### Cause X:`` out of the matched chunk's text and matching it against
-        ``cause_letter``. A letter no chunk carries therefore names a cause that
-        can never be seeded — and nothing says so: the runbook is well-formed
-        from either side alone, the case just quietly gets fewer candidates.
-
-        Observed, not enforced. Refusing the write would convert a recall loss
-        into a failed ingest, which on the pack path is a failed KB bootstrap —
-        a produce-side data bug must not take the deployment down. So the
-        document is indexed as asked and the drift is made loud instead: a
-        WARNING naming the document and the missing letters (the unit a producer
-        acts on) plus ``kb_cause_unseedable_at_ingest_total`` labeled by which
-        chunker produced the disagreement.
-
-        Swallows its own errors — a diagnostic on the ingest path must not be
-        able to fail the write it is observing — but reports the swallow LOUDLY,
-        which is the part that is easy to get wrong. A check that dies quietly
-        leaves ``kb_cause_unseedable_at_ingest_total`` reading zero, and zero is
-        this alarm's healthy state: a broken guard would be indistinguishable
-        from a clean corpus, which is the exact silent-failure shape the guard
-        exists to close. So the swallow costs a WARNING with the traceback and
-        an increment of ``kb_cause_ingest_check_failed_total``.
-        """
-        try:
-            missing = _unrecoverable_cause_letters(letters_per_chunk, causes)
-            unrecorded = _unrecorded_chunk_letters(letters_per_chunk, causes)
-            if not missing and not unrecorded:
-                return
-            from faultmaven.core.investigation.lifecycle_metrics import (
-                kb_cause_unseedable_at_ingest_total,
-            )
-
-            # Labeled by DIRECTION as well as chunker: the two are opposite
-            # defects with opposite fixes, and one counter that cannot tell them
-            # apart sends an operator looking for a declared letter with no
-            # heading when the truth is a heading with no record entry.
-            if missing:
-                kb_cause_unseedable_at_ingest_total.labels(
-                    chunker=chunker, direction="record_letter_unchunked"
-                ).inc()
-            if unrecorded:
-                kb_cause_unseedable_at_ingest_total.labels(
-                    chunker=chunker, direction="chunk_letter_unrecorded"
-                ).inc()
-            # Say which SIDE is wrong when the letter itself proves it. A letter
-            # the heading grammar cannot express (``cause_letter: "a"``) is
-            # unseedable — the seeder's join is case-sensitive, so reporting it
-            # is correct — but the Causes section is not what needs fixing, and
-            # advice pointing there would send a producer looking at healthy
-            # markdown. Normalising case instead would be worse than imprecise:
-            # it would call a cause recoverable that retrieval cannot join.
-            ungrammatical = [
-                letter for letter in missing if not _letter_can_head_a_cause(letter)
-            ]
-            absent = [letter for letter in missing if letter not in ungrammatical]
-            if absent:
-                logger.warning(
-                    "UNSEEDABLE RUNBOOK CAUSES %s: the causes record declares "
-                    "letter(s) %s that no chunk of this document carries a "
-                    "'### Cause X:' heading for (%d chunks, %s chunker). Those "
-                    "causes can never be seeded into an investigation — "
-                    "retrieval has no way to name them. Fix the runbook's "
-                    "Causes section (or the producer that emitted the record) "
-                    "and re-ingest.",
-                    document_id,
-                    ", ".join(absent),
-                    len(letters_per_chunk),
-                    chunker,
-                )
-            if unrecorded:
-                logger.warning(
-                    "UNSEEDABLE RUNBOOK CAUSES %s: chunk(s) carry a "
-                    "'### Cause X:' heading for letter(s) %s that the causes "
-                    "record does not declare (%s chunker), so a hit on them "
-                    "names nothing and seeds nothing. Usually a cause heading "
-                    "outside the '## Causes' section the extractor reads. This "
-                    "is what the (removed) seeder's letter-mismatch counter "
-                    "reported from the far end.",
-                    document_id,
-                    ", ".join(unrecorded),
-                    chunker,
-                )
-            if ungrammatical:
-                logger.warning(
-                    "UNSEEDABLE RUNBOOK CAUSES %s: the causes record declares "
-                    "letter(s) %s that no '### Cause X:' heading can express, "
-                    "so no chunk could ever carry them (%s chunker). The "
-                    "markdown is not what is wrong here — the RECORD is "
-                    "malformed, and whichever producer emitted it is what to "
-                    "fix.",
-                    document_id,
-                    ", ".join(ungrammatical),
-                    chunker,
-                )
-        except Exception as check_error:
-            # Loud, not debug. Production runs at INFO, so a DEBUG line here
-            # would let a broken check disappear while its counter kept
-            # reporting a clean corpus — see the docstring.
-            logger.warning(
-                "UNSEEDABLE-CAUSES CHECK FAILED for %s (%s chunker): %s. That "
-                "document went unchecked, and kb_cause_unseedable_at_ingest_"
-                "total cannot be read as a clean bill of health until this "
-                "stops.",
-                document_id,
-                chunker,
-                check_error,
-                exc_info=True,
-            )
-            try:
-                from faultmaven.core.investigation.lifecycle_metrics import (
-                    kb_cause_ingest_check_failed_total,
-                )
-
-                kb_cause_ingest_check_failed_total.inc()
-            except Exception:
-                # The deferred import is among the likelier things to have
-                # failed above; the WARNING already carries the report, and
-                # nothing here may raise into the write.
-                pass
 
     async def _discard_vectors_for_vanished_row(self, document_id: str) -> None:
         """Drop vectors written for a row that was deleted mid-update (#952).
@@ -1543,7 +1094,6 @@ class KnowledgeService:
             else:
                 await self._index_document_in_vector_store(
                     self._build_index_model(observed),
-                    causes=_row_causes(observed.metadata),
                 )
         except Exception as restore_error:
             logger.error(
@@ -1624,7 +1174,6 @@ class KnowledgeService:
         verified_by: Optional[str] = None,
         verification_level: "Optional[VerificationLevel]" = None,
         prechunked: Optional[List[tuple[str, List[float]]]] = None,
-        causes: Optional[List[Dict[str, Any]]] = None,
     ) -> int:
         """Promote runbook content to a fully-published KnowledgeItem.
 
@@ -1734,25 +1283,7 @@ class KnowledgeService:
             verified_at=now if verified_by else None,
             created_at=now,
             updated_at=now,
-            # v4 per-Cause graph records, stored verbatim (absent/None on the
-            # upload path and pre-v4 runbooks). The runtime reader — the KB
-            # cause seeder — was removed in fm#1295; the record and its stamps
-            # are retired in the follow-on that removes the cause-record
-            # pipeline. The shape is also the cross-repo
-            # pack contract (test_runbook_causes_contract). Co-located in the row
-            # so the orphan-prune removes them with it, and re-ingested on a
-            # causes drift even when the markdown is byte-identical (kb_init
-            # compares the persisted causes, not just the content hash).
-            # ``causes`` verbatim, plus the identity of the chunk stamp
-            # written alongside it (fm#1108). The stamp identity is recorded
-            # even for a runbook with no causes record, because it describes the
-            # CHUNKS, not the record — and the bootstrap's idempotency gate
-            # compares it to decide whether stored stamps still mean what they
-            # say.
-            metadata={
-                **({"causes": causes} if causes else {}),
-                "chunk_stamp": chunk_stamp_identity(),
-            },
+            metadata={},
         )
         async with self._db_session_factory() as session:
             repo = DatabaseKnowledgeItemRepository(session)
@@ -1789,7 +1320,7 @@ class KnowledgeService:
         )
         try:
             chunks_created = await self._index_document_in_vector_store(
-                doc_model, prechunked=prechunked, causes=causes
+                doc_model, prechunked=prechunked
             )
         except Exception:
             await self._delete_knowledge_item_row(document_id)
@@ -1887,21 +1418,10 @@ class KnowledgeService:
             created_at=to_json_compatible(row.created_at),
             updated_at=to_json_compatible(row.updated_at),
         )
-        # A repair re-chunks with the RUNTIME chunker while the row keeps the
-        # causes record it was ingested with — for a pack runbook that pairs our
-        # chunks with kb-toolkit's record, the one place the two producers meet.
-        # Read straight off the row.
-        row_causes = _row_causes(getattr(row, "knowledge_metadata", None))
         try:
-            written = await self._index_document_in_vector_store(
-                doc_model, prechunked=None, causes=row_causes
+            return await self._index_document_in_vector_store(
+                doc_model, prechunked=None
             )
-            if written > 0:
-                # These chunks carry the current stamp, so the row should say so
-                # — otherwise the fm#1108 restamp sweep sees a repaired row as
-                # still stale and re-embeds it on the next boot.
-                await self._record_chunk_stamp(item_id)
-            return written
         except KnowledgeBaseError as e:
             # Deliberate, documented tolerance — see the docstring. A failed
             # boot-time repair leaves the row orphaned for a later attempt; it
@@ -1911,125 +1431,6 @@ class KnowledgeService:
                 "leaving the row orphaned for a later boot to retry"
             )
             return 0
-
-    async def restamp_document(self, item_id: str) -> int:
-        """Re-index a row so its chunks carry the CURRENT cause stamp (fm#1108).
-
-        The convergence path for content ``kb_init`` never walks. The pack's
-        runbooks re-stamp through the bootstrap's idempotency gate, but authored
-        rows — verified conversions, edits — are not in the pack, and the repair
-        pass that could have caught them selects on MISSING VECTORS, not stale
-        stamps. Without this they would keep their pre-fm#1108 chunks
-        indefinitely, so the read path's legacy parse (and with it the
-        grammar-drift hazard) would never drain for exactly the population most
-        exposed to it: LLM-written headings sit nearest the grammar's edges.
-
-        Skips an UNPUBLISHED row. Retrieval ignores ``is_published``, so a
-        retired runbook is one whose vectors were deleted; writing fresh ones
-        would put it back into investigations on the strength of a maintenance
-        pass. It has no chunks to re-stamp either way.
-
-        The new stamp identity is recorded on the row ONLY after the vectors
-        are written (by the indexing path itself), so a failure leaves the row
-        stale and the next boot retries it — rather than marking it done and
-        never returning. Returns the number of chunks written (0 when skipped or
-        unrepairable).
-
-        Costs an embed: it re-chunks and re-embeds through the runtime path.
-        Callers MUST bound how many rows they restamp per boot.
-        """
-        from sqlalchemy import select as _select
-
-        from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
-
-        async with self._db_session_factory() as session:
-            found = await session.execute(
-                _select(KnowledgeItemModel).where(KnowledgeItemModel.item_id == item_id)
-            )
-            row = found.scalar_one_or_none()
-
-        if row is None:
-            return 0
-        if not row.is_published:
-            logger.debug(
-                "restamp_document: %s is unpublished — no vectors to re-stamp",
-                item_id,
-            )
-            return 0
-
-        # reindex_missing_vectors records the stamp itself on success — it is
-        # the one writing the chunks, so it is where that belongs.
-        return await self.reindex_missing_vectors(item_id)
-
-    async def _record_chunk_stamp(self, item_id: str) -> None:
-        """Note on the row which stamp identity its chunks now carry.
-
-        Written after a successful (re-)index, never before. The row is the only
-        place a later boot can cheaply ask "are these chunks stamped by the
-        current schema and grammar?" — reading it from the vector store would
-        mean a per-runbook metadata query at startup. Leaving it unwritten is
-        safe but expensive: the row stays a restamp candidate and pays the
-        embedding cost again on every boot, forever.
-
-        Best-effort and read-modify-write on the whole metadata dict, so the
-        ``causes`` record beside it is preserved. Failure is logged, not raised:
-        the vectors are already correct, and the cost of not recording it is a
-        repeated repair, not wrong data.
-        """
-        from sqlalchemy import select as _select
-
-        from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
-
-        try:
-            async with self._db_session_factory() as session:
-                found = await session.execute(
-                    _select(KnowledgeItemModel).where(
-                        KnowledgeItemModel.item_id == item_id
-                    )
-                )
-                row = found.scalar_one_or_none()
-                if row is None:
-                    return
-                # Refuse to rewrite metadata we could not READ. This is
-                # read-modify-write, and _row_metadata answers {} for an
-                # unreadable value — so writing here would replace a corrupt
-                # blob with {"chunk_stamp": ...}, destroying whatever causes
-                # record it held and leaving the row looking healthy afterwards.
-                # It was already unusable to every reader, but unrecoverable and
-                # unusable are different, and the second is not ours to choose.
-                # The row stays stale and the sweep skips it (with its id), which
-                # is a loud, repeatable state rather than a silent one-way loss.
-                #
-                # Scoped to a TRUTHY unreadable value on purpose. A falsy one
-                # (JSONB holding ``0``/``false``/``""``/``[]``) is overwritten as
-                # before — nothing recoverable is in it, so refusing would cost a
-                # permanently unconvergeable row to preserve nothing. The
-                # principle is "do not destroy what might still be read", not
-                # "never write".
-                decoded = decode_json_blob(row.knowledge_metadata)
-                if decoded is None and row.knowledge_metadata:
-                    logger.error(
-                        "UNREADABLE KNOWLEDGE METADATA %s: refusing to record a "
-                        "chunk stamp over it, because that would overwrite "
-                        "whatever it holds. The row keeps its vectors and stays "
-                        "retrievable, but NOTHING WILL RETRY THIS on its own — "
-                        "the restamp sweep skips unreadable rows for the same "
-                        "reason. Repair or clear that row's metadata by hand and "
-                        "it converges on the next boot.",
-                        item_id,
-                    )
-                    return
-                metadata = dict(decoded or {})
-                metadata["chunk_stamp"] = chunk_stamp_identity()
-                row.knowledge_metadata = json.dumps(metadata)
-                await session.commit()
-        except Exception as record_error:
-            logger.warning(
-                "Could not record the chunk stamp for %s (%s) — its vectors are "
-                "correct, but it will be restamped again on the next boot.",
-                item_id,
-                record_error,
-            )
 
     async def _delete_knowledge_item_row(self, item_id: str) -> None:
         """Best-effort cleanup of an orphaned knowledge_items row.
@@ -3090,13 +2491,8 @@ class KnowledgeService:
             # a recency signal.
             if needs_reindex:
                 item.updated_at = datetime.now(timezone.utc)
-                # An edit re-chunks the content but leaves ``metadata["causes"]``
-                # exactly as it was — editing a runbook's Causes section is the
-                # everyday way for the record and the chunks to stop agreeing, so
-                # the new pairing is checked like an ingest (fm#1103).
                 await self._index_document_in_vector_store(
                     self._build_index_model(item),
-                    causes=_row_causes(item.metadata),
                 )
 
             # Everything from here is compensated as one unit. The vectors

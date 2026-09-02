@@ -42,18 +42,12 @@ Idempotency
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import re
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 from sqlalchemy import select
-
-from faultmaven.modules.knowledge.domain.services.knowledge_service import (
-    chunk_stamp_identity,
-)
-from faultmaven.utils.serialization import decode_json_blob
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +64,6 @@ class BootstrapResult:
         self.orphaned_vectors_cleaned: list[str] = []  # parent_ids w/ no DB row
         self.repaired_rows: list[str] = []  # DB rows re-embedded this boot
         self.orphaned_rows: list[str] = []  # DB rows still w/o vectors after repair
-        self.restamped_rows: list[str] = []  # authored rows re-stamped this boot
 
     def __repr__(self) -> str:
         return (
@@ -80,7 +73,6 @@ class BootstrapResult:
             f"pruned={len(self.pruned)}, "
             f"orphaned_vectors_cleaned={len(self.orphaned_vectors_cleaned)}, "
             f"repaired_rows={len(self.repaired_rows)}, "
-            f"restamped_rows={len(self.restamped_rows)}, "
             f"orphaned_rows={len(self.orphaned_rows)})"
         )
 
@@ -189,19 +181,6 @@ async def bootstrap_kb(
         orphaned_rows, knowledge_service, max_rows=max_rows, max_chunks=max_chunks
     )
 
-    # Convergence for content this pass never walks (fm#1108). The pack's
-    # runbooks re-stamp through the idempotency gate above; AUTHORED rows are not
-    # in the pack, and the repair pass just above selects on MISSING VECTORS, so
-    # a row with perfectly good pre-fm#1108 chunks is invisible to both. Left
-    # alone they would keep the read path's legacy parse alive forever, for
-    # exactly the population most exposed to grammar drift.
-    result.restamped_rows = await _restamp_stale_rows(
-        knowledge_service,
-        db_session_factory,
-        max_rows=max_rows,
-        max_chunks=max_chunks,
-    )
-
     logger.info(
         f"KB bootstrap complete: {len(result.ingested)} ingested, "
         f"{len(result.skipped_unchanged)} unchanged, "
@@ -209,8 +188,7 @@ async def bootstrap_kb(
         f"{len(result.pruned)} pruned, "
         f"{len(result.orphaned_vectors_cleaned)} orphaned vectors cleaned, "
         f"{len(result.repaired_rows)} rows repaired, "
-        f"{len(result.orphaned_rows)} orphaned rows, "
-        f"{len(result.restamped_rows)} restamped"
+        f"{len(result.orphaned_rows)} orphaned rows"
     )
     return result
 
@@ -274,60 +252,12 @@ async def _ingest_pack_runbook(
     if existing_row is not None:
         existing_hash = hashlib.sha256(existing_row.content.encode("utf-8")).hexdigest()
         content_unchanged = existing_hash == runbook.content_hash
-        # The content hash covers only the markdown. ``causes`` is derived from
-        # the markdown but travels separately in metadata, so a pack change that
-        # edits ONLY causes (markdown byte-identical) would hash-match and be
-        # skipped — leaving the live consumer (the KB cause seeder) reading stale
-        # structure. Compare the persisted causes too and re-ingest on drift.
-        existing_metadata = decode_json_blob(existing_row.knowledge_metadata) or {}
-        existing_causes = existing_metadata.get("causes")
-        causes_unchanged = _causes_fingerprint(existing_causes) == _causes_fingerprint(
-            runbook.causes
-        )
-        # Third axis (fm#1108): the chunks carry a stamp of the cause letters the
-        # seeder joins on, and that stamp is only as good as the schema+grammar
-        # that produced it. Neither is in the content hash — the grammar lives in
-        # code — so before this a grammar change left every stored stamp meaning
-        # something it no longer meant, with nothing to notice. Comparing the
-        # identity makes the re-stamp automatic: edit the grammar, and the next
-        # boot re-ingests the pack. Cheap, because pack re-ingest is prechunked.
-        stamp_unchanged = existing_metadata.get("chunk_stamp") == chunk_stamp_identity()
-        if content_unchanged and causes_unchanged and stamp_unchanged:
+        if content_unchanged:
             logger.debug(f"Skipping {runbook.relpath}: unchanged")
             return "skipped"
-        if content_unchanged and causes_unchanged:
-            # Re-ingest is delete-then-create, and the created row is published
-            # (``KnowledgeItem.is_published`` defaults True). For a runbook an
-            # operator UNPUBLISHED that would silently put it back into
-            # retrieval — ``delete_document`` unpublishes a built-in by dropping
-            # its vectors precisely because retrieval ignores the flag, and its
-            # contract is that the skip survives restart until the CONTENT
-            # changes. A stamp change is not a content change: nothing about the
-            # runbook moved, only our code did.
-            #
-            # Skipping is also the correct answer on its own terms — an
-            # unpublished built-in has no vectors, so there are no stamps on it
-            # to refresh. If it is ever republished it is re-vectorised then,
-            # by code that stamps.
-            if not existing_row.is_published:
-                logger.debug(
-                    f"Skipping {runbook.relpath}: stamp identity changed but the "
-                    "runbook is unpublished (no vectors to re-stamp)"
-                )
-                return "skipped"
-            logger.info(
-                f"{runbook.relpath}: chunk stamp identity changed (content and "
-                "causes unchanged) — re-ingesting to re-stamp"
-            )
-        elif content_unchanged:
-            logger.info(
-                f"{runbook.relpath}: causes changed (markdown unchanged) — "
-                "re-ingesting"
-            )
-        else:
-            logger.info(
-                f"{runbook.relpath}: content changed since last ingest — re-ingesting"
-            )
+        logger.info(
+            f"{runbook.relpath}: content changed since last ingest — re-ingesting"
+        )
         await _delete_existing(runbook.item_id, knowledge_service, db_session_factory)
 
     prechunked = [(c.text, c.embedding) for c in runbook.chunks]
@@ -349,9 +279,6 @@ async def _ingest_pack_runbook(
         verified_by=None,
         verification_level=VerificationLevel.COMMUNITY,
         prechunked=prechunked,
-        # v4 per-Cause graph records → knowledge_items.metadata["causes"], stored
-        # verbatim (the cross-repo pack contract pins the shape).
-        causes=runbook.causes,
     )
 
     if chunks_created <= 0:
@@ -561,145 +488,6 @@ def _resolve_repair_bounds() -> tuple[int, int]:
         return KB_REPAIR_MAX_ROWS, KB_REPAIR_MAX_CHUNKS
 
 
-async def _restamp_stale_rows(
-    knowledge_service: Any,
-    db_session_factory: Callable[[], Awaitable[Any]],
-    *,
-    max_rows: int = KB_REPAIR_MAX_ROWS,
-    max_chunks: int = KB_REPAIR_MAX_CHUNKS,
-) -> list[str]:
-    """Re-stamp AUTHORED rows whose chunks predate the current stamp (fm#1108).
-
-    The seeder's cause join lives in chunk metadata, written by a specific stamp
-    schema and cause-heading grammar. Two existing passes converge content onto
-    the current one and neither reaches authored rows:
-
-    * the pack ingest above compares ``metadata["chunk_stamp"]`` — but it only
-      ever walks the pack, and authored runbooks are not in it;
-    * ``_repair_orphaned_rows`` re-embeds from the row — but it selects on
-      MISSING VECTORS, and these rows' vectors are present and fine, just
-      stamped by older code (or not at all).
-
-    So a verified conversion would keep pre-fm#1108 chunks indefinitely, the read
-    path would parse them on every retrieval, and the grammar-drift hazard would
-    stay open for the population most exposed to it — LLM-written headings sit
-    nearest the grammar's edges. This is the selector neither pass had.
-
-    Detection is SQL-only and cheap: ``ingest_runbook`` records the identity on
-    the row, so a stale or absent ``chunk_stamp`` is decidable without reading a
-    single vector. Only ``item_id``/``is_published``/metadata are fetched — never
-    ``content`` — so the scan stays light even on a large KB.
-
-    Scope and safety:
-
-    * **Built-ins are excluded.** They converge through the pack gate, and doing
-      them here would duplicate that work with an EMBEDDING (the pack path is
-      prechunked and free).
-    * **Unpublished rows are excluded.** Retrieval ignores ``is_published``, so a
-      retired runbook is one whose vectors were deleted; re-indexing it would put
-      it back into investigations, and it has no chunks to re-stamp anyway.
-    * **Bounded by the repair budgets** (``max_rows``/``max_chunks``): this
-      re-chunks and re-embeds with BGE-M3, so an unbounded sweep would
-      reintroduce the on-pod embedding timeout the pack exists to avoid. Both
-      bounds SLICE rather than refuse — unlike repair, where an oversized set
-      signals a bulk-loss anomaly, an oversized set here is simply the first boot
-      after fm#1108, and declining it would leave any deployment with more
-      authored runbooks than the cap permanently unconverged. What does not fit
-      this boot is picked up by the next; a row stays stale until its vectors are
-      actually rewritten, so progress is monotone and never double-counted.
-
-    Returns the item_ids restamped this boot.
-    """
-    from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
-
-    current = chunk_stamp_identity()
-    try:
-        async with db_session_factory() as session:
-            found = await session.execute(
-                select(
-                    KnowledgeItemModel.item_id,
-                    KnowledgeItemModel.knowledge_metadata,
-                    KnowledgeItemModel.is_published,
-                )
-            )
-            rows = found.all()
-        # Selection is inside the guard as well as the query: this is a
-        # maintenance sweep, and no shape it fails to understand may take
-        # startup down with it.
-        stale = []
-        for item_id, metadata, is_published in rows:
-            if not is_published or _BUILTIN_ITEM_ID_RE.match(item_id or ""):
-                continue
-            decoded = decode_json_blob(metadata)
-            if decoded is None and metadata:
-                # Present but unreadable. Do NOT restamp it: the stamp write is
-                # read-modify-write, so it would replace a blob we could not read
-                # (destroying any causes record in it), and we cannot even tell
-                # whether this row is stale. Naming the ROW is the diagnostic
-                # that matters — the decoder itself only ever sees the value, and
-                # deliberately does not log it.
-                logger.warning(
-                    "KB restamp: skipping %s — its metadata is present but "
-                    "unreadable, so its chunk stamp cannot be judged or safely "
-                    "rewritten. Repair or clear that row's metadata.",
-                    item_id,
-                )
-                continue
-            if (decoded or {}).get("chunk_stamp") != current:
-                stale.append(item_id)
-    except Exception as e:
-        logger.warning(f"KB restamp skipped: could not select stale rows: {e}")
-        return []
-
-    if not stale:
-        return []
-
-    # ``max_rows`` SLICES here; it does not refuse. That is the one place this
-    # pass must not copy ``_repair_orphaned_rows``, whose equivalent guard treats
-    # an oversized set as a bulk-loss ANOMALY and declines it wholesale. A large
-    # stale set is the expected FIRST BOOT after fm#1108 — every authored row is
-    # stale at once — so refusing would mean any deployment with more authored
-    # runbooks than the cap (25 by default) never converges at all, which is the
-    # exact failure this pass exists to fix. Slicing makes convergence monotone:
-    # each boot restamps a bounded prefix until there is nothing left.
-    total_stale = len(stale)
-    stale = stale[:max_rows]
-
-    logger.info(
-        "KB restamp: %d authored row(s) carry a stale chunk stamp; taking %d "
-        "this boot (max_rows=%d, max_chunks=%d) — re-embedding with BGE-M3.",
-        total_stale,
-        len(stale),
-        max_rows,
-        max_chunks,
-    )
-
-    restamped: list[str] = []
-    chunks_embedded = 0
-    for i, item_id in enumerate(stale):
-        if chunks_embedded >= max_chunks:
-            logger.info(
-                "KB restamp: per-boot chunk budget (%d) reached after %d row(s) "
-                "— deferring %d to the next boot.",
-                max_chunks,
-                len(restamped),
-                len(stale) - i,
-            )
-            break
-        try:
-            written = await knowledge_service.restamp_document(item_id)
-        except Exception as e:
-            # Never fail startup for a maintenance sweep; the row stays stale and
-            # the next boot retries it.
-            logger.warning(f"KB restamp failed for {item_id}: {e}")
-            continue
-        if written > 0:
-            chunks_embedded += written
-            restamped.append(item_id)
-
-    return restamped
-
-
 async def _repair_orphaned_rows(
     orphaned_rows: list[str],
     knowledge_service: Any,
@@ -796,15 +584,6 @@ async def _repair_orphaned_rows(
                 "unavailable?) — row remains unretrievable, will retry next boot."
             )
     return repaired, still_orphaned
-
-
-def _causes_fingerprint(causes: Optional[list]) -> str:
-    """Order-stable, key-order-insensitive fingerprint of a causes record.
-
-    Cause order is authoring-significant (kept), but dict key order is not, so
-    ``sort_keys`` lets a semantically-identical re-serialization compare equal.
-    """
-    return json.dumps(causes or [], sort_keys=True, ensure_ascii=False)
 
 
 async def _delete_existing(

@@ -15,6 +15,7 @@ Usage:
     pytest tests/integration/test_alembic_migrations.py -v
 """
 
+import json
 import os
 import shlex
 import sqlite3
@@ -33,7 +34,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
-HEAD_REVISION = "c3d4e5f6a7b8"  # current head (049 — coverage_source)
+HEAD_REVISION = "d4e5f6a7b8c9"  # current head (050 — strip_cause_record_metadata)
 # Parent of the RBAC-seed migration (029). Downgrading here reverses the seed
 # (029) regardless of no-op migrations stacked above it — more robust than a
 # relative "downgrade -1", which follows whatever the current head is.
@@ -1203,3 +1204,41 @@ class TestOperatorAccessGrantsImmutability:
 
 # Test markers for different categories
 pytestmark = pytest.mark.integration
+
+
+class Test050StripsTheRetiredCauseRecord:
+    """050 removes ``causes`` and ``chunk_stamp`` from ``knowledge_items.metadata``
+    and nothing else (fm#1295). Rows without either key are not rewritten."""
+
+    def _insert(self, item_id, metadata):
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            conn.execute(
+                "INSERT INTO knowledge_items "
+                "(item_id, organization_id, scope, title, content, item_type, metadata) "
+                "VALUES (?, NULL, 'global', 'T', 'body', 'runbook', ?)",
+                (item_id, json.dumps(metadata)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_dead_keys_are_stripped_and_others_kept(self, clean_database, database_url):
+        up = run_alembic("upgrade c3d4e5f6a7b8", database_url)
+        assert up.returncode == 0, up.stderr
+        self._insert(
+            "kb_a", {"causes": [{"cause_letter": "A"}], "chunk_stamp": "x", "keep": 1}
+        )
+        self._insert("kb_b", {"chunk_stamp": "y"})
+        self._insert("kb_c", {"other": "untouched"})
+        self._insert("kb_d", {})
+
+        head = run_alembic("upgrade head", database_url)
+        assert head.returncode == 0, head.stderr
+        rows = dict(
+            query_rows(TEST_DB, "SELECT item_id, metadata FROM knowledge_items")
+        )
+        assert json.loads(rows["kb_a"]) == {"keep": 1}
+        assert json.loads(rows["kb_b"]) == {}
+        assert json.loads(rows["kb_c"]) == {"other": "untouched"}
+        assert json.loads(rows["kb_d"]) == {}

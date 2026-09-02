@@ -5,10 +5,10 @@ Replicated from faultmaven-kb-toolkit to avoid cross-repo dependency. Each
 **Indicators** / quadrant-tagged **Interventions**.
 
 Cause validation is anchored on the SHARED parse grammar (`runbook_grammar`) — the
-same section, heading, and sub-field regexes the extractor (`runbook_cause_extractor`)
+same section, heading, and sub-field regexes the toolkit parser
 and the upstream pack builder consume — so a draft this gate PASSES is exactly one
-the extractor can parse into the `metadata["causes"]` records the investigation
-seeder reads. The gate can no longer be looser than the parser it fronts.
+the toolkit parser can parse into per-Cause records. The gate can no longer
+be looser than the parser it fronts.
 
 The cause-level ERRORS mirror the KB Toolkit's `RunbookValidator`
 (`kb_toolkit/core/validator.py`): strict `### Cause X:` heading; unique letters;
@@ -48,11 +48,11 @@ from faultmaven.modules.knowledge.domain.services.content_chunker import (
     ContentChunker,
 )
 
-# Shared v4 parse grammar — the SAME regexes + sub-field parser the extractor
-# (``runbook_cause_extractor``) and the upstream pack builder consume. Anchoring
+# Shared v4 parse grammar — the SAME regexes + sub-field parser the upstream
+# pack builder consumes. Anchoring
 # the validator's cause enumeration here is what keeps the gate from being looser
-# than the parser it fronts (a draft the gate passes must be one the extractor can
-# parse into the exact ``metadata["causes"]`` records the seeder reads).
+# than the parser it fronts (a draft the gate passes must be one the toolkit can
+# parse into the exact per-Cause records the toolkit emits).
 from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
     CAUSE_HEADING_RE,
     CHAIN_RUNG_RE,
@@ -365,9 +365,9 @@ MAX_CHAIN_RUNG_LENGTH = 300
 #
 # The section scope (``CAUSES_SECTION_RE``), the ``### Cause X:`` heading
 # (``CAUSE_HEADING_RE``), and the sub-field split (``parse_cause_subfields``) are
-# the EXACT ones the extractor + upstream pack builder use. So a draft the gate
-# passes is one the extractor can parse into the same ``metadata["causes"]``
-# records — the gate can no longer accept a Cause shape the extractor silently
+# the EXACT ones the upstream pack builder use. So a draft the gate
+# passes is one the toolkit parser can parse into the same per-Cause
+# records — the gate can no longer accept a Cause shape the toolkit parser silently
 # drops (a stricter heading, a stray-bold-truncated Statement, an out-of-section
 # heading that the gate counts but the parser does not).
 # =============================================================================
@@ -384,8 +384,8 @@ _LOOSE_CAUSE_HEADING_RE = re.compile(r"^[ \t]*#{2,}[ \t]*Cause\b.*$", re.MULTILI
 _CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 
 # Sub-field boundary set — the schema's required + optional labels, identical to
-# the extractor's (``runbook_cause_extractor._CAUSE_SUBFIELDS``), so a Statement
-# the gate length-checks is byte-for-byte the one the extractor/seeder sees.
+# the toolkit's, so a Statement the gate length-checks is byte-for-byte the one
+# the pack builder parses.
 _CAUSE_SUBFIELDS: List[str] = list(REQUIRED_CAUSE_SUBFIELDS) + list(
     OPTIONAL_CAUSE_SUBFIELDS
 )
@@ -395,7 +395,7 @@ def _causes_section_body(content: str) -> str:
     """Comment-MASKED body of the ``## Causes`` H2 section, or "".
 
     Uses the shared ``causes_section`` so the gate scopes causes to exactly the
-    span the extractor does: a ``### Cause``-style heading in ANOTHER section stays
+    span the toolkit parser does: a ``### Cause``-style heading in ANOTHER section stays
     out of cause validation, and the LAST cause's block cannot bleed into
     ``## Prevention`` / ``## Sources`` (which would let a whole-body sub-field scan
     find a required label in a trailing section and mask a genuinely-missing one).
@@ -425,7 +425,7 @@ def _cause_fields(body: str) -> Dict[str, str]:
     Returns ``{label: value}`` for every label PRESENT in the block (value stripped;
     ``""`` when present-but-empty). A missing label is simply absent from the dict —
     so the caller keeps the message-oriented MISSING-vs-EMPTY distinction while the
-    field boundaries match the extractor exactly (splitting only on the four schema
+    field boundaries match the toolkit parser exactly (splitting only on the four schema
     labels, so a stray ``**Note:**`` no longer truncates a Statement before the
     length gate)."""
     return parse_cause_subfields(body, _CAUSE_SUBFIELDS)
@@ -433,15 +433,15 @@ def _cause_fields(body: str) -> Dict[str, str]:
 
 def _iter_cause_blocks(content: str, include_heading: bool = False):
     """Yield ``(letter, name, text)`` for each strict ``### Cause X:`` block, from
-    the SHARED walk (``runbook_grammar.iter_cause_blocks``) the extractor uses —
-    so the gate can never accept a Cause shape the extractor silently drops.
+    the SHARED walk (``runbook_grammar.iter_cause_blocks``) the toolkit parser uses —
+    so the gate can never accept a Cause shape the toolkit parser silently drops.
 
     By default ``text`` is the comment-MASKED post-heading BODY (what the
     sub-field parser consumes); with ``include_heading=True`` it is the RAW span
     ``ContentChunker`` sees — the heading line THROUGH the block terminus,
     comments included — so a length measured on it matches the chunker's
     per-section length. A heading that is not the strict form (``#### Cause``,
-    ``### Cause AA``, ``### Cause A :``) is NOT yielded here — the extractor drops
+    ``### Cause AA``, ``### Cause A :``) is NOT yielded here — the toolkit parser drops
     it too; it is surfaced separately by ``_flag_malformed_cause_headings``."""
     for cause in iter_cause_blocks(content):
         yield (
@@ -453,9 +453,9 @@ def _iter_cause_blocks(content: str, include_heading: bool = False):
 
 def _cause_is_fallback(fields: Dict[str, str]) -> bool:
     """The fallback Cause is the one whose **Indicators** carry ``[Default]`` — the
-    SAME key the extractor uses to set ``is_fallback_cause`` (``[Default]`` only,
+    SAME key the toolkit parser uses to set ``is_fallback_cause`` (``[Default]`` only,
     NOT the letter Z). Keying on ``[Default]`` alone is what lets the validator
-    catch a ``### Cause Z:`` that OMITS ``[Default]`` (which the extractor would seed
+    catch a ``### Cause Z:`` that OMITS ``[Default]`` (which the toolkit parser would seed
     as a real candidate root, not a fallback)."""
     return FALLBACK_INDICATOR_TOKEN in fields.get("Indicators", "")
 
@@ -502,7 +502,7 @@ class RunbookValidator:
         # Gate 2c: per-Cause graph shape (heading form, duplicate/reserved letters,
         # exactly-one fallback, parseable Chain, quadrant-tagged Interventions,
         # token-anchored Indicators) — ERROR parity with the kb-toolkit validator so
-        # a passing draft parses into the causes the seeder consumes.
+        # a passing draft parses into the same per-Cause records the toolkit emits.
         self._validate_cause_graph(content, errors, warnings)
 
         # Gate 2d: per-Cause retrieval-chunk guard (bounds/boundary imported FROM
@@ -657,7 +657,7 @@ class RunbookValidator:
         # ## Causes must have at least one ### Cause subsection. Scanned
         # SECTION-SCOPED with the shared strict ``CAUSE_HEADING_RE`` (not a loose
         # whole-content scan) so an example ``### Cause`` heading in another section
-        # cannot satisfy this gate while the extractor parses zero causes. Comments
+        # cannot satisfy this gate while the toolkit parser parses zero causes. Comments
         # are masked for the same reason (#1241): a section holding only a
         # commented-out example Cause parses to zero causes, so it must fail here.
         if re.search(r"^##[ \t]+Causes[ \t]*$", content, re.MULTILINE):
@@ -722,7 +722,7 @@ class RunbookValidator:
         """Match-surface invariants (#545) on NON-FALLBACK Cause Statements.
 
         Drop the fallback Cause (``[Default]`` in its *Indicators* — the SAME key
-        the extractor uses, NOT the letter Z, so a mis-lettered ``### Cause Z:``
+        the toolkit parser uses, NOT the letter Z, so a mis-lettered ``### Cause Z:``
         without ``[Default]`` is still checked), collect each remaining Cause's
         non-empty ``**Statement:**``, and run the shared
         ``check_cause_statement_invariants`` (no ``[Step N]`` leak; siblings mutually
@@ -749,18 +749,18 @@ class RunbookValidator:
 
         Ports the structural errors the backend gate was missing, each guarding a
         way a runbook could pass validation yet parse into wrong/zero causes for the
-        seeder: a malformed heading the extractor drops; a duplicate letter; a
-        real Cause on the reserved letter Z (which the extractor would seed as a
+        toolkit parser: a malformed heading the toolkit parser drops; a duplicate letter; a
+        real Cause on the reserved letter Z (which the toolkit parser would seed as a
         candidate root); a missing/duplicate ``[Default]`` fallback; a Chain present
         but unparseable; an Intervention with no/invalid quadrant tag; an Indicator
         entry with no ``[Step N]``/``[Symptom]``/``[Default]`` token or an unresolved
-        ``[Step N]``. Coarse, section-scoped parse (same span as the extractor).
+        ``[Step N]``. Coarse, section-scoped parse (same span as the toolkit parser).
         """
         body = _causes_section_body(content)
         if not body:
             return  # a missing ## Causes section is flagged by _validate_structure
 
-        # Near-miss headings the extractor silently drops (surfaced, not skipped).
+        # Near-miss headings the toolkit parser silently drops (surfaced, not skipped).
         self._flag_malformed_cause_headings(body, errors)
 
         causes = list(_iter_cause_blocks(content))
@@ -901,14 +901,14 @@ class RunbookValidator:
     ) -> None:
         """ERROR on a heading that reads like a Cause but is not the strict
         ``### Cause X: <name>`` form (``#### Cause``, ``### Cause AA``,
-        ``### Cause A :``, lowercase/numeric letter, empty name). The extractor
+        ``### Cause A :``, lowercase/numeric letter, empty name). The toolkit parser
         matches ONLY the strict form, so any near-miss is silently dropped — this
         converts that silent drop into an actionable error.
 
         Fenced code blocks are stripped first so an illustrative ``#### Cause`` in
         an Intervention's command example is not mistaken for a malformed heading
         (a false block); a genuine ``### Cause`` in a fence is parsed as a cause by
-        the extractor anyway, so it is not a near-miss to flag."""
+        the toolkit parser anyway, so it is not a near-miss to flag."""
         # ``causes_body`` arrives comment-MASKED from ``_causes_section_body``,
         # so this must NOT strip comments again — and above all must not DELETE
         # them. Deleting splices the lines either side together, which measurably
@@ -919,15 +919,15 @@ class RunbookValidator:
         scan = _CODE_FENCE_RE.sub("", causes_body)
         for m in _LOOSE_CAUSE_HEADING_RE.finditer(scan):
             # Compare with LEADING whitespace preserved: the strict grammar (and the
-            # extractor) anchor the heading at column 0, so an INDENTED ``### Cause``
-            # is a near-miss the extractor drops too — stripping first would hide it.
+            # toolkit parser) anchor the heading at column 0, so an INDENTED ``### Cause``
+            # is a near-miss the toolkit parser drops too — stripping first would hide it.
             raw = m.group(0).rstrip()
             if not CAUSE_HEADING_RE.match(raw):
                 errors.append(
                     f"Malformed Cause heading {raw.strip()!r}: expected "
                     f"'### Cause X: <name>' (H3 '###', a single uppercase letter A-Z, "
                     f"then ':' immediately after the letter, then a non-empty name). "
-                    f"The extractor silently drops any other form."
+                    f"The toolkit parser silently drops any other form."
                 )
 
     def _validate_chain(

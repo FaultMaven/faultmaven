@@ -23,7 +23,6 @@ import json
 
 import pytest
 
-from faultmaven.modules.knowledge.domain.services.knowledge_service import _row_metadata
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
     DatabaseKnowledgeItemRepository,
 )
@@ -31,7 +30,7 @@ from faultmaven.utils.serialization import decode_json_blob
 
 pytestmark = [pytest.mark.unit]
 
-RECORD = {"causes": [{"cause_letter": "A"}], "chunk_stamp": "abc123"}
+RECORD = {"description": "a stored object", "tags": ["a", "b"]}
 
 # Every shape a JsonBlob column has been observed to hand back, plus the ways a
 # value can be unusable. `None` means "nothing usable here".
@@ -52,16 +51,6 @@ SHAPES = [
 @pytest.mark.parametrize("value,expected", SHAPES)
 def test_the_shared_decode_covers_every_stored_shape(value, expected):
     assert decode_json_blob(value) == expected
-
-
-@pytest.mark.parametrize("value,expected", SHAPES)
-def test_the_service_surface_is_the_shared_decode_plus_a_get_safe_default(
-    value, expected
-):
-    """``_row_metadata`` differs from the shared decode in exactly one way: it
-    substitutes ``{}`` for "nothing usable", because every reader goes straight
-    to ``.get``. Anything else is drift."""
-    assert _row_metadata(value) == (expected if expected is not None else {})
 
 
 @pytest.mark.parametrize("value,expected", SHAPES)
@@ -111,71 +100,3 @@ def test_the_read_only_surfaces_do_not_pay_for_a_copy():
     deliberate one."""
     stored = {"causes": [{"cause_letter": "A"}]}
     assert decode_json_blob(stored) is stored
-    assert _row_metadata(stored) is stored
-
-
-def test_a_present_but_unreadable_value_is_reported_not_silently_empty(caplog):
-    """The service surface warns, and that is the point of keeping a named
-    wrapper: this value feeds the causes record the seeder joins on AND the chunk
-    stamp the restamp sweep keys on, so a silent ``{}`` would read as "prose
-    runbook, nothing to check" and disable both."""
-    with caplog.at_level("WARNING"):
-        assert _row_metadata("{not json") == {}
-    assert any(
-        "Unreadable knowledge_items metadata" in r.getMessage()
-        for r in caplog.records
-        if r.levelname == "WARNING"
-    )
-
-
-def test_absent_metadata_is_not_warned_about():
-    """A row with no metadata is ordinary — most rows. Warning on it would bury
-    the signal above in noise."""
-    import logging
-
-    logger = logging.getLogger(
-        "faultmaven.modules.knowledge.domain.services.knowledge_service"
-    )
-    records = []
-    handler = logging.Handler()
-    handler.emit = records.append
-    logger.addHandler(handler)
-    try:
-        assert _row_metadata(None) == {}
-        assert _row_metadata("") == {}
-    finally:
-        logger.removeHandler(handler)
-    assert [r for r in records if r.levelno >= logging.WARNING] == []
-
-
-# ---------------------------------------------------------------------------
-# The warning must diagnose without publishing what it read
-# ---------------------------------------------------------------------------
-
-
-def test_the_unreadable_warning_never_logs_the_value(caplog):
-    """``knowledge_metadata`` is author-supplied document metadata of unbounded
-    size, and this branch fires per row inside sweeps — so interpolating the
-    value would put user KB content in the logs, repeatedly, to say something its
-    shape already says."""
-    secret = '{"causes": "CONFIDENTIAL-RUNBOOK-BODY-' + "x" * 500 + '"'  # truncated
-    with caplog.at_level("WARNING"):
-        assert _row_metadata(secret) == {}
-    logged = "\n".join(r.getMessage() for r in caplog.records)
-    assert "CONFIDENTIAL-RUNBOOK-BODY" not in logged
-    assert "str of" in logged, "the shape must still be diagnosable"
-    assert str(len(secret)) in logged
-
-
-def test_a_value_that_decodes_to_a_non_object_is_reported_too():
-    """Deliberate widening over the pre-fm#1107 wrapper, which only caught a
-    decode ERROR. ``"[1,2,3]"`` parses fine and is still unusable as metadata —
-    it disables the causes check exactly like a corrupt value, so it earns the
-    same report rather than a silent ``{}``."""
-    assert _row_metadata("[1, 2, 3]") == {}
-    assert _row_metadata("null") == {}
-
-
-def test_absent_metadata_never_reaches_the_warning():
-    assert _row_metadata(None) == {}
-    assert _row_metadata("") == {}

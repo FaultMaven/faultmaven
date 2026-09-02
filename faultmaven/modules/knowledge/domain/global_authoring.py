@@ -2,9 +2,8 @@
 
 Global scope is the org-free platform tier: its rows are readable by every
 tenant (RLS read exemption, migration 033) and its chunks are served to every
-tenant by the org-free vector path, and — once verified — they re-enter
-diagnosis for everyone as seeder candidates (the Phase-4 KB cause seeder
-consumes ``metadata["causes"]``). Authoring global content is therefore a
+tenant by the org-free vector path, and — once verified — they are retrieved
+into every tenant's investigations. Authoring global content is therefore a
 platform-operator action, not a tenant one:
 
 * **Multi-tenant** (``TENANT_PROVIDER=multi``): NO tenant session may author it —

@@ -89,8 +89,8 @@ so chunks match the app exactly — but nothing breaks if they diverge.)
 
 Per-chunk **metadata** is intentionally *not* in the pack — the app derives it
 from the runbook frontmatter at ingest (cheap, app-owned), keeping the pack
-contract: runbook content + chunk text + vectors + the per-Cause `causes` record
-(below).
+contract: runbook content + chunk text + vectors (the per-Cause `causes` record
+the toolkit also ships is ignored by the app since fm#1295 — below).
 
 ### Integrity guards (load- and ingest-time)
 
@@ -155,18 +155,19 @@ silent-corruption failure modes are guarded rather than left to chance:
   a **shared** row; it does not catch a *swapped pair* (two chunks exchanging two
   still-distinct rows keeps every row unique and is unverifiable at load).
 
-### Per-Cause `causes` record (the v4 cause-shape contract)
+### Per-Cause `causes` record (toolkit-emitted, ignored by the app)
 
 Each runbook entry also ships a **`causes`** array — one record per `### Cause`
 in the runbook's `## Causes` section, produced by the toolkit's
-`pack_builder._extract_causes`. Per cause: `cause_letter`, `cause_name`,
-`cause_statement`, the `chain_nodes`/`chain_edges` topology, optional
-`rung_indicators` and `interventions`, and `is_fallback_cause`. At ingest the
-app persists the record verbatim to `knowledge_items.metadata['causes']` (no
-re-derivation; `bootstrap/kb_pack.py`). It is structured per-Cause metadata
-riding alongside the chunks — retrieval itself serves the runbook *text* as RAG
-context. See [runbook-content-architecture.md](./runbook-content-architecture.md)
-for the authoring grammar the record is extracted from.
+`pack_builder._extract_causes`. Its only runtime reader was the KB cause seeder,
+removed in fm#1295; since then the app's pack loader (`bootstrap/kb_pack.py`)
+does not read the field and nothing is persisted from it. The toolkit keeps
+emitting it (its own contract test pins the shape); whether to stop is a
+toolkit decision. Retrieval serves the runbook *text* as RAG context — the
+`## Causes` section chunks one Cause per chunk, so each retrieved Cause is a
+self-contained cause→fix unit. See
+[runbook-content-architecture.md](./runbook-content-architecture.md) for the
+authoring grammar.
 
 **The cause authoring grammar is a cross-repo contract.** The toolkit grammar
 source (`kb_toolkit/core/runbook_grammar.py` + `config.py`) and the backend
