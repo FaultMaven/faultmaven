@@ -13,7 +13,12 @@ Design Notes:
     - Idempotent: Safe to call multiple times
     - Silent on subsequent runs (only logs on first-time setup)
     - Does not modify existing data
-    - Uses absolute paths based on project root for deployment flexibility
+    - Every data directory is resolved from the setting its consumer reads,
+      falling back to the project root only where no setting was configured
+      (see ``resolve_data_dir``). A second, project-root-derived spelling of a
+      configured path does not merely miss the store — it CREATES an empty one
+      beside it, which is what made ``fm-reset-kb`` wipe a decoy and report
+      success (fm#936).
 """
 
 import logging
@@ -57,33 +62,241 @@ def get_project_root() -> Path:
     return Path(__file__).parent.parent.parent
 
 
-def ensure_data_directories() -> None:
-    """Create data directories if they don't exist.
+class UnusableDataDirError(ValueError):
+    """A data-directory knob is set to something no consumer can open.
 
-    Creates (relative to project root):
-        - data/                  (root data directory)
-        - data/chroma-kb/        (ChromaDB KB vector storage — permanent)
-        - data/chroma-evidence/  (ChromaDB case evidence vector storage — ephemeral)
-        - data/evidence/         (uploaded evidence files)
-        - data/knowledge/        (runbook source files by scope)
+    Raised rather than substituted, because substituting is how fm#936 works.
+    A blank ``CHROMADB_KB_PERSIST_DIR=`` is the reachable case: pydantic-settings
+    runs with ``env_ignore_empty`` off, so an unpopulated ConfigMap key or a
+    trailing ``=`` in a .env arrives as a SET field holding ``""``. The
+    consumers do not fall back either — ``getattr(db, "chromadb_kb_persist_dir",
+    "./data/chroma-kb")`` returns ``""``, because the attribute exists, and
+    ``create_persistent_client("")`` dies in ``os.makedirs("")`` with
+    ``FileNotFoundError`` (measured). A resolver that quietly answered
+    ``./data/chroma-kb`` there would have the bootstrap create a tree the
+    container cannot open, log that the default is in effect, and hand
+    ``fm-reset-kb`` a decoy — the exact shape of the bug, rebuilt inside its
+    own fix.
 
-    These directories are gitignored and store runtime data.
-    Uses absolute paths based on project root for deployment flexibility.
+    Callers decide what to do with it: startup logs and skips that one
+    directory (the deployment is broken, but it is not this function's job to
+    kill the process), and a destructive command refuses.
     """
-    project_root = get_project_root()
 
-    directories = [
-        project_root / "data",
-        project_root / "data" / "chroma-kb",
-        project_root / "data" / "chroma-evidence",
-        project_root / "data" / "evidence",
-        project_root / "data" / "knowledge",
-        project_root / "data" / "knowledge" / "global",
-    ]
+
+def _absolute(path: Path) -> Path:
+    """The cwd-anchored absolute form of ``path``, symlinks left alone.
+
+    Anchoring is the point: a relative configured value means "relative to this
+    process's working directory", and that is only useful to a human — or to a
+    log line an operator compares against the server's — once it is spelled
+    out. ``fm-reset-kb`` printing ``data/chroma-kb`` tells nobody which tree it
+    is about to delete.
+
+    ``.absolute()``, never ``.resolve()``: resolving would follow symlinks, and
+    the identity that matters here is the path a caller was configured with and
+    will operate on. A symlinked persist directory must still read back as the
+    link (``shutil.rmtree`` refuses symlinks, and the operator needs to see the
+    name they configured, not its target).
+    """
+    return path if path.is_absolute() else Path.cwd() / path
+
+
+def resolve_data_dir(section: Any, field: str) -> Path:
+    """Resolve a data directory EXACTLY as its consumer resolves it.
+
+    Every one of these directories has a live settings knob, and every consumer
+    hands that knob's raw string straight to the filesystem —
+    ``create_persistent_client`` does ``os.makedirs(path)``,
+    ``FilesystemStorageBackend`` takes ``storage_root`` as given. So a relative
+    value is relative to the **process's working directory** there, and must be
+    read the same way here.
+
+    Deriving the same directory a second way — anchoring it on
+    ``get_project_root()`` — is correct only while the two happen to coincide,
+    and when they stop coinciding nothing says so: the bootstrap creates an
+    EMPTY directory at the project root that no server ever writes to, and that
+    empty directory then reads as "the store is here" to anything that looks
+    (fm#936). ``fm-reset-kb`` looked, wiped the decoy, printed "Removed …" and
+    exited 0 while the real store kept its vectors and the SQL rows were gone.
+
+    There is therefore **no project-root fallback**, not even for the unset
+    case: the unset case is `./data/chroma-kb`, which the consumer reads
+    cwd-relative like any other value, and a fallback would reintroduce the
+    second spelling for exactly the configuration nobody overrides. In every
+    shipped configuration the two agree anyway — the image's ``WORKDIR`` is
+    ``/app`` and the dev scripts ``cd`` to the checkout, and the ``PROJECT_ROOT``
+    environment variable is set by none of them — so this changes nothing that
+    ships and closes the case where they diverge.
+
+    ``get_project_root()`` keeps its job: locating **repo-layout artifacts**
+    (``alembic.ini``, the bundled KB pack), which really do live at a fixed
+    place in the tree. It is not a source of truth for runtime data paths.
+
+    Args:
+        section: The settings sub-model holding the field (``settings.database``,
+            ``settings.evidence_storage``). A real settings object, not a mock —
+            this reads the field's declared default off the model class.
+        field: The field name on that sub-model.
+    """
+    configured = str(getattr(section, field) or "")
+    if configured.strip():
+        # Stripped only to decide EMPTINESS — the value itself is passed
+        # through unstripped, because the consumer does not strip it either.
+        # ``CHROMADB_KB_PERSIST_DIR=" /data/kb "`` names a directory whose
+        # components carry spaces, and a caller that tidied it would resolve a
+        # different tree from the one the server opens: this bug, one layer in.
+        return _absolute(Path(configured))
+
+    # BLANK, not absent, and therefore NOT the default either — see
+    # UnusableDataDirError. ``Path("")`` is ``Path(".")``, the working
+    # directory, which is what ``fm-reset-kb`` would then ``rmtree``.
+    # Whitespace-only is the same thing wearing a hat.
+    # Named as the ENVIRONMENT VARIABLE, not the pydantic field. These models
+    # carry an empty ``env_prefix``, so the variable is the field name upper-
+    # cased — and ``chromadb_kb_persist_dir is set but empty`` sends an
+    # operator looking for something they never typed.
+    raise UnusableDataDirError(
+        f"{field.upper()} is set but empty. An empty path resolves to the "
+        "working directory, not to a store, and the consumers do not fall back "
+        "to the documented default either (they read the attribute, which "
+        "exists and is blank). Unset the variable to get the default, or give "
+        "it a path."
+    )
+
+
+def resolve_kb_chroma_dir(settings: Any) -> Path:
+    """The local ChromaDB KB tree the server opens (``CHROMADB_KB_PERSIST_DIR``).
+
+    The single spelling shared by the startup bootstrap and ``fm-reset-kb``.
+    Says nothing about whether a local tree is the store at all — under an
+    external ChromaDB it is not; ask
+    :func:`~faultmaven.config.deployment_coherence.is_remote_chroma_configured`
+    first.
+    """
+    return resolve_data_dir(settings.database, "chromadb_kb_persist_dir")
+
+
+def resolve_evidence_chroma_dir(settings: Any) -> Path:
+    """The local ChromaDB evidence tree the server opens (``CHROMADB_EVIDENCE_PERSIST_DIR``)."""
+    return resolve_data_dir(settings.database, "chromadb_evidence_persist_dir")
+
+
+def resolve_evidence_storage_dir(settings: Any) -> Path:
+    """The evidence-file tree the storage factory opens (``EVIDENCE_STORAGE_ROOT``)."""
+    return resolve_data_dir(settings.evidence_storage, "evidence_storage_root")
+
+
+def _extend(directories: list, resolver: Any, settings: Any) -> None:
+    """Append ``resolver(settings)``, or log why that directory has no path.
+
+    A knob set to something no consumer can open (see
+    :class:`UnusableDataDirError`) is a misconfiguration the deployment will
+    hit on its own, loudly, when the consumer opens it. Startup's job is to
+    name it — not to invent a location that nothing will read, and not to kill
+    the process over one directory.
+    """
+    try:
+        directories.append(resolver(settings))
+    except UnusableDataDirError as exc:
+        logger.error("Not creating a data directory: %s", exc)
+
+
+def ensure_data_directories() -> None:
+    """Create the data directories THIS deployment actually reads and writes.
+
+    Every directory here is resolved from the setting the corresponding
+    consumer reads — not from the project root — so the bootstrap cannot
+    manufacture an empty look-alike beside the real store (fm#936; see
+    :func:`resolve_data_dir`).
+
+    Creates:
+        - ``data/``                          (shared parent, cwd-relative like
+          the SQLite DSN default ``sqlite+aiosqlite:///./data/faultmaven.db``
+          that needs it)
+        - ``CHROMADB_KB_PERSIST_DIR``        (ChromaDB KB vectors — permanent)
+        - ``CHROMADB_EVIDENCE_PERSIST_DIR``  (ChromaDB case evidence — ephemeral)
+        - ``EVIDENCE_STORAGE_ROOT``          (uploaded evidence files)
+        - ``data/knowledge/`` + ``global/``  (runbook source files, from
+          :func:`~faultmaven.utils.runbook_id.knowledge_root` — the anchor the
+          scan and upload paths resolve against, which is relative on purpose)
+
+    The two ChromaDB trees are created ONLY when this deployment opens a local
+    store. Under an external ``CHROMADB_URL`` the server never touches a local
+    tree, so creating one is precisely the decoy #936 is about — and nothing
+    needs the pre-creation in any case: ``create_persistent_client`` does its
+    own ``makedirs`` on the path it opens.
+
+    That gate is :func:`is_external_chroma_configured`, deliberately NOT the
+    wider :func:`is_remote_chroma_configured`: the container's client factory
+    dispatches on the narrow one, so under the host-only opt-in
+    (``CHROMADB_HOST`` set, ``CHROMADB_URL`` unset) the container really does
+    open a local tree and this must create it. Only the ingester goes remote
+    there — an inconsistency this function has to accommodate rather than paper
+    over.
+
+    Takes no settings override on purpose: the whole point is that it reads
+    the SAME source the server reads, and a settings parameter is a second
+    source — one that tests would then exercise instead of the real path, and
+    that a caller could hand a value diverging from the running configuration.
+
+    Idempotent: safe to call on every startup.
+    """
+    from faultmaven.config.deployment_coherence import is_external_chroma_configured
+    from faultmaven.config.settings import get_settings
+    from faultmaven.utils.runbook_id import knowledge_root
+
+    settings = get_settings()
+
+    # The one literal here, and the one knob-derived path this does NOT resolve
+    # from its setting. It exists for the SQLite default
+    # (``sqlite+aiosqlite:///./data/faultmaven.db``), which is cwd-relative, so
+    # the literal is spelled the way that DSN spells it. Deriving it from
+    # ``DATABASE_URL`` would mean parsing a DSN whose non-SQLite forms name no
+    # directory at all, for a directory that costs nothing when unneeded and
+    # that `mkdir(parents=True)` on the trees below already creates in the
+    # default configuration. If that changes — a knob for the database file's
+    # location, say — this becomes the next instance of fm#936 and should be
+    # resolved like the rest.
+    directories = [_absolute(Path("data"))]
+
+    if is_external_chroma_configured(settings):
+        logger.info(
+            "External ChromaDB is configured — not creating local vector "
+            "directories (an empty local tree beside an external store is a "
+            "decoy, not a store)."
+        )
+    else:
+        _extend(directories, resolve_kb_chroma_dir, settings)
+        _extend(directories, resolve_evidence_chroma_dir, settings)
+
+    _extend(directories, resolve_evidence_storage_dir, settings)
+    directories.append(_absolute(knowledge_root()))
+    directories.append(_absolute(knowledge_root() / "global"))
 
     for path in directories:
-        if not path.exists():
+        if path.exists():
+            continue
+        # These paths are operator-supplied now, so a mkdir here can fail on a
+        # read-only mount, a PVC that did not attach, or a knob pointing
+        # somewhere this process cannot write. Before fm#936 the bootstrap only
+        # touched the project root and could reasonably assume success; now a
+        # bad knob must not turn into a CrashLoopBackOff. Every consumer
+        # creates its own tree lazily anyway (``create_persistent_client`` does
+        # ``os.makedirs``), so the honest response is to say so and continue —
+        # a startup that dies here takes down the whole API over one directory.
+        try:
             path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.error(
+                "Could not create data directory %s: %s: %s. Startup "
+                "continues; whatever reads this path will fail on its own if "
+                "it genuinely needs it.",
+                path,
+                type(exc).__name__,
+                exc,
+            )
+        else:
             logger.info(f"Created data directory: {path}")
 
 

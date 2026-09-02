@@ -153,7 +153,65 @@ Defaults are conservative — `conversion_drafts` (case-generated work in progre
 
 `fm-reset-kb` is a console entrypoint shipped with the installed package (`faultmaven/cli/reset_kb.py`), so it is available both in a local checkout (after `pip install -e .`) and inside the API pod.
 
-> **This resets the KB, not the deployment.** It refuses under `TENANT_PROVIDER=multi`, and its ChromaDB wipe `rmtree`s a *local* directory — with an external `CHROMADB_URL` the vectors survive it. To return a whole deployment to a clean slate (cases, evidence, users, tenants, object storage, Redis), use `fm-wipe-deployment`: see [Deployment Wipe](./deployment-wipe.md).
+> **This resets the KB, not the deployment.** It refuses under `TENANT_PROVIDER=multi`. To return a whole deployment to a clean slate (cases, evidence, users, tenants, object storage, Redis), use `fm-wipe-deployment`: see [Deployment Wipe](./deployment-wipe.md).
+
+#### Which store it wipes, and when it refuses
+
+The ChromaDB wipe is an `rmtree` of a **local** directory, and both of the
+questions that implies are answered from the settings the running server reads
+(fm#936):
+
+* **Is a local directory the store at all?** `CHROMADB_URL` says no — it is the
+  knob `create_kb_chromadb_client` dispatches on, and under it this command
+  cannot reach the server's collections, so it **refuses before touching SQL**
+  rather than deleting every `knowledge_items` row while the server's vectors
+  survive. Pass `--keep-chroma` to wipe only the SQL rows, accepting the
+  divergence; to clear a remote store, remove its KB collection on the server
+  and restart the API so the bootstrap re-ingests the pack
+  (`fm-wipe-deployment` with no flags writes nothing and reports what the
+  configured store holds).
+
+  `CHROMADB_HOST` on its own is a **different** answer, not a second version of
+  the same one. The client factory still returns a local `PersistentClient`
+  there; only `KnowledgeIngester` opens an HTTP client off that knob. So the
+  local tree really is the store this deployment searches, the reset proceeds
+  against it, and it **warns** that a second copy of the KB's vectors lives on
+  the server and is not touched. (That split is a defect in its own right — the
+  writer and the reader disagree about where the KB is — and is out of this
+  command's hands.)
+* **Which local directory?** Whatever `CHROMADB_KB_PERSIST_DIR` says, read
+  exactly as `create_persistent_client` reads it — so a relative value
+  (including the shipped default `./data/chroma-kb`) is relative to **the
+  working directory the command runs from**. That is the same resolution the
+  startup bootstrap uses to *create* it, so the two cannot name different
+  trees; there is deliberately no project-root anchoring, because no consumer
+  resolves it that way. **Run `fm-reset-kb` from the same working directory the
+  server runs from** — `/app` in the image, the checkout for the dev scripts.
+* **Does that path exist, and is it store-shaped?** A blank
+  `CHROMADB_KB_PERSIST_DIR=` is refused rather than defaulted — an empty value
+  resolves to the working directory, and no consumer falls back to the
+  documented default either (`create_persistent_client("")` dies in
+  `os.makedirs`), so guessing one here would target a tree nothing opens. A
+  path that is not there means this process is not looking where the server
+  looked. A path that is neither empty nor holding `chroma.sqlite3` is not a
+  ChromaDB store. All three refuse before the SQL wipe. `--keep-chroma` is the
+  escape hatch when the KB genuinely has no vector store yet.
+
+**Exit codes:** `0` did what it said · `1` refused, nothing written · `2` wiped,
+then `--rebuild` ingested with failures (re-runnable) · `3` wiped the SQL rows
+but could **not** remove the vector store — the KB is diverged and needs a human
+before the API goes back up. A runbook chaining `fm-reset-kb --yes && kubectl …
+scale --replicas=1` stops on 3, which is the point of it having a code at all.
+`--dry-run` writes nothing and always exits 0, even when it prints the refusal a
+real run would give.
+
+Before this, the path was re-derived from the project root while the server
+opened `CHROMADB_KB_PERSIST_DIR`, *and* the startup bootstrap created an empty
+directory at the project root — so on a deployment backed by external ChromaDB
+the command deleted every row, removed the empty look-alike, printed
+`Removed …` and exited 0. The "no ChromaDB directory found" warning written to
+catch exactly that could not fire, because the bootstrap's decoy made the
+directory exist; it is now a refusal that runs first.
 
 #### ⚠️ Stop the API before wiping
 
@@ -185,7 +243,7 @@ fm-reset-kb --yes      # in the checkout's venv, against the bind-mounted data/
 ./faultmaven.sh start
 ```
 
-The command prints the **resolved** ChromaDB path it found. Check it against the store the server actually writes to — if it reports that no directory was found, the SQL rows are gone and the vector store was left untouched, which means the two halves of the KB have diverged.
+The command prints the **resolved, absolute** ChromaDB store it found — the local path, or the remote server it is refusing to touch. Check it against the store the server actually writes to.
 
 It refuses to run under `TENANT_PROVIDER=multi` — a multi-tenant database holds every tenant's KB, and a blanket wipe would bypass the audited maintenance path. Reseed the platform tier with the `kb_seed` job instead (#770).
 

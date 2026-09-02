@@ -53,6 +53,39 @@ def is_external_chroma_configured(settings: Any) -> bool:
     return bool(chromadb_url) and vector_storage_type in CHROMA_STORAGE_SYNONYMS
 
 
+def is_host_only_chroma_configured(settings: Any) -> bool:
+    """Whether ``CHROMADB_HOST`` alone selects a remote ChromaDB server.
+
+    The **second** opt-in to a remote store, and the one that is easy to
+    forget: ``KnowledgeIngester`` opens an ``HttpClient`` when ``CHROMADB_URL``
+    is unset and ``CHROMADB_HOST`` is not ``localhost`` (see
+    ``settings.chromadb_host`` — it is the documented knob for a k8s
+    deployment). Written here, beside its sibling, so a caller asking "is a
+    local directory the store?" cannot answer it by checking only one of the
+    two — which is precisely the fm#936 shape, one spelling down.
+
+    Deliberately NOT folded into :func:`is_external_chroma_configured`: that
+    predicate has callers (the container's client factory, the coherence gate)
+    whose meaning is specifically "``CHROMADB_URL`` selects the server", and
+    widening it would silently change what they do. It is also NOT a substitute
+    for it: under this opt-in the client factory still hands out a **local**
+    ``PersistentClient`` (measured), so only the ingester goes remote and the
+    deployment reads its KB from two different stores.
+
+    A BLANK host is not a host. pydantic-settings runs with ``env_ignore_empty``
+    off, so ``CHROMADB_HOST=`` — an unpopulated ConfigMap key, a trailing ``=``
+    in a .env — arrives as a set field holding ``""``, and a bare ``!=
+    "localhost"`` reads that as "a remote server is configured". It is the same
+    shape as the blank persist directory (see
+    ``faultmaven.bootstrap.data_init.UnusableDataDirError``), and it reached
+    further: ``KnowledgeIngester`` would build ``HttpClient(host="", port=8000)``
+    off it. Empty means "not configured", which means the embedded client.
+    """
+    db = settings.database
+    host = (db.chromadb_host or "").strip()
+    return not (db.chromadb_url or "").strip() and host not in ("", "localhost")
+
+
 def _plain(obj: Any, name: str) -> str:
     """Return a str/SecretStr field's plain value, or '' if unset."""
     val = getattr(obj, name, None)

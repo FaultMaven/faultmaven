@@ -9,9 +9,18 @@ with it. It does not: the file-relative fallback is anchored on
 module lives.
 
 ``get_project_root``'s three strategies are covered in
-``tests/unit/bootstrap/test_get_project_root.py``. What belongs *here* is what
-the CLI does with the answer — which store it names, and what it says when the
-store it resolved is not there.
+``tests/unit/bootstrap/test_get_project_root.py``.
+
+**#936 moved the wipe off that anchor entirely.** ``get_project_root()`` now
+locates repo-layout artifacts (``alembic.ini``, the KB pack) and nothing else;
+the wipe path is ``CHROMADB_KB_PERSIST_DIR`` read exactly as
+``create_persistent_client`` reads it, so the shipped relative default is
+relative to the process's working directory. The structural claim above still
+holds and is still worth pinning — the file-relative fallback is anchored on
+``data_init.py``, not on its callers — but the cases below now place the store
+by ``chdir`` rather than by ``PROJECT_ROOT``, because that is what decides it.
+Which store the CLI picks, and its refusals, live in
+``test_reset_kb_targets_the_servers_store.py``.
 """
 
 from __future__ import annotations
@@ -86,7 +95,7 @@ async def test_the_banner_names_the_resolved_store_not_a_literal_path(
     """The banner prints the absolute path it resolved. Which tree that is
     depends on PROJECT_ROOT and the working directory, and an operator cannot
     confirm the wipe targets the server's store unless the command says so."""
-    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
     (tmp_path / "data" / "chroma-kb").mkdir(parents=True)
     stub_db(rows=7)
 
@@ -96,28 +105,30 @@ async def test_the_banner_names_the_resolved_store_not_a_literal_path(
 
     assert code == 0
     out = capsys.readouterr().out
+    # The ABSOLUTE path. The configured value is relative, and printing it back
+    # verbatim ("data/chroma-kb") names no tree at all.
     assert str(tmp_path / "data" / "chroma-kb") in out
     assert "ChromaDB path exists: True" in out
 
 
-async def test_a_missing_store_is_reported_loudly_not_skipped(
+async def test_a_missing_store_is_refused_not_wiped_and_warned_about(
     tmp_path, monkeypatch, capsys, stub_db
 ):
-    """The SQL half is already gone by this point. Finding no vector store
-    almost always means this process resolved a different root than the server
-    writes to — so the two halves have just diverged, and saying nothing would
-    leave the operator believing the reset succeeded."""
-    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))  # data/chroma-kb absent
+    """Finding no vector store means this process is not looking where the
+    server looked. Until #936 the command deleted every row and *then* printed
+    a DIVERGE warning — a description of damage, arriving after the
+    irreversible half. It now refuses first and writes nothing."""
+    monkeypatch.chdir(tmp_path)  # data/chroma-kb absent
     session = stub_db(rows=3)
 
     code = await reset_kb.reset_kb(
         dry_run=False, all_drafts=False, rebuild=False, keep_chroma=False
     )
 
-    assert code == 0
-    assert session.deletes == 1  # knowledge_items wiped; drafts kept by default
+    assert code == 1
+    assert session.deletes == 0, "the SQL half must not run"
     out = capsys.readouterr().out
-    assert "WARNING" in out
+    assert "refusing" in out.lower()
     assert "DIVERGE" in out
     assert str(tmp_path / "data" / "chroma-kb") in out
 
@@ -127,7 +138,7 @@ async def test_keep_chroma_names_the_store_it_kept(
 ):
     """--keep-chroma is not the missing-store case: nothing diverged, so no
     warning — but the path is still named."""
-    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
     (tmp_path / "data" / "chroma-kb").mkdir(parents=True)
     stub_db(rows=3)
 
@@ -148,7 +159,7 @@ async def test_the_deleted_count_is_the_databases_rowcount(
     """Reported counts come from the DELETE's own rowcount, so the number an
     operator reads is what the database did — not a pre-count that a concurrent
     writer could have made stale."""
-    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
     (tmp_path / "data" / "chroma-kb").mkdir(parents=True)
     stub_db(rows=42)
 

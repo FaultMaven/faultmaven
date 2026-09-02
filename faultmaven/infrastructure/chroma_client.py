@@ -28,6 +28,7 @@ from faultmaven.config.deployment_coherence import (
     CHROMA_STORAGE_SYNONYMS,
     DeploymentCoherenceError,
     is_external_chroma_configured,
+    is_host_only_chroma_configured,
 )
 
 __all__ = [
@@ -36,6 +37,7 @@ __all__ = [
     "ChromaUnavailableError",
     "chroma_token_auth_kwargs",
     "is_external_chroma_configured",
+    "is_host_only_chroma_configured",
     "local_chroma_or_fail",
 ]
 

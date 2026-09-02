@@ -139,6 +139,21 @@ fm-reset-kb --yes --all-drafts    # Also delete case-generated drafts
 
 Default behaviour is conservative: SQL `knowledge_items` are deleted, ChromaDB is removed, but `conversion_drafts` (which may contain case-generated work in progress) are preserved unless `--all-drafts` is passed.
 
+The ChromaDB half is an `rmtree` of a **local** directory resolved from
+`CHROMADB_KB_PERSIST_DIR`, read exactly as `create_persistent_client` reads it
+— the same knob the container opens the store with, and the same one the
+startup bootstrap creates it at, so the wipe and the store cannot be different
+trees (fm#936). Where no local directory is the store — an external
+`CHROMADB_URL` — the command refuses **before** the SQL delete instead of
+leaving the two halves diverged, and it refuses likewise when the resolved path
+is blank, absent, or not store-shaped; `--keep-chroma` is the explicit opt-out.
+`CHROMADB_HOST` alone is *this module's* opt-in to an HTTP client and not the
+container's: the client factory still returns a local `PersistentClient`, so
+the reset proceeds against that tree and warns that the ingester's server-side
+copy is untouched.
+Operational detail:
+[data-storage-management.md](../../operations/data-storage-management.md#reset--hot-rebuild).
+
 ---
 
 ## Invariants enforced by the code

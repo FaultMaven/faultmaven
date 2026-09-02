@@ -1917,11 +1917,15 @@ class EmbeddingSettings(BaseSettings):
         description="Maximum text length for embedding (OpenAI limit)",
     )
 
-    # ChromaDB Vector Store
-    chroma_persist_directory: str = Field(
-        default="./data/chroma-kb",
-        description="Directory for ChromaDB KB persistence",
-    )
+    # NOTE: no ChromaDB persist directory here. There is exactly ONE knob for
+    # the KB vector tree — ``DatabaseSettings.chromadb_kb_persist_dir`` — and
+    # that is the one the container, the ingester, the admin status route and
+    # ``fm-reset-kb`` all read. ``EmbeddingSettings`` carried a second,
+    # never-read ``chroma_persist_directory`` defaulting to the same literal
+    # ``./data/chroma-kb``; it was removed in fm#936 because a settings field
+    # that shadows a live knob and tracks nothing is a trap, not a default —
+    # the next caller to reach for it gets a path that silently ignores
+    # ``CHROMADB_KB_PERSIST_DIR``, which is the whole shape of that bug.
 
     # Indexing Job
     indexing_batch_size: int = Field(
