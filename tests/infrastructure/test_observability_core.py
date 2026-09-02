@@ -202,18 +202,15 @@ class TestObservabilityIntegration:
 
     def test_data_processing_has_tracing(self):
         """Verify data processing methods have trace decorators."""
-        import importlib
-        import sys
-
-        # Remove the mock from sys.modules to import the real class
-        if "faultmaven.core.processing.log_analyzer" in sys.modules:
-            mock_module = sys.modules["faultmaven.core.processing.log_analyzer"]
-            # Check if it's a mock (SimpleNamespace)
-            if not hasattr(mock_module, "__file__"):
-                del sys.modules["faultmaven.core.processing.log_analyzer"]
-
-        # Import the real LogProcessor
+        # This used to delete a conftest stand-in out of sys.modules first, so
+        # that `LogProcessor` was the real class rather than `Mock` -- against
+        # which `hasattr(..., "__wrapped__")` is True for free and this test
+        # asserted nothing. The stand-in is gone with #942, so the import
+        # reaches the real module the way production does; the assertion below
+        # is load-bearing again rather than locally rescued.
         from faultmaven.core.processing.log_analyzer import LogProcessor
+
+        assert LogProcessor.__module__ == "faultmaven.core.processing.log_analyzer"
 
         # Check that key methods have been wrapped with @trace
         # LogProcessor has @trace decorators on process methods

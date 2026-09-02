@@ -42,8 +42,68 @@ try:
 except ImportError:
     pass  # dotenv not installed, which is fine for tests
 
+import importlib.machinery
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, Mock
+
+# --------------------------------------------------------------------------- #
+# Harness stand-ins (#942)
+#
+# The harness substitutes heavy third-party dependencies so the suite does not
+# import ~690 MiB of torch (#868) or re-register TORCH_LIBRARY. Two rules keep a
+# substitution from silently becoming the thing under test:
+#
+#   1. A stand-in must be indistinguishable from the real module to a NON-
+#      IMPORTING availability probe. A hand-built module object has
+#      ``__spec__ is None``, and ``importlib.util.find_spec(name)`` RAISES
+#      ``ValueError`` for such a name rather than returning a spec. So
+#      ``find_spec`` -- the correct way to ask "is this installed" without
+#      paying the import -- answers differently under the harness than in
+#      production, and a green suite is not evidence the probe works (#942).
+#      ``_install_stand_in`` attaches a real ``ModuleSpec`` so it does not.
+#
+#   2. A stand-in may only stand in for something ABSENT or deliberately
+#      excluded -- never for a first-party ``faultmaven.*`` module, which is the
+#      thing under test. Shadowing one makes every test that appears to exercise
+#      it exercise a ``Mock`` instead.
+#
+# ``HARNESS_STAND_INS`` records what was actually substituted;
+# ``tests/unit/test_harness_stand_ins.py`` pins both rules against it.
+# --------------------------------------------------------------------------- #
+
+HARNESS_STAND_INS: dict[str, object] = {}
+
+
+def _install_stand_in(name: str, module):
+    """Install ``module`` as the harness stand-in for ``name``.
+
+    No-ops when ``name`` is already in ``sys.modules`` -- the real module, or an
+    earlier stand-in, wins and nothing is recorded, so the registry names only
+    what this harness actually substituted.
+
+    Refuses a first-party ``faultmaven.*`` name outright. That is rule 2 above,
+    enforced where the mistake is made rather than only in a test, because the
+    failure mode is silent: the shadowed module still imports, still exposes the
+    expected attribute names, and the tests still pass.
+    """
+    if name == "faultmaven" or name.startswith("faultmaven."):
+        raise RuntimeError(
+            f"refusing to install a harness stand-in for {name!r}: the harness "
+            "may substitute an absent or deliberately excluded third-party "
+            "dependency, never a first-party module, which is the thing under "
+            "test (#942). Patch the collaborator in the test instead."
+        )
+    if name in sys.modules:
+        return sys.modules[name]
+
+    # A real ModuleSpec, so find_spec(name) returns rather than raising
+    # ValueError. loader=None matches what a stand-in truthfully is: located,
+    # but not loadable from disk.
+    module.__spec__ = importlib.machinery.ModuleSpec(name, loader=None)
+    sys.modules[name] = module
+    HARNESS_STAND_INS[name] = module
+    return module
+
 
 # CRITICAL: Mock heavy ML dependencies FIRST to prevent PyTorch TORCH_LIBRARY errors
 # This must happen before ANY imports that could trigger torch/transformers/sentence-transformers
@@ -82,10 +142,10 @@ if "torch" not in sys.modules:
     _mock_torch.Tensor = type("Tensor", (), {})
     _mock_torch.device = Mock
     _mock_torch.dtype = Mock
-    sys.modules["torch"] = _mock_torch
-    sys.modules["torch.nn"] = ModuleType("torch.nn")
-    sys.modules["torch.optim"] = ModuleType("torch.optim")
-    sys.modules["torch.cuda"] = ModuleType("torch.cuda")
+    _install_stand_in("torch", _mock_torch)
+    _install_stand_in("torch.nn", ModuleType("torch.nn"))
+    _install_stand_in("torch.optim", ModuleType("torch.optim"))
+    _install_stand_in("torch.cuda", ModuleType("torch.cuda"))
 
 # Mock transformers to prevent heavy imports
 if "transformers" not in sys.modules:
@@ -94,8 +154,8 @@ if "transformers" not in sys.modules:
     _mock_transformers.AutoModel = Mock
     _mock_transformers.AutoTokenizer = Mock
     _mock_transformers.PreTrainedModel = type("PreTrainedModel", (), {})
-    sys.modules["transformers"] = _mock_transformers
-    sys.modules["transformers.utils"] = ModuleType("transformers.utils")
+    _install_stand_in("transformers", _mock_transformers)
+    _install_stand_in("transformers.utils", ModuleType("transformers.utils"))
 
 # Mock sentence_transformers to prevent model loading
 if "sentence_transformers" not in sys.modules:
@@ -134,7 +194,7 @@ if "sentence_transformers" not in sys.modules:
     _mock_st = ModuleType("sentence_transformers")
     _mock_st.SentenceTransformer = _MockSentenceTransformer
     _mock_st.__version__ = "2.2.2"
-    sys.modules["sentence_transformers"] = _mock_st
+    _install_stand_in("sentence_transformers", _mock_st)
 
 # CRITICAL: Mock _ctypes FIRST, before any other imports
 # This must happen before any module tries to import ctypes (e.g., protobuf, numpy, chromadb)
@@ -204,7 +264,7 @@ except ImportError:
                 return Mock(return_value=None)
 
     _mock_ctypes = _CTypesMock("_ctypes")
-    sys.modules["_ctypes"] = _mock_ctypes
+    _install_stand_in("_ctypes", _mock_ctypes)
 
     # Also create a minimal ctypes mock for numpy compatibility
     # numpy.ctypeslib needs ctypes.c_byte, c_short, etc.
@@ -243,7 +303,7 @@ except ImportError:
             ctype_name,
             type(ctype_name, (), {"_type_": ctype_name}),
         )
-    sys.modules["ctypes"] = _mock_ctypes_module
+    _install_stand_in("ctypes", _mock_ctypes_module)
 
 # Mock _sqlite3 for Python installations missing this built-in module
 # Similar to _ctypes, this can happen when Python is built without sqlite support
@@ -280,7 +340,7 @@ except ImportError:
     _mock_sqlite3.NotSupportedError = type(
         "NotSupportedError", (_mock_sqlite3.DatabaseError,), {}
     )
-    sys.modules["_sqlite3"] = _mock_sqlite3
+    _install_stand_in("_sqlite3", _mock_sqlite3)
 
     # Also mock sqlite3 module itself to prevent import errors
     # sqlite3.dbapi2 tries to call register_adapter during init, which fails without _sqlite3
@@ -313,52 +373,18 @@ except ImportError:
         _mock_sqlite3_module.threadsafety = 1
         _mock_sqlite3_module.apilevel = "2.0"
         _mock_sqlite3_module.register_converter = Mock()
-        sys.modules["sqlite3"] = _mock_sqlite3_module
+        _install_stand_in("sqlite3", _mock_sqlite3_module)
 
 
-class _DummyAPMIntegration:
-    def __init__(self, *args, **kwargs):
-        pass
-
-    def get_export_statistics(self):
-        return {"enabled": False}
-
-
-# Provide a minimal stub for apm_integration to avoid import-side initialization in tests
-sys.modules.setdefault(
-    "faultmaven.infrastructure.observability.apm_integration",
-    SimpleNamespace(
-        APMIntegration=_DummyAPMIntegration,
-        apm_integration=SimpleNamespace(
-            get_export_statistics=lambda: {"enabled": False}
-        ),
-    ),
-)
-
-
-# Provide a minimal stub for metrics_collector referenced by performance middleware
-sys.modules.setdefault(
-    "faultmaven.infrastructure.observability.apm_metrics",
-    SimpleNamespace(
-        metrics_collector=SimpleNamespace(
-            get_metrics_summary=lambda: {},
-            get_dashboard_data=lambda window: {},
-            record_performance_metric=lambda *args, **kwargs: None,
-        )
-    ),
-)
-
-
-# Provide a minimal stub for alerting referenced by performance endpoints
-sys.modules.setdefault(
-    "faultmaven.infrastructure.observability.alerting",
-    SimpleNamespace(
-        alert_manager=SimpleNamespace(
-            get_active_alerts=lambda: [],
-            get_alert_statistics=lambda: {},
-        )
-    ),
-)
+# NOTE: faultmaven.infrastructure.observability.{apm_integration,apm_metrics,
+# alerting} used to be stubbed here "to avoid import-side initialization".
+# All three exist on disk and have production importers (main.py,
+# api/middleware/performance.py), so the stubs made every test that appeared to
+# exercise them exercise a SimpleNamespace of lambdas instead -- and one test
+# had already grown a hand-rolled `del sys.modules[...]` to reach past them.
+# Removed with #942: the harness may substitute what is absent, never a
+# first-party module. Their import-time cost is three singleton constructions
+# with no threads, no I/O and no asyncio tasks.
 
 """Shared pytest fixtures and configuration for FaultMaven tests."""
 
@@ -459,7 +485,7 @@ if "_ctypes" not in sys.modules:
     _mock_ctypes.ArgumentError = Exception
     _mock_ctypes.RTLD_GLOBAL = 256
     _mock_ctypes.RTLD_LOCAL = 0
-    sys.modules["_ctypes"] = _mock_ctypes
+    _install_stand_in("_ctypes", _mock_ctypes)
 
 # Mock ctypes module itself
 if "ctypes" not in sys.modules:
@@ -518,7 +544,7 @@ if "ctypes" not in sys.modules:
     _mock_ctypes_module.PyDLL = Mock()
     _mock_ctypes_module.LoadLibrary = Mock()
     _mock_ctypes_module.pythonapi = Mock()
-    sys.modules["ctypes"] = _mock_ctypes_module
+    _install_stand_in("ctypes", _mock_ctypes_module)
 
 # Stub heavy dependencies to avoid import issues in tests
 # These stubs prevent importing sklearn, chromadb, pypdf, etc.
@@ -526,21 +552,20 @@ if "ctypes" not in sys.modules:
 import types
 
 if "sklearn" not in sys.modules:
-    _mock_sklearn = types.ModuleType("sklearn")
-    _mock_sklearn.__spec__ = types.SimpleNamespace(
-        name="sklearn",
-        loader=None,
-        origin=None,
-        submodule_search_locations=None,
-    )
-    sys.modules["sklearn"] = _mock_sklearn
-    sys.modules.setdefault("sklearn.ensemble", SimpleNamespace(IsolationForest=Mock))
-    sys.modules.setdefault(
-        "sklearn.preprocessing", SimpleNamespace(StandardScaler=Mock)
-    )
+    # The spec here predates #942 -- transformers probes for sklearn and a
+    # spec-less stand-in broke it. _install_stand_in generalises that one-off
+    # to every stand-in, and upgrades the hand-rolled SimpleNamespace to a real
+    # ModuleSpec (find_spec's contract says it returns one).
+    _install_stand_in("sklearn", types.ModuleType("sklearn"))
+    _install_stand_in("sklearn.ensemble", SimpleNamespace(IsolationForest=Mock))
+    _install_stand_in("sklearn.preprocessing", SimpleNamespace(StandardScaler=Mock))
 # NOTE: chromadb stub removed - tests need real ChromaDB
 # If chromadb is not installed, tests using it will fail as expected
-sys.modules.setdefault("pypdf", SimpleNamespace())
+# NOTE: pypdf stub removed with #942. pypdf is a real, installed dependency;
+# standing an empty SimpleNamespace in front of it made `from pypdf import
+# PdfReader` fail and every PYPDF_AVAILABLE-style probe read False for the
+# whole session, so the suite could not be evidence that the PDF path -- or a
+# security bump to it -- works.
 
 # Mock _ctypes and ctypes for Python installations missing this built-in module
 # This can happen when Python is built without libffi support
@@ -565,7 +590,7 @@ except ImportError:
         "c_double",
     ]:
         setattr(_mock_ctypes, attr, Mock)
-    sys.modules["_ctypes"] = _mock_ctypes
+    _install_stand_in("_ctypes", _mock_ctypes)
 
 # Also mock ctypes module itself to prevent import errors
 try:
@@ -587,26 +612,15 @@ except (ImportError, AttributeError):
         "Structure",
     ]:
         setattr(_mock_ctypes_module, attr, Mock)
-    sys.modules["ctypes"] = _mock_ctypes_module
+    _install_stand_in("ctypes", _mock_ctypes_module)
 
-sys.modules.setdefault(
-    "faultmaven.core.knowledge.ingestion",
-    SimpleNamespace(
-        KnowledgeIngester=Mock,
-    ),
-)
-sys.modules.setdefault(
-    "faultmaven.tools.web_search",
-    SimpleNamespace(
-        WebSearchTool=Mock,
-    ),
-)
-sys.modules.setdefault(
-    "faultmaven.core.processing.log_analyzer",
-    SimpleNamespace(
-        LogProcessor=Mock,
-    ),
-)
+# NOTE: stubs for faultmaven.core.knowledge.ingestion, faultmaven.tools
+# .web_search and faultmaven.core.processing.log_analyzer were removed with
+# #942. The first two are fossils of a layout that moved -- neither
+# faultmaven/core/knowledge/ nor faultmaven/tools/ exists, and nothing in the
+# tree imports either dotted name -- so they stood in for nothing. The third
+# names a real 1780-line module with two production importers, which the stub
+# replaced with a Mock for the whole session.
 
 # Lazy import tools that may require _ctypes (via chromadb/protobuf) or have version issues
 # These will be imported only when needed, not at module level
