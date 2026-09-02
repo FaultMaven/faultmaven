@@ -1533,6 +1533,24 @@ class TestEveryFeatureReportsEffectNotIntent:
 
         assert result.features[feature].enabled is True
 
+    @pytest.mark.parametrize("feature", sorted(FEATURE_SCENARIOS))
+    def test_the_settings_only_stand_in_is_not_a_constant(self, mock_settings, feature):
+        """The meta-test's own premise.
+
+        ``test_a_pure_settings_implementation_fails_this_sweep`` asserts the
+        stand-in reports True; a stand-in hardcoded to True would satisfy it
+        while proving nothing — the same vacuity the sweep itself was guilty
+        of. So each stand-in is shown to report False on settings that
+        configure nothing.
+
+        ``workers`` is raised because the suggestion store's historical proxy
+        was ``WORKERS <= 1``, which the fixture's default of 1 satisfies: its
+        unconfigured state is many workers, not few.
+        """
+        mock_settings.server.workers = 4
+
+        assert _pure_settings_answer(feature, mock_settings) is False
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("feature", sorted(FEATURE_SCENARIOS))
     async def test_a_pure_settings_implementation_fails_this_sweep(
