@@ -155,6 +155,7 @@ from faultmaven.infrastructure.llm.metering import (
     active_token_tracker,
     record_provider_call,
 )
+from faultmaven.infrastructure.llm.providers import ReasoningIntent
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputMode,
 )
@@ -276,6 +277,15 @@ KB_PREFETCH_RELEVANCE_THRESHOLD = 0.5
 # levers — from "give the answer more room" to "give the answer more room by
 # shrinking the question" (the #662 minimal-prompt degrade).
 STRUCTURED_OUTPUT_MAX_TOKENS = 8000
+# Visible-output floor declared with ``ReasoningIntent.INFERENCE`` on the
+# tool-less single-shot diagnostic call (fm#1116). INFERENCE lifts the
+# provider's starvation guards, so the router requires a floor (#1117).
+# Anchor: the full Diagnosis body on the replayed case_bf484a484a77 turn 9
+# measured 1,495-1,756 completion tokens at effort none and 1,641-1,8xx at
+# low/medium (probe results_reasoning.jsonl); 2048 sits above every observed
+# body and well under STRUCTURED_OUTPUT_MAX_TOKENS, so the floor never raises
+# the cap and only forbids a starvable partition.
+TOOLLESS_INFERENCE_OUTPUT_FLOOR = 2048
 STRUCTURED_OUTPUT_MAX_TOKENS_CEILING = 16000
 
 
@@ -379,6 +389,31 @@ def _should_force_tools(
         and _has_searchable_material(case)
         and not has_pending
     )
+
+
+def _route_toolless_turn_single_shot(
+    processing_mode: Optional[str], case: Case, force_tools: bool
+) -> bool:
+    """Send a turn with nothing to search to the single-shot structured path.
+
+    fm#1116: on gpt-5.x the provider must pin ``reasoning_effort: "none"``
+    whenever function tools are attached, so a turn that runs the tool loop
+    reasons at zero — and on a turn with NO searchable material (no evidence
+    rows, no indexed upload) the loop offers nothing to search anyway. Route
+    exactly those turns to the tool-less structured call, where the call site
+    can declare ``ReasoningIntent.INFERENCE`` and the provider honours it.
+
+    Measured on the replayed case_bf484a484a77 turn 9 (the ``df -h`` turn:
+    no files, no evidence, ``force_tools`` False): a linked causal row
+    persisted in 8/20 reps at effort none vs 19/20 at low.
+
+    Kept on the tool loop: forced-tool (directed-analysis) turns, turns with
+    searchable material, and ``knowledge_query`` turns — the last rely on
+    ``kb_qa``/``web_search``, which the single-shot path cannot call.
+    """
+    if force_tools or processing_mode == "knowledge_query":
+        return False
+    return not _has_searchable_material(case)
 
 
 def _solution_cause_validated(case: Case) -> bool:
@@ -5890,7 +5925,24 @@ class MilestoneEngine:
                     tools_available=tools_available,
                 )
 
-            prompt = _build_prompt(_tools_avail)
+            # fm#1116: decide the generation route BEFORE the single prompt
+            # build. A tool-less turn with nothing to search takes the
+            # single-shot structured path (reasoning declared) and must get the
+            # un-elided prompt — no search_file will run to recover an extract
+            # replaced by an index stub. Pure over case state; computed once.
+            has_pending = (
+                hasattr(case, "pending_transition") and case.pending_transition
+            )
+            force_tools = (
+                _should_force_tools(processing_mode, case, bool(has_pending))
+                if self.investigation_tools
+                else False
+            )
+            route_single_shot = bool(
+                self.investigation_tools
+            ) and _route_toolless_turn_single_shot(processing_mode, case, force_tools)
+
+            prompt = _build_prompt(_tools_avail and not route_single_shot)
 
             # Determine schema based on status/stage
             if case.state == CaseState.INQUIRY:
@@ -5936,13 +5988,26 @@ class MilestoneEngine:
             # message is a confirmation/decline that may have fallen through
             # pattern matching (typed instead of clicked). Forcing tools crashes
             # the tool loop when the LLM has nothing to search for.
-            has_pending = (
-                hasattr(case, "pending_transition") and case.pending_transition
-            )
-            if self.investigation_tools:
-                force_tools = _should_force_tools(
-                    processing_mode, case, bool(has_pending)
+            if route_single_shot:
+                # fm#1116: nothing to search on this turn — take the single-shot
+                # structured path with reasoning declared, instead of a tool
+                # loop that would pin reasoning to "none" for tools it cannot
+                # use. ``prompt`` was built un-elided above for this route.
+                logger.info(
+                    f"Turn {case.current_turn}: no searchable material and tools "
+                    f"not forced (mode={processing_mode}) — single-shot "
+                    f"structured path with reasoning_intent=INFERENCE"
                 )
+                response_obj = await self._generate_structured_output(
+                    prompt,
+                    schema_model,
+                    redaction_ctx=redaction_ctx,
+                    case=case,
+                    user_message=user_message,
+                    reasoning_intent=ReasoningIntent.INFERENCE,
+                    min_output_tokens=TOOLLESS_INFERENCE_OUTPUT_FLOOR,
+                )
+            elif self.investigation_tools:
                 da_tools = self._build_da_tool_schemas()
                 da_context = await self._build_tool_context(case, user_id=user_id)
                 response_obj = await self._generate_structured_output(
@@ -9024,6 +9089,8 @@ class MilestoneEngine:
         case: Any | None = None,
         user_message: Optional[str] = None,
         fallback_prompt_builder: Optional[Callable[[], str]] = None,
+        reasoning_intent: Optional[Any] = None,
+        min_output_tokens: Optional[int] = None,
     ) -> BaseInteractionResponse:
         """Structured-output generation with runtime context-length recovery.
 
@@ -9045,6 +9112,8 @@ class MilestoneEngine:
                 redaction_ctx=redaction_ctx,
                 case=case,
                 fallback_prompt_builder=fallback_prompt_builder,
+                reasoning_intent=reasoning_intent,
+                min_output_tokens=min_output_tokens,
             )
         except Exception as exc:
             if (
@@ -9085,6 +9154,8 @@ class MilestoneEngine:
                     force_tool_use=False,
                     redaction_ctx=redaction_ctx,
                     case=case,
+                    reasoning_intent=reasoning_intent,
+                    min_output_tokens=min_output_tokens,
                 )
             raise
 
@@ -9098,6 +9169,8 @@ class MilestoneEngine:
         redaction_ctx: Any | None = None,
         case: Any | None = None,
         fallback_prompt_builder: Optional[Callable[[], str]] = None,
+        reasoning_intent: Optional[Any] = None,
+        min_output_tokens: Optional[int] = None,
     ) -> BaseInteractionResponse:
         """
         Generate structured output from LLM using provider-agnostic capability system.
@@ -9253,6 +9326,13 @@ class MilestoneEngine:
                 "case_id": case.case_id if case is not None else None,
                 "bypass_cache": max_tokens_state["bumped"],
             }
+            # fm#1116: the tool-less diagnostic call declares its reasoning
+            # intent and output floor (#1117/#1118). Only ever set on the
+            # single-shot path — the tool loop cannot carry effort on gpt-5.x.
+            if reasoning_intent is not None:
+                generate_params["reasoning_intent"] = reasoning_intent
+            if min_output_tokens is not None:
+                generate_params["min_output_tokens"] = min_output_tokens
 
             # Tier 2 — route schema-bound calls to STRUCTURED_OUTPUT_PROVIDER
             # when set, so operators running a weak-structured-output
