@@ -137,8 +137,16 @@ async def test_semantic_search_degrades_without_echoing_the_exception():
 
 @pytest.mark.asyncio
 async def test_fulltext_search_degrades_without_echoing_the_exception():
+    # The session factory, not ``list_documents``: since #1288 this path reads
+    # ``list_for_inventory`` directly (it needs content and category, which the
+    # inventory DTO drops). Stubbing the method it no longer calls left the
+    # driver error unraised, so the no-leak assertion held over a body that had
+    # never seen it.
+    def _boom():
+        raise RuntimeError(_DRIVER_ERROR)
+
     service = _service()
-    service.list_documents = AsyncMock(side_effect=RuntimeError(_DRIVER_ERROR))
+    service._db_session_factory = _boom
 
     result = await service.fulltext_search_documents(query="disk full")
 

@@ -2402,7 +2402,7 @@
         "type": "object"
       },
       "DocumentSnippetResponse": {
-        "description": "Response model for document snippet (hover card preview).\n\nSupports both line-based and semantic snippet extraction.",
+        "description": "Response model for document snippet (hover card preview).\n\nSupports both line-based and relevance-based snippet extraction. Relevance\nis keyword matching over the document text, not vector similarity (#1288).",
         "properties": {
           "document_id": {
             "title": "Document Id",
@@ -11795,7 +11795,7 @@
     },
     "/api/v1/knowledge/documents/search": {
       "post": {
-        "description": "Full-text search for knowledge base documents (Microservices Parity)\n\nImplements full-text search complementing the semantic search at /knowledge/search.\nThis endpoint provides simple keyword-based text matching across document titles\nand content, useful when semantic understanding is not required.\n\n**Differences from /knowledge/search:**\n- `/knowledge/search` - Semantic vector search using embeddings (similarity-based)\n- `/documents/search` - Full-text keyword search (exact/partial word matching)\n\n**Use Cases:**\n- Searching for specific error codes or identifiers\n- Finding documents with exact phrases\n- Faster search when semantic understanding not needed\n- Filtering by document_type, category, tags\n\n**Request Body:**\n```json\n{\n    \"query\": \"PostgreSQL connection timeout\",\n    \"document_type\": \"kb_article\",\n    \"category\": \"database\",\n    \"tags\": \"postgresql,timeout\",\n    \"limit\": 20,\n    \"similarity_threshold\": 0.5\n}\n```\n\n**Returns:**\n```json\n{\n    \"query\": \"...\",\n    \"total_results\": 5,\n    \"results\": [\n        {\n            \"document_id\": \"...\",\n            \"content\": \"...\",\n            \"metadata\": {\n                \"title\": \"...\",\n                \"document_type\": \"...\",\n                \"category\": \"...\",\n                \"tags\": [...],\n                \"priority\": \"...\"\n            },\n            \"similarity_score\": 0.85\n        }\n    ]\n}\n```",
+        "description": "Full-text search for knowledge base documents (Microservices Parity)\n\nImplements full-text search complementing the semantic search at /knowledge/search.\nThis endpoint provides simple keyword-based text matching across document titles\nand content, useful when semantic understanding is not required.\n\n**Differences from /knowledge/search:**\n- `/knowledge/search` - Semantic vector search using embeddings (similarity-based)\n- `/documents/search` - Full-text keyword search (exact/partial word matching)\n\n**How matching works.** Both the title and the body are matched. Per field the\nquery scores 1.0 if it appears verbatim, otherwise the fraction of its words\npresent; the two are combined as `0.7 * title + 0.3 * content`, so a title hit\noutranks a body hit and a document matching both outranks either. The result is\non a 0.0-1.0 scale, which is the scale `similarity_threshold` filters on.\n**Documents matching neither field are not returned** \u2014 this is a search, not a\nranked listing of the whole knowledge base.\n\nMatching is literal: `\"timeout\"` finds documents containing that token, and does\nnot find `\"unresponsive\"`. Use `/knowledge/search` for meaning.\n\n**Use Cases:**\n- Searching for specific error codes or identifiers (these usually appear in the\n  body rather than the title, which is why content is matched)\n- Finding documents with exact phrases\n- Faster search when semantic understanding not needed\n- Filtering by document_type, category, tags\n\n**Request Body:**\n```json\n{\n    \"query\": \"PostgreSQL connection timeout\",\n    \"document_type\": \"kb_article\",\n    \"category\": \"database\",\n    \"tags\": \"postgresql,timeout\",\n    \"limit\": 20,\n    \"similarity_threshold\": 0.5\n}\n```\n\n**Returns:**\n`content` is an excerpt of the body around the match (or the head of the\ndocument when the query matched only the title).\n\n```json\n{\n    \"query\": \"...\",\n    \"total_results\": 5,\n    \"results\": [\n        {\n            \"document_id\": \"...\",\n            \"content\": \"...\",\n            \"metadata\": {\n                \"title\": \"...\",\n                \"document_type\": \"...\",\n                \"category\": \"...\",\n                \"tags\": [...],\n                \"priority\": \"...\"\n            },\n            \"similarity_score\": 0.85\n        }\n    ]\n}\n```",
         "operationId": "fulltext_search_documents_api_v1_knowledge_documents_search_post",
         "requestBody": {
           "content": {
@@ -11986,7 +11986,7 @@
     },
     "/api/v1/knowledge/documents/{document_id}/snippet": {
       "get": {
-        "description": "Get a snippet/preview of a knowledge base document for hover cards.\n\nRequires authentication and applies the same read-visibility rule as\n``GET /documents/{document_id}`` (#867): a document the caller may not see\nanswers 404, identically to an absent id.\n\nSupports two modes:\n1. **Line-based extraction**: Extract lines from line_start to line_end (or max_lines)\n2. **Semantic extraction**: If query_string is provided, returns the most relevant\n   snippet based on vector similarity (more robust than line numbers after edits)\n\nArgs:\n    document_id: Document identifier\n    line_start: Starting line number (1-indexed, default: 1)\n    line_end: Ending line number (optional, computed from max_lines if not provided)\n    max_lines: Maximum lines to return (default: 5, max: 50)\n    query_string: Query for semantic snippet extraction (optional)\n\nReturns:\n    Document snippet with verification status for badge display",
+        "description": "Get a snippet/preview of a knowledge base document for hover cards.\n\nRequires authentication and applies the same read-visibility rule as\n``GET /documents/{document_id}`` (#867): a document the caller may not see\nanswers 404, identically to an absent id.\n\nSupports two modes:\n1. **Line-based extraction**: Extract lines from line_start to line_end (or max_lines)\n2. **Relevance-based extraction**: If query_string is provided, returns the\n   line window that best matches the query\n\nRelevance is **keyword matching, not vector similarity**: the document is\nsplit into consecutive `max_lines` windows and each is scored by word\noverlap with the query, with a bonus for a verbatim match. No embedding and\nno vector search happen on this path, so a window repeating the query's\nwords outranks a paraphrase sharing none of them.\n\nThat is deliberate. The response is a line range over the document text as\nstored, while the knowledge base's vectors are overlapping 512-token chunks\ncarrying no line numbers; and this backs a hover card, where an embedding\nround trip per pointer movement would be the wrong trade.\n\nArgs:\n    document_id: Document identifier\n    line_start: Starting line number (1-indexed, default: 1)\n    line_end: Ending line number (optional, computed from max_lines if not provided)\n    max_lines: Maximum lines to return (default: 5, max: 50)\n    query_string: Query for relevance-based snippet extraction (optional)\n\nReturns:\n    Document snippet with verification status for badge display",
         "operationId": "get_document_snippet_api_v1_knowledge_documents__document_id__snippet_get",
         "parameters": [
           {
@@ -12045,7 +12045,7 @@
             }
           },
           {
-            "description": "Query for semantic snippet extraction",
+            "description": "Query for relevance-based snippet extraction (keyword matching, not vector similarity)",
             "in": "query",
             "name": "query_string",
             "required": false,
@@ -12058,7 +12058,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Query for semantic snippet extraction",
+              "description": "Query for relevance-based snippet extraction (keyword matching, not vector similarity)",
               "title": "Query String"
             }
           }

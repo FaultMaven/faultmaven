@@ -194,6 +194,68 @@ async def resolve_shared_kb_ids(
     )
 
 
+# Relative weight of a title hit vs a body hit in the lexical search that backs
+# ``POST /documents/search`` (#1288). They sum to 1.0, so the combined score
+# shares the 0..1 scale the API's ``similarity_threshold`` declares. Title is
+# weighted higher because it is the stronger signal, but a body-only hit still
+# scores well above zero — matching content is the whole point of the endpoint.
+_TITLE_MATCH_WEIGHT = 0.7
+_CONTENT_MATCH_WEIGHT = 0.3
+
+# How much of the body to return around a hit.
+_EXCERPT_RADIUS = 120
+
+
+def _score_field_match(query_lower: str, query_words: List[str], field: str) -> float:
+    """Lexical match of a query against one field, in 0..1.
+
+    1.0 when the query appears verbatim, else the fraction of its words present.
+    """
+    if not field or not query_words:
+        return 0.0
+    field_lower = field.lower()
+    if query_lower in field_lower:
+        return 1.0
+    hits = sum(1 for word in query_words if word in field_lower)
+    return hits / len(query_words)
+
+
+def _score_text_match(
+    query_lower: str, query_words: List[str], title: str, content: str
+) -> float:
+    """Combined title+content lexical relevance, in 0..1.
+
+    Monotone in both fields, so a document matching title *and* body outranks
+    one matching either alone.
+    """
+    title_score = _score_field_match(query_lower, query_words, title)
+    content_score = _score_field_match(query_lower, query_words, content)
+    return min(
+        1.0,
+        _TITLE_MATCH_WEIGHT * title_score + _CONTENT_MATCH_WEIGHT * content_score,
+    )
+
+
+def _match_excerpt(query_lower: str, content: str) -> str:
+    """A short body excerpt around the query, for the search result card.
+
+    Returns the head of the document when the query is not present verbatim —
+    the result may have matched on the title, or on scattered words.
+    """
+    if not content:
+        return ""
+    position = content.lower().find(query_lower)
+    if position < 0:
+        excerpt = content[: _EXCERPT_RADIUS * 2].strip()
+        return f"{excerpt}..." if len(content) > _EXCERPT_RADIUS * 2 else excerpt
+    start = max(0, position - _EXCERPT_RADIUS)
+    end = min(len(content), position + len(query_lower) + _EXCERPT_RADIUS)
+    excerpt = content[start:end].strip()
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(content) else ""
+    return f"{prefix}{excerpt}{suffix}"
+
+
 class KnowledgeService:
     """Knowledge service using interface dependencies"""
 
@@ -1994,17 +2056,42 @@ class KnowledgeService:
             logger.error(f"Failed to load title for {item_id}: {e}")
             return None
 
-    async def get_semantic_snippet(
+    async def get_relevant_snippet(
         self,
         document_id: str,
         query: str,
         max_lines: int = 5,
     ) -> Optional[Dict[str, Any]]:
-        """Get semantically relevant snippet from a document.
+        """Pick the document window that best matches a query, LEXICALLY.
 
-        Uses vector similarity to find the most relevant chunk of the document
-        based on the user's query. This is more robust than line-based extraction
-        when documents are edited.
+        Splits the document into consecutive ``max_lines`` windows and scores
+        each by word overlap with the query, plus a bonus when the query
+        appears verbatim. **No embedding and no vector search happen here** —
+        the ranking is Python string matching over the live document text, so
+        a window that repeats the query's words outranks a paraphrase that
+        shares none of them.
+
+        That is deliberate, not a stand-in for something better (#1288):
+
+        * The response is a ``line_start``/``line_end`` range over the text as
+          it is stored. The KB's vectors are 512-token chunks with 50-token
+          overlap carrying no line numbers, so they cannot answer this shape
+          without re-deriving offsets — and overlapping chunks make that
+          mapping ambiguous.
+        * This backs a hover card. Embedding the windows per hover would put a
+          BGE-M3 load (cold: 60-120s, behind a process-wide lock) on a pointer
+          movement.
+        * A document can be published with its vectors missing — that is what
+          :meth:`reindex_missing_vectors` repairs. The hover card still has to
+          render, and a lexical window always can.
+
+        This used to be gated on ``if self._vector_store:`` while doing the
+        same string matching inside the gate. The store was truthiness-tested
+        and never called, so the only thing the gate decided was *which* of two
+        lexical algorithms ran — the same query on the same document returned a
+        different window depending on whether a vector store happened to be
+        configured. The gate is gone; the window scoring below is now what
+        every deployment gets.
 
         Args:
             document_id: Document identifier
@@ -2013,7 +2100,7 @@ class KnowledgeService:
 
         Returns:
             Dict with snippet, line_start, line_end, relevance_score
-            or None if document not found or semantic search unavailable
+            or None if the document is not found or has no content.
         """
         try:
             # Get the full document
@@ -2028,63 +2115,55 @@ class KnowledgeService:
             lines = content.split("\n")
             total_lines = len(lines)
 
-            # Try to use vector store for semantic search if available
-            if self._vector_store:
-                try:
-                    # Search within this specific document
-                    # Create chunks from the document content
-                    chunk_size = max_lines
-                    chunks = []
-                    for i in range(0, total_lines, chunk_size):
-                        chunk_lines = lines[i : i + chunk_size]
-                        chunk_text = "\n".join(chunk_lines)
-                        if chunk_text.strip():
-                            chunks.append(
-                                {
-                                    "text": chunk_text,
-                                    "line_start": i + 1,
-                                    "line_end": min(i + chunk_size, total_lines),
-                                }
-                            )
-
-                    if not chunks:
-                        return None
-
-                    # Use simple text similarity as fallback
-                    # (In production, this would use embeddings)
-                    best_chunk = None
-                    best_score = 0.0
-                    query_lower = query.lower()
-                    query_words = set(query_lower.split())
-
-                    for chunk in chunks:
-                        chunk_lower = chunk["text"].lower()
-                        chunk_words = set(chunk_lower.split())
-
-                        # Calculate word overlap score
-                        overlap = len(query_words & chunk_words)
-                        if overlap > 0:
-                            score = overlap / len(query_words)
-                            # Bonus for exact phrase match
-                            if query_lower in chunk_lower:
-                                score += 0.5
-
-                            if score > best_score:
-                                best_score = score
-                                best_chunk = chunk
-
-                    if best_chunk:
-                        return {
-                            "snippet": best_chunk["text"],
-                            "line_start": best_chunk["line_start"],
-                            "line_end": best_chunk["line_end"],
-                            "relevance_score": min(best_score, 1.0),
+            # Rank consecutive line windows by overlap with the query.
+            chunk_size = max_lines
+            chunks = []
+            for i in range(0, total_lines, chunk_size):
+                chunk_lines = lines[i : i + chunk_size]
+                chunk_text = "\n".join(chunk_lines)
+                if chunk_text.strip():
+                    chunks.append(
+                        {
+                            "text": chunk_text,
+                            "line_start": i + 1,
+                            "line_end": min(i + chunk_size, total_lines),
                         }
-                except Exception as e:
-                    logger.warning(f"Vector-based semantic search failed: {e}")
+                    )
 
-            # Fallback: simple text matching
+            if not chunks:
+                return None
+
+            best_chunk = None
+            best_score = 0.0
             query_lower = query.lower()
+            query_words = set(query_lower.split())
+
+            for chunk in chunks:
+                chunk_lower = chunk["text"].lower()
+                chunk_words = set(chunk_lower.split())
+
+                # Calculate word overlap score
+                overlap = len(query_words & chunk_words)
+                if overlap > 0:
+                    score = overlap / len(query_words)
+                    # Bonus for exact phrase match
+                    if query_lower in chunk_lower:
+                        score += 0.5
+
+                    if score > best_score:
+                        best_score = score
+                        best_chunk = chunk
+
+            if best_chunk:
+                return {
+                    "snippet": best_chunk["text"],
+                    "line_start": best_chunk["line_start"],
+                    "line_end": best_chunk["line_end"],
+                    "relevance_score": min(best_score, 1.0),
+                }
+
+            # Nothing overlapped: centre a window on the last verbatim hit, or
+            # fall back to the head of the document.
             best_start = 0
             best_score = 0.0
 
@@ -2107,7 +2186,7 @@ class KnowledgeService:
             }
 
         except Exception as e:
-            logger.error(f"Failed to get semantic snippet for {document_id}: {e}")
+            logger.error(f"Failed to get relevant snippet for {document_id}: {e}")
             return None
 
     async def search_documents(
@@ -2135,11 +2214,17 @@ class KnowledgeService:
             return await self.fulltext_search_documents(
                 query=query,
                 document_type=document_type,
+                category=category,
                 tags=tags,
                 limit=limit,
                 similarity_threshold=similarity_threshold,
                 rank_by=rank_by,
                 user=user,
+                # Without this the vectorless fallback saw a narrower corpus
+                # than the vector path it stands in for: the scope filter
+                # resolves shared-to-my-teams, and dropping team_ids here made
+                # team-shared runbooks invisible whenever the store was absent.
+                team_ids=team_ids,
             )
 
         try:
@@ -2247,51 +2332,109 @@ class KnowledgeService:
         similarity_threshold: Optional[float] = None,
         rank_by: Optional[str] = None,
         user: Optional[Any] = None,
+        team_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """Full-text keyword search across document titles with RBAC filtering.
+        """Full-text keyword search across document titles AND CONTENT (#1288).
 
-        Scores results by substring/word matches in title. Used by the
-        /documents/search endpoint. Prefer search_documents() for
-        intent-based queries — this method matches exact tokens, not meaning.
+        Backs ``POST /documents/search``. Matches exact tokens, not meaning —
+        prefer :meth:`search_documents` for intent-based queries.
+
+        Reads the same RBAC-isolated row set the inventory does
+        (``list_for_inventory``: global ∪ own-org owned ∪ shared-to-my-teams,
+        enforced in-query), rather than the inventory *DTO*. The DTO drops
+        ``content`` and ``category``, which is why this endpoint could only
+        ever score titles; going to the repository directly gains both with
+        identical tenant isolation — same function, same arguments, no extra
+        query. It deliberately does NOT use
+        ``KnowledgeItemRepository.search_by_text``, whose ``organization_id``
+        predicate carries no global arm and would therefore drop every
+        platform-tier runbook (global rows hold no org — #770).
+
+        Scoring is a weighted sum, normalised to 0..1 so it shares a scale with
+        the ``similarity_threshold`` the API declares:
+
+        * per field, the query scores 1.0 if it appears verbatim, else the
+          fraction of its words present;
+        * title is weighted above content, so a title hit outranks a body hit
+          while a document matching both outranks either.
+
+        **Non-matches are dropped.** This used to return the entire visible
+        inventory, scoring a genuine body match 0.0 — identical to a document
+        matching nothing at all — so real hits were crowded out by ``limit`` in
+        creation order (#1288).
         """
         from faultmaven.api.v1.utils.parsing import normalize_tags_field
+        from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+            KnowledgeItemType,
+        )
+        from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
+            DatabaseKnowledgeItemRepository,
+        )
+        from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
         try:
-            result = await self.list_documents(
-                document_type=document_type,
-                tags=tags,
-                limit=500,
-                offset=0,
-                user=user,
+            organization_id = (
+                getattr(user, "organization_id", None)
+                or SingleTenantProvider.DEFAULT_ORG_ID
             )
-            filtered_docs = result.get("documents", [])
+            user_id = getattr(user, "user_id", None) if user else None
+
+            item_type = None
+            if document_type:
+                try:
+                    item_type = KnowledgeItemType(document_type)
+                except ValueError:
+                    # Unknown type → no matching items, as in list_documents.
+                    logger.info(
+                        f"Unknown document_type filter '{document_type}' — "
+                        "no matching items"
+                    )
+                    return {"query": query, "total_results": 0, "results": []}
+
+            async with self._db_session_factory() as session:
+                repo = DatabaseKnowledgeItemRepository(session)
+                items = await repo.list_for_inventory(
+                    organization_id=organization_id,
+                    user_id=user_id,
+                    team_ids=team_ids,
+                    item_type=item_type,
+                )
+
+            query_lower = query.lower()
+            query_words = [w for w in query_lower.split() if w]
 
             scored_results = []
-            query_lower = query.lower()
+            for item in items:
+                tag_list = list(item.tags) if item.tags else []
 
-            for doc in filtered_docs:
-                score = 0.0
-                title = doc.get("title", "").lower()
+                # Filters are applied over the already tenant-isolated set,
+                # mirroring list_documents.
+                if tags and not any(t in tag_list for t in tags):
+                    continue
+                if category and (item.category or "") != category:
+                    continue
 
-                if query_lower in title:
-                    score += 0.8
-
-                for word in query_lower.split():
-                    if word in title:
-                        score += 0.3
-
+                score = _score_text_match(
+                    query_lower, query_words, item.title or "", item.content or ""
+                )
+                if score <= 0.0:
+                    continue
                 if similarity_threshold is not None and score < similarity_threshold:
                     continue
 
-                scored_results.append((doc, score))
+                scored_results.append((item, score))
 
             if rank_by and rank_by in ["priority"]:
                 scored_results.sort(
                     key=lambda x: (
                         (
                             -1
-                            if x[0].get(rank_by) == "high"
-                            else 0 if x[0].get(rank_by) == "medium" else 1
+                            if (x[0].metadata or {}).get(rank_by) == "high"
+                            else (
+                                0
+                                if (x[0].metadata or {}).get(rank_by) == "medium"
+                                else 1
+                            )
                         ),
                         -x[1],
                     )
@@ -2310,20 +2453,20 @@ class KnowledgeService:
                 "total_results": len(limited_results),
                 "results": [
                     {
-                        "document_id": doc.get("document_id", "unknown"),
-                        "content": "",
+                        "document_id": item.item_id,
+                        "content": _match_excerpt(query_lower, item.content or ""),
                         "metadata": {
-                            "title": doc.get("title", "Untitled"),
-                            "document_type": doc.get("document_type", "general"),
-                            "category": doc.get(
-                                "category", doc.get("document_type", "general")
+                            "title": item.title or "Untitled",
+                            "document_type": item.item_type.value,
+                            "category": item.category or item.item_type.value,
+                            "tags": normalize_tags_field(
+                                list(item.tags) if item.tags else []
                             ),
-                            "tags": normalize_tags_field(doc.get("tags", [])),
-                            "priority": doc.get("priority", "normal"),
+                            "priority": (item.metadata or {}).get("priority", "normal"),
                         },
                         "similarity_score": score,
                     }
-                    for doc, score in limited_results
+                    for item, score in limited_results
                 ],
             }
 

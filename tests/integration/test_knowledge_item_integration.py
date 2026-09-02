@@ -174,137 +174,6 @@ async def test_item_with_embedding_lifecycle(
 
 
 # ============================================================
-# Full-Text Search Tests
-# ============================================================
-
-
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_full_text_search_relevance(repository: DatabaseKnowledgeItemRepository):
-    """Test full-text search returns relevant results."""
-    organization_id = generate_org_id()
-
-    # Create items with different content
-    await repository.create(
-        create_sample_item(
-            organization_id=organization_id,
-            title="How to configure SSL certificates",
-            content="This guide explains SSL/TLS certificate configuration.",
-        )
-    )
-    await repository.create(
-        create_sample_item(
-            organization_id=organization_id,
-            title="Database backup procedures",
-            content="Follow these steps to backup your database.",
-        )
-    )
-    await repository.create(
-        create_sample_item(
-            organization_id=organization_id,
-            title="SSL troubleshooting guide",
-            content="Common SSL errors and how to fix them.",
-        )
-    )
-
-    # Search for SSL
-    result = await repository.search_by_text(organization_id, "SSL")
-
-    assert len(result) == 2
-    assert all("ssl" in r.title.lower() or "ssl" in r.content.lower() for r in result)
-
-
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_full_text_search_case_insensitive(
-    repository: DatabaseKnowledgeItemRepository,
-):
-    """Test full-text search is case insensitive."""
-    organization_id = generate_org_id()
-
-    await repository.create(
-        create_sample_item(
-            organization_id=organization_id,
-            title="DATABASE Connection Issues",
-            content="Troubleshooting DATABASE connections.",
-        )
-    )
-
-    # Search with different cases
-    result_lower = await repository.search_by_text(organization_id, "database")
-    result_upper = await repository.search_by_text(organization_id, "DATABASE")
-    result_mixed = await repository.search_by_text(organization_id, "DaTaBasE")
-
-    assert len(result_lower) == 1
-    assert len(result_upper) == 1
-    assert len(result_mixed) == 1
-
-
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_full_text_search_with_item_type_filter(
-    repository: DatabaseKnowledgeItemRepository,
-):
-    """Test full-text search with item type filter."""
-    organization_id = generate_org_id()
-
-    await repository.create(
-        create_sample_item(
-            organization_id=organization_id,
-            title="Error handling in API",
-            content="How to handle errors in API calls.",
-            item_type=KnowledgeItemType.API_DOCUMENTATION,
-        )
-    )
-    await repository.create(
-        create_sample_item(
-            organization_id=organization_id,
-            title="Error handling best practices",
-            content="Best practices for error handling.",
-            item_type=KnowledgeItemType.BEST_PRACTICE,
-        )
-    )
-
-    result = await repository.search_by_text(
-        organization_id,
-        "error",
-        item_type=KnowledgeItemType.API_DOCUMENTATION,
-    )
-
-    assert len(result) == 1
-    assert result[0].item_type == KnowledgeItemType.API_DOCUMENTATION
-
-
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_full_text_search_only_published(
-    repository: DatabaseKnowledgeItemRepository,
-):
-    """Test full-text search only returns published items."""
-    organization_id = generate_org_id()
-
-    await repository.create(
-        create_sample_item(
-            organization_id=organization_id,
-            title="Published error guide",
-            is_published=True,
-        )
-    )
-    await repository.create(
-        create_sample_item(
-            organization_id=organization_id,
-            title="Unpublished error guide",
-            is_published=False,
-        )
-    )
-
-    result = await repository.search_by_text(organization_id, "error")
-
-    assert len(result) == 1
-    assert result[0].is_published is True
-
-
-# ============================================================
 # Tag Search Tests
 # ============================================================
 
@@ -920,34 +789,6 @@ async def test_organization_isolation(repository: DatabaseKnowledgeItemRepositor
     assert all(i.organization_id == org_id2 for i in org2_items)
 
 
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_search_respects_organization(
-    repository: DatabaseKnowledgeItemRepository,
-):
-    """Test search only returns items from specified organization."""
-    org_id1 = generate_org_id()
-    org_id2 = generate_org_id()
-
-    await repository.create(
-        create_sample_item(
-            organization_id=org_id1,
-            title="Common error handling",
-        )
-    )
-    await repository.create(
-        create_sample_item(
-            organization_id=org_id2,
-            title="Common error patterns",
-        )
-    )
-
-    result = await repository.search_by_text(org_id1, "error")
-
-    assert len(result) == 1
-    assert result[0].organization_id == org_id1
-
-
 # ============================================================
 # InMemory Repository Tests
 # ============================================================
@@ -1029,26 +870,6 @@ async def test_unicode_content(repository: DatabaseKnowledgeItemRepository):
     retrieved = await repository.get_by_id(item.item_id)
     assert retrieved.title == "Unicode Title こんにちは"
     assert retrieved.content == unicode_content
-
-
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_special_characters_in_search(
-    repository: DatabaseKnowledgeItemRepository,
-):
-    """Test search with special characters."""
-    organization_id = generate_org_id()
-
-    await repository.create(
-        create_sample_item(
-            organization_id=organization_id,
-            title="Error: 'NoneType' has no attribute",
-            content="Common Python error when accessing None.",
-        )
-    )
-
-    result = await repository.search_by_text(organization_id, "NoneType")
-    assert len(result) == 1
 
 
 @pytest.mark.asyncio

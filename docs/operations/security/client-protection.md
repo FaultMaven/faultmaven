@@ -73,7 +73,14 @@ behind a process-wide lock) and a vector similarity search per call, so they are
 metered as writes:
 
 - `GET /api/v1/cases/{case_id}/report-recommendations`
-- `GET /api/v1/knowledge/documents/{document_id}/snippet`
+
+`GET /api/v1/knowledge/documents/{document_id}/snippet` was listed here until
+fm#1288. It never embedded anything — it reads one row and picks a line window
+by word overlap — so it now meters as the cheap read it is. It was added on the
+strength of its handler's name and docstring, which claimed vector similarity;
+the reachability guard below cannot tell a real embedding from a convincing
+name, so a verdict in that table is a claim someone has to substantiate against
+the code.
 
 The list lives in `EXPENSIVE_READ_PATTERNS` in
 `faultmaven/api/middleware/rate_limiting.py`. A hand-maintained list of

@@ -69,10 +69,17 @@ class IKnowledgeService(Protocol):
         """
         ...
 
-    async def get_semantic_snippet(
+    async def get_relevant_snippet(
         self, document_id: str, query: str, max_lines: int = 5
     ) -> Optional[Dict[str, Any]]:
-        """Get semantically relevant snippet from a document."""
+        """Pick the document window that best matches a query, lexically.
+
+        Named for what it does. It was ``get_semantic_snippet``, which no
+        implementation ever was: the ranking is word overlap over the live
+        document text, with no embedding and no vector search (#1288). The old
+        name is what a reader — and the rate limiter's cost classification —
+        took as evidence that this endpoint embeds.
+        """
         ...
 
 
