@@ -248,8 +248,9 @@ async def get_data_service(request: Request):
 # A second ``get_knowledge_service`` used to sit here, reading the same
 # app.state slot as the one in modules/knowledge/api/routes.py. Deleted rather
 # than given the same 503 guard (#899): no route depended on it, and its only
-# importer — tests/unit/api/conftest.py — sits in a try block whose companion
-# import (faultmaven.api.v1.routes) does not resolve, so the import never ran.
+# importer sat in a try block whose companion import
+# (faultmaven.api.v1.routes) did not resolve, so the import never ran. That
+# importer — tests/unit/api/conftest.py — was itself deleted in #947.
 # Two accessors for one slot means the next contract change lands on one of
 # them; the knowledge module owns its own.
 
