@@ -90,7 +90,17 @@ dependencies = [
     # the CPU wheel at whatever version the lockfile pins — it reads the pin
     # rather than repeating it, so there is nothing here to keep in step.
     "torch>=2.13.0",
-    "pypdf>=6.15.0",  # >=6.14.2: inline-image infinite-loop GHSA fixes; >=6.15.0: CVE-2026-71852
+    # Transitive via sentence-transformers, floored here for the same reason:
+    # below 5.10.0, `save_pretrained` writes files at paths taken from a Hub
+    # repo's `chat_template` keys, so a malicious repo escapes the save
+    # directory (CVE-2026-9856 / GHSA-xrqw-3rrv-vx5w).
+    "transformers>=5.10.0",
+    # >=6.14.2: inline-image infinite-loop GHSA fixes; >=6.15.0:
+    # CVE-2026-71852; >=6.16.1: three denial-of-service advisories — outline
+    # retrieval and XForm extraction blow up on crafted files
+    # (GHSA-23w6-3w8w-8484, GHSA-763m-79hh-57f2) and TreeObject.insert_child
+    # can loop forever (GHSA-jp53-mhqp-8xcg). Reached from evidence upload.
+    "pypdf>=6.16.1",
     "python-docx>=1.1.2",
 
     # Data processing and analysis

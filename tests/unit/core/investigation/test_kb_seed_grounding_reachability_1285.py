@@ -650,90 +650,92 @@ class TestATermIndexOutageCannotSwitchTheGateOff:
         assert verdicts == {KBSeedGrounding.NAMED}, verdicts
 
 
+def _seed_engine():
+    """A bare engine carrying the two collaborators the seeding path touches."""
+    engine = MilestoneEngine.__new__(MilestoneEngine)
+    service = MagicMock()
+    service.get_runbook_causes = AsyncMock(
+        side_effect=lambda p: [{"cause_letter": "A", "statement": "s"}]
+    )
+    engine.knowledge_service = service
+    engine.hypothesis_manager = MagicMock()
+    return engine
+
+
+def _seed_case(description):
+    return SimpleNamespace(
+        case_id="case_test",
+        user_id="u1",
+        organization_id=None,
+        kb_context=None,
+        current_turn=1,
+        description=description,
+    )
+
+
+async def seed_hits_through_engine(hits, monkeypatch, description="q"):
+    """Drive the REAL seeding path with ready-made hits; return what it seeds.
+
+    Module level because two classes measure through it. Reaching into another
+    test class to borrow this coupled them through an implementation detail:
+    the ``total_chunks``/cause-letter shape in ``_hits_for`` is part of what
+    the measurement MEANS, and a change to it must be visible at both call
+    sites rather than silently reinterpreting one of them.
+    """
+    seen = {}
+
+    def _capture(case, runbooks, *a, **k):
+        seen["runbooks"] = runbooks
+        return SimpleNamespace(seeded_anything=True)
+
+    monkeypatch.setattr(
+        "faultmaven.core.investigation.kb_cause_seeder.seed_candidate_causes",
+        _capture,
+    )
+    monkeypatch.setattr(
+        "faultmaven.config.settings.get_settings",
+        lambda: SimpleNamespace(features=SimpleNamespace(kb_cause_seeder_enabled=True)),
+    )
+    engine = _seed_engine()
+    await engine._seed_candidate_causes_from_kb(_seed_case(description), hits)
+    return seen.get("runbooks", [])
+
+
+def _hits_for(rows):
+    """The recorded pairs as retrieval would hand them to the seeder.
+
+    ``total_chunks=8`` is above #1144's corroboration bar, so a row with two
+    recorded chunks clears it: what these tests measure is GROUNDING, and a
+    document too short to corroborate itself would decline for another reason.
+    """
+    return [
+        SearchResult(
+            document_id=chunk["chunk_id"],
+            title=row["runbook_title"],
+            document_type="runbook",
+            tags=[],
+            score=0.7,
+            snippet="...",
+            parent_document_id=row["runbook_title"],
+            total_chunks=8,
+            matched_cause_letters=["A"],
+            term_coverage=coverage,
+            identity_terms_in_query=row["named"],
+        )
+        for row in rows
+        for chunk, coverage in zip(row["chunks"], row["per_chunk"])
+    ]
+
+
+async def seed_rows_through_engine(rows, monkeypatch):
+    """The same path, driven from recorded fixture rows."""
+    return await seed_hits_through_engine(
+        _hits_for(rows), monkeypatch, rows[0]["query"]
+    )
+
+
 class TestTheSeederRefusesTheContentFreeQuery:
     """End to end: the same recorded pairs, through the real seeding path."""
-
-    @staticmethod
-    def _engine():
-        engine = MilestoneEngine.__new__(MilestoneEngine)
-        service = MagicMock()
-        service.get_runbook_causes = AsyncMock(
-            side_effect=lambda p: [{"cause_letter": "A", "statement": "s"}]
-        )
-        engine.knowledge_service = service
-        engine.hypothesis_manager = MagicMock()
-        return engine
-
-    @staticmethod
-    def _case(description):
-        return SimpleNamespace(
-            case_id="case_test",
-            user_id="u1",
-            organization_id=None,
-            kb_context=None,
-            current_turn=1,
-            description=description,
-        )
-
-    async def _seed_hits(self, hits, monkeypatch):
-        """Drive the real seeding path with ready-made hits."""
-        seen = {}
-
-        def _capture(case, runbooks, *a, **k):
-            seen["runbooks"] = runbooks
-            return SimpleNamespace(seeded_anything=True)
-
-        monkeypatch.setattr(
-            "faultmaven.core.investigation.kb_cause_seeder.seed_candidate_causes",
-            _capture,
-        )
-        monkeypatch.setattr(
-            "faultmaven.config.settings.get_settings",
-            lambda: SimpleNamespace(
-                features=SimpleNamespace(kb_cause_seeder_enabled=True)
-            ),
-        )
-        engine = self._engine()
-        await engine._seed_candidate_causes_from_kb(self._case("q"), hits)
-        return seen.get("runbooks", [])
-
-    async def _seed(self, rows, monkeypatch):
-        seen = {}
-
-        def _capture(case, runbooks, *a, **k):
-            seen["runbooks"] = runbooks
-            return SimpleNamespace(seeded_anything=True)
-
-        monkeypatch.setattr(
-            "faultmaven.core.investigation.kb_cause_seeder.seed_candidate_causes",
-            _capture,
-        )
-        monkeypatch.setattr(
-            "faultmaven.config.settings.get_settings",
-            lambda: SimpleNamespace(
-                features=SimpleNamespace(kb_cause_seeder_enabled=True)
-            ),
-        )
-        hits = [
-            SearchResult(
-                document_id=chunk["chunk_id"],
-                title=row["runbook_title"],
-                document_type="runbook",
-                tags=[],
-                score=0.7,
-                snippet="...",
-                parent_document_id=row["runbook_title"],
-                total_chunks=8,
-                matched_cause_letters=["A"],
-                term_coverage=coverage,
-                identity_terms_in_query=row["named"],
-            )
-            for row in rows
-            for chunk, coverage in zip(row["chunks"], row["per_chunk"])
-        ]
-        engine = self._engine()
-        await engine._seed_candidate_causes_from_kb(self._case(rows[0]["query"]), hits)
-        return seen.get("runbooks", [])
 
     @pytest.mark.asyncio
     async def test_nothing_seeds_for_a_statement_that_identifies_nothing(
@@ -755,7 +757,7 @@ class TestTheSeederRefusesTheContentFreeQuery:
             "these are the maximum-coverage pairs; if they no longer are, this "
             "test is no longer about the arm that was removed"
         )
-        seeded = await self._seed(rows, monkeypatch)
+        seeded = await seed_rows_through_engine(rows, monkeypatch)
         assert seeded == [], (
             f"{len(rows)} runbooks retrieved for a statement that identifies "
             f"nothing, {len(unnamed)} of them at coverage 1.000, must not seed "
@@ -805,7 +807,7 @@ class TestTheSeederRefusesTheContentFreeQuery:
 
         # One parentless hit the gate ADMITS, beside a parentless one it refuses.
         hits = [_mk(None, ["named"], "c1"), _mk(None, [], "c2")]
-        seeded = await self._seed_hits(hits, monkeypatch)
+        seeded = await seed_hits_through_engine(hits, monkeypatch)
         assert seeded == [], "neither hit belongs to a runbook, so nothing seeds"
         assert ungrounded.inc.called, (
             "the refused parentless hit was excluded, so the exclusion must be "
@@ -834,7 +836,7 @@ class TestTheSeederRefusesTheContentFreeQuery:
         )
         row = next(r for r in measured if r["named"] and len(r["chunks"]) >= 2)
         unmeasured = {**row, "named": [], "per_chunk": [None] * len(row["chunks"])}
-        seeded = await self._seed([unmeasured], monkeypatch)
+        seeded = await seed_rows_through_engine([unmeasured], monkeypatch)
 
         assert counter.inc.call_count == 1, (
             "a seeding attempt carrying unmeasured hits must be counted, or "
@@ -847,7 +849,7 @@ class TestTheSeederRefusesTheContentFreeQuery:
 
         # The discriminating half: the counter must not fire when grounding WAS
         # measured, or 'it fired' says nothing about which state produced it.
-        await self._seed([row], monkeypatch)
+        await seed_rows_through_engine([row], monkeypatch)
         assert counter.inc.call_count == 1
 
     @pytest.mark.asyncio
@@ -868,8 +870,259 @@ class TestTheSeederRefusesTheContentFreeQuery:
             candidates
         ), "COULD NOT ASK: no named on-domain pair with two recorded chunks"
         row = candidates[0]
-        seeded = await self._seed([row], monkeypatch)
+        seeded = await seed_rows_through_engine([row], monkeypatch)
         assert [r.item_id for r in seeded] == [row["runbook_title"]], (
             f"the query {row['query'][:50]!r} names {row['runbook_title']!r} "
             f"and must still seed it"
         )
+
+
+GRAFANA_RUNBOOK = "Grafana Dashboard Loading Slowly"
+
+
+class TestRarityOfTheMatchedTermDoesNotOrderTheAdmissions:
+    """fm#1293 — the repair the issue points at, measured before it was built.
+
+    The names arm admits on ONE title word, so the natural repair is to ask
+    whether that word is IDENTIFYING rather than whether it matched — weight
+    it by corpus rarity, the discrimination #1282 applied to ranking. The
+    statistics to do it with are reachable where the arm runs: ``_rerank``
+    holds ``CorpusTermStats`` at the moment it computes
+    ``identity_terms_in_query``. So the only open question was whether rarity
+    ORDERS the admissions, and on the recorded corpus it does not, in both
+    directions:
+
+    - the wrong admissions that go on to SEED (the labelled negatives seeding
+      *Grafana Dashboard Loading Slowly*) ride on ``dashboard`` at 20 of 1297
+      chunks — under ``IDENTIFIER_DF_RATIO``, an identifier by the corpus's
+      own test;
+    - correct seeds ride on nothing rare: ``disk`` (99), ``connection`` (188),
+      ``403``/``denied`` (69/59) — and the disk query carries no
+      identifier-class term anywhere in it, so a query-level precondition
+      (the issue's own declined alternative) refuses it too.
+
+    A rarity floor at the declared ratio keeps 3 of the 7 correct admissions
+    and 3 of the 16 wrong ones, and the 3 wrong ones it keeps are the only
+    ones that seed. Title-level rarity (how many runbooks share the word),
+    naming the service, requiring two terms and requiring the query's rarest
+    term were measured beside it and each drops 3 to 7 of the 7. The residue
+    is semantic — "the dashboard shows…" names the instrument, not the
+    subject — and no per-term quantity the reranker holds can see that.
+    Pinned so the next reading of the issue does not build it.
+    """
+
+    @pytest.fixture(scope="class")
+    def n_chunks(self):
+        return _fixture()["corpus"]["n_chunks"]
+
+    @staticmethod
+    def _fully_recorded(row):
+        # ``df`` is keyed by the QUERY's tokens. A title term matched under the
+        # plural fold (``pod`` by "pods") has no recorded frequency of its own,
+        # so it cannot be judged here; such pairs are left out and counted.
+        return all(t in row["df"] for t in row["named"])
+
+    @staticmethod
+    def _rarity_admits(row, n_chunks):
+        stats = _recorded_stats(n_chunks, row["df"])
+        return any(stats.is_identifier(t) for t in row["named"])
+
+    @staticmethod
+    def _query_identifiers(row, n_chunks):
+        stats = _recorded_stats(n_chunks, row["df"])
+        terms = KnowledgeVectorStore._extract_query_terms(row["query"])
+        missing = [t for t in terms if t not in row["df"]]
+        assert not missing, f"COULD NOT ASK: query terms with no recorded df: {missing}"
+        return [t for t in terms if stats.is_identifier(t)]
+
+    def _grafana_negatives(self, measured):
+        return [
+            r
+            for r in measured
+            if r["kind"] == "labelled_negative"
+            and r["named"]
+            and r["runbook_title"] == GRAFANA_RUNBOOK
+        ]
+
+    def test_the_seeding_residue_rides_on_identifier_class_terms(
+        self, measured, n_chunks
+    ):
+        rows = self._grafana_negatives(measured)
+        assert len(rows) >= 3, (
+            f"COULD NOT ASK: {len(rows)} labelled-negative admissions of "
+            f"{GRAFANA_RUNBOOK!r} in the fixture"
+        )
+        for r in rows:
+            assert self._fully_recorded(r), (
+                f"COULD NOT ASK: {r['query'][:40]!r} names {GRAFANA_RUNBOOK!r} "
+                f"via {r['named']} and the corpus records no document frequency "
+                f"for all of those — matched under the plural fold, it cannot be "
+                f"judged for rarity. The aggregate tests count such pairs and "
+                f"skip them; this one must not, because silently dropping a "
+                f"residue pair would hide the very change it exists to catch"
+            )
+            assert kb_hit_grounding(_hit(r)) is KBSeedGrounding.NAMED, (
+                f"{r['query'][:40]!r} no longer grounds {GRAFANA_RUNBOOK!r} at "
+                f"all, so there is no residue here for rarity to order and the "
+                f"rest of this class measures nothing; re-derive from the "
+                f"regenerated fixture"
+            )
+            assert self._rarity_admits(r, n_chunks), (
+                f"{r['query'][:40]!r} names {GRAFANA_RUNBOOK!r} via {r['named']} "
+                f"at df {[r['df'][t] for t in r['named']]} — a rarity floor at "
+                f"IDENTIFIER_DF_RATIO would now REFUSE this pair, which is the "
+                f"one thing this file says it cannot do. Re-derive, don't adjust."
+            )
+
+    @pytest.mark.asyncio
+    async def test_and_that_residue_seeds_through_the_real_path(
+        self, measured, monkeypatch
+    ):
+        """Residue means SEEDED, not merely admitted.
+
+        Grounding is one of three guards; the corroboration guard downstream
+        could in principle be what stops these. It is not: every recorded
+        Grafana pair with two chunks clears it and seeds, which is what the
+        offline e2e driver also shows on the live corpus (10, 5 and 4 chunks).
+        """
+        rows = [r for r in self._grafana_negatives(measured) if len(r["chunks"]) >= 2]
+        assert rows, "COULD NOT ASK: no Grafana negative carries two recorded chunks"
+        for r in rows:
+            seeded = await seed_rows_through_engine([r], monkeypatch)
+            assert [x.item_id for x in seeded] == [GRAFANA_RUNBOOK], (
+                f"{r['query'][:40]!r} no longer seeds {GRAFANA_RUNBOOK!r} — if a "
+                f"guard now catches it, say which and re-derive this file"
+            )
+
+    def test_correct_seeds_ride_on_common_terms(self, measured, n_chunks):
+        rows = [
+            r
+            for r in measured
+            if r["on_domain"] and r["named"] and self._fully_recorded(r)
+        ]
+        assert (
+            len(rows) >= 5
+        ), f"COULD NOT ASK: {len(rows)} judgeable correct admissions"
+        common = [r for r in rows if not self._rarity_admits(r, n_chunks)]
+        titles = {r["runbook_title"] for r in common}
+        for fragment in (
+            "Linux Disk Full",
+            "AWS RDS Connection Exhaustion",
+            "AWS S3 403 Access Denied",
+        ):
+            assert any(fragment in t for t in titles), (
+                f"{fragment!r} is a correct seed named on a common word "
+                f"(df well above the identifier ratio); if it now carries a "
+                f"rare term the corpus changed and this must be re-derived"
+            )
+        assert len(common) >= 3, (
+            f"only {len(common)} of {len(rows)} judgeable correct admissions "
+            f"ride on a common word; a rarity floor would then cost less than "
+            f"this file records, and fm#1293's disposition must be re-derived"
+        )
+
+    def test_a_rarity_floor_keeps_the_residue_and_drops_the_correct_seeds(
+        self, measured, n_chunks
+    ):
+        judged = [r for r in measured if r["named"] and self._fully_recorded(r)]
+        skipped = sum(1 for r in measured if r["named"] and not self._fully_recorded(r))
+        on = [r for r in judged if r["on_domain"]]
+        neg = [r for r in judged if r["kind"] == "labelled_negative"]
+        on_kept = [r for r in on if self._rarity_admits(r, n_chunks)]
+        neg_kept = [r for r in neg if self._rarity_admits(r, n_chunks)]
+        print(
+            f"named pairs judged (every matched term has a recorded df): "
+            f"{len(judged)} (skipped {skipped} folded-plural pairs)\n"
+            f"  rarity floor at IDENTIFIER_DF_RATIO keeps, ON-domain : "
+            f"{len(on_kept)}/{len(on)}\n"
+            f"  rarity floor keeps, labelled-NEGATIVE                 : "
+            f"{len(neg_kept)}/{len(neg)}"
+        )
+        for r in neg_kept:
+            print(f"    keeps {r['query'][:38]!r:<42} -> {r['runbook_title'][:40]}")
+        assert len(on) >= 6 and len(neg) >= 12, "COULD NOT ASK: too few judged pairs"
+        # The cost: more than half of the correct admissions.
+        assert 2 * len(on_kept) <= len(on), (
+            f"a rarity floor now keeps {len(on_kept)} of {len(on)} correct "
+            f"admissions — if that is real, the measurement in this file's "
+            f"docstring is stale and fm#1293's disposition should be re-opened"
+        )
+        # And the wrong admissions it keeps are exactly the ones that seed.
+        assert {r["runbook_title"] for r in neg_kept} == {GRAFANA_RUNBOOK}, (
+            f"a rarity floor now keeps labelled negatives beyond the Grafana "
+            f"residue: {sorted({r['runbook_title'] for r in neg_kept})}. This "
+            f"file's docstring says the ones it keeps are the ONLY ones that "
+            f"seed; re-derive fm#1293's disposition rather than relaxing this "
+            f"back to a superset"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_query_level_precondition_refuses_the_disk_query(
+        self, measured, n_chunks, monkeypatch
+    ):
+        """fm#1293's own declined alternative, re-measured.
+
+        Refuse to ground when the query carries no identifier-class term. On
+        the 24 labelled statements it costs the disk seed and saves nothing
+        that seeds: every query behind the Grafana residue carries such a term
+        (``dashboard`` itself, among others).
+
+        The cost is asserted as a SEED, not as an admission. A precondition
+        that cost one more pair at the GATE would be cheap; what makes this one
+        expensive is that the pair it refuses is a correct candidate cause that
+        reaches the user today — so the disk pair is driven through the real
+        seeding path here rather than judged at the gate.
+        """
+        by_query = {}
+        for r in measured:
+            by_query.setdefault(r["query"], r)
+        prefix = "Disk on the app server"
+        disk_query = next((q for q in by_query if q.startswith(prefix)), None)
+        assert disk_query is not None, (
+            f"COULD NOT ASK: no fixture query starts {prefix!r}. The statement "
+            f"this measurement is anchored on was reworded or dropped when the "
+            f"fixture was regenerated; re-derive the precondition's cost from "
+            f"the new statements rather than re-anchoring it on another query"
+        )
+        assert self._query_identifiers(by_query[disk_query], n_chunks) == [], (
+            "the disk query now carries an identifier-class term; the "
+            "precondition's cost has changed and must be re-measured"
+        )
+
+        # What the refusal costs. Grounded by the names arm today, and it
+        # SEEDS — the precondition would refuse the query before either.
+        disk_pairs = [
+            r
+            for r in measured
+            if r["query"] == disk_query
+            and r["on_domain"]
+            and DISK_RUNBOOK in r["runbook_title"]
+        ]
+        assert len(disk_pairs) == 1, (
+            f"COULD NOT ASK: {len(disk_pairs)} on-domain {DISK_RUNBOOK!r} pairs "
+            f"for the disk query — the cost recorded here is exactly one seed"
+        )
+        row = disk_pairs[0]
+        assert kb_hit_grounding(_hit(row)) is KBSeedGrounding.NAMED, (
+            f"the disk query no longer names {row['runbook_title']!r} (matched "
+            f"{row['named']}), so the precondition costs nothing here and "
+            f"fm#1293's disposition must be re-derived"
+        )
+        seeded = await seed_rows_through_engine([row], monkeypatch)
+        assert [x.item_id for x in seeded] == [row["runbook_title"]], (
+            f"the disk pair no longer seeds through the real path (got "
+            f"{seeded}), so refusing this query would cost an ADMISSION rather "
+            f"than a seed — a cheaper trade than the one recorded here, and the "
+            f"declined alternative deserves re-measuring on that basis"
+        )
+
+        grafana_queries = {r["query"] for r in self._grafana_negatives(measured)}
+        assert len(grafana_queries) >= 3, (
+            f"COULD NOT ASK: {len(grafana_queries)} distinct queries behind the "
+            f"Grafana residue — 'saves nothing that seeds' is measured over them"
+        )
+        for q in grafana_queries:
+            assert self._query_identifiers(by_query[q], n_chunks), (
+                f"{q[:40]!r} carries no identifier-class term — the precondition "
+                f"would now refuse a Grafana residue query; re-measure"
+            )
