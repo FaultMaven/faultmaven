@@ -549,7 +549,7 @@ pyod==3.2.1
     # via faultmaven (pyproject.toml)
 pyparsing==3.3.2
     # via matplotlib
-pypdf==6.15.0
+pypdf==6.16.2
     # via faultmaven (pyproject.toml)
 pypika==0.51.1
     # via chromadb
@@ -678,7 +678,7 @@ ruff==0.9.10
     # via faultmaven (pyproject.toml)
 s3transfer==0.16.0
     # via boto3
-safetensors==0.7.0
+safetensors==0.8.0
     # via transformers
 scikit-learn==1.8.0
     # via
@@ -767,7 +767,7 @@ tiktoken==0.12.0
     #   tavily-python
 tldextract==5.3.1
     # via presidio-analyzer
-tokenizers==0.22.2
+tokenizers==0.23.1
     # via
     #   chromadb
     #   litellm
@@ -787,8 +787,10 @@ tqdm==4.67.3
     #   sentence-transformers
     #   spacy
     #   transformers
-transformers==5.5.4
-    # via sentence-transformers
+transformers==5.16.1
+    # via
+    #   faultmaven (pyproject.toml)
+    #   sentence-transformers
 tree-sitter==0.25.2
     # via opik
 tree-sitter-javascript==0.25.0
