@@ -17,7 +17,6 @@ Key Endpoints:
 import asyncio
 import hashlib
 import logging
-import os
 import re
 import time
 import uuid
@@ -63,6 +62,7 @@ from faultmaven.api.v1.dependencies import (
     get_suggestion_service,
 )
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
+from faultmaven.core.investigation.turn_budget import bind_turn_deadline
 from faultmaven.exceptions import (
     AuthorizationError,
     FaultMavenException,
@@ -74,6 +74,7 @@ from faultmaven.exceptions import (
 )
 from faultmaven.infrastructure.base_client import CircuitBreakerError
 from faultmaven.infrastructure.knowledge.runbook_kb import RESULTS_UNREADABLE_CODE
+from faultmaven.infrastructure.llm.router import resolve_chat_provider_name
 from faultmaven.infrastructure.observability.tracing import trace
 
 # TD-001: IReportStore removed - reports now accessed via CaseRepository
@@ -245,15 +246,11 @@ def _resolve_agent_timeout(settings) -> tuple[float, str]:
 
     See ISS-058.
     """
-    # ``provider`` is the field; CHAT_PROVIDER is only its env alias (see the
-    # same fix in infrastructure/llm/router.py) — the getattr for
-    # ``chat_provider`` always missed, so a deployment relying on the shipped
-    # default rather than exporting the var lost its per-provider timeout.
-    provider_name = getattr(settings.llm, "provider", None) or os.getenv(
-        "CHAT_PROVIDER"
-    )
-    if provider_name is not None and not isinstance(provider_name, str):
-        provider_name = getattr(provider_name, "value", str(provider_name))
+    # Resolved by the SAME helper the LLM router uses for its own per-provider
+    # timeout lookup. The two sides of the turn budget must agree on which
+    # provider they are talking about, or a comparison between them compares
+    # two different providers' timeouts.
+    provider_name = resolve_chat_provider_name(settings)
     timeout = float(settings.agent.timeout_for_provider(provider_name))
     return timeout, provider_name or "default"
 
@@ -3002,12 +2999,21 @@ async def submit_turn(
                 f"Processing turn for case {case_id} with {agent_timeout}s timeout "
                 f"(provider={provider_name})"
             )
-            response = await asyncio.wait_for(
-                investigation_service.process_turn(
-                    case_id=case_id, user_id=current_user.user_id, payload=payload
-                ),
-                timeout=agent_timeout,
-            )
+            # Bind the same ceiling as a DEADLINE for the duration of the turn,
+            # so the LLM retry ladder inside can budget against the cancellation
+            # that would otherwise cut it mid-attempt (#1278, #1292). This is the
+            # only site that knows both the ceiling and the instant it starts;
+            # deriving either independently downstream is exactly the drift the
+            # two settings already have between them. Scoped to the wait_for and
+            # nothing else — auto-titling below has its own timeout and must not
+            # be charged to the turn budget.
+            with bind_turn_deadline(agent_timeout):
+                response = await asyncio.wait_for(
+                    investigation_service.process_turn(
+                        case_id=case_id, user_id=current_user.user_id, payload=payload
+                    ),
+                    timeout=agent_timeout,
+                )
 
             # Name the case from its own content. Called unconditionally: whether
             # the case is *titleable* is decided inside, against the case as it

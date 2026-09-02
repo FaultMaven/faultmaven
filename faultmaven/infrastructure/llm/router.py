@@ -226,6 +226,62 @@ def _opik_track_llm(name: str):
     return decorator
 
 
+# Consecutive provider failures that open the router's circuit breaker, and how
+# long it stays open. Both are lower than the ``BaseExternalClient`` defaults —
+# an LLM outage is expensive to keep probing and cheap to recover from.
+#
+# The threshold is NAMED rather than inlined because it also sets the true cost
+# of the engine's retry ladder, which is not obvious from the retry
+# configuration alone: with ``max_retries=3`` the ladder iterates four times,
+# but the breaker opens on the third failure, so the fourth iteration never
+# reaches a provider. A hung provider therefore costs THREE request timeouts and
+# all FOUR backoffs (2 + 4 + 8 = 14s) — the eight seconds are spent before the
+# attempt the breaker refuses. ``turn_budget.worst_case_ladder_plan`` is given
+# this number so the configuration report models the ladder that actually runs.
+LLM_CIRCUIT_BREAKER_THRESHOLD = 3
+LLM_CIRCUIT_BREAKER_TIMEOUT = 30
+
+
+def resolve_chat_provider_name(settings) -> Optional[str]:
+    """The provider name the primary (CHAT) role resolves to, or ``None``.
+
+    ``provider`` is the field; ``CHAT_PROVIDER`` is only its env alias, and
+    there has never been a ``chat_provider`` attribute — a ``getattr`` for it
+    always missed, leaving the env var as the sole source. That was survivable
+    while an unset ``CHAT_PROVIDER`` could not boot; now that the field carries
+    a usable default, a deployment that never exports the var resolved to
+    ``None`` and silently lost its per-provider timeout override. Read the
+    resolved field, keeping the env var as the fallback for settings doubles
+    that lack it.
+
+    Shared rather than repeated: the per-provider timeout maps are looked up by
+    this name on BOTH sides of the turn budget (``LLMSettings`` here,
+    ``AgentSettings`` at the route), and a copy that resolved the name
+    differently would silently compare two different providers' timeouts.
+    """
+    provider_name = getattr(settings.llm, "provider", None) or os.getenv(
+        "CHAT_PROVIDER"
+    )
+    # str enums need .value; raw strings pass through unchanged.
+    if provider_name is not None and not isinstance(provider_name, str):
+        provider_name = getattr(provider_name, "value", str(provider_name))
+    return provider_name
+
+
+def resolve_request_timeout(settings) -> float:
+    """The per-request LLM timeout the active provider would be called with.
+
+    The instance method ``LLMRouter._resolve_timeout`` is what a real call uses;
+    this is the same arithmetic for callers that have settings but no router —
+    the configuration report on ``GET /admin/config/status``, which needs to
+    know what ONE attempt costs in order to say whether the retry ladder fits
+    inside the turn deadline.
+    """
+    base = float(os.getenv("LLM_REQUEST_TIMEOUT", str(settings.llm.request_timeout)))
+    override = settings.llm.timeout_for_provider(resolve_chat_provider_name(settings))
+    return float(max(override, base))
+
+
 class LLMRouter(BaseExternalClient, ILLMProvider):
     """Simplified LLM router using centralized provider registry"""
 
@@ -235,8 +291,8 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             client_name="llm_router",
             service_name="LLM_Providers",
             enable_circuit_breaker=True,
-            circuit_breaker_threshold=3,  # Lower threshold for LLM failures
-            circuit_breaker_timeout=30,  # Shorter timeout for LLM recovery
+            circuit_breaker_threshold=LLM_CIRCUIT_BREAKER_THRESHOLD,
+            circuit_breaker_timeout=LLM_CIRCUIT_BREAKER_TIMEOUT,
         )
 
         self.sanitizer = DataSanitizer()
@@ -279,22 +335,9 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         local Ollama on CPU) exceed the global 30-90s ceiling without
         widening it for everyone.
         """
-        # ``provider`` is the field; CHAT_PROVIDER is only its env alias, and
-        # there has never been a ``chat_provider`` attribute — the getattr
-        # always missed, leaving the env var as the sole source. That was
-        # survivable while an unset CHAT_PROVIDER could not boot; now that the
-        # field carries a usable default, a deployment that never exports the
-        # var resolved to None here and silently lost its per-provider timeout
-        # override. Read the resolved field, keeping the env var as the
-        # fallback for settings doubles that lack it.
-        provider_name = getattr(self.settings.llm, "provider", None) or os.getenv(
-            "CHAT_PROVIDER"
+        override = self.settings.llm.timeout_for_provider(
+            resolve_chat_provider_name(self.settings)
         )
-        # str enums need .value; raw strings pass through unchanged.
-        if provider_name is not None and not isinstance(provider_name, str):
-            provider_name = getattr(provider_name, "value", str(provider_name))
-
-        override = self.settings.llm.timeout_for_provider(provider_name)
         # If the user has explicitly raised the env var above the override,
         # respect that ceiling (env is the operator's last word).
         return float(max(override, self.request_timeout))

@@ -605,6 +605,42 @@ async def get_env_config_status(
             ),
         }
 
+        # Reported HERE for the same reason as the two above: the failure is
+        # silent. A deployment whose LLM timeout is too large for its turn
+        # timeout looks fine until a provider hangs, and then every turn spends
+        # its whole budget and answers with an opaque 504. The running ladder
+        # now budgets against the deadline (#1278/#1292), so this reports a
+        # DEGRADED retry policy rather than a broken one — the operator is
+        # getting fewer provider attempts than their retry configuration says,
+        # and no other signal says so.
+        #
+        # Deliberately NOT wrapped in a try/except. A defensive catch here would
+        # make the field disappear from the response on any settings shape it
+        # could not read, and a field that is simply absent reads as "nothing to
+        # report" — which is the exact failure mode this entry exists to close.
+        from faultmaven.config.retry_budget import describe_retry_ladder_budget
+
+        plan = describe_retry_ladder_budget(settings)
+        features["llm_retry_ladder_fits_turn_budget"] = FeatureStatus(
+            enabled=plan.fits,
+            description=(
+                f"A hung LLM provider gets {plan.attempts} of "
+                f"{plan.paid_attempts} attempts inside one turn. The full "
+                f"retry ladder costs {plan.full_ladder_seconds:.0f}s "
+                f"(attempts plus backoff); this turn's budget affords "
+                f"{plan.afforded_seconds:.0f}s of it."
+            ),
+            config_hint=(
+                "True when the whole retry ladder completes inside the turn "
+                "deadline. False means LLM_REQUEST_TIMEOUT (or an entry in "
+                "LLM_PROVIDER_TIMEOUT_OVERRIDES) is too large for "
+                "AGENT_REQUEST_TIMEOUT (or AGENT_PROVIDER_TIMEOUT_OVERRIDES) "
+                "for this provider — lower the first or raise the second. "
+                "Turns stay honest either way: the ladder stops early with a "
+                "503 rather than being cancelled into a 504."
+            ),
+        )
+
         # Report actual runtime state, not raw setting defaults.
         # Bootstrap may create persistent stores even when settings say "inmemory".
         from pathlib import Path

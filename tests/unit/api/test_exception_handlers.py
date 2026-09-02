@@ -931,6 +931,24 @@ class TestLLMServiceErrorHttpException:
         assert exc.headers["x-error-code"] == "LLM_PROVIDER_UNAVAILABLE"
         assert exc.headers["Retry-After"] == "30"
 
+    def test_engine_turn_budget_exhausted_maps_to_503(self):
+        """#1278/#1292 — the whole point of stopping the ladder early.
+
+        The deadline-aware ladder exists to replace an opaque
+        ``504 REQUEST_TIMEOUT`` (the turn-wide ``wait_for`` cancelling it
+        mid-attempt) with the honest, retryable answer the LLM error path
+        already produces. If this code were not in ``_RETRYABLE_ENGINE_CODES``
+        it would fall through to a bare 500 SERVICE_ERROR — which is worse than
+        the 504 it replaced, and would fail silently: the ladder would still
+        stop early, and the caller would just get a different wrong answer.
+        """
+        from faultmaven.exceptions import TURN_BUDGET_EXHAUSTED
+
+        exc = self._by_engine_code(TURN_BUDGET_EXHAUSTED)
+        assert exc.status_code == 503
+        assert exc.headers["x-error-code"] == "LLM_PROVIDER_UNAVAILABLE"
+        assert exc.headers["Retry-After"] == "30"
+
     def test_engine_unknown_error_parse_maps_to_503(self):
         # UNKNOWN_ERROR is what a schema-parse failure becomes on the retry path.
         exc = self._by_engine_code("UNKNOWN_ERROR")
