@@ -430,13 +430,42 @@ def test_an_already_imported_module_is_not_automatically_obtainable(
     assert model_cache_module._sentence_transformers_obtainable() is expect_obtainable
 
 
-def test_the_conftest_stand_in_still_reads_as_obtainable():
+def test_the_conftest_stand_in_still_reads_as_obtainable(monkeypatch):
     """...and the real stand-in, not a reconstruction of it, still passes.
 
     The sys.modules branch exists so conftest's double wins; a discriminator
     that rejected it would mark the embedding stack absent for the whole
-    session and make every real-model assertion vacuous."""
-    assert sys.modules["sentence_transformers"].__spec__ is None  # the trap
+    session and make every real-model assertion vacuous.
+
+    Until #942 the branch was pinned INDIRECTLY, by asserting the stand-in's
+    ``__spec__ is None``: find_spec RAISES ValueError on that shape, so a True
+    answer could not have come from the find_spec path. #942 gives every
+    conftest stand-in a real spec, which retires that implication -- and an
+    assertion that merely dropped the ``__spec__`` line would leave this test
+    unable to tell the two branches apart, i.e. green and no longer testing
+    what it was written for.
+
+    So the branch is pinned DIRECTLY instead: find_spec is booby-trapped for
+    the duration of the call. Reaching it is now a failure in its own right,
+    which is a strictly stronger statement than the old one -- it holds
+    whatever ``__spec__`` happens to be.
+    """
+    stand_in = sys.modules["sentence_transformers"]
+    # The real conftest double, not a reconstruction of it: not loaded from
+    # disk, and carrying the attribute the caller actually needs (a module
+    # exposing neither is the namespace shadow the branch must still reject).
+    assert getattr(stand_in, "__file__", None) is None
+    assert hasattr(stand_in, "SentenceTransformer")
+
+    def _find_spec_must_not_be_reached(name, package=None):
+        raise AssertionError(
+            f"find_spec({name!r}) was called for a module already present in "
+            "sys.modules — the sys.modules-first branch did not answer, so "
+            "this test is no longer covering it"
+        )
+
+    monkeypatch.setattr(importlib.util, "find_spec", _find_spec_must_not_be_reached)
+
     assert model_cache_module._sentence_transformers_obtainable() is True
 
 
