@@ -962,11 +962,11 @@ class TestLLMTracingReportsEffect:
     ``init_opik_tracing`` returns at its first line and nothing is ever traced,
     while this endpoint reported tracing on.
 
-    BOTH directions are pinned deliberately. The SDK is genuinely absent from
-    this repo's venv, so the SDK-absent case would pass here against the old
-    implementation-independent accident of the environment; only the
-    monkeypatched SDK-present case proves the conjunction is a conjunction and
-    not a hardcoded False.
+    BOTH directions are pinned deliberately. ``opik`` is genuinely absent from
+    this repo's venv, so the SDK-absent assertion passes here for a reason that
+    has nothing to do with the fix — it would hold just as well against a field
+    hardcoded to False. Only the monkeypatched SDK-present arm shows that the
+    conjunction is a conjunction.
     """
 
     @staticmethod

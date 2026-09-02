@@ -507,19 +507,24 @@ def _llm_tracing_is_effective(settings) -> bool:
     skipping tracing initialization") and not one span is ever recorded —
     while this endpoint reported tracing *on* (#1234).
 
-    ``OPIK_AVAILABLE`` is read off the module at call time rather than
-    from-imported at module scope. Two reasons: the from-import would bind a
-    copy that no longer tracks the flag, and this is deliberately the *same*
-    flag ``init_opik_tracing`` gates on — reading it directly is what keeps
-    "reported as tracing" and "actually initialised" from being able to
-    disagree. Note it is not a bare ``import opik`` either: it is
-    ``module_is_usable(opik)``, so a leftover namespace-package directory
-    (#1231) reads as absent here too.
+    This is deliberately the *same* ``OPIK_AVAILABLE`` that
+    ``init_opik_tracing`` gates on, which is what keeps "reported as tracing"
+    and "actually initialised" from being able to disagree. Note it is not a
+    bare ``import opik`` either: it is ``module_is_usable(opik)``, so a
+    leftover namespace-package directory (#1231) reads as absent here too.
+
+    The import is function-local, which matters twice over. It re-reads the
+    attribute on every call, so the flag is never captured into a stale copy
+    the way a module-scope ``from … import OPIK_AVAILABLE`` would. And
+    ``infrastructure.observability.tracing`` is the one infrastructure module
+    the API layer may name — see the explicit carve-out in
+    ``tests/unit/architecture/test_architecture_boundaries.py``, which admits
+    this dotted path and rejects importing the package above it.
     """
-    from faultmaven.infrastructure.observability import tracing
+    from faultmaven.infrastructure.observability.tracing import OPIK_AVAILABLE
 
     return bool(getattr(settings.observability, "opik_enabled", False)) and bool(
-        tracing.OPIK_AVAILABLE
+        OPIK_AVAILABLE
     )
 
 
