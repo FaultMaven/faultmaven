@@ -100,9 +100,13 @@ def dependency_is_usable(name: str, attr: Optional[str] = None) -> bool:
 
     ``sys.modules`` is consulted FIRST for two reasons. It is the only correct
     answer for a module already present, and ``find_spec`` RAISES ValueError
-    for a name in ``sys.modules`` whose ``__spec__`` is None — the shape of the
-    test-suite doubles in ``tests/conftest.py``. Asking find_spec first would
-    report those absent for a whole test session.
+    for a name in ``sys.modules`` whose ``__spec__`` is None. The test-suite
+    doubles in ``tests/conftest.py`` used to be exactly that shape; since #942
+    they carry a real ``ModuleSpec``, so they no longer trip it. The ordering
+    stays regardless — the ValueError is a property of find_spec's contract for
+    ANY spec-less entry, not of that one harness, and the branch is pinned
+    against the live double by
+    ``tests/unit/container/test_no_eager_embedding_load.py``.
 
     Being present is not being usable, though: importing a namespace shadow
     succeeds, so that branch discriminates exactly as ``module_is_usable``

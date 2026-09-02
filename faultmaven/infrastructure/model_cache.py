@@ -44,9 +44,10 @@ def _sentence_transformers_obtainable() -> bool:
     the question is answered by locating the package, not executing it — which
     is exactly what ``dependency_is_usable`` does, including the two subtleties
     this module discovered and that live there now: ``sys.modules`` has to be
-    consulted first (``find_spec`` RAISES ValueError for the spec-less doubles
-    ``tests/conftest.py`` installs), and being present there is still not being
-    usable, because importing a namespace shadow succeeds.
+    consulted first (``find_spec`` RAISES ValueError for any spec-less entry —
+    the shape the ``tests/conftest.py`` doubles had before #942 gave them a real
+    ModuleSpec), and being present there is still not being usable, because
+    importing a namespace shadow succeeds.
 
     ``SentenceTransformer`` is the attribute because it is the one
     ``_sentence_transformer_class`` goes on to fetch: conftest's stand-in sets

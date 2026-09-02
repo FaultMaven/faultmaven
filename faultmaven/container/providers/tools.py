@@ -68,12 +68,25 @@ def create_registry_tools(
     try:
         from faultmaven.modules.agent.tools.web_search import WebSearchTool
 
-        web_search = WebSearchTool(settings=settings)
-        if web_search.is_available():
-            tools.append(web_search)
-        else:
+        if not getattr(settings.knowledge, "enable_web_search", True):
+            # ENABLE_WEB_SEARCH is documented in .env.example, the quickstart
+            # and CLAUDE.md as the web-search toggle, and until #1234 nothing
+            # read it: the tool was registered on provider keys alone, so a
+            # deployment that set it false still handed the model a tool that
+            # sends investigation text to a third party. Honoured HERE because
+            # registration is the decision the knob is supposed to make, and
+            # because /admin/config/status reports this same composed tool —
+            # wiring it anywhere else would leave the report and the registry
+            # disagreeing again.
             web_search = None
-            logger.debug("Web search tool skipped (no search provider configured)")
+            logger.info("Web search tool disabled (ENABLE_WEB_SEARCH=false)")
+        else:
+            web_search = WebSearchTool(settings=settings)
+            if web_search.is_available():
+                tools.append(web_search)
+            else:
+                web_search = None
+                logger.debug("Web search tool skipped (no search provider configured)")
     except Exception as e:
         web_search = None
         logger.warning(f"Web search tool creation failed: {e}")
