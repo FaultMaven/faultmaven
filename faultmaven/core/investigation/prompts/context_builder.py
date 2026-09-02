@@ -3390,11 +3390,13 @@ def _build_causal_graph_block(case: Case) -> str:
         "<causal_graph>",
         "Chains built so far (D = the problem). REFERENCE these cn_... ids when "
         "extending — attach evidence or new rungs to an existing node rather "
-        "than re-stating a cause already present as a new node.",
+        "than re-stating a cause already present as a new node. Each hypothesis "
+        "is prefixed with its hyp_... id: use that id in hypothesis_evidence_links "
+        "and hypotheses_to_update instead of creating a duplicate hypothesis.",
     ]
     for h in active_h:
         lines.append(
-            f"- {_stmt(h.statement)} "
+            f"- [{h.hypothesis_id}] {_stmt(h.statement)} "
             f"(Confidence: {h.likelihood * 100:.0f}%, State: {h.state.value})"
         )
         chain_ids = h.path or ([h.root_node_id] if h.root_node_id else [])
@@ -3826,7 +3828,7 @@ def build_investigation_context(
                     )[:3]
                     hypothesis_str = "<working_hypotheses>\n"
                     for h in top_3:
-                        hypothesis_str += f"- {h.statement} (Confidence: {h.likelihood * 100:.0f}%, State: {h.state.value})\n"
+                        hypothesis_str += f"- [{h.hypothesis_id}] {h.statement} (Confidence: {h.likelihood * 100:.0f}%, State: {h.state.value})\n"
                     hypothesis_str += "</working_hypotheses>"
 
         elif stage == InvestigationStage.MITIGATION:
@@ -3840,7 +3842,8 @@ def build_investigation_context(
                 hypothesis_str = "<working_hypotheses>\n"
                 for h in active_validated:
                     hypothesis_str += (
-                        f"- {h.statement} (Confidence: {h.likelihood * 100:.0f}%)\n"
+                        f"- [{h.hypothesis_id}] {h.statement} "
+                        f"(Confidence: {h.likelihood * 100:.0f}%)\n"
                     )
                 hypothesis_str += "</working_hypotheses>"
             else:
@@ -3853,7 +3856,7 @@ def build_investigation_context(
             ]
             if validated:
                 best = max(validated, key=lambda h: h.likelihood)
-                hypothesis_str = f"<working_hypotheses>\n- {best.statement} (Confidence: {best.likelihood * 100:.0f}%, VALIDATED)\n</working_hypotheses>"
+                hypothesis_str = f"<working_hypotheses>\n- [{best.hypothesis_id}] {best.statement} (Confidence: {best.likelihood * 100:.0f}%, VALIDATED)\n</working_hypotheses>"
             else:
                 hypothesis_str = ""
 
