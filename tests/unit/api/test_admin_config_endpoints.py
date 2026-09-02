@@ -1478,6 +1478,32 @@ class TestEveryFeatureReportsEffectNotIntent:
     fact, which is the property the scenarios above are built to guarantee and
     which ``test_a_pure_settings_implementation_fails_this_sweep`` measures
     rather than assumes.
+
+    That is one of TWO ways a member can satisfy the contract, and a member
+    must satisfy one of them EXPLICITLY rather than by default:
+
+    1. **Runtime-verified** — every member registered here today. The scenario
+       withholds a genuine runtime fact and the field goes False.
+
+    2. **Derived from configuration** — a member whose SUBJECT is the
+       configuration: it reports a relation *between* settings that an
+       operator cannot read off their own config. "Do these two knobs fit each
+       other" is such a claim; "did you set this knob" is not. Reading
+       settings IS reading reality for it, so there is nothing to withhold and
+       no scenario here can express it. Such a member registers separately and
+       owes a DIFFERENT proof — one configuration where it reports True and
+       one where it reports False — because what can go wrong for it is not
+       echoing an instruction back but being a constant.
+
+    The distinction is about what the field CLAIMS, not where its bytes come
+    from. A field computed from settings is the anti-pattern only when the
+    claim it makes is one the operator already knows because they typed it.
+
+    What no member may do is neither — drop out of the sweep in silence.
+    ``test_every_reported_feature_is_classified_here`` forces the choice, and
+    is deliberately strict: relaxing it to tolerate unregistered entries would
+    turn this population rule into an opt-in list and hand back the property
+    the sweep exists to establish.
     """
 
     @pytest.mark.asyncio
@@ -1500,7 +1526,20 @@ class TestEveryFeatureReportsEffectNotIntent:
                 request=_request_for(rate_limited_app), current_user=mock_admin_user
             )
 
-        assert set(result.features) == set(FEATURE_SCENARIOS)
+        reported = set(result.features)
+        classified = set(FEATURE_SCENARIOS)
+        assert reported == classified, (
+            "every entry in the features dict must be classified by this "
+            "sweep.\n"
+            f"  unclassified (endpoint has it, sweep does not): "
+            f"{sorted(reported - classified)}\n"
+            f"  stale (sweep has it, endpoint does not):        "
+            f"{sorted(classified - reported)}\n"
+            "A runtime-verified feature registers by adding a scenario that "
+            "withholds its capability. A feature whose subject IS the "
+            "configuration registers differently and still owes a "
+            "True-and-False pair - see this class's docstring."
+        )
         assert len(result.features) >= 4
 
     @pytest.mark.asyncio
