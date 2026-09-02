@@ -774,6 +774,20 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing DI container...")
     await compose_application(app, settings)
 
+    # Fail fast if the composition root withheld a route from idempotent
+    # replay but left it collapsible by deduplication. That combination
+    # cannot be built by ``declare_route_policy`` (it applies the
+    # implication itself), so reaching here means the declaration was
+    # assigned onto ``app.state`` by hand — and the symptom is a 409 raised
+    # by the middleware *further out* than the one the declaration named,
+    # on an operation whose whole purpose is to be repeatable. Close to
+    # undiagnosable in production; trivial to state at boot (#1303).
+    from .api.middleware.route_policy import assert_policy_coherent
+
+    _policy_problem = assert_policy_coherent(app)
+    if _policy_problem:
+        raise RuntimeError(_policy_problem)
+
     # Initialize core services with K8s support
     # SessionManager replaced by services.session.SessionService via DI container
     # Access via: container.get_session_service()

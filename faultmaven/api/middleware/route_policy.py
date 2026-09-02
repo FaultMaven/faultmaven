@@ -1,0 +1,534 @@
+"""What a composed deployment may declare about a route it serves.
+
+Two middlewares withhold a route from a repeat-suppressing mechanism, and both
+expressed that as a literal list owned by *this package*:
+``IdempotencyMiddleware.EXCLUDED_EXACT_PATHS`` and
+``DeduplicationMiddleware._should_skip``. The served route table is larger than
+this package — ``faultmaven-cloud`` mounts its routers onto the same ``app``
+singleton — so neither list can name a composed route. fm#1299 closed that for
+idempotency; fm#1303 is the same gap in deduplication.
+
+Rather than a second, independently-shaped attribute, the composition root makes
+**one** declaration here and each middleware reads what it needs from it. The
+declaration is a property of the *route* ("this response is a credential, so the
+operation must genuinely re-run"), not of whichever middleware happens to ask.
+
+Why the two flags are not one
+-----------------------------
+They are genuinely different questions, and the core's own lists prove it:
+``POST /api/v1/cases`` is exempt from deduplication *because* it participates in
+idempotency — the copilot retries it with a stable ``Idempotency-Key`` and
+expects the cached replay, which a dedup 409 would pre-empt. So
+"not collapsed" does not imply "not replayed", and collapsing them into a single
+boolean would make that case inexpressible.
+
+Why the implication is structural rather than asserted
+------------------------------------------------------
+The other direction *does* hold, and is enforced in ``declare_route_policy``
+instead of being left for a startup check to catch. Deduplication is installed
+after idempotency and therefore sits **further out**, so it sees a request first:
+a route whose response must never be replayed but which dedup may still collapse
+gets a ``409`` on the retry, which is the same operation blocked by a different
+door. There is no route for which the withheld-replay reason (the response is a
+credential; the caller needs a fresh one) stops applying to the collapse. Making
+a half-declaration impossible to express beats reporting it — a guard is only as
+good as the run that reaches it.
+
+``assert_policy_coherent`` therefore exists for what the constructor cannot
+reach: a declaration assigned straight onto ``app.state`` by hand, which bypasses
+the helper and can express exactly the half this module refuses to build.
+"""
+
+import logging
+from collections.abc import Collection
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Dict, Mapping, NamedTuple, Optional
+
+try:  # pragma: no cover - exercised on FastAPI >= 0.139; see _flattened_post_paths
+    from fastapi.routing import iter_route_contexts
+except ImportError:
+    iter_route_contexts = None
+
+logger = logging.getLogger(__name__)
+
+#: Where the declaration lives. Read off ``app.state`` — the channel the auth
+#: service, the tenant services and the Redis client already travel on — because
+#: ``BaseHTTPMiddleware.dispatch`` runs before routing, so no matched route is in
+#: scope at the point either middleware decides.
+APP_STATE_POLICY_ATTR = "route_middleware_policy"
+
+#: Retained from fm#1299, which shipped it as the idempotency-only seam. A
+#: deployment that assigned it directly still works; ``policy_for`` folds it in.
+LEGACY_IDEMPOTENCY_ATTR = "idempotency_excluded_paths"
+
+#: Where the legacy-merged map is memoised. Private: it is a derived value,
+#: not a declaration, and nothing outside this module should read or set it.
+_MERGED_CACHE_ATTR = "_route_policy_merged_cache"
+
+
+@dataclass(frozen=True)
+class RoutePolicy:
+    """What repeat-suppression a route is withheld from.
+
+    Both default to False: an undeclared route participates in everything, which
+    is what every route in this repository does today.
+    """
+
+    #: ``IdempotencyMiddleware`` must not cache this response or serve it again.
+    #: Replaying a token mint is not idempotency — it hands one caller's
+    #: credential to whoever presents the key next.
+    never_replayed: bool = False
+
+    #: ``DeduplicationMiddleware`` must not answer a repeat of this request with
+    #: a 409. The repeat is the point: re-running is how a caller recovers a
+    #: credential it lost, so collapsing it returns a conflict where the caller
+    #: needed the operation to happen.
+    never_collapsed: bool = False
+
+    def merged_with(self, other: "RoutePolicy") -> "RoutePolicy":
+        """Union of two declarations: a later one may only add withholdings.
+
+        The accumulate rule lives here rather than at each call site so a third
+        flag cannot be added to the dataclass and silently forgotten by one of
+        them — which is what ``dataclasses.replace`` would have done, since it
+        reads as "keep the other fields" while overriding every field there is.
+        """
+        return RoutePolicy(
+            never_replayed=self.never_replayed or other.never_replayed,
+            never_collapsed=self.never_collapsed or other.never_collapsed,
+        )
+
+
+def normalize_path(path: str) -> str:
+    """Reduce a path to the form policy is compared in.
+
+    One function across both middlewares and the declaration, so a declared path
+    and an incoming request path can never be normalised by two different rules.
+    A silent non-match here is an open hole rather than a visible failure.
+
+    Both middlewares are installed *outside* ``TrailingSlashMiddleware``, so they
+    see the path as the client sent it — ``/x/`` must match a declaration of
+    ``/x`` or the exclusion is skipped by a spelling.
+    """
+    return path.rstrip("/") or "/"
+
+
+class RouteTable(NamedTuple):
+    """The POST paths an app serves, and whether that list is known complete.
+
+    ``complete`` is what makes refusing a declaration safe. fm#1305 was the cost
+    of getting that wrong in the other direction: the validator refused a real
+    route and the composed app could not import. So enumeration reports its own
+    reach, and only a *complete* enumeration is allowed to refuse.
+    """
+
+    post_paths: frozenset
+    complete: bool
+
+
+def _flattened_post_paths(route) -> RouteTable:
+    """POST paths inside a route object that is not itself a route or container.
+
+    FastAPI 0.139 stopped copying an included router's routes into
+    ``app.routes`` and records an ``_IncludedRouter`` placeholder instead, which
+    carries neither ``routes`` nor ``methods``. Walking it as if it did finds
+    nothing, so every ``include_router`` route vanished and
+    ``declare_route_policy`` refused paths the app really serves — fm#1305, and
+    the composed app failed to import.
+
+    ``iter_route_contexts`` is FastAPI's own flattener for exactly this, and it
+    resolves the effective path including any prefix passed to
+    ``include_router``. It does not exist before 0.139, where it is not needed;
+    the import guard below therefore only reports when this function is actually
+    *reached*, which is the honest signal — silence on an older FastAPI, a loud
+    report if a future one renames it and this arm starts finding nothing.
+
+    One shape stays out of reach: a ``Mount`` nested inside an included router.
+    Its context carries an empty ``path`` and the router prefix is not
+    recoverable from it, so the children are real but unnameable here. Reported
+    as incomplete rather than guessed at, which downgrades a refusal to a
+    warning instead of blocking composition on a path this cannot see.
+    """
+    if iter_route_contexts is None:
+        _report_once(
+            "flatten-unavailable",
+            "This FastAPI exposes routes this module cannot enumerate and "
+            "provides no fastapi.routing.iter_route_contexts to flatten them; "
+            "route-policy paths cannot be verified against the route table.",
+        )
+        return RouteTable(frozenset(), False)
+
+    found: set = set()
+    complete = True
+    for context in iter_route_contexts([route]):
+        if "POST" in (getattr(context, "methods", None) or ()):
+            found.add(normalize_path(context.path))
+        elif getattr(getattr(context, "route", None), "routes", None):
+            complete = False
+    return RouteTable(frozenset(found), complete)
+
+
+def _post_route_paths(routes) -> RouteTable:
+    """Every path in a route table that answers POST, including nested ones.
+
+    Nested tables are reached through ``route.routes``, never ``route.app``: a
+    ``Mount`` constructed with ``middleware=`` exposes the *wrapper* on ``.app``,
+    and the wrapper has no ``routes`` at all — measured on starlette 1.3.1,
+    ``.app`` yields nothing where ``.routes`` yields the five real routes.
+
+    Duck-typed rather than isinstance-checked because ``Host`` carries ``routes``
+    but no ``path`` (host routing contributes no prefix), and a container this
+    function has not heard of should degrade to "walk it if it has routes"
+    rather than to a refusal — a refusal a composer learns to route around is
+    worse than no check.
+
+    The third arm is for an object that is neither: no ``routes`` to walk and no
+    ``methods`` to read. A plain ``GET`` route is *not* that — it has methods,
+    and is correctly dropped here — so the expensive flattening below runs only
+    for something genuinely unrecognised.
+    """
+    found: set = set()
+    complete = True
+    for route in routes:
+        nested = getattr(route, "routes", None)
+        if nested:
+            prefix = (getattr(route, "path", "") or "").rstrip("/")
+            inner = _post_route_paths(nested)
+            complete = complete and inner.complete
+            for path in inner.post_paths:
+                found.add(normalize_path(prefix + path))
+        elif getattr(route, "methods", None):
+            if "POST" in route.methods:
+                found.add(normalize_path(route.path))
+        else:
+            table = _flattened_post_paths(route)
+            complete = complete and table.complete
+            found |= table.post_paths
+    return RouteTable(frozenset(found), complete)
+
+
+def declare_route_policy(
+    app,
+    *paths: str,
+    never_replayed: bool = False,
+    never_collapsed: bool = False,
+) -> Mapping[str, RoutePolicy]:
+    """Declare how the repeat-suppressing middlewares must treat these routes.
+
+    For composition roots: call it after the routers are mounted, and build each
+    path from the router that serves it rather than retyping a literal, so the
+    declaration cannot drift away from the route it protects.
+
+    ``router.prefix`` alone is **not** that path when the router is mounted with
+    a prefix of its own — ``app.include_router(r, prefix="/api/v1")`` serves
+    ``/api/v1`` + ``r.prefix``, and this repository mounts ten routers that way.
+    Compose both, or read the path off the mounted app.
+
+    Every path is checked against ``app``'s real route table, because the failure
+    mode this guards against is silent in both directions. A declaration that
+    matches nothing does not fail — it simply leaves the route unprotected, which
+    looks exactly like a working exclusion from the outside. So a path that names
+    no POST route is a ``ValueError`` at composition time, not a hole discovered
+    in production. Templated paths are refused for the same reason:
+    ``/orgs/{org_id}/tokens`` can never equal the concrete path a request
+    carries.
+
+    ``never_replayed`` implies ``never_collapsed``. Deduplication sits further
+    out and would answer the retry with a 409, blocking the same operation
+    through a different door — so the half-declaration is not built rather than
+    reported. See the module docstring.
+
+    Declarations accumulate and merge per path, so several composed units can
+    each declare their own without knowing about each other, and a later
+    declaration can only add withholdings, never remove one.
+
+    Returns the resulting policy map, so a caller (or a test) can assert what
+    took effect rather than trusting that it did.
+    """
+    if never_replayed:
+        never_collapsed = True
+
+    table = _post_route_paths(app.routes)
+    declared = RoutePolicy(
+        never_replayed=never_replayed, never_collapsed=never_collapsed
+    )
+
+    existing = dict(_read_policy_map(getattr(app.state, APP_STATE_POLICY_ATTR, None)))
+    for path in paths:
+        if not isinstance(path, str) or not path.startswith("/"):
+            raise ValueError(
+                f"route policy must name an absolute path string, got {path!r}"
+            )
+        candidate = normalize_path(path)
+        if "{" in candidate:
+            raise ValueError(
+                f"route policy {path!r} is templated; an exact-path declaration "
+                "can never equal the concrete path a request carries"
+            )
+        if candidate not in table.post_paths:
+            if not table.complete:
+                # Refusing here is what fm#1305 cost: the validator could not
+                # see an included router's routes and blocked the composed app
+                # from importing. When enumeration is known partial an
+                # unmatched path is unproven rather than wrong — say so and
+                # accept it, because a false refusal breaks composition while a
+                # missed check only forfeits the check.
+                _report_once(
+                    f"unverifiable:{candidate}",
+                    "Route policy %r could not be verified: this app serves "
+                    "routes this module cannot enumerate. The declaration is "
+                    "applied unchecked — confirm the path is served.",
+                    path,
+                )
+            else:
+                raise ValueError(
+                    f"route policy {path!r} names no POST route on this app. "
+                    "Declare it after the routers are mounted, and build the "
+                    "path from the router that serves it — including any prefix "
+                    "passed to include_router, which router.prefix does not "
+                    "carry."
+                )
+        existing[candidate] = existing.get(candidate, RoutePolicy()).merged_with(
+            declared
+        )
+
+    combined = _PolicyMap(existing)
+    setattr(app.state, APP_STATE_POLICY_ATTR, combined)
+    # Returned read-only. The module's claim is that the half-declaration cannot
+    # be built, and handing back a live handle onto ``app.state`` would defeat
+    # it: ``policy[path] = RoutePolicy(never_replayed=True, ...)`` would mutate
+    # the stored map in place, after ``assert_policy_coherent`` has already run.
+    view = MappingProxyType(dict(combined))
+    logger.info(
+        "Route middleware policy declared by the composition root: %s",
+        {path: vars(policy) for path, policy in sorted(combined.items())},
+    )
+    return view
+
+
+def declare_credential_mint(app, *paths: str) -> Mapping[str, RoutePolicy]:
+    """Declare that these routes return a credential in their response body.
+
+    The named case, and the one every composed caller wants: the response must
+    never be replayed *and* a repeat must never be collapsed, both because the
+    operation has to genuinely re-run. Prefer this over spelling the flags —
+    it records the reason, which is what a future reader needs in order to decide
+    whether the declaration still applies.
+    """
+    return declare_route_policy(app, *paths, never_replayed=True)
+
+
+class _PolicyMap(Dict[str, RoutePolicy]):
+    """A policy map this module built and has already normalised.
+
+    Marker only. It lets the per-request read hand the map back directly instead
+    of rebuilding it, while a value assigned to ``app.state`` by hand still takes
+    the defensive read below.
+    """
+
+
+#: Composition-time mistakes already reported. The policy is read on every POST,
+#: so an unconditional log would emit a line per request for the life of the
+#: process — flooding the structured log and the error-pattern detection behind
+#: ``GET /health/patterns`` with a static condition. Reporting is per-process
+#: because the mistake is.
+_REPORTED_BAD_DECLARATIONS: set = set()
+
+
+def _report_once(key: str, message: str, *args) -> None:
+    if key in _REPORTED_BAD_DECLARATIONS:
+        return
+    _REPORTED_BAD_DECLARATIONS.add(key)
+    logger.error(message, *args)
+
+
+def _read_policy_map(declared) -> Mapping[str, RoutePolicy]:
+    """Read a policy declaration defensively into a normalised map.
+
+    ``app.state`` is assignable by hand, so everything this refuses, it refuses
+    *loudly*. The failure mode this whole mechanism exists to prevent is a
+    declaration that looks like it closed a hole and did not, so silently
+    yielding an empty map would reproduce fm#1299 with a declaration sitting in
+    the source.
+
+    Anything unreadable is reported and ignored rather than raised: this runs
+    outside each middleware's error handling, and a broken declaration must not
+    take every POST with it.
+    """
+    if isinstance(declared, _PolicyMap):
+        return declared
+    if declared is None:
+        return {}
+    if not isinstance(declared, Mapping):
+        _report_once(
+            f"policy-type:{type(declared).__name__}",
+            "app.state.%s is %s, not a mapping of path -> RoutePolicy; "
+            "route policy ignored",
+            APP_STATE_POLICY_ATTR,
+            type(declared).__name__,
+        )
+        return {}
+    try:
+        items = list(declared.items())
+    except Exception as exc:  # a declaration must never break the request path
+        _report_once(
+            f"policy-iter:{type(declared).__name__}",
+            "app.state.%s could not be read (%s: %s); route policy ignored",
+            APP_STATE_POLICY_ATTR,
+            type(exc).__name__,
+            exc,
+        )
+        return {}
+
+    usable: Dict[str, RoutePolicy] = {}
+    unusable = []
+    for path, policy in items:
+        if isinstance(path, str) and isinstance(policy, RoutePolicy):
+            usable[normalize_path(path)] = policy
+        else:
+            unusable.append((path, policy))
+    if unusable:
+        _report_once(
+            f"policy-entries:{sorted(type(p).__name__ for p, _ in unusable)}",
+            "app.state.%s has %d entr(y/ies) that are not (path, RoutePolicy) "
+            "pairs and cannot match any request: %r; those are NOT in effect",
+            APP_STATE_POLICY_ATTR,
+            len(unusable),
+            unusable,
+        )
+    return usable
+
+
+def _read_legacy_exclusions(declared) -> frozenset:
+    """Fold fm#1299's idempotency-only attribute into the policy.
+
+    That seam shipped one release before this module and named only replay, so a
+    deployment still assigning it gets ``never_replayed`` — and, by the same
+    implication ``declare_route_policy`` enforces, ``never_collapsed`` with it.
+    A lone string is read as the one path it means: the value is compared with
+    ``in``, and reading a ``str`` as an iterable of characters would turn the
+    exact comparison into substring containment.
+    """
+    if declared is None:
+        return frozenset()
+    if isinstance(declared, str):
+        declared = (declared,)
+    if not isinstance(declared, Collection):
+        _report_once(
+            f"legacy-type:{type(declared).__name__}",
+            "app.state.%s is %s, which cannot be read on every request "
+            "(a set, list or tuple is required); those exclusions are ignored",
+            LEGACY_IDEMPOTENCY_ATTR,
+            type(declared).__name__,
+        )
+        return frozenset()
+    try:
+        entries = list(declared)
+    except Exception as exc:
+        _report_once(
+            f"legacy-iter:{type(declared).__name__}",
+            "app.state.%s could not be read (%s: %s); those exclusions are ignored",
+            LEGACY_IDEMPOTENCY_ATTR,
+            type(exc).__name__,
+            exc,
+        )
+        return frozenset()
+    unusable = [entry for entry in entries if not isinstance(entry, str)]
+    if unusable:
+        _report_once(
+            f"legacy-entries:{sorted(type(e).__name__ for e in unusable)}",
+            "app.state.%s contains %d entr(y/ies) that are not path strings and "
+            "cannot match any request path: %s; those are NOT in effect",
+            LEGACY_IDEMPOTENCY_ATTR,
+            len(unusable),
+            [repr(entry) for entry in unusable],
+        )
+    return frozenset(normalize_path(e) for e in entries if isinstance(e, str))
+
+
+def policy_for(request) -> Mapping[str, RoutePolicy]:
+    """The declared policy for the app serving this request.
+
+    The app is read off the raw scope rather than through ``request.app``, which
+    raises ``KeyError`` when the key is absent: both call sites decide before
+    entering their own error handling, so an app-less scope would 500 every POST
+    instead of degrading to an ordinary uncollapsed, uncached request.
+    """
+    app = request.scope.get("app")
+    state = getattr(app, "state", None)
+    raw_policy = getattr(state, APP_STATE_POLICY_ATTR, None)
+    raw_legacy = getattr(state, LEGACY_IDEMPOTENCY_ATTR, None)
+    policy = _read_policy_map(raw_policy)
+    if raw_legacy is None:
+        return policy
+
+    # The merge is cached against the identity of both inputs. Without it every
+    # POST on a deployment still using the fm#1299 attribute rebuilds a frozenset
+    # and copies a dict — twice, once per middleware — for a value that changes
+    # only at composition time. Keyed on identity rather than equality so the
+    # check itself stays O(1); a re-declaration replaces the objects and misses.
+    cached = getattr(state, _MERGED_CACHE_ATTR, None)
+    if cached is not None and cached[0] is raw_policy and cached[1] is raw_legacy:
+        return cached[2]
+
+    legacy = _read_legacy_exclusions(raw_legacy)
+    merged = _PolicyMap(policy)
+    for path in legacy:
+        merged[path] = merged.get(path, RoutePolicy()).merged_with(
+            RoutePolicy(never_replayed=True, never_collapsed=True)
+        )
+    if state is not None:
+        setattr(state, _MERGED_CACHE_ATTR, (raw_policy, raw_legacy, merged))
+    return merged
+
+
+def assert_policy_coherent(app) -> Optional[str]:
+    """Refuse a declaration that withholds replay but permits collapsing.
+
+    ``declare_route_policy`` cannot produce that state — it applies the
+    implication itself — so this exists for the one path that bypasses it: a
+    value assigned straight onto ``app.state``. The failure it catches is a
+    ``409`` on a credential-recovery path, raised by the middleware *further
+    out* than the one the declaration named, which is close to undiagnosable
+    from the outside: the operator sees a conflict on an operation whose whole
+    purpose is to be repeatable.
+
+    Returns the problem as a string rather than raising, so the caller decides
+    whether this deployment should refuse to boot. Returns ``None`` when
+    coherent.
+    """
+    raw = getattr(app.state, APP_STATE_POLICY_ATTR, None)
+    policy = _read_policy_map(raw)
+    if raw is not None and not policy:
+        return (
+            f"app.state.{APP_STATE_POLICY_ATTR} is set to {type(raw).__name__} but "
+            f"yields no usable declaration, so every route it names is unprotected. "
+            f"A declaration that matches nothing is indistinguishable from a "
+            f"working one from outside; use declare_route_policy()."
+        )
+
+    table = _post_route_paths(app.routes)
+    unmatched = sorted(set(policy) - table.post_paths)
+    if unmatched and table.complete:
+        return (
+            f"Route policy names no POST route on this app for: {unmatched}. "
+            f"Declared but unmatched means unprotected, and it looks exactly like "
+            f"a working declaration; declare after the routers are mounted, and "
+            f"build the path from the router that serves it."
+        )
+
+    incoherent = sorted(
+        path
+        for path, entry in policy.items()
+        if entry.never_replayed and not entry.never_collapsed
+    )
+    if not incoherent:
+        return None
+    return (
+        f"Route policy withholds idempotent replay but permits deduplication "
+        f"for: {incoherent}. Deduplication is installed further out, so a repeat "
+        f"of one of these is answered 409 before the route runs — blocking the "
+        f"very retry the replay exclusion exists to allow. Declare these with "
+        f"declare_credential_mint(), which applies both."
+    )

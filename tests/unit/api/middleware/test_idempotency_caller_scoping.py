@@ -759,19 +759,23 @@ def test_exclusions_do_not_over_catch_any_real_post_route():
     An exclusion is a silent disabling of idempotency, so it must be shown
     against the real route table rather than against hand-written paths. The
     tempting ``/sessions`` substring marker catches fifteen POST routes here.
-    """
-    from starlette.routing import Route
 
+    Enumerated through ``route_policy._post_route_paths`` rather than by walking
+    ``real_app.routes`` directly: FastAPI >= 0.139 records an ``_IncludedRouter``
+    placeholder instead of copying an included router's routes, so an isinstance
+    walk sees ~19 of the ~145 routes served and the vacuity guard below is the
+    only thing that would notice (fm#1305). Not ``app.openapi()`` either — that
+    omits ``include_in_schema=False`` operations, so a hidden POST route would
+    fall outside the very guard this test is, and it would tie a unit test to
+    schema generation on the process-wide singleton.
+    """
+    from faultmaven.api.middleware.route_policy import _post_route_paths
     from faultmaven.main import app as real_app
 
     middleware = IdempotencyMiddleware(app=lambda scope, receive, send: None)
-    post_paths = sorted(
-        {
-            route.path
-            for route in real_app.routes
-            if isinstance(route, Route) and "POST" in (route.methods or set())
-        }
-    )
+    table = _post_route_paths(real_app.routes)
+    assert table.complete, "enumeration must be known complete to prove anything"
+    post_paths = sorted(table.post_paths)
 
     # Guard against a vacuous pass if route collection ever breaks.
     assert len(post_paths) > 40, f"only {len(post_paths)} POST routes enumerated"
