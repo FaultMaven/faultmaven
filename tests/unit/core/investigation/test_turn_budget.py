@@ -26,9 +26,12 @@ import pytest
 
 from faultmaven.core.investigation.llm_error_handler import LLMErrorHandler, RetryConfig
 from faultmaven.core.investigation.turn_budget import (
+    TURN_BUDGET_BACKSTOP_RESERVE_SECONDS,
     TURN_BUDGET_RESERVE_SECONDS,
+    backstop_turn_budget,
     bind_turn_deadline,
     can_afford_next_attempt,
+    clamp_to_turn_budget,
     remaining_turn_budget,
     spendable_turn_budget,
     worst_case_ladder_plan,
@@ -254,3 +257,79 @@ class TestBindingTheDeadline:
         after = time.monotonic()
         assert remaining is not None
         assert 60 - (after - before) <= remaining <= 60
+
+
+@pytest.mark.unit
+class TestClampingOneCallsOwnTimeout:
+    """``clamp_to_turn_budget`` is what bounds EVERY router-borne LLM call.
+
+    It is applied at ``LLMRouter._resolve_timeout``, the single place such a
+    call learns its ceiling — so intent classification and KB/document answer
+    synthesis are bounded by it too, not only the calls the investigation
+    engine wraps in a retry ladder (#1278's "each subsequent call in the turn").
+    """
+
+    def test_unbound_returns_the_configured_ceiling_untouched(self):
+        assert clamp_to_turn_budget(600.0) == 600.0
+
+    def test_a_ceiling_that_fits_is_untouched(self):
+        with bind_turn_deadline(120):
+            assert clamp_to_turn_budget(30.0) == 30.0
+
+    def test_a_ceiling_larger_than_the_turn_is_cut_to_the_budget(self):
+        with bind_turn_deadline(30):
+            clamped = clamp_to_turn_budget(600.0)
+        assert clamped < 30.0
+        assert clamped == pytest.approx(30.0 - TURN_BUDGET_RESERVE_SECONDS, abs=0.05)
+
+    def test_a_spent_budget_clamps_to_zero_never_negative(self):
+        """``asyncio.wait_for`` turns 0.0 into an immediate, CLASSIFIED timeout.
+
+        A negative would too, but zero is the honest floor and keeps the value
+        printable in a log line without a sign that reads like a bug.
+        """
+        with bind_turn_deadline(-5):
+            assert clamp_to_turn_budget(600.0) == 0.0
+
+
+@pytest.mark.unit
+class TestTheProviderClampWinsTheRace:
+    """Two clamps bound an attempt, and WHICH one fires decides whether the
+    circuit breaker ever learns the provider is down.
+
+    The provider's own timeout (inside ``call_external``) raises
+    ``ExternalCallTimeout`` from an ``except asyncio.TimeoutError`` handler and
+    records a breaker failure. The ladder's outer backstop cancels the
+    coroutine instead, and ``CancelledError`` is a ``BaseException`` that none
+    of that method's handlers catch — nothing is recorded, the breaker never
+    opens, and the outage repeats at full cost every turn.
+
+    So the provider clamp must expire STRICTLY EARLIER. That is not luck: it
+    follows from the backstop reserve being the smaller of the two, and it is
+    asserted here rather than left as a comment.
+    """
+
+    def test_the_backstop_reserve_is_the_smaller_one(self):
+        assert TURN_BUDGET_BACKSTOP_RESERVE_SECONDS < TURN_BUDGET_RESERVE_SECONDS
+
+    def test_the_backstop_deadline_is_later_than_the_provider_clamp(self):
+        with bind_turn_deadline(120):
+            provider = spendable_turn_budget()
+            backstop = backstop_turn_budget()
+        assert provider is not None and backstop is not None
+        assert backstop > provider
+
+    def test_the_gap_is_the_difference_between_the_two_reserves(self):
+        with bind_turn_deadline(120):
+            gap = backstop_turn_budget() - spendable_turn_budget()
+        expected = TURN_BUDGET_RESERVE_SECONDS - TURN_BUDGET_BACKSTOP_RESERVE_SECONDS
+        assert gap == pytest.approx(expected, abs=0.05)
+
+    def test_the_backstop_still_lands_inside_the_turn(self):
+        """Later than the provider clamp, but never at or past the deadline the
+        route will cancel on — or it would be the 504 it exists to prevent."""
+        with bind_turn_deadline(120):
+            assert backstop_turn_budget() < remaining_turn_budget()
+
+    def test_unbound_reads_none_like_every_other_budget_reader(self):
+        assert backstop_turn_budget() is None

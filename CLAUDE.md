@@ -411,19 +411,28 @@ retry at a bigger cap would be served instead of reaching the provider.
 bounded by `AGENT_REQUEST_TIMEOUT` (per-provider via
 `AGENT_PROVIDER_TIMEOUT_OVERRIDES`), applied as an `asyncio.wait_for` at the
 turn route. The ladder inside it (`LLMErrorHandler.with_retry`, `max_retries=3`)
-costs `3 × LLM_REQUEST_TIMEOUT + 14s` against a hung provider — three PAID
-attempts, because the router's breaker opens on the third failure and
-short-circuits the fourth, plus all four backoffs (2 + 4 + 8; the eight seconds
-are spent before the attempt the breaker refuses). The two settings live in
+costs `3T + 14s` against a hung provider, where `T` is the resolved per-call
+ceiling — `max(LLM_REQUEST_TIMEOUT, LLM_PROVIDER_TIMEOUT_OVERRIDES[provider])`,
+NOT `LLM_REQUEST_TIMEOUT` alone, which understates the shipped cluster shape
+threefold. Three PAID attempts, because the router's breaker opens on the third
+failure and short-circuits the fourth, plus all four backoffs (2 + 4 + 8; the
+eight seconds are spent before the attempt the breaker refuses). The two settings live in
 different classes with their own per-provider maps and nothing related them, so
 the turn used to be cancelled mid-ladder: the classification never ran and the
 caller got an opaque 504 instead of the honest 503 + `Retry-After`
 (#1278/#1292). `core/investigation/turn_budget.py` binds the deadline in a
-`ContextVar` at the one site that applies the `wait_for`, and `with_retry`
-**clamps every attempt** to what is left (the invariant — it holds at any
-config) and **refuses a retry** whose backoff plus another attempt of the worst
-cost observed *in that ladder* would not fit (the anti-waste half), reporting
-`TURN_BUDGET_EXHAUSTED` → 503. **Unbound context means unbounded**: outside a
+`ContextVar` at the one site that applies the `wait_for`.
+`LLMRouter._resolve_timeout` then **clamps every router-borne call's own
+timeout** to what is left — which bounds intent classification and KB/document
+synthesis too, not just the ladder, and keeps a cut-short call on the path that
+records a circuit-breaker failure (an outer `wait_for` would cancel it, and
+`CancelledError` is invisible to `call_external`'s handlers). `with_retry` adds
+a later backstop clamp for providers reached without the router, and **refuses a
+retry** whose backoff plus another attempt of the worst cost observed *in that
+ladder* would not fit. Refusing the ladder's last iteration reports
+`RETRY_EXHAUSTED` (nothing that could have changed the answer was lost);
+refusing an earlier one reports `TURN_BUDGET_EXHAUSTED`, whose remediation is
+the config. Both → 503. **Unbound context means unbounded**: outside a
 turn the budget reads `None` and every check is inert, which is why the binding
 is the seam the whole guard hangs on and has its own test. Whether a
 deployment's two timeouts actually fit is reported by

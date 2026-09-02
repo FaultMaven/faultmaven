@@ -23,8 +23,12 @@ import pytest
 
 from faultmaven.core.investigation import turn_budget
 from faultmaven.core.investigation.llm_error_handler import LLMErrorHandler, RetryConfig
-from faultmaven.core.investigation.turn_budget import bind_turn_deadline
+from faultmaven.core.investigation.turn_budget import (
+    bind_turn_deadline,
+    clamp_to_turn_budget,
+)
 from faultmaven.exceptions import TURN_BUDGET_EXHAUSTED, ExternalCallTimeout
+from faultmaven.infrastructure.base_client import BaseExternalClient
 
 # Scaled reserve: big enough that the ladder's early stop is unambiguously
 # earlier than the cancellation even on a loaded runner (every assertion below
@@ -369,3 +373,254 @@ class TestEveryExitCarriesAClassifiedCode:
         assert error.error_code == TURN_BUDGET_EXHAUSTED
         # The provider's own wording survives for diagnostics.
         assert isinstance(error.original_exception, ExternalCallTimeout)
+
+
+class _HangingProvider(BaseExternalClient):
+    """A real ``BaseExternalClient`` with the router's own breaker settings.
+
+    Real, not a double, because the whole question is which of that class's
+    exception handlers runs — and a double would answer it by construction.
+    """
+
+    def __init__(self, hang_seconds):
+        super().__init__(
+            client_name="test_provider",
+            service_name="LLM_Providers",
+            enable_circuit_breaker=True,
+            circuit_breaker_threshold=3,
+            circuit_breaker_timeout=30,
+        )
+        self.hang_seconds = hang_seconds
+
+    async def health_check(self):
+        return {"status": "ok"}
+
+    async def _hang(self):
+        await asyncio.sleep(self.hang_seconds)
+        return "never reached"
+
+    async def generate(self, configured_timeout, clamp):
+        """``clamp=True`` is what ``LLMRouter._resolve_timeout`` now does."""
+        timeout = (
+            clamp_to_turn_budget(configured_timeout) if clamp else configured_timeout
+        )
+        return await self.call_external(
+            "route_llm_request", self._hang, timeout=timeout, retries=0
+        )
+
+
+async def _turn_against_provider(*, hang, turn_seconds, base_delay, clamp):
+    provider = _HangingProvider(hang)
+    attempts = {"n": 0}
+
+    async def op():
+        attempts["n"] += 1
+        return await provider.generate(hang, clamp)
+
+    handler = LLMErrorHandler(RetryConfig(base_delay_seconds=base_delay))
+    with bind_turn_deadline(turn_seconds):
+        try:
+            _, error = await asyncio.wait_for(
+                handler.with_retry(operation=op), timeout=turn_seconds
+            )
+            code = error.error_code if error is not None else None
+        except asyncio.TimeoutError:
+            code = CANCELLED
+    return provider.circuit_breaker, attempts["n"], code
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+class TestTheCutShortCallStillReachesTheBreaker:
+    """The other half of #1278: fast-failing the SECOND outage turn.
+
+    Bounding the turn makes each failure honest, but a provider outage should
+    also stop costing a full budget after the breaker has seen enough of it.
+    That only happens if a cut-short attempt is RECORDED, and which timeout
+    fires decides whether it is: the call's own timeout raises
+    ``ExternalCallTimeout`` from ``call_external``'s ``except
+    asyncio.TimeoutError`` and records a failure, while an outer ``wait_for``
+    cancels the coroutine and ``CancelledError`` reaches none of that method's
+    handlers.
+
+    Measured on the shape where the two differ — one attempt costing more than
+    the whole turn, i.e. the ``T=180 / A=120`` row of the configuration table.
+    """
+
+    PARAMS = dict(hang=5.0, turn_seconds=2.0, base_delay=0.05)
+
+    async def test_control_an_outer_clamp_records_nothing(self):
+        """Pre-fix behaviour, asserted rather than described."""
+        breaker, attempts, code = await _turn_against_provider(
+            **self.PARAMS, clamp=False
+        )
+        assert attempts == 1
+        assert code == TURN_BUDGET_EXHAUSTED  # the turn is honest ...
+        assert breaker.failure_count == 0  # ... and the breaker learns nothing
+        assert breaker.state == "closed"
+
+    async def test_treatment_clamping_the_calls_own_timeout_records_it(self):
+        breaker, attempts, code = await _turn_against_provider(
+            **self.PARAMS, clamp=True
+        )
+        assert attempts == 1
+        assert code == TURN_BUDGET_EXHAUSTED
+        assert breaker.failure_count == 1, (
+            "a cut-short attempt must still count against the breaker, or a "
+            "provider outage costs a full turn budget forever"
+        )
+
+    async def test_the_breaker_opens_across_turns_and_then_fast_fails(self):
+        """The end #1278 asks for: the outage stops costing a full budget.
+
+        Three turns' worth of failures on one provider, then the breaker is
+        open and the next call never reaches it.
+        """
+        provider = _HangingProvider(5.0)
+        for _ in range(3):
+            with bind_turn_deadline(2.0):
+                with pytest.raises(Exception):
+                    await provider.generate(5.0, clamp=True)
+        assert provider.circuit_breaker.failure_count >= 3
+        assert provider.circuit_breaker.state == "open"
+
+        started = time.monotonic()
+        with pytest.raises(Exception):
+            await provider.generate(5.0, clamp=True)
+        assert time.monotonic() - started < 0.5, "an open breaker must fast-fail"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+class TestWhichVerdictTheBudgetReports:
+    """``TURN_BUDGET_EXHAUSTED`` must mean the budget COST the caller attempts.
+
+    Its documented remediation is ``GET /admin/config/status``. Reporting it
+    when the ladder in fact made every attempt that could reach a provider
+    sends the operator to a page that says the timeouts are coherent — a
+    diagnostic dead end. The verdict therefore turns on whether a
+    provider-reaching attempt was actually lost, which is a structural question
+    about the ladder's own length and not a question about the circuit breaker,
+    whose state this layer cannot observe.
+    """
+
+    async def test_full_length_ladder_reports_a_provider_verdict(self):
+        """3 of 3 paid attempts made; only the breaker-refused iteration was
+        skipped, and skipping it cannot have changed the answer."""
+        outcome = await _run_turn(
+            hang_seconds=0.1, turn_seconds=1.3, base_delay=0.1, bind=True
+        )
+        assert outcome.attempts == 3
+        assert outcome.error_code == "RETRY_EXHAUSTED"
+
+    async def test_a_lost_attempt_reports_a_configuration_verdict(self):
+        outcome = await _run_turn(
+            hang_seconds=0.5, turn_seconds=1.3, base_delay=0.1, bind=True
+        )
+        assert outcome.attempts < 3
+        assert outcome.error_code == TURN_BUDGET_EXHAUSTED
+
+    async def test_the_two_verdicts_discriminate_on_the_same_turn_budget(self):
+        """Same A, same backoffs — only the attempt cost differs, and the code
+        flips exactly where a paid attempt starts being lost. A single shape
+        would not show that the code tracks anything."""
+        full = await _run_turn(
+            hang_seconds=0.1, turn_seconds=1.3, base_delay=0.1, bind=True
+        )
+        lost = await _run_turn(
+            hang_seconds=0.5, turn_seconds=1.3, base_delay=0.1, bind=True
+        )
+        assert full.error_code != lost.error_code
+        assert full.attempts > lost.attempts
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+class TestATruncationRetryKeepsItsRecoveryCode:
+    """A budget refusal must not disable the minimal-prompt degrade (#662).
+
+    The engine selects that recovery on ``TOKEN_LIMIT``. If the budget refuses
+    the truncation retry and the ladder reports a budget/availability code
+    instead, a recoverable overflow becomes a hard failure whose message blames
+    the provider.
+    """
+
+    async def test_the_budget_refusal_still_reports_token_limit(self, monkeypatch):
+        from faultmaven.core.investigation import llm_error_handler as module
+        from faultmaven.exceptions import TOKEN_LIMIT
+
+        monkeypatch.setattr(module, "spendable_turn_budget", lambda *a, **k: 0.0)
+        handler = LLMErrorHandler(RetryConfig(base_delay_seconds=0.0))
+
+        result = await handler._retry_or_exhaust(
+            0, next_attempt_seconds=5.0, no_budget_code=TOKEN_LIMIT
+        )
+
+        assert result.error_code == TOKEN_LIMIT
+
+    async def test_without_the_override_it_reports_the_budget(self, monkeypatch):
+        """The control: the same refusal on the ordinary retryable branch."""
+        from faultmaven.core.investigation import llm_error_handler as module
+
+        monkeypatch.setattr(module, "spendable_turn_budget", lambda *a, **k: 0.0)
+        handler = LLMErrorHandler(RetryConfig(base_delay_seconds=0.0))
+
+        result = await handler._retry_or_exhaust(0, next_attempt_seconds=5.0)
+
+        assert result.error_code == TURN_BUDGET_EXHAUSTED
+
+
+@pytest.mark.integration
+class TestTheRouterAppliesTheClamp:
+    """The seam that makes the budget cover EVERY LLM call in a turn.
+
+    ``LLMRouter._resolve_timeout`` is the sole source of the ``timeout`` handed
+    to ``call_external`` for a router-borne call, so clamping there bounds the
+    investigation ladder, intent classification (``intent_resolver``) and
+    KB/document answer synthesis (``document_qa_tool``) alike. Without it only
+    the one ``with_retry`` call site was budgeted, and a hang anywhere else in
+    the turn still produced the opaque 504 this work removes.
+
+    Asserted on the real router rather than on ``clamp_to_turn_budget``, which
+    is already unit-tested: the question here is whether the router calls it.
+    """
+
+    @pytest.fixture(scope="class")
+    def router(self):
+        from faultmaven.infrastructure.llm.router import LLMRouter
+
+        return LLMRouter()
+
+    def test_outside_a_turn_the_configured_ceiling_is_untouched(self, router):
+        assert router._resolve_timeout() == pytest.approx(router.request_timeout)
+
+    def test_inside_a_turn_the_ceiling_is_cut_to_the_remaining_budget(self, router):
+        deadline = max(1.0, router.request_timeout / 10.0)
+        with bind_turn_deadline(deadline):
+            clamped = router._resolve_timeout()
+
+        assert clamped < router.request_timeout
+        assert clamped == pytest.approx(
+            deadline - turn_budget.TURN_BUDGET_RESERVE_SECONDS, abs=0.1
+        )
+
+    def test_the_router_applies_the_SHARED_clamp_not_a_local_min(self, router):
+        """Pins the seam between the two halves of the breaker fix.
+
+        One test proves the router narrows its ceiling; another proves a call
+        cut short by ``clamp_to_turn_budget`` still records a breaker failure.
+        Neither is worth much unless the router narrows it with THAT function —
+        a hand-rolled ``min`` here would satisfy the first test and silently
+        drop the second's guarantee.
+        """
+        unbound = router._resolve_timeout()
+        with bind_turn_deadline(max(1.0, unbound / 10.0)):
+            assert router._resolve_timeout() == pytest.approx(
+                clamp_to_turn_budget(unbound), abs=0.05
+            )
+
+    def test_a_turn_longer_than_the_ceiling_leaves_it_alone(self, router):
+        """The clamp is a ceiling, never a floor: a generous turn must not
+        lengthen a deliberately short provider timeout."""
+        with bind_turn_deadline(router.request_timeout * 10):
+            assert router._resolve_timeout() == pytest.approx(router.request_timeout)

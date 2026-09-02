@@ -19,13 +19,18 @@ boot gate**. What it tells an operator is how many provider attempts their two
 numbers actually buy, which is not derivable from either one alone and which no
 other signal in the system states.
 
-Lives in the config layer, not beside the endpoint that serves it, because
-``faultmaven/api`` may not import ``faultmaven.core`` or
-``faultmaven.infrastructure`` (``tests/unit/architecture/test_architecture_boundaries``
-enforces that, and ``lint-imports`` does not). The imports are function-local for
-the same reason ``llm_config_overrides`` does it: nothing here is needed to load
-settings, and keeping them out of module scope keeps the config package
-importable without dragging the LLM stack in.
+Lives in the config layer, not beside the endpoint that serves it, because the
+answer is composed from three things the API layer has no business knowing: the
+engine's retry configuration, the router's circuit-breaker threshold, and the
+two timeout maps. Composition of core and infrastructure belongs below the
+route that reports it — the same reason ``investigation_capability`` sits here
+rather than in ``main``. (``tests/unit/architecture/test_architecture_boundaries``
+enforces that direction for ``faultmaven/api``; ``lint-imports`` does not, so
+the test is the one that catches a regression.)
+
+The imports are function-local for the reason ``llm_config_overrides`` does the
+same: nothing here is needed to load settings, so keeping them out of module
+scope leaves the config package importable without dragging in the LLM stack.
 """
 
 from __future__ import annotations
@@ -64,9 +69,10 @@ def describe_retry_ladder_budget(settings) -> "LadderPlan":
 
     provider = resolve_chat_provider_name(settings)
     config = RetryConfig()
-    backoffs = [
-        LLMErrorHandler(config).calculate_delay(n) for n in range(config.max_retries)
-    ]
+    # One handler, not one per backoff: ``calculate_delay`` is a pure function
+    # of the config, and the instance exists only to reach it.
+    schedule = LLMErrorHandler(config)
+    backoffs = [schedule.calculate_delay(n) for n in range(config.max_retries)]
     return worst_case_ladder_plan(
         agent_timeout=float(settings.agent.timeout_for_provider(provider)),
         attempt_seconds=resolve_request_timeout(settings),

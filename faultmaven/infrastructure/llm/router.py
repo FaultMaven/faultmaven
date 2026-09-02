@@ -16,6 +16,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from faultmaven.config.settings import get_settings
+from faultmaven.core.investigation.turn_budget import clamp_to_turn_budget
 from faultmaven.exceptions import LLMOutputFloorError
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.health.sla_tracker import sla_tracker
@@ -334,13 +335,33 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         Provider-aware timeouts let slow models (Fireworks DeepSeek V4 Pro,
         local Ollama on CPU) exceed the global 30-90s ceiling without
         widening it for everyone.
+
+        The resolved ceiling is then bounded by whatever is left of the current
+        turn (``clamp_to_turn_budget``). This is the single place a router-borne
+        call learns its timeout, so clamping here bounds EVERY LLM call made
+        while handling a turn — the investigation engine's retry ladder, but
+        equally intent classification and KB/document answer synthesis, which
+        have no ladder around them and could otherwise outlive the turn and
+        return the opaque 504 that #1278 is about.
+
+        Clamping the call's own timeout is also what keeps a cut-short call on
+        the RECORDED failure path: it expires inside ``call_external``, which
+        raises ``ExternalCallTimeout`` and records a circuit-breaker failure.
+        Wrapping the call in an outer ``wait_for`` instead cancels it, and a
+        ``CancelledError`` is a ``BaseException`` that none of that method's
+        handlers catch — so the breaker would never learn the provider is down
+        and the outage would repeat at full cost every turn.
+
+        Outside a turn (background jobs, the CLI, direct-call tests) the clamp
+        is inert and the resolved ceiling is returned unchanged.
         """
         override = self.settings.llm.timeout_for_provider(
             resolve_chat_provider_name(self.settings)
         )
         # If the user has explicitly raised the env var above the override,
         # respect that ceiling (env is the operator's last word).
-        return float(max(override, self.request_timeout))
+        resolved = float(max(override, self.request_timeout))
+        return clamp_to_turn_budget(resolved)
 
     @_opik_track_llm("llm_router_route")
     async def route(
