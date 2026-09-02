@@ -252,9 +252,99 @@ def test_the_coherence_gate_is_wired_into_the_lifespan():
     for one branch.
     """
     import inspect
+    import re
 
     import faultmaven.main
 
     source = inspect.getsource(faultmaven.main)
-    assert "assert_policy_coherent" in source
-    assert "raise RuntimeError" in source
+
+    # `assert "raise RuntimeError" in source` was vacuous: main.py has six of
+    # them, so downgrading the gate to a logger.warning still passed. Pin the
+    # raise to THIS call.
+    assert re.search(
+        r"assert_policy_coherent\(app\)\s*\n\s*if _policy_problem:\s*\n\s*"
+        r"raise RuntimeError\(_policy_problem\)",
+        source,
+    ), "the gate must refuse the boot, not merely report"
+
+    # And it must run AFTER composition: before it, app.state carries nothing a
+    # composed unit declared during composition, so the gate passes vacuously on
+    # exactly the deployment shape it exists for.
+    assert source.index("await compose_application") < source.index(
+        "assert_policy_coherent(app)"
+    ), "the gate must inspect a composed app"
+
+
+# ---------------------------------------------------------------------------
+# Review findings on this PR (fm#1304).
+# ---------------------------------------------------------------------------
+
+
+def test_declaring_a_post_route_does_not_exempt_other_methods_on_that_path():
+    """The policy names POST routes, so it must not withhold anything else.
+
+    ``_post_route_paths`` refuses a path that answers no POST, so a DELETE can
+    never be declared — but keying the exemption on path alone silently removed
+    duplicate protection from a co-located unbind. Measured before the fix:
+    declared, two identical DELETEs answered 200/200; undeclared, 200/409.
+    """
+    app = _build_app(lambda a: declare_credential_mint(a, BIND))
+
+    @app.delete(BIND)
+    async def unbind():
+        return {"unbound": True}
+
+    with TestClient(app) as client:
+        codes = [
+            client.request(
+                "DELETE",
+                BIND,
+                content=BODY,
+                headers={"X-Session-ID": "s", "content-type": "application/json"},
+            ).status_code
+            for _ in range(2)
+        ]
+
+    assert codes == [200, 409], "DELETE must keep duplicate protection"
+
+
+def test_the_returned_policy_is_not_a_handle_onto_live_state():
+    """The module's thesis is that the half-declaration cannot be built.
+
+    Handing back the stored map defeats it: ``policy[path] = RoutePolicy(...)``
+    would mutate ``app.state`` in place, and a lazily-composed unit doing so
+    after startup is past the gate.
+    """
+    app = _build_app()
+    returned = declare_credential_mint(app, BIND)
+
+    with pytest.raises(TypeError):
+        returned[BIND] = RoutePolicy(never_replayed=True, never_collapsed=False)
+
+    assert assert_policy_coherent(app) is None
+
+
+def test_the_gate_refuses_a_declaration_that_yields_nothing():
+    """Inert is the failure this module exists to prevent, and it looks
+    identical to a working declaration from outside."""
+    app = _build_app()
+    setattr(app.state, APP_STATE_POLICY_ATTR, ["/x"])
+
+    problem = assert_policy_coherent(app)
+
+    assert problem is not None and "unprotected" in problem
+
+
+def test_the_gate_refuses_a_declaration_naming_no_route():
+    """Declared-but-unmatched is unprotected, and startup is the one moment it
+    can be refused rather than discovered in Redis."""
+    app = _build_app()
+    setattr(
+        app.state,
+        APP_STATE_POLICY_ATTR,
+        {"/api/v1/does-not-exist": RoutePolicy(True, True)},
+    )
+
+    problem = assert_policy_coherent(app)
+
+    assert problem is not None and "/api/v1/does-not-exist" in problem

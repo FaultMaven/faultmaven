@@ -41,7 +41,8 @@ the helper and can express exactly the half this module refuses to build.
 
 import logging
 from collections.abc import Collection
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Dict, Mapping, Optional
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,10 @@ APP_STATE_POLICY_ATTR = "route_middleware_policy"
 #: Retained from fm#1299, which shipped it as the idempotency-only seam. A
 #: deployment that assigned it directly still works; ``policy_for`` folds it in.
 LEGACY_IDEMPOTENCY_ATTR = "idempotency_excluded_paths"
+
+#: Where the legacy-merged map is memoised. Private: it is a derived value,
+#: not a declaration, and nothing outside this module should read or set it.
+_MERGED_CACHE_ATTR = "_route_policy_merged_cache"
 
 
 @dataclass(frozen=True)
@@ -75,6 +80,19 @@ class RoutePolicy:
     #: credential it lost, so collapsing it returns a conflict where the caller
     #: needed the operation to happen.
     never_collapsed: bool = False
+
+    def merged_with(self, other: "RoutePolicy") -> "RoutePolicy":
+        """Union of two declarations: a later one may only add withholdings.
+
+        The accumulate rule lives here rather than at each call site so a third
+        flag cannot be added to the dataclass and silently forgotten by one of
+        them — which is what ``dataclasses.replace`` would have done, since it
+        reads as "keep the other fields" while overriding every field there is.
+        """
+        return RoutePolicy(
+            never_replayed=self.never_replayed or other.never_replayed,
+            never_collapsed=self.never_collapsed or other.never_collapsed,
+        )
 
 
 def normalize_path(path: str) -> str:
@@ -176,20 +194,22 @@ def declare_route_policy(
                 "it after the router is mounted, and derive it from the router "
                 "rather than retyping the path."
             )
-        current = existing.get(candidate, RoutePolicy())
-        existing[candidate] = replace(
-            current,
-            never_replayed=current.never_replayed or declared.never_replayed,
-            never_collapsed=current.never_collapsed or declared.never_collapsed,
+        existing[candidate] = existing.get(candidate, RoutePolicy()).merged_with(
+            declared
         )
 
     combined = _PolicyMap(existing)
     setattr(app.state, APP_STATE_POLICY_ATTR, combined)
+    # Returned read-only. The module's claim is that the half-declaration cannot
+    # be built, and handing back a live handle onto ``app.state`` would defeat
+    # it: ``policy[path] = RoutePolicy(never_replayed=True, ...)`` would mutate
+    # the stored map in place, after ``assert_policy_coherent`` has already run.
+    view = MappingProxyType(dict(combined))
     logger.info(
         "Route middleware policy declared by the composition root: %s",
         {path: vars(policy) for path, policy in sorted(combined.items())},
     )
-    return combined
+    return view
 
 
 def declare_credential_mint(app, *paths: str) -> Mapping[str, RoutePolicy]:
@@ -342,15 +362,29 @@ def policy_for(request) -> Mapping[str, RoutePolicy]:
     """
     app = request.scope.get("app")
     state = getattr(app, "state", None)
-    policy = _read_policy_map(getattr(state, APP_STATE_POLICY_ATTR, None))
-    legacy = _read_legacy_exclusions(getattr(state, LEGACY_IDEMPOTENCY_ATTR, None))
-    if not legacy:
+    raw_policy = getattr(state, APP_STATE_POLICY_ATTR, None)
+    raw_legacy = getattr(state, LEGACY_IDEMPOTENCY_ATTR, None)
+    policy = _read_policy_map(raw_policy)
+    if raw_legacy is None:
         return policy
 
-    merged = dict(policy)
+    # The merge is cached against the identity of both inputs. Without it every
+    # POST on a deployment still using the fm#1299 attribute rebuilds a frozenset
+    # and copies a dict — twice, once per middleware — for a value that changes
+    # only at composition time. Keyed on identity rather than equality so the
+    # check itself stays O(1); a re-declaration replaces the objects and misses.
+    cached = getattr(state, _MERGED_CACHE_ATTR, None)
+    if cached is not None and cached[0] is raw_policy and cached[1] is raw_legacy:
+        return cached[2]
+
+    legacy = _read_legacy_exclusions(raw_legacy)
+    merged = _PolicyMap(policy)
     for path in legacy:
-        current = merged.get(path, RoutePolicy())
-        merged[path] = replace(current, never_replayed=True, never_collapsed=True)
+        merged[path] = merged.get(path, RoutePolicy()).merged_with(
+            RoutePolicy(never_replayed=True, never_collapsed=True)
+        )
+    if state is not None:
+        setattr(state, _MERGED_CACHE_ATTR, (raw_policy, raw_legacy, merged))
     return merged
 
 
@@ -369,7 +403,26 @@ def assert_policy_coherent(app) -> Optional[str]:
     whether this deployment should refuse to boot. Returns ``None`` when
     coherent.
     """
-    policy = _read_policy_map(getattr(app.state, APP_STATE_POLICY_ATTR, None))
+    raw = getattr(app.state, APP_STATE_POLICY_ATTR, None)
+    policy = _read_policy_map(raw)
+    if raw is not None and not policy:
+        return (
+            f"app.state.{APP_STATE_POLICY_ATTR} is set to {type(raw).__name__} but "
+            f"yields no usable declaration, so every route it names is unprotected. "
+            f"A declaration that matches nothing is indistinguishable from a "
+            f"working one from outside; use declare_route_policy()."
+        )
+
+    served = _post_route_paths(app.routes)
+    unmatched = sorted(set(policy) - served)
+    if unmatched:
+        return (
+            f"Route policy names no POST route on this app for: {unmatched}. "
+            f"Declared but unmatched means unprotected, and it looks exactly like "
+            f"a working declaration; declare after the routers are mounted, and "
+            f"build the path from the router that serves it."
+        )
+
     incoherent = sorted(
         path
         for path, entry in policy.items()

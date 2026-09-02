@@ -26,7 +26,11 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
 from .route_policy import (
+    APP_STATE_POLICY_ATTR as APP_STATE_POLICY_ATTR_INTERNAL,
+)
+from .route_policy import (
     LEGACY_IDEMPOTENCY_ATTR,
+    _read_legacy_exclusions,
     declare_credential_mint,
     policy_for,
 )
@@ -86,10 +90,19 @@ def exclude_from_idempotency(app, *paths: str) -> frozenset:
     otherwise answer the retry with a 409, blocking through a different door the
     very re-run this exclusion exists to allow (fm#1303).
 
-    Returns the excluded paths, as it always did. Call
-    ``declare_credential_mint`` directly for the full policy map.
+    Returns the paths withheld from replay — every one, including any the
+    fm#1299 ``app.state`` attribute contributes, and *only* those: a path some
+    other unit declared ``never_collapsed``-only is not excluded from replay and
+    must not be reported as if it were. Call ``declare_credential_mint`` for the
+    full policy map.
     """
-    return frozenset(declare_credential_mint(app, *paths))
+    declare_credential_mint(app, *paths)
+    policy = dict(getattr(app.state, APP_STATE_POLICY_ATTR_INTERNAL, {}) or {})
+    excluded = {path for path, entry in policy.items() if entry.never_replayed}
+    excluded |= _read_legacy_exclusions(
+        getattr(app.state, LEGACY_IDEMPOTENCY_ATTR, None)
+    )
+    return frozenset(excluded)
 
 
 # Upper bound on a request body we are willing to buffer for fingerprinting.
@@ -110,6 +123,10 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         self.redis_client = redis_client
         self.ttl_seconds = 3600  # 1 hour TTL for idempotency keys
         self.key_prefix = "idempotency:"
+        # (policy object, derived replay-exclusion set). policy_for returns a
+        # stable object per declaration, so this is an identity check on the hot
+        # path rather than a rebuild of the set on every POST.
+        self._replay_exclusions = None
         self._resolved = redis_client is not None
 
     def _ensure_redis(self, request: Request) -> None:
@@ -292,11 +309,15 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         and the once-per-process reporting of a malformed one — lives in one
         place rather than being implemented twice with two sets of edge cases.
         """
-        return frozenset(
-            path
-            for path, policy in policy_for(request).items()
-            if policy.never_replayed
+        policy = policy_for(request)
+        cached = self._replay_exclusions
+        if cached is not None and cached[0] is policy:
+            return cached[1]
+        excluded = frozenset(
+            path for path, entry in policy.items() if entry.never_replayed
         )
+        self._replay_exclusions = (policy, excluded)
+        return excluded
 
     def _is_excluded_path(self, path: str, declared: frozenset = frozenset()) -> bool:
         """Whether this path is structurally excluded from idempotency.

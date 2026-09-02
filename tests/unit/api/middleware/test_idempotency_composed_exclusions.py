@@ -591,3 +591,62 @@ def test_a_declaration_this_module_normalised_is_not_rebuilt_per_request():
 
     assert _read_policy_map(stored) is stored
     assert _read_policy_map(dict(stored)) is not stored
+
+
+# ---------------------------------------------------------------------------
+# The asymmetry, asserted where it is CONSUMED (fm#1303 review).
+# ---------------------------------------------------------------------------
+
+
+async def test_a_dedup_only_declaration_still_participates_in_replay():
+    """``never_collapsed`` alone must not withhold idempotent replay.
+
+    This is the claim the two flags exist for — ``/api/v1/cases`` is the core's
+    own instance of it — and it was previously asserted only against the
+    dataclass ``declare_route_policy`` returns. That never reaches
+    ``IdempotencyMiddleware``, which is where the flag is actually read: a
+    mutation dropping the ``never_replayed`` filter in ``_declared_exclusions``
+    left all 38 tests of this lane passing.
+    """
+    from faultmaven.api.middleware.route_policy import declare_route_policy
+
+    app, fake = _build_app()
+    declare_route_policy(app, BIND, never_collapsed=True)
+    headers = {"Authorization": ADMIN, "Idempotency-Key": KEY}
+
+    async with _client(app) as client:
+        first = await client.post(BIND, headers=headers, json=BODY)
+        retry = await client.post(BIND, headers=headers, json=BODY)
+        keys = sorted(await fake.keys("idempotency:*"))
+
+    assert first.status_code == 200
+    assert (
+        retry.headers.get("X-Idempotency-Replayed") == "true"
+    ), "a dedup-only declaration must leave idempotency untouched"
+    assert keys, "the response must still be cached"
+    assert app.state.mints["n"] == 1
+
+
+def test_the_helper_returns_only_the_paths_withheld_from_replay():
+    """``exclude_from_idempotency`` names what it excluded, not what it saw.
+
+    fm#1299's contract was that the return value lets a caller "assert what took
+    effect". A path some other composed unit declared ``never_collapsed``-only
+    is *not* withheld from replay, so reporting it would tell a cloud test a
+    credential mint is protected while it is still cached and replayed.
+    """
+    from faultmaven.api.middleware.route_policy import declare_route_policy
+
+    app, _ = _build_app()
+    declare_route_policy(app, PAGERDUTY, never_collapsed=True)
+
+    assert exclude_from_idempotency(app, BIND) == frozenset({BIND})
+
+
+def test_the_helper_return_carries_pre_existing_legacy_declarations():
+    """The fm#1299 attribute contributes to what is withheld, so it must appear
+    in what the helper reports — the old implementation folded it in."""
+    app, _ = _build_app()
+    setattr(app.state, APP_STATE_EXCLUSIONS_ATTR, frozenset({PAGERDUTY}))
+
+    assert exclude_from_idempotency(app, BIND) == frozenset({BIND, PAGERDUTY})

@@ -212,9 +212,16 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
             return True
         if request.url.path.startswith("/static"):
             return True
-        if request.method == "POST" and request.url.path == "/api/v1/cases":
+        # Normalised, as the policy read below is. This middleware sits outside
+        # ``TrailingSlashMiddleware`` and sees the path as the client sent it,
+        # so ``POST /api/v1/cases/`` reaches the same handler as
+        # ``/api/v1/cases`` while missing an un-normalised comparison — the
+        # exemption would then depend on a spelling. Two matching rules in one
+        # function is how that goes unnoticed.
+        normalized = normalize_path(request.url.path)
+        if request.method == "POST" and normalized == "/api/v1/cases":
             return True
-        if request.method == "POST" and request.url.path == "/api/v1/sessions":
+        if request.method == "POST" and normalized == "/api/v1/sessions":
             return True
 
         # Exemptions this repository cannot write down. Every entry above names
@@ -227,10 +234,15 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         #
         # Read from the same declaration ``IdempotencyMiddleware`` reads, so the
         # two can never disagree about what the composition root asked for.
+        #
+        # Scoped to POST because that is the only thing declarable: the
+        # validator refuses a path that answers no POST route. Without the
+        # method test the exemption is keyed on path alone, so declaring the
+        # composed Slack bind (POST) would also strip duplicate protection from
+        # a co-located unbind (DELETE on the same path) that nobody declared.
         if (
-            policy_for(request)
-            .get(normalize_path(request.url.path), _NO_POLICY)
-            .never_collapsed
+            request.method == "POST"
+            and policy_for(request).get(normalized, _NO_POLICY).never_collapsed
         ):
             return True
 
