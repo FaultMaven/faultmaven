@@ -108,41 +108,86 @@ class TestRemediationPrefetchIsNotGatedBySeeding:
     fm#1295 flipped ``FAULTMAVEN_KB_CAUSE_SEEDER`` to off by default. What that
     withholds is the engine's unasked assertion of a runbook's causes as
     hypotheses. What it must NOT withhold is the runbook reaching the model as
-    prose at remediation time — the ``root_cause`` prefetch on the
-    cause_state→IDENTIFIED edge — because that is where the corrective pattern
-    has measured value. The prefetch reads no feature flag; this pins that it
-    stays that way.
+    prose at remediation time — the ``root_cause`` prefetch the turn pipeline
+    fires on the cause_state→IDENTIFIED edge — because that is where the
+    corrective pattern has measured value.
+
+    Driven through ``_apply_investigation_updates`` itself, not by calling
+    ``_prefetch_kb_context`` directly: the thing being pinned is the CALL SITE,
+    which the fm#1295 removal work could delete or gate without any test on
+    ``_prefetch_kb_context`` noticing. The rising edge is supplied by patching
+    the edge helper (tested on its own in ``test_prompt_engine_realignment``),
+    and a no-edge control shows the assertion is about the edge, not about a
+    mock that always fires.
     """
 
-    @pytest.mark.asyncio
-    async def test_root_cause_prefetch_runs_with_the_seeder_off(self, monkeypatch):
+    @staticmethod
+    def _engine_with_seeder_off(monkeypatch, edge_query):
+        from tests.unit.core.investigation.test_solution_offer_liveness import (
+            _make_engine,
+        )
+
         monkeypatch.setattr(
             "faultmaven.config.settings.get_settings",
             lambda: SimpleNamespace(
                 features=SimpleNamespace(kb_cause_seeder_enabled=False)
             ),
         )
-        hit = SearchResult(
-            document_id="kb_x_chunk_1",
-            title="Redis Out of Memory (maxmemory exceeded)",
-            document_type="runbook",
-            tags=[],
-            score=0.9,
-            snippet="### Cause A: unbounded keys ...",
-            parent_document_id="kb_x",
+        monkeypatch.setattr(
+            "faultmaven.core.investigation.milestone_engine."
+            "_kb_prefetch_query_on_identification",
+            lambda *a, **k: edge_query,
         )
-        service = MagicMock()
-        service.search_knowledge = AsyncMock(return_value=[hit])
-        engine = _engine(service)
-        case = _case()
-        relevant = await engine._prefetch_kb_context(case, "redis OOM", "root_cause")
+        engine = _make_engine()
+        engine._prefetch_kb_context = AsyncMock(return_value=[])
+        return engine
+
+    @pytest.mark.asyncio
+    async def test_the_identified_edge_still_prefetches_with_the_seeder_off(
+        self, monkeypatch
+    ):
+        from tests.unit.core.investigation.test_solution_offer_liveness import (
+            _make_case,
+            _meta,
+            _solution_updates,
+        )
+
+        engine = self._engine_with_seeder_off(monkeypatch, "redis maxmemory reached")
+        case = _make_case()
+        await engine._apply_investigation_updates(case, _solution_updates(), _meta())
+        calls = [
+            c
+            for c in engine._prefetch_kb_context.await_args_list
+            if c.args[2:3] == ("root_cause",)
+        ]
+        assert len(calls) == 1, (
+            "the remediation-time KB prefetch on the cause_state→IDENTIFIED edge "
+            f"must fire with the seeder off; prefetch calls seen: "
+            f"{engine._prefetch_kb_context.await_args_list}"
+        )
         assert (
-            service.search_knowledge.await_count == 1
-        ), "the remediation-time KB prefetch must run regardless of the seeder flag"
-        assert relevant == [hit]
-        assert (
-            case.kb_context and case.kb_context[0]["title"] == hit.title
-        ), "the runbook must reach the prompt as prose even though nothing seeds"
+            calls[0].args[0] is case and calls[0].args[1] == "redis maxmemory reached"
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_edge_no_remediation_prefetch(self, monkeypatch):
+        """Control: the assertion above is about the edge, not a mock that
+        always fires."""
+        from tests.unit.core.investigation.test_solution_offer_liveness import (
+            _make_case,
+            _meta,
+            _solution_updates,
+        )
+
+        engine = self._engine_with_seeder_off(monkeypatch, None)
+        await engine._apply_investigation_updates(
+            _make_case(), _solution_updates(), _meta()
+        )
+        assert not [
+            c
+            for c in engine._prefetch_kb_context.await_args_list
+            if c.args[2:3] == ("root_cause",)
+        ]
 
 
 class TestSeedingGroundingGate:

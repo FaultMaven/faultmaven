@@ -1979,14 +1979,15 @@ class FeatureSettings(BaseSettings):
     # OFF by default (fm#1295, 2026-09-02). The enabling eval proved the seeds
     # SOUND (a wrong seed cannot reach VALIDATED on its own); the on-vs-off A/B
     # then measured whether they HELP, and they do not: over 6 scenarios × 2
-    # arms the cause came from pasted evidence at the same turn in both arms,
-    # seeds never shortened the path, and in the one case where a seeded root
-    # validated it did so on a literally-true, non-causal rung indicator and
-    # became the recorded conclusion while the true root went unexplored.
-    # OFF resolved 3/6 vs 2/6, identified the root 5/6 vs 3/6, in fewer turns.
-    # Runbooks still reach the model as retrieved prose and through the KB QA
-    # tools; only the engine's unasked assertion of their causes is withheld.
-    # Set true to re-enable for measurement. See
+    # arms the cause came from pasted evidence on the turn it arrived in both
+    # arms, no seeded chain was ever the cause found, and of the two seeded
+    # roots that validated one was wrong and became the recorded conclusion
+    # while the true root went unexplored. OFF resolved 3/6 vs 2/6 and
+    # identified the root 5/6 vs 3/6. Runbooks still reach the model as
+    # retrieved prose and through the KB QA tools; with the flag off, seeding
+    # and the two readers of seeded provenance (the R9 candidate_solutions
+    # handoff, the sync tier of runbook-generation dedup) stop. Set true to
+    # re-enable for measurement. See
     # docs/architecture/knowledge-and-ai/kb-cause-seeder.md ("Status") and
     # tests/eval/kb_cause_seeder/recorded-runs/2026-09-02-seeder-ab-local.md.
     kb_cause_seeder_enabled: bool = Field(

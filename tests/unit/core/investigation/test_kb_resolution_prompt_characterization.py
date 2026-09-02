@@ -6,9 +6,9 @@ independent hypothesis generation. That "one matched runbook → one flat
 hypothesis" mapping is the **flag-off default** and remains the fallback for
 prose-only sources.
 
-When the KB cause seeder (``FAULTMAVEN_KB_CAUSE_SEEDER``) is enabled AND has
-seeded candidate causes into a case, ``_select_diagnosis_block`` appends the
-seeded-candidate override, which SUPERSEDES the flat "create hypotheses_to_add"
+When the KB cause seeder has seeded candidate causes into a case (the graph
+holds them — the flag only decides whether NEW seeds are minted),
+``_select_diagnosis_block`` applies the seeded-candidate override, which SUPERSEDES the flat "create hypotheses_to_add"
 mapping: the structure already exists in the graph, so the LLM validates/refutes
 it against evidence instead of re-deriving it from prose.
 
@@ -165,12 +165,30 @@ class TestSeededCandidateDirectiveSwap:
         assert _KB_MATCHED_CAUSE_FLAT not in block
         assert "that Cause IS your hypothesis" not in block
 
-    def test_flag_off_keeps_flat_directive(self, monkeypatch):
+    def test_flag_off_with_persisted_seeds_still_gets_seeded_directive(
+        self, monkeypatch
+    ):
+        """The swap keys on graph state, not on the flag.
+
+        Seeds persist. A case seeded while the flag was on still holds them
+        after fm#1295 turned the default off, and the causal-graph block still
+        renders them — so it must get the validate/refute directive, not the
+        flat "that Cause IS your hypothesis" one on top of a graph that already
+        holds the seed.
+        """
         _force_seeder_flag(monkeypatch, False)
         case = _diagnosis_case()
         seed_candidate_causes(
             case, [SeededRunbook("rb1", 0.9, [_cause()])], current_turn=1
         )
+        block = _select_diagnosis_block(case)
+        assert _KB_MATCHED_CAUSE_SEEDED in block
+        assert _KB_MATCHED_CAUSE_FLAT not in block
+
+    def test_flag_off_no_seeds_keeps_flat_directive(self, monkeypatch):
+        # The production default after fm#1295: nothing seeds, flat path.
+        _force_seeder_flag(monkeypatch, False)
+        case = _diagnosis_case()
         block = _select_diagnosis_block(case)
         assert _KB_MATCHED_CAUSE_FLAT in block
         assert _KB_MATCHED_CAUSE_SEEDED not in block

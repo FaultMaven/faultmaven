@@ -6,8 +6,9 @@ the investigation reach the right cause*.
 
 ## Setup
 
-- Engine: `faultmaven` main at `6d90d94f` (engine code identical to `4558959c`,
-  the merge of #1296; the differences are tests and docstrings), run as a local
+- Engine: `faultmaven` at `6d90d94f` (the head of the #1296 branch, whose squash
+  merge is `4558959c` on main; engine code identical to main at that point — the
+  branch differed only in tests and docstrings), run as a local
   process on port 8091 with `CHAT_PROVIDER=openai`, `OPENAI_MODEL=gpt-5.6-luna`
   (the production chat model), the shipped 1297-chunk KB pack, `AUTH_MODE=local`.
 - Arms: `FAULTMAVEN_KB_CAUSE_SEEDER=true` then `=false`, verified from the
@@ -41,13 +42,15 @@ the investigation reach the right cause*.
 | root cause identified (judge) | 3 / 6 | 5 / 6 |
 | mean judge score | 0.82 | 0.80 |
 | mean turns | 18.2 | 16.0 |
-| hypotheses / anti-anchoring retirements | 26 / 15 | 16 / 7 |
+| hypotheses / anti-anchoring retirements | 26 / 15 | 16 / 6 |
 | seeded rung evidence-needs that surfaced to the user | 4 of 5 seeded cases | — |
 
 ## Turn by turn (reconstructed from `case_messages`, `hypotheses`, `causal_nodes`, `evidence_needs`)
 
 - **redis-oom.** Both arms found the oversized `rec:features:user:*` keys from
-  the same pasted rollup — ON at turn 5, OFF at turn 7. The three seeded chains
+  the same pasted rollup, on the turn the persona pasted it — ON at turn 5, OFF
+  at turn 7 (the OFF persona spent turns 5–6 on config output and a
+  "got pulled away" turn). The seeded chains were not the cause found. The three seeded chains
   (maxmemory unset, client output buffers, fragmentation) were retired at turn 9
   as never linked to evidence; none of their 9 rung needs surfaced. The outcome
   gap is after diagnosis: the ON persona executed a rollback at turn 7 and the
@@ -57,18 +60,22 @@ the investigation reach the right cause*.
   journal at turn 4. The correct runbook was seeded; none of its chains
   validated. Outcome gap: the ON persona escalated and closed at turn 13, the
   OFF persona looped on an unrecoverable verification window.
-- **kafka.** Neither arm reached the scenario's root (a dropped
-  `idx_orders_customer_id` index). Both found the mechanical cause
+- **kafka.** The judge scored `root_cause_identified=False` for BOTH arms
+  (scenario root: a dropped `idx_orders_customer_id` index). Both found the
+  mechanical cause
   (poll-interval evictions) at turn 4. ON: the seeded root *"M members < N
   partitions"* validated at turn 6 on a literally-true indicator (3 members, 6
   partitions) surfaced by a seeded rung need at turns 4–5, and became the
-  recorded `root_cause_conclusion`; ON never explored upstream. OFF found the
-  dropped index at turn 16. The judge's 0.95 vs 0.40 scored the mechanical
+  recorded `root_cause_conclusion`; ON never explored upstream. OFF surfaced
+  the dropped index at turn 16 as an active hypothesis (likelihood 0.40) but
+  did not converge on it. The judge's 0.95 vs 0.40 scored the mechanical
   cause; its own summary says ON "failed to investigate the upstream root
   cause". The one pair the seeder "won" is the fm#1144 failure mode with the
   correct runbook seeded.
 - **iam.** The seeded off-domain runbook's root text happened to state the real
-  answer and validated; resolved @16 vs @12. A correct seed, no speed gain.
+  answer and validated — the second of two seeded roots that reached VALIDATED
+  in this batch, and the one that was right; resolved @16 vs @12. A correct seed,
+  no speed gain.
 
 ## The remediation channel with the seeder off
 
@@ -81,9 +88,11 @@ the runs. Pinned by
 
 ## Reading
 
-In every examined pair the diagnosis came from evidence the user pasted, at the
-same turn in both arms. Seeds did not shorten the path in any case; where they
-had an effect on engine state it was one wrong recorded conclusion. The
+In every examined pair the diagnosis came from evidence the user pasted, on
+the turn that evidence arrived (which differed between arms only by when the
+persona pasted it). No seeded chain was the cause found. Two seeded roots
+reached VALIDATED: one stated the right answer (iam), one was wrong and became
+the recorded conclusion (kafka). The
 ON-vs-OFF outcome totals are otherwise dominated by the treatment-phase
 verification loop, which is orthogonal to seeding. Under a symmetric choice the
 measurement decides: **off by default** (this PR). Removal of the inert path is

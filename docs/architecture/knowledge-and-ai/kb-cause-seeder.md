@@ -26,8 +26,9 @@ Guarantee section).
 for a measurement run). The enabling eval proved the seeds *sound*; the on-vs-off
 A/B then measured whether they *help*, and they do not — see "Status" at the end
 of this document. With the flag off nothing here runs: runbooks still reach the
-model as retrieved prose and through the KB QA tools, and only the engine's
-unasked assertion of their causes is withheld.
+model as retrieved prose and through the KB QA tools; what stops is the
+engine's unasked assertion of their causes and the two readers that depend on
+seeded provenance (listed under "Status").
 
 ---
 
@@ -999,8 +1000,10 @@ transcripts at [`tests/eval/kb_cause_seeder/`](../../../tests/eval/kb_cause_seed
 
 ### Enabling gate — the passes the flag-on decision was made against
 
-The flag is **on by default.** The mechanically-verified code merged first (flag
-OFF); the flag was then turned on after the flag-ON sim/eval, on the **hardest
+The flag was turned on after this gate and is **off by default again since
+fm#1295** (see "Status" below — the gate answered soundness, not benefit). The
+mechanically-verified code merged first (flag OFF); the flag was then turned on
+after the flag-ON sim/eval, on the **hardest
 provider (BEST_EFFORT)**, cleared the items below. The bar is the hardest
 provider, *not* every provider:
 items 1 and 4 are structural (candidate-only, evidence-less, provenance-blind,
@@ -1044,8 +1047,8 @@ more of the seeder path to real use and bug-hunting, not rollout safety, and the
 single below-INV-36-bar duplication held soundness in that run too. Its envelope
 stays prompt + per-provider eval (a prompt change is re-measured with the
 committed harness), **not** a new seed-specific dedup backstop (#658 territory).
-The flag is retained as the kill switch and the tested flag-OFF no-op path, and is
-removed only as the final adoption step.
+The flag was retained as the kill switch and the tested flag-OFF no-op path;
+fm#1295 later turned it off by default on the benefit measurement ("Status").
 
 Plus one **measurement** (not pass/fail — it sizes a follow-on decision):
 
@@ -1075,24 +1078,31 @@ The record is
 | root cause identified (judge) | 3 / 6 | 5 / 6 |
 | mean judge score | 0.82 | 0.80 |
 | mean turns | 18.2 | 16.0 |
-| hypotheses / anti-anchoring retirements | 26 / 15 | 16 / 7 |
+| hypotheses / anti-anchoring retirements | 26 / 15 | 16 / 6 |
 
 Turn-by-turn, in every examined pair the cause came from evidence the user
-pasted, at the same turn in both arms or one turn earlier ON; seeds never
-shortened the path. Seeds are not inert — seeded rung needs surfaced to the user
-in 4 of 5 seeded cases — and in the one case where a seeded root validated
-(kafka) it validated on a literally-true, non-causal indicator (3 members, 6
-partitions) and became the recorded conclusion while the true root (a dropped
-database index) went unexplored. That is the fm#1144 failure mode, reproduced
+pasted, on the turn it arrived (redis: ON turn 5, OFF turn 7 — the persona
+pasted later, the seeded chains were not the cause found). No seeded chain was
+the cause found in any case. Seeds are not inert — seeded rung needs surfaced to
+the user in 4 of 5 seeded cases — and two seeded roots reached VALIDATED: iam's
+stated the right answer; kafka's validated on a literally-true, non-causal
+indicator (3 members, 6 partitions) and became the recorded conclusion while
+the true root (a dropped database index) went unexplored. That is the fm#1144 failure mode, reproduced
 with the *correct* runbook seeded. The outcome differences between arms were
 otherwise dominated by the treatment-phase verification loop, which is
 orthogonal to seeding.
 
 Under a symmetric choice — no default in favour of either state — the
 measurement decides: seeding is off. The flag stays live in both directions so
-the measurement can be repeated. The push-seeding path, its provenance readers,
-metrics and the cause-record extraction are now inert in production and are
-removed in a follow-on (fm#1295 step 4b); the remediation channel that carries
-the corrective pattern to the model (the `root_cause` prefetch and the KB QA
-tools) is unaffected and pinned by
+the measurement can be repeated. With the flag off, three things stop
+alongside seeding, because they read only seeder-stamped provenance: the
+`<candidate_solutions>` handoff of a seeded runbook's interventions at
+remediation (R9), the sync provenance tier of runbook-generation dedup (the
+"resolved by applying runbook X" short-circuit — the async similarity dedup
+remains), and the seeded variant of the KB-matched-cause prompt (which still
+fires for a case that already holds persisted seeds, since it is gated on graph
+state). The push-seeding path and those readers are removed in a follow-on
+(fm#1295 step 4b). The remediation channel that carries the corrective pattern
+to the model — the `root_cause` prefetch on the cause_state→IDENTIFIED edge and
+the KB QA tools — reads no flag and is pinned by
 `tests/unit/core/investigation/test_kb_seed_grounding_1272.py::TestRemediationPrefetchIsNotGatedBySeeding`.

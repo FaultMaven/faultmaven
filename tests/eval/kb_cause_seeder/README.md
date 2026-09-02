@@ -39,7 +39,8 @@ It is the artifact behind `KB_SEED_MIN_CORROBORATING_CHUNKS`, and **the thing to
 re-run before re-sizing that threshold** — which is what
 `faultmaven_kb_cause_seed_uncorroborated_total` is there to prompt.
 
-Unlike the driver above it needs **no server, no provider key and no flag** —
+Unlike the driver above it needs **no server and no provider key** (its `e2e`
+mode enables the seeder itself, so the default flip does not turn it off) —
 only an ingested KB (a ChromaDB collection plus the `knowledge_items` rows), so
 it is deterministic and re-runnable offline:
 
@@ -197,7 +198,7 @@ once runs were averaged — see below).
   every assertion's state, and the measurements. `aggregate_runs.py file...`
   reports **held-rate over *exercised* runs** (`HELD / (HELD + BREACHED)`,
   excluding NOT-EXERCISED) per assertion, grouped by mode — the honest batch
-  picture the flag-on decision keys on.
+  picture the 2026-07 flag-on decision keyed on.
 - **Crash-tolerant driver.** A turn that 500s mid-scenario (the very
   no-collapse-under-pressure case this eval exists to catch) is recorded
   (`crashed_at_turn`) rather than aborting the run; the driver still dumps and
@@ -248,8 +249,12 @@ provider) — see
   too. **An earlier single-run "clean pass" was not robust — averaging is exactly
   why this harness is now committed.**
 
-**Flag-on decision (open):** whether that ≤1-ACTIVE rate clears enabling-gate
-item 3 is a deliberate, product-level call, not something this eval declares met.
+**Flag-on decision (closed 2026-09-02 — superseded):** whether that ≤1-ACTIVE
+rate cleared enabling-gate item 3 was accepted as a known residual in 2026-07;
+the question is now moot, because the on-vs-off A/B
+([`recorded-runs/2026-09-02-seeder-ab-local.md`](recorded-runs/2026-09-02-seeder-ab-local.md))
+turned the default off on benefit grounds (fm#1295). The paragraph below is kept
+as the record of the residual it measured.
 The design doc's intended envelope for the residual is *prompt + per-provider
 eval* (not a new seed-specific semantic-dedup backstop — that is #658 territory).
 Options if the rate is judged insufficient: (a) accept it (soundness is never at
