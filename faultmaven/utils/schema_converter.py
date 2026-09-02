@@ -145,8 +145,16 @@ def to_strict_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
 
             The second construct is a **recursive** ``$ref``. The rewrite
             inlines ``$defs`` (below) and a self-referencing definition cannot
-            be inlined, so it is refused the same way rather than escaping as a
-            bare ``ValueError`` that the caller's fallback does not catch.
+            be inlined, so on the single-shot ``response_format`` path it is
+            refused the same way rather than escaping as a bare ``ValueError``
+            that the caller's fallback does not catch. The tool path is NOT
+            covered by this wrap: :func:`pydantic_to_openai_function` inlines
+            for itself before calling here, so a recursive schema raises the
+            bare ``ValueError`` there and no handler in ``_build_schema_tool``
+            catches it. No shipped response schema is recursive, so that is a
+            latent hazard, not a reachable one; making the tool path degrade
+            is a separate change (a fallback to the unenforced tool inside
+            ``_build_schema_tool``, not a different exception class here).
 
     **``$defs`` are inlined first, not marked in place.** Pydantic emits every
     nested model as a ``$ref`` into a sibling ``$defs`` map. Walking only the
@@ -159,7 +167,9 @@ def to_strict_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
     ``response_format`` path (:mod:`structured_output_capability`) passes the
     raw ``model_json_schema()`` and did not. Inlining here, rather than adding a
     second walker over ``$defs``, means both callers reach the same flat shape
-    through the same code and cannot drift again.
+    through the same marking code. The two still inline separately (the tool
+    path first, in :func:`pydantic_to_openai_function`; this path here), so
+    what cannot drift is the strict marking, not the inlining itself.
     """
     try:
         schema = _inline_refs(schema)
@@ -345,11 +355,19 @@ def pydantic_to_strict_openai_tools(
     merely being asked nicely in the prompt.
 
     Falls back to the ordinary non-strict tool when the schema cannot be
-    expressed strictly (see :func:`to_strict_schema`) — the four
-    ``InvestigationResponse_*`` schemas are in that category today, because their
-    ``Dict[str, Any]`` fields have no strict representation. Returning a working
-    unenforced tool is correct here: strict is an improvement to pursue where it
-    is available, not a precondition for the turn running at all.
+    expressed strictly (see :func:`to_strict_schema`). No shipped response
+    schema is in that category today — all six were given declared shapes in
+    fm#1057 — so the fallback is the valve for a schema that later grows a
+    free-form field. Returning a working unenforced tool is correct here: strict
+    is an improvement to pursue where it is available, not a precondition for
+    the turn running at all.
+
+    The fallback catches only :class:`StrictSchemaUnsupported`. A recursive
+    schema never reaches it on this path: :func:`pydantic_to_openai_tools`
+    inlines ``$defs`` itself and raises a bare ``ValueError`` before the strict
+    rewrite runs, so recursion fails the call rather than degrading it. Not a
+    live hazard (nothing shipped is recursive), and not fixed by retyping that
+    error — degrading here would need a fallback in the caller.
     """
     tools = pydantic_to_openai_tools(model, name, description)
     function = tools[0]["function"]

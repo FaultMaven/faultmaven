@@ -279,10 +279,13 @@ def test_a_nested_model_reached_through_defs_is_marked_strict():
 
 
 def test_a_recursive_definition_is_refused_not_leaked():
-    """Inlining cannot flatten a self-reference. It must surface as the refusal
-    the live caller already handles (``strict: false``), not as a bare
-    ``ValueError`` that fails the turn — and never as a ``$defs`` block sent
-    under ``strict: true``."""
+    """Inlining cannot flatten a self-reference. On the single-shot
+    ``response_format`` path it must surface as the refusal that caller already
+    handles (``strict: false``), not as a bare ``ValueError`` — and never as a
+    ``$defs`` block sent under ``strict: true``. The tool path inlines for
+    itself before ``to_strict_schema`` runs and still raises the bare
+    ``ValueError`` there (pinned in ``tests/unit/utils/test_schema_converter.py``);
+    this test does not cover it."""
     from faultmaven.infrastructure.llm.structured_output_capability import (
         create_strategy_for_capability,
     )
