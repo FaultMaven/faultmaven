@@ -247,34 +247,19 @@ class TestHasActionableSolutionOutcomeAware:
 
 
 @pytest.mark.unit
-class TestProvenanceUniquenessOffer:
-    """Phase 5.2b: on top of the readiness predicate, the offer gate suppresses
-    the runbook affordance when the confirmed cause was SEEDED from an existing
-    runbook — generating one would only duplicate it. The provenance answer is
-    stubbed here; ``confirmed_root_seed_origin`` has its own graph-state tests."""
+class TestReadyCaseIsOffered:
+    """The offer boundary is the readiness predicate and nothing else.
 
-    @staticmethod
-    def _ready_case():
-        return _make_case(problem_def=True, rcc=True, actionable=True)
+    A sync provenance tier ("the confirmed cause was seeded from runbook X, so
+    do not offer generation") sat on top of it while the KB cause seeder
+    existed; it went with the seeder (fm#1295). Duplicate protection is the
+    async similarity dedup at action time.
+    """
 
-    def test_offer_suppressed_when_confirmed_cause_was_seeded(self, monkeypatch):
-        import faultmaven.core.investigation.kb_cause_seeder as seeder
+    def test_offer_shown_when_ready(self, monkeypatch):
         from faultmaven.core.investigation import milestone_engine
 
         _pin_grade(monkeypatch, CauseAssuranceGrade.CONFIRMED)
-        monkeypatch.setattr(
-            seeder, "confirmed_root_seed_origin", lambda case: "rb_covering"
-        )
-        case = self._ready_case()
-        # Readiness passes, but provenance suppresses the offer.
+        case = _make_case(problem_def=True, rcc=True, actionable=True)
         assert runbook_conversion_ready(case) is True
-        assert milestone_engine._runbook_suggestion(case) is None
-
-    def test_offer_shown_when_confirmed_cause_self_discovered(self, monkeypatch):
-        import faultmaven.core.investigation.kb_cause_seeder as seeder
-        from faultmaven.core.investigation import milestone_engine
-
-        _pin_grade(monkeypatch, CauseAssuranceGrade.CONFIRMED)
-        monkeypatch.setattr(seeder, "confirmed_root_seed_origin", lambda case: None)
-        case = self._ready_case()
         assert milestone_engine._runbook_suggestion(case) is not None

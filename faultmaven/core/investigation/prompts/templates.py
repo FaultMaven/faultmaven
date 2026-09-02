@@ -1016,7 +1016,6 @@ STATE: INVESTIGATING
 
 {hypotheses}
 
-{candidate_solutions}
 
 {investigation_journal}
 
@@ -3286,90 +3285,22 @@ proposal never forecloses a live diagnostic thread.
 """
 
 
-# Seeded-candidate AUTHORITY rewrite (KB cause seeder). Rather than APPEND a
-# contradicting override after the flat "matched Cause → create hypotheses_to_add"
-# directive (two directives the model must arbitrate), we conditionally REPLACE
-# that one directive when the seeder has already instantiated the matched runbook's
-# Cause chains as CANDIDATE hypotheses — so a seeded turn reads ONE coherent
-# instruction. The flat directive is sliced out of the assembled block by stable
-# anchors (no hand-transcription: the source of truth stays the block itself), so
-# the runtime replace is exact and guaranteed to hit once. A drift in the anchors
-# raises loudly at import.
-_MATCHED_CAUSE_ANCHOR_START = "  - **Exactly one Cause matches:**"
-_MATCHED_CAUSE_ANCHOR_END = "  - **Two or more Causes"
-
-
-def _slice_matched_cause_directive(block: str) -> str:
-    """Extract the exact 'Exactly one Cause matches' bullet from the block."""
-    start = block.index(_MATCHED_CAUSE_ANCHOR_START)
-    end = block.index(_MATCHED_CAUSE_ANCHOR_END, start)
-    return block[start:end]
-
-
-# The flat directive verbatim (flag-off / prose-only sources). Sliced, not
-# transcribed — identical bytes to what appears in _RCA_DIAGNOSIS_BLOCK.
-_KB_MATCHED_CAUSE_FLAT = _slice_matched_cause_directive(_RCA_DIAGNOSIS_BLOCK)
-
-# Its coherent replacement for a seeded turn: the matched Cause is ALREADY a
-# CANDIDATE hypothesis in the graph, so validate/refute it against evidence
-# rather than re-create it. Preserves the knowledge_match / SolutionToAdd
-# TREATMENT handoff, adds priors-to-test framing (anti over-deference) and an
-# explicit keep-your-own-hypotheses clause (anti crowd-out). Trailing blank line
-# matches the sliced directive so the surrounding list spacing is preserved.
-_KB_MATCHED_CAUSE_SEEDED = """  - **Exactly one Cause matches:** its chain is ALREADY in your `<causal_graph>`
-    as a CANDIDATE hypothesis (rationale reads "Seeded from runbook …") — a prior
-    to TEST, not an answer. Do NOT create a `hypotheses_to_add` record for it;
-    that duplicates the cause. Instead link evidence to the existing candidate
-    (`hypothesis_evidence_links` SUPPORTS/REFUTES; `causal_evidence` on its rungs).
-    Never confirm it on partial or absent evidence — a runbook match is a lead,
-    not proof; an unsupported seed decays on its own, so test it rather than
-    defend it. When evidence genuinely supports it, emit `knowledge_match` in
-    state_updates (match_type / match_likelihood / match_summary /
-    suggested_solution) so the TREATMENT-stage KB-RESOLUTION VARIANT can
-    direct-copy it, and propose its fix via a SolutionToAdd record. KEEP forming
-    your own hypotheses for any cause the runbook did NOT cover — the seeds are a
-    starting differential, not a ceiling.
-"""
-
-
 def _select_diagnosis_block(case: Case) -> str:
-    """DIAGNOSIS-stage prompt assembly (unified opportunistic flow).
+    """Focus emphasis + the RCA diagnosis block for a diagnosing turn.
 
-    Post-redesign there is no path fork: the diagnostic machinery
-    (hypothesis formulation + evidence-needs) runs as a single
-    opportunistic flow. Stage guidance is selected by the assessment
-    variables (``symptom_verified`` / ``cause_state`` / ``solution_proposed``)
-    via ``_get_diagnosis_focus_emphasis`` — not by a prospective path
-    choice. The focus emphasis is prepended to ``_RCA_DIAGNOSIS_BLOCK``,
-    which carries the hypothesis-evidence ordering mandate
-    (``_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK``).
-
-    When this case's graph holds seeded candidates, the flat "matched Cause →
-    create hypotheses_to_add" directive is REPLACED (not appended-to) with the
-    validate/refute-the-seeded-candidate directive, so the seeded turn sees a
-    single coherent instruction. No seeds this case: byte-identical to before.
-
-    Gated on GRAPH STATE, not on the seeder flag. Seeds are persisted, so a
-    case seeded while the flag was on still carries them after the flag is
-    turned off (fm#1295 flipped the default) — and ``_build_causal_graph_block``
-    renders them regardless. Reading the flag here would hand exactly those
-    cases the flat "that Cause IS your hypothesis … skip independent
-    generation" directive on top of a graph that already holds the seed, which
-    is the duplicate-beside-the-seed shape the seeded directive exists to
-    prevent. With the flag off no NEW seeds are minted, so for every case
-    opened after the flip this is the flat path.
+    Diagnosis has no path fork (redesign R5): hypothesis formulation and
+    evidence-needs run as a single opportunistic flow. Stage guidance is
+    selected by the assessment variables (``symptom_verified`` /
+    ``cause_state`` / ``solution_proposed``) via
+    ``_get_diagnosis_focus_emphasis`` — not by a prospective path choice. The
+    focus emphasis is prepended to ``_RCA_DIAGNOSIS_BLOCK``, which carries the
+    hypothesis-evidence ordering mandate
+    (``_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK``), then the chain-emission block
+    teaches lazy backward expansion (the engine ingests the emitted chain).
     """
     focus_emphasis = _get_diagnosis_focus_emphasis(case.progress, case)
     block = focus_emphasis + _RCA_DIAGNOSIS_BLOCK
-    # Teach lazy backward expansion (the engine ingests the emitted chain).
     block += _CHAIN_EMISSION_BLOCK
-
-    from faultmaven.core.investigation.kb_cause_seeder import (
-        case_has_seeded_candidates,
-    )
-
-    if case_has_seeded_candidates(case):
-        block = block.replace(_KB_MATCHED_CAUSE_FLAT, _KB_MATCHED_CAUSE_SEEDED, 1)
     return block
 
 

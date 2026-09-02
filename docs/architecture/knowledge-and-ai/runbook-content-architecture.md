@@ -149,10 +149,11 @@ down to the problem `D`, with per-rung indicators and quadrant-tagged
 interventions. This mirrors the engine's two-dimensional hypothesis model (a
 hypothesis is a causal chain, not a sentence — see
 [two-dimensional-hypothesis-methodology.md](../investigation-engine/two-dimensional-hypothesis-methodology.md)),
-so a retrieved Cause maps onto the case's causal graph by direct field copy. The
-**KB cause seeder** ([kb-cause-seeder.md](./kb-cause-seeder.md)) performs that
-copy when enabled — instantiating a matched runbook's Cause chains as CANDIDATE
-graph nodes/hypotheses (a prior, never VALIDATED without case evidence).
+so a retrieved Cause reads as one self-contained cause→fix unit when the model
+retrieves it. (An engine-side copy of matched Causes into the case's causal graph
+— the KB cause seeder — existed until fm#1295 and was removed after it measured
+as not helping diagnosis; record in
+[`retired/kb-cause-seeder/design.md`](../knowledge-and-ai/retired/kb-cause-seeder/design.md).)
 
 **One Cause = one ROOT (no AND-sets).** Separate Causes are *mutually-exclusive
 alternatives* — the engine treats them as OR-ed candidates and demotes one when

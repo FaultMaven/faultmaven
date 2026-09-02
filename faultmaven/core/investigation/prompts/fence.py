@@ -282,8 +282,8 @@ rejected: it nests delimiters inside a body routed through
 The remaining MAIN-PROMPT blocks are still NOT fenced, and the justification is
 that none of them is a caller-controlled channel:
 
-- ``<investigation_journal>``, ``<working_hypotheses>``, ``<causal_graph>``,
-  ``<working_conclusion>`` and ``<candidate_solutions>`` carry
+- ``<investigation_journal>``, ``<working_hypotheses>``, ``<causal_graph>``
+  and ``<working_conclusion>`` carry
   schema-validated model output, not uploader text: forging them requires the
   model to inject itself.
 - ``<knowledge_context>`` carries operator-curated runbook content.

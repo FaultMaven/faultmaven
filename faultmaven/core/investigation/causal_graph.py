@@ -2163,9 +2163,8 @@ def _normalize_and_group(and_group: object) -> str | None:
       JSON from a model numbering its groups, and the key is an opaque identity
       token — "1" groups exactly what the emitter meant to group, so there is
       nothing to gain by discarding it and a conjunction to lose (the #1096
-      factor loss again). Deliberate, not incidental: the schema declares
-      ``Optional[str]`` and Pydantic v2 does not coerce int->str, so this
-      reaches only the duck-typed callers (``kb_cause_seeder``'s specs). Bool
+      factor loss again). The schema declares ``Optional[str]`` and Pydantic v2
+      does not coerce int->str, so this reaches only duck-typed callers. Bool
       is excluded — ``and_group: true`` is a model confusing the field for a
       flag, not naming a group, and "True" would silently group everything
       that made the same mistake. Any other type (list, dict) names no group.

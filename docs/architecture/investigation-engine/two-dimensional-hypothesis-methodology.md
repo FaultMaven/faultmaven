@@ -559,8 +559,7 @@ Dense same-domain sibling frames can still DELAY a terse mechanism root's
 validation, though the attribution test above removes the case where that delay
 was permanent — a hold that one standing hypothesis fully accounts for is
 released rather than waiting for a duplicate that is true and therefore never
-refuted or retired (fm#1122; measured on the dev corpus at 4 of 5 real holds,
-including every non-seeded one). The guard is one layer of the #656 defense,
+refuted or retired (fm#1122; measured on the dev corpus at 4 of 5 real holds). The guard is one layer of the #656 defense,
 beside the independent-support bar (above), the assurance-grade caps (§9.5),
 and MECE arbitration (§7.1.2).
 

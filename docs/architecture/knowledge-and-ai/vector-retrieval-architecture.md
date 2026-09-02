@@ -217,160 +217,26 @@ The `UnifiedKBConfig.format_chunk_metadata()` method computes staleness at retri
 
 The synthesis LLM's system prompt (in `UnifiedKBConfig.system_prompt`) explicitly instructs the model to warn users when chunks are stale or in draft status, and to prefer verified, recently-updated content. This means staleness warnings propagate naturally to the user response without special agent-side handling.
 
-### Grounding: seeding is not retrieval
+### Grounding, and the consumer that needed it (removed)
 
-Two consumers read the same results and owe the user different things. The
-prompt surface (`case.kb_context`) *shows* runbook prose the model may ignore.
-The KB cause seeder *asserts* "this may be why your system is broken" as a
-candidate root cause. The bar for showing and the bar for asserting are not the
-same bar, and until #1272 there was only one.
-
-**What retrieval cannot see.** Every signal in Stage 2 asks a version of "does
-this chunk answer the query?". None asks "was the query about this document?".
-Those come apart exactly where it hurts: `Failed to start QEMU binary cannot
-create PID file` is answered plausibly by a Kubernetes CrashLoopBackOff runbook,
-because the only word identifying the system — `qemu` — appears in none of the
-91 shipped runbooks, so every candidate matches on `failed`, `start` and `file`
-alone. Eight runbooks cleared the relevance floor on that query and every one
-was about a different platform; three of them cleared #1144's corroboration
-guard too, because that guard asks whether a runbook matched *broadly*, which a
-wrong one can.
-
-**The gate.** A runbook may seed only if **the query named it** — one of its
-title or `service` terms appears in the query, matched at token level under a
-plural fold. `identity_terms_in_query` carries the answer with the hit, because
-only the reranker holds both the chunk metadata and the query.
-
-Judged **per runbook**, never per chunk: grounding decides whether the document
-belongs, corroboration decides whether it matched broadly. Judging each chunk
-separately makes grounding do corroboration's job a second time and silently
-tightens it — a runbook admitted on the chunk whose metadata named it is then
-declined for want of a second, even though its other retrieved chunks are the
-breadth #1144 asks for.
-
-A hit that carries **no grounding evidence at all** (`term_coverage is None` —
-the pure-vector path, where no reranker ran) is **not judged** and passes
-through: an absent measurement must not authorise what the gate withholds, and
-must not silently disable seeding either. That pass-through is the one state in
-which nothing is being checked, so it increments
-`kb_cause_seed_grounding_unmeasured_total` rather than being inferred from the
-silence of the counter above. `None` means "no reranker ran" and nothing else —
-without a corpus term index the reranker still writes a float (see below), so a
-term-index outage cannot reach this branch.
-
-**There is no second, "covers" ground (#1285).** #1272 shipped one: a runbook
-could also seed if a chunk's `term_coverage` reached `KB_SEED_MIN_TERM_COVERAGE`
-(0.90). It was sized on "Services fail to start or crash with write errors
-referencing ENOSPC" → *Linux Disk Full* at coverage 1.00 — a runbook sentence
-typed back in, and 1.00 for the same reason the arm does not work.
-
-`term_coverage` is a share **of the query**. It is maximised by queries with the
-least vocabulary, not by runbooks that cover the problem, so an absolute
-threshold on it selects for queries that identify nothing. Measured over 226
-queries / 1296 (query, runbook) pairs against the shipped pack — the 24 labelled
-statements, 14 symptom-phrased paraphrases, and 178 real `case.description`
-narratives:
-
-| | pairs |
-|---|---|
-| decided by the names arm | 574 |
-| left undecided by it | 722 |
-| of those, decided by the covers arm | 37 |
-| — on-domain | **1** |
-| — off-domain | **36** |
-| covers-arm firings over the 178 real `case.description` narratives (1026 pairs) | **0** |
-
-All 36 wrong admissions come from content-free statements. "The application is
-slow." — one of the project's own labelled *negatives*, whose correct outcome is
-to seed nothing — reaches coverage 1.000 against eight runbooks at once, seven
-of which it names nothing of: Kinesis, Elasticsearch, Kafka, Lambda, NGINX,
-PostgreSQL and ALB. Its two words appear in all of them.
-
-No threshold repairs that, because the **ordering** is wrong: the highest
-coverage reached by any off-domain pair is 1.000 and the highest by any
-on-domain pair is 0.926 (a disk-full paraphrase). Every bar at or below 0.926
-admits both; every bar above it admits only the content-free queries. 0.90 sat
-in the first regime — admitting those 36 while refusing a correct **rank-1**
-retrieval of the same runbook phrased at 0.885. The arm was not inert and it was
-not mis-calibrated; it was measuring the wrong thing, and it is gone.
-
-**What the surviving ground costs.** The residue account above lists the arm's
-MISSES. Its wrong ADMISSIONS were never written down, and they are the same
-failure shape the coverage ground was removed for: over the labelled
-*negatives* — statements carrying no concrete failure signature, whose correct
-outcome is to seed nothing — the names arm admits **16 of 51** pairs, across
-**8 of 12** such queries, every one on a single generic title word:
-
-| statement | runbook admitted | on |
-|---|---|---|
-| "Latency is high." | AWS Kinesis Data Streams High Iterator Age | `high` |
-| "The service is down." | HAProxy 503 Service Unavailable | `service` |
-| "The cluster is unhealthy." | Envoy returns 503 'no healthy upstream' | `cluster` |
-| "The application is slow." | MongoDB Lock Contention and Slow Operations | `slow` |
-
-Six of those statements clear #1144's corroboration guard as well, so they seed.
-This is #1272's acknowledged residue — it measured requiring two matched terms,
-one above an IDF floor, and a share of the document's identity mass, each
-costing four to nine correct seeds — and it is now **bounded by assertion**
-(`test_the_surviving_arms_wrong_admissions_are_bounded`) rather than only
-described. A query-level precondition ("refuse when the query carries no
-corpus-identifying vocabulary at all") was measured against #1285's corpus and
-rejected on the same grounds: it costs 3 correct queries to save 6 content-free
-ones, which lands inside the same 4–9 band.
-
-What a replacement for the removed COVERAGE ground would have to be, if one is
-ever wanted: not a share of the
-query. Restricting coverage to the query's corpus-*identifying* terms (df ≤
-`IDENTIFIER_DF_RATIO`) does order them correctly — it scores those content-free
-statements 0.000 — but on this labelled set its best bar still admits 9
-off-domain pairs for 4 on-domain, and that bar would be a number chosen from the
-data it is scored on. The residue it would address is real and small: **12**
-on-domain pairs the names arm misses, listed in
-`tests/fixtures/kb_grounding_1285/`.
-
-**Alternatives, measured and rejected.** All against the shipped pack over 34
-statements (the 24 labelled ones in `tests/eval/kb_cause_seeder` plus #1272's
-queries and adversarial variants):
-
-| candidate gate | why not |
-|---|---|
-| a higher similarity floor | does not separate: correct seeds 0.571–0.780, confidently wrong ones 0.509–0.673 |
-| a confidence test on the cosine | actively backfires — a flat distribution still has a top standard deviations above its own median, and the wrong answer measured ~3.0σ where a correct one measured ~1.9σ |
-| "the query names something the corpus never indexed" | false-blocks ordinary prose: on "postgres connections exhausted since Tuesday afternoon" the unseen words are `tuesday` and `afternoon` |
-| a lexical-distinctiveness ratio (best chunk vs a corpus percentile) | measures query *specificity*, not answer correctness — the QEMU queries score above the generic-but-correctly-answered ones |
-
-**What it costs and buys — CURRENT (one ground, #1285).** Through
-`run_corroboration_eval.py grounding` over the 24 labelled statements, in both
-term-index states:
-
-| | on-domain seeds | off-domain seeds |
-|---|---|---|
-| pure vector | 14 | 27 |
-| hybrid, gate off | 15 | 28 |
-| hybrid + gate | **18** | **12** |
-
-Removing the coverage ground changed that from 18/14 to 18/12: no on-domain
-seed lost, two off-domain seeds withdrawn, identically with and without the
-term index.
-
-**Superseded (two grounds, #1272).** Kept because the reasoning it prompted is
-the reason #1285 happened, not because the numbers still describe the gate:
-
-| | correct seeds | wrong seeds | statements with a correct seed |
-|---|---|---|---|
-| gate off | 21 | 28 | 19 / 21 |
-| gate on (any bar 0.80–1.00) | 21 | 9 | 20 / 21 |
-
-That insensitivity across 0.80–1.00 was read at the time as "a shape, not a
-tuned number". It was the first sign of #1285: an arm whose value does not
-matter across a fifth of its range is an arm that is barely deciding anything,
-and the measurement that would have distinguished the two readings is the
-per-arm **decision rate with its denominator**, which is now what
-`run_corroboration_eval.py grounding` prints. Run it in **both** term-index
-states (`--no-term-index`) before changing what grounds a seed;
-`kb_cause_seed_ungrounded_total` is what says the gate is refusing more than it
-used to, and `kb_cause_seed_grounding_unmeasured_total` is what says it has
-stopped applying at all.
+The reranker still carries two lexical facts out with every hit —
+`identity_terms_in_query` (which of the document's title/`service` terms the
+query used, token-level under a plural fold) and `term_coverage` (the share of
+the query's IDF-weighted vocabulary the chunk contains) — beside
+`rerank_score`. They were written for the KB cause seeder's grounding gate:
+retrieval asks "does this chunk answer the query?", never "was the query about
+this document?", and the seeder needed the second answer before asserting a
+runbook's cause as a candidate root cause. The seeder, its gate and its eval
+were removed in fm#1295 after an on-vs-off measurement (record:
+[`retired/kb-cause-seeder/design.md`](../knowledge-and-ai/retired/kb-cause-seeder/design.md)
+and the eval beside it). What the gate measured about *retrieval* still
+holds and is worth keeping in mind for any future consumer that would act on
+a hit rather than show it: a cosine floor does not separate on-domain from
+off-domain runbooks (0.603–0.731 vs 0.519–0.715), `term_coverage` is a share
+of the QUERY and so peaks on queries that identify nothing, and a single
+matched title word is not evidence the query is about the document
+(fm#1293: the correct seeds rode on `disk`, `connection`, `403`; the wrong ones
+on `dashboard`). Nothing in the live retrieval path acts on these fields.
 
 ### Tool Path
 

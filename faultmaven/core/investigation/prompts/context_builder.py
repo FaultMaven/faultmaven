@@ -875,7 +875,7 @@ def _build_state_summary(case: Case) -> str:
         for h in sorted_h[:3]:
             status_tag = " [VALIDATED]" if h.state.value == "validated" else ""
             hypothesis_lines.append(
-                f"  - {h.statement[:100]} ({h.likelihood*100:.0f}%{status_tag})"
+                f"  - {h.statement[:100]} ({h.likelihood * 100:.0f}%{status_tag})"
             )
         hypothesis_str = "\n".join(hypothesis_lines)
     else:
@@ -2848,57 +2848,6 @@ def _build_evidence_needs_block(case: Case) -> str:
     return "\n".join(lines)
 
 
-def _build_candidate_solutions_block(case: Case) -> str:
-    """Render the ``<candidate_solutions>`` block (R9).
-
-    When a runbook-seeded cause has been *confirmed* (its root counterfactually
-    validated), surface that runbook's structured ``interventions`` as CANDIDATE
-    fixes so the LLM proposes them via ``solutions_to_add`` — with the
-    intervention quadrant carried through — instead of re-deriving the fix from
-    prose. A *prior, not a directive*: each candidate still requires the user to
-    accept and verify, and the M5 gate is unchanged.
-
-    Returns ``""`` unless the case is INVESTIGATING and a confirmed seeded cause
-    carries captured interventions (``confirmed_cause_interventions``). Because
-    interventions are captured only when the seeder runs (behind the
-    ``FAULTMAVEN_KB_CAUSE_SEEDER`` flag), this block is inert when the flag is off —
-    an empty section, exactly like every other optional prompt block on a turn that
-    has nothing to show for it.
-    """
-    if case.state != CaseState.INVESTIGATING:
-        return ""
-
-    # Provenance-read helper lives in the seeder module (not a safety mechanism;
-    # see the provenance-blindness invariant). Local import mirrors the module's
-    # other lazy kb_cause_seeder uses and avoids an import cycle.
-    from faultmaven.core.investigation.kb_cause_seeder import (
-        confirmed_cause_interventions,
-    )
-
-    interventions = confirmed_cause_interventions(case)
-    if not interventions:
-        return ""
-
-    lines = [
-        "<candidate_solutions>",
-        "The confirmed root cause was seeded from a runbook that documents these",
-        "interventions. They are CANDIDATE fixes for the established cause — a",
-        "prior, not a directive. Weigh each against the case evidence; each still",
-        "requires the user to accept and verify (the solution gate is unchanged).",
-        "When you propose one via solutions_to_add, set `quadrant` to the listed",
-        "quadrant so the fix is recorded against the right causal rung.",
-        "",
-    ]
-    for iv in interventions:
-        quadrant = iv.get("quadrant") or "?"
-        text = " ".join((iv.get("text") or "").split())
-        if len(text) > 300:
-            text = text[:297] + "..."
-        lines.append(f"- [{quadrant}] {text}")
-    lines.append("</candidate_solutions>")
-    return "\n".join(lines)
-
-
 def _build_compact_history(
     case: Case, user_message_safe: str, fence: PromptFence
 ) -> str:
@@ -3028,7 +2977,6 @@ def _allocate_sections(
     hypothesis_str: str,
     evidence_needs_str: str,
     entity_highlights_str: str,
-    candidate_solutions_str: str,
 ) -> Dict[str, str]:
     """Priority-greedy allocation of ``budget`` across the prompt sections.
 
@@ -3141,13 +3089,6 @@ def _allocate_sections(
         ),
         ("kb_results", kb_str, budget.count(kb_str), 0, section_budget),
         ("hypotheses", hypothesis_str, budget.count(hypothesis_str), 0, section_budget),
-        (
-            "candidate_solutions",
-            candidate_solutions_str,
-            budget.count(candidate_solutions_str),
-            0,
-            section_budget,
-        ),
         (
             "evidence_needs",
             evidence_needs_str,
@@ -3398,7 +3339,7 @@ def _build_causal_graph_block(case: Case) -> str:
     for h in active_h:
         lines.append(
             f"- {_stmt(h.statement)} "
-            f"(Confidence: {h.likelihood*100:.0f}%, State: {h.state.value})"
+            f"(Confidence: {h.likelihood * 100:.0f}%, State: {h.state.value})"
         )
         chain_ids = h.path or ([h.root_node_id] if h.root_node_id else [])
         if not chain_ids and h.state.value not in ("refuted", "retired"):
@@ -3691,7 +3632,7 @@ def build_investigation_context(
         wc = case.working_conclusion
         conclusion_str = "<working_conclusion>\n"
         conclusion_str += f"STATEMENT: {wc.statement}\n"
-        conclusion_str += f"CONFIDENCE: {wc.likelihood*100:.0f}%\n"
+        conclusion_str += f"CONFIDENCE: {wc.likelihood * 100:.0f}%\n"
         conclusion_str += f"REASONING: {wc.reasoning[:1000]}\n"
         if wc.supporting_evidence_ids:
             conclusion_str += f"EVIDENCE: {', '.join(wc.supporting_evidence_ids)}\n"
@@ -3791,7 +3732,7 @@ def build_investigation_context(
             if len(solution) > KB_MAX_SOLUTION_CHARS:
                 solution = solution[:KB_MAX_SOLUTION_CHARS] + "... [truncated]"
             if title:
-                kb_str += f"MATCH {i+1}: {title}{trigger_label}\n"
+                kb_str += f"MATCH {i + 1}: {title}{trigger_label}\n"
             if summary:
                 kb_str += f"  {summary}\n"
             if solution:
@@ -3829,7 +3770,7 @@ def build_investigation_context(
                     )[:3]
                     hypothesis_str = "<working_hypotheses>\n"
                     for h in top_3:
-                        hypothesis_str += f"- {h.statement} (Confidence: {h.likelihood*100:.0f}%, State: {h.state.value})\n"
+                        hypothesis_str += f"- {h.statement} (Confidence: {h.likelihood * 100:.0f}%, State: {h.state.value})\n"
                     hypothesis_str += "</working_hypotheses>"
 
         elif stage == InvestigationStage.MITIGATION:
@@ -3843,7 +3784,7 @@ def build_investigation_context(
                 hypothesis_str = "<working_hypotheses>\n"
                 for h in active_validated:
                     hypothesis_str += (
-                        f"- {h.statement} (Confidence: {h.likelihood*100:.0f}%)\n"
+                        f"- {h.statement} (Confidence: {h.likelihood * 100:.0f}%)\n"
                     )
                 hypothesis_str += "</working_hypotheses>"
             else:
@@ -3856,7 +3797,7 @@ def build_investigation_context(
             ]
             if validated:
                 best = max(validated, key=lambda h: h.likelihood)
-                hypothesis_str = f"<working_hypotheses>\n- {best.statement} (Confidence: {best.likelihood*100:.0f}%, VALIDATED)\n</working_hypotheses>"
+                hypothesis_str = f"<working_hypotheses>\n- {best.statement} (Confidence: {best.likelihood * 100:.0f}%, VALIDATED)\n</working_hypotheses>"
             else:
                 hypothesis_str = ""
 
@@ -3934,12 +3875,6 @@ def build_investigation_context(
     # activation; design §10.6).
     evidence_needs_str = _build_evidence_needs_block(case)
 
-    # R9 — candidate-solution priors: a confirmed runbook-seeded cause's
-    # structured interventions, surfaced at the SOLUTION stage so the LLM proposes
-    # them (quadrant-carrying) rather than re-deriving the fix from prose. Empty
-    # when the seeder flag is off or no seeded cause is confirmed.
-    candidate_solutions_str = _build_candidate_solutions_block(case)
-
     # =====================================================================
     # Budget allocation
     # =====================================================================
@@ -3969,7 +3904,6 @@ def build_investigation_context(
         hypothesis_str=hypothesis_str,
         evidence_needs_str=evidence_needs_str,
         entity_highlights_str=entity_highlights_str,
-        candidate_solutions_str=candidate_solutions_str,
     )
     return ctx
 

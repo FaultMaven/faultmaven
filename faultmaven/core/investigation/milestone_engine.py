@@ -81,10 +81,6 @@ from faultmaven.core.investigation.hypothesis_manager import (
     HypothesisManager,
     create_hypothesis_manager,
 )
-from faultmaven.core.investigation.kb_grounding import (
-    KBSeedGrounding,
-    kb_hit_grounding,
-)
 from faultmaven.core.investigation.lifecycle_metrics import (
     cause_identification_held_mece_total,
     engine_owned_affordance_served_total,
@@ -96,11 +92,6 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     hypothesis_root_adoption_refused_total,
     inquiry_handshake_deferred_total,
     inquiry_handshake_recovered_total,
-    kb_cause_seed_attempt_total,
-    kb_cause_seed_grounding_unmeasured_total,
-    kb_cause_seed_letter_mismatch_total,
-    kb_cause_seed_uncorroborated_total,
-    kb_cause_seed_ungrounded_total,
     narration_overclaim_total,
     pending_action_superseded_stale_total,
     prompt_context_recovery_total,
@@ -262,139 +253,8 @@ _PENDING_GATE_SUBSTANTIVE_LEN = 40
 KB_PREFETCH_FETCH_LIMIT = 10
 KB_CONTEXT_MAX_ENTRIES = 3
 
-# Distinct chunks of ONE runbook that must appear in the relevance-filtered
-# retrieval set before any of that runbook's causes may be seeded as a candidate
-# root cause (#1144). Corroboration, not rank.
-#
-# Seeding asserts "this may be why your system is broken". Retrieval score
-# supports only "this text is semantically nearby", and the gap between the two
-# is where #1144 lives: a page-captured, symptom-vague problem statement seeded
-# an NGINX-502 chain and a MongoDB WiredTiger chain into a Kubernetes OOMKilled
-# case, then carried the NGINX text into the case header as the working
-# conclusion.
-#
-# The obvious guards do not work, and were measured rather than assumed
-# (41 candidate seeds over 24 problem statements against the shipped pack):
-#
-#   * A minimum SCORE floor cannot separate them. On-domain seeds scored
-#     0.603-0.731 and off-domain ones 0.519-0.715 — overlapping, because the
-#     score tracks how much concrete text the QUERY carries far more than how
-#     well the runbook fits. A floor at 0.66 (needed to drop most junk) also
-#     dropped 8 of 14 correct seeds.
-#   * Requiring the runbook to also appear in the turn's kb_context/Sources
-#     does almost nothing: it keeps 19 of the 27 off-domain seeds, which were
-#     ALREADY in the top-3 kb_context — kb_context is the top slice of the very
-#     same ranking, so it cannot cross-check a ranking against itself.
-#
-# What does separate them is BREADTH OF MATCH WITHIN ONE DOCUMENT. A runbook
-# that genuinely covers the failure matches on several of its sections at once
-# (symptom recognition, a cause, diagnostic steps); an off-domain runbook
-# matches exactly one paragraph, by lexical coincidence. At >=2 chunks the same
-# measurement kept 13 of 14 on-domain seeds while dropping 21 of 27 off-domain
-# ones — and of the six survivors, four were runbooks a reader would call
-# defensible for the query asked.
-#
-# The bar is relative to the document's own length (see _chunks_required): a
-# runbook cannot corroborate itself beyond its chunk count, so a document that IS
-# one chunk corroborates itself. Read as a flat minimum it would exclude compact
-# documents entirely — and those are the flywheel's own output, which is the one
-# population this must not exclude. The threshold is meaningful only relative to
-# KB_PREFETCH_FETCH_LIMIT — a shallower fetch would tighten it silently — so the
-# two are pinned together by test.
-# ``kb_cause_seed_uncorroborated_total`` counts what it declines, which is how
-# the number gets re-sized on evidence rather than on this comment. The
-# measurement itself is re-runnable:
-# ``tests/eval/kb_cause_seeder/run_corroboration_eval.py``.
-KB_SEED_MIN_CORROBORATING_CHUNKS = 2
-
-# Whether a retrieved runbook may seed a candidate cause — the grounding gate
-# (#1272), re-measured and cut back to ONE ground in #1285.
-#
-# The ground is: the query NAMED the runbook — one of its title or ``service``
-# terms appears in the query, token-level under a plural fold
-# (``KnowledgeVectorStore._identity_terms_in_query``). Retrieval only ever asks
-# whether a chunk ANSWERS the query; the missing question is whether the query
-# was ABOUT that document, and a hit's own name is the only evidence it carries
-# that speaks to it.
-#
-# What passes it is #1272's counter-example inverted: "Failed to start QEMU
-# binary cannot create PID file" retrieves Kubernetes CrashLoopBackOff on
-# "failed", "start" and "file" alone — because `qemu`, the one word identifying
-# the system, appears in none of the 91 shipped runbooks — and no title or
-# service term of that runbook is in the query, so it does not seed.
-#
-# Guards measured against #1272 and rejected, kept here so they are not
-# re-proposed: a higher SIMILARITY floor does not separate (correct seeds
-# 0.571-0.780, confidently wrong ones 0.509-0.673); a CONFIDENCE test on the
-# cosine backfires (the wrong answer measured ~3.0 sigma above its corpus
-# median where a correct one measured ~1.9); "the query names something the
-# corpus never indexed" false-blocks ordinary prose ("postgres connections
-# exhausted since Tuesday afternoon" — the unseen words are `tuesday` and
-# `afternoon`); a lexical-distinctiveness RATIO measures query specificity, not
-# answer correctness.
-#
-# ---------------------------------------------------------------------------
-# WHY THERE IS NO SECOND, "COVERS" GROUND (#1285)
-#
-# #1272 shipped a second arm: a runbook could also seed if a chunk's
-# ``term_coverage`` — the share of the query's IDF-weighted vocabulary that
-# chunk carries — reached KB_SEED_MIN_TERM_COVERAGE (0.90). It was sized on
-# "Services fail to start or crash with write errors referencing ENOSPC" ->
-# Linux Disk Full at coverage 1.00. That query is a runbook sentence typed back
-# in, and its coverage is 1.00 for the same reason the arm does not work.
-#
-# ``term_coverage`` is a share OF THE QUERY. It is maximised by queries with
-# the least vocabulary, not by runbooks that cover the problem — so an absolute
-# threshold on it selects for queries that identify nothing. Measured over 226
-# queries / 1296 (query, runbook) pairs against the shipped pack (the 24
-# labelled statements, 14 symptom-phrased paraphrases, and 178 real
-# ``case.description`` narratives from a development corpus):
-#
-#   the names arm decides                                    574 pairs
-#   the covers arm decides, of the 722 it leaves undecided     37 pairs
-#     of those 37, ON-domain                                    1
-#     of those 37, OFF-domain                                  36
-#
-# All 36 wrong admissions come from content-free statements — "The application
-# is slow." (a labelled NEGATIVE, correct outcome: seed nothing) reaches
-# coverage 1.000 against eight runbooks at once, seven of which it names
-# nothing of: Kinesis, Elasticsearch, Kafka, Lambda, NGINX, PostgreSQL and ALB.
-# Its two words appear in all of them. Over the 178 real case descriptions —
-# the only distribution this gate actually serves, since the seeder's query IS
-# ``case.description`` — the arm fired 0 times in 1026 pairs.
-#
-# No threshold repairs that, because the ordering itself is wrong: the highest
-# coverage reached by any OFF-domain pair is 1.000 and the highest reached by
-# any ON-domain pair is 0.926 (a disk-full paraphrase). Every bar at or below
-# 0.926 admits both; every bar above it admits ONLY the content-free queries.
-# 0.90 sat in the first regime, admitting 36 wrong pairs while refusing a
-# correct rank-1 retrieval of the same runbook phrased at 0.885.
-#
-# What a second ground would have to be, if one is ever wanted: not a share of
-# the query. Restricting coverage to the query's corpus-IDENTIFYING terms (df
-# <= IDENTIFIER_DF_RATIO) does order them correctly — it scores those
-# content-free statements 0.000 — but on this labelled set its best bar still
-# admits 9 off-domain pairs for 4 on-domain ones, and the bar would be a number
-# chosen from the data it is scored on. That is a measurement, not a mechanism,
-# and it needs a labelled set built for the purpose. The residue it would
-# address is real and small: 12 on-domain pairs that the names arm misses.
-# ``kb_cause_seed_ungrounded_total`` counts what the gate turns away, and
-# ``run_corroboration_eval.py grounding`` re-runs the measurement above.
-# ---------------------------------------------------------------------------
-#
-# Deliberately a SEEDING gate, not a retrieval one: the runbooks still reach
-# the model as prose in `kb_context`, where they are suggestions it may ignore.
-# What is withheld is the assertion "this may be why your system is broken",
-# and the specified outcome when nothing is trustworthy already exists — the
-# model forms hypotheses from the evidence (`Cause Z: Unidentified`).
-
-
-# The predicate itself lives in ``kb_grounding`` so that applying it does not
-# require importing this module; the rationale above is what it implements.
-
-
-# Cosine floor a pre-fetched runbook must clear to enter `case.kb_context` (and
-# to reach the KB cause seeder). Same scale, corpus and calibration as
+# Cosine floor a pre-fetched runbook must clear to enter `case.kb_context`.
+# Same scale, corpus and calibration as
 # ``UnifiedKBConfig.relevance_threshold`` — this path reads the identical
 # ``KnowledgeVectorStore.search`` score, so the two must move together; see that
 # docstring for the measured distribution the number comes from.
@@ -403,8 +263,8 @@ KB_SEED_MIN_CORROBORATING_CHUNKS = 2
 # but ``2*cos - 1``, making it a cosine floor of 0.65 that silently dropped
 # on-topic runbooks. Quieter than the QA-tool symptom the issue was opened on —
 # nothing is logged and no message reaches the model, the prefetched context is
-# simply thinner than it should be — and on this path that starves both
-# symptom-verification context and the cause seeder.
+# simply thinner than it should be — and on this path that starves the
+# symptom-verification context.
 KB_PREFETCH_RELEVANCE_THRESHOLD = 0.5
 
 # Generation cap for schema-bound calls, and the ceiling the truncation ladder
@@ -1608,8 +1468,7 @@ def _post_process_llm_response(
     """
     evidence_to_add = getattr(updates, "evidence_to_add", []) or []
     logger.debug(
-        f"Post-processing LLM response: "
-        f"evidence_to_add_count={len(evidence_to_add)}"
+        f"Post-processing LLM response: evidence_to_add_count={len(evidence_to_add)}"
     )
     return updates
 
@@ -3525,26 +3384,12 @@ def _runbook_suggestion(case) -> dict | None:
     adding a redirect affordance is a separate suggestion-contract change, out of
     scope.)
 
-    Also suppressed when the confirmed cause was SEEDED from an existing runbook
-    (Phase 5.2b provenance-based uniqueness): generating one would only duplicate
-    the runbook the case was resolved by applying. That is a knowledge-lifecycle
-    decision, not a safety gate — the manual create path and the async
-    similarity dedup (which surfaces a ≥70% match by title and score for the
-    user to judge) both remain for the residual
-    false-negatives (a reused node never restamped, a benign dedup overlap, a
-    retrieval miss).
+    Duplicate-runbook protection is the async similarity dedup at action time,
+    which surfaces a ≥70% match by title and score for the user to judge. (A
+    sync provenance tier — "the confirmed cause was seeded from runbook X" —
+    existed while the KB cause seeder did; it went with the seeder, fm#1295.)
     """
     if not runbook_conversion_ready(case):
-        return None
-    # Cheap SYNC provenance read via the single offer-gate helper the
-    # provenance-blindness invariant carves out for this module. Closes the #695
-    # offered-then-refused drift at the offer boundary rather than only at
-    # action time (where the async similarity dedup runs).
-    from faultmaven.core.investigation.kb_cause_seeder import (
-        confirmed_root_seed_origin,
-    )
-
-    if confirmed_root_seed_origin(case):
         return None
     return {
         "label": "Generate runbook from this case",
@@ -4528,43 +4373,10 @@ class MilestoneEngine:
                 similar-runbook candidate on the previous turn and chosen to
                 proceed.
         """
-        from faultmaven.core.investigation.kb_cause_seeder import (
-            confirmed_root_seed_origin,
-        )
         from faultmaven.core.investigation.terminal_transitions import (
             RunbookSuggestion,
             evaluate_runbook_suggestion,
         )
-
-        # Step 0: Provenance-based uniqueness (Phase 5.2b). A case resolved by
-        # validating a cause the seeder planted from an existing runbook needs no
-        # new runbook — it would duplicate that one. This is the cheap SYNC tier
-        # ABOVE the async embedding-similarity dedup (Step 2, which stops and
-        # names a ≥70% match for the user to decide on):
-        # a direct, certain "you applied runbook X" signal, so we short-circuit
-        # with the covering runbook named before spending an embedding search.
-        # (The offer gate already suppresses the affordance for these cases; this
-        # covers the residual typed-exact-payload path and names the runbook.)
-        # A knowledge-lifecycle decision, not a safety gate — the manual
-        # POST /knowledge/runbooks/create path stays open.
-        seed_origin = confirmed_root_seed_origin(case)
-        if seed_origin:
-            title = None
-            if self.knowledge_service and hasattr(
-                self.knowledge_service, "get_runbook_title"
-            ):
-                title = await self.knowledge_service.get_runbook_title(seed_origin)
-            named = f"**{title}**" if title else "an existing runbook"
-            return {
-                "agent_response": (
-                    f"This case was resolved by applying {named}, so it is already "
-                    "covered — no new runbook is needed. You can view or update it "
-                    "from the Dashboard Knowledge Base."
-                ),
-                "suggested_follow_ups": [],
-                "case_updated": case,
-                "metadata": metadata,
-            }
 
         # Step 1+2: Evaluate readiness and deduplication. The KB is injected
         # explicitly (constructor param) — the old probe here,
@@ -6009,7 +5821,7 @@ class MilestoneEngine:
                     )
             except Exception as exc:
                 logger.warning(
-                    "Entity highlights prefetch failed for case %s " "(non-fatal): %s",
+                    "Entity highlights prefetch failed for case %s (non-fatal): %s",
                     case.case_id,
                     exc,
                 )
@@ -9371,8 +9183,7 @@ class MilestoneEngine:
                     exc,
                 )
                 return OutputTruncationError(
-                    f"Response truncated at the max_tokens ceiling "
-                    f"({old_max}): {exc}",
+                    f"Response truncated at the max_tokens ceiling ({old_max}): {exc}",
                     cap_reached=True,
                 )
             max_tokens_state["value"] = new_max
@@ -11543,7 +11354,7 @@ class MilestoneEngine:
                     f"ignoring purpose change"
                 )
                 metadata.setdefault("validation_repairs", []).append(
-                    f"Ignored purpose-change attempt on " f"need {target.need_id}"
+                    f"Ignored purpose-change attempt on need {target.need_id}"
                 )
 
             # SUPERSEDED is terminal — cannot resurrect via update.
@@ -11557,8 +11368,7 @@ class MilestoneEngine:
                     f"change. Emit a new need instead."
                 )
                 metadata.setdefault("validation_repairs", []).append(
-                    f"Ignored resurrection attempt on SUPERSEDED "
-                    f"need {target.need_id}"
+                    f"Ignored resurrection attempt on SUPERSEDED need {target.need_id}"
                 )
                 continue
 
@@ -11768,13 +11578,7 @@ class MilestoneEngine:
         # Deterministic, code-level — not an LLM tool call decision.
         # Results are stored on the case and injected into context by
         # context_builder so the LLM sees relevant runbooks from turn 1.
-        kb_hits = await self._prefetch_kb_context(case, case.description, "symptom")
-
-        # KB cause seeder (flag-gated): instantiate the matched runbooks'
-        # metadata["causes"] chains as CANDIDATE graph nodes/hypotheses, so the
-        # LLM validates/refutes structured priors instead of re-deriving one flat
-        # hypothesis from prose. Prior, not gate — no evidentiary privilege.
-        await self._seed_candidate_causes_from_kb(case, kb_hits)
+        await self._prefetch_kb_context(case, case.description, "symptom")
 
     async def _prefetch_kb_context(
         self,
@@ -11926,378 +11730,6 @@ class MilestoneEngine:
                 exc_info=True,
             )
             return []
-
-    async def _seed_candidate_causes_from_kb(self, case: "Case", kb_hits: list) -> None:
-        """Seed matched runbooks' cause chains as candidate graph nodes (flag-gated).
-
-        Deterministic, engine-driven — no LLM call. Loads ``metadata["causes"]``
-        for the top distinct runbooks the pre-fetch surfaced and instantiates
-        their chains as CANDIDATE nodes/hypotheses (prior, not gate). Best-effort:
-        a failure never breaks the transition.
-        """
-        from faultmaven.config.settings import get_settings
-
-        if not get_settings().features.kb_cause_seeder_enabled:
-            return
-        if not self.knowledge_service or not kb_hits:
-            return  # no retrieval this turn — a legitimate no-match, not a failure
-
-        # #1272 grounding gate, cut back to its one working ground in #1285 —
-        # see ``kb_hit_grounding`` and the block above it for what was measured
-        # and what the removed coverage arm actually admitted. Applied here,
-        # before the per-runbook fold below, so an ungrounded hit contributes
-        # nothing to any of it: not a cause letter, not a corroborating chunk,
-        # not a rank.
-        verdicts = [(h, kb_hit_grounding(h)) for h in kb_hits]
-        unmeasured = sum(1 for _, v in verdicts if v is KBSeedGrounding.UNMEASURED)
-        if unmeasured:
-            # The gate is not applying to these hits, which is indistinguishable
-            # from the gate applying and finding them fine unless it is said out
-            # loud. Reachable when the KB search ran without the reranker (the
-            # pure-vector path), which KnowledgeService already warns about from
-            # the other side.
-            kb_cause_seed_grounding_unmeasured_total.inc()
-            # WARNING, matching KnowledgeService's warning on the producing side
-            # of the same event. One of the two is the reason the other happened,
-            # and a reader filtering at WARNING must not see half of it.
-            logger.warning(
-                "KB cause seeder: %d of %d retrieved chunks for case %s carry no "
-                "lexical grounding evidence (no reranker ran for this search) — "
-                "the grounding gate does not apply to them and they pass through",
-                unmeasured,
-                len(kb_hits),
-                case.case_id,
-            )
-
-        # Grounded PER RUNBOOK, not per chunk. Grounding answers "does this
-        # runbook belong to this case at all?", which is a property of the
-        # document; corroboration answers "did it match broadly?", which is a
-        # property of the chunk set. Judging each chunk separately makes
-        # grounding do corroboration's job a second time and silently tightens
-        # it: a runbook named by the query on one chunk is admitted on that
-        # chunk and then declined for want of a second, even though its other
-        # retrieved chunks are the very breadth #1144 asks for. Measured — it
-        # cost exactly that case.
-        # ``None`` is excluded from the parent set deliberately. A hit with no
-        # ``parent_document_id`` belongs to no runbook — ``knowledge_service``
-        # derives that id from chunk metadata falling back to the chunk id, and
-        # both can be absent — so folding it in would put a literal ``None`` in
-        # the set and then wave through every OTHER parentless hit, UNGROUNDED
-        # ones included, on a membership test that was never about them. The
-        # visible symptom would be silence: such hits seed nothing either way
-        # (the per-runbook fold below skips them), but they would inflate
-        # ``grounded_hits`` and suppress ``kb_cause_seed_ungrounded_total`` —
-        # the counter this gate is meant to be re-sized on.
-        grounded_parents = {
-            parent
-            for parent, verdict in (
-                (getattr(h, "parent_document_id", None), v) for h, v in verdicts
-            )
-            if parent is not None and verdict is not KBSeedGrounding.UNGROUNDED
-        }
-        grounded_hits = [
-            h
-            for h, verdict in verdicts
-            if (
-                getattr(h, "parent_document_id", None) in grounded_parents
-                # A parentless hit has no runbook to be judged with, so it is
-                # judged on its own verdict rather than borrowing one.
-                if getattr(h, "parent_document_id", None) is not None
-                else verdict is not KBSeedGrounding.UNGROUNDED
-            )
-        ]
-        if not grounded_hits:
-            kb_cause_seed_ungrounded_total.inc()
-            kb_cause_seed_attempt_total.labels(outcome="not_lexically_grounded").inc()
-            logger.info(
-                "KB cause seeder: none of the %d retrieved chunks for case %s is "
-                "grounded in the query (it names no retrieved runbook) — seeding "
-                "nothing; the runbook prose still reaches the LLM via kb_context "
-                "and the model forms hypotheses from the evidence instead",
-                len(kb_hits),
-                case.case_id,
-            )
-            return
-        if len(grounded_hits) < len(kb_hits):
-            kb_cause_seed_ungrounded_total.inc()
-            logger.info(
-                "KB cause seeder: %d of %d retrieved chunks for case %s are not "
-                "grounded in the query and were excluded from seeding",
-                len(kb_hits) - len(grounded_hits),
-                len(kb_hits),
-                case.case_id,
-            )
-        kb_hits = grounded_hits
-
-        try:
-            from faultmaven.core.investigation.kb_cause_seeder import (
-                MAX_SEEDED_RUNBOOKS,
-                SeededRunbook,
-                seed_candidate_causes,
-            )
-
-            # Fold hits into {runbook: {cause_letter: best score}}. Retrieval is
-            # CHUNK-level and a runbook's ``## Causes`` section chunks
-            # one-Cause-per-chunk, so a hit names not just WHICH runbook matched
-            # but WHICH OF ITS CAUSES did (`matched_cause_letters`, derived from
-            # the chunk's own ``### Cause X:`` headings). Keeping that identity is
-            # the fix for #1092: this used to collapse hits to
-            # `parent_document_id`, discard which chunk matched, re-fetch the
-            # runbook's FULL cause list and seed its first MAX_SEEDED_CAUSES in
-            # AUTHOR order — so a k8s OOM/exit-137 case seeded the GKE runbook's
-            # three *unschedulable* causes (A/B/C: capacity, machine type,
-            # taints) while the OOMKilled cause that actually matched (D) sat one
-            # slot past the cap, and a GitHub-Actions runbook that matched on
-            # "exit code 137" seeded its causes A/B/C verbatim — runner RAM, disk
-            # full, missing secret — into a Kubernetes investigation.
-            #
-            # A hit on a NON-cause chunk (Symptom Recognition, Diagnostic Steps,
-            # Prevention) contributes no letter and therefore seeds nothing. That
-            # is deliberate: such a hit is evidence the runbook is topically
-            # relevant, never evidence that any particular cause of it applies —
-            # and a seeded cause is asserted to the user as a candidate root, so
-            # precision is worth more here than fan-out. Runbooks that seed
-            # nothing are already a normal, served outcome (the flat-prose path).
-            #
-            # #1144 adds the CORROBORATION guard below. Knowing which cause a
-            # chunk names fixed *which* of a matched runbook's causes seed; it
-            # did not establish that the runbook belongs to this case at all.
-            # That was left to rank alone ("retrieval has already done the
-            # semantic case<->cause alignment"), and rank is a statement about
-            # the other nine results, never about fit.
-            # DISTINCT chunks, by chunk id — not a hit count. The two are the
-            # same today (one vector search returns each chunk at most once), so
-            # this changes nothing now; it is here because the day they diverge
-            # is the day the guard fails OPEN. A hybrid/BM25 merge returning the
-            # same chunk from both arms would let one chunk corroborate itself,
-            # silently restoring the exact #1144 behaviour with the guard still
-            # apparently in place. Cheaper to enforce than to detect.
-            #
-            # ``document_id`` is the CHUNK id here (``{parent}_chunk_{n}``):
-            # search_knowledge falls through to the vector store's ``id`` because
-            # the formatted hit carries no ``document_id`` key. A hit that
-            # supplies no usable id still counts as its own chunk — a MISSING id
-            # is not the failure mode being closed, a REPEATED one is, and
-            # collapsing anonymous hits together would tighten the guard on a
-            # source that never duplicated anything.
-            chunk_ids_per_runbook: dict[str, set[str]] = {}
-            length_of_runbook: dict[str, int] = {}
-            for index, hit in enumerate(kb_hits):
-                parent_id = getattr(hit, "parent_document_id", None)
-                if not parent_id:
-                    continue
-                chunk_id = getattr(hit, "document_id", None) or ""
-                if not chunk_id or chunk_id == "unknown":
-                    chunk_id = f"__unidentified_{index}"
-                chunk_ids_per_runbook.setdefault(parent_id, set()).add(chunk_id)
-                total = getattr(hit, "total_chunks", None)
-                if isinstance(total, int) and total > 0:
-                    length_of_runbook[parent_id] = total
-
-            def _chunks_required(parent_id: str) -> int:
-                """How many chunks THIS runbook must surface to corroborate.
-
-                Corroboration asks whether a runbook matched BROADLY, and breadth
-                is only meaningful against the document's own length. A runbook
-                cannot corroborate itself beyond how many chunks it has: a
-                document that IS one chunk matches completely when that chunk
-                matches, which is the strongest evidence available for it, not
-                the weakest. A flat threshold read that as marginal and made such
-                a document permanently unseedable — and compact documents are
-                exactly the flywheel's own output (a runbook authored through
-                ``POST /knowledge/runbooks/create``, or converted from a resolved
-                case, chunks whole well under the chunker's 3000-char section
-                budget), so the flat form silently excluded the personal runbooks
-                the owner-aware prefetch scope exists to serve.
-
-                An ABSENT stamp is "unknown", never "small": the full threshold
-                applies, so pre-stamp content is treated exactly as it was before
-                and no missing metadata can wave a runbook through.
-                """
-                total = length_of_runbook.get(parent_id)
-                if total is None:
-                    return KB_SEED_MIN_CORROBORATING_CHUNKS
-                return min(KB_SEED_MIN_CORROBORATING_CHUNKS, total)
-
-            # Fold ALL cause-naming runbooks first, guarded or not, then split.
-            # The guard's COST cannot be measured from the survivors alone.
-            cause_naming: dict[str, dict[str, float]] = {}
-            for hit in kb_hits:
-                parent_id = getattr(hit, "parent_document_id", None)
-                if not parent_id:
-                    continue
-                for letter in getattr(hit, "matched_cause_letters", None) or []:
-                    per_cause = cause_naming.setdefault(parent_id, {})
-                    if hit.score > per_cause.get(letter, -1.0):
-                        per_cause[letter] = hit.score
-
-            best_score_by_cause: dict[str, dict[str, float]] = {}
-            uncorroborated: set[str] = set()
-            for parent_id, per_cause in cause_naming.items():
-                surfaced = len(chunk_ids_per_runbook[parent_id])
-                if surfaced >= _chunks_required(parent_id):
-                    best_score_by_cause[parent_id] = per_cause
-                else:
-                    uncorroborated.add(parent_id)
-
-            if uncorroborated:
-                # Count only the declines that COST something: a runbook ranked
-                # below MAX_SEEDED_RUNBOOKS would never have been consulted even
-                # with the guard off, so counting it would inflate the guard's
-                # price with runbooks it never actually turned away. Same
-                # reasoning the ``no_seedable_cause`` branch below already
-                # applies to ``top`` rather than ``ranked``. One increment per
-                # declined runbook, never per chunk or per cause.
-                would_consult = [
-                    parent_id
-                    for parent_id, _ in sorted(
-                        cause_naming.items(),
-                        key=lambda kv: max(kv[1].values()),
-                        reverse=True,
-                    )[:MAX_SEEDED_RUNBOOKS]
-                ]
-                cost = [p for p in would_consult if p in uncorroborated]
-                if cost:
-                    kb_cause_seed_uncorroborated_total.inc(len(cost))
-                    logger.info(
-                        "KB cause seeder: %d runbook(s) named a cause on too few "
-                        "retrieved chunks (needed %d) and were not seeded for "
-                        "case %s (%s) — their prose still reaches the LLM via "
-                        "kb_context",
-                        len(cost),
-                        KB_SEED_MIN_CORROBORATING_CHUNKS,
-                        case.case_id,
-                        sorted(cost),
-                    )
-
-            if not best_score_by_cause:
-                # Two different zero-seeds, kept apart: nothing named a cause at
-                # all, versus something did and the corroboration guard declined
-                # it. Collapsing them would hide the guard's whole cost inside a
-                # counter that already means something else.
-                outcome = (
-                    "no_corroborated_runbook"
-                    if uncorroborated
-                    else "no_cause_chunk_matched"
-                )
-                kb_cause_seed_attempt_total.labels(outcome=outcome).inc()
-                logger.debug(
-                    "KB cause seeder: no seedable runbook cause for case %s "
-                    "(%s) — nothing to seed (the runbook prose still reaches "
-                    "the LLM via kb_context)",
-                    case.case_id,
-                    outcome,
-                )
-                return
-
-            # Rank runbooks by their best MATCHED cause — a runbook is worth
-            # entering only for the causes retrieval surfaced in it, so that is
-            # the score that should order them.
-            ranked = sorted(
-                best_score_by_cause.items(),
-                key=lambda kv: max(kv[1].values()),
-                reverse=True,
-            )
-
-            # The per-runbook causes lookups are independent — issue them
-            # concurrently (get_runbook_causes catches its own errors → None, so
-            # gather never raises).
-            top = ranked[:MAX_SEEDED_RUNBOOKS]
-            causes_per_runbook = await asyncio.gather(
-                *(
-                    self.knowledge_service.get_runbook_causes(parent_id)
-                    for parent_id, _ in top
-                )
-            )
-            runbooks: list = []
-            for (parent_id, scores_by_letter), causes in zip(top, causes_per_runbook):
-                if not causes:
-                    continue
-                # Keep only the causes retrieval matched, best-scoring first.
-                # sorted() is stable, so causes tied on score (the common case —
-                # one chunk carrying two headings) keep the author's own
-                # most-likely-first order.
-                matched = sorted(
-                    (
-                        c
-                        for c in causes
-                        if str(c.get("cause_letter", "")) in scores_by_letter
-                    ),
-                    key=lambda c: scores_by_letter[str(c.get("cause_letter", ""))],
-                    reverse=True,
-                )
-                if not matched:
-                    # The chunk's heading letter names no cause in the record —
-                    # a produce-side inconsistency (heading vs extracted causes),
-                    # not a normal outcome. Visible, never silent. Counted as
-                    # well as logged: the shipped pack is pinned against this by
-                    # a corpus test, but generated/uploaded runbooks are not, so
-                    # in production this counter is the only sighting of the
-                    # drift. This runbook keeps the MAX_SEEDED_RUNBOOKS slot it
-                    # occupied rather than yielding it to the next ranked one —
-                    # a deliberate simplicity call: promoting a runbook on the
-                    # strength of a DATA BUG in a higher-ranked one would make
-                    # the seeded set depend on corruption, and the counter says
-                    # how often the micro recall loss is even in play.
-                    kb_cause_seed_letter_mismatch_total.inc()
-                    logger.warning(
-                        "KB cause seeder: runbook %s matched cause letter(s) %s "
-                        "but its causes record holds none of them (case %s)",
-                        parent_id,
-                        sorted(scores_by_letter),
-                        case.case_id,
-                    )
-                    continue
-                runbooks.append(
-                    SeededRunbook(
-                        item_id=parent_id,
-                        score=max(scores_by_letter.values()),
-                        causes=matched,
-                    )
-                )
-            if not runbooks:
-                kb_cause_seed_attempt_total.labels(outcome="no_seedable_cause").inc()
-                # None of the runbooks LOOKED UP yielded a seedable cause — either
-                # it carried no causes record (flat prose) or its record held none
-                # of the matched letters (warned individually just above). Counts
-                # `top`, the slice actually fetched, not `ranked`: reporting every
-                # ranked runbook here would claim nine runbooks contributed
-                # nothing when only MAX_SEEDED_RUNBOOKS were ever consulted.
-                # Logged (not silent) so a legitimate zero-seed is traceable and
-                # cannot be confused with the seeder crashing below.
-                logger.debug(
-                    "KB cause seeder: none of the %d consulted runbook(s) yielded "
-                    "a seedable cause for case %s — flat-prose path serves them",
-                    len(top),
-                    case.case_id,
-                )
-                return
-
-            report = seed_candidate_causes(
-                case,
-                runbooks,
-                case.current_turn,
-                hypothesis_manager=self.hypothesis_manager,
-            )
-            # Counted AFTER the call, so a crash inside the seeder lands on the
-            # ``crashed`` label alone — the outcome labels stay exclusive and sum
-            # to attempts, which is what makes ``seeded``/total a yield.
-            kb_cause_seed_attempt_total.labels(
-                outcome=("seeded" if report.seeded_anything else "all_causes_skipped")
-            ).inc()
-        except Exception:
-            kb_cause_seed_attempt_total.labels(outcome="crashed").inc()
-            # A crash here is a SEEDER BUG, not a legitimate no-match. Log at ERROR
-            # with an explicit marker so that, once the flag is on, "investigation
-            # proceeded with zero seeds" from a broken seeder is distinguishable
-            # from the normal no-match path (which returns quietly above) — the
-            # same no-silent-failure goal the skip taxonomy serves.
-            logger.error(
-                "KB cause seeder CRASHED for case %s — investigation proceeds with "
-                "NO structural seeds (this is a seeder bug, not a no-match)",
-                case.case_id,
-                exc_info=True,
-            )
 
     async def _check_automatic_transitions(
         self, case: Case, metadata: dict[str, Any], user_message: str = ""

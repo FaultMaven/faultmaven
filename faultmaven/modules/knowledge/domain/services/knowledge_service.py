@@ -353,8 +353,9 @@ def _unrecorded_chunk_letters(
     """The reverse disagreement: letters the CHUNKS carry that the record lacks.
 
     Same defect from the other end, and until fm#1108 it was visible only from
-    retrieval — ``kb_cause_seed_letter_mismatch_total`` fires when a matched
-    chunk's heading names a letter the record has no entry for, by which point a
+    retrieval — the KB cause seeder's letter-mismatch counter (removed with the
+    seeder, fm#1295) fired when a matched chunk's heading named a letter the
+    record had no entry for, by which point a
     case has already been served without those seeds. Both directions are
     decidable at write time, because both sides are built here.
 
@@ -654,10 +655,9 @@ class KnowledgeService:
                             # "unmeasured, therefore not judged" and admits
                             # everything. The floor is dropped too. A caller
                             # that ASKED for hybrid and did not get it must be
-                            # able to find out why. The seeder counts the same
-                            # event from its own side
-                            # (``kb_cause_seed_grounding_unmeasured_total``,
-                            # #1285); this is the half that says WHY.
+                            # able to find out why. (The KB cause seeder,
+                            # which gated on these fields, was removed in
+                            # fm#1295; the fields are still carried out.)
                             logger.warning(
                                 "KB search asked for hybrid retrieval but the "
                                 "vector store does not provide it — falling "
@@ -915,8 +915,7 @@ class KnowledgeService:
         except Exception as delete_error:
             if await self._knowledge_item_exists(document_id):
                 residue.append(
-                    f"knowledge_items row {document_id} (delete failed: "
-                    f"{delete_error})"
+                    f"knowledge_items row {document_id} (delete failed: {delete_error})"
                 )
             else:
                 residue.append(
@@ -1026,8 +1025,7 @@ class KnowledgeService:
                 resolved.unlink(missing_ok=True)
             except RunbookPathEscape as escape_error:
                 residue.append(
-                    f"on-disk runbook {file_path} (refusing to delete: "
-                    f"{escape_error})"
+                    f"on-disk runbook {file_path} (refusing to delete: {escape_error})"
                 )
             except Exception as file_error:
                 residue.append(
@@ -1456,8 +1454,8 @@ class KnowledgeService:
                     "record does not declare (%s chunker), so a hit on them "
                     "names nothing and seeds nothing. Usually a cause heading "
                     "outside the '## Causes' section the extractor reads. This "
-                    "is what kb_cause_seed_letter_mismatch_total reports from "
-                    "the far end, after a case has already lost the seeds.",
+                    "is what the (removed) seeder's letter-mismatch counter "
+                    "reported from the far end.",
                     document_id,
                     ", ".join(unrecorded),
                     chunker,
@@ -1796,10 +1794,10 @@ class KnowledgeService:
             created_at=now,
             updated_at=now,
             # v4 per-Cause graph records, stored verbatim (absent/None on the
-            # upload path and pre-v4 runbooks). Runtime reader: the KB cause
-            # seeder (get_runbook_causes → core.investigation.kb_cause_seeder)
-            # instantiates these chains as CANDIDATE graph nodes when
-            # FAULTMAVEN_KB_CAUSE_SEEDER is on. The shape is also the cross-repo
+            # upload path and pre-v4 runbooks). The runtime reader — the KB
+            # cause seeder — was removed in fm#1295; the record and its stamps
+            # are retired in the follow-on that removes the cause-record
+            # pipeline. The shape is also the cross-repo
             # pack contract (test_runbook_causes_contract). Co-located in the row
             # so the orphan-prune removes them with it, and re-ingested on a
             # causes drift even when the markdown is byte-identical (kb_init
