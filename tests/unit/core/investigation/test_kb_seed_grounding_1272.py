@@ -102,6 +102,49 @@ class TestStaleContextIsCleared:
         assert case.kb_context is None
 
 
+class TestRemediationPrefetchIsNotGatedBySeeding:
+    """Turning the seeder off must not turn runbooks off.
+
+    fm#1295 flipped ``FAULTMAVEN_KB_CAUSE_SEEDER`` to off by default. What that
+    withholds is the engine's unasked assertion of a runbook's causes as
+    hypotheses. What it must NOT withhold is the runbook reaching the model as
+    prose at remediation time — the ``root_cause`` prefetch on the
+    cause_state→IDENTIFIED edge — because that is where the corrective pattern
+    has measured value. The prefetch reads no feature flag; this pins that it
+    stays that way.
+    """
+
+    @pytest.mark.asyncio
+    async def test_root_cause_prefetch_runs_with_the_seeder_off(self, monkeypatch):
+        monkeypatch.setattr(
+            "faultmaven.config.settings.get_settings",
+            lambda: SimpleNamespace(
+                features=SimpleNamespace(kb_cause_seeder_enabled=False)
+            ),
+        )
+        hit = SearchResult(
+            document_id="kb_x_chunk_1",
+            title="Redis Out of Memory (maxmemory exceeded)",
+            document_type="runbook",
+            tags=[],
+            score=0.9,
+            snippet="### Cause A: unbounded keys ...",
+            parent_document_id="kb_x",
+        )
+        service = MagicMock()
+        service.search_knowledge = AsyncMock(return_value=[hit])
+        engine = _engine(service)
+        case = _case()
+        relevant = await engine._prefetch_kb_context(case, "redis OOM", "root_cause")
+        assert (
+            service.search_knowledge.await_count == 1
+        ), "the remediation-time KB prefetch must run regardless of the seeder flag"
+        assert relevant == [hit]
+        assert (
+            case.kb_context and case.kb_context[0]["title"] == hit.title
+        ), "the runbook must reach the prompt as prose even though nothing seeds"
+
+
 class TestSeedingGroundingGate:
     """A runbook may seed only if the query NAMED it.
 

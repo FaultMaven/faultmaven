@@ -22,11 +22,12 @@ engaged-but-unsupported seed and an ignored one decay across turns — an ignore
 seed via the housekeeping loop's age-based stagnation sweep, #713 — see the
 Guarantee section).
 
-On by default, behind `FAULTMAVEN_KB_CAUSE_SEEDER` (kill switch — set `false` to
-disable without a rollback). The flag turned on after the enabling eval cleared
-its soundness gate on the hardest provider (see "Enabling gate" below); it is
-retained as the kill switch and as the tested flag-OFF no-op path, and is removed
-only as the final adoption step.
+**Off by default** behind `FAULTMAVEN_KB_CAUSE_SEEDER` (set `true` to enable
+for a measurement run). The enabling eval proved the seeds *sound*; the on-vs-off
+A/B then measured whether they *help*, and they do not — see "Status" at the end
+of this document. With the flag off nothing here runs: runbooks still reach the
+model as retrieved prose and through the KB QA tools, and only the engine's
+unasked assertion of their causes is withheld.
 
 ---
 
@@ -902,7 +903,7 @@ the counter says how often the micro recall loss is even in play.
 
 | Knob | Kind | Default | Effect |
 |---|---|---|---|
-| `FAULTMAVEN_KB_CAUSE_SEEDER` (`features.kb_cause_seeder_enabled`) | env flag | `true` | Gates seeder invocation **and** the AUTHORITY prompt override. On by default; set `false` as the kill switch — disables in prod without rollback. |
+| `FAULTMAVEN_KB_CAUSE_SEEDER` (`features.kb_cause_seeder_enabled`) | env flag | `false` | Gates seeder invocation **and** the AUTHORITY prompt override. Off by default (fm#1295, see "Status"); set `true` to enable for a measurement run. |
 | `KB_SEED_MIN_CORROBORATING_CHUNKS` | module constant (`milestone_engine.py`) | `2` | Distinct chunks of one runbook that must appear in the relevance-filtered result set before any of its causes may seed (#1144). Not an env var: it is calibrated against `KB_PREFETCH_FETCH_LIMIT` and re-sized from `kb_cause_seed_uncorroborated_total`, not per deployment. |
 | `MAX_SEEDED_RUNBOOKS` | module constant (`kb_cause_seeder.py`) | `2` | Distinct runbooks seeded per retrieval, top by score. |
 | `MAX_SEEDED_CAUSES` | module constant, **derived** | `ANCHORING_SAME_CATEGORY_THRESHOLD − 1` (= `3`) | Total causes seeded per turn. Derived from the anchoring condition-1 constant (not an env var — deriving then overriding would break the coupling guarantee), asserted `< threshold` in a test. |
@@ -1055,3 +1056,43 @@ Plus one **measurement** (not pass/fail — it sizes a follow-on decision):
   gap is confined to *post-verification* discovery — smaller than feared. A
   guarded re-seed hook for that residual remains a possible follow-on; the
   measurement says it is not urgent.
+
+---
+
+## Status — off by default (fm#1295, 2026-09-02)
+
+The enabling gate above answered *is seeding sound* (a wrong seed cannot reach
+VALIDATED on its own). It did not answer *does seeding help*, and the flag-on
+decision was explicitly made on exposure grounds, not benefit. fm#1295 asked the
+benefit question directly: an on-vs-off A/B on the same six sim scenarios,
+main's engine code, the shipped pack, `gpt-5.6-luna`, one judge for both arms.
+The record is
+[`tests/eval/kb_cause_seeder/recorded-runs/2026-09-02-seeder-ab-local.md`](../../../tests/eval/kb_cause_seeder/recorded-runs/2026-09-02-seeder-ab-local.md).
+
+| | seeder ON | seeder OFF |
+|---|---|---|
+| resolved | 2 / 6 | 3 / 6 |
+| root cause identified (judge) | 3 / 6 | 5 / 6 |
+| mean judge score | 0.82 | 0.80 |
+| mean turns | 18.2 | 16.0 |
+| hypotheses / anti-anchoring retirements | 26 / 15 | 16 / 7 |
+
+Turn-by-turn, in every examined pair the cause came from evidence the user
+pasted, at the same turn in both arms or one turn earlier ON; seeds never
+shortened the path. Seeds are not inert — seeded rung needs surfaced to the user
+in 4 of 5 seeded cases — and in the one case where a seeded root validated
+(kafka) it validated on a literally-true, non-causal indicator (3 members, 6
+partitions) and became the recorded conclusion while the true root (a dropped
+database index) went unexplored. That is the fm#1144 failure mode, reproduced
+with the *correct* runbook seeded. The outcome differences between arms were
+otherwise dominated by the treatment-phase verification loop, which is
+orthogonal to seeding.
+
+Under a symmetric choice — no default in favour of either state — the
+measurement decides: seeding is off. The flag stays live in both directions so
+the measurement can be repeated. The push-seeding path, its provenance readers,
+metrics and the cause-record extraction are now inert in production and are
+removed in a follow-on (fm#1295 step 4b); the remediation channel that carries
+the corrective pattern to the model (the `root_cause` prefetch and the KB QA
+tools) is unaffected and pinned by
+`tests/unit/core/investigation/test_kb_seed_grounding_1272.py::TestRemediationPrefetchIsNotGatedBySeeding`.

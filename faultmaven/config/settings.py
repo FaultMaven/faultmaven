@@ -1975,14 +1975,22 @@ class FeatureSettings(BaseSettings):
     # and switch the KNOWLEDGE & RUNBOOK AUTHORITY prompt to the
     # validate/refute-seeded-candidates variant. When False, the engine keeps the
     # flat "matched runbook → one hypothesis" prompt path and seeds nothing.
-    # On by default: the flag-ON enabling eval cleared its soundness gate on the
-    # hardest provider (candidate-only, evidence-less, provenance-blind seeds
-    # cannot reach VALIDATED or collapse an investigation). The flag is retained
-    # as the prod kill switch (FAULTMAVEN_KB_CAUSE_SEEDER=false) and as the tested
-    # flag-OFF byte-identical no-op path; it is removed only as the final adoption
-    # step. See docs/architecture/knowledge-and-ai/kb-cause-seeder.md.
+    #
+    # OFF by default (fm#1295, 2026-09-02). The enabling eval proved the seeds
+    # SOUND (a wrong seed cannot reach VALIDATED on its own); the on-vs-off A/B
+    # then measured whether they HELP, and they do not: over 6 scenarios × 2
+    # arms the cause came from pasted evidence at the same turn in both arms,
+    # seeds never shortened the path, and in the one case where a seeded root
+    # validated it did so on a literally-true, non-causal rung indicator and
+    # became the recorded conclusion while the true root went unexplored.
+    # OFF resolved 3/6 vs 2/6, identified the root 5/6 vs 3/6, in fewer turns.
+    # Runbooks still reach the model as retrieved prose and through the KB QA
+    # tools; only the engine's unasked assertion of their causes is withheld.
+    # Set true to re-enable for measurement. See
+    # docs/architecture/knowledge-and-ai/kb-cause-seeder.md ("Status") and
+    # tests/eval/kb_cause_seeder/recorded-runs/2026-09-02-seeder-ab-local.md.
     kb_cause_seeder_enabled: bool = Field(
-        default=True,
+        default=False,
         validation_alias="FAULTMAVEN_KB_CAUSE_SEEDER",
         description=(
             "Feature flag: seed retrieved runbook metadata['causes'] chains as "

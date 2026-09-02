@@ -1,9 +1,11 @@
 # KB cause-seeder — flag-ON enabling eval
 
 The re-runnable artifact behind the KB cause seeder's **enabling gate**. The
-seeder is now **on by default** (`FAULTMAVEN_KB_CAUSE_SEEDER`, kill switch — set
-`false` to disable); the flag-on decision was made after this flag-ON sim/eval
-cleared its soundness gate on the hardest provider. Design + gate definition:
+seeder is **off by default** (`FAULTMAVEN_KB_CAUSE_SEEDER`; set `true` to enable
+for a measurement run). This eval proved the seeds *sound*; the on-vs-off A/B in
+[`recorded-runs/2026-09-02-seeder-ab-local.md`](recorded-runs/2026-09-02-seeder-ab-local.md)
+measured whether they *help* and turned the default off (fm#1295). Design + gate
+definition:
 [`docs/architecture/knowledge-and-ai/kb-cause-seeder.md`](../../../docs/architecture/knowledge-and-ai/kb-cause-seeder.md).
 
 It is **not** a CI test — it needs a live server, a real provider key, and the
