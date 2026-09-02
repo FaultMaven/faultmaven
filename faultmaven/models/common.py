@@ -192,8 +192,8 @@ class SearchResult(BaseModel):
     parent_document_id: Optional[str] = Field(
         default=None,
         description=(
-            "Id of the parent knowledge_items row this hit's chunk belongs to "
-            "(== the row holding metadata['causes']). None when the hit carries "
+            "Id of the parent knowledge_items row this hit's chunk belongs to. "
+            "None when the hit carries "
             "no parent identity. Distinct from document_id, which for a chunk hit "
             "is the chunk id."
         ),

@@ -226,7 +226,6 @@ class TestChromaDBVectorStore:
             "chunk_index": 0,
             "total_chunks": 3,
             "parent_document_id": "parentdoc-99",
-            "cause_letters": "A,B",
         }
 
         values = [str(v) for v in sample.values()]

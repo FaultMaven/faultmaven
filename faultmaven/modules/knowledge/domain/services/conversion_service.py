@@ -64,9 +64,6 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
 from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
     DocumentPreprocessor,
 )
-from faultmaven.modules.knowledge.domain.services.runbook_cause_extractor import (
-    extract_causes,
-)
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     VALID_SYMPTOM_CLASSES,
     QualityScorer,
@@ -2533,15 +2530,6 @@ class ConversionService:
             # the bootstrap orphan-prune would delete this user runbook on redeploy.
             knowledge_item_id = authored_item_id()
 
-            # Close the knowledge flywheel: extract the v4 ``## Causes`` graph
-            # record so this human-verified, case-derived runbook re-enters
-            # diagnosis as structured candidates (the Phase-4 seeder consumes
-            # ``metadata["causes"]``), exactly like a built-in runbook does from
-            # the pack. Extraction is deliberately here — on verify, the
-            # human-verification gate — and NOT inside ``ingest_runbook``: the
-            # anonymous/experimental ``upload_document`` path also calls
-            # ``ingest_runbook`` and must never become a seeder feeder.
-            causes = extract_causes(content)
             # Transfer the job's team publish target (a share row on the
             # conversion_job) to the promoted knowledge_item — ingest_runbook
             # creates the item's own share row. Replaces the retired
@@ -2569,7 +2557,6 @@ class ConversionService:
                     owner_id=user_id,
                     team_id=team_id,
                     verified_by=user_id,
-                    causes=causes or None,
                 )
             except Exception as e:
                 # `ingest_runbook` cleaned up its own SQL row before raising.
@@ -3379,7 +3366,7 @@ status: draft
                     file_path.unlink()
             except RunbookPathEscape as exc:
                 logger.error(
-                    "refusing to unlink for draft %s; discarding the row " "anyway: %s",
+                    "refusing to unlink for draft %s; discarding the row anyway: %s",
                     dm.id,
                     exc,
                 )

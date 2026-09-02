@@ -21,7 +21,7 @@ twice before this file settled:
 2. **Heading enumeration** — a whole ``### Cause A:`` block written inside a
    comment was counted, validated and extracted. Not an empty runbook but a
    FABRICATED one.
-3. **The chunk cause-letter stamp** (``_matched_cause_letters``) — the join key
+3. (Removed in fm#1295.) **The chunk cause-letter stamp** — the join key
    the KB cause seeder reads, stamping a phantom letter with no
    ``metadata["causes"]`` record behind it.
 4. **A comment opening BEFORE ``## Causes``** — the section was located in the
@@ -50,12 +50,6 @@ from faultmaven.modules.knowledge.domain.services import (
     knowledge_service as knowledge_service_mod,
 )
 from faultmaven.modules.knowledge.domain.services import runbook_grammar as g
-from faultmaven.modules.knowledge.domain.services.knowledge_service import (
-    _matched_cause_letters,
-)
-from faultmaven.modules.knowledge.domain.services.runbook_cause_extractor import (
-    extract_causes,
-)
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     RunbookValidator,
     _iter_cause_blocks,
@@ -149,6 +143,27 @@ _REAL_CAUSES = (
     "**Risk:** Diagnostic only. **Duration:** Until SME review. "
     "**Verification:** N/A.\n"
 )
+
+
+def _cause_records(text: str) -> list[dict]:
+    """Grammar-level stand-in for the removed extractor: one record per Cause
+    block with its letter and parsed ``Statement``."""
+    from faultmaven.modules.knowledge.domain.services.cause_grammar import (
+        OPTIONAL_CAUSE_SUBFIELDS,
+        REQUIRED_CAUSE_SUBFIELDS,
+    )
+
+    names = list(REQUIRED_CAUSE_SUBFIELDS) + list(OPTIONAL_CAUSE_SUBFIELDS)
+    return [
+        {
+            "cause_letter": b.letter,
+            "cause_name": b.name,
+            "cause_statement": g.parse_cause_subfields(b.body, names).get(
+                "Statement", ""
+            ),
+        }
+        for b in g.iter_cause_blocks(text)
+    ]
 
 
 # =============================================================================
@@ -295,7 +310,7 @@ class TestQuotedCommentTokensAreNotComments:
             1,
         )
         assert [letter for letter, _n, _b in _iter_cause_blocks(doc)] == ["A", "Z"]
-        assert [r["cause_letter"] for r in extract_causes(doc)] == ["A", "Z"]
+        assert [b.letter for b in g.iter_cause_blocks(doc)] == ["A", "Z"]
 
     def test_a_fenced_block_containing_markers_is_not_a_comment(self):
         doc = _wrap(
@@ -351,7 +366,7 @@ class TestCommentedCauseIsNotEnumerated:
         assert [letter for letter, _n, _b in _iter_cause_blocks(self._DOC)] == ["Z"]
 
     def test_the_extractor_does_not_write_it_to_the_corpus(self):
-        assert [r["cause_letter"] for r in extract_causes(self._DOC)] == ["Z"]
+        assert [b.letter for b in g.iter_cause_blocks(self._DOC)] == ["Z"]
 
     def test_a_section_holding_only_a_commented_cause_fails_the_structure_gate(self):
         only_commented = self._DOC[: self._DOC.index("### Cause Z:")]
@@ -400,7 +415,7 @@ class TestCommentOpeningBeforeTheSectionHeading:
         )
 
     def test_the_extractor_seeds_nothing_from_it(self):
-        assert extract_causes(self._COMMENTED) == []
+        assert g.iter_cause_blocks(self._COMMENTED) == []
 
 
 # =============================================================================
@@ -482,56 +497,12 @@ def test_a_heading_the_enumerator_drops_is_never_dropped_silently():
 
 
 # =============================================================================
-# 8. The chunk-stamping path
-# =============================================================================
-
-
-class TestChunkStampingIsCommentBlind:
-    """``_matched_cause_letters`` mints the ``cause_letters`` stamp on each chunk.
-
-    It ran ``CAUSE_HEADING_RE.findall`` on raw chunk text, so a commented-out
-    ``### Cause A:`` example beside a real Cause stamped a phantom ``A`` and the
-    seeder read "retrieval surfaced Cause A" for a cause with no
-    ``metadata["causes"]`` record to join to.
-    """
-
-    _CHUNK = (
-        "### Cause Z: Unidentified\n**Statement:** unknown\n\n"
-        "<!--\n### Cause A: commented-out example\n"
-        "**Statement:** never real\n-->\n"
-    )
-
-    def test_a_commented_heading_does_not_stamp_a_phantom_letter(self):
-        assert _matched_cause_letters(self._CHUNK) == ["Z"]
-
-    def test_a_real_heading_beside_a_comment_still_stamps(self):
-        """Masking must not cost a letter that is genuinely there."""
-        chunk = (
-            "<!-- authoring note about the cause below -->\n"
-            "### Cause D: OOMKilled\n**Statement:** the container exceeded its "
-            "memory limit.\n"
-        )
-        assert _matched_cause_letters(chunk) == ["D"]
-
-    def test_the_stamp_identity_moved_so_old_stamps_are_re_derived(self):
-        """The source fix alone repairs nothing already stamped: a
-        present-but-wrong ``cause_letters`` stamp stays in the store until
-        something re-derives it. ``chunk_stamp_identity`` derives from the
-        pattern (unchanged here) plus ``CHUNK_STAMP_SCHEMA``, so the schema bump
-        is the only thing that marks those rows stale for the pack gate and the
-        fm#1108 restamp sweep.
-        """
-        assert knowledge_service_mod.CHUNK_STAMP_SCHEMA >= 2
-
-
-# =============================================================================
 # 9. Structural guard — what stops a FIFTH call site reintroducing this
 # =============================================================================
 #
 # ``CAUSE_HEADING_RE`` is comment-blind on its own and must stay exported: the
-# cross-repo drift guard pins its ``.pattern``/``.flags``, ``chunk_stamp_identity``
-# hashes them, and one site legitimately matches a string it built itself. So the
-# safety cannot live in the primitive.
+# cross-repo drift guard pins its ``.pattern``/``.flags``. So the safety cannot
+# live in the primitive.
 #
 # A masking WRAPPER was considered and rejected as the whole answer. It cannot
 # stop a new caller reaching for the bare regex that has to remain exported, so
@@ -561,11 +532,6 @@ _COMMENT_SAFE_BY_CONSTRUCTION = {
         "``causes_section``, which masks the whole document before locating the "
         "section. This is the one site allowed to hold the walk."
     ),
-    "knowledge_service::_letter_can_head_a_cause": (
-        "matches a heading string the function builds itself from a letter "
-        '(f"### Cause {letter}: name"); there is no document text in it, so '
-        "there is no comment for one to hide in."
-    ),
     "runbook_validator::_flag_malformed_cause_headings": (
         "its input is a line from ``scan``, built from the already-masked "
         "``_causes_section_body``. Masking again would be a no-op, and DELETING "
@@ -575,7 +541,7 @@ _COMMENT_SAFE_BY_CONSTRUCTION = {
 
 # Positive control for the walk (see the vacuity test): the sites that exist
 # today. A walk that finds FEWER is broken.
-_EXPECTED_MATCHER_SITES_AT_LEAST = 4
+_EXPECTED_MATCHER_SITES_AT_LEAST = 2
 
 _PACKAGE_ROOT = REPO_ROOT / "faultmaven"
 _GRAMMAR_MODULE = "runbook_grammar"
@@ -729,7 +695,7 @@ class TestShippedPackIsUnchanged:
 
         def snapshot() -> list[tuple]:
             return [
-                (r.passed, tuple(r.errors), extract_causes(t))
+                (r.passed, tuple(r.errors), _cause_records(t))
                 for r, t in ((v.validate_content(t), t) for t in texts)
             ]
 
@@ -760,7 +726,7 @@ class TestShippedPackIsUnchanged:
         )
         assert [
             r["cause_letter"]
-            for r in extract_causes(TestCommentedCauseIsNotEnumerated._DOC)
+            for r in _cause_records(TestCommentedCauseIsNotEnumerated._DOC)
         ] == ["A", "Z"]
 
 
@@ -784,13 +750,12 @@ class TestQuotedMarkersRunbookIsInTheCorpus:
         assert result.passed, result.errors
 
     def test_every_cause_survives_and_keeps_its_markers(self):
-        records = {r["cause_letter"]: r for r in extract_causes(self._text())}
+        records = {r["cause_letter"]: r for r in _cause_records(self._text())}
         assert sorted(records) == ["A", "B", "Z"]
         assert "`<!--`" in records["A"]["cause_statement"]
         assert "`-->`" in records["A"]["cause_statement"]
         assert records["A"]["cause_statement"].endswith("never rendered.")
         assert "`-->`" in records["B"]["cause_statement"]
-        assert [n["ref"] for n in records["A"]["chain_nodes"]] == ["root", "s1", "D"]
 
     def test_its_real_authoring_comment_is_still_ignored(self):
         assert "<!-- Authoring note" in self._text()
@@ -816,7 +781,7 @@ class TestQuotedMarkersRunbookIsInTheCorpus:
             lambda t: naive.sub(lambda m: chars.sub(" ", m.group(0)), t),
         )
 
-        records = {r["cause_letter"]: r for r in extract_causes(text)}
+        records = {r["cause_letter"]: r for r in _cause_records(text)}
         # Cause B is swallowed: the span runs from the ``<!--`` quoted in Cause
         # A's Statement to the ``-->`` quoted in Cause B's.
         assert sorted(records) == ["A", "Z"]

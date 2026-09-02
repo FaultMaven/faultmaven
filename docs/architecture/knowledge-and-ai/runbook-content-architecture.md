@@ -449,7 +449,7 @@ HTML comments and lifts per-Cause metadata.
 
 **Content migration is complete.** All **91 built-in runbooks** (the 59
 pre-existing + the 32 backlog) are authored in v4, and the vendored KB pack ships
-all 91 with their per-Cause `causes` record. The FaultMaven API's
+all 91 with their per-Cause `causes` record (which the API ignores since fm#1295). The FaultMaven API's
 `runbook_validator.py` is on the v4 causal-chain schema and enforces the
 cause-`Statement` invariants (symptom-level phrasing + sibling MECE, #545/#557).
 
@@ -460,7 +460,7 @@ cause-`Statement` invariants (symptom-level phrasing + sibling MECE, #545/#557).
 | Indicator token validation (`[Step N]`, `[Symptom]`, `[Default]`) | **Implemented (toolkit)** | `_validate_indicator_field()` with step-number cross-reference |
 | Intervention quadrant validation | **Implemented (toolkit)** | `_validate_interventions()` against `valid_quadrants` |
 | HTML-comment stripping + per-Cause metadata at chunk time | **Implemented (toolkit)** | `kb_toolkit/core/chunker.py` — `_post_process_chunk()` lifts `cause_*` + `is_fallback_cause` |
-| Per-Cause metadata carried into KB pack | **Implemented** | `kb_toolkit/core/pack_builder.py` — `_extract_causes` writes the per-Cause graph record into `pack.json` `runbooks[].causes`; see [kb-pack-architecture.md](./kb-pack-architecture.md) |
+| Per-Cause metadata carried into KB pack | **Implemented (toolkit); unread by the API since fm#1295** | `kb_toolkit/core/pack_builder.py` — `_extract_causes` writes the per-Cause graph record into `pack.json` `runbooks[].causes`; see [kb-pack-architecture.md](./kb-pack-architecture.md) |
 | FaultMaven API `runbook_validator.py` v4 update | **Implemented** | `modules/knowledge/domain/services/runbook_validator.py` — v4 causal-chain schema + cause-`Statement` match-surface invariants (#545/#557) |
 | Regenerate the 59 built-in runbooks to v4 | **Implemented** | all 91 built-ins (59 + 32) are v4; the vendored pack ships 91/91 with `causes` |
 | Taxonomy fields stored in ChromaDB | Implemented | `domain`, `service`, `symptom_class`, `severity`, `scope`, `status`, `last_updated`, `tags` propagated per chunk |

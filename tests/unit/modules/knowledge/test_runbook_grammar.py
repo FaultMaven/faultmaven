@@ -4,9 +4,8 @@
 (``kb_toolkit/core/runbook_grammar.py``): the two repos cannot import one
 another, so the regexes and the sub-field parser are duplicated. This test pins
 each pattern's source so an edit here can't silently diverge from the upstream
-grammar without also updating this guard — at which point the golden cross-check
-(``test_runbook_cause_extractor``) is the second line of defence that the two
-sides still agree on real markdown.
+grammar without also updating this guard; kb-toolkit's cross-repo grammar check
+is the second line of defence that the two sides still agree.
 
 If you change a pattern, mirror it in kb-toolkit AND update the frozen literal
 below in the same commit.

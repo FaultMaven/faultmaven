@@ -3,13 +3,12 @@ in-repo source for turning a ``## Causes`` section into structured records.
 
 This module mirrors the upstream producer grammar
 (``kb_toolkit/core/runbook_grammar.py``) verbatim: the regexes and sub-field
-parser here are byte-for-byte the ones the KB pack builder uses to emit each
-runbook's ``metadata["causes"]`` graph record. Anchoring the in-repo extractor
-(``runbook_cause_extractor``) on this shared grammar is what keeps the
-**produce** side (a case→runbook conversion, extracted here on verify) and the
-**consume** side (built-in runbooks, extracted upstream in the pack) structurally
-symmetric — a converted runbook re-enters diagnosis as the same shape of
-candidate a shipped one does.
+parser here are byte-for-byte the ones the KB pack builder uses to enumerate
+each runbook's Causes. The in-repo consumer is the validator gate: anchoring it
+on this shared grammar keeps what the gate passes identical to what the
+toolkit parses. (An in-repo extractor that turned the section into a
+``metadata["causes"]`` record for the KB cause seeder went with the seeder,
+fm#1295.)
 
 LAYER NOTE — three grammar surfaces exist and must agree:
 
@@ -19,19 +18,17 @@ LAYER NOTE — three grammar surfaces exist and must agree:
      manual mirror of ``kb_toolkit/core/runbook_grammar.py``;
   3. ``runbook_validator`` — the GATE. It anchors its cause ENUMERATION and
      sub-field parsing on THIS module (the same ``CAUSE_HEADING_RE`` /
-     ``CAUSES_SECTION_RE`` / ``parse_cause_subfields`` the extractor uses), so a
-     draft the gate passes is exactly one the extractor can parse — the gate can
+     ``CAUSES_SECTION_RE`` / ``parse_cause_subfields`` the toolkit uses), so a
+     draft the gate passes is exactly one the toolkit can parse — the gate can
      no longer be looser than the parser it fronts. Only its message-oriented
      present-vs-empty wording is validator-private; the grammar is shared.
 
 The two repos cannot import one another, so (2) is a **manual mirror**. Three
-guards keep it honest. Two are in-repo and see only this checkout:
+guards keep it honest. One is in-repo and sees only this checkout:
 ``test_runbook_grammar`` (frozen-literal drift-guard — trips if a pattern here is
-edited without updating the test) and the golden cross-check in
-``test_runbook_cause_extractor`` (pins the extractor's output to records computed
-by the kb-toolkit builder for vendored fixtures). Neither can see the upstream
-grammar, so a corpus-invariant change upstream (e.g. a widened regex no vendored
-fixture exercises) slips both. The third guard closes that: kb-toolkit's
+edited without updating the test). It cannot see the upstream grammar, so a
+corpus-invariant change upstream (e.g. a widened regex) slips it. The other
+guard closes that: kb-toolkit's
 ``scripts/check_grammar_cross_repo.py`` CI job checks out BOTH repos and compares
 the shared regex primitives (pattern + flags) and ``CONVERGES_REF`` across the
 two ``runbook_grammar.py`` files. A change to the upstream grammar MUST be
@@ -266,9 +263,8 @@ def causes_section(content: str) -> tuple[str, str]:
 def iter_cause_blocks(content: str) -> list["CauseBlock"]:
     """Every strict ``### Cause X:`` block in ``## Causes`` — the ONE walk.
 
-    Shared by the gate (``runbook_validator``) and the extractor
-    (``runbook_cause_extractor``) so a draft the gate passes is one the
-    extractor parses identically. Folding the walk here is what stops the
+    The one place the head->terminus walk lives: the gate (``runbook_validator``)
+    delegates to it. Folding the walk here is what stops the
     comment decision being re-made per call site: #1241 escaped a per-site
     repair twice — once at the chunk-stamping path, once at a comment opening
     before the section heading — because each site owned its own masking.
