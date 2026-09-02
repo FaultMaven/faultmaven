@@ -486,6 +486,133 @@ def _suggestion_store_is_durable(app) -> bool:
     return bool(getattr(repository, "is_durable", False))
 
 
+# ``FeatureStatus.enabled`` is documented as "Feature is active and usable", so
+# every predicate below answers about EFFECT, never about intent. A setting is
+# an instruction; whether the deployment carried it out is a different question,
+# and it is the only one worth reporting here. Reporting the instruction back is
+# what makes the next investigation expensive — the endpoint agrees with the
+# operator's mental model and the capability is dead anyway (#1234).
+#
+# Each predicate is therefore sourced from the SAME expression the runtime
+# decision reads, so the report and the behaviour cannot drift apart.
+
+
+def _llm_tracing_is_effective(settings) -> bool:
+    """Is tracing switched on AND able to record a span?
+
+    ``OPIK_ENABLED=true`` is not sufficient, and the gap is the default
+    standalone install rather than an exotic one: ``opik`` ships only in
+    pyproject's ``[cloud]`` extra, so on a plain install
+    ``init_opik_tracing`` returns at its first line ("Opik SDK not installed,
+    skipping tracing initialization") and not one span is ever recorded —
+    while this endpoint reported tracing *on* (#1234).
+
+    ``OPIK_AVAILABLE`` is read off the module at call time rather than
+    from-imported at module scope. Two reasons: the from-import would bind a
+    copy that no longer tracks the flag, and this is deliberately the *same*
+    flag ``init_opik_tracing`` gates on — reading it directly is what keeps
+    "reported as tracing" and "actually initialised" from being able to
+    disagree. Note it is not a bare ``import opik`` either: it is
+    ``module_is_usable(opik)``, so a leftover namespace-package directory
+    (#1231) reads as absent here too.
+    """
+    from faultmaven.infrastructure.observability import tracing
+
+    return bool(getattr(settings.observability, "opik_enabled", False)) and bool(
+        tracing.OPIK_AVAILABLE
+    )
+
+
+def _consent_skip_is_effective(settings) -> bool:
+    """Can ANY client actually skip the consent screen?
+
+    The skip fires from ``_is_first_party`` (modules/auth/api/oauth.py), which
+    requires BOTH halves — membership in ``oauth_first_party_clients`` and a
+    match against ``oauth_first_party_redirect_patterns`` — inside a router
+    ``main.py`` mounts only when ``oauth_enabled``. Reporting the redirect list
+    alone said *enabled* on a deployment whose client list was empty, or one
+    running with OAuth off entirely, where no caller can reach the skip at all.
+
+    The claim is deliberately "some client could", not "this request would":
+    the predicate needs a concrete ``client_id`` and ``redirect_uri`` and a
+    status endpoint has neither. Both lists non-empty is the strongest true
+    statement available here, and it is exactly the one an operator is asking
+    for — they want to know whether pinning took, and an empty half means it
+    did not.
+
+    This is the field whose own comment (below) says a startup log line cannot
+    answer this question. It could not answer it either while it reported the
+    configuration back.
+    """
+    auth = settings.auth
+    return (
+        bool(getattr(auth, "oauth_enabled", False))
+        and bool(getattr(auth, "oauth_first_party_clients", None))
+        and bool(getattr(auth, "oauth_first_party_redirect_patterns", None))
+    )
+
+
+def _web_search_provider_is_composed(settings) -> bool:
+    """Does this configuration actually yield a usable search provider?
+
+    Built by calling what the DA tool registry calls. ``container/providers/
+    tools.py`` registers web search when
+    ``WebSearchTool(settings=settings).is_available()``, so constructing the
+    same tool and asking the same predicate is what stops the report and the
+    registration from disagreeing — including about Google CSE, which
+    ``_auto_select_provider`` supports as a full fallback and which the old
+    Tavily-only check reported as *disabled* on a deployment where web search
+    demonstrably worked.
+
+    Construction is pure — the providers only capture keys, and the ``tavily``
+    import lives inside ``TavilyProvider.search`` — so this makes no network
+    call and imports no SDK. The ``except`` mirrors the registry's own: a tool
+    that cannot be constructed is a tool that was not registered.
+
+    Note what is deliberately NOT conjoined: ``ENABLE_WEB_SEARCH``. No
+    production path reads it (the registry gates on provider availability
+    alone), so conjoining it would report the knob's intent over the
+    deployment's behaviour — the same substitution this endpoint is being
+    fixed for, and in the direction that hides a live capability. If the knob
+    is ever wired, it will be wired into ``is_available()``'s side of this
+    call and the answer follows automatically.
+    """
+    try:
+        from faultmaven.modules.agent.tools.web_search import WebSearchTool
+
+        return bool(WebSearchTool(settings=settings).is_available())
+    except Exception as exc:  # pragma: no cover - mirrors the registry's guard
+        logger.debug(f"Web search availability probe failed: {exc}")
+        return False
+
+
+def _web_search_api_key_configured(settings) -> bool:
+    """Is a key configured for EITHER supported provider?
+
+    ``has_api_key`` answers "did you supply the credential", which is a
+    different question from whether the feature runs — it is what tells an
+    operator seeing ``enabled: false`` whether the key is missing or something
+    downstream of it is. Both providers count, for the same reason
+    ``_web_search_provider_is_composed`` counts both.
+    """
+    tavily_key = getattr(settings.knowledge, "tavily_api_key", None)
+    has_tavily = bool(
+        tavily_key
+        and hasattr(tavily_key, "get_secret_value")
+        and tavily_key.get_secret_value()
+    )
+
+    google_key = getattr(settings.tools, "web_search_api_key", None)
+    has_google = bool(
+        google_key
+        and hasattr(google_key, "get_secret_value")
+        and google_key.get_secret_value()
+        and getattr(settings.tools, "web_search_engine_id", None)
+    )
+
+    return has_tavily or has_google
+
+
 @router.get("/config/status", response_model=EnvConfigStatusResponse)
 async def get_env_config_status(
     request: Request,
@@ -513,38 +640,34 @@ async def get_env_config_status(
         # Build feature status
         from faultmaven.api.models import FeatureStatus
 
-        # Web search: needs TAVILY_API_KEY (or Google CSE keys)
-        tavily_key = getattr(settings.knowledge, "tavily_api_key", None)
-        has_tavily = bool(
-            tavily_key
-            and hasattr(tavily_key, "get_secret_value")
-            and tavily_key.get_secret_value()
-        )
-        web_search_enabled = (
-            getattr(settings.knowledge, "enable_web_search", False) and has_tavily
-        )
-
-        # Opik tracing
-        opik_enabled = getattr(settings.observability, "opik_enabled", False)
-
         # Only surface features that require user-provided configuration.
         # Core capabilities (interpreted search, semantic search) that work
         # automatically with the existing LLM are not shown.
+        #
+        # Every ``enabled`` below is an EFFECT, not a setting — see the
+        # predicates above the endpoint.
         features = {
             "web_search": FeatureStatus(
-                enabled=web_search_enabled,
-                has_api_key=has_tavily,
+                enabled=_web_search_provider_is_composed(settings),
+                has_api_key=_web_search_api_key_configured(settings),
                 description="Search technical websites during investigations",
-                config_hint="Set TAVILY_API_KEY and ENABLE_WEB_SEARCH=true",
+                config_hint=(
+                    "Set TAVILY_API_KEY, or WEB_SEARCH_API_KEY together with "
+                    "WEB_SEARCH_ENGINE_ID for Google CSE"
+                ),
             ),
             "llm_tracing": FeatureStatus(
-                enabled=opik_enabled,
+                enabled=_llm_tracing_is_effective(settings),
                 has_api_key=bool(
                     getattr(settings.observability, "opik_api_key", None)
                     or getattr(settings.observability, "opik_use_local", False)
                 ),
                 description="Trace LLM calls for observability and debugging",
-                config_hint="Set OPIK_ENABLED=true with Opik cloud key or OPIK_USE_LOCAL=true",
+                config_hint=(
+                    "Set OPIK_ENABLED=true with Opik cloud key or "
+                    "OPIK_USE_LOCAL=true, and install the SDK "
+                    "(pip install 'faultmaven[cloud]')"
+                ),
             ),
             # Reported HERE, and this is the answer — deliberately not a
             # startup log line. What goes wrong on an unpinned deployment is
@@ -559,13 +682,15 @@ async def get_env_config_status(
             # have no published extension id, so this reports rather than
             # degrading /health.
             "first_party_consent_skip": FeatureStatus(
-                enabled=bool(settings.auth.oauth_first_party_redirect_patterns),
+                enabled=_consent_skip_is_effective(settings),
                 description=(
                     "Shipped browser extension signs in without a consent "
                     "prompt (requires its published redirect to be pinned)"
                 ),
                 config_hint=(
-                    "Set OAUTH_FIRST_PARTY_REDIRECT_PATTERNS to a JSON list of "
+                    "Requires OAUTH_ENABLED=true, a non-empty "
+                    "OAUTH_FIRST_PARTY_CLIENTS, and "
+                    "OAUTH_FIRST_PARTY_REDIRECT_PATTERNS set to a JSON list of "
                     "regexes matching your published extension's "
                     "launchWebAuthFlow redirect, e.g. "
                     r'["^https://<id>\.chromiumapp\.org/?$"]'

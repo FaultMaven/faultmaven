@@ -128,6 +128,22 @@ def mock_settings():
     # deployment that had pinned nothing — the one answer this endpoint exists
     # to give correctly.
     settings.auth.oauth_first_party_redirect_patterns = []
+    # Every other input the feature predicates read, likewise explicit. An
+    # unset MagicMock attribute does not merely leave a gap here, it
+    # MANUFACTURES an enabled feature: the attribute is truthy, and pydantic
+    # coerces it — measured, ``FeatureStatus(enabled=MagicMock()).enabled`` is
+    # ``True``. A test asserting ``enabled is True`` against an unset field is
+    # therefore asserting against itself, which is how the endpoint reported
+    # tracing as on for as long as it did (#1234).
+    settings.auth.oauth_enabled = False
+    settings.auth.oauth_first_party_clients = []
+    settings.observability.opik_enabled = False
+    settings.observability.opik_api_key = None
+    settings.observability.opik_use_local = False
+    settings.knowledge.enable_web_search = False
+    settings.knowledge.tavily_api_key = None
+    settings.tools.web_search_api_key = None
+    settings.tools.web_search_engine_id = None
     settings.is_cloud = False  # standalone (canonical DEPLOYMENT_MODE, ADR-004)
     settings.server.environment = MagicMock(value="development")
     # A real int, not a MagicMock: the endpoint compares it (#1214 reports
@@ -712,6 +728,16 @@ class TestGetEnvConfigStatus:
     async def test_consent_skip_reports_active_once_a_redirect_is_pinned(
         self, mock_admin_user, mock_settings, rate_limited_app
     ):
+        """The fully configured deployment — every half the skip needs.
+
+        The redirect is the half that carries the proof, but it is not the
+        whole condition: ``_is_first_party`` also requires the client list, and
+        the router carrying the flow is mounted only under ``oauth_enabled``.
+        Setting all three is what makes the True here mean "the skip can fire"
+        rather than "a list is non-empty".
+        """
+        mock_settings.auth.oauth_enabled = True
+        mock_settings.auth.oauth_first_party_clients = ["faultmaven-copilot"]
         mock_settings.auth.oauth_first_party_redirect_patterns = [
             r"^https://abcdefghijklmnopabcdefghijklmnop\.chromiumapp\.org/?$"
         ]
@@ -722,6 +748,81 @@ class TestGetEnvConfigStatus:
             )
 
         assert result.features["first_party_consent_skip"].enabled is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "missing_half",
+        ["oauth_enabled", "oauth_first_party_clients"],
+        ids=["oauth-disabled", "no-client-listed"],
+    )
+    async def test_consent_skip_reports_inactive_when_a_required_half_is_missing(
+        self, mock_admin_user, mock_settings, rate_limited_app, missing_half
+    ):
+        """A pinned redirect is necessary and NOT sufficient.
+
+        ``_is_first_party`` returns False for every caller when the client list
+        is empty, and there is no authorize endpoint at all when OAuth is off —
+        so in both states no client skips consent, however carefully the
+        redirect was pinned. The field used to read the redirect list alone and
+        reported *enabled* in both, which is the same substitution as #1234:
+        the configuration is echoed back where the effect was promised.
+
+        Parametrised rather than written once because the halves fail
+        independently: a fix that conjoined only one of them would pass the
+        other case and look complete.
+        """
+        mock_settings.auth.oauth_enabled = True
+        mock_settings.auth.oauth_first_party_clients = ["faultmaven-copilot"]
+        mock_settings.auth.oauth_first_party_redirect_patterns = [
+            r"^https://abcdefghijklmnopabcdefghijklmnop\.chromiumapp\.org/?$"
+        ]
+        setattr(
+            mock_settings.auth,
+            missing_half,
+            False if missing_half == "oauth_enabled" else [],
+        )
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        assert result.features["first_party_consent_skip"].enabled is False
+
+    @pytest.mark.asyncio
+    async def test_consent_skip_matches_the_predicate_that_actually_gates_it(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        """Cross-check the report against ``_is_first_party`` itself.
+
+        Both halves present is reported enabled AND the real gate admits the
+        shipped client; drop the client list and both flip. Asserting the pair
+        together is what makes this a claim about the skip rather than about
+        this endpoint's own arithmetic.
+        """
+        from faultmaven.modules.auth.api.oauth import _is_first_party
+
+        redirect = "https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org"
+        mock_settings.auth.oauth_enabled = True
+        mock_settings.auth.oauth_first_party_clients = ["faultmaven-copilot"]
+        mock_settings.auth.oauth_first_party_redirect_patterns = [
+            r"^https://abcdefghijklmnopabcdefghijklmnop\.chromiumapp\.org/?$"
+        ]
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            configured = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+        assert configured.features["first_party_consent_skip"].enabled is True
+        assert _is_first_party("faultmaven-copilot", redirect, mock_settings) is True
+
+        mock_settings.auth.oauth_first_party_clients = []
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            stripped = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+        assert stripped.features["first_party_consent_skip"].enabled is False
+        assert _is_first_party("faultmaven-copilot", redirect, mock_settings) is False
 
     async def _suggestion_store_feature(
         self, mock_admin_user, mock_settings, app, repository
@@ -838,3 +939,387 @@ class TestGetEnvConfigStatus:
     # object and the test would assert nothing while appearing to. It is tested
     # where it can bite, against a real ``SecuritySettings``:
     # tests/unit/config/test_settings_mapping.py::TestRateLimitingIsNotASetting.
+
+
+# ============================================================
+# features[*].enabled reports EFFECT, not configured intent (#1234)
+# ============================================================
+
+
+def _secret(value: str) -> MagicMock:
+    """A ``SecretStr``-shaped double: truthy, with ``get_secret_value``."""
+    key = MagicMock()
+    key.get_secret_value.return_value = value
+    return key
+
+
+class TestLLMTracingReportsEffect:
+    """``llm_tracing.enabled`` must mean "a span will be recorded" (#1234).
+
+    ``FeatureStatus.enabled`` is documented as "Feature is active and usable",
+    and ``OPIK_ENABLED=true`` does not establish that: ``opik`` ships only in
+    pyproject's ``[cloud]`` extra, so on the default standalone install
+    ``init_opik_tracing`` returns at its first line and nothing is ever traced,
+    while this endpoint reported tracing on.
+
+    BOTH directions are pinned deliberately. The SDK is genuinely absent from
+    this repo's venv, so the SDK-absent case would pass here against the old
+    implementation-independent accident of the environment; only the
+    monkeypatched SDK-present case proves the conjunction is a conjunction and
+    not a hardcoded False.
+    """
+
+    @staticmethod
+    def _set_opik_available(monkeypatch, value: bool) -> None:
+        """Patch the flag ON THE MODULE the endpoint reads at call time.
+
+        Patching the module attribute (rather than a name imported into the
+        route module) is what makes this bite: the predicate is written to read
+        ``tracing.OPIK_AVAILABLE`` fresh precisely so it tracks the SDK, and a
+        from-imported copy would silently ignore this.
+        """
+        from faultmaven.infrastructure.observability import tracing
+
+        monkeypatch.setattr(tracing, "OPIK_AVAILABLE", value)
+
+    @pytest.mark.asyncio
+    async def test_configured_but_sdk_absent_reports_disabled(
+        self, mock_admin_user, mock_settings, rate_limited_app, monkeypatch
+    ):
+        """#1234's case: the standalone install with OPIK_ENABLED=true."""
+        mock_settings.observability.opik_enabled = True
+        self._set_opik_available(monkeypatch, False)
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        assert result.features["llm_tracing"].enabled is False
+
+    @pytest.mark.asyncio
+    async def test_configured_with_sdk_present_reports_enabled(
+        self, mock_admin_user, mock_settings, rate_limited_app, monkeypatch
+    ):
+        """The other direction, which the environment cannot supply.
+
+        Without this arm ``enabled=False`` would satisfy the whole class on
+        this machine, so a fix that simply hardcoded the feature off would
+        read as green.
+        """
+        mock_settings.observability.opik_enabled = True
+        self._set_opik_available(monkeypatch, True)
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        assert result.features["llm_tracing"].enabled is True
+
+    @pytest.mark.asyncio
+    async def test_not_configured_reports_disabled_even_with_the_sdk_present(
+        self, mock_admin_user, mock_settings, rate_limited_app, monkeypatch
+    ):
+        """An installed SDK is not an instruction to trace.
+
+        The positive control for the other conjunct: with the SDK available,
+        ``OPIK_ENABLED=false`` must still read False, so the field cannot have
+        degenerated into "is opik importable".
+        """
+        mock_settings.observability.opik_enabled = False
+        self._set_opik_available(monkeypatch, True)
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        assert result.features["llm_tracing"].enabled is False
+
+    @pytest.mark.asyncio
+    async def test_config_hint_names_the_install_the_operator_is_missing(
+        self, mock_admin_user, mock_settings, rate_limited_app, monkeypatch
+    ):
+        """``enabled: false`` on a deployment that set OPIK_ENABLED=true is
+        confusing unless the hint names the missing half."""
+        mock_settings.observability.opik_enabled = True
+        self._set_opik_available(monkeypatch, False)
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        assert "cloud" in result.features["llm_tracing"].config_hint
+
+
+class TestWebSearchReportsEffect:
+    """``web_search.enabled`` must track the provider the DA registry composes.
+
+    The registry (``container/providers/tools.py``) registers web search when
+    ``WebSearchTool(settings=settings).is_available()``, and
+    ``_auto_select_provider`` supports Google CSE as a full fallback to Tavily.
+    Reporting a Tavily-only check said *disabled* on a CSE deployment where the
+    model could demonstrably search — the same intent-for-effect substitution
+    as #1234, pointing the other way.
+    """
+
+    @staticmethod
+    def _configure_google_cse(settings) -> None:
+        settings.knowledge.tavily_api_key = None
+        settings.tools.web_search_api_key = _secret("google-key")
+        settings.tools.web_search_engine_id = "cse-id"
+        settings.tools.web_search_api_endpoint = "https://example.invalid"
+
+    @pytest.mark.asyncio
+    async def test_google_cse_only_deployment_reports_enabled(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        """Cross-checked against the tool, not against a second copy of the
+        rule: the same settings must compose a provider that reports itself
+        available, so the report cannot be right about a capability that is
+        not there."""
+        from faultmaven.modules.agent.tools.web_search import WebSearchTool
+
+        self._configure_google_cse(mock_settings)
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        assert WebSearchTool(settings=mock_settings).is_available() is True
+        assert result.features["web_search"].enabled is True
+        assert result.features["web_search"].has_api_key is True
+
+    @pytest.mark.asyncio
+    async def test_tavily_deployment_reports_enabled(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        mock_settings.knowledge.tavily_api_key = _secret("tvly-key")
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        assert result.features["web_search"].enabled is True
+        assert result.features["web_search"].has_api_key is True
+
+    @pytest.mark.asyncio
+    async def test_no_provider_configured_reports_disabled(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        """The positive control. Without it every assertion above could be
+        satisfied by a field wired to a constant ``True``."""
+        from faultmaven.modules.agent.tools.web_search import WebSearchTool
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        assert WebSearchTool(settings=mock_settings).is_available() is False
+        assert result.features["web_search"].enabled is False
+        assert result.features["web_search"].has_api_key is False
+
+    @pytest.mark.asyncio
+    async def test_google_cse_key_without_an_engine_id_reports_disabled(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        """CSE needs both halves — ``_auto_select_provider`` composes nothing
+        from a key alone, so a half-configured deployment must not read as
+        working."""
+        mock_settings.knowledge.tavily_api_key = None
+        mock_settings.tools.web_search_api_key = _secret("google-key")
+        mock_settings.tools.web_search_engine_id = None
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        assert result.features["web_search"].enabled is False
+        assert result.features["web_search"].has_api_key is False
+
+    @pytest.mark.asyncio
+    async def test_config_hint_names_both_supported_providers(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        """The hint used to name only Tavily, and to name ENABLE_WEB_SEARCH,
+        which no production path reads."""
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        hint = result.features["web_search"].config_hint
+        assert "TAVILY_API_KEY" in hint
+        assert "WEB_SEARCH_ENGINE_ID" in hint
+
+
+# ============================================================
+# The population rule (#1234)
+# ============================================================
+#
+# Each scenario configures ONE feature and is called twice: with
+# ``reality=False`` it sets every knob an operator can reach for that feature
+# and withholds the runtime capability; with ``reality=True`` it additionally
+# supplies the capability. Both mutate ``settings``/``app`` in place.
+#
+# ONE registry, and the sweep parametrises off it. A hand-written list beside
+# the registry is how a population test quietly stops covering a member: add a
+# scenario, forget the list, and the entry is never exercised while the
+# exhaustiveness check keeps passing because the registry did grow.
+
+
+def _scenario_llm_tracing(settings, app, monkeypatch, reality):
+    from faultmaven.infrastructure.observability import tracing
+
+    settings.observability.opik_enabled = True
+    settings.observability.opik_api_key = _secret("opik-key")
+    monkeypatch.setattr(tracing, "OPIK_AVAILABLE", reality)
+
+
+def _scenario_web_search(settings, app, monkeypatch, reality):
+    # ``ENABLE_WEB_SEARCH`` is the only pure-intent knob web search has, and it
+    # is switched ON in both arms — including the one that must report False.
+    # It was conjoined into ``enabled`` until this fix, so a regression to that
+    # shape shows up here rather than in a comment.
+    settings.knowledge.enable_web_search = True
+    if reality:
+        settings.knowledge.tavily_api_key = _secret("tvly-key")
+    else:
+        # No provider resolvable: no key for EITHER provider, which is all
+        # ``_auto_select_provider`` consults.
+        settings.knowledge.tavily_api_key = None
+        settings.tools.web_search_api_key = None
+        settings.tools.web_search_engine_id = None
+
+
+def _scenario_first_party_consent_skip(settings, app, monkeypatch, reality):
+    # The pinned redirect — the knob operators actually set, and the one the
+    # field used to report on its own — is present in BOTH arms.
+    settings.auth.oauth_enabled = True
+    settings.auth.oauth_first_party_redirect_patterns = [
+        r"^https://abcdefghijklmnopabcdefghijklmnop\.chromiumapp\.org/?$"
+    ]
+    settings.auth.oauth_first_party_clients = ["faultmaven-copilot"] if reality else []
+
+
+def _scenario_suggestion_store_worker_safe(settings, app, monkeypatch, reality):
+    from faultmaven.modules.knowledge.domain.services.suggestion_service import (
+        SuggestionService,
+    )
+    from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
+        DatabaseSuggestionRepository,
+        InMemorySuggestionRepository,
+    )
+
+    # The control that was already correct (#1227): it reads no setting at all,
+    # so WORKERS=1 — the knob operators used to reach for — is set in both arms
+    # precisely to show it buys nothing.
+    settings.server.workers = 1
+    repository = (
+        DatabaseSuggestionRepository(session_factory=MagicMock())
+        if reality
+        else InMemorySuggestionRepository()
+    )
+    app.state.suggestion_service = SuggestionService(
+        knowledge_service=MagicMock(), suggestion_repository=repository
+    )
+
+
+FEATURE_SCENARIOS = {
+    "web_search": _scenario_web_search,
+    "llm_tracing": _scenario_llm_tracing,
+    "first_party_consent_skip": _scenario_first_party_consent_skip,
+    "suggestion_store_worker_safe": _scenario_suggestion_store_worker_safe,
+}
+
+
+class TestEveryFeatureReportsEffectNotIntent:
+    """The population rule, swept over the whole ``features`` dict.
+
+    #1234 was raised against ``llm_tracing``, but the contract it broke
+    (``FeatureStatus.enabled`` — "Feature is active and usable") is one
+    sentence covering every entry, and two of the four were breaking it. The
+    per-feature tests above pin each case; this pins the RULE, so a fifth
+    feature added as ``enabled=<some setting>`` fails here rather than shipping
+    and being found the way this one was.
+
+    The rule, stated so it is falsifiable for any feature: **there is a state
+    in which the feature's configuration knobs are set and it still reports
+    False, because the runtime capability is absent.** That is exactly the
+    state #1234 mis-reported, and a field wired to a setting cannot satisfy it.
+
+    Every feature supplies BOTH arms. There is deliberately no "effect is
+    unknowable" bucket: each of these four has a reachable runtime signal, and
+    an entry that genuinely had none would have to argue for it here rather
+    than drop out of the sweep in silence.
+    """
+
+    @pytest.mark.asyncio
+    async def test_every_reported_feature_is_classified_here(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        """The anti-vacuity guard, and the reason the sweep cannot rot.
+
+        Equality in BOTH directions. A feature added to the endpoint without a
+        scenario fails here — otherwise the sweep silently would not cover it,
+        which is how a population test becomes a test of three things out of
+        five. A scenario naming a feature the endpoint no longer emits fails
+        too, so the sweep cannot keep passing over a shrunken dict.
+
+        The count floor is the third leg: equality against an empty registry
+        would still be equality.
+        """
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        assert set(result.features) == set(FEATURE_SCENARIOS)
+        assert len(result.features) >= 4
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("feature", sorted(FEATURE_SCENARIOS))
+    async def test_configured_but_capability_absent_reports_disabled(
+        self, mock_admin_user, mock_settings, rate_limited_app, monkeypatch, feature
+    ):
+        """The load-bearing arm: knobs set, capability absent.
+
+        A field wired to a setting reports True here. That is #1234 stated as a
+        property rather than as one endpoint's bug, and it is what the two
+        broken entries failed.
+        """
+        FEATURE_SCENARIOS[feature](mock_settings, rate_limited_app, monkeypatch, False)
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        assert result.features[feature].enabled is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("feature", sorted(FEATURE_SCENARIOS))
+    async def test_capability_present_reports_enabled(
+        self, mock_admin_user, mock_settings, rate_limited_app, monkeypatch, feature
+    ):
+        """The other arm, without which "report False" satisfies everything.
+
+        Every feature must be reachable, or the sweep degenerates into
+        asserting that the endpoint reports nothing as working — which the
+        shipped standalone default satisfies for three of the four, and which a
+        fix that simply switched tracing off would satisfy for all of them.
+        """
+        FEATURE_SCENARIOS[feature](mock_settings, rate_limited_app, monkeypatch, True)
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        assert result.features[feature].enabled is True
