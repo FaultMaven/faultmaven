@@ -98,6 +98,11 @@ class AuditEventType(str, Enum):
     # revocation" must not depend on parsing a JSON blob (fm#1050).
     ROLE_REMOVED = "role_removed"
     CASE_SHARED = "case_shared"
+    # Ownership moving between principals, distinct from CASE_SHARED (which
+    # widens visibility without changing the owner). Its own indexed value
+    # for the same reason ROLE_REMOVED is not a flag on ROLE_ASSIGNED:
+    # "which cases changed hands" must not require parsing `details`.
+    CASE_REASSIGNED = "case_reassigned"
     KB_DOCUMENT_SHARED = "kb_document_shared"
     TEAM_CREATED = "team_created"
 
