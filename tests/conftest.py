@@ -99,6 +99,19 @@ def _install_stand_in(name: str, module):
     # A real ModuleSpec, so find_spec(name) returns rather than raising
     # ValueError. loader=None matches what a stand-in truthfully is: located,
     # but not loadable from disk.
+    #
+    # This mutates a caller-owned object, so installing ONE object under two
+    # names would silently relabel the first entry's spec and make find_spec
+    # answer with the wrong name. Every call site passes a fresh object; this
+    # refuses rather than letting a future one re-use one by accident.
+    existing = getattr(module, "__spec__", None)
+    if existing is not None and getattr(existing, "name", name) != name:
+        raise RuntimeError(
+            f"refusing to install {existing.name!r} a second time as {name!r}: "
+            "one module object cannot carry two names, and re-labelling its "
+            "spec would make find_spec answer with the wrong one. Build a "
+            "separate stand-in for each name."
+        )
     module.__spec__ = importlib.machinery.ModuleSpec(name, loader=None)
     sys.modules[name] = module
     HARNESS_STAND_INS[name] = module
@@ -383,8 +396,25 @@ except ImportError:
 # exercise them exercise a SimpleNamespace of lambdas instead -- and one test
 # had already grown a hand-rolled `del sys.modules[...]` to reach past them.
 # Removed with #942: the harness may substitute what is absent, never a
-# first-party module. Their import-time cost is three singleton constructions
-# with no threads, no I/O and no asyncio tasks.
+# first-party module.
+#
+# What that makes live, stated accurately (an earlier revision of this comment
+# claimed "no threads, no I/O and no asyncio tasks", which was false):
+#   * `AlertManager.__init__` and `APMIntegration.__init__` both call
+#     `get_settings()`, so importing these freezes a settings snapshot for the
+#     session.
+#   * `alert_manager` and `metrics_collector` are module-level singletons with
+#     MUTABLE state, and `PerformanceMiddleware._record_performance_metrics`
+#     writes to both on EVERY request. Under the old stub those calls hit a
+#     SimpleNamespace lacking the methods and were swallowed, recording nothing.
+#   * `alert_manager._schedule_notification` does `asyncio.create_task(...)`,
+#     falling back on RuntimeError to `_send_sync_notification`, which itself
+#     calls `asyncio.run(...)` (alerting.py:469) -- and that raises inside a
+#     running loop.
+# The accumulating state is therefore reset between tests by the autouse
+# `_reset_observability_singletons` fixture below; without it every TestClient
+# request leaves residue and any future assertion on /metrics/* would be
+# order-dependent.
 
 """Shared pytest fixtures and configuration for FaultMaven tests."""
 
@@ -394,6 +424,57 @@ from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
+
+# Accumulating state on the observability singletons that #942 un-stubbed. Named
+# explicitly rather than reconstructed, and pinned by
+# tests/unit/test_harness_stand_ins.py so the list cannot drift into a no-op.
+# Configuration set up in __init__ (alert_rules, channel_configs,
+# notification_handlers, alert_thresholds) is deliberately NOT reset -- it is
+# not per-request residue.
+OBSERVABILITY_RESET_FIELDS = {
+    "faultmaven.infrastructure.observability.apm_metrics": (
+        "metrics_collector",
+        (
+            "metrics",
+            "aggregated_cache",
+            "last_aggregation",
+            "start_times",
+            "dashboard_data",
+        ),
+    ),
+    "faultmaven.infrastructure.observability.alerting": (
+        "alert_manager",
+        ("active_alerts", "alert_history", "suppressed_rules"),
+    ),
+}
+
+
+@pytest.fixture(autouse=True)
+def _reset_observability_singletons():
+    """Clear per-request residue off the un-stubbed observability singletons.
+
+    `PerformanceMiddleware` writes to `metrics_collector` and calls
+    `alert_manager.evaluate_metric` on every request, and both are module-level
+    singletons. Before #942 those calls hit a stub and recorded nothing; now
+    they accumulate for the whole session, which would make any assertion on
+    /metrics/* order-dependent. No test asserts on those endpoints today -- this
+    exists so that the first one to do so is not silently coupled to whatever
+    ran before it.
+
+    Costs one dict lookup per test when the modules were never imported.
+    """
+    yield
+    for module_name, (singleton_name, fields) in OBSERVABILITY_RESET_FIELDS.items():
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        singleton = getattr(module, singleton_name, None)
+        if singleton is None:
+            continue
+        for field in fields:
+            container = getattr(singleton, field, None)
+            if hasattr(container, "clear"):
+                container.clear()
 
 
 # Session-level fixture to clear .env variables that may have been loaded before tests started

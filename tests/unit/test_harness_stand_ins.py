@@ -39,7 +39,11 @@ import types
 
 import pytest
 
-from tests.conftest import HARNESS_STAND_INS, _install_stand_in
+from tests.conftest import (
+    HARNESS_STAND_INS,
+    OBSERVABILITY_RESET_FIELDS,
+    _install_stand_in,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -114,100 +118,193 @@ _MUST_BE_REAL = {"pypdf": "PdfReader"}
 # used; ``update`` is the other plausible spelling of the same mistake.
 _MUTATING_CALLS = frozenset({"setdefault", "update"})
 
+# The single sanctioned installer, in the root conftest. It is exempt BY NAME —
+# not by "it is inside a function", which was the pre-review rule and which
+# exempted any local helper anyone cared to write, including a copy of this one.
+_SANCTIONED_INSTALLER = "_install_stand_in"
 
-def _module_level_sys_modules_writes(source: str, label: str) -> list[str]:
-    """Module-level substitutions: ``sys.modules[x] = y`` and mutating calls.
 
-    Takes the source text so a synthetic violating file can be pushed through
+def _sys_modules_writes(
+    source: str, label: str, sanctioned: str | None = None
+) -> list[str]:
+    """Every ``sys.modules`` substitution in ``source``, wherever it appears.
+
+    Takes the source text so synthetic violating files can be pushed through
     this exact function: a scanner only ever run against a clean tree passes
     just as well when the scanner itself is broken.
 
-    Module level only, deliberately. A fixture that swaps ``sys.modules`` and
-    restores it is scoped and reversible; a write at import time is a
-    session-wide substitution installed before collection, which is the shape
-    that fails open. Function and class bodies are therefore not descended
-    into — which is also what exempts ``_install_stand_in`` itself.
+    The scan is deliberately NOT restricted to module level. The invariant is
+    "every substitution goes through the one helper", and an installer called
+    from module level does its work inside a function body, so a module-level
+    scan cannot see the very shape the sanctioned helper itself has. Exemption
+    is therefore by the sanctioned function's NAME, applied only to the root
+    conftest; everything else is in scope no matter how deeply nested.
 
-    Calls are matched wherever they appear in a module-level assignment or
-    expression statement, not only as a bare statement, so
-    ``m = sys.modules.setdefault(...)`` is caught as well.
+    Three reach-paths for the dict are resolved, because ``sys.modules`` is not
+    the only spelling: ``import sys as s`` (``s.modules[...]``) and
+    ``from sys import modules`` (a bare ``modules[...]``) install exactly the
+    same session-wide substitution.
     """
-    violations: list[str] = []
+    tree = ast.parse(source)
+
+    sys_aliases = {"sys"}
+    modules_aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "sys":
+                    sys_aliases.add(alias.asname or "sys")
+        elif isinstance(node, ast.ImportFrom) and node.module == "sys":
+            for alias in node.names:
+                if alias.name == "modules":
+                    modules_aliases.add(alias.asname or "modules")
+
+    exempt: set[int] = set()
+    if sanctioned:
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == sanctioned
+            ):
+                for descendant in ast.walk(node):
+                    exempt.add(id(descendant))
 
     def _is_sys_modules(node: ast.AST) -> bool:
+        if isinstance(node, ast.Name):
+            return node.id in modules_aliases
         return (
             isinstance(node, ast.Attribute)
             and node.attr == "modules"
             and isinstance(node.value, ast.Name)
-            and node.value.id == "sys"
+            and node.value.id in sys_aliases
         )
 
-    def _check_calls(node: ast.AST, lineno: int) -> None:
-        for sub in ast.walk(node):
-            if (
-                isinstance(sub, ast.Call)
-                and isinstance(sub.func, ast.Attribute)
-                and sub.func.attr in _MUTATING_CALLS
-                and _is_sys_modules(sub.func.value)
-            ):
-                violations.append(f"{label}:{lineno}: sys.modules.{sub.func.attr}(...)")
+    def _leaves(target: ast.AST):
+        """Flatten tuple/list unpacking, so ``sys.modules[x], y = ...`` counts."""
+        if isinstance(target, (ast.Tuple, ast.List)):
+            for element in target.elts:
+                yield from _leaves(element)
+        else:
+            yield target
 
-    def _walk(body) -> None:
-        for node in body:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                continue  # scoped, reversible — see the docstring
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if isinstance(target, ast.Subscript) and _is_sys_modules(
-                        target.value
-                    ):
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if id(node) in exempt:
+            continue
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                for leaf in _leaves(target):
+                    if isinstance(leaf, ast.Subscript) and _is_sys_modules(leaf.value):
                         violations.append(f"{label}:{node.lineno}: sys.modules[...] =")
-            # Expression-only statements can be walked whole: they cannot
-            # contain a nested def, so this never reaches a scoped write.
-            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Expr)):
-                _check_calls(node, node.lineno)
-            for child in ("body", "orelse", "finalbody"):
-                _walk(getattr(node, child, []) or [])
-            for handler in getattr(node, "handlers", []) or []:
-                _walk(handler.body)
-
-    _walk(ast.parse(source).body)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in _MUTATING_CALLS
+            and _is_sys_modules(node.func.value)
+        ):
+            violations.append(
+                f"{label}:{node.lineno}: sys.modules.{node.func.attr}(...)"
+            )
     return violations
 
 
-def test_the_scanner_detects_every_substitution_shape():
-    """POSITIVE CONTROL for the scan below.
+# Every shape the scanner must decide, and the verdict it must reach. Kept as a
+# table rather than one synthetic file asserted by exact line numbers: the old
+# control pinned ``lines == {3,4,6,7,8}``, so ADDING a shape reddened the
+# control instead of extending coverage, and the control fought the fix.
+# Six of these were measured MISSED by the review against the shipped scanner.
+_SCANNER_SHAPES: dict[str, tuple[str, bool]] = {
+    "plain subscript write": ("import sys\nsys.modules['a.b'] = OBJ\n", True),
+    "setdefault statement": ("import sys\nsys.modules.setdefault('a.b', OBJ)\n", True),
+    "update spelling": ("import sys\nsys.modules.update({'a.b': OBJ})\n", True),
+    "setdefault bound in an assignment": (
+        "import sys\nm = sys.modules.setdefault('a.b', OBJ)\n",
+        True,
+    ),
+    "nested inside a module-level if": (
+        "import sys\nif True:\n    sys.modules['a.b'] = OBJ\n",
+        True,
+    ),
+    # --- the six the review measured as MISSED ---
+    "local helper indirection": (
+        "import sys\ndef _put(n, m):\n    sys.modules[n] = m\n_put('a.b', OBJ)\n",
+        True,
+    ),
+    "from sys import modules": (
+        "from sys import modules\nmodules['a.b'] = OBJ\n",
+        True,
+    ),
+    "aliased import sys as s": ("import sys as s\ns.modules['a.b'] = OBJ\n", True),
+    "match/case block": (
+        "import sys\nx = 1\nmatch x:\n    case 1:\n        sys.modules['a.b'] = OBJ\n",
+        True,
+    ),
+    "setdefault in an if header": (
+        "import sys\nif sys.modules.setdefault('a.b', OBJ):\n    pass\n",
+        True,
+    ),
+    "tuple-unpacking target": (
+        "import sys\nsys.modules['a.b'], q = OBJ, 2\n",
+        True,
+    ),
+    # --- negative controls: the scanner must NOT flag these ---
+    "reads sys.modules without writing": (
+        "import sys\nx = sys.modules.get('a.b')\n",
+        False,
+    ),
+    "a different object named modules": (
+        "import other\nother.modules['a.b'] = OBJ\n",
+        False,
+    ),
+    "setdefault on an unrelated dict": ("d = {}\nd.setdefault('a.b', OBJ)\n", False),
+}
 
-    Without this, a scanner that had silently stopped matching anything would
-    report a clean tree — which is the exact failure this whole file is about.
-    Each shape is asserted by line number so that a scanner matching only one
-    of them cannot pass on the total.
+
+@pytest.mark.parametrize("shape", sorted(_SCANNER_SHAPES))
+def test_the_scanner_decides_every_substitution_shape(shape):
+    """POSITIVE **and** NEGATIVE control for the scan below.
+
+    Without the positives, a scanner that had silently stopped matching would
+    report a clean tree — the exact failure this whole file is about. Without
+    the negatives, a scanner that flagged everything would also pass, and the
+    real scan would be unusable rather than merely blind.
     """
-    synthetic = (
-        "import sys\n"  # 1
-        "from types import SimpleNamespace\n"  # 2
-        "sys.modules['a.b'] = SimpleNamespace()\n"  # 3  subscript assign
-        "sys.modules.setdefault('c.d', SimpleNamespace())\n"  # 4  bare call
-        "if True:\n"  # 5
-        "    sys.modules['nested'] = SimpleNamespace()\n"  # 6  module level still
-        "m = sys.modules.setdefault('e.f', SimpleNamespace())\n"  # 7  call in assign
-        "sys.modules.update({'g.h': SimpleNamespace()})\n"  # 8  update spelling
-        "def f():\n"  # 9
-        "    sys.modules['scoped'] = SimpleNamespace()\n"  # 10 scoped: NOT a hit
-    )
-    found = _module_level_sys_modules_writes(synthetic, "synthetic")
-    lines = {int(v.split(":")[1]) for v in found}
+    source, must_flag = _SCANNER_SHAPES[shape]
+    found = _sys_modules_writes(source, "synthetic")
 
-    assert 3 in lines, "subscript assignment not detected"
-    assert 4 in lines, "bare setdefault call not detected"
-    assert 6 in lines, "module-level write nested in `if` not detected"
-    assert 7 in lines, "setdefault inside an assignment not detected"
-    assert 8 in lines, "update() spelling not detected"
-    assert 10 not in lines, (
-        "a write inside a function body was flagged — those are scoped and "
-        "reversible, and flagging them makes the scan unusable"
+    if must_flag:
+        assert found, f"{shape!r} is a session-wide substitution and was not flagged"
+    else:
+        assert not found, f"{shape!r} is not a substitution but was flagged: {found}"
+
+
+def test_the_sanctioned_exemption_is_by_name_not_by_being_a_function():
+    """The helper is exempt because of what it is called, and only there.
+
+    The pre-review scanner skipped every function body, so ANY local helper was
+    exempt — the one shape that most needs catching, since it is the shape the
+    sanctioned helper itself has. Both directions are asserted: the same source
+    is flagged when no name is sanctioned, and clean when it is. A blanket
+    function-body skip passes the second and fails the first.
+    """
+    source = (
+        "import sys\n"
+        "def _install_stand_in(name, module):\n"
+        "    sys.modules[name] = module\n"
+        "def _sneaky(name, module):\n"
+        "    sys.modules[name] = module\n"
     )
-    assert lines == {3, 4, 6, 7, 8}, found
+
+    unexempted = _sys_modules_writes(source, "synthetic")
+    assert len(unexempted) == 2, unexempted
+
+    exempted = _sys_modules_writes(source, "synthetic", sanctioned="_install_stand_in")
+    assert len(exempted) == 1, (
+        "exempting by name must leave the second helper flagged — otherwise the "
+        f"exemption is a blanket function skip again: {exempted}"
+    )
+    assert "_sneaky" not in "".join(exempted)  # it is reported by line, not name
 
 
 def test_no_conftest_substitutes_a_module_outside_the_helper():
@@ -227,8 +324,17 @@ def test_no_conftest_substitutes_a_module_outside_the_helper():
 
     violations: list[str] = []
     for path in conftests:
-        violations += _module_level_sys_modules_writes(
-            path.read_text(), str(path.relative_to(REPO_ROOT))
+        # encoding is pinned: several scanned conftests carry non-ASCII em
+        # dashes, and read_text() without it follows the ambient locale — under
+        # a POSIX-locale container the guard would die with UnicodeDecodeError
+        # instead of returning a verdict.
+        text = path.read_text(encoding="utf-8")
+        # Only the ROOT conftest may define the sanctioned installer.
+        sanctioned = (
+            _SANCTIONED_INSTALLER if path == TESTS_ROOT / "conftest.py" else None
+        )
+        violations += _sys_modules_writes(
+            text, str(path.relative_to(REPO_ROOT)), sanctioned=sanctioned
         )
 
     assert violations == [], (
@@ -261,35 +367,60 @@ def test_installing_a_first_party_stand_in_is_refused(name):
     Refusal covers a name that does not exist on disk too, because both fossils
     removed with #942 were exactly that shape.
     """
-    before = dict(sys.modules)
+    _MISSING = object()
+    before = sys.modules.get(name, _MISSING)
+
     with pytest.raises(RuntimeError, match="first-party"):
         _install_stand_in(name, types.SimpleNamespace())
-    assert name not in sys.modules or sys.modules[name] is before.get(
-        name
+
+    assert (
+        sys.modules.get(name, _MISSING) is before
     ), "the refused stand-in was installed anyway"
 
 
-def test_the_helper_accepts_a_third_party_name(monkeypatch):
+_PROBE_NAME = "l3_probe_third_party"
+
+
+def test_the_helper_accepts_a_third_party_name():
     """POSITIVE CONTROL: the refusal above discriminates.
 
     A helper that raised for everything would satisfy the previous test while
     installing nothing at all, and the whole harness would be broken in a way
     those parametrised cases cannot see.
+
+    Cleanup is an explicit ``try/finally``, NOT ``monkeypatch``. This test used
+    ``monkeypatch.delitem(sys.modules, name, raising=False)`` to arrange the
+    teardown, which does not work: for an ABSENT key delitem records no undo
+    entry at all, so the module the helper then created survived the whole
+    session — this file leaking a stand-in into ``sys.modules``, which is the
+    one thing it exists to forbid. (``setitem`` does record on an absent key,
+    which is why only the registry half was cleaned and the leak was silent.)
     """
-    # Both keys are absent; registering them with monkeypatch is how the
-    # entries the helper is about to create get torn down again, so this test
-    # cannot leave a probe module in the registry the next test then asserts on.
-    monkeypatch.delitem(sys.modules, "l3_probe_third_party", raising=False)
-    monkeypatch.setitem(HARNESS_STAND_INS, "l3_probe_third_party", None)
+    assert _PROBE_NAME not in sys.modules, "a previous run leaked the probe"
+    try:
+        installed = _install_stand_in(_PROBE_NAME, types.ModuleType(_PROBE_NAME))
 
-    installed = _install_stand_in(
-        "l3_probe_third_party", types.ModuleType("l3_probe_third_party")
-    )
+        assert sys.modules[_PROBE_NAME] is installed
+        assert (
+            importlib.util.find_spec(_PROBE_NAME) is installed.__spec__
+        ), "the helper installed a module the standard probe still cannot resolve"
+    finally:
+        # pop, not the helper: _install_stand_in no-ops on a present name, so
+        # there is no "uninstall" path through it.
+        sys.modules.pop(_PROBE_NAME, None)
+        HARNESS_STAND_INS.pop(_PROBE_NAME, None)
 
-    assert sys.modules["l3_probe_third_party"] is installed
-    assert (
-        importlib.util.find_spec("l3_probe_third_party") is installed.__spec__
-    ), "the helper installed a module the standard probe still cannot resolve"
+
+def test_the_probe_stand_in_did_not_outlive_its_test():
+    """...and the cleanup above is pinned from OUTSIDE that test.
+
+    Asserting the teardown inside the test that performs it cannot catch a
+    teardown that never runs. This runs after it and looks at the shared state
+    directly, which is how the leak was found; deleting the ``finally`` above
+    reds this and nothing else.
+    """
+    assert _PROBE_NAME not in sys.modules, "probe stand-in leaked into sys.modules"
+    assert _PROBE_NAME not in HARNESS_STAND_INS, "probe stand-in leaked into registry"
 
 
 # --------------------------------------------------------------------------- #
@@ -323,9 +454,12 @@ def test_every_harness_stand_in_answers_a_non_importing_probe():
     """
     assert _REQUIRED_STAND_INS <= set(HARNESS_STAND_INS), (
         "the harness did not stand in for "
-        f"{sorted(_REQUIRED_STAND_INS - set(HARNESS_STAND_INS))} — either the "
-        "substitution was removed (and the suite is now importing the real "
-        "heavy stack, #868) or it was installed without the helper"
+        f"{sorted(_REQUIRED_STAND_INS - set(HARNESS_STAND_INS))}. The likely "
+        "cause is that the name was ALREADY in sys.modules when conftest ran, "
+        "so _install_stand_in no-opped and recorded nothing — i.e. something "
+        "imported the real (heavy, #868) package before collection. The other "
+        "causes are that the substitution was deleted, or installed without "
+        "going through the helper."
     )
     for name, module in sorted(HARNESS_STAND_INS.items()):
         assert sys.modules.get(name) is module, (
@@ -359,14 +493,22 @@ def test_a_formerly_shadowed_module_is_the_real_module(name, attr):
         f"{name} resolved to {origin}, outside {PACKAGE_ROOT} — it measured a "
         "different checkout"
     )
-    obj = getattr(module, attr)
-    owner = obj.__module__ if isinstance(obj, type) else type(obj).__module__
+    owner = _defining_module(getattr(module, attr))
     assert owner == name, (
         f"{name}.{attr} is defined in {owner!r}, not in {name!r} — the module "
-        "is shadowed again. Asserting merely 'not a Mock' would NOT catch it: "
-        "the log_analyzer stub bound the Mock CLASS, and `type(Mock).__module__`"
-        " is 'builtins'."
+        "is shadowed again."
     )
+
+
+def _defining_module(obj) -> str:
+    """Where ``obj`` is defined — the discriminator both stand-in checks use.
+
+    A class carries its own ``__module__``; an instance carries its type's.
+    Note this is NOT "is it a Mock": the log_analyzer stub bound the Mock
+    CLASS, and ``type(Mock).__module__`` is "builtins", so a not-a-Mock check
+    would have passed straight over it.
+    """
+    return obj.__module__ if isinstance(obj, type) else type(obj).__module__
 
 
 def _is_genuinely_first_party(module) -> bool:
@@ -483,10 +625,67 @@ def test_an_installed_third_party_package_is_not_stubbed_away(name, attr):
     )
     module = importlib.import_module(name)
     assert pathlib.Path(module.__file__).is_file()
-    obj = getattr(module, attr)
-    owner = obj.__module__ if isinstance(obj, type) else type(obj).__module__
+    owner = _defining_module(getattr(module, attr))
     assert owner == name or owner.startswith(f"{name}."), (
         f"{name}.{attr} is defined in {owner!r}, outside the {name!r} package — "
         "the import resolved to a stand-in"
     )
     assert name not in HARNESS_STAND_INS
+
+
+# --------------------------------------------------------------------------- #
+# The reset that keeps the un-stubbed singletons from accumulating
+# --------------------------------------------------------------------------- #
+
+
+def test_the_observability_reset_names_state_that_actually_exists():
+    """The autouse reset fixture must not quietly become a no-op.
+
+    It clears named attributes and skips anything missing, so a rename upstream
+    would leave it silently clearing nothing while every TestClient request kept
+    accumulating residue on shared singletons. Checking the names here is what
+    makes that loud. Each named attribute must also actually be a container --
+    ``hasattr(x, "clear")`` is the fixture's own test, so a field that stopped
+    being one would be skipped just as silently.
+    """
+    assert OBSERVABILITY_RESET_FIELDS, "the reset fixture has nothing to reset"
+
+    for module_name, (singleton_name, fields) in OBSERVABILITY_RESET_FIELDS.items():
+        module = importlib.import_module(module_name)
+        singleton = getattr(module, singleton_name)
+        assert fields, f"{singleton_name} has an empty field list"
+        for field in fields:
+            container = getattr(singleton, field)
+            assert hasattr(container, "clear"), (
+                f"{module_name}.{singleton_name}.{field} is {type(container).__name__},"
+                " which the fixture cannot clear -- it would skip it in silence"
+            )
+
+
+def test_one_module_object_cannot_be_installed_under_two_names():
+    """The helper mutates ``__spec__`` on a caller-owned object.
+
+    So installing the same object twice would relabel the first entry's spec,
+    and ``find_spec`` on the ORIGINAL name would answer with a spec carrying the
+    second name — resolving, and lying, which is exactly the failure
+    ``spec.name == name`` was added to catch. Every call site passes a fresh
+    object today; this refuses so that a future one cannot re-use one silently.
+    """
+    shared = types.ModuleType("l3_alias_first")
+    first = "l3_alias_first"
+    second = "l3_alias_second"
+    try:
+        _install_stand_in(first, shared)
+        assert sys.modules[first].__spec__.name == first
+
+        with pytest.raises(RuntimeError, match="cannot carry two names"):
+            _install_stand_in(second, shared)
+
+        assert second not in sys.modules, "the aliased stand-in was installed anyway"
+        assert (
+            sys.modules[first].__spec__.name == first
+        ), "the first entry's spec was relabelled"
+    finally:
+        for name in (first, second):
+            sys.modules.pop(name, None)
+            HARNESS_STAND_INS.pop(name, None)

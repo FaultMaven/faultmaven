@@ -218,19 +218,11 @@ class TestObservabilityIntegration:
 
     def test_knowledge_base_has_tracing(self):
         """Verify knowledge base methods have trace decorators."""
-        import sys
-
-        # Remove the mock from sys.modules to import the real class
-        if "faultmaven.modules.knowledge.domain.services.ingestion" in sys.modules:
-            mock_module = sys.modules[
-                "faultmaven.modules.knowledge.domain.services.ingestion"
-            ]
-            # Check if it's a mock (SimpleNamespace)
-            if not hasattr(mock_module, "__file__"):
-                del sys.modules[
-                    "faultmaven.modules.knowledge.domain.services.ingestion"
-                ]
-
+        # A `del sys.modules[...]` used to stand here, mirroring the one removed
+        # from test_data_processing_has_tracing. It was already dead -- the root
+        # conftest never stubbed this name -- and it is removed rather than left
+        # as a pattern for the next reader to copy: reaching past a stand-in by
+        # hand is what #942 replaced, and no conftest may install one now.
         from faultmaven.modules.knowledge.domain.services.ingestion import (
             KnowledgeIngester,
         )
