@@ -161,3 +161,76 @@ def test_floor_sits_under_the_structured_output_cap():
 
     # The floor forbids a starvable partition; it must never RAISE the cap.
     assert 0 < TOOLLESS_INFERENCE_OUTPUT_FLOOR < STRUCTURED_OUTPUT_MAX_TOKENS
+
+
+# ---------------------------------------------------------------------------
+# Turn level: process_turn on an engine WITH tools registered
+# ---------------------------------------------------------------------------
+from faultmaven.modules.case.domain.models import (  # noqa: E402
+    CaseState,
+    InvestigationProgress,
+    ProblemVerification,
+)
+
+
+def _investigating_case() -> Case:
+    case = Case(
+        case_id="case_1116a0b1c2d3",
+        title="VM will not start",
+        state=CaseState.INQUIRY,
+        user_id="user_test",
+        organization_id="org_test",
+        description="libvirt cannot write its PID file",
+        problem_verification=ProblemVerification(
+            symptom_statement="VM fails to start", severity="high"
+        ),
+    )
+    case.inquiry.proposed_problem_statement = "VM fails to start"
+    case.inquiry.problem_statement_confirmed = True
+    case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
+    case.inquiry.decided_to_investigate = True
+    case.inquiry.decision_made_at = datetime.now(UTC)
+    case.state = CaseState.INVESTIGATING
+    case.progress = InvestigationProgress()
+    case.current_turn = 8
+    return case
+
+
+def _tool_engine() -> MilestoneEngine:
+    repo = MagicMock()
+    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.get = AsyncMock(side_effect=lambda cid: None)
+    tools = MagicMock()
+    tools.get_all_tools.return_value = []
+    engine = MilestoneEngine(MagicMock(), repo, investigation_tools=tools)
+    engine._generate_structured_output = AsyncMock(
+        return_value=InvestigationResponse_Diagnosis(
+            agent_response="Checking the mount.", state_updates={}
+        )
+    )
+    return engine
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_turn_with_nothing_to_search_takes_the_single_shot_seam_with_intent():
+    engine = _tool_engine()
+    await engine.process_turn(
+        case=_investigating_case(), user_message="df -h shows /var/lib 100%"
+    )
+    kwargs = engine._generate_structured_output.call_args.kwargs
+    assert kwargs.get("investigation_tools") is None
+    assert kwargs["reasoning_intent"] is ReasoningIntent.INFERENCE
+    assert kwargs["min_output_tokens"] == TOOLLESS_INFERENCE_OUTPUT_FLOOR
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_turn_with_searchable_evidence_stays_on_the_tool_loop():
+    engine = _tool_engine()
+    case = _investigating_case()
+    case.evidence.append(_evidence())
+    await engine.process_turn(case=case, user_message="df -h shows /var/lib 100%")
+    kwargs = engine._generate_structured_output.call_args.kwargs
+    assert kwargs.get("investigation_tools") is not None
+    assert "reasoning_intent" not in kwargs
