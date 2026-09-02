@@ -17,6 +17,7 @@ Architecture Integration:
 import hashlib
 import json
 import logging
+from collections.abc import Collection
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
@@ -79,35 +80,70 @@ EXCLUDED_EXACT_PATHS = frozenset({"/api/v1/sessions"})
 APP_STATE_EXCLUSIONS_ATTR = "idempotency_excluded_paths"
 
 
-def _normalize_exclusion_path(path: str) -> str:
-    """Reduce a path to the form exclusions are compared in.
+def _normalize_path(path: str) -> str:
+    """Reduce a path to the form this middleware compares paths in.
 
-    One function so a declared path and an incoming request path can never be
-    normalised by two different rules — which would be a silent non-match, and a
-    silent non-match here is an open hole rather than a visible failure.
+    One function so a declared path, an incoming request path and a cache key
+    can never be normalised by three different rules — a silent non-match here
+    is an open hole rather than a visible failure, and a cache key computed
+    under a different rule splits buckets for one logical route.
     """
     return path.rstrip("/") or "/"
 
 
 def _post_route_paths(routes) -> frozenset:
-    """Every path in a route table that answers POST, including mounted ones.
+    """Every path in a route table that answers POST, including nested ones.
 
-    Mounts are walked rather than skipped so a composed unit served under a
-    ``Mount`` can still be validated; skipping them would turn a legitimate
-    declaration into a spurious refusal, and a refusal a caller learns to work
-    around is worse than no check.
+    Nested tables are walked rather than skipped so a composed unit served under
+    a ``Mount`` (or a ``Host``) can still be validated; skipping them turns a
+    legitimate declaration into a spurious refusal, and a refusal a composer
+    learns to route around is worse than no check.
+
+    They are reached through ``route.routes``, never ``route.app``: a ``Mount``
+    constructed with ``middleware=`` exposes the *wrapper* on ``.app``, and the
+    wrapper has no ``routes`` at all — measured on starlette 1.3.1, ``.app``
+    yields nothing where ``.routes`` yields the five real routes. ``.routes`` is
+    Starlette's own accessor and reports the mounted app in both shapes.
+
+    Duck-typed rather than isinstance-checked for the same reason: ``Host``
+    carries ``routes`` but no ``path`` (host routing contributes no prefix), and
+    a container this function has not heard of should degrade to "walk it if it
+    has routes" rather than to a refusal.
     """
-    from starlette.routing import Mount, Route
-
     found: set = set()
     for route in routes:
-        if isinstance(route, Route) and "POST" in (route.methods or set()):
-            found.add(_normalize_exclusion_path(route.path))
-        elif isinstance(route, Mount):
-            prefix = route.path.rstrip("/")
-            for nested in _post_route_paths(getattr(route.app, "routes", [])):
-                found.add(_normalize_exclusion_path(prefix + nested))
+        nested = getattr(route, "routes", None)
+        if nested:
+            prefix = (getattr(route, "path", "") or "").rstrip("/")
+            for path in _post_route_paths(nested):
+                found.add(_normalize_path(prefix + path))
+        elif "POST" in (getattr(route, "methods", None) or ()):
+            found.add(_normalize_path(route.path))
     return frozenset(found)
+
+
+class _NormalizedExclusions(frozenset):
+    """A set this module normalised itself.
+
+    Marker only. It lets the per-POST read hand back the stored set directly
+    instead of rebuilding it on the request path, while a value assigned to
+    ``app.state`` by hand still goes through the defensive read below.
+    """
+
+
+#: Composition-time mistakes already reported. The declaration is read on every
+#: POST, so an unconditional log would emit a line per request for the life of
+#: the process — flooding the structured log and the error-pattern detection
+#: behind ``GET /health/patterns`` with a static condition. Reporting is
+#: per-process rather than per-request because the mistake is too.
+_REPORTED_BAD_DECLARATIONS: set = set()
+
+
+def _report_once(key: str, message: str, *args) -> None:
+    if key in _REPORTED_BAD_DECLARATIONS:
+        return
+    _REPORTED_BAD_DECLARATIONS.add(key)
+    logger.error(message, *args)
 
 
 def _normalize_declared_exclusions(declared) -> frozenset:
@@ -120,28 +156,70 @@ def _normalize_declared_exclusions(declared) -> frozenset:
     path. A lone string is therefore read as the one path it obviously means,
     which is the only reading that can never exclude more than was declared.
 
-    Anything that is not a string is dropped, and something not iterable at all
-    is reported and ignored: a broken declaration must not take every POST with
-    it. That fail-open half is exactly why ``exclude_from_idempotency`` refuses
-    a bad path up front rather than leaving it to be noticed at request time.
+    Everything else this refuses, it refuses *loudly*. The failure mode this
+    whole mechanism exists to prevent is a declaration that looks like it closed
+    a hole and did not, so silently yielding an empty set would reproduce
+    fm#1299 with an exclusion sitting in the source:
+
+    * a **one-shot iterator** (a generator, ``map``, ``filter``) is rejected
+      rather than consumed. Consuming it would exclude the first POST of the
+      process and no other — an exclusion that demonstrably works once and is
+      then gone, which is worse than never declaring it. ``Collection`` is the
+      test because it is exactly "re-readable";
+    * **non-string entries** (a ``PurePosixPath`` or ``bytes``, both natural
+      when paths are built rather than typed) are dropped, but never quietly:
+      they cannot match a request path, and the composer needs to know that.
+
+    Anything that cannot be read at all is reported and ignored rather than
+    raised: this runs outside ``dispatch``'s ``try``, so a broken declaration
+    must not take every POST with it. That fail-open half is precisely why
+    ``exclude_from_idempotency`` refuses a bad path up front instead of leaving
+    it to be noticed here.
     """
-    if not declared:
+    if isinstance(declared, _NormalizedExclusions):
+        return declared
+    if declared is None:
         return frozenset()
     if isinstance(declared, str):
         declared = (declared,)
-    try:
-        return frozenset(
-            _normalize_exclusion_path(entry)
-            for entry in declared
-            if isinstance(entry, str)
-        )
-    except TypeError:
-        logger.error(
-            "app.state.%s is not iterable (%r); composed exclusions ignored",
+
+    if not isinstance(declared, Collection):
+        _report_once(
+            f"type:{type(declared).__name__}",
+            "app.state.%s is %s, which cannot be read on every request "
+            "(a set, list or tuple is required); composed exclusions ignored",
             APP_STATE_EXCLUSIONS_ATTR,
             type(declared).__name__,
         )
         return frozenset()
+
+    try:
+        entries = list(declared)
+    except Exception as exc:  # a declaration must never break the request path
+        _report_once(
+            f"iter:{type(declared).__name__}",
+            "app.state.%s could not be read (%s: %s); composed exclusions ignored",
+            APP_STATE_EXCLUSIONS_ATTR,
+            type(exc).__name__,
+            exc,
+        )
+        return frozenset()
+
+    unusable = [entry for entry in entries if not isinstance(entry, str)]
+    if unusable:
+        _report_once(
+            f"entries:{sorted(type(e).__name__ for e in unusable)}",
+            "app.state.%s contains %d entr(y/ies) that are not path strings and "
+            "cannot match any request path: %s; those exclusions are NOT in "
+            "effect",
+            APP_STATE_EXCLUSIONS_ATTR,
+            len(unusable),
+            [repr(entry) for entry in unusable],
+        )
+
+    return frozenset(
+        _normalize_path(entry) for entry in entries if isinstance(entry, str)
+    )
 
 
 def exclude_from_idempotency(app, *paths: str) -> frozenset:
@@ -175,7 +253,7 @@ def exclude_from_idempotency(app, *paths: str) -> frozenset:
             raise ValueError(
                 f"idempotency exclusion must be an absolute path string, got {path!r}"
             )
-        candidate = _normalize_exclusion_path(path)
+        candidate = _normalize_path(path)
         if "{" in candidate:
             raise ValueError(
                 f"idempotency exclusion {path!r} is templated; an exact-path "
@@ -192,7 +270,7 @@ def exclude_from_idempotency(app, *paths: str) -> frozenset:
     existing = _normalize_declared_exclusions(
         getattr(app.state, APP_STATE_EXCLUSIONS_ATTR, None)
     )
-    combined = existing | normalized
+    combined = _NormalizedExclusions(existing | normalized)
     setattr(app.state, APP_STATE_EXCLUSIONS_ATTR, combined)
     logger.info(
         "Idempotency exclusions declared by the composition root: %s",
@@ -418,8 +496,17 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         markers: the marker tier stays owned by this file, where the reasoning
         for why ``/sessions`` is unusable as one is written down and can be
         weighed against the real route table.
+
+        The markers are matched against the **raw** path on purpose, and that
+        asymmetry with the two exact tiers is load-bearing rather than an
+        oversight. Normalising first strips the trailing slash, and ``/auth/``
+        appears in ``POST /api/v1/auth/`` only *before* that strip — so routing
+        the marker through ``normalized`` would stop excluding a credential mint
+        this middleware excludes today. Exact comparison needs the normalisation
+        (``/api/v1/sessions/`` must equal ``/api/v1/sessions``); substring
+        containment is only ever widened by keeping the raw form.
         """
-        normalized = _normalize_exclusion_path(path)
+        normalized = _normalize_path(path)
         if normalized in EXCLUDED_EXACT_PATHS or normalized in declared:
             return True
         return any(marker in path for marker in EXCLUDED_PATH_MARKERS)
@@ -701,7 +788,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         # The query string keeps its exact value: unlike the trailing slash it
         # is never normalised downstream, and two different queries really are
         # two different operations.
-        normalized_path = request.url.path.rstrip("/") or "/"
+        normalized_path = _normalize_path(request.url.path)
         method_path = f"{request.method}:{normalized_path}"
         combined = "|".join(
             [idempotency_key, method_path, request.url.query, caller_identity]
