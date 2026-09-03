@@ -212,6 +212,7 @@ from .api.routes.admin_cases import router as admin_cases_router
 from .api.routes.admin_config import router as admin_config_router
 from .api.routes.admin_grants import router as admin_grants_router
 from .api.routes.sessions import router as investigation_sessions_router
+from .api.v1.auth_dependencies import require_authentication
 from .infrastructure.observability.tracing import init_opik_tracing
 
 # Import API routes from modules
@@ -220,6 +221,7 @@ from .modules.auth.api.auth import router as auth_router
 from .modules.auth.api.oauth import router as oauth_router
 from .modules.auth.api.session import router as session_router
 from .modules.auth.api.teams import router as teams_router
+from .modules.auth.domain.models.auth import DevUser
 from .modules.case.api.routes import router as case_router
 from .modules.knowledge.api.conversion_routes import router as conversion_router
 from .modules.knowledge.api.routes import router as knowledge_router
@@ -1805,7 +1807,11 @@ if _is_debug_enabled(settings=_debug_settings):
             }
 
     @app.get("/debug/cases/{case_id}/causal-graph")
-    async def debug_causal_graph(case_id: str, request: Request):
+    async def debug_causal_graph(
+        case_id: str,
+        request: Request,
+        current_user: DevUser = Depends(require_authentication),
+    ):
         """Dump a case's causal graph + hypothesis-chain wiring (dev-only).
 
         Instrumentation hook for the 2D-hypothesis chain-emission validation
@@ -1815,16 +1821,29 @@ if _is_debug_enabled(settings=_debug_settings):
         conclusion — enough for the simulator probe to detect well-formed
         chains, bridge-stub divergence, rung-level evidence, and M6 demotion.
 
+        Authenticated, and gated by the same owner ∪ shared-to-my-teams check
+        every other single-case read carries. It previously took neither and
+        loaded the row straight from the repository: under the deployed cloud
+        posture PostgreSQL row-level security covered it, so the exposure was
+        bounded by a layer this route did not ask for — and on any deployment
+        without RLS (standalone on SQLite) it served any case to any caller,
+        authenticated or not. Recorded as an observation by the two-tenant
+        surface probe; closed here.
+
+        A case the caller may not read answers the same ``case not found``
+        envelope an absent one does, so the refusal is not an existence oracle.
+
         Best-effort: never raises on serialization; absent graph returns empty
         collections. Not registered in production (debug block).
         """
         from .api.debug_introspection import build_causal_graph_debug_payload
-        from .api.v1.dependencies import get_case_repository
 
-        repo = await get_case_repository(request)
-        if repo is None:
-            return {"error": "case repository unavailable", "case_id": case_id}
-        case = await repo.get(case_id)
+        case_service = getattr(request.app.state, "case_service", None)
+        if case_service is None:
+            return {"error": "case service unavailable", "case_id": case_id}
+        # Through the service, not the repository: `user_id` is what applies the
+        # owner ∪ shared check, and the repository has no such notion.
+        case = await case_service.get_case(case_id, user_id=current_user.user_id)
         if case is None:
             return {"error": "case not found", "case_id": case_id}
 
