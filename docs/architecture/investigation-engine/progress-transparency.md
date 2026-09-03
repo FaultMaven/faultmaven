@@ -161,7 +161,7 @@ Transparent Mode (progress stalled)
 - **Stateless**: Progress transparency is fully computed from `case.turn_history` each turn. No persisted state, no schema changes.
 - **No separate system message**: The agent's response carries the case-specific guidance. The `ProgressTransparencyInfo` in the API response enables frontend UI indicators.
 - **Prompt injection via `system_feedback`**: Delivered to the LLM on the next turn (one-turn delay).
-- **Context builder complement**: The context builder implements **stage-specific hypothesis condensing** that complements progress transparency by freeing token budget during MITIGATION/TREATMENT. During long DIAGNOSIS investigations (state summary mode), hypotheses are condensed to top 3 to avoid duplicating the state summary.
+- **Context builder complement**: The context builder implements **stage-specific hypothesis condensing** that complements progress transparency by freeing token budget during MITIGATION/TREATMENT. During long DIAGNOSIS investigations (state summary mode), the `<working_hypotheses>` block is condensed to the top 3 to avoid duplicating the state summary, and the state summary itself lists every active/validated hypothesis with its `hyp_` id (bounded by `STATE_SUMMARY_MAX_HYPOTHESES`) so a lower-ranked hypothesis stays addressable in `hypothesis_evidence_links` (#1116).
 
 ---
 

@@ -318,14 +318,20 @@ class TestReVerificationSuccessCaseDirective:
 @pytest.mark.unit
 class TestEvidenceClassificationDecisionTreeExtension:
     """The universal classification decision tree in INVESTIGATION_BASE
-    must enumerate all six categories so the absence-evidence emission
-    rule in the re-verification addendum doesn't contradict the
-    universal rule the LLM reads first. INQUIRY_TEMPLATE keeps the
-    legacy four-category enumeration — pre-investigation has no
-    re-verification context."""
+    must enumerate both absence categories so the absence-evidence
+    emission rule in the re-verification addendum doesn't contradict the
+    universal rule the LLM reads first. ``EvidenceCategory`` has four
+    members (symptom, causal, and the two absence variants) and the tree
+    has three numbered steps; the header said "6 categories" from the
+    #386 era, when contextual/other categories still existed, and was
+    corrected in the #1116 follow-up."""
 
-    def test_tree_header_acknowledges_six_categories(self):
-        assert "(6 categories)" in INVESTIGATION_BASE
+    def test_tree_header_states_the_real_category_count(self):
+        from faultmaven.modules.case.contracts import EvidenceCategory
+
+        assert len(EvidenceCategory) == 4
+        assert "(4 categories)" in INVESTIGATION_BASE
+        assert "(6 categories)" not in INVESTIGATION_BASE
 
     def test_tree_has_re_verification_step(self):
         """Step 4 covers the re-verification case — without it the

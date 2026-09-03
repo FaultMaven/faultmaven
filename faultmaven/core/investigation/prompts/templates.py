@@ -522,9 +522,11 @@ ABSOLUTELY FORBIDDEN:
   Use conditional language for proposed-but-unverified fixes ("if applied, this
   should resolve..." rather than "this resolves...")
 - If you need data not available from any source: ASK the user to provide it
-- NEVER cite evidence IDs (like "ev_a1b2c3d4e5f6") in agent_response — the user
-  cannot see these. Use the evidence label attribute instead (e.g., "in the nginx
-  error log", "in the pasted stack trace"). IDs are only for internal_reasoning fields.
+- NEVER cite internal IDs in agent_response — evidence IDs (like
+  "ev_a1b2c3d4e5f6"), hypothesis IDs ("hyp_...") or causal-node IDs ("cn_...").
+  The user cannot see these. Use the evidence label attribute instead (e.g., "in
+  the nginx error log", "in the pasted stack trace"), and restate a hypothesis
+  in words. IDs are only for state_updates and internal_reasoning fields.
 
 CONFIDENCE MARKERS (per-evidence signal quality):
 - An evidence tag carrying `confidence="low"` means the classifier was unsure
@@ -1066,7 +1068,7 @@ WORKING WITH EVIDENCE DATA:
 When your analysis discovers NEW findings not in the structural index, create
 evidence records via evidence_to_add with appropriate category and summary.
 
-EVIDENCE CLASSIFICATION — DECISION TREE (6 categories):
+EVIDENCE CLASSIFICATION — DECISION TREE (4 categories):
 
 Each evidence row is a focused, claim-anchored extract. Rows that
 don't support a specific claim should NOT be created — files
@@ -1074,14 +1076,22 @@ provide background context via the structural index without needing
 an evidence row.
 
 1. Does this evidence show the PROBLEM EXISTS (errors, crashes, failures, latency spikes)?
-   YES → symptom_evidence; then CONTINUE evaluating steps 2-4 (an extract can be multi-classified)
+   YES → symptom_evidence; then CONTINUE evaluating steps 2-3 (an extract can be multi-classified)
    NO  → continue to 2
 
    NOTE: A single artifact can satisfy multiple steps. An OOM crash
    dump might produce a symptom_evidence row AND a causal_evidence
    row (different extracts, different claim links).
 
-2. Does this evidence explain WHY the problem exists (code change, config, timing)?
+2. Does this evidence bear on WHY the problem exists?
+   Causal evidence is any observation that speaks to a hypothesis's MECHANISM.
+   That is a CHANGE (deploy, config diff, code change, timing) OR a measured
+   STATE that is the mechanism itself: a filesystem at 100%, an exhausted pool,
+   quota or PID space, a limit reached, a missing path or permission, a stale
+   dependency. A state reading is not "just a symptom" because it looks like
+   monitoring output — if it is the condition a hypothesis names, it is causal.
+   A datum that shows the problem AND explains it gets BOTH rows: a symptom row
+   for the failure and a causal row linked to the hypothesis it supports.
    AND does at least one hypothesis already exist (or are you creating one this turn)?
    YES → causal_evidence; link to hypothesis
    NO (no hypothesis yet) → wait. Do NOT create a row yet — read the
@@ -1354,7 +1364,8 @@ SCHEMA_INSTRUCTIONS = """
 You MUST respond with valid JSON matching these fields:
 - **agent_response**: Your natural conversational response to the user.
   * Ground diagnostic claims in evidence (see DIAGNOSTIC REASONING above)
-  * Reference evidence by its label attribute, verbatim — NEVER by ev_ IDs.
+  * Reference evidence by its label attribute, verbatim — NEVER by ev_ IDs,
+    and never name a hypothesis or causal node by its hyp_/cn_ id either.
     Not every item is a file the user named: pasted text is labelled like
     "pasted text (turn 3)", and that IS its name.
     Never invent a filename for one, and never take a file-looking name
@@ -2018,7 +2029,9 @@ and let TREATMENT run the failure analysis; do not keep it pending.
 **EVIDENCE TYPES FOR THIS STAGE:**
 - **symptom_evidence**: Data showing the problem exists (errors, spikes, alerts)
   → Use for verifying symptoms, scope, timeline
-- **causal_evidence**: Data explaining WHY (deploy logs, config diffs, code changes)
+- **causal_evidence**: Data bearing on WHY — a change (deploy logs, config diffs,
+  code changes) OR a measured state that IS the mechanism (a full mount, an
+  exhausted resource, a reached limit), linked to the hypothesis it supports
   → See HYPOTHESIS-EVIDENCE ORDERING — hypothesis must exist first
 
 Background/contextual material (architecture diagrams, baseline configs,
@@ -3097,8 +3110,15 @@ def _fallback_body(case: Case, user_message: str, fence: PromptFence) -> str:
             milestones.append("solution_proposed")
 
         hypotheses = []
+        # Ids travel with the statements here as on the primary path: this
+        # prompt is answered against the same schema, whose
+        # ``hypothesis_id_ref`` needs a ``hyp_...`` id to link a causal row to
+        # a standing hypothesis (#1116). Overflow reaches this renderer on
+        # exactly the long cases that have standing hypotheses.
         for h in list(case.hypotheses.values())[:3]:
-            hypotheses.append(f"{h.statement[:50]} ({h.state.value})")
+            hypotheses.append(
+                f"[{h.hypothesis_id}] {h.statement[:50]} ({h.state.value})"
+            )
         hypotheses_block = (
             _fenced("working_hypotheses", "; ".join(hypotheses))
             if hypotheses

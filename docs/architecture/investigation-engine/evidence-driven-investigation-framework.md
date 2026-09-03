@@ -478,7 +478,7 @@ two tables play distinct roles and never carry duplicate information.
 | Category | Description | Used In Stage | Example |
 |----------|-------------|--------------|---------|
 | `symptom_evidence` | Data showing the problem exists | DIAGNOSIS, TREATMENT | Error logs, latency spikes, alert notifications |
-| `causal_evidence` | Data explaining why the problem happened | DIAGNOSIS, TREATMENT | Deploy logs, config diffs, code changes |
+| `causal_evidence` | Data bearing on why the problem happened: a change, OR a measured state that is the hypothesised mechanism itself | DIAGNOSIS, TREATMENT | Deploy logs, config diffs, code changes; a filesystem at 100%, an exhausted pool, a reached limit |
 | `symptom_absence_evidence` | Confirmation the symptom is gone after a workaround (cause may persist) | MITIGATION | Post-mitigation metrics, error-rate drop |
 | `causal_absence_evidence` | Confirmation the root cause is eliminated after the fix | TREATMENT | Post-fix metrics, clean logs, user confirmation |
 
@@ -516,13 +516,19 @@ invariant).
 1. **Causal evidence requires hypothesis**: The agent must create a
    hypothesis before classifying evidence as `causal_evidence`. This
    enforces the logical dependency: "X caused Y" presupposes
-   "X might have caused Y" (the hypothesis).
+   "X might have caused Y" (the hypothesis). Causal evidence is not
+   change-only: a measured state that IS the mechanism a hypothesis
+   names (a full mount, an exhausted pool, a missing path) is causal
+   for that hypothesis, even though it reads like monitoring output.
+   A datum that both shows the problem and explains it yields two
+   rows — a `symptom_evidence` row for the failure and a
+   `causal_evidence` row linked to the hypothesis.
 
 2. **Multiple extracts per file**: A single file can yield multiple
    Evidence rows — different focused slices supporting different
    claims (e.g., the error lines as `symptom_evidence` plus the
-   deploy timestamp as `causal_evidence`). They all share the same
-   `source_file_id`.
+   deploy timestamp, or the `df -h` line showing the mount at 100%, as
+   `causal_evidence`). They all share the same `source_file_id`.
 
 3. **No evidence creation during INQUIRY**: Evidence presupposes a
    confirmed claim. During INQUIRY the claim is still being formed;
