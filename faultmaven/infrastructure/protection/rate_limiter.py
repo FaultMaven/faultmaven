@@ -603,9 +603,17 @@ class RedisRateLimiter:
         self.logger.info(f"Configured {len(limits)} rate limit types")
 
     async def check_rate_limits(
-        self, specs: Sequence[RateLimitSpec]
+        self, specs: Sequence[RateLimitSpec], *, member: Optional[str] = None
     ) -> List[RateLimitResult]:
         """Decide every window a request is subject to, all or nothing.
+
+        ``member`` is the identifier written into every admitted window. A
+        caller passes one only when it intends to be able to :meth:`release`
+        this request's entries later; everything else leaves it unset and gets a
+        fresh one. It is an argument rather than a return value because the
+        entries exist *before* this returns, so a caller that learned the member
+        afterwards could still be cancelled in between and leave entries nothing
+        can name.
 
         Returns one result per spec, in spec order. Either every window admitted
         the request and every one of them counted it, or one refused and **none**
@@ -660,7 +668,9 @@ class RedisRateLimiter:
                 enforced.append((index, spec, config))
 
             if enforced:
-                by_index.update(await self._check_redis_rate_limits(script, enforced))
+                by_index.update(
+                    await self._check_redis_rate_limits(script, enforced, member)
+                )
 
                 duration = time.time() - start_time
                 refused = next(
@@ -741,7 +751,7 @@ class RedisRateLimiter:
             raise
 
     async def _check_redis_rate_limits(
-        self, script, enforced
+        self, script, enforced, member: Optional[str] = None
     ) -> Dict[int, RateLimitResult]:
         """Run every enforced window through the atomic script, in one round trip.
 
@@ -778,7 +788,7 @@ class RedisRateLimiter:
         refused, and whichever window did the refusing.
         """
         current_time = time.time()
-        member = uuid.uuid4().hex
+        member = member or uuid.uuid4().hex
 
         keys = []
         args: list = [f"{current_time:.6f}", member]
@@ -833,6 +843,69 @@ class RedisRateLimiter:
             )
 
         return results
+
+    def window_key(self, spec: RateLimitSpec) -> str:
+        """The Redis key one spec's window lives under.
+
+        Exposed because :meth:`release` and the enforcement path must agree on
+        it byte for byte; a second copy of the format string in the release path
+        is how a release quietly stops releasing anything.
+        """
+        return f"{self.key_prefix}:{spec.limit_type.value}:{spec.key}"
+
+    async def release(self, specs: Sequence[RateLimitSpec], member: str) -> int:
+        """Give back the quota one already-admitted request consumed.
+
+        For the narrow, honest case: a request that every window admitted, that
+        then turned out to cost nothing the window exists to meter. The per-turn
+        tenant cap is the live caller — a turn refused at the cap runs no model,
+        so leaving it in ``per_session_hourly`` would charge the quota that
+        protects LLM compute for compute nobody spent, and a capped tenant could
+        throttle its own reading by retrying.
+
+        Exact rather than approximate: it removes **this request's own member**,
+        which the caller passed to :meth:`check_rate_limits`. Nothing else can
+        be removed by accident, and a member already aged out of the window
+        removes nothing. It can only *widen* quota, never narrow it, so the
+        worst outcome of a bug here is a window that meters one request less.
+
+        Best-effort and non-raising. A release that fails leaves the entry in
+        place, which is the pre-existing behaviour — the request has already
+        been decided, and turning a Redis blip on the way out into a 500 would
+        trade a correct-but-strict accounting for an error the caller cannot
+        act on. Failures are logged and, unlike a failed check, are NOT counted
+        toward the demotion threshold: no verdict depended on this call.
+
+        Returns:
+            How many window entries were actually removed.
+        """
+        enforced = [
+            spec
+            for spec in specs
+            if (config := self._configs.get(spec.limit_type.value)) and config.enabled
+        ]
+        if not enforced or self._redis is None:
+            return 0
+
+        removed = 0
+        for spec in enforced:
+            try:
+                removed += int(await self._redis.zrem(self.window_key(spec), member))
+            except Exception as e:
+                self.logger.warning(
+                    "Rate limit release failed for %s: %s: %s",
+                    spec.limit_type,
+                    type(e).__name__,
+                    e,
+                )
+        if removed:
+            self.logger.debug(
+                "Released %s rate-limit window entr%s for member %s",
+                removed,
+                "y" if removed == 1 else "ies",
+                member,
+            )
+        return removed
 
     async def health_check(self) -> Dict[str, any]:
         """Perform health check and return status."""

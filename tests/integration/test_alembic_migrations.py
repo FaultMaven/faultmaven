@@ -161,6 +161,7 @@ EXPECTED_TABLES = [
     "operator_access_audit",
     "operator_access_grants",
     "organization_members",
+    "organization_turn_usage",
     "organizations",
     "permissions",
     "reports",

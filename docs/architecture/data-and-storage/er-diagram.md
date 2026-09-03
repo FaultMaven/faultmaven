@@ -1,12 +1,12 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-09-03 19:05 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-09-03 22:08 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
 ## Summary
 
-**39 tables** in the schema.
+**40 tables** in the schema.
 
 | Table | Columns | Primary Key | Foreign Keys |
 |-------|---------|-------------|--------------|
@@ -35,7 +35,8 @@
 | `operator_access_audit` | 12 | `audit_id` | — |
 | `operator_access_grants` | 14 | `grant_id` | — |
 | `organization_members` | 9 | `user_id, organization_id` | organizations, roles, users |
-| `organizations` | 11 | `organization_id` | enterprises, users |
+| `organization_turn_usage` | 5 | `organization_id, usage_date` | organizations |
+| `organizations` | 12 | `organization_id` | enterprises, users |
 | `permissions` | 4 | `permission_id` | — |
 | `reports` | 16 | `report_id` | cases, organizations, users |
 | `resource_shares` | 8 | `share_id` | organizations, users |
@@ -458,6 +459,13 @@ erDiagram
         DATETIME last_active_at
         DATETIME updated_at
     }
+    organization_turn_usage {
+        VARCHAR organization_id PK
+        DATE usage_date PK
+        INTEGER turn_count
+        DATETIME created_at
+        DATETIME updated_at
+    }
     organizations {
         VARCHAR organization_id PK
         VARCHAR enterprise_id FK
@@ -467,6 +475,7 @@ erDiagram
         VARCHAR owner_id FK
         BOOLEAN is_active
         TEXT settings
+        INTEGER daily_turn_cap
         DATETIME created_at
         DATETIME updated_at
         DATETIME deleted_at
@@ -692,6 +701,7 @@ erDiagram
     organizations ||--o{ knowledge_items : ""
     organizations ||--o{ knowledge_suggestions : ""
     organizations ||--o{ organization_members : ""
+    organizations ||--o{ organization_turn_usage : ""
     organizations ||--o{ reports : ""
     organizations ||--o{ resource_shares : ""
     organizations ||--o{ solutions : ""

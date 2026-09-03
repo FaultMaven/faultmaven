@@ -155,6 +155,12 @@ MUST_BE_EMPTY = frozenset(
         # login would land in a stale tenant.
         "oauth_authorization_codes",
         "organization_members",
+        # The per-UTC-day turn ledger (ADR-016 D5.3). Rows here are usage
+        # accounting for organizations the wipe removes, so a surviving row is
+        # the previous deployment's spend attached to an organization id that
+        # may be minted again — and the new tenant would start its first day
+        # already partway to its cap.
+        "organization_turn_usage",
         "organizations",
         "resource_shares",
         "sso_org_mappings",

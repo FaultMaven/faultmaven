@@ -2747,6 +2747,38 @@ class AgentSettings(BaseSettings):
         ),
     )
 
+    # The per-tenant investigation-turn cap (ADR-016 D5.3, owner decision
+    # 2026-09-03). A COUNT of turns per organization per UTC day, not a token
+    # budget: the owner tunes this number against measured usage, and a count is
+    # the only unit a refusal message can state honestly to the person it
+    # refuses.
+    #
+    # This is the DEFAULT, and it applies to **personal** tenants only. A
+    # company organization with no override is uncapped — the cap exists to
+    # bound what self-service sign-up can spend, not to meter customers. Both
+    # kinds can be overridden per organization
+    # (``organizations.daily_turn_cap``, written by ``fm-set-turn-cap``), and
+    # that override is read from the database on every turn, so raising or
+    # clearing one tenant's cap takes effect on its next turn with no restart.
+    # This setting does not: like every other field here it is read through the
+    # ``get_settings()`` process singleton, so changing it takes a redeploy.
+    #
+    # ``ge=1``: a default of 0 would mean "personal tenants may never take a
+    # turn", which is a shutdown switch wearing a quota's name. The way to
+    # un-cap a tenant is the per-organization override, where "uncapped" has an
+    # explicit spelling.
+    tenant_daily_turn_cap: int = Field(
+        default=30,
+        ge=1,
+        le=1000000,
+        validation_alias="TENANT_DAILY_TURN_CAP",
+        description=(
+            "Investigation turns a PERSONAL tenant may take per UTC day before "
+            "further turns are refused. Company organizations are uncapped "
+            "unless given a per-organization override."
+        ),
+    )
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 

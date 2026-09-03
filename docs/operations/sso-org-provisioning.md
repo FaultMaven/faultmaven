@@ -582,3 +582,65 @@ Read the exit code:
 
 Do **not** do this with two SQL statements. The second one is the one that
 actually ends the session, and it is the one that gets forgotten.
+
+### Changing one tenant's daily turn cap
+
+Personal tenants are capped at `TENANT_DAILY_TURN_CAP` (default **30**)
+investigation turns per UTC day; company organizations are uncapped unless given
+an override. A tenant at its cap is refused with a 429 that names the limit and
+the reset instant — its reads, its sign-in and the knowledge base are
+unaffected. The design is in
+[SSO Organization Mapping → The daily turn cap](../architecture/security/sso-org-mapping.md#the-daily-turn-cap).
+
+Read the current state first — it also prints how much of today the tenant has
+already used, which is usually the number you actually wanted:
+
+```bash
+kubectl exec -it deploy/faultmaven-api -n faultmaven -- \
+  fm-set-turn-cap --organization-id <organization_id> --show
+```
+
+Then one of three actions. They are three flags because they are three different
+things:
+
+```bash
+# Cap this tenant at 200 turns per UTC day, whatever kind of tenant it is.
+fm-set-turn-cap --organization-id <organization_id> --cap 200 --yes
+
+# Take the cap off this tenant entirely.
+fm-set-turn-cap --organization-id <organization_id> --unlimited --yes
+
+# Remove the override, so the deployment policy applies again:
+#   personal → TENANT_DAILY_TURN_CAP, company → uncapped.
+fm-set-turn-cap --organization-id <organization_id> --clear --yes
+```
+
+`--clear` and `--unlimited` are **not** the same action. On a *personal* tenant,
+clearing returns it to the deployment default while un-limiting takes the cap
+off. On a company organization they happen to coincide today — which is exactly
+why they must not share a spelling.
+
+`--dry-run` previews without writing. A write with neither `--dry-run` nor
+`--yes` is refused: this changes what a tenant is allowed to spend.
+
+**It takes effect on that tenant's next turn.** The override is read from the
+row on every turn, so there is no restart and no redeploy — and no need to wait
+for a rollout when somebody is stuck mid-incident. Changing
+`TENANT_DAILY_TURN_CAP` itself is an ordinary setting change and *does* need a
+redeploy; use the per-organization override when one tenant needs headroom now.
+
+Raising a cap does **not** give back a day already spent: the ledger holds what
+was used, and the tenant resumes against the new, higher number. Lowering a cap
+below a tenant's standing count refuses its next turn immediately, and the log
+line reports the true count rather than the new limit.
+
+| Code | Meaning |
+|------|---------|
+| 0 | Done, or a dry run, or `--show` |
+| 1 | Refused: no such organization, or the update matched no row — nothing was written |
+| 2 | A bad flag (argparse usage error) — nothing was written |
+
+If a turn is refused with **503** and `x-error-code:
+TENANT_TURN_CAP_UNAVAILABLE`, the cap could not be applied at all — the ledger
+write failed. That is a database problem, not a quota one; the caller's
+allowance is untouched, and the API logs carry the underlying error.

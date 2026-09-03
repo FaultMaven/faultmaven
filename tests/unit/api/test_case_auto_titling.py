@@ -386,6 +386,7 @@ class TestTurnEndpointNamesTheCase:
 
         from faultmaven.api.v1.auth_dependencies import require_authentication
         from faultmaven.api.v1.dependencies import get_investigation_service
+        from faultmaven.modules.case.api.turn_cap import enforce_tenant_turn_cap
 
         user = UserDTO(
             user_id="user_123",
@@ -399,6 +400,15 @@ class TestTurnEndpointNamesTheCase:
         app.dependency_overrides[get_investigation_service] = (
             lambda: investigation_service
         )
+        # The turn route carries the per-tenant turn cap (ADR-016 D5.3), which
+        # reserves against a real database table. This module is about titling,
+        # and an app assembled here has no migrated database — so the guard is
+        # overridden rather than satisfied. Its own behaviour is pinned in
+        # tests/unit/modules/case/api/test_turn_cap_dependency.py, and that it
+        # is INSTALLED on this route in
+        # tests/integration/api/test_turn_cap_surface_inventory.py, so nothing
+        # is lost by taking it out of the way here.
+        app.dependency_overrides[enforce_tenant_turn_cap] = lambda: None
 
         with TestClient(app) as client:
             client.fm_service = service

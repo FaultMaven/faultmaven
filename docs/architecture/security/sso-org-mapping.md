@@ -226,8 +226,9 @@ in this repo.
 Sign-up does **not** open when this ships. ADR-016 D5 sequences three hard
 preconditions ahead of it: the two-tenant surface probe green on the Postgres
 lane (#1317), the live two-tenant assertion recorded by the owner (#1252), and a
-per-tenant LLM usage cap that fails closed at the limit. The cap is a separate
-change; open sign-up plus uncapped compute is an open bill.
+per-tenant LLM usage cap that fails closed at the limit. The cap is
+["The daily turn cap"](#the-daily-turn-cap) below; open sign-up plus uncapped
+compute is an open bill.
 
 ### What first sign-in creates
 
@@ -387,8 +388,9 @@ resolves from its subject row without ever consulting it, so tripping the
 ceiling cannot lock out people already using the product. Global rather than
 per-subject because the abuse shape is many subjects, not one retrying.
 
-This is **not** the per-tenant LLM usage cap (ADR-016 D5.3), which bounds what a
-tenant may spend and ships separately.
+This is **not** the per-tenant LLM usage cap. That one bounds what a tenant may
+*spend* rather than how many tenants exist, and is
+["The daily turn cap"](#the-daily-turn-cap) below.
 
 ### Other refusals
 
@@ -426,6 +428,99 @@ response is lost, the organization exists and the next attempt adopts it — tha
 is the direction the ordering was chosen for. Nothing here reconciles an IdP
 organization whose tenant was never created; `sso_personal_orgs.provider_org_id`
 exists so an operator can.
+
+### The daily turn cap
+
+**Refs:** ADR-016 D5.3, owner decision 2026-09-03, migration 052.
+
+The third precondition. Self-service sign-up hands anyone who can authenticate
+an organization of their own, and an investigation turn is the one operation in
+the product that spends LLM compute without a further gate.
+
+**Turns per organization per UTC calendar day, as a count.** Not tokens: the
+number is one the owner tunes against measured usage, and a count is the only
+unit a refusal can state honestly to the person it refuses. Not a rolling
+window either — a sliding 24 h window cannot promise a reset instant, so the
+message would have to lie or say nothing.
+
+Which tenants are capped:
+
+| tenant | override | cap |
+| --- | --- | --- |
+| personal | none | `TENANT_DAILY_TURN_CAP` (default **30**) |
+| company | none | **uncapped** |
+| either | `0` | uncapped, explicitly |
+| either | `N > 0` | N turns per UTC day |
+
+Company organizations are uncapped by default because the cap exists to bound
+what *self-service* can spend, not to meter customers. "Personal" is not a flag:
+it is the existence of an `sso_personal_orgs` row naming the organization, so
+the question is answered by the same table the JIT path writes and needs no
+second source of truth. The Standalone sentinel of a self-hosted deployment has
+no such row, so a self-hosted install is uncapped.
+
+**Where it is enforced.** `POST /cases/{case_id}/turns` — the one route that
+reaches `InvestigationService.process_turn`, and the route every client uses
+(Copilot, Dashboard, the Slack agent, any API caller). The guard is declared as
+a route dependency (`modules/case/api/turn_cap.enforce_tenant_turn_cap`) rather
+than called from inside the handler, so it is part of the route's signature.
+`tests/integration/api/test_turn_cap_surface_inventory.py` reads the live
+OpenAPI document and the live route objects on every run and fails when a second
+turn-accepting operation appears without a verdict.
+
+**The ledger.** `organization_turn_usage`, one row per (organization, UTC day),
+RLS-tenanted like every other table carrying `organization_id`. The reservation
+is a single statement — `INSERT … ON CONFLICT … DO UPDATE SET turn_count =
+turn_count + 1 WHERE turn_count < :cap RETURNING turn_count` — so the check and
+the increment cannot interleave, and an empty `RETURNING` *is* the refusal.
+Consequently **a refused turn increments nothing**. A table rather than a Redis
+counter because ADR-016 D5.3 requires the cap to fail closed: a counter whose
+store can be unavailable fails open, and a Redis blip would silently un-cap every
+tenant until it healed. The turn cannot be served without this database anyway.
+
+Usage is recorded for **every** tenant, capped or not — a company tenant is
+never refused, but its counts are what the default is tuned against.
+
+**At the cap** the turn is refused with **429**, `x-error-code:
+TENANT_TURN_CAP_EXCEEDED`, a `Retry-After` naming the next UTC midnight, and a
+message that states the limit, that it is daily, when it returns, and that
+reading cases and the knowledge base is unaffected. Nothing else is refused:
+sign-in, every read, case listing and the knowledge base carry no such guard,
+and the surface-inventory test asserts that the guard is on no read and no auth
+operation — the guard *reserves* a turn, so over-applying it would spend the
+allowance on reading.
+
+**A refusal costs no LLM-compute quota.** `per_session` and
+`per_session_hourly` exist to bound model spend (see
+[Rate limiting](rate-limiting-sliding-window.md#releasing-a-request-that-cost-nothing));
+a turn this cap refused reached no model, so the guard marks the request and the
+rate-limit middleware releases that request's own entry from those two windows on
+the way out. The address-keyed `global` window keeps its entry — it bounds
+request volume, which a refused caller still generates.
+
+**Failure direction.** If the personal/company question cannot be answered — the
+lookup raises, the table is missing on a half-migrated deployment — the tenant
+is treated as **personal** and capped at the default. The other direction is
+exactly what ADR-016 D5.3 exists to prevent, and it is the one a partial rollout
+would take by accident. If the reservation itself cannot be written, the turn is
+refused with **503** and `x-error-code: TENANT_TURN_CAP_UNAVAILABLE` — a
+distinct answer from the 429, because telling somebody their daily allowance is
+spent when the ledger merely failed to write is a false statement about their
+own account.
+
+**The unit is consumed when the turn is accepted**, before the model runs, and
+is not refunded if the turn later fails. Refunding would be a free-retry channel
+for anyone who can make a turn fail. The guard runs as a route dependency, so a
+turn the handler would itself have refused — no query and no attachment, an
+unknown case, a closed case — also consumes a unit; the cost falls on the tenant
+that sent the malformed request.
+
+**The operator control** is `fm-set-turn-cap`, which writes
+`organizations.daily_turn_cap`. The value is read from the row on every turn, so
+raising or clearing one tenant's cap takes effect on its **next turn**, with no
+restart and no redeploy. `TENANT_DAILY_TURN_CAP` itself is an ordinary setting
+and moves only with a redeploy. See
+[the operator runbook](../../operations/sso-org-provisioning.md#changing-one-tenants-daily-turn-cap).
 
 ### Switching to a company organization (ADR-016 D5 as amended)
 

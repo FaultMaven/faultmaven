@@ -126,6 +126,7 @@ from faultmaven.models.interfaces_case import ICaseService
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.auth.contracts import ISessionService, UserDTO
+from faultmaven.modules.case.api.turn_cap import enforce_tenant_turn_cap
 from faultmaven.modules.case.domain.models import Case as CaseEntity
 from faultmaven.modules.case.domain.models import CaseState
 from faultmaven.modules.case.domain.services.case_converter import CaseConverter
@@ -2743,7 +2744,16 @@ async def resume_case_in_session(
 # ============================================================
 
 
-@router.post("/{case_id}/turns", response_model=TurnResponse)
+@router.post(
+    "/{case_id}/turns",
+    response_model=TurnResponse,
+    # The per-tenant turn cap (ADR-016 D5.3). Declared here rather than called
+    # from the body so the guard is part of the route's signature — see
+    # ``turn_cap.py`` for why this is the single entry point, and
+    # ``tests/integration/api/test_turn_cap_surface_inventory.py`` for the gate
+    # that fails when a second turn-accepting operation appears without one.
+    dependencies=[Depends(enforce_tenant_turn_cap)],
+)
 @trace("api_submit_turn")
 async def submit_turn(
     case_id: str,

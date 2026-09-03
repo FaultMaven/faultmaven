@@ -207,6 +207,60 @@ The invariant that fm#920 restored: after N back-to-back requests against a
 limit of L, exactly `min(N, L)` are allowed and the set holds `min(N, L)`
 entries — regardless of how the requests distribute across wall-clock seconds.
 
+## Releasing a request that cost nothing
+
+A request that every window admitted is normally in those windows for good: it
+was served, and it spent whatever the window meters. One case is different, and
+it is narrow enough to state exhaustively.
+
+`per_session` and `per_session_hourly` are the quota that protects **LLM
+compute** — that is why cheap reads were moved out of them (fm#994). The
+per-tenant turn cap (ADR-016 D5.3) refuses a turn *at the route*, after this
+middleware has already admitted and counted the request, and a turn it refused
+reaches no model at all. Leaving the entry in those two windows would meter one
+event against two independent quotas, and a capped tenant retrying could
+exhaust its own hourly write allowance — so that after an operator raised its
+cap, it still could not submit a turn for up to an hour.
+
+So the middleware releases it:
+
+1. `RateLimitMiddleware._check_rate_limits` generates the member itself and
+   passes it to `check_rate_limits(specs, member=…)`, then records
+   `(specs, member)` on `request.state.rate_limit_ticket`. The member is an
+   **argument** rather than a return value because the entries exist before the
+   check returns; a caller that learned it afterwards could be cancelled in
+   between and leave entries nothing can name.
+2. The inner enforcer sets `request.state.rate_limit_refund = True` before
+   raising. The attribute is simply absent when this middleware is not in the
+   stack, and a missing one means "nothing to release", so neither side has to
+   know whether the other is present.
+3. After `call_next`, `_refund_if_marked` calls `RedisRateLimiter.release`,
+   which `ZREM`s **this request's own member** from each refundable window.
+
+Three narrowings make this safe to reason about:
+
+- It runs only where a check actually happened. A request that was never
+  metered has nothing to give back.
+- It releases only `per_session` and `per_session_hourly`. **`global` keeps its
+  entry** — that window is keyed on the client address and bounds request
+  *volume*, which a refused caller still generates; refunding it would let a
+  capped client hammer a deployment for free.
+- It removes one named member, so it can widen a window by exactly one entry
+  and nothing else. A member already aged out removes nothing. It can only ever
+  widen quota, never narrow it, so the worst outcome of a bug here is a window
+  that meters one request less.
+
+`release` is best-effort and never raises: the request has already been decided,
+and turning a Redis blip on the way out into a 500 would trade strict accounting
+for an error the caller cannot act on. Unlike a failed *check*, a failed release
+is **not** counted toward the demotion threshold — no verdict depended on it.
+
+The headers are not rewritten. `results` was measured during the check, so a
+refunded response still advertises the count that included this request: one
+entry pessimistic, on one response, for a client that is being told to come back
+tomorrow. Recomputing them would cost a second Redis round trip on the refusal
+path to correct a number by one.
+
 ## Memory bound
 
 A window key holds at most `limit` entries, never `window` entries: the set
@@ -311,6 +365,15 @@ allowed and the blocked path and does not move with the clock; a served
 response with no session id still advertises the `global` limit; and the header
 path performs no Redis call of its own.
 
+The release contract is pinned by
+`tests/unit/api/middleware/test_rate_limit_turn_cap_refund.py`: the two sides
+name the same `request.state` attribute; the refundable set is the per-session
+write pair and nothing else; a refused turn leaves both of those windows empty
+while `global` keeps its entry; an *admitted* turn keeps its entry in both (a
+middleware that released everything is a limiter that limits nothing); a refusal
+gives back one entry rather than clearing the key; and releasing a member that
+was never written removes nothing.
+
 Mutation checks (each must turn at least one test red): reverting the member
 to the integer second; skipping the `ZREMRANGEBYSCORE` prune; inserting on
 the blocked path; making the prune bound exclusive; reverting the script to a
@@ -318,6 +381,8 @@ three-element return; restoring `now + window` on the blocked path; removing the
 skew clamp from `quota_frees_at`; re-deriving `X-RateLimit-Reset` on a 429 from
 `time.time() + retry_after`; dropping the `X-RateLimit-*` headers from the OAuth
 429; closing the outgoing client before installing its replacement in `_adopt`;
+adding `global` to `REFUNDABLE_LIMIT_TYPES`, or releasing on every response
+rather than only on a marked one;
 awaiting the close instead of dispatching it; removing either early return from
 `_add_rate_limit_headers`; writing `Retry-After` unconditionally in
 `_create_rate_limit_response`, or restoring a `or 60` / `or 3600` default at

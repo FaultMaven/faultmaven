@@ -166,7 +166,7 @@ async def test_a_429_carries_the_reset_instant_the_limiter_measured():
     app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
     measured = datetime(2033, 5, 18, 3, 33, 20, tzinfo=timezone.utc)
 
-    async def _refuse(specs):
+    async def _refuse(specs, **_):
         return [
             RateLimitResult(
                 allowed=False,
@@ -198,7 +198,7 @@ async def test_a_429_omits_the_reset_header_when_nothing_measured_one():
     mw = _middleware(_settings(global_requests=7))
     app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
 
-    async def _refuse(specs):
+    async def _refuse(specs, **_):
         return [
             RateLimitResult(
                 allowed=False,
@@ -254,7 +254,7 @@ async def test_an_unmeasured_wait_is_absent_not_defaulted():
     app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
     captured = []
 
-    async def _refuse(specs):
+    async def _refuse(specs, **_):
         return [
             RateLimitResult(
                 allowed=False,
@@ -338,7 +338,7 @@ async def test_no_raise_site_defaults_an_unmeasured_wait(refusing_type, method):
     app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
     captured = []
 
-    async def _refuse_one(specs):
+    async def _refuse_one(specs, **_):
         # Only the limit type under test refuses, and it refuses with nothing
         # measured — every other window must admit, or the request would be
         # refused by a limit this case is not about.
@@ -403,7 +403,7 @@ async def test_the_measured_wait_reaches_the_header_however_small():
     mw = _middleware(_settings(global_requests=3))
     app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
 
-    async def _refuse(specs):
+    async def _refuse(specs, **_):
         return [
             RateLimitResult(
                 allowed=False,
