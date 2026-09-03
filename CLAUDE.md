@@ -659,6 +659,7 @@ fm-demote-platform-admin <username>        # Remove platform admin privileges
 fm-provision-service-account -u slack-agent  # Mint a service-account OAuth refresh credential (AUTH_MODE=oauth)
 fm-provision-sso-org --name ... --slug ... --workos-org-id org_...  # Provision a Cloud tenant + WorkOS org mapping (TENANT_PROVIDER=multi)
 fm-remove-org-member --organization-id ... --user alice --yes  # Remove an org membership AND revoke that user's tokens, as one operation (#874)
+fm-reassign-cases --organization-id ... --from-user slack-agent --to-user slack-T0123 --case-ids-file ids.txt --dry-run  # Move cases to a new owner within one org, with the team share and an audit row (faultmaven-slack-agent#61)
 fm-reset-kb --dry-run                      # Wipe/re-bootstrap the KB (refuses under TENANT_PROVIDER=multi)
 fm-wipe-deployment                         # Inventory every wipe surface (resolved targets, writes nothing)
 fm-wipe-deployment --verify                # Positively verify a clean slate; exit 5 on residue (#819)
