@@ -222,26 +222,16 @@ class KnowledgeItemRepository(ABC):
         """
         pass
 
-    @abstractmethod
-    async def search_by_text(
-        self,
-        organization_id: str,
-        query: str,
-        item_type: Optional[KnowledgeItemType] = None,
-        limit: int = 10,
-    ) -> List[KnowledgeItem]:
-        """Full-text search for knowledge items.
-
-        Args:
-            organization_id: Organization identifier
-            query: Search query string
-            item_type: Optional filter by item type
-            limit: Maximum results to return
-
-        Returns:
-            List of matching items ordered by relevance
-        """
-        pass
+    # ``search_by_text`` lived here until #1288. It was an org-scoped LIKE over
+    # title+content, and it had no caller: the two that look like callers pass
+    # ``query_text``/``scope_filter``/``top_k``/``min_similarity`` to
+    # ``RunbookKnowledgeBase.search_by_text``, a signature this one cannot
+    # accept. It was also stale against the schema — the ``organization_id``
+    # predicate carried no global arm, and global rows hold no org (#770), so
+    # adopting it would have made every platform-tier runbook invisible, and it
+    # saw none of the ``resource_shares`` team visibility ``list_for_inventory``
+    # enforces in-query. ``POST /documents/search`` now scores title+content
+    # over ``list_for_inventory``'s rows instead.
 
     @abstractmethod
     async def search_by_tags(
@@ -692,54 +682,6 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 f"Failed to get visible knowledge item {item_id}: {e}"
             ) from e
 
-    async def search_by_text(
-        self,
-        organization_id: str,
-        query: str,
-        item_type: Optional[KnowledgeItemType] = None,
-        limit: int = 10,
-    ) -> List[KnowledgeItem]:
-        """Full-text search for knowledge items.
-
-        Uses LIKE operator for SQLite compatibility.
-        For PostgreSQL, could be enhanced with ts_vector/ts_query.
-        """
-        try:
-            # Build query conditions
-            search_pattern = f"%{query}%"
-            conditions = [
-                KnowledgeItemModel.organization_id == organization_id,
-                KnowledgeItemModel.is_published == True,
-                or_(
-                    KnowledgeItemModel.title.ilike(search_pattern),
-                    KnowledgeItemModel.content.ilike(search_pattern),
-                ),
-            ]
-            if item_type:
-                conditions.append(KnowledgeItemModel.item_type == item_type.value)
-
-            where_clause = and_(*conditions)
-
-            stmt = (
-                select(KnowledgeItemModel)
-                .where(where_clause)
-                .order_by(KnowledgeItemModel.created_at.desc())
-                .limit(limit)
-            )
-
-            result = await self.db.execute(stmt)
-            item_models = result.scalars().all()
-
-            return [self._to_domain(model) for model in item_models]
-
-        except Exception as e:
-            logger.error(
-                f"Failed to search items for organization {organization_id}: {e}"
-            )
-            raise KnowledgeItemRepositoryException(
-                f"Failed to search items for organization {organization_id}: {e}"
-            ) from e
-
     async def search_by_tags(
         self,
         organization_id: str,
@@ -1119,33 +1061,6 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         if not item.is_published and not (user_id and item.owner_id == user_id):
             return None
         return deepcopy(item)
-
-    async def search_by_text(
-        self,
-        organization_id: str,
-        query: str,
-        item_type: Optional[KnowledgeItemType] = None,
-        limit: int = 10,
-    ) -> List[KnowledgeItem]:
-        """Full-text search for knowledge items."""
-        query_lower = query.lower()
-        items = [
-            i
-            for i in self._items.values()
-            if (
-                i.organization_id == organization_id
-                and i.is_published
-                and (query_lower in i.title.lower() or query_lower in i.content.lower())
-            )
-        ]
-
-        if item_type:
-            items = [i for i in items if i.item_type == item_type]
-
-        # Sort by created_at descending
-        items.sort(key=lambda x: x.created_at, reverse=True)
-
-        return [deepcopy(i) for i in items[:limit]]
 
     async def search_by_tags(
         self,

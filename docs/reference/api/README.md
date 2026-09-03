@@ -3093,8 +3093,27 @@ and content, useful when semantic understanding is not required.
 - `/knowledge/search` - Semantic vector search using embeddings (similarity-based)
 - `/documents/search` - Full-text keyword search (exact/partial word matching)
 
+**How matching works.** Both the title and the body are matched, on **word
+boundaries** — `"timeout"` matches the word `timeout`, and matches neither
+`"timeouts"` nor the `out` inside `"about"`. Per field the query scores 1.0 if
+its words appear consecutively, otherwise the fraction of its distinct words
+present; the two are combined as `0.7 * title + 0.3 * content`, so a title hit
+outranks a body hit and a document matching both outranks either. The result is
+on a 0.0-1.0 scale, which is the scale `similarity_threshold` filters on.
+**Documents matching neither field are not returned** — this is a search, not a
+ranked listing of the whole knowledge base.
+
+Matching is literal: `"timeout"` finds documents containing that token, and does
+not find `"unresponsive"`. Use `/knowledge/search` for meaning.
+
+**Visibility.** Results cover global runbooks, your own, and those shared with
+your teams. `content` is document body text, so it is returned only to an
+authenticated caller — an anonymous one gets titles and metadata with `content`
+empty, matching `GET /documents/{document_id}`, which requires authentication.
+
 **Use Cases:**
-- Searching for specific error codes or identifiers
+- Searching for specific error codes or identifiers (these usually appear in the
+  body rather than the title, which is why content is matched)
 - Finding documents with exact phrases
 - Faster search when semantic understanding not needed
 - Filtering by document_type, category, tags
@@ -3112,6 +3131,10 @@ and content, useful when semantic understanding is not required.
 ```
 
 **Returns:**
+`content` is an excerpt of the body around the match — the whole phrase where
+it occurs, else the first matching word, else the head of the document (which
+is what a title-only match looks like). It is empty for anonymous callers.
+
 ```json
 {
     "query": "...",
@@ -3263,15 +3286,26 @@ answers 404, identically to an absent id.
 
 Supports two modes:
 1. **Line-based extraction**: Extract lines from line_start to line_end (or max_lines)
-2. **Semantic extraction**: If query_string is provided, returns the most relevant
-   snippet based on vector similarity (more robust than line numbers after edits)
+2. **Relevance-based extraction**: If query_string is provided, returns the
+   line window that best matches the query
+
+Relevance is **keyword matching, not vector similarity**: the document is
+split into consecutive `max_lines` windows and each is scored by word
+overlap with the query, with a bonus for a verbatim match. No embedding and
+no vector search happen on this path, so a window repeating the query's
+words outranks a paraphrase sharing none of them.
+
+That is deliberate. The response is a line range over the document text as
+stored, while the knowledge base's vectors are overlapping 512-token chunks
+carrying no line numbers; and this backs a hover card, where an embedding
+round trip per pointer movement would be the wrong trade.
 
 Args:
     document_id: Document identifier
     line_start: Starting line number (1-indexed, default: 1)
     line_end: Ending line number (optional, computed from max_lines if not provided)
     max_lines: Maximum lines to return (default: 5, max: 50)
-    query_string: Query for semantic snippet extraction (optional)
+    query_string: Query for relevance-based snippet extraction (optional)
 
 Returns:
     Document snippet with verification status for badge display
@@ -3286,7 +3320,7 @@ Returns:
 - `line_start` (query, optional) — Starting line number
 - `line_end` (query, optional) — Ending line number
 - `max_lines` (query, optional) — Maximum lines to return
-- `query_string` (query, optional) — Query for semantic snippet extraction
+- `query_string` (query, optional) — Query for relevance-based snippet extraction (keyword matching, not vector similarity)
 
 **Responses:**
 
@@ -5262,7 +5296,8 @@ Supports username-based login with optional user details.
 
 Response model for document snippet (hover card preview).
 
-Supports both line-based and semantic snippet extraction.
+Supports both line-based and relevance-based snippet extraction. Relevance
+is keyword matching over the document text, not vector similarity (#1288).
 
 **Properties:**
 

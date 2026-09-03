@@ -546,7 +546,11 @@ async def get_document_snippet(
         default=5, ge=1, le=50, description="Maximum lines to return"
     ),
     query_string: Optional[str] = Query(
-        default=None, description="Query for semantic snippet extraction"
+        default=None,
+        description=(
+            "Query for relevance-based snippet extraction (keyword matching, "
+            "not vector similarity)"
+        ),
     ),
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
     current_user: DevUser = Depends(require_authentication),
@@ -560,15 +564,26 @@ async def get_document_snippet(
 
     Supports two modes:
     1. **Line-based extraction**: Extract lines from line_start to line_end (or max_lines)
-    2. **Semantic extraction**: If query_string is provided, returns the most relevant
-       snippet based on vector similarity (more robust than line numbers after edits)
+    2. **Relevance-based extraction**: If query_string is provided, returns the
+       line window that best matches the query
+
+    Relevance is **keyword matching, not vector similarity**: the document is
+    split into consecutive `max_lines` windows and each is scored by word
+    overlap with the query, with a bonus for a verbatim match. No embedding and
+    no vector search happen on this path, so a window repeating the query's
+    words outranks a paraphrase sharing none of them.
+
+    That is deliberate. The response is a line range over the document text as
+    stored, while the knowledge base's vectors are overlapping 512-token chunks
+    carrying no line numbers; and this backs a hover card, where an embedding
+    round trip per pointer movement would be the wrong trade.
 
     Args:
         document_id: Document identifier
         line_start: Starting line number (1-indexed, default: 1)
         line_end: Ending line number (optional, computed from max_lines if not provided)
         max_lines: Maximum lines to return (default: 5, max: 50)
-        query_string: Query for semantic snippet extraction (optional)
+        query_string: Query for relevance-based snippet extraction (optional)
 
     Returns:
         Document snippet with verification status for badge display
@@ -594,10 +609,9 @@ async def get_document_snippet(
         relevance_score = None
 
         if query_string:
-            # Semantic snippet extraction: find most relevant chunk
+            # Relevance-based extraction: pick the best-matching line window.
             try:
-                # Use the knowledge service's semantic search to find relevant chunk
-                search_result = await knowledge_service.get_semantic_snippet(
+                search_result = await knowledge_service.get_relevant_snippet(
                     document_id=document_id,
                     query=query_string,
                     max_lines=max_lines,
@@ -612,9 +626,10 @@ async def get_document_snippet(
                     snippet = "\n".join(
                         lines[line_start - 1 : line_start - 1 + max_lines]
                     )
-            except Exception as semantic_error:
+            except Exception as snippet_error:
                 logger.warning(
-                    f"Semantic snippet extraction failed, falling back to line-based: {semantic_error}"
+                    "Relevance-based snippet extraction failed, falling back "
+                    f"to line-based: {snippet_error}"
                 )
                 # Fallback to line-based extraction
                 snippet = "\n".join(lines[line_start - 1 : line_start - 1 + max_lines])
@@ -769,6 +784,7 @@ async def search_documents(
 @trace("api_fulltext_search_documents")
 async def fulltext_search_documents(
     request: SearchRequest,
+    http_request: Request,
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
     current_user: Optional[DevUser] = Depends(get_current_user_optional),
 ) -> dict:
@@ -783,8 +799,27 @@ async def fulltext_search_documents(
     - `/knowledge/search` - Semantic vector search using embeddings (similarity-based)
     - `/documents/search` - Full-text keyword search (exact/partial word matching)
 
+    **How matching works.** Both the title and the body are matched, on **word
+    boundaries** — `"timeout"` matches the word `timeout`, and matches neither
+    `"timeouts"` nor the `out` inside `"about"`. Per field the query scores 1.0 if
+    its words appear consecutively, otherwise the fraction of its distinct words
+    present; the two are combined as `0.7 * title + 0.3 * content`, so a title hit
+    outranks a body hit and a document matching both outranks either. The result is
+    on a 0.0-1.0 scale, which is the scale `similarity_threshold` filters on.
+    **Documents matching neither field are not returned** — this is a search, not a
+    ranked listing of the whole knowledge base.
+
+    Matching is literal: `"timeout"` finds documents containing that token, and does
+    not find `"unresponsive"`. Use `/knowledge/search` for meaning.
+
+    **Visibility.** Results cover global runbooks, your own, and those shared with
+    your teams. `content` is document body text, so it is returned only to an
+    authenticated caller — an anonymous one gets titles and metadata with `content`
+    empty, matching `GET /documents/{document_id}`, which requires authentication.
+
     **Use Cases:**
-    - Searching for specific error codes or identifiers
+    - Searching for specific error codes or identifiers (these usually appear in the
+      body rather than the title, which is why content is matched)
     - Finding documents with exact phrases
     - Faster search when semantic understanding not needed
     - Filtering by document_type, category, tags
@@ -802,6 +837,10 @@ async def fulltext_search_documents(
     ```
 
     **Returns:**
+    `content` is an excerpt of the body around the match — the whole phrase where
+    it occurs, else the first matching word, else the head of the document (which
+    is what a title-only match looks like). It is empty for anonymous callers.
+
     ```json
     {
         "query": "...",
@@ -845,7 +884,15 @@ async def fulltext_search_documents(
         if request.filters and not document_type:
             document_type = request.filters.get("document_type")
 
-        # Use full-text (title substring) search, distinct from semantic /search endpoint
+        # Resolve the caller's teams, exactly as GET /documents does. Without
+        # this the "shared-to-my-teams" arm of the visibility rule this endpoint
+        # documents is dead: team_ids stays None and a team-shared runbook is
+        # unfindable here while being listed one endpoint over (#1288).
+        team_ids = await _resolve_team_ids(
+            http_request, current_user.user_id if current_user else None
+        )
+
+        # Lexical title+content search, distinct from the semantic /search endpoint
         result = await knowledge_service.fulltext_search_documents(
             query=request.query.strip(),
             document_type=document_type,
@@ -855,6 +902,7 @@ async def fulltext_search_documents(
             similarity_threshold=request.similarity_threshold,
             rank_by=request.rank_by,
             user=current_user,
+            team_ids=team_ids,
         )
 
         logger.info(

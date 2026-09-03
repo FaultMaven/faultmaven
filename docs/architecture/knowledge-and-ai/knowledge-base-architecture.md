@@ -468,7 +468,7 @@ Managed through the Knowledge module (`/api/v1/knowledge/`):
 - `PUT /documents/{id}` — Update document metadata in-place (`update_document_metadata`: loads the row, applies updates, persists, and re-indexes ChromaDB on content change).
 - `DELETE /documents/{id}` — Delete document and remove from ChromaDB
 - `POST /search` — Semantic search (vector embeddings + hybrid reranker) across user's authorized scopes
-- `POST /documents/search` — Full-text search on document title (substring match). Distinct from `/search` — no vector retrieval.
+- `POST /documents/search` — Full-text keyword search over document **title and content**, on word boundaries (#1288). Scored `0.7 * title + 0.3 * content` on a 0–1 scale; documents matching neither field are not returned. Distinct from `/search` — no vector retrieval.
 
 ### Personal KB Files
 

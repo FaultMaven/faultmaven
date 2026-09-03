@@ -50,10 +50,12 @@ def create_sample_item(**kwargs) -> KnowledgeItem:
     change updates every suite at once — this file previously carried its own
     copy and was silently left behind by #770.
 
-    The benchmark-specific title/content are kept deliberately: the browsing
-    workload times ``search_by_text(..., "sample")``, so borrowing the shared
-    defaults would change how many rows that search hydrates and move the
-    measured baseline.
+    The benchmark-specific title/content are kept deliberately: they sized the
+    rows the browsing workload's text search hydrated, so changing them would
+    move the measured baseline. (That search was ``search_by_text``, deleted in
+    #1288; the fixture text stays put so the remaining row sizes — and the
+    create/update/get timings measured over them — are still comparable with
+    historical runs.)
     """
     kwargs.setdefault("title", "Benchmark Knowledge Item")
     kwargs.setdefault(
@@ -314,44 +316,11 @@ class TestItemRetrievalPerformance:
 class TestItemSearchPerformance:
     """Benchmark item search operations."""
 
-    @pytest.mark.asyncio
-    async def test_full_text_search_latency(
-        self,
-        knowledge_item_repository: DatabaseKnowledgeItemRepository,
-        benchmark_session,
-    ):
-        """Measure latency of full-text search.
-
-        Target: < 200ms for 1000 items
-        """
-        organization_id = generate_org_id()
-        keywords = ["connection", "timeout", "database", "error", "network"]
-
-        # Create 1000 items with varied content
-        for i in range(1000):
-            keyword = keywords[i % len(keywords)]
-            item = create_sample_item(
-                organization_id=organization_id,
-                title=f"{keyword} troubleshooting guide {i}",
-                content=f"This guide explains how to fix {keyword} issues.",
-            )
-            await knowledge_item_repository.create(item)
-
-        # Benchmark search — read-only.
-        measured = await measure_min_latency(
-            lambda: knowledge_item_repository.search_by_text(
-                organization_id, "connection", limit=100
-            )
-        )
-
-        assert len(measured.result) > 0
-        assert (
-            measured.best < 0.200
-        ), f"Full-text search latency {measured.report()} exceeds 200ms target"
-        print(
-            f"\n  Full-text search latency: {measured.report()} "
-            f"({len(measured.result)} results)"
-        )
+    # ``test_full_text_search_latency`` timed ``search_by_text`` over 1000 items
+    # against a 200ms target. That method was deleted in #1288 (no caller, and
+    # blind to the org-free global tier), so the surface it measured is gone
+    # along with its baseline. The lexical search that replaced it lives in the
+    # service, over ``list_for_inventory``, and is not a repository benchmark.
 
     @pytest.mark.asyncio
     async def test_tag_search_match_any_latency(
@@ -712,9 +681,13 @@ class TestItemMixedWorkloadPerformance:
             item.mark_helpful()
             await knowledge_item_repository.update(item)
 
-            # Search
-            return await knowledge_item_repository.search_by_text(
-                organization_id, "sample"
+            # Read back the org's items. This step was
+            # ``search_by_text(organization_id, "sample")`` until #1288 deleted
+            # that method; ``list_by_organization_id`` keeps the step a real
+            # hydrating read that returns rows, rather than a search that would
+            # now miss.
+            return await knowledge_item_repository.list_by_organization_id(
+                organization_id, limit=10
             )
 
         measured = await measure_min_latency(_lifecycle, setup=_fresh_item)
@@ -763,10 +736,9 @@ class TestItemMixedWorkloadPerformance:
                 limit=25,
             )
 
-            # Search by text
-            await knowledge_item_repository.search_by_text(
-                organization_id, "sample", limit=10
-            )
+            # (A "search by text" step ran here until #1288 deleted
+            # ``search_by_text``; the tag search below is the remaining
+            # repository-level search.)
 
             # Search by tags
             await knowledge_item_repository.search_by_tags(

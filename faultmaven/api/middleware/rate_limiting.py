@@ -69,11 +69,16 @@ READ_ONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 # embedder or vector store at all. Only the routes that can need a recorded
 # verdict, so adding an ordinary read endpoint costs nothing and adding one that
 # touches the vector store fails until someone decides what it costs.
+# The knowledge document snippet lookup was listed here until #1288, on the
+# strength of a docstring calling it semantic. It never embedded anything: it
+# reads one row and picks a line window by word overlap, which costs what
+# ``GET /knowledge/documents/{id}`` costs. Metering it as a write charged hover
+# cards to the quota that protects LLM compute, so a hover-heavy panel could
+# refuse the next POST turn — the fm#994 symptom, from a false cost belief
+# rather than from a verb.
 EXPENSIVE_READ_PATTERNS = (
     # Runbook similarity search over the knowledge base.
     re.compile(r"^/api/v1/cases/[^/]+/report-recommendations/?$"),
-    # Semantic snippet lookup — embeds the query to locate the chunk.
-    re.compile(r"^/api/v1/knowledge/documents/[^/]+/snippet/?$"),
 )
 
 
@@ -569,8 +574,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         - **Cheap reads** — GET/HEAD/OPTIONS that are not in
           ``EXPENSIVE_READ_PATTERNS`` — go to ``per_session_read`` and
           ``per_session_read_hourly``. Ordinary SPA navigation lives here.
-        - **Everything else** — writes, and the read endpoints that run an
-          embedding and a vector search — goes to ``per_session`` and
+        - **Everything else** — writes, and the read endpoints that really do
+          run an embedding and a vector search — goes to ``per_session`` and
           ``per_session_hourly``, the quota that protects LLM compute.
 
         The pairing is the point, and it is what fm#994's first fix got wrong.

@@ -21,11 +21,18 @@ embedder. The other fifty are not enumerated here — they are *proved* cheap
 each run, so adding one costs nothing, and adding one that touches the vector
 store fails this test until someone decides what it costs.
 
-Reachability is deliberately coarser than truth: four of the six hold a
-``KnowledgeService`` but only read counts and rows with it. They are listed as
-cheap, with the reason, rather than excluded by narrowing the probe — a probe
-tuned until it flags exactly today's three answers would stop flagging tomorrow's
-fourth.
+Reachability is deliberately coarser than truth: five of the six hold a
+``KnowledgeService`` but only read rows, counts, or — for the document snippet —
+a line window chosen by word overlap. They are listed as cheap, with the reason,
+rather than excluded by narrowing the probe — a probe tuned until it flags
+exactly today's one answer would stop flagging tomorrow's second.
+
+The snippet route is why the coarse probe earns its keep in both directions. It
+was recorded expensive because it *looked* embedder-backed — a
+``get_semantic_snippet`` call and a docstring promising vector similarity — and
+the probe cannot tell a real embedding from a convincing name. Only a reader
+checking the verdict against the code found that it embeds nothing (#1288). A
+verdict here is a claim someone has to substantiate, not a formality.
 """
 
 import ast
@@ -93,8 +100,14 @@ _IMPORT_MARKERS = (
 EMBEDDER_REACHABLE_READS = {
     # Embeds a query and runs a similarity search. Metered as a write.
     "/api/v1/cases/{case_id}/report-recommendations": False,
-    # ``get_semantic_snippet`` — embeds the query to locate the chunk.
-    "/api/v1/knowledge/documents/{document_id}/snippet": False,
+    # ``get_relevant_snippet`` reads one row and picks a line window by word
+    # overlap — no embedding, no vector search. It was recorded False here (and
+    # listed in EXPENSIVE_READ_PATTERNS) on the strength of its former name,
+    # ``get_semantic_snippet``, and a docstring claiming vector similarity;
+    # #1288 measured the vector store being truthiness-tested and never called.
+    # Metering it as a write charged hover cards to the quota that protects LLM
+    # compute.
+    "/api/v1/knowledge/documents/{document_id}/snippet": True,
     # Hold a KnowledgeService but never embed with it: ``list_documents``,
     # ``get_document``, ``get_knowledge_stats`` and ``get_search_analytics``
     # read rows and counts. Verified by inspecting those methods for embedding

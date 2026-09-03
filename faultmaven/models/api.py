@@ -477,7 +477,8 @@ class KnowledgeBaseDocument(BaseModel):
 class DocumentSnippetResponse(BaseModel):
     """Response model for document snippet (hover card preview).
 
-    Supports both line-based and semantic snippet extraction.
+    Supports both line-based and relevance-based snippet extraction. Relevance
+    is keyword matching over the document text, not vector similarity (#1288).
     """
 
     document_id: str
@@ -491,7 +492,7 @@ class DocumentSnippetResponse(BaseModel):
     )
     verification_level: int = 0
 
-    # Semantic context (when query_string is provided)
+    # Lexical match strength (when query_string is provided)
     relevance_score: Optional[float] = None  # How relevant is this snippet to the query
 
 

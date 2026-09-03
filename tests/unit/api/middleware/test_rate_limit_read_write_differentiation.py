@@ -52,10 +52,11 @@ WRITE_PATH = "/api/v1/cases/case-123/turns"
 # Reads that cost what a write costs: each embeds a query and searches the
 # vector store. Kept in sync with the middleware's own classification by
 # ``test_rate_limit_read_cost_classification.py``.
-EXPENSIVE_READ_PATHS = (
-    "/api/v1/cases/case-123/report-recommendations",
-    "/api/v1/knowledge/documents/doc-9/snippet",
-)
+#
+# ``/knowledge/documents/{id}/snippet`` was here until #1288. It never embedded
+# anything — it reads one row and picks a line window by word overlap — so it is
+# now metered as the cheap read it is.
+EXPENSIVE_READ_PATHS = ("/api/v1/cases/case-123/report-recommendations",)
 
 
 @pytest.fixture(autouse=True)
