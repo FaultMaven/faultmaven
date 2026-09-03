@@ -847,18 +847,26 @@ async def get_env_config_status(
 
         # Vector storage: check if ChromaDB PersistentClient is active
         vector_storage = settings.database.vector_storage_type
-        chroma_kb_dir = Path(
-            getattr(settings.database, "chromadb_kb_persist_dir", "./data/chroma-kb")
+        # Through the shared resolvers, like the bootstrap, fm-reset-kb and
+        # fm-wipe-deployment: one spelling of "where is the local store". A
+        # bare getattr read the raw string, so this existence probe ran against
+        # a path relative to the API process's cwd while the operator surfaces
+        # reported another — the fm#936 shape, on a status endpoint. An
+        # unusable knob answers "not active", which is exactly what it is.
+        from faultmaven.bootstrap.data_init import (
+            UnusableDataDirError,
+            resolve_evidence_chroma_dir,
+            resolve_kb_chroma_dir,
         )
-        chroma_evidence_dir = Path(
-            getattr(
-                settings.database,
-                "chromadb_evidence_persist_dir",
-                "./data/chroma-evidence",
-            )
-        )
-        kb_active = (chroma_kb_dir / "chroma.sqlite3").exists()
-        evidence_active = (chroma_evidence_dir / "chroma.sqlite3").exists()
+
+        def _store_active(resolve) -> bool:
+            try:
+                return (resolve(settings) / "chroma.sqlite3").exists()
+            except UnusableDataDirError:
+                return False
+
+        kb_active = _store_active(resolve_kb_chroma_dir)
+        evidence_active = _store_active(resolve_evidence_chroma_dir)
         if kb_active and evidence_active:
             vector_storage = "chromadb (persistent, split: kb + evidence)"
         elif kb_active:

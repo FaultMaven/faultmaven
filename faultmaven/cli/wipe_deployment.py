@@ -559,10 +559,25 @@ def _chroma_clients(settings) -> tuple[list, str]:
         url = (getattr(settings.database, "chromadb_url", "") or "").strip()
         return clients, f"external server {url}"
 
-    kb_dir = getattr(settings.database, "chromadb_kb_persist_dir", "./data/chroma-kb")
-    ev_dir = getattr(
-        settings.database, "chromadb_evidence_persist_dir", "./data/chroma-evidence"
+    # Through the shared resolvers, like the bootstrap and fm-reset-kb: one
+    # spelling of "where is the local store", and an ABSOLUTE one. A bare
+    # getattr reported the raw relative string, so an operator comparing this
+    # inventory against fm-reset-kb's resolved path was comparing two different
+    # spellings of the same question (fm#936).
+    from faultmaven.bootstrap.data_init import (
+        UnusableDataDirError,
+        resolve_evidence_chroma_dir,
+        resolve_kb_chroma_dir,
     )
+
+    def _dir(resolve) -> str:
+        try:
+            return str(resolve(settings))
+        except UnusableDataDirError as exc:
+            return f"(unusable: {exc})"
+
+    kb_dir = _dir(resolve_kb_chroma_dir)
+    ev_dir = _dir(resolve_evidence_chroma_dir)
     target = f"local PersistentClient: {kb_dir}, {ev_dir}"
     # Say so loudly: an external server was asked for and is not what we got, so
     # the store being swept is NOT the one the deployment reads from.

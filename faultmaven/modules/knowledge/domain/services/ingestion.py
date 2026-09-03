@@ -43,6 +43,7 @@ from docx import Document
 from faultmaven.infrastructure.chroma_client import (
     chroma_token_auth_kwargs,
     is_external_chroma_configured,
+    is_host_only_chroma_configured,
     local_chroma_or_fail,
 )
 from faultmaven.infrastructure.model_cache import model_cache
@@ -187,8 +188,12 @@ class KnowledgeIngester:
                     anonymized_telemetry=False, allow_reset=True, **auth_kwargs
                 ),
             )
-        elif not chromadb_url.strip() and chromadb_host != "localhost":
-            # K8s cluster or external HTTP client
+        elif is_host_only_chroma_configured(settings):
+            # K8s cluster or external HTTP client. The condition is the shared
+            # predicate rather than an inline `not url and host != "localhost"`
+            # so that a caller asking "is a local directory the store?" — a
+            # destructive one, in fm-reset-kb's case — reads the same rule this
+            # branch runs on, instead of a copy that can drift from it (fm#936).
             _open_http(
                 f"{chromadb_host}:{chromadb_port}",
                 host=chromadb_host,
