@@ -169,6 +169,7 @@ EXPECTED_TABLES = [
     "roles",
     "solutions",
     "sso_org_mappings",
+    "sso_personal_orgs",
     "team_members",
     "teams",
     "uploaded_files",

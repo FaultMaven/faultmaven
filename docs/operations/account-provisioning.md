@@ -369,7 +369,7 @@ so historical cases stay attached, and corrects `account_kind` if it is wrong.
 |---|---|
 | `?error=sso_org_unmapped` | No `sso_org_mappings` row for the IdP org. Step 3 was skipped or used the wrong `org_…`. Currently renders as a generic "please try again" (dash **#79**) |
 | `?error=sso_failed` with `reason=email_conflict` in logs | An existing unlinked account already owns that email. Deliberate: no email linking, and the browser gets a generic slug so it is not an account oracle |
-| Login fails, `reason=enterprise_mismatch` | The account sits under the wrong enterprise. This is an **account migration**, not a configuration change — see the parent runbook |
+| Login fails, `reason=enterprise_mismatch` | The account sits under the wrong enterprise. This is an **account migration**, not a configuration change — see the parent runbook. One case is handled automatically and never reaches this slug: an account anchored to its own **personal** enterprise signing into a mapped company org is re-anchored (ADR-016 D5 as amended, #1045) |
 | 403 *"Request is not scoped to an organization"* | Empty `organization_id` claim — the login resolved no tenant |
 | Promotion appears to do nothing | Roles apply at next token mint. Sign out and back in |
 | `fm-provision-sso-org` refuses, naming `faultmaven_app` | The `env DATABASE_URL=` override did not take effect |
