@@ -1572,6 +1572,30 @@ class AuthSettings(BaseSettings):
         ),
     )
 
+    # Self-service personal tenants (ADR-016 D5, #1045). Default OFF: with the
+    # switch off, an SSO identity that carries NO IdP organization is refused
+    # exactly as it is today (``sso_org_unmapped``), and nothing about the
+    # unmapped-organization branch changes in either state. Turning it on lets
+    # the FIRST sign-in of an org-less identity provision a personal tenant
+    # just-in-time — a real, distinct organization row, never the Standalone
+    # sentinel, whose single member holds the ``member`` role.
+    #
+    # Read live from settings on every callback, not captured at composition
+    # time, so an operator flip does not need a redeploy to take effect — and so
+    # the setting cannot become the kind of documented knob nothing reads.
+    #
+    # Multi-tenant (Cloud) only: single-tenant has one organization and never
+    # reaches the branch this gates.
+    sso_jit_personal_tenant_enabled: bool = Field(
+        default=False,
+        validation_alias="SSO_JIT_PERSONAL_TENANT_ENABLED",
+        description=(
+            "Allow an SSO identity with no IdP organization to provision a "
+            "personal tenant on first sign-in (Cloud/multi-tenant only). "
+            "Default false: an org-less identity is refused."
+        ),
+    )
+
     # Local mode settings (only used when auth_mode=local)
     local_token_expiry_hours: int = Field(
         default=24,

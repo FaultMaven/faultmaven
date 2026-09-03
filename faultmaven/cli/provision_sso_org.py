@@ -78,6 +78,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select
 
+from faultmaven.config.constants import STANDALONE_TEAM_NAME
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.infrastructure.persistence.models import (
@@ -93,10 +94,11 @@ from faultmaven.infrastructure.persistence.rls_role_guard import (
 #: The only SSO provider FaultMaven ships an adapter for (ADR-015).
 PROVIDER = "workos"
 
-#: Every organization gets one team at creation (ADR-013). Named to match the
-#: standalone bootstrap's default team (``config/constants.py``), so the two
-#: deployment shapes read the same.
-DEFAULT_TEAM_NAME = "Default Team"
+#: Every organization gets one team at creation (ADR-013). Aliased from the
+#: standalone bootstrap's constant rather than re-spelled, so the deployment
+#: shapes cannot drift into "default" teams that differ by a word — the JIT
+#: personal-tenant path aliases the same constant.
+DEFAULT_TEAM_NAME = STANDALONE_TEAM_NAME
 
 
 def _now() -> datetime:

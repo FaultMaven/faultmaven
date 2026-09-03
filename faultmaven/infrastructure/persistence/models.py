@@ -448,6 +448,64 @@ class SSOOrgMappingModel(Base):
     )
 
 
+class SSOPersonalOrgModel(Base):
+    """IdP **subject** → the personal FaultMaven organization it owns (#1045).
+
+    The sibling of :class:`SSOOrgMappingModel`, and outside RLS for exactly the
+    same reason: it is read on the unauthenticated SSO callback, before any
+    tenant is bound, because binding the tenant is what the lookup decides.
+
+    It exists because ``sso_org_mappings`` cannot answer this question. That
+    table is keyed on the IdP's *organization* id, and AuthKit only reports one
+    when the sign-in was organization-scoped — a returning individual's login
+    may carry none at all. Membership cannot answer it either:
+    ``organization_members`` is RLS-tenanted (migration 018) and no tenant is
+    bound yet. So a returning individual needs a lookup keyed on the one
+    identifier every login carries, the subject.
+
+    ``(provider, provider_user_id)`` is the primary key: a subject owns at most
+    one personal organization, which is what makes first-login provisioning
+    idempotent and what arbitrates a race between two concurrent first logins —
+    the loser's INSERT violates this key and rolls its whole transaction back.
+    ``(provider, organization_id)`` is unique in the other direction: a personal
+    organization belongs to exactly one subject, so it can never become a shared
+    tenant by a second row pointing at it.
+
+    A row holds two identifiers and no tenant data. The subject is the IdP's own
+    opaque handle, never an email.
+    """
+
+    __tablename__ = "sso_personal_orgs"
+
+    provider = Column(String(50), primary_key=True)
+    provider_user_id = Column(String(255), primary_key=True)
+    organization_id = Column(
+        String(36),
+        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    #: The IdP organization minted to hold this one member. Recorded so a retry
+    #: after a partial failure can be reconciled against the IdP by an operator,
+    #: and so "which WorkOS org is this tenant" has an answer that does not
+    #: depend on re-deriving the external id.
+    provider_org_id = Column(String(255), nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "provider", "organization_id", name="uq_sso_personal_orgs_organization"
+        ),
+    )
+
+
 class TeamModel(Base):
     """Sub-group within an organization for case routing & collaboration."""
 

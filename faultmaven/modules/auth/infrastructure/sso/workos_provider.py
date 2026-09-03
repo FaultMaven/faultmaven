@@ -17,7 +17,10 @@ import jwt as jwt_lib
 import structlog
 
 from faultmaven.modules.auth.contracts import ISSOIdentityProvider, SSOIdentity
-from faultmaven.modules.auth.exceptions import SSOAuthenticationError
+from faultmaven.modules.auth.exceptions import (
+    SSOAuthenticationError,
+    SSOProvisioningError,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -93,6 +96,151 @@ class WorkOSIdentityProvider(ISSOIdentityProvider):
             # that matters. Degrades to "AuthKit session outlives ours".
             logger.warning("workos_logout_url_failed", error=type(exc).__name__)
             return None
+
+    def provision_personal_organization(
+        self, *, provider_user_id: str, external_id: str, name: str
+    ) -> str:
+        """Get-or-create the WorkOS organization holding this one member (#1045).
+
+        Two calls, each made idempotent by a different mechanism, in the order
+        that makes a retry safe:
+
+        1. **The organization**, keyed on ``external_id``. WorkOS enforces
+           uniqueness on that field, so ``get_organization_by_external_id``
+           finds whatever a previous attempt created and a lost create race
+           surfaces as a conflict this method resolves by re-reading rather than
+           by minting a second organization. The read comes first because the
+           overwhelmingly common retry is "we already made it".
+        2. **The membership**, keyed on the (user, organization) pair. WorkOS
+           refuses a duplicate; a refusal is confirmed by listing the
+           memberships rather than trusted, so "already a member" and "the write
+           was rejected for another reason" cannot be conflated.
+
+        Every failure becomes :class:`SSOProvisioningError` with no provider
+        detail attached — this runs inside an unauthenticated callback, which
+        must not become an error oracle. Refusing leaves the login closed and
+        the next attempt able to complete: nothing here writes anything that a
+        re-derived ``external_id`` cannot find again.
+        """
+        organization_id = self._ensure_organization(external_id=external_id, name=name)
+        self._ensure_membership(
+            provider_user_id=provider_user_id, organization_id=organization_id
+        )
+        return organization_id
+
+    def _ensure_organization(self, *, external_id: str, name: str) -> str:
+        """Return the id of the organization carrying ``external_id``."""
+        from workos import ConflictError, NotFoundError
+
+        existing = self._organization_by_external_id(external_id)
+        if existing is not None:
+            return existing
+
+        try:
+            created = self._client.organizations.create_organization(
+                name=name, external_id=external_id
+            )
+        except ConflictError as exc:
+            # A concurrent first login for the same subject won the create.
+            # Both derived the same external id, so the winner's organization
+            # is the one this login wants — read it back rather than fail.
+            recovered = self._organization_by_external_id(external_id)
+            if recovered is not None:
+                return recovered
+            logger.warning(
+                "workos_personal_org_conflict_unresolved", error=type(exc).__name__
+            )
+            raise SSOProvisioningError(
+                "Personal organization could not be provisioned"
+            ) from exc
+        except NotFoundError as exc:
+            # A create that reports "not found" is a misconfigured client, not
+            # an absent organization; treat it like any other refusal.
+            logger.warning(
+                "workos_personal_org_create_failed", error=type(exc).__name__
+            )
+            raise SSOProvisioningError(
+                "Personal organization could not be provisioned"
+            ) from exc
+        except Exception as exc:
+            logger.warning(
+                "workos_personal_org_create_failed", error=type(exc).__name__
+            )
+            raise SSOProvisioningError(
+                "Personal organization could not be provisioned"
+            ) from exc
+
+        organization_id = getattr(created, "id", None)
+        if not isinstance(organization_id, str) or not organization_id:
+            # An SDK that returns something without an id would otherwise let a
+            # falsy value through into the mapping row.
+            logger.warning("workos_personal_org_create_returned_no_id")
+            raise SSOProvisioningError("Personal organization could not be provisioned")
+        return organization_id
+
+    def _organization_by_external_id(self, external_id: str) -> str | None:
+        """Return the organization id for ``external_id``, or None if absent.
+
+        ``None`` means *absent*, and only absent. Any other failure raises, so a
+        provider outage cannot be read as "no organization yet" and answered by
+        creating a duplicate.
+        """
+        from workos import NotFoundError
+
+        try:
+            found = self._client.organizations.get_organization_by_external_id(
+                external_id
+            )
+        except NotFoundError:
+            return None
+        except Exception as exc:
+            logger.warning(
+                "workos_personal_org_lookup_failed", error=type(exc).__name__
+            )
+            raise SSOProvisioningError(
+                "Personal organization could not be provisioned"
+            ) from exc
+        organization_id = getattr(found, "id", None)
+        if not isinstance(organization_id, str) or not organization_id:
+            return None
+        return organization_id
+
+    def _ensure_membership(
+        self, *, provider_user_id: str, organization_id: str
+    ) -> None:
+        """Make the subject a member of the organization; raise if it is not."""
+        try:
+            self._client.organization_membership.create_organization_membership(
+                user_id=provider_user_id, organization_id=organization_id
+            )
+            return
+        except Exception as exc:
+            # Could be "already a member" (the retry case) or a genuine refusal.
+            # Do not guess from the exception type — ask.
+            if self._is_member(
+                provider_user_id=provider_user_id, organization_id=organization_id
+            ):
+                return
+            logger.warning(
+                "workos_personal_org_membership_failed", error=type(exc).__name__
+            )
+            raise SSOProvisioningError(
+                "Personal organization membership could not be established"
+            ) from exc
+
+    def _is_member(self, *, provider_user_id: str, organization_id: str) -> bool:
+        """Whether the subject already holds a membership. Fail-closed."""
+        try:
+            page = self._client.organization_membership.list_organization_memberships(
+                organization_id=organization_id, user_id=provider_user_id, limit=1
+            )
+        except Exception as exc:
+            logger.warning(
+                "workos_personal_org_membership_check_failed",
+                error=type(exc).__name__,
+            )
+            return False
+        return bool(getattr(page, "data", None))
 
     def revoke_session(self, *, provider_session_id: str) -> bool:
         if not provider_session_id:

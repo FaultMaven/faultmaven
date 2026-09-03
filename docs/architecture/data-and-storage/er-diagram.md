@@ -1,12 +1,12 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-08-29 09:56 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-09-03 18:22 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
 ## Summary
 
-**38 tables** in the schema.
+**39 tables** in the schema.
 
 | Table | Columns | Primary Key | Foreign Keys |
 |-------|---------|-------------|--------------|
@@ -21,9 +21,9 @@
 | `causal_nodes` | 21 | `node_id` | cases, organizations |
 | `config_overrides` | 6 | `key` | users |
 | `conversion_drafts` | 22 | `id` | conversion_jobs, knowledge_items, organizations, users |
-| `conversion_jobs` | 13 | `id` | cases, organizations, uploaded_files, users |
+| `conversion_jobs` | 14 | `id` | cases, organizations, uploaded_files, users |
 | `enterprises` | 11 | `enterprise_id` | — |
-| `evidence` | 23 | `evidence_id` | cases, organizations, uploaded_files |
+| `evidence` | 24 | `evidence_id` | cases, organizations, uploaded_files |
 | `evidence_need_fulfillment` | 5 | `need_id, evidence_id` | evidence, evidence_needs, organizations |
 | `evidence_needs` | 16 | `need_id` | cases, organizations |
 | `hypotheses` | 25 | `hypothesis_id` | cases, causal_nodes, organizations, users |
@@ -43,9 +43,10 @@
 | `roles` | 7 | `role_id` | — |
 | `solutions` | 28 | `solution_id` | cases, causal_nodes, evidence, hypotheses, organizations |
 | `sso_org_mappings` | 5 | `provider, provider_org_id` | organizations |
+| `sso_personal_orgs` | 6 | `provider, provider_user_id` | organizations |
 | `team_members` | 4 | `user_id, team_id` | teams, users |
 | `teams` | 7 | `team_id` | organizations |
-| `uploaded_files` | 18 | `file_id` | cases, organizations, users |
+| `uploaded_files` | 19 | `file_id` | cases, organizations, users |
 | `user_audit_log` | 13 | `audit_id` | organizations, users |
 | `users` | 21 | `user_id` | enterprises |
 
@@ -220,6 +221,7 @@ erDiagram
         VARCHAR source_type
         INTEGER failure_modes_detected
         JSON analysis_result
+        JSON warnings
         DATETIME created_at
         DATETIME completed_at
     }
@@ -255,6 +257,7 @@ erDiagram
         INTEGER collected_at_turn
         DATETIME coverage_start_ts
         DATETIME coverage_end_ts
+        VARCHAR coverage_source
         BOOLEAN vectorized
         VARCHAR collected_by
         TEXT metadata
@@ -552,6 +555,14 @@ erDiagram
         DATETIME created_at
         DATETIME updated_at
     }
+    sso_personal_orgs {
+        VARCHAR provider PK
+        VARCHAR provider_user_id PK
+        VARCHAR organization_id FK
+        VARCHAR provider_org_id
+        DATETIME created_at
+        DATETIME updated_at
+    }
     team_members {
         VARCHAR user_id PK
         VARCHAR team_id PK
@@ -585,6 +596,7 @@ erDiagram
         VARCHAR data_type
         DATETIME coverage_start_ts
         DATETIME coverage_end_ts
+        VARCHAR coverage_source
         DATETIME uploaded_at
     }
     user_audit_log {
@@ -682,6 +694,7 @@ erDiagram
     organizations ||--o{ resource_shares : ""
     organizations ||--o{ solutions : ""
     organizations ||--o{ sso_org_mappings : ""
+    organizations ||--o{ sso_personal_orgs : ""
     organizations ||--o{ teams : ""
     organizations ||--o{ uploaded_files : ""
     organizations ||--o{ user_audit_log : ""

@@ -26,9 +26,20 @@ Under multi-tenant (Cloud) the login also has to decide *which tenant* it lands
 in (#869). The IdP's organization is resolved through the operator-provisioned
 ``sso_org_mappings`` table before any user lookup, bound as the request's
 organization for the rest of the callback, and carried on the completion code so
-the minted tokens claim it. No mapping means no login: tenants are provisioned
-out of band, never just-in-time. Single-tenant runs none of this — there is one
-organization and the behaviour is unchanged.
+the minted tokens claim it. An IdP organization this deployment has no mapping
+for means no login: a company is onboarded deliberately, never by whoever signs
+in first. Single-tenant runs none of this — there is one organization and the
+behaviour is unchanged.
+
+An identity that carries **no** IdP organization at all is a different question,
+and the answer is a configuration switch (#1045, ADR-016 D5 amending ADR-015).
+Off — the default — it is refused exactly as an unmapped one is. On, its first
+sign-in provisions a **personal tenant**: an IdP organization holding that one
+member, and the FaultMaven enterprise, organization, default team and
+``sso_personal_orgs`` row that make it a real, distinct tenant. Returning
+individuals resolve it through that subject-keyed, untenanted lookup, because at
+callback time no tenant is bound and membership is therefore unreadable. Nothing
+about the unmapped-organization branch changes in either switch state.
 """
 
 from __future__ import annotations
@@ -45,6 +56,7 @@ from urllib.parse import urlencode
 import structlog
 from pydantic import EmailStr, TypeAdapter, ValidationError
 
+from faultmaven.config.constants import STANDALONE_ORG_ID
 from faultmaven.config.tenant_context import set_current_org_id
 from faultmaven.exceptions import ConflictError
 from faultmaven.infrastructure.persistence.user_repository import (
@@ -54,10 +66,19 @@ from faultmaven.models.interfaces_user import AuditCategory, AuditEventType
 from faultmaven.models.rbac import Role
 from faultmaven.models.rbac_seed import SYSTEM_ROLE_IDS
 from faultmaven.modules.auth.contracts import ISSOIdentityProvider, SSOIdentity
+from faultmaven.modules.auth.domain.personal_tenant import (
+    PERSONAL_ORG_NAME,
+    personal_external_id,
+    personal_org_slug,
+    personal_tenant_key,
+)
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     capture_state_read_at,
 )
-from faultmaven.modules.auth.exceptions import SSOAuthenticationError
+from faultmaven.modules.auth.exceptions import (
+    SSOAuthenticationError,
+    SSOProvisioningError,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -117,6 +138,23 @@ def _is_multi_tenant() -> bool:
     )
 
     return requested_tenant_provider() == BUILTIN_MULTI
+
+
+def _jit_personal_tenant_enabled() -> bool:
+    """True when an org-less identity may provision a personal tenant (#1045).
+
+    Read from settings on **every** callback rather than captured at
+    composition time, so flipping the switch takes effect without a redeploy —
+    and so the value cannot become a documented knob that nothing actually
+    consults. Deferred import for the same reason as :func:`_is_multi_tenant`:
+    settings must not be imported at auth-module import time.
+
+    Default false. With the switch off this returns False and the org-less
+    branch behaves exactly as it did before this feature existed.
+    """
+    from faultmaven.config.settings import get_settings
+
+    return bool(get_settings().auth.sso_jit_personal_tenant_enabled)
 
 
 def _is_usable_email(email: str) -> bool:
@@ -217,6 +255,7 @@ class SSOLoginService:
         audit_log: Any | None = None,
         org_mapping_repository: Any | None = None,
         organization_repository: Any | None = None,
+        personal_org_repository: Any | None = None,
     ) -> None:
         self._provider = identity_provider
         self._store = ephemeral_store
@@ -233,6 +272,10 @@ class SSOLoginService:
         # rather than silently skipping the tenant decision.
         self._org_mappings = org_mapping_repository
         self._orgs = organization_repository
+        # Subject-keyed personal-tenant lookup (#1045). Consulted only on the
+        # no-IdP-organization branch and only with the switch on; its absence
+        # fails that branch closed rather than silently skipping the decision.
+        self._personal_orgs = personal_org_repository
 
     # -- leg 1: browser -> IdP ---------------------------------------------- #
 
@@ -437,6 +480,12 @@ class SSOLoginService:
         """
         provider_org_id = identity.organization_id
         if not provider_org_id:
+            # The ONLY branch #1045 changes. An identity whose IdP organization
+            # exists but is unmapped is handled below and is untouched: a
+            # company is onboarded deliberately, never by whoever signs in
+            # first.
+            if _jit_personal_tenant_enabled():
+                return await self._resolve_personal_organization(identity)
             logger.warning(
                 "sso_org_resolution_failed",
                 reason="no_idp_org",
@@ -495,6 +544,164 @@ class SSOLoginService:
             return None, ERROR_FAILED
 
         return organization, None
+
+    async def _resolve_personal_organization(
+        self, identity: SSOIdentity
+    ) -> tuple[Any | None, str | None]:
+        """Resolve — provisioning on first sign-in — this individual's tenant.
+
+        Reached only from the no-IdP-organization branch, and only with
+        ``SSO_JIT_PERSONAL_TENANT_ENABLED`` on. Returns the same
+        ``(organization, error_slug)`` pair as the mapped path, and ends in the
+        same place: the organization bound as the request's tenant and verified
+        through ``IOrganizationRepository.get_organization``, so a personal
+        tenant is subject to every check a mapped one is.
+
+        **The lookup is keyed on the subject, not on membership.** Organization
+        resolution runs before the user lookup precisely so the RLS scope is
+        right for everything after it, and ``organization_members`` is itself
+        RLS-tenanted — at this moment no tenant is bound, so membership is
+        unreadable. The subject is the one identifier every login carries, which
+        is why ``sso_personal_orgs`` is keyed on it and untenanted, for the same
+        reason ``sso_org_mappings`` is.
+
+        **Order of operations, and why.** The IdP organization is created
+        *before* the database rows, and the database rows are one transaction.
+        That ordering is what makes a failure recoverable in the safe direction:
+        an IdP organization with no FaultMaven tenant is invisible to everyone
+        and is found again by the next attempt (its external id is derived from
+        the subject, so it is the same organization), whereas a FaultMaven
+        tenant with no IdP organization would be adopted by the next login as if
+        it were complete. Either way the login is refused and nothing
+        half-provisioned is reachable.
+
+        Organization *membership* is deliberately NOT written here. The user row
+        does not exist yet — the user lookup happens after tenant resolution —
+        so there is nothing to make a member of. It is written afterwards by
+        ``_ensure_org_affiliation``, the same code that serves the mapped path,
+        which is what makes "the personal org's single member holds the member
+        role" (ADR-015 D5) true by construction rather than by a second copy of
+        the rule. A tenant whose membership write fails is left in exactly the
+        state the operator path leaves a freshly provisioned tenant in, and the
+        next login heals it because the ensure is idempotent.
+        """
+        if self._orgs is None or self._personal_orgs is None:
+            # Misconfiguration, not a user error — same treatment as the mapped
+            # path's unwired repositories.
+            logger.error(
+                "sso_org_resolution_failed",
+                reason="personal_org_repository_unwired",
+                provider=identity.provider,
+            )
+            return None, ERROR_FAILED
+
+        subject = identity.provider_user_id
+        if not subject:
+            logger.warning(
+                "sso_org_resolution_failed",
+                reason="no_subject",
+                provider=identity.provider,
+            )
+            return None, ERROR_FAILED
+
+        try:
+            organization_id = await self._personal_orgs.get_organization_id(
+                identity.provider, subject
+            )
+            if organization_id is None:
+                organization_id = await self._provision_personal_tenant(identity)
+        except SSOProvisioningError:
+            # Already logged, without provider detail, at the adapter boundary.
+            return None, ERROR_FAILED
+        except Exception:
+            logger.exception("sso_personal_tenant_failed", provider=identity.provider)
+            return None, ERROR_FAILED
+
+        if organization_id == STANDALONE_ORG_ID:
+            # fm#850, re-proved on the deliberate path: the Standalone sentinel
+            # identifies the single-tenant deployment and is never a tenant
+            # under multi. Reaching here means a row points at it — refuse
+            # rather than pool this login into the sentinel.
+            logger.error(
+                "sso_org_resolution_failed",
+                reason="personal_org_is_sentinel",
+                provider=identity.provider,
+            )
+            return None, ERROR_FAILED
+
+        # Bind before reading the organization row, for migration 018's reason:
+        # `organizations` is RLS-tenanted, so the read only succeeds inside its
+        # own tenant scope. Same rebind-between-transactions caveat as the
+        # mapped path (#935) — each repository call opens its own session.
+        set_current_org_id(organization_id)
+
+        organization = await self._orgs.get_organization(organization_id)
+        if (
+            organization is None
+            or getattr(organization, "deleted_at", None) is not None
+            or not getattr(organization, "is_active", True)
+        ):
+            # A personal tenant that is missing or disabled is not something to
+            # tell the browser about, and not something to route around by
+            # provisioning a second one.
+            logger.warning(
+                "sso_org_resolution_failed",
+                reason="personal_org_unavailable",
+                provider=identity.provider,
+                organization_id=organization_id,
+            )
+            return None, ERROR_FAILED
+
+        return organization, None
+
+    async def _provision_personal_tenant(self, identity: SSOIdentity) -> str:
+        """Create this subject's IdP organization and FaultMaven tenant.
+
+        Returns the FaultMaven organization id. Raises on any failure, which the
+        caller turns into a refused login — never a partial tenant.
+        """
+        key = personal_tenant_key(identity.provider, identity.provider_user_id)
+        slug = personal_org_slug(key)
+
+        # 1. The IdP side first (see the caller's docstring for why). The
+        #    provider port is sync, like the code exchange, so keep the network
+        #    round-trips off the event loop.
+        provider_org_id = await asyncio.to_thread(
+            lambda: self._provider.provision_personal_organization(
+                provider_user_id=identity.provider_user_id,
+                external_id=personal_external_id(key),
+                name=PERSONAL_ORG_NAME,
+            )
+        )
+        if not provider_org_id:
+            raise SSOProvisioningError("IdP returned no organization id")
+
+        # 2. The FaultMaven side, in one transaction. The id is generated here
+        #    rather than by the repository because it must be BOUND as the
+        #    tenant context before that transaction opens: the engine's `begin`
+        #    listener samples the contextvar once per transaction, and migration
+        #    018's policy (no `FOR` clause, so USING doubles as WITH CHECK)
+        #    refuses an INSERT whose organization_id is not the bound one. This
+        #    is why the login path does not need the RLS-exempt role the
+        #    operator CLI demands — it knows the id, so it never has to look a
+        #    tenant up without one.
+        organization_id = str(uuid.uuid4())
+        set_current_org_id(organization_id)
+        tenant = await self._personal_orgs.provision(
+            provider=identity.provider,
+            provider_user_id=identity.provider_user_id,
+            provider_org_id=provider_org_id,
+            organization_id=organization_id,
+            name=PERSONAL_ORG_NAME,
+            slug=slug,
+        )
+        logger.info(
+            "sso_personal_tenant_resolved",
+            provider=identity.provider,
+            organization_id=tenant.organization_id,
+            created=tenant.created,
+        )
+        return tenant.organization_id
 
     async def _ensure_org_affiliation(self, user: Any, organization: Any) -> bool:
         """Make ``user`` a member of ``organization``; False means fail closed.

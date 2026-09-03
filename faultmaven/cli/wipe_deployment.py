@@ -148,15 +148,17 @@ MUST_BE_EMPTY = frozenset(
         "reports",
         "solutions",
         "uploaded_files",
-        # Identity / tenancy. ``sso_org_mappings`` is deliberately untenanted
-        # (the callback that reads it is unauthenticated, so no tenant is bound
-        # yet, #869) — which is exactly why a tenant-scoped wipe would miss it
-        # and the next SSO login would land in a stale tenant.
+        # Identity / tenancy. ``sso_org_mappings`` and ``sso_personal_orgs`` are
+        # deliberately untenanted (the callback that reads them is
+        # unauthenticated, so no tenant is bound yet — #869, #1045) — which is
+        # exactly why a tenant-scoped wipe would miss them and the next SSO
+        # login would land in a stale tenant.
         "oauth_authorization_codes",
         "organization_members",
         "organizations",
         "resource_shares",
         "sso_org_mappings",
+        "sso_personal_orgs",
         "team_members",
         "teams",
         "user_audit_log",

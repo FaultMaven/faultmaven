@@ -633,6 +633,34 @@ class ISSOIdentityProvider(ABC):
         """
         return False
 
+    def provision_personal_organization(
+        self, *, provider_user_id: str, external_id: str, name: str
+    ) -> str:
+        """Return the IdP organization id holding ``provider_user_id`` alone.
+
+        The IdP half of a personal tenant (#1045, ADR-016 D5): an organization
+        that exists to hold exactly one member, so an individual who signs up
+        with no company still has an organization-scoped identity at the IdP.
+
+        **Must be idempotent in ``external_id``.** The caller derives that value
+        deterministically from the subject and calls this before it writes
+        anything of its own, so a retry after a failed database commit has to
+        find the organization the previous attempt created rather than mint a
+        second one. Adding the member is idempotent for the same reason.
+
+        Returns the IdP's organization id. Raises
+        :class:`~faultmaven.modules.auth.exceptions.SSOProvisioningError` on any
+        failure, including "this provider has no such concept" — a caller that
+        cannot get an IdP organization must refuse the login, never proceed with
+        a tenant the IdP does not know about. The default implementation raises,
+        so a provider is opted in by implementing it.
+        """
+        from faultmaven.modules.auth.exceptions import SSOProvisioningError
+
+        raise SSOProvisioningError(
+            "This SSO provider cannot provision a personal organization"
+        )
+
 
 class ISSOOrgMappingRepository(ABC):
     """IdP organization → FaultMaven organization lookup port.
@@ -657,6 +685,86 @@ class ISSOOrgMappingRepository(ABC):
         Args:
             provider: SSO provider key (e.g. ``"workos"``).
             provider_org_id: The IdP's organization identifier.
+        """
+
+
+@dataclass(frozen=True)
+class PersonalTenant:
+    """The organization one personal-tenant provisioning run created or found.
+
+    Deliberately just the organization id and whether this call is what created
+    it. The enterprise and team ids are not carried because a caller cannot
+    always read them back: this runs before a tenant is bound, and the moment it
+    IS bound it is bound to whichever organization won a race — so a field for
+    "the enterprise" would be answerable on the create path and unanswerable on
+    the adopt path. The organization id is the only thing the login needs, and
+    the only thing both paths can state truthfully.
+
+    ``created`` distinguishes "this call provisioned the tenant" from "it was
+    already there". The audit trail and the idempotency tests read it; the login
+    itself does not branch on it.
+    """
+
+    organization_id: str
+    created: bool
+
+
+class ISSOPersonalOrgRepository(ABC):
+    """IdP subject → the personal FaultMaven organization it owns (#1045).
+
+    The sibling of :class:`ISSOOrgMappingRepository`, and untenanted for exactly
+    the same reason: both are read on the **unauthenticated** SSO callback,
+    before a tenant is bound, and binding the tenant is what the lookup decides.
+
+    It cannot be folded into that port. ``sso_org_mappings`` is keyed on the
+    IdP's *organization* id, which a returning individual's login need not
+    carry at all; and it is 1:1 per organization, so a personal tenant's row
+    there is already spent on the IdP organization that holds the member.
+    Membership cannot serve either — ``organization_members`` is RLS-tenanted
+    (migration 018) and invisible at callback time.
+
+    Writes are hostile-input-facing: the caller is a login, not an operator.
+    """
+
+    @abstractmethod
+    async def get_organization_id(
+        self, provider: str, provider_user_id: str
+    ) -> Optional[str]:
+        """Return the subject's personal organization id, or None if it has none.
+
+        Args:
+            provider: SSO provider key (e.g. ``"workos"``).
+            provider_user_id: The IdP's stable subject identifier.
+        """
+
+    @abstractmethod
+    async def provision(
+        self,
+        *,
+        provider: str,
+        provider_user_id: str,
+        provider_org_id: str,
+        organization_id: str,
+        name: str,
+        slug: str,
+    ) -> PersonalTenant:
+        """Create the tenant for one subject, atomically, or adopt the winner's.
+
+        Writes the enterprise, the organization, its default team, the
+        ``sso_org_mappings`` row binding ``provider_org_id`` to it and the
+        ``sso_personal_orgs`` row binding the subject — in that order and in a
+        **single transaction**, which is the ordering
+        ``fm-provision-sso-org`` already encodes.
+
+        Implementations must be idempotent and race-safe: a second call for the
+        same subject, whether sequential or concurrent, returns the tenant the
+        first one created and writes no second organization. A failure part-way
+        must leave nothing behind for a later login to adopt.
+
+        ``organization_id`` is supplied by the caller rather than generated here
+        because the write runs under the RLS-scoped application role: the tenant
+        context has to be bound to that id *before* the transaction opens, or
+        the ``organizations`` policy's ``WITH CHECK`` refuses the INSERT.
         """
 
 
