@@ -10,7 +10,7 @@ It adapts between DevUser (authentication model) and User (repository model).
 import logging
 import re
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Collection, List, Optional
 
 from faultmaven.exceptions import (
     ConflictError,
@@ -365,18 +365,36 @@ class DatabaseUserStore:
             logger.error(f"Failed to delete user {user_id}: {e}")
             return False
 
-    async def list_users(self, limit: int = 100, offset: int = 0) -> List[DevUser]:
-        """List users with pagination
+    async def list_users(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        user_ids: Optional[Collection[str]] = None,
+    ) -> List[DevUser]:
+        """List users with pagination, optionally restricted to an id allowlist
 
         Args:
             limit: Maximum number of users to return
             offset: Pagination offset
+            user_ids: The only users the caller may see, or ``None`` for no
+                restriction. The operator surface resolves it from
+                ``organization_members`` (``api/operator_user_scope``, #1318)
+                and passes it here rather than filtering the returned page: the
+                page is deployment-wide, so a tenant's users could fall outside
+                it, and one row elsewhere that fails hydration empties this
+                listing for every caller (the ``except`` below returns ``[]``).
 
         Returns:
             List of DevUser objects
         """
         try:
-            users, _ = await self.user_repository.list(limit=limit, offset=offset)
+            # `is not None`, not truthiness: an empty allowlist selects nothing.
+            if user_ids is not None:
+                users, _ = await self.user_repository.list_users(
+                    limit=limit, offset=offset, user_ids=user_ids
+                )
+            else:
+                users, _ = await self.user_repository.list(limit=limit, offset=offset)
             return [self._user_to_devuser(user) for user in users]
         except Exception as e:
             logger.error(f"Failed to list users: {e}")

@@ -844,13 +844,20 @@ async def list_users(
 
     try:
         user_store = await get_user_store(request)
-        users = await user_store.list_users(limit=1000)
         if member_ids is None:
+            # Single-tenant: the deployment IS the tenant. Called exactly as it
+            # always was, so a store that predates the predicate is unaffected.
+            users = await user_store.list_users(limit=1000)
             total_count = await user_store.count_users()
         else:
-            # `is None` is the "unconfined" test; an EMPTY set means this tenant
-            # has no users and must filter everything out.
-            users = [user for user in users if user.user_id in member_ids]
+            # The allowlist goes INTO the store call rather than filtering the
+            # page it returns: the 1000-row window is deployment-wide, so a
+            # tenant's users could fall outside it, and loading every tenant's
+            # rows couples this listing to them — one row that fails hydration
+            # empties it for everyone (`DatabaseUserStore.list_users` answers
+            # `[]` on any exception). A store that does not accept the argument
+            # raises here rather than quietly serving an unconfined page.
+            users = await user_store.list_users(limit=1000, user_ids=member_ids)
             # The tenant's population, which is what `truncated` below has to be
             # measured against. `count_users()` counts the deployment and would
             # report this page as truncated whenever ANOTHER tenant has users.

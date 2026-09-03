@@ -873,9 +873,14 @@ class UserService(BaseService):
             restrict_to_user_ids: The only users the caller may see, or ``None``
                 for no restriction. This is the tenant predicate the operator
                 surface resolves from ``organization_members``
-                (``api/operator_user_scope``, #1318) — it is applied BEFORE
-                pagination, so ``total`` counts the caller's tenant rather than
-                the deployment, and an empty collection returns nothing rather
+                (``api/operator_user_scope``, #1318). It goes down to the
+                repository as a QUERY predicate rather than being applied to the
+                page this method fetches: the 1000-row window below is
+                deployment-wide, so a tenant's users could fall outside it, and
+                loading every tenant's rows to project one out of them makes
+                ``total`` a deployment-wide count and couples this listing to
+                rows the caller may not see — one that fails hydration takes it
+                down for everyone. An empty collection returns nothing rather
                 than everything. ``organization_id`` above remains a context
                 label the repository does not filter on; passing it does not
                 confine anything, which is why the confined caller passes this.
@@ -883,27 +888,25 @@ class UserService(BaseService):
         Returns:
             Tuple of (users, total_count)
         """
-        # Get base users list from repository
+        # Get base users list from repository. The allowlist goes DOWN as a
+        # query predicate rather than being applied only here: the 1000-row
+        # window is deployment-wide, so post-filtering would leave `total`
+        # counting other tenants and would couple this listing to their rows —
+        # one row that fails hydration takes every operator's listing with it.
         users, total = await self.user_repo.list_users(
             limit=1000,  # Get all for filtering
             offset=0,
             is_active=is_active,
+            user_ids=restrict_to_user_ids,
         )
 
-        # `is None` rather than truthiness: an EMPTY allowlist means "this
-        # tenant has no users", and reading it as "no restriction" would turn
-        # the tenant predicate into a deployment-wide listing — the fail-open
-        # inversion of the thing it exists to prevent.
-        allowlist = None if restrict_to_user_ids is None else set(restrict_to_user_ids)
-
-        # Apply additional filters (TASK-019)
+        # Apply additional filters (TASK-019). The tenant predicate is NOT
+        # re-applied here: the repository answered it, and a second copy of the
+        # rule would be one that could drift from the query without any test
+        # able to tell them apart (see `restrict_to_user_ids` above for why the
+        # query is where it has to live).
         filtered_users = []
         for user in users:
-            # The tenant predicate, applied before pagination so `total` is a
-            # count of what the caller may see.
-            if allowlist is not None and user.user_id not in allowlist:
-                continue
-
             # Ensure is_active filtering even if repository doesn't apply it
             if is_active is not None and user.is_active != is_active:
                 continue

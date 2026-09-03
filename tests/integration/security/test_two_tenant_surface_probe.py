@@ -118,8 +118,13 @@ RLS bypassed                                                       by_id_...``
                                                                    mutate_another_tenants_user_account``
 ``OperatorUserScope.member_ids`` returns ``None`` (unconfined)     ``..._neither_user_listing_names_or_
                                                                    counts_the_other_tenant``
-the ``user_id`` argument dropped from the debug causal-graph       ``..._debug_causal_graph_...``
-read, RLS bypassed
+the user-listing id predicate dropped, at any one of its three     the same case
+sites (the service→repository argument, the repository ``WHERE``,
+``DatabaseUserStore``'s pass-through)
+the ``user_id`` argument dropped from the debug causal-graph       nothing here — RLS caught it. The
+read — alone                                                       witness is ``tests/integration/api/
+                                                                   test_debug_causal_graph_access.py``,
+                                                                   which is why that module exists
 ``authorize_content_read`` returns standing access in cloud        both break-glass cases
 (pre-#815)
 ``find_live_grant`` stops keying on ``target_case_id``             ``..._grant_unlocks_exactly_the_case_
@@ -2025,6 +2030,14 @@ async def test_neither_user_listing_names_or_counts_the_other_tenant(world):
         assert (
             world.b.user_id not in response.text
         ), f"{name} listing names a user of the other tenant"
+        # The control. An empty listing satisfies "does not name B" trivially,
+        # and this deployment carries rows written by every other module in the
+        # run — so what matters is that A's OWN user is still here.
+        assert world.a.user_id in response.text, (
+            f"control: the {name} listing does not name the operator's own "
+            f"tenant's user, so 'B is absent' proves nothing: "
+            f"{response.text[:300]}"
+        )
         assert response.json()["total"] <= len(_org_a_members(world)), (
             f"{name} listing reports a total larger than its own tenant: "
             f"{response.text[:300]}"

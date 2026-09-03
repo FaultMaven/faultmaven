@@ -138,6 +138,45 @@ class FakeOrganizations:
         ]
 
 
+class _UserStore:
+    """Just enough user store for the two listing routes and the delete path.
+
+    Honours ``user_ids`` for real. That matters: the fix pushes the allowlist
+    into the store call rather than filtering the returned page, and an
+    ``AsyncMock`` would return the same three users whatever it was handed — so
+    a route that dropped the argument would still look confined here. The calls
+    are recorded as well, so the assertion can be "the predicate was passed"
+    AND "the answer respects it" rather than either alone.
+    """
+
+    def __init__(self, users):
+        self._users = users
+        self.list_calls: list = []
+        self.deleted: list[str] = []
+
+    async def list_users(self, limit: int = 100, offset: int = 0, user_ids=None):
+        self.list_calls.append(user_ids)
+        rows = list(self._users.values())
+        # `is not None`, not truthiness — an empty allowlist selects nothing.
+        if user_ids is not None:
+            allowed = set(user_ids)
+            rows = [row for row in rows if row.user_id in allowed]
+        return rows[offset : offset + limit]
+
+    async def count_users(self) -> int:
+        return len(self._users)
+
+    async def get_user(self, user_id: str):
+        return self._users.get(user_id)
+
+    async def get_user_by_username(self, username: str):
+        return self._users.get(username)
+
+    async def delete_user(self, user_id: str) -> bool:
+        self.deleted.append(user_id)
+        return True
+
+
 def _repository_user(user_id: str, organization_id: str):
     """A ``user_repository.User``-shaped row, as the service layer returns it."""
     from faultmaven.infrastructure.persistence.user_repository import User
@@ -231,20 +270,13 @@ def world():
     user_service.assign_role = AsyncMock(return_value=users[MEMBER_B])
     user_service.remove_role = AsyncMock(return_value=users[MEMBER_B])
 
-    user_store = AsyncMock()
-    user_store.list_users = AsyncMock(
-        return_value=[
-            _dev_user(OPERATOR_A, ORG_A),
-            _dev_user(MEMBER_A, ORG_A),
-            _dev_user(MEMBER_B, ORG_B),
-        ]
+    user_store = _UserStore(
+        {
+            OPERATOR_A: _dev_user(OPERATOR_A, ORG_A),
+            MEMBER_A: _dev_user(MEMBER_A, ORG_A),
+            MEMBER_B: _dev_user(MEMBER_B, ORG_B),
+        }
     )
-    user_store.count_users = AsyncMock(return_value=3)
-    user_store.get_user = AsyncMock(side_effect=lambda uid: _dev_user(uid, ORG_B))
-    user_store.get_user_by_username = AsyncMock(
-        side_effect=lambda name: _dev_user(name, ORG_B)
-    )
-    user_store.delete_user = AsyncMock(return_value=True)
 
     auth_service = AsyncMock()
     auth_service.revoke_user_tokens = AsyncMock(return_value=datetime.now(timezone.utc))
@@ -367,7 +399,7 @@ def test_no_operation_reaches_another_tenants_user(world):
                 getattr(world.user_service, mutator).assert_not_awaited()
 
     world.auth_service.revoke_user_tokens.assert_not_awaited()
-    world.user_store.delete_user.assert_not_awaited()
+    assert world.user_store.deleted == []
 
 
 @pytest.mark.unit
@@ -429,6 +461,11 @@ def test_the_auth_listing_neither_names_nor_counts_another_tenant(world):
     assert body["truncated"] is False, body
     assert MEMBER_B not in listing.text
 
+    # The allowlist reached the STORE, so the window it paginates is the
+    # tenant's. Post-filtering a deployment-wide page would satisfy the row
+    # assertions above while leaving a tenant's users able to fall outside it.
+    assert world.user_store.list_calls == [frozenset(MEMBERSHIP[ORG_A])]
+
 
 @pytest.mark.unit
 @pytest.mark.security
@@ -477,6 +514,16 @@ async def test_the_service_applies_the_allowlist_before_paginating():
     assert {user.user_id for user in users} == set(MEMBERSHIP[ORG_A])
     assert total == len(MEMBERSHIP[ORG_A])
 
+    # The repository applies it too, and answers the same way on its own. That
+    # is the half that keeps one tenant's unreadable row out of another
+    # tenant's listing: the rows are never loaded.
+    rows, repo_total = await repository.list_users(
+        user_ids=frozenset(MEMBERSHIP[ORG_A])
+    )
+    assert {row.user_id for row in rows} == set(MEMBERSHIP[ORG_A])
+    assert repo_total == len(MEMBERSHIP[ORG_A])
+    assert await repository.list_users(user_ids=frozenset()) == ([], 0)
+
     # An EMPTY allowlist returns nothing. Read as "no restriction" it would
     # return the deployment, which is the fail-open inversion of the predicate.
     users, total = await service.list_users(restrict_to_user_ids=frozenset())
@@ -518,7 +565,7 @@ def test_the_operators_own_tenant_is_unaffected(world):
                 getattr(world.user_service, mutator).assert_awaited()
 
     world.auth_service.revoke_user_tokens.assert_awaited()
-    world.user_store.delete_user.assert_awaited()
+    assert world.user_store.deleted == [MEMBER_A]
 
 
 # =============================================================================
