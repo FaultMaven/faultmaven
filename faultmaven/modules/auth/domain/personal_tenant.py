@@ -65,16 +65,12 @@ def personal_tenant_key(provider: str, provider_user_id: str) -> str:
 
 
 def personal_org_slug(key: str) -> str:
-    """The FaultMaven organization/enterprise slug for a derived key."""
-    return f"{PERSONAL_SLUG_PREFIX}{key}"
+    """The slug for a derived key — and the IdP organization's ``external_id``.
 
-
-def personal_external_id(key: str) -> str:
-    """The IdP organization's ``external_id`` for a derived key.
-
-    The same string as the slug, deliberately: it is what makes an
-    IdP organization and its FaultMaven tenant recognisable as the same thing
-    from either side, and re-deriving it is how a retry finds the organization a
-    failed attempt already created.
+    One value serving both, deliberately: it is what makes an IdP organization
+    and its FaultMaven tenant recognisable as the same thing from either side,
+    and re-deriving it is how a retry finds the organization a failed attempt
+    already created. A second function returning the same string only invited
+    the two to drift.
     """
-    return personal_org_slug(key)
+    return f"{PERSONAL_SLUG_PREFIX}{key}"

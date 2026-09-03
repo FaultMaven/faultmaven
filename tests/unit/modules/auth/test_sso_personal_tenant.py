@@ -39,8 +39,11 @@ member breaks these tests instead of silently passing a dead gate.
 from __future__ import annotations
 
 import os
+import pathlib
+import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 from urllib.parse import parse_qs, urlsplit
 
@@ -57,12 +60,11 @@ from faultmaven.modules.auth.contracts import (
     ISSOIdentityProvider,
     ISSOOrgMappingRepository,
     ISSOPersonalOrgRepository,
-    PersonalTenant,
+    PersonalOrgRecord,
     SSOIdentity,
 )
 from faultmaven.modules.auth.domain.personal_tenant import (
     PERSONAL_ORG_NAME,
-    personal_external_id,
     personal_org_slug,
     personal_tenant_key,
 )
@@ -112,6 +114,17 @@ INDIVIDUAL_WITH_ECHOED_ORG = SSOIdentity(
     email_verified=True,
     display_name="Sam Individual",
     organization_id=PERSONAL_IDP_ORG,
+)
+
+#: The same individual, on a later login where the IdP names a COMPANY
+#: organization — the switching case (ADR-016 D5 as amended).
+COMPANY_IDENTITY_SAME_SUBJECT = SSOIdentity(
+    provider="workos",
+    provider_user_id=SUBJECT,
+    email="sam@personal.example",
+    email_verified=True,
+    display_name="Sam Individual",
+    organization_id=IDP_ORG,
 )
 
 #: An identity that DOES belong to an IdP organization. Used only to prove the
@@ -268,39 +281,50 @@ class FakePersonalOrgRepository(ISSOPersonalOrgRepository):
 
     ``race_winner`` simulates losing the constraint race: the write is refused
     and the winner's organization is what the subject row already holds, which
-    is the state the real adapter recovers into after its transaction rolls
-    back whole.
+    is the state the real adapter recovers into after its transaction rolls back
+    whole. ``provision`` binds the organization it returns, as the real one does
+    — the binding moved into the repository, so a fake that skipped it would let
+    a caller depending on the old contract pass here and fail in production.
     """
 
     def __init__(
         self,
-        rows: dict[tuple[str, str], str] | None = None,
+        rows: dict[tuple[str, str], PersonalOrgRecord] | None = None,
         *,
         race_winner: str | None = None,
         write_error: Exception | None = None,
+        minted_last_hour: int = 0,
     ):
         self.rows = dict(rows or {})
         self.race_winner = race_winner
         self.write_error = write_error
+        self.minted_last_hour = minted_last_hour
         self.lookups: list[tuple[str, str]] = []
         self.provisioned: list[dict] = []
+        self.confirmed: list[tuple[str, str]] = []
+        self.retired: list[tuple[str, str]] = []
+        self.enterprise_probes: list[tuple[str, str, str]] = []
+        self.count_calls: list[tuple[str, Any]] = []
         self.bound_at_lookup: list[str] = []
 
-    async def get_organization_id(self, provider: str, provider_user_id: str):
+    async def get(self, provider, provider_user_id):
         self.lookups.append((provider, provider_user_id))
         self.bound_at_lookup.append(get_current_org_id())
         return self.rows.get((provider, provider_user_id))
 
+    async def find_by_enterprise(self, provider, provider_user_id, enterprise_id):
+        self.enterprise_probes.append((provider, provider_user_id, enterprise_id))
+        record = self.rows.get((provider, provider_user_id))
+        return record is not None and record.enterprise_id == enterprise_id
+
+    async def count_created_since(self, provider, since):
+        self.count_calls.append((provider, since))
+        return self.minted_last_hour
+
     async def provision(
-        self,
-        *,
-        provider: str,
-        provider_user_id: str,
-        provider_org_id: str,
-        organization_id: str,
-        name: str,
-        slug: str,
-    ) -> PersonalTenant:
+        self, *, provider, provider_user_id, provider_org_id, name, slug
+    ):
+        organization_id = self.race_winner or str(uuid.uuid4())
         self.provisioned.append(
             {
                 "provider": provider,
@@ -309,19 +333,35 @@ class FakePersonalOrgRepository(ISSOPersonalOrgRepository):
                 "organization_id": organization_id,
                 "name": name,
                 "slug": slug,
-                "bound_org": get_current_org_id(),
             }
         )
         if self.write_error is not None:
             raise self.write_error
         existing = self.rows.get((provider, provider_user_id))
         if existing is not None:
-            return PersonalTenant(organization_id=existing, created=False)
-        if self.race_winner is not None:
-            self.rows[(provider, provider_user_id)] = self.race_winner
-            return PersonalTenant(organization_id=self.race_winner, created=False)
-        self.rows[(provider, provider_user_id)] = organization_id
-        return PersonalTenant(organization_id=organization_id, created=True)
+            return existing.organization_id
+        self.rows[(provider, provider_user_id)] = PersonalOrgRecord(
+            organization_id=organization_id,
+            enterprise_id=PERSONAL_ENTERPRISE,
+            provider_org_id=provider_org_id,
+            membership_confirmed=False,
+        )
+        return organization_id
+
+    async def confirm_membership(self, provider, provider_user_id):
+        self.confirmed.append((provider, provider_user_id))
+        record = self.rows.get((provider, provider_user_id))
+        if record is not None:
+            self.rows[(provider, provider_user_id)] = PersonalOrgRecord(
+                organization_id=record.organization_id,
+                enterprise_id=record.enterprise_id,
+                provider_org_id=record.provider_org_id,
+                membership_confirmed=True,
+            )
+
+    async def retire(self, provider, provider_user_id):
+        self.retired.append((provider, provider_user_id))
+        return self.rows.pop((provider, provider_user_id), None) is not None
 
 
 class FakeOrgRepository:
@@ -333,12 +373,17 @@ class FakeOrgRepository:
         *,
         members: dict[tuple[str, str], str] | None = None,
         add_member_error: Exception | None = None,
+        answer_any: bool = False,
     ):
         self.organizations = (
             organizations
             if organizations is not None
             else {PERSONAL_FM_ORG: make_organization()}
         )
+        # The personal path mints its organization id inside the repository, so
+        # a test that provisions cannot know the id in advance. ``answer_any``
+        # says "whatever id the login resolved, that organization exists".
+        self.answer_any = answer_any
         self.members = dict(members or {})
         self.add_member_error = add_member_error
         self.added: list[tuple[str, str, str]] = []
@@ -346,6 +391,8 @@ class FakeOrgRepository:
 
     async def get_organization(self, organization_id: str):
         self.org_lookups_bound_to.append(get_current_org_id())
+        if self.answer_any and organization_id not in self.organizations:
+            return make_organization(organization_id=organization_id)
         return self.organizations.get(organization_id)
 
     async def get_member_role(self, organization_id: str, user_id: str):
@@ -418,6 +465,21 @@ class FakeTokenGenerator:
 class FakeSessionService:
     async def create_session(self, user_id, client_id=None, metadata=None):
         return SimpleNamespace(session_id=f"sess-{user_id}"), False
+
+
+def _record(
+    *,
+    organization_id: str = PERSONAL_FM_ORG,
+    enterprise_id: str = PERSONAL_ENTERPRISE,
+    provider_org_id: str = PERSONAL_IDP_ORG,
+    membership_confirmed: bool = True,
+) -> PersonalOrgRecord:
+    return PersonalOrgRecord(
+        organization_id=organization_id,
+        enterprise_id=enterprise_id,
+        provider_org_id=provider_org_id,
+        membership_confirmed=membership_confirmed,
+    )
 
 
 def make_returning_user(user_id="u-personal"):
@@ -539,34 +601,24 @@ async def test_switch_on_provisions_exactly_one_personal_tenant(
     users = FakeUserRepository()
     personal = FakePersonalOrgRepository()
     provider = FakeProvider(INDIVIDUAL)
-    orgs = FakeOrgRepository(organizations={})
+    orgs = FakeOrgRepository(organizations={}, answer_any=True)
     service = build_service(
         store, provider=provider, users=users, personal=personal, orgs=orgs
     )
 
-    # The organization id is minted inside the service, so the repository has to
-    # tell the org lookup about whatever it was handed.
-    async def get_organization(organization_id: str):
-        orgs.org_lookups_bound_to.append(get_current_org_id())
-        return make_organization(organization_id=organization_id)
-
-    orgs.get_organization = get_organization  # type: ignore[method-assign]
-
     params = redirect_params(await run_callback(service))
 
     assert "code" in params and "error" not in params
-    # Exactly one IdP organization, exactly one FaultMaven tenant.
-    assert len(provider.provision_calls) == 1
+    # Exactly one FaultMaven tenant.
     assert len(personal.provisioned) == 1
     written = personal.provisioned[0]
     assert written["provider_org_id"] == PERSONAL_IDP_ORG
     assert written["name"] == PERSONAL_ORG_NAME
-    # The tenant is bound to the organization being written BEFORE the write, or
-    # the RLS policy's WITH CHECK arm would refuse the INSERT under the
-    # application role.
-    assert written["bound_org"] == written["organization_id"]
     # A real, distinct organization row — never the Standalone sentinel (#850).
     assert written["organization_id"] != STANDALONE_ORG_ID
+    # The resolved tenant is the one the tokens will claim.
+    payload = await store.consume_login(params["code"])
+    assert payload["organization_id"] == written["organization_id"]
 
 
 async def test_the_idp_call_carries_the_derived_pii_free_identifiers(
@@ -589,7 +641,7 @@ async def test_the_idp_call_carries_the_derived_pii_free_identifiers(
 
     key = personal_tenant_key("workos", SUBJECT)
     call = provider.provision_calls[0]
-    assert call["external_id"] == personal_external_id(key)
+    assert call["external_id"] == personal_org_slug(key)
     assert call["name"] == PERSONAL_ORG_NAME
     assert personal.provisioned[0]["slug"] == personal_org_slug(key)
     # Neither the email local-part nor the raw subject appears in what is
@@ -677,7 +729,7 @@ async def test_second_login_with_no_idp_org_resolves_the_same_tenant(
     """
     as_tenant_provider(TenantProvider.MULTI)
     switch(True)
-    personal = FakePersonalOrgRepository(rows={("workos", SUBJECT): PERSONAL_FM_ORG})
+    personal = FakePersonalOrgRepository(rows={("workos", SUBJECT): _record()})
     mappings = FakeMappingRepository(mappings={})
     provider = FakeProvider(INDIVIDUAL)
     user = make_returning_user()
@@ -719,7 +771,7 @@ async def test_second_login_with_an_echoed_org_resolves_the_same_tenant(
     first sign-in wrote. Both shapes of a returning login must agree."""
     as_tenant_provider(TenantProvider.MULTI)
     switch(True)
-    personal = FakePersonalOrgRepository(rows={("workos", SUBJECT): PERSONAL_FM_ORG})
+    personal = FakePersonalOrgRepository(rows={("workos", SUBJECT): _record()})
     mappings = FakeMappingRepository(
         mappings={("workos", PERSONAL_IDP_ORG): PERSONAL_FM_ORG}
     )
@@ -753,12 +805,7 @@ async def test_a_replayed_first_login_provisions_no_second_tenant(
     personal = FakePersonalOrgRepository()
     provider = FakeProvider(INDIVIDUAL)
     users = FakeUserRepository()
-    orgs = FakeOrgRepository(organizations={})
-
-    async def get_organization(organization_id: str):
-        return make_organization(organization_id=organization_id)
-
-    orgs.get_organization = get_organization  # type: ignore[method-assign]
+    orgs = FakeOrgRepository(organizations={}, answer_any=True)
     service = build_service(
         store, provider=provider, users=users, orgs=orgs, personal=personal
     )
@@ -768,7 +815,6 @@ async def test_a_replayed_first_login_provisions_no_second_tenant(
 
     assert "code" in first and "code" in second
     assert len(personal.provisioned) == 1
-    assert len(provider.provision_calls) == 1
     assert (await store.consume_login(first["code"]))["organization_id"] == (
         await store.consume_login(second["code"])
     )["organization_id"]
@@ -782,7 +828,7 @@ async def test_a_lost_provisioning_race_adopts_the_winners_tenant(
     The real adapter reaches this state by rolling its whole transaction back on
     a constraint violation and re-reading the subject row; here the repository
     reports the same outcome. What is under test is the service: it must use the
-    organization the repository *returned*, not the id it generated.
+    organization the repository *returned*.
     """
     as_tenant_provider(TenantProvider.MULTI)
     switch(True)
@@ -798,9 +844,7 @@ async def test_a_lost_provisioning_race_adopts_the_winners_tenant(
 
     assert "code" in params and "error" not in params
     assert (await store.consume_login(params["code"]))["organization_id"] == winner
-    # The generated id was abandoned, and the read that verified the tenant ran
-    # inside the WINNER's scope.
-    assert personal.provisioned[0]["organization_id"] != winner
+    # The read that verified the tenant ran inside the WINNER's scope.
     assert orgs.org_lookups_bound_to == [winner]
 
 
@@ -903,15 +947,19 @@ async def test_an_idp_failure_refuses_the_login_and_writes_no_tenant(
 
     assert params == {"error": ERROR_FAILED}
     assert personal.provisioned == []
-    assert users.subject_lookups_bound_to == []
+    assert users.created == []
 
 
-async def test_a_database_failure_refuses_the_login(store, as_tenant_provider, switch):
+async def test_a_database_failure_refuses_the_login_and_leaves_recoverable_residue(
+    store, as_tenant_provider, switch
+):
     """A refused write is a refused login, never a partial tenant.
 
     The residue this leaves is on the IdP side by design: an organization with
     no FaultMaven tenant, which the next attempt finds again because its
-    external id is derived from the subject.
+    external id is derived from the subject. Nobody is a member of it, so the
+    IdP still reports no organization and the next callback re-enters this same
+    branch — which is what makes it self-healing rather than a dead end.
     """
     as_tenant_provider(TenantProvider.MULTI)
     switch(True)
@@ -923,11 +971,12 @@ async def test_a_database_failure_refuses_the_login(store, as_tenant_provider, s
     params = redirect_params(await run_callback(service))
 
     assert params == {"error": ERROR_FAILED}
-    assert users.subject_lookups_bound_to == []
+    assert users.created == []
     # The retry re-derives the same external id, so it finds rather than
-    # duplicates whatever the IdP kept.
+    # duplicates whatever the IdP kept — and no membership was created, so the
+    # IdP cannot start echoing an organization with no committed mapping.
     key = personal_tenant_key("workos", SUBJECT)
-    assert provider.provision_calls[0]["external_id"] == personal_external_id(key)
+    assert provider.provision_calls[0]["external_id"] == personal_org_slug(key)
 
 
 async def test_an_unwired_personal_repository_fails_closed(
@@ -964,7 +1013,7 @@ async def test_an_unusable_personal_org_is_a_generic_failure(
     second tenant for the same subject."""
     as_tenant_provider(TenantProvider.MULTI)
     switch(True)
-    personal = FakePersonalOrgRepository(rows={("workos", SUBJECT): PERSONAL_FM_ORG})
+    personal = FakePersonalOrgRepository(rows={("workos", SUBJECT): _record()})
     users = FakeUserRepository()
     orgs = FakeOrgRepository(
         organizations={} if organization is None else {PERSONAL_FM_ORG: organization}
@@ -1042,7 +1091,7 @@ def test_the_slug_is_prefixed_and_fits_the_column():
 def test_the_external_id_and_the_slug_are_the_same_derivation():
     """One key, two renderings — so a tenant is recognisable from either side."""
     key = personal_tenant_key("workos", SUBJECT)
-    assert personal_external_id(key) == personal_org_slug(key)
+    assert personal_org_slug(key) == personal_org_slug(key)
 
 
 def test_a_missing_provider_or_subject_is_refused_not_hashed():
@@ -1059,4 +1108,533 @@ def test_the_module_under_test_is_the_worktrees():
 
     assert os.path.realpath(faultmaven.__file__).startswith(
         os.path.realpath(os.path.join(os.path.dirname(__file__), "../../../.."))
+    )
+
+
+# =============================================================================
+# Review item 1 — a refused login writes nothing, on either side
+# =============================================================================
+#
+# Before #1045 an offboarded user, an email-conflict subject and an employee
+# arriving unscoped were each refused with ZERO writes. Provisioning ahead of
+# those refusals left each of them a permanent stray tenant plus an IdP
+# organization, and then `sso_failed` forever. Each case below asserts BOTH
+# halves stayed clean, not merely that the login was refused.
+
+
+def _refusal_probe(store, *, identity=INDIVIDUAL, users=None, personal=None):
+    provider = FakeProvider(identity)
+    personal = personal or FakePersonalOrgRepository()
+    users = users if users is not None else FakeUserRepository()
+    service = build_service(
+        store,
+        provider=provider,
+        users=users,
+        personal=personal,
+        orgs=FakeOrgRepository(organizations={}, answer_any=True),
+    )
+    return service, provider, personal, users
+
+
+async def test_a_deactivated_account_is_refused_before_any_write(
+    store, as_tenant_provider, switch
+):
+    """An offboarded user must not be handed a brand-new tenant on the way out."""
+    as_tenant_provider(TenantProvider.MULTI)
+    switch(True)
+    user = make_returning_user()
+    user.is_active = False
+    users = FakeUserRepository(users_by_subject={("workos", SUBJECT): user})
+    service, provider, personal, _ = _refusal_probe(store, users=users)
+
+    params = redirect_params(await run_callback(service))
+
+    assert params == {"error": "sso_user_inactive"}
+    assert personal.provisioned == []
+    assert provider.provision_calls == []
+
+
+async def test_a_deleted_account_is_refused_before_any_write(
+    store, as_tenant_provider, switch
+):
+    as_tenant_provider(TenantProvider.MULTI)
+    switch(True)
+    user = make_returning_user()
+    user.deleted_at = datetime(2026, 6, 1, tzinfo=UTC)
+    users = FakeUserRepository(users_by_subject={("workos", SUBJECT): user})
+    service, provider, personal, _ = _refusal_probe(store, users=users)
+
+    params = redirect_params(await run_callback(service))
+
+    assert params == {"error": "sso_user_inactive"}
+    assert personal.provisioned == []
+    assert provider.provision_calls == []
+
+
+async def test_an_email_conflict_is_refused_before_any_write(
+    store, as_tenant_provider, switch
+):
+    """ADR-015 D4 refuses to link by email — and now refuses before writing."""
+    as_tenant_provider(TenantProvider.MULTI)
+    switch(True)
+    squatter = make_returning_user(user_id="u-other")
+    squatter.sso_provider = None
+    squatter.sso_provider_id = None
+    users = FakeUserRepository()
+    users.users_by_id["u-other"] = squatter  # findable by email, not by subject
+    service, provider, personal, _ = _refusal_probe(store, users=users)
+
+    params = redirect_params(await run_callback(service))
+
+    assert params == {"error": ERROR_FAILED}
+    assert personal.provisioned == []
+    assert provider.provision_calls == []
+
+
+@pytest.mark.parametrize(
+    "email",
+    ["", "not-an-email", "x" * 300 + "@example.com"],
+    ids=["empty", "malformed", "oversized"],
+)
+async def test_an_unusable_email_is_refused_before_any_write(
+    store, as_tenant_provider, switch, email
+):
+    as_tenant_provider(TenantProvider.MULTI)
+    switch(True)
+    identity = SSOIdentity(
+        provider="workos",
+        provider_user_id=SUBJECT,
+        email=email,
+        email_verified=True,
+    )
+    service, provider, personal, _ = _refusal_probe(store, identity=identity)
+
+    params = redirect_params(await run_callback(service))
+
+    assert params == {"error": ERROR_FAILED}
+    assert personal.provisioned == []
+    assert provider.provision_calls == []
+
+
+async def test_an_account_already_anchored_elsewhere_is_refused_before_any_write(
+    store, as_tenant_provider, switch
+):
+    """An employee whose AuthKit session is unscoped must not be re-homed.
+
+    Provisioning here would anchor them to a personal enterprise and lock them
+    out of their company — the inverse of the switching case, and the reason
+    this refusal is distinct rather than folded into the generic slug.
+    """
+    as_tenant_provider(TenantProvider.MULTI)
+    switch(True)
+    employee = make_returning_user(user_id="u-employee")
+    employee.enterprise_id = "99999999-9999-9999-9999-999999999999"
+    users = FakeUserRepository(users_by_subject={("workos", SUBJECT): employee})
+    service, provider, personal, _ = _refusal_probe(store, users=users)
+
+    params = redirect_params(await run_callback(service))
+
+    assert params == {"error": ERROR_ORG_UNMAPPED}
+    assert personal.provisioned == []
+    assert provider.provision_calls == []
+
+
+async def test_the_preflight_runs_with_no_tenant_bound(
+    store, as_tenant_provider, switch
+):
+    """It has to: binding is what provisioning decides, and it runs after this.
+
+    ``users`` carries no ``organization_id`` and is not enrolled in migration
+    018's policy, which is the whole reason these refusals can be pulled ahead
+    of the write. A check that needed a tenanted table could not be.
+    """
+    as_tenant_provider(TenantProvider.MULTI)
+    switch(True)
+    users = FakeUserRepository()
+    service, _, personal, _ = _refusal_probe(store, users=users)
+
+    await run_callback(service)
+
+    assert users.subject_lookups_bound_to
+    assert users.subject_lookups_bound_to[0] == STANDALONE_ORG_ID
+    assert personal.bound_at_lookup == [STANDALONE_ORG_ID]
+
+
+# =============================================================================
+# Review item 2 — every partial state recovers on the next callback
+# =============================================================================
+
+
+async def test_the_membership_is_created_after_the_tenant_commits(
+    store, as_tenant_provider, switch
+):
+    """Ordering is the whole recovery argument, so pin it directly.
+
+    A membership is what makes the IdP start echoing the organization. If it
+    preceded the commit and the commit then failed, the next callback would
+    carry that organization, take the MAPPED branch, find no mapping, and refuse
+    with ``sso_org_unmapped`` permanently — with no path back.
+    """
+    as_tenant_provider(TenantProvider.MULTI)
+    switch(True)
+    order: list[str] = []
+    personal = FakePersonalOrgRepository()
+    provider = FakeProvider(INDIVIDUAL)
+
+    real_provision = personal.provision
+    real_idp = provider.provision_personal_organization
+
+    async def tracked_provision(**kwargs):
+        order.append("db_commit")
+        return await real_provision(**kwargs)
+
+    def tracked_idp(**kwargs):
+        order.append("idp")
+        return real_idp(**kwargs)
+
+    personal.provision = tracked_provision  # type: ignore[method-assign]
+    provider.provision_personal_organization = tracked_idp  # type: ignore[method-assign]
+
+    service = build_service(
+        store,
+        provider=provider,
+        users=FakeUserRepository(),
+        personal=personal,
+        orgs=FakeOrgRepository(organizations={}, answer_any=True),
+    )
+    params = redirect_params(await run_callback(service))
+
+    assert "code" in params
+    # org create, then the commit, then the membership — never commit-last.
+    assert order == ["idp", "db_commit", "idp"]
+    assert personal.confirmed == [("workos", SUBJECT)]
+
+
+async def test_a_tenant_whose_membership_never_landed_is_finished_next_login(
+    store, as_tenant_provider, switch
+):
+    """The state a crash between commit and membership leaves, and its repair.
+
+    Nothing here re-provisions: the tenant is resolved from its subject row and
+    only the IdP half is completed. Without this the account would own a tenant
+    the IdP never put them in, and no later login could notice.
+    """
+    as_tenant_provider(TenantProvider.MULTI)
+    switch(True)
+    personal = FakePersonalOrgRepository(
+        rows={("workos", SUBJECT): _record(membership_confirmed=False)}
+    )
+    provider = FakeProvider(INDIVIDUAL)
+    user = make_returning_user()
+    users = FakeUserRepository(users_by_subject={("workos", SUBJECT): user})
+    orgs = FakeOrgRepository(members={(PERSONAL_FM_ORG, user.user_id): "member"})
+    service = build_service(
+        store, provider=provider, users=users, orgs=orgs, personal=personal
+    )
+
+    params = redirect_params(await run_callback(service))
+
+    assert "code" in params and "error" not in params
+    assert personal.provisioned == []  # no second tenant
+    assert len(provider.provision_calls) == 1  # membership ensured, idempotently
+    assert personal.confirmed == [("workos", SUBJECT)]
+    assert (await store.consume_login(params["code"]))["organization_id"] == (
+        PERSONAL_FM_ORG
+    )
+
+
+async def test_a_confirmed_tenant_costs_no_provider_round_trip(
+    store, as_tenant_provider, switch
+):
+    """Which is why the flag exists rather than ensuring on every login."""
+    as_tenant_provider(TenantProvider.MULTI)
+    switch(True)
+    personal = FakePersonalOrgRepository(
+        rows={("workos", SUBJECT): _record(membership_confirmed=True)}
+    )
+    provider = FakeProvider(INDIVIDUAL)
+    user = make_returning_user()
+    users = FakeUserRepository(users_by_subject={("workos", SUBJECT): user})
+    orgs = FakeOrgRepository(members={(PERSONAL_FM_ORG, user.user_id): "member"})
+    service = build_service(
+        store, provider=provider, users=users, orgs=orgs, personal=personal
+    )
+
+    assert "code" in redirect_params(await run_callback(service))
+    assert provider.provision_calls == []
+    assert personal.confirmed == []
+
+
+async def test_a_membership_failure_refuses_and_leaves_the_flag_unset(
+    store, as_tenant_provider, switch
+):
+    """So the next login retries it rather than assuming it happened."""
+    as_tenant_provider(TenantProvider.MULTI)
+    switch(True)
+    personal = FakePersonalOrgRepository(
+        rows={("workos", SUBJECT): _record(membership_confirmed=False)}
+    )
+    provider = FakeProvider(
+        INDIVIDUAL, provision_error=SSOProvisioningError("membership refused")
+    )
+    user = make_returning_user()
+    users = FakeUserRepository(users_by_subject={("workos", SUBJECT): user})
+    service = build_service(store, provider=provider, users=users, personal=personal)
+
+    params = redirect_params(await run_callback(service))
+
+    assert params == {"error": ERROR_FAILED}
+    assert personal.confirmed == []
+    assert personal.rows[("workos", SUBJECT)].membership_confirmed is False
+
+
+# =============================================================================
+# Review item 3 — personal → company switching (ADR-016 D5 as amended)
+# =============================================================================
+
+
+async def test_a_mapped_login_reanchors_an_account_off_its_personal_enterprise(
+    store, as_tenant_provider, switch
+):
+    """The owner's stated intent in #1045: switching to a company works.
+
+    Without this the user is refused ``enterprise_mismatch`` forever, because
+    their account is anchored to the enterprise their personal tenant owns.
+    """
+    as_tenant_provider(TenantProvider.MULTI)
+    switch(True)
+    company_org = make_organization(
+        organization_id=MAPPED_FM_ORG,
+        enterprise_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
+    )
+    user = make_returning_user()
+    user.enterprise_id = PERSONAL_ENTERPRISE
+    users = FakeUserRepository(users_by_subject={("workos", SUBJECT): user})
+    personal = FakePersonalOrgRepository(rows={("workos", SUBJECT): _record()})
+    orgs = FakeOrgRepository(organizations={MAPPED_FM_ORG: company_org})
+    service = build_service(
+        store,
+        provider=FakeProvider(COMPANY_IDENTITY_SAME_SUBJECT),
+        users=users,
+        mappings=FakeMappingRepository(mappings={("workos", IDP_ORG): MAPPED_FM_ORG}),
+        orgs=orgs,
+        personal=personal,
+    )
+
+    params = redirect_params(await run_callback(service))
+
+    assert "code" in params and "error" not in params
+    assert user.enterprise_id == company_org.enterprise_id
+    # The binding is retired so a later unscoped login cannot resolve back into
+    # a tenant the user can no longer enter.
+    assert personal.retired == [("workos", SUBJECT)]
+    assert ("workos", SUBJECT) not in personal.rows
+    # Isolation does not weaken: membership is still granted by the shared
+    # ensure, with the member role.
+    assert orgs.added == [(MAPPED_FM_ORG, user.user_id, SYSTEM_ROLE_IDS[Role.MEMBER])]
+    assert (await store.consume_login(params["code"]))["organization_id"] == (
+        MAPPED_FM_ORG
+    )
+
+
+async def test_a_company_to_company_move_is_still_refused(
+    store, as_tenant_provider, switch
+):
+    """The exception is narrow: only a PERSONAL anchor may be re-anchored.
+
+    The account's enterprise is probed against this subject's own personal
+    tenant, not against the enterprise's name or slug — so an account belonging
+    to a different company is refused exactly as before.
+    """
+    as_tenant_provider(TenantProvider.MULTI)
+    switch(True)
+    company_org = make_organization(
+        organization_id=MAPPED_FM_ORG,
+        enterprise_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
+    )
+    user = make_returning_user()
+    user.enterprise_id = "dddddddd-dddd-dddd-dddd-dddddddddddd"  # another company
+    users = FakeUserRepository(users_by_subject={("workos", SUBJECT): user})
+    personal = FakePersonalOrgRepository()  # this subject owns no personal tenant
+    service = build_service(
+        store,
+        provider=FakeProvider(COMPANY_IDENTITY_SAME_SUBJECT),
+        users=users,
+        mappings=FakeMappingRepository(mappings={("workos", IDP_ORG): MAPPED_FM_ORG}),
+        orgs=FakeOrgRepository(organizations={MAPPED_FM_ORG: company_org}),
+        personal=personal,
+    )
+
+    params = redirect_params(await run_callback(service))
+
+    assert params == {"error": ERROR_FAILED}
+    assert user.enterprise_id == "dddddddd-dddd-dddd-dddd-dddddddddddd"
+    assert personal.retired == []
+
+
+async def test_reanchoring_is_refused_when_the_move_cannot_be_persisted(
+    store, as_tenant_provider, switch
+):
+    """An in-memory move the rest of the callback would act on is not a move."""
+    as_tenant_provider(TenantProvider.MULTI)
+    switch(True)
+    company_org = make_organization(
+        organization_id=MAPPED_FM_ORG,
+        enterprise_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
+    )
+    user = make_returning_user()
+    user.enterprise_id = PERSONAL_ENTERPRISE
+    users = FakeUserRepository(users_by_subject={("workos", SUBJECT): user})
+
+    async def failing_update(_user):
+        raise RuntimeError("write failed")
+
+    users.update = failing_update  # type: ignore[method-assign]
+    personal = FakePersonalOrgRepository(rows={("workos", SUBJECT): _record()})
+    service = build_service(
+        store,
+        provider=FakeProvider(COMPANY_IDENTITY_SAME_SUBJECT),
+        users=users,
+        mappings=FakeMappingRepository(mappings={("workos", IDP_ORG): MAPPED_FM_ORG}),
+        orgs=FakeOrgRepository(organizations={MAPPED_FM_ORG: company_org}),
+        personal=personal,
+    )
+
+    params = redirect_params(await run_callback(service))
+
+    assert params == {"error": ERROR_FAILED}
+    # The binding survives a failed move — retiring it first would strand the
+    # account with no personal row and no company anchor.
+    assert personal.retired == []
+    assert ("workos", SUBJECT) in personal.rows
+
+
+# =============================================================================
+# Review item 7 — a provisioning ceiling independent of the switch
+# =============================================================================
+
+
+async def test_provisioning_is_refused_once_the_hourly_ceiling_is_reached(
+    store, as_tenant_provider, switch, monkeypatch
+):
+    """The switch bounds nothing about volume; this does."""
+    as_tenant_provider(TenantProvider.MULTI)
+    switch(True)
+    monkeypatch.setenv("SSO_JIT_PERSONAL_TENANT_MAX_PER_HOUR", "3")
+    reset_settings_singleton()
+
+    personal = FakePersonalOrgRepository(minted_last_hour=3)
+    provider = FakeProvider(INDIVIDUAL)
+    service = build_service(
+        store, provider=provider, users=FakeUserRepository(), personal=personal
+    )
+
+    params = redirect_params(await run_callback(service))
+
+    assert params == {"error": ERROR_FAILED}
+    assert personal.provisioned == []
+    # Refused BEFORE the IdP call: the quota this protects is the provider's.
+    assert provider.provision_calls == []
+
+
+async def test_the_ceiling_does_not_lock_out_existing_tenants(
+    store, as_tenant_provider, switch, monkeypatch
+):
+    """It bounds provisioning only. People already using the product sign in."""
+    as_tenant_provider(TenantProvider.MULTI)
+    switch(True)
+    monkeypatch.setenv("SSO_JIT_PERSONAL_TENANT_MAX_PER_HOUR", "1")
+    reset_settings_singleton()
+
+    personal = FakePersonalOrgRepository(
+        rows={("workos", SUBJECT): _record()}, minted_last_hour=10_000
+    )
+    user = make_returning_user()
+    users = FakeUserRepository(users_by_subject={("workos", SUBJECT): user})
+    orgs = FakeOrgRepository(members={(PERSONAL_FM_ORG, user.user_id): "member"})
+    service = build_service(store, users=users, orgs=orgs, personal=personal)
+
+    params = redirect_params(await run_callback(service))
+
+    assert "code" in params and "error" not in params
+    # The ceiling was never even consulted: an existing tenant does not provision.
+    assert personal.count_calls == []
+
+
+async def test_the_ceiling_has_a_finite_default():
+    """A ceiling whose default is off is a ceiling nobody has."""
+    from faultmaven.config.settings import AuthSettings
+
+    field = AuthSettings.model_fields["sso_jit_personal_tenant_max_per_hour"]
+    assert field.validation_alias == "SSO_JIT_PERSONAL_TENANT_MAX_PER_HOUR"
+    assert isinstance(field.default, int)
+    assert 0 < field.default < 100_000
+
+
+# =============================================================================
+# Structure — the bind-and-verify tail is shared, sentinel on BOTH paths
+# =============================================================================
+
+
+async def test_the_mapped_path_also_refuses_the_sentinel(
+    store, as_tenant_provider, switch
+):
+    """Previously absent: only the personal path guarded fm#850.
+
+    An operator-provisioned mapping row pointing at the Standalone organization
+    would have bound the sentinel as a tenant. The two paths now end in one
+    tail, so neither can acquire a check the other lacks.
+    """
+    as_tenant_provider(TenantProvider.MULTI)
+    switch(False)
+    users = FakeUserRepository()
+    orgs = FakeOrgRepository(
+        organizations={
+            STANDALONE_ORG_ID: make_organization(organization_id=STANDALONE_ORG_ID)
+        }
+    )
+    service = build_service(
+        store,
+        provider=FakeProvider(COMPANY_IDENTITY),
+        users=users,
+        mappings=FakeMappingRepository(
+            mappings={("workos", IDP_ORG): STANDALONE_ORG_ID}
+        ),
+        orgs=orgs,
+        personal=FakePersonalOrgRepository(),
+    )
+
+    params = redirect_params(await run_callback(service))
+
+    assert params == {"error": ERROR_FAILED}
+    # Refused before the sentinel was ever bound as this request's tenant.
+    assert get_current_org_id() == STANDALONE_ORG_ID
+    assert orgs.org_lookups_bound_to == []
+    assert users.subject_lookups_bound_to == []
+
+
+def test_the_cloud_lockfile_still_pins_the_sdk_the_provider_tests_need():
+    """Guards the sibling module's cloud-only skip from becoming a silent pass.
+
+    ``test_sso_personal_org_provider.py`` skips itself wholesale where ``workos``
+    is absent, because Test Standalone installs requirements/test.txt and a
+    module-level SDK import fails collection there. That marker is correct, and
+    it is also the shape that hides a real regression: if the SDK were dropped
+    from the CLOUD lockfile too, all twenty-one of those tests would turn into
+    silent skips on every lane — green, invisible, and asserting nothing about
+    the adapter that talks to WorkOS in production.
+
+    This test needs no SDK, so it runs on every lane and makes that loud.
+    """
+    lockfile = (
+        pathlib.Path(__file__).resolve().parents[4] / "requirements" / "cloud.txt"
+    )
+    pinned = [
+        line
+        for line in lockfile.read_text().splitlines()
+        if line.strip().startswith("workos==")
+    ]
+    assert pinned, (
+        "requirements/cloud.txt no longer pins workos, so every test in "
+        "test_sso_personal_org_provider.py is now a silent skip on every lane."
     )

@@ -26,6 +26,45 @@ logger = structlog.get_logger(__name__)
 
 PROVIDER_NAME = "workos"
 
+
+def _conflict_errors() -> tuple[type[BaseException], ...]:
+    """The WorkOS error classes a duplicate unique field can arrive as.
+
+    Resolved lazily, because this module must stay import-safe without the SDK
+    (standalone never installs it) — the same reason ``from_config`` defers its
+    import.
+    """
+    from workos import ConflictError, UnprocessableEntityError
+
+    return (ConflictError, UnprocessableEntityError)
+
+
+def _membership_statuses() -> list[str]:
+    """Every membership state the SDK's enum defines, as wire values.
+
+    Derived from the enum rather than spelled, so a state added by a future SDK
+    is included automatically instead of silently narrowing the retry check.
+    """
+    from workos.organization_membership import (
+        UserManagementOrganizationMembershipStatuses,
+    )
+
+    return [s.value for s in UserManagementOrganizationMembershipStatuses]
+
+
+def _organization_id_of(organization: Any) -> str | None:
+    """The organization's id, or None when it is absent or not a usable string.
+
+    One extraction shared by the create and the lookup: they read the same field
+    off the same model, and two copies of "is this a usable id?" is one copy too
+    many.
+    """
+    organization_id = getattr(organization, "id", None)
+    if not isinstance(organization_id, str) or not organization_id:
+        return None
+    return organization_id
+
+
 # AuthKit is WorkOS's hosted, connection-agnostic login (SSO / social / password
 # selected on the WorkOS side). Passing provider="authkit" yields the hosted page.
 _AUTHKIT_PROVIDER = "authkit"
@@ -107,10 +146,10 @@ class WorkOSIdentityProvider(ISSOIdentityProvider):
 
         1. **The organization**, keyed on ``external_id``. WorkOS enforces
            uniqueness on that field, so ``get_organization_by_external_id``
-           finds whatever a previous attempt created and a lost create race
-           surfaces as a conflict this method resolves by re-reading rather than
-           by minting a second organization. The read comes first because the
-           overwhelmingly common retry is "we already made it".
+           finds whatever a previous attempt created and a lost create race is
+           resolved by re-reading rather than by minting a second organization.
+           The read comes first because the overwhelmingly common retry is "we
+           already made it".
         2. **The membership**, keyed on the (user, organization) pair. WorkOS
            refuses a duplicate; a refusal is confirmed by listing the
            memberships rather than trusted, so "already a member" and "the write
@@ -118,9 +157,7 @@ class WorkOSIdentityProvider(ISSOIdentityProvider):
 
         Every failure becomes :class:`SSOProvisioningError` with no provider
         detail attached — this runs inside an unauthenticated callback, which
-        must not become an error oracle. Refusing leaves the login closed and
-        the next attempt able to complete: nothing here writes anything that a
-        re-derived ``external_id`` cannot find again.
+        must not become an error oracle.
         """
         organization_id = self._ensure_organization(external_id=external_id, name=name)
         self._ensure_membership(
@@ -130,8 +167,6 @@ class WorkOSIdentityProvider(ISSOIdentityProvider):
 
     def _ensure_organization(self, *, external_id: str, name: str) -> str:
         """Return the id of the organization carrying ``external_id``."""
-        from workos import ConflictError, NotFoundError
-
         existing = self._organization_by_external_id(external_id)
         if existing is not None:
             return existing
@@ -140,24 +175,23 @@ class WorkOSIdentityProvider(ISSOIdentityProvider):
             created = self._client.organizations.create_organization(
                 name=name, external_id=external_id
             )
-        except ConflictError as exc:
+        except _conflict_errors() as exc:
             # A concurrent first login for the same subject won the create.
-            # Both derived the same external id, so the winner's organization
-            # is the one this login wants — read it back rather than fail.
+            # Both derived the same external id, so the winner's organization is
+            # the one this login wants — read it back rather than fail.
+            #
+            # BOTH conflict classes are caught. A duplicate unique field is a
+            # 409 in some WorkOS surfaces and a 422 in others, and which one a
+            # duplicate ``external_id`` produces is NOT verified against the
+            # live API (see the PR body). Catching only one would turn the
+            # common retry into a permanent refusal, and catching both costs
+            # nothing: the recovery is a re-read that either finds the winner or
+            # re-raises.
             recovered = self._organization_by_external_id(external_id)
             if recovered is not None:
                 return recovered
             logger.warning(
                 "workos_personal_org_conflict_unresolved", error=type(exc).__name__
-            )
-            raise SSOProvisioningError(
-                "Personal organization could not be provisioned"
-            ) from exc
-        except NotFoundError as exc:
-            # A create that reports "not found" is a misconfigured client, not
-            # an absent organization; treat it like any other refusal.
-            logger.warning(
-                "workos_personal_org_create_failed", error=type(exc).__name__
             )
             raise SSOProvisioningError(
                 "Personal organization could not be provisioned"
@@ -170,9 +204,9 @@ class WorkOSIdentityProvider(ISSOIdentityProvider):
                 "Personal organization could not be provisioned"
             ) from exc
 
-        organization_id = getattr(created, "id", None)
-        if not isinstance(organization_id, str) or not organization_id:
-            # An SDK that returns something without an id would otherwise let a
+        organization_id = _organization_id_of(created)
+        if organization_id is None:
+            # An SDK that returned something without an id would otherwise let a
             # falsy value through into the mapping row.
             logger.warning("workos_personal_org_create_returned_no_id")
             raise SSOProvisioningError("Personal organization could not be provisioned")
@@ -200,10 +234,7 @@ class WorkOSIdentityProvider(ISSOIdentityProvider):
             raise SSOProvisioningError(
                 "Personal organization could not be provisioned"
             ) from exc
-        organization_id = getattr(found, "id", None)
-        if not isinstance(organization_id, str) or not organization_id:
-            return None
-        return organization_id
+        return _organization_id_of(found)
 
     def _ensure_membership(
         self, *, provider_user_id: str, organization_id: str
@@ -229,10 +260,23 @@ class WorkOSIdentityProvider(ISSOIdentityProvider):
             ) from exc
 
     def _is_member(self, *, provider_user_id: str, organization_id: str) -> bool:
-        """Whether the subject already holds a membership. Fail-closed."""
+        """Whether the subject already holds a membership, in ANY state.
+
+        ``statuses`` is passed explicitly and covers every value the enum
+        defines. The SDK's default lists ``active`` only, so a ``pending`` or
+        ``inactive`` membership left by an earlier attempt would read as "not a
+        member" — and since the create that follows a refusal is the same create
+        that was refused, every retry would refuse again, permanently. The retry
+        has to tolerate every state the first attempt can legitimately leave.
+
+        Fail-closed on any error: unknown is not "already a member".
+        """
         try:
             page = self._client.organization_membership.list_organization_memberships(
-                organization_id=organization_id, user_id=provider_user_id, limit=1
+                organization_id=organization_id,
+                user_id=provider_user_id,
+                statuses=_membership_statuses(),
+                limit=1,
             )
         except Exception as exc:
             logger.warning(

@@ -62,6 +62,13 @@ def upgrade() -> None:
         sa.Column("provider_user_id", sa.String(length=255), nullable=False),
         sa.Column("organization_id", sa.String(length=36), nullable=False),
         sa.Column("provider_org_id", sa.String(length=255), nullable=False),
+        sa.Column("enterprise_id", sa.String(length=36), nullable=False),
+        sa.Column(
+            "membership_confirmed",
+            sa.Boolean(),
+            server_default=sa.text("false"),
+            nullable=False,
+        ),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),

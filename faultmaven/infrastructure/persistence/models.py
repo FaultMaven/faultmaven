@@ -487,8 +487,24 @@ class SSOPersonalOrgModel(Base):
     #: The IdP organization minted to hold this one member. Recorded so a retry
     #: after a partial failure can be reconciled against the IdP by an operator,
     #: and so "which WorkOS org is this tenant" has an answer that does not
-    #: depend on re-deriving the external id.
+    #: depend on re-deriving it from the subject.
     provider_org_id = Column(String(255), nullable=False)
+    #: Denormalised from the organization, because the one branch that needs it
+    #: cannot read the organization. A *mapped* (company) login is bound to the
+    #: company tenant, so the personal organization row is invisible under RLS —
+    #: and this is what lets that login tell "the account is anchored to a
+    #: personal enterprise I may re-anchor" from "the account belongs to a
+    #: different company" (ADR-016 D5 as amended).
+    enterprise_id = Column(String(36), nullable=False)
+    #: Whether the IdP-side membership was established. The membership is
+    #: written AFTER this row commits (an IdP membership is what makes AuthKit
+    #: echo the organization, and an echoed organization with no committed
+    #: mapping is a permanent ``sso_org_unmapped``), so a login that stopped in
+    #: between leaves this False and the next one finishes the job — without
+    #: costing every returning sign-in a WorkOS round-trip.
+    membership_confirmed = Column(
+        Boolean, nullable=False, server_default=text("false"), default=False
+    )
     created_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

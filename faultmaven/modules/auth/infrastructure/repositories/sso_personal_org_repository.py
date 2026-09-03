@@ -1,47 +1,52 @@
 """Persistence adapter for personal tenants (#1045, ADR-016 D5).
 
-Implements ``ISSOPersonalOrgRepository`` (``modules/auth/contracts.py``) over
-``sso_personal_orgs`` (migration 051) plus the four rows a tenant is made of.
-Both tables it keys on — that one and ``sso_org_mappings`` — are deliberately
-outside RLS: they are read on the unauthenticated SSO callback, before a tenant
-is bound.
+Implements ``ISSOPersonalOrgRepository`` over ``sso_personal_orgs``
+(migration 051). Both tables this path keys on — that one and
+``sso_org_mappings`` — are deliberately outside RLS: they are read on the
+unauthenticated SSO callback, before a tenant is bound.
 
-Why this is not ``fm-provision-sso-org``
-----------------------------------------
-It writes the same rows in the same order — enterprise, organization, default
-team, mapping — because the ordering constraints are the same. It differs in
-exactly two ways, and both follow from the trigger being a *login* rather than
-an operator:
+The four tenant rows themselves are written by the shared
+``infrastructure/persistence/tenant_bootstrap`` writer, the same one
+``fm-provision-sso-org`` uses, so the ordering constraints cannot drift between
+the operator path and the login path. What this module adds is the subject row,
+the tenant binding, and the recovery semantics a login needs and an operator
+does not.
 
-**It runs under the RLS-scoped application role.** The CLI demands the
-RLS-exempt owner DSN, and its module docstring explains why: it resolves an
-organization by ``(enterprise_id, slug)``, an id-blind lookup that the
-``organizations`` policy cannot satisfy. This path does not have that problem,
-because it does not have that lookup. The caller *generates* the organization id
-and binds it as the tenant context before the transaction opens, so the engine's
-``begin`` listener writes it into ``app.current_org_id`` and every INSERT below
-matches the policy — migration 018 creates its policies with no ``FOR`` clause,
-which makes ``USING`` double as ``WITH CHECK``. The subject-keyed row is the
-identity the CLI's slug lookup stands in for, and it is untenanted, so the
-"which organization is this?" question is answered before RLS is in the way.
+Why this path does not need the operator's RLS-exempt role
+----------------------------------------------------------
+``fm-provision-sso-org`` demands the owner DSN because it resolves an
+organization by ``(enterprise_id, slug)`` — an id-blind lookup the
+``organizations`` policy cannot satisfy. This path has no such lookup: the
+untenanted subject row answers "which organization?" before RLS is in the way,
+and on a first sign-in there is no organization to find because this call is
+what creates it. It therefore *generates* the id and binds it before opening the
+transaction, so the engine's ``begin`` listener writes it into
+``app.current_org_id`` and migration 018's policy (no ``FOR`` clause, so
+``USING`` doubles as ``WITH CHECK``) accepts every row.
 
-**Its refusals are conflicts, not alarms.** The CLI stops and asks a human when
-a slug resolves onto an existing tenant, because an operator provisioning Acme
-onto Beta's organization is a catastrophe. Here the only way to reach an
-existing row is to *be* that subject or to race yourself, and the right answer
-in both cases is to adopt what is already there.
+**The binding happens here, not in the caller.** A caller of :meth:`provision`
+should not have to know that persisting a row requires a contextvar to be set
+first — and a caller that knew could also forget, or leave a nonexistent
+organization bound after a failed attempt. On every exit path this module
+restores whatever scope it was called with; the login service rebinds to the
+tenant it actually resolved, afterwards and once.
 
-Idempotency and races
----------------------
+Idempotency, races, and collisions that are not races
+------------------------------------------------------
 The whole write is one transaction, so it commits entirely or not at all. Two
-concurrent first logins for the same subject therefore cannot both succeed:
-they derive the same slug and the same IdP organization, so the loser trips one
-of three constraints — ``enterprises.slug`` (unique globally),
-``sso_org_mappings``'s primary key, or ``sso_personal_orgs``'s — and rolls back
-whole, leaving no enterprise, organization or team behind. It then re-reads the
-subject row and adopts the winner's tenant. There is no window in which a
-half-built tenant is visible to anyone, because an uncommitted transaction is
-visible to nobody.
+concurrent first logins for the same subject cannot both succeed: they derive
+the same slug and the same IdP organization, so the loser trips one of the
+constraints and rolls back whole, leaving no enterprise, organization or team
+behind. It then re-reads the subject row and adopts the winner's tenant.
+
+A constraint violation is **not** automatically a lost race, and conflating the
+two produced a permanent lockout with a log that named the wrong thing (#1045
+review, item 4). So when the subject row does not explain the violation, this
+module asks the database *which key collided* and says so. The enterprise arm of
+that class is gone by construction: the shared writer adopts an existing
+enterprise with the same slug rather than always inserting, which is safe
+precisely because the slug is derived from the subject and nobody else can
+produce it.
 """
 
 from __future__ import annotations
@@ -51,58 +56,104 @@ from datetime import UTC, datetime
 from typing import Optional
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
-from faultmaven.config.constants import STANDALONE_TEAM_NAME
+from faultmaven.config.tenant_context import get_current_org_id, set_current_org_id
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.infrastructure.persistence.models import (
     EnterpriseModel,
     OrganizationModel,
     SSOOrgMappingModel,
     SSOPersonalOrgModel,
-    TeamModel,
+)
+from faultmaven.infrastructure.persistence.tenant_bootstrap import (
+    OrgAlreadyClaimed,
+    RemapRefused,
+    bootstrap_tenant,
 )
 from faultmaven.modules.auth.contracts import (
     ISSOPersonalOrgRepository,
-    PersonalTenant,
+    PersonalOrgRecord,
 )
 
 logger = structlog.get_logger(__name__)
 
-#: Every organization gets one team at creation (ADR-013). Aliased from the one
-#: shared constant rather than re-spelled, so this path, the operator CLI and
-#: the standalone bootstrap cannot drift into three "default" teams that differ
-#: by a word — ``SingleTenantProvider`` aliases it the same way.
-DEFAULT_TEAM_NAME = STANDALONE_TEAM_NAME
+#: Everything that means "a key this attempt derived is already taken". The raw
+#: ``IntegrityError`` covers the keys the database arbitrates (the subject row's
+#: primary key, the enterprise slug); the two typed refusals cover the mapping
+#: relation, which the shared writer checks before writing so the operator path
+#: gets a named error instead of a raw constraint. All three are ambiguous in
+#: the same way — a lost race or somebody else's key — and are disambiguated the
+#: same way, by re-reading the untenanted subject row.
+_CONFLICT_SIGNALS = (IntegrityError, RemapRefused, OrgAlreadyClaimed)
 
 
-def _now() -> datetime:
-    return datetime.now(UTC)
+class PersonalTenantCollision(Exception):
+    """A constraint fired that a lost race does not explain.
+
+    Carries the key that actually collided, so the log names the thing an
+    operator has to look at rather than the organization id this attempt
+    invented and never committed.
+    """
+
+    def __init__(self, colliding_key: str, colliding_value: str) -> None:
+        super().__init__(f"{colliding_key}={colliding_value}")
+        self.colliding_key = colliding_key
+        self.colliding_value = colliding_value
 
 
 class SessionlessSSOPersonalOrgRepository(ISSOPersonalOrgRepository):
-    """Sessionless personal-tenant lookup and provisioning.
+    """One database session per operation, as the sibling mapping repository."""
 
-    One database session per operation, matching the shape the composition root
-    injects for the sibling mapping repository. That per-operation session is
-    also what makes the caller's mid-flow ``set_current_org_id`` take effect:
-    the engine's ``begin`` listener samples the contextvar once per
-    transaction, so a rebind is only honoured by transactions opened after it
-    (#935).
-    """
-
-    async def get_organization_id(
+    async def get(
         self, provider: str, provider_user_id: str
-    ) -> Optional[str]:
-        """Return the subject's personal organization id, or None."""
+    ) -> Optional[PersonalOrgRecord]:
         async with get_db_session() as session:
-            stmt = select(SSOPersonalOrgModel.organization_id).where(
-                SSOPersonalOrgModel.provider == provider,
-                SSOPersonalOrgModel.provider_user_id == provider_user_id,
+            row = await session.get(SSOPersonalOrgModel, (provider, provider_user_id))
+            if row is None:
+                return None
+            return PersonalOrgRecord(
+                organization_id=row.organization_id,
+                enterprise_id=row.enterprise_id,
+                provider_org_id=row.provider_org_id,
+                membership_confirmed=bool(row.membership_confirmed),
             )
-            result = await session.execute(stmt)
-            return result.scalar_one_or_none()
+
+    async def find_by_enterprise(
+        self, provider: str, provider_user_id: str, enterprise_id: str
+    ) -> bool:
+        record = await self.get(provider, provider_user_id)
+        return record is not None and record.enterprise_id == enterprise_id
+
+    async def count_created_since(self, provider: str, since: datetime) -> int:
+        async with get_db_session() as session:
+            stmt = select(func.count()).where(
+                SSOPersonalOrgModel.provider == provider,
+                SSOPersonalOrgModel.created_at >= since,
+            )
+            return int((await session.execute(stmt)).scalar_one())
+
+    async def confirm_membership(self, provider: str, provider_user_id: str) -> None:
+        async with get_db_session() as session:
+            await session.execute(
+                update(SSOPersonalOrgModel)
+                .where(
+                    SSOPersonalOrgModel.provider == provider,
+                    SSOPersonalOrgModel.provider_user_id == provider_user_id,
+                )
+                .values(membership_confirmed=True, updated_at=datetime.now(UTC))
+            )
+
+    async def retire(self, provider: str, provider_user_id: str) -> bool:
+        """Drop the binding. The organization and its cases are left in place."""
+        async with get_db_session() as session:
+            row = await session.get(SSOPersonalOrgModel, (provider, provider_user_id))
+            if row is None:
+                return False
+            await session.delete(row)
+        logger.info("sso_personal_tenant_retired", provider=provider)
+        return True
 
     async def provision(
         self,
@@ -110,15 +161,13 @@ class SessionlessSSOPersonalOrgRepository(ISSOPersonalOrgRepository):
         provider: str,
         provider_user_id: str,
         provider_org_id: str,
-        organization_id: str,
         name: str,
         slug: str,
-    ) -> PersonalTenant:
+    ) -> str:
         """Create the subject's tenant atomically, or adopt an existing one."""
-        existing = await self.get_organization_id(provider, provider_user_id)
-        if existing is not None:
-            return PersonalTenant(organization_id=existing, created=False)
-
+        organization_id = str(uuid.uuid4())
+        restore_to = get_current_org_id()
+        set_current_org_id(organization_id)
         try:
             await self._write(
                 provider=provider,
@@ -128,29 +177,77 @@ class SessionlessSSOPersonalOrgRepository(ISSOPersonalOrgRepository):
                 name=name,
                 slug=slug,
             )
-        except IntegrityError:
-            # Lost a race with a concurrent first login for the same subject.
-            # The whole transaction rolled back, so nothing of ours survives;
-            # the winner's tenant is the one this login wants.
-            adopted = await self.get_organization_id(provider, provider_user_id)
+        except _CONFLICT_SIGNALS:
+            # The whole transaction rolled back, so nothing of ours survives.
+            # Either a concurrent login for the same subject won — in which case
+            # its tenant is the one this login wants — or something else owns a
+            # key we derived, which is a different problem with a different
+            # remedy and must not be logged as a race.
+            adopted = await self.get(provider, provider_user_id)
             if adopted is not None:
                 logger.info(
                     "sso_personal_tenant_race_adopted",
                     provider=provider,
-                    organization_id=adopted,
+                    organization_id=adopted.organization_id,
                 )
-                return PersonalTenant(organization_id=adopted, created=False)
-            # A constraint fired that the subject row does not explain — a slug
-            # or IdP-organization collision with a tenant belonging to somebody
-            # else. Refusing is the only safe answer: the alternative is landing
-            # this login in a tenant it does not own.
-            logger.error(
-                "sso_personal_tenant_conflict_unresolved",
-                provider=provider,
-                organization_id=organization_id,
+                return adopted.organization_id
+            collision = await self._diagnose_collision(
+                provider=provider, provider_org_id=provider_org_id, slug=slug
             )
-            raise
-        return PersonalTenant(organization_id=organization_id, created=True)
+            logger.error(
+                "sso_personal_tenant_collision",
+                provider=provider,
+                colliding_key=collision.colliding_key,
+                colliding_value=collision.colliding_value,
+            )
+            raise collision from None
+        finally:
+            set_current_org_id(restore_to)
+
+        logger.info(
+            "sso_personal_tenant_provisioned",
+            provider=provider,
+            organization_id=organization_id,
+        )
+        return organization_id
+
+    async def _diagnose_collision(
+        self, *, provider: str, provider_org_id: str, slug: str
+    ) -> PersonalTenantCollision:
+        """Name the key that actually collided.
+
+        Read outside any tenant scope, on untenanted tables plus ``enterprises``
+        (which has no ``organization_id`` and is therefore not enrolled in
+        migration 018) — so the diagnosis itself cannot be hidden by RLS. The
+        ``organizations`` probe is last and deliberately best-effort: it IS
+        tenanted, so an invisible row simply does not answer, and an
+        indeterminate diagnosis is reported as such rather than guessed.
+        """
+        async with get_db_session() as session:
+            mapping = await session.get(SSOOrgMappingModel, (provider, provider_org_id))
+            if mapping is not None:
+                return PersonalTenantCollision(
+                    "sso_org_mappings.provider_org_id", provider_org_id
+                )
+            enterprise = (
+                await session.execute(
+                    select(EnterpriseModel.enterprise_id).where(
+                        EnterpriseModel.slug == slug
+                    )
+                )
+            ).scalar_one_or_none()
+            if enterprise is not None:
+                return PersonalTenantCollision("enterprises.slug", slug)
+            organization = (
+                await session.execute(
+                    select(OrganizationModel.organization_id).where(
+                        OrganizationModel.slug == slug
+                    )
+                )
+            ).scalar_one_or_none()
+            if organization is not None:
+                return PersonalTenantCollision("organizations.slug", slug)
+        return PersonalTenantCollision("unknown", slug)
 
     async def _write(
         self,
@@ -162,91 +259,40 @@ class SessionlessSSOPersonalOrgRepository(ISSOPersonalOrgRepository):
         name: str,
         slug: str,
     ) -> None:
-        """Write all five rows in one transaction, in the operator path's order."""
-        now = _now()
-        enterprise_id = str(uuid.uuid4())
-        team_id = str(uuid.uuid4())
-
+        """Enterprise, organization, team, mapping, subject row — one transaction."""
         async with get_db_session() as session:
-            # 1. Enterprise — the top tier. Not RLS-tenanted (no
-            #    ``organization_id`` column), so this write is unaffected by the
-            #    bound scope; its globally-unique slug is nevertheless one of
-            #    the three constraints that arbitrate a race.
-            session.add(
-                EnterpriseModel(
-                    enterprise_id=enterprise_id,
-                    name=name,
-                    slug=slug,
-                    created_at=now,
-                    updated_at=now,
-                )
+            # The four tenant rows, in the operator path's order, from the one
+            # writer both paths share. Its conflict refusals are unconditional;
+            # what this module adds is the interpretation, above, using the
+            # untenanted subject row the writer cannot see.
+            tenant = await bootstrap_tenant(
+                session,
+                name=name,
+                slug=slug,
+                provider_org_id=provider_org_id,
+                organization_id=organization_id,
             )
-            await session.flush()
 
-            # 2. The organization — the isolation boundary. Its id was chosen by
-            #    the caller and bound as the tenant context before this
-            #    transaction opened, which is what lets the RLS policy's WITH
-            #    CHECK arm accept the row under the application role.
-            session.add(
-                OrganizationModel(
-                    organization_id=organization_id,
-                    enterprise_id=enterprise_id,
-                    name=name,
-                    slug=slug,
-                    is_active=True,
-                    created_at=now,
-                    updated_at=now,
-                )
-            )
-            await session.flush()
-
-            # 3. The default team (ADR-013: every organization has one).
-            session.add(
-                TeamModel(
-                    team_id=team_id,
-                    organization_id=organization_id,
-                    name=DEFAULT_TEAM_NAME,
-                    description="Default team for this organization",
-                    created_at=now,
-                    updated_at=now,
-                )
-            )
-            await session.flush()
-
-            # 4. The IdP-organization binding, so a later login that DOES carry
-            #    an organization resolves through the ordinary mapped path to
-            #    this same tenant.
-            session.add(
-                SSOOrgMappingModel(
-                    provider=provider,
-                    provider_org_id=provider_org_id,
-                    organization_id=organization_id,
-                    created_at=now,
-                    updated_at=now,
-                )
-            )
-            await session.flush()
-
-            # 5. The subject binding — the row that answers "where does this
-            #    individual live?" on every later login, including the ones the
-            #    IdP reports no organization for. Written last so that on a
-            #    race it is the final arbiter, and so nothing above it is
-            #    visible without it.
+            # The subject binding — the row that answers "where does this
+            # individual live?" on every later login, including the ones the IdP
+            # reports no organization for. Written last so it is the final
+            # arbiter of a race, and so nothing above it is visible without it.
+            #
+            # ``membership_confirmed`` starts False: the IdP membership is
+            # established only once this transaction has committed, because a
+            # membership is what makes the IdP echo the organization and an
+            # echoed organization with no committed mapping is a permanent
+            # ``sso_org_unmapped``.
+            now = datetime.now(UTC)
             session.add(
                 SSOPersonalOrgModel(
                     provider=provider,
                     provider_user_id=provider_user_id,
-                    organization_id=organization_id,
+                    organization_id=tenant.organization.organization_id,
                     provider_org_id=provider_org_id,
+                    enterprise_id=tenant.enterprise.enterprise_id,
+                    membership_confirmed=False,
                     created_at=now,
                     updated_at=now,
                 )
             )
-            await session.flush()
-
-        logger.info(
-            "sso_personal_tenant_provisioned",
-            provider=provider,
-            organization_id=organization_id,
-            enterprise_id=enterprise_id,
-        )

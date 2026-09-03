@@ -187,8 +187,22 @@ Step 9 gates step 10 deliberately: provisioning onto a half-wiped database is
 how you get an `enterprise_mismatch` tenant that needs manual migration to fix.
 
 Step 10's order is unforgiving — see `docs/operations/sso-org-provisioning.md`.
-An unmapped IdP org fails closed (`sso_org_unmapped`); there is no JIT tenant
-creation by design, so the mapping must precede the first sign-in.
+An unmapped IdP org fails closed (`sso_org_unmapped`), so the mapping must
+precede the first sign-in.
+
+That is unconditional for a **company** tenant, and it is the only shape a wiped
+deployment should be in. There is one narrow exception, off by default:
+`SSO_JIT_PERSONAL_TENANT_ENABLED` lets an identity that carries **no** IdP
+organization provision a personal tenant on first sign-in (ADR-016 D5, #1045).
+An unmapped *organization* is still refused either way — a company is never
+provisioned by whoever signs in first.
+
+If that switch is on, `sso_personal_orgs` is a second untenanted table this wipe
+must clear (`fm-wipe-deployment` classifies it beside `sso_org_mappings`), and
+the WorkOS organizations those tenants own are **not** removed by any wipe: they
+live at the IdP. Leaving them behind is harmless — the next sign-in adopts the
+one whose `external_id` matches the subject — but an operator wiping a
+deployment for good should retire them at WorkOS separately.
 
 ---
 

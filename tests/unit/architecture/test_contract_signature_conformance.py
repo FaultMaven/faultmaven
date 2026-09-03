@@ -469,6 +469,7 @@ def _build_registry() -> Dict[str, RegistryEntry]:
         ISessionService,
         ISSOIdentityProvider,
         ISSOOrgMappingRepository,
+        ISSOPersonalOrgRepository,
         IUserRepository,
     )
     from faultmaven.modules.auth.domain.services.auth_service import AuthService
@@ -484,6 +485,9 @@ def _build_registry() -> Dict[str, RegistryEntry]:
     from faultmaven.modules.auth.infrastructure.repositories.sso_org_mapping_repository import (  # noqa: E501
         SessionlessSSOOrgMappingRepository,
         SSOOrgMappingRepository,
+    )
+    from faultmaven.modules.auth.infrastructure.repositories.sso_personal_org_repository import (  # noqa: E501
+        SessionlessSSOPersonalOrgRepository,
     )
     from faultmaven.modules.auth.infrastructure.sso.workos_provider import (
         WorkOSIdentityProvider,
@@ -589,6 +593,10 @@ def _build_registry() -> Dict[str, RegistryEntry]:
         RegistryEntry(
             interface=ISSOOrgMappingRepository,
             reals=(SSOOrgMappingRepository, SessionlessSSOOrgMappingRepository),
+        ),
+        RegistryEntry(
+            interface=ISSOPersonalOrgRepository,
+            reals=(SessionlessSSOPersonalOrgRepository,),
         ),
     )
     return {entry.interface.__name__: entry for entry in entries}

@@ -1,6 +1,6 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-09-03 18:22 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-09-03 19:05 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
@@ -43,7 +43,7 @@
 | `roles` | 7 | `role_id` | — |
 | `solutions` | 28 | `solution_id` | cases, causal_nodes, evidence, hypotheses, organizations |
 | `sso_org_mappings` | 5 | `provider, provider_org_id` | organizations |
-| `sso_personal_orgs` | 6 | `provider, provider_user_id` | organizations |
+| `sso_personal_orgs` | 8 | `provider, provider_user_id` | organizations |
 | `team_members` | 4 | `user_id, team_id` | teams, users |
 | `teams` | 7 | `team_id` | organizations |
 | `uploaded_files` | 19 | `file_id` | cases, organizations, users |
@@ -560,6 +560,8 @@ erDiagram
         VARCHAR provider_user_id PK
         VARCHAR organization_id FK
         VARCHAR provider_org_id
+        VARCHAR enterprise_id
+        BOOLEAN membership_confirmed
         DATETIME created_at
         DATETIME updated_at
     }

@@ -202,7 +202,7 @@ authoritative contract list and which are active, run `lint-imports`:
 | 3 | Models cannot import services | Active |
 | 4 | Knowledge module layer boundaries | Active |
 | 5 | Case module layer boundaries | Active |
-| 6 | Auth module layer boundaries | Disabled (TODO) |
+| 6 | Auth module layer boundaries | Active |
 | 7 | Agent module layer boundaries | Disabled (TODO) |
 | 8 | Evidence module layer boundaries | Active |
 | 9 | Report module layer boundaries | Active |

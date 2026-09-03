@@ -79,6 +79,12 @@ deleting a tenant retires its mapping with it.
    `IOrganizationRepository.get_organization` — an organization that is missing,
    soft-deleted, or deactivated fails the login with the generic `sso_failed`.
 
+Steps 3 and 4, plus a refusal of the Standalone sentinel *before* the bind, are
+one shared tail (`_bind_and_verify_organization`). Both resolution branches end
+in it, so neither can acquire a check the other lacks — the sentinel guard was
+previously on the personal path only, which meant an operator-provisioned
+mapping row pointing at the Standalone organization would have bound it.
+
 Logging carries reason slugs (`no_idp_org`, `org_unmapped`, `org_unavailable`,
 `enterprise_mismatch`) plus the provider and, where useful, the IdP organization
 id — never the subject or the email. The IdP organization id is not a secret and
@@ -200,16 +206,22 @@ invisible in the UI, real in the database.
 
 ### The switch
 
-| setting | `SSO_JIT_PERSONAL_TENANT_ENABLED` (`AuthSettings.sso_jit_personal_tenant_enabled`) |
-| --- | --- |
-| default | `false` |
-| scope | multi-tenant (Cloud) only; single-tenant never decides a tenant |
-| read | live from settings on every callback, not captured at composition time |
+| setting | meaning | default |
+| --- | --- | --- |
+| `SSO_JIT_PERSONAL_TENANT_ENABLED` (`AuthSettings.sso_jit_personal_tenant_enabled`) | whether an org-less identity may provision a personal tenant at all | `false` |
+| `SSO_JIT_PERSONAL_TENANT_MAX_PER_HOUR` (`AuthSettings.sso_jit_personal_tenant_max_per_hour`) | ceiling on NEW personal tenants per rolling hour, deployment-wide | `20` |
+
+Both are multi-tenant (Cloud) only; single-tenant never decides a tenant.
 
 Off, an identity with no IdP organization is refused exactly as it was before
-this feature existed. The switch is read on each callback so an operator flip
-takes effect without a redeploy, and so it cannot become a documented knob that
-nothing consults.
+this feature existed.
+
+Both are read through `get_settings()` **at the point of use** rather than
+captured at composition time, so neither can become a documented knob that
+nothing consults. That is deliberately *not* a live-reload claim:
+`get_settings()` is a process singleton, so changing either variable takes
+effect on the next process — a restart or a redeploy, like every other setting
+in this repo.
 
 Sign-up does **not** open when this ships. ADR-016 D5 sequences three hard
 preconditions ahead of it: the two-tenant surface probe green on the Postgres
@@ -228,6 +240,12 @@ transaction, triggered by a login rather than an operator:
 3. its **default team** (ADR-013);
 4. the **`sso_org_mappings`** row binding the IdP organization to it;
 5. the **`sso_personal_orgs`** row binding the subject to it.
+
+Rows 1–4 are written by the same `tenant_bootstrap` writer
+`fm-provision-sso-org` uses, so the ordering constraints cannot drift between
+the operator path and the login path. Its conflict refusals (`RemapRefused`,
+`OrgAlreadyClaimed`) are unconditional; what differs is who *interprets* them —
+see "Collisions are not races" below.
 
 On the IdP side, a WorkOS organization holding that one member.
 
@@ -258,7 +276,15 @@ before RLS is in the way.
 | `provider_user_id` | the IdP's stable **subject** (`user_01H…`), never an email |
 | `organization_id` | FK → `organizations`, `ON DELETE CASCADE` |
 | `provider_org_id` | the IdP organization minted to hold that one member |
+| `enterprise_id` | denormalised from the organization — see below |
+| `membership_confirmed` | whether the IdP-side membership was established |
 | `created_at` / `updated_at` | server-defaulted, timezone-aware |
+
+`enterprise_id` is denormalised on purpose. It is read on the **mapped** branch,
+where the session is bound to the *company* tenant and the personal organization
+row is therefore invisible under RLS — it is what lets a company login tell "this
+account is anchored to a personal enterprise I may re-anchor" from "this account
+belongs to a different company".
 
 `(provider, provider_user_id)` is the primary key; `(provider, organization_id)`
 is unique.
@@ -296,22 +322,76 @@ minting a second. Fields are length-prefixed rather than separator-joined
 because any separator can appear inside a value, and an ambiguous encoding lets
 a crafted subject land on another pair's tenant.
 
-### Failure direction
+### Order of writes, and why every partial state recovers
 
-The IdP organization is created **before** the database transaction, and the
-database rows are one transaction. Both orderings follow from the same rule: a
-failure must leave the login refused and a retry able to finish, never a
-half-provisioned tenant a later login adopts as if it were complete.
+Three steps, in this order: **IdP organization → database commit → IdP
+membership**. Each is placed so that stopping after it leaves a state the next
+sign-in repairs by itself.
 
-- **IdP call fails** → nothing written on either side; login refused.
-- **Database transaction fails** → it rolls back whole, so no enterprise,
-  organization or team survives. The residue is an IdP organization with no
-  tenant, which is invisible to everyone and is found again by the next attempt.
-- **Two concurrent first logins** → both derive the same slug and the same IdP
-  organization, so the loser trips one of three constraints
-  (`enterprises.slug`, `sso_org_mappings`'s primary key, `sso_personal_orgs`'s),
-  rolls back whole, re-reads the subject row and adopts the winner's tenant.
-  Exactly one organization results.
+| stopped after | what exists | what the next callback does |
+| --- | --- | --- |
+| the IdP organization | an organization nobody is a member of | the IdP still reports no organization, so the same branch runs and finds it again by its derived `external_id` — no duplicate |
+| the database commit | the tenant, with `membership_confirmed` false | resolves from the subject row and finishes the membership; no second tenant |
+| the membership | everything, flag unset | the IdP may now echo the organization, sending the login down the **mapped** branch — which resolves, because the mapping committed one step earlier |
+
+**The membership is last on purpose.** It is the IdP-visible change: a membership
+is what makes AuthKit start echoing the organization. Creating it before the
+commit is the cheaper order and the unrecoverable one — an echoed organization
+whose mapping never committed sends every later login to the mapped branch,
+which finds no mapping and refuses `sso_org_unmapped` **permanently**, with no
+path back. `membership_confirmed` exists so the repair costs a provider
+round-trip only on the logins that actually need it, not on every returning
+sign-in.
+
+### A refused login writes nothing
+
+Every refusal the callback can still make is evaluated **before** any
+provisioning write, on either side (`_personal_preflight_refusal`): an account
+that is deactivated or deleted; an account already anchored to an enterprise;
+and, for an unknown subject, the two things `_jit_provision` refuses — an
+unusable email and an email another account owns.
+
+This is possible only because `users` carries no `organization_id` and is not
+enrolled in migration 018's policy, so those lookups are readable with **no
+tenant bound**. Provisioning ahead of them left an offboarded user, an
+email-conflict subject or an employee arriving unscoped each holding a permanent
+stray tenant plus an IdP organization, and then `sso_failed` forever — where
+before this feature every one of them was refused with zero writes.
+
+### Collisions are not races
+
+A constraint violation is ambiguous: it is either a concurrent attempt by the
+same subject (adopt its tenant) or a key somebody else holds (refuse, loudly).
+Only the untenanted subject row distinguishes them, which is why the shared
+writer refuses unconditionally and the login path interprets. When the subject
+row does not explain the violation, the repository asks the database *which key
+collided* and logs `colliding_key` / `colliding_value` — the previous message
+named an organization id this attempt invented and never committed, which an
+operator could not look up anywhere.
+
+One member of that class is gone by construction: `organizations` has no
+`ON DELETE CASCADE` to `enterprises`, so hard-deleting a personal organization
+strands its enterprise, and a writer that always INSERTed would collide forever
+on `enterprises.slug`. The shared writer **adopts** an enterprise with the same
+slug instead — safe precisely because the slug is derived from the subject and
+nobody else can produce it.
+
+### A ceiling on provisioning
+
+The switch bounds nothing about volume: every subject the IdP vouches for would
+mint an IdP organization and five rows, so a scripted sign-up loop exhausts the
+provider's organization quota. `SSO_JIT_PERSONAL_TENANT_MAX_PER_HOUR`
+(default 20) bounds **new tenants per rolling hour, deployment-wide**, and is
+checked before the IdP call. It bounds provisioning only — an existing tenant
+resolves from its subject row without ever consulting it, so tripping the
+ceiling cannot lock out people already using the product. Global rather than
+per-subject because the abuse shape is many subjects, not one retrying.
+
+This is **not** the per-tenant LLM usage cap (ADR-016 D5.3), which bounds what a
+tenant may spend and ships separately.
+
+### Other refusals
+
 - **A subject row pointing at the Standalone sentinel** → refused. Under
   multi-tenant the sentinel identifies the deployment, not a tenant (#850).
 - **Membership write fails** → the login is refused and the tenant is left in
@@ -323,9 +403,23 @@ half-provisioned tenant a later login adopts as if it were complete.
 `external_id` is unique per WorkOS environment, so `get_organization_by_external_id`
 is what makes the IdP half idempotent and a duplicate create is refused rather
 than silently accepted. That refusal is resolved by re-reading, never by minting
-a second organization. Membership creation is likewise get-or-confirm: a refused
-create is **confirmed by listing the memberships**, not inferred from the
-exception type, and a refusal that cannot be confirmed fails the login closed.
+a second organization.
+
+**Which status a duplicate produces is not verified against the live API.** A
+duplicate unique field is a 409 in some WorkOS surfaces and a 422 in others, so
+both `ConflictError` and `UnprocessableEntityError` are treated as conflicts and
+resolved the same way. Catching only one would turn the common retry into a
+permanent refusal; catching both costs nothing, because the recovery is a
+re-read that either finds the winner or re-raises.
+
+Membership creation is likewise get-or-confirm: a refused create is **confirmed
+by listing the memberships**, not inferred from the exception type, and a
+refusal that cannot be confirmed fails the login closed. The listing passes
+**every status the SDK's enum defines**, derived from the enum rather than
+spelled — the SDK's default lists `active` only, so a `pending` or `inactive`
+membership left by an earlier attempt would read as "not a member", and since
+the create that follows a refusal is the same create that was refused, every
+retry would refuse again, permanently.
 
 There is no cross-service transaction. If the IdP accepts the create and the
 response is lost, the organization exists and the next attempt adopts it — that
@@ -333,14 +427,51 @@ is the direction the ordering was chosen for. Nothing here reconciles an IdP
 organization whose tenant was never created; `sso_personal_orgs.provider_org_id`
 exists so an operator can.
 
+### Switching to a company organization (ADR-016 D5 as amended)
+
+A personal-tenant user later placed in a mapped company organization **is
+re-anchored**, not refused. Without this they meet `enterprise_mismatch` forever,
+because their account is anchored to the enterprise their own personal tenant
+owns — which contradicts the owner's stated intent in #1045 that switching to a
+company later works.
+
+The exception is deliberately narrow, and each narrowing does a job:
+
+- It fires only on the **mapped** branch, so the company organization was
+  operator-provisioned. Nobody re-anchors themselves.
+- It fires only when the account's current enterprise is the one *this subject's
+  own personal tenant* owns, established from the untenanted `sso_personal_orgs`
+  row — never from an enterprise's name or slug. A company-to-company move is
+  still refused.
+- Isolation does not weaken: membership is still granted by the same
+  `_ensure_org_affiliation`, with the `member` role.
+- The move is persisted **before** the personal binding is retired. The reverse
+  order would leave an account anchored to a personal enterprise whose subject
+  row no longer names it, and no login could repair that.
+
+The personal tenant is **not migrated** — the cases stay where they are. What is
+removed is the *binding*, so a later unscoped login cannot resolve the user back
+into a tenant they can no longer enter; it meets the "already anchored" refusal
+instead.
+
+The inverse — an employee whose first login is unscoped — is refused with
+`reason=personal_account_already_anchored` and **never provisioned**. Anchoring
+them to a personal enterprise would lock them out of their company.
+
 ### Non-goals (owner-accepted, #1045)
 
-Personal → business is **not a migration**. SSO matches on subject, so a
+Personal → business is **not a data migration**. SSO matches on subject, so a
 different email is a different WorkOS user and therefore a new FaultMaven
 account; JIT deliberately refuses to link by email (ADR-015 D4); and the
 individual's cases live in the personal organization behind a NOT NULL RLS key,
 so moving them is an organization move, not an owner change. Neither an
-SSO-identity link nor an org move exists.
+SSO-identity link nor an org move exists. Re-anchoring (above) moves the
+*account*, not its data.
+
+There is also **no lifecycle for a dormant personal tenant**. A re-anchored
+user's personal organization keeps existing, with its cases, unreachable by that
+user. Retiring it needs a tenant-retire primitive that does not exist and is an
+owner decision, not part of this change.
 
 ## Rejected alternatives
 
