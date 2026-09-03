@@ -20,16 +20,14 @@ each turn.
 
 from __future__ import annotations
 
-import os
+from contextlib import asynccontextmanager
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from faultmaven.cli.reassign_cases import _apply, _Refused
-from faultmaven.config.settings import reset_settings
-from faultmaven.infrastructure.persistence.database import reset_engine
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
@@ -49,22 +47,23 @@ UNRELATED = "case_zzz999"
 
 @pytest_asyncio.fixture
 async def db(tmp_path, monkeypatch):
-    """A real SQLite database, seeded, wired to the module-level engine.
+    """A real SQLite database, seeded, with ``get_db_session`` pointed at it.
 
-    A file rather than ``:memory:`` because the command opens its own session
-    through ``get_db_session()``: an in-memory database would give that
-    connection a different, empty database.
+    Deliberately **touches no module-level state**. An earlier version set
+    ``DATABASE_URL`` and reset the engine and settings singletons, the way the
+    sibling integration tests do — and that leaks: the whole suite runs in one
+    process, so nulling the shared engine strands every later test that relied
+    on tables created through it. It surfaced as ``no such table: enterprises``
+    in the composition-root tests, which pass in isolation and failed after this
+    file.
 
-    ``DATABASE_URL`` is set explicitly so this can never run against the dev
-    database (``data/faultmaven.db``), which is what the default resolves to.
+    Patching the session factory instead keeps the real SQL, the real models and
+    the real transaction semantics — all this file asserts — while leaving the
+    process exactly as it found it. It also means the dev database
+    (``data/faultmaven.db``, what the default ``DATABASE_URL`` resolves to) can
+    never be reached from here.
     """
     url = f"sqlite+aiosqlite:///{tmp_path / 'reassign.db'}"
-    monkeypatch.setenv("DATABASE_URL", url)
-    # Both caches, not just the engine: ``get_engine`` takes the URL from the
-    # settings singleton, so resetting the engine alone would rebuild it from
-    # the previous test's cached settings and quietly write to that database.
-    reset_settings()
-    reset_engine()
 
     from faultmaven.infrastructure.persistence.models import Base
 
@@ -137,13 +136,32 @@ async def db(tmp_path, monkeypatch):
     await engine.dispose()
 
     engine = create_async_engine(url)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+
+    @asynccontextmanager
+    async def _session(database_url=None):
+        """Stands in for ``get_db_session``, with its commit/rollback contract.
+
+        The rollback on exception is load-bearing here — it is what the
+        concurrent-change test asserts — so it is reproduced, not approximated.
+        """
+        session = sessions()
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.persistence.database.get_db_session", _session
+    )
     try:
         yield engine
     finally:
         await engine.dispose()
-        reset_engine()
-        reset_settings()
-        os.environ.pop("DATABASE_URL", None)
 
 
 async def _rows(engine, sql, params=None):
