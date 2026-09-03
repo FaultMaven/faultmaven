@@ -182,6 +182,8 @@ async def test_reassignment_moves_ownership_and_bumps_version(db):
         from_user_id=OLD_OWNER,
         to_user_id=NEW_OWNER,
         team_ids=[TEAM_A, TEAM_B],
+        revoke_team_ids=[],
+        actor="tester@host",
     )
 
     rows = await _rows(
@@ -207,6 +209,8 @@ async def test_reassignment_shares_each_case_to_every_team_of_the_new_owner(db):
         from_user_id=OLD_OWNER,
         to_user_id=NEW_OWNER,
         team_ids=[TEAM_A, TEAM_B],
+        revoke_team_ids=[],
+        actor="tester@host",
     )
 
     rows = await _rows(
@@ -231,6 +235,8 @@ async def test_reassignment_records_one_audit_row_per_case(db):
         from_user_id=OLD_OWNER,
         to_user_id=NEW_OWNER,
         team_ids=[TEAM_A],
+        revoke_team_ids=[],
+        actor="tester@host",
     )
 
     rows = await _rows(
@@ -260,6 +266,8 @@ async def test_attribution_is_not_rewritten(db):
         from_user_id=OLD_OWNER,
         to_user_id=NEW_OWNER,
         team_ids=[TEAM_A],
+        revoke_team_ids=[],
+        actor="tester@host",
     )
 
     authors = await _rows(db, "SELECT DISTINCT author_id FROM case_messages")
@@ -277,6 +285,8 @@ async def test_a_case_owned_by_someone_else_is_untouched(db):
         from_user_id=OLD_OWNER,
         to_user_id=NEW_OWNER,
         team_ids=[TEAM_A],
+        revoke_team_ids=[],
+        actor="tester@host",
     )
 
     rows = await _rows(
@@ -308,6 +318,8 @@ async def test_a_case_that_changed_owner_underneath_rolls_the_whole_run_back(db)
             from_user_id=OLD_OWNER,
             to_user_id=NEW_OWNER,
             team_ids=[TEAM_A],
+            revoke_team_ids=[],
+            actor="tester@host",
         )
 
     # The first case's UPDATE succeeded before the second one failed; the
@@ -336,7 +348,195 @@ async def test_rerunning_does_not_duplicate_share_rows(db):
             from_user_id=OLD_OWNER,
             to_user_id=NEW_OWNER,
             team_ids=[TEAM_A],
+            revoke_team_ids=[],
+            actor="tester@host",
         )
 
     rows = await _rows(db, "SELECT resource_id FROM resource_shares")
     assert sorted(r[0] for r in rows) == sorted(MOVED)
+
+
+# -- the cross-tenant guards, against a real database -------------------------
+#
+# These exist because a code review proved both could be deleted with the whole
+# suite green: `_swept_case_ids` was AsyncMock'd in the unit tests and never
+# reached from here, and nothing observed the RLS binding at all. A guard no
+# test can see removed is a guard that will eventually be removed.
+
+OTHER_ORG = "9999aaaa-0000-4111-8222-333344445555"
+
+
+async def test_the_sweep_does_not_see_another_organizations_cases(db):
+    """The redundant `organization_id` predicate, exercised.
+
+    On SQLite there is no RLS at all, which is exactly the connection this
+    predicate exists for: without it the sweep spans tenants and the run moves
+    a stranger's cases while reporting success.
+    """
+    from faultmaven.cli.reassign_cases import _swept_case_ids
+
+    async with db.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO organizations "
+                "(organization_id, enterprise_id, name, slug) "
+                "VALUES (:o, :e, 'Other', 'other')"
+            ),
+            {"o": OTHER_ORG, "e": ENTERPRISE},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO cases "
+                "(case_id, organization_id, user_id, title, source, version) "
+                "VALUES ('case_other', :o, :u, 'theirs', 'slack', 7)"
+            ),
+            {"o": OTHER_ORG, "u": OLD_OWNER},
+        )
+
+    assert await _swept_case_ids(ORG, OLD_OWNER) == set(MOVED)
+
+
+async def test_the_reassignment_will_not_touch_another_organizations_case(db):
+    """Same predicate on the write side. A case id named in the file but living
+    in another tenant must not be re-owned — it is not this run's to move."""
+    async with db.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO organizations "
+                "(organization_id, enterprise_id, name, slug) "
+                "VALUES (:o, :e, 'Other', 'other')"
+            ),
+            {"o": OTHER_ORG, "e": ENTERPRISE},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO cases "
+                "(case_id, organization_id, user_id, title, source, version) "
+                "VALUES ('case_other', :o, :u, 'theirs', 'slack', 7)"
+            ),
+            {"o": OTHER_ORG, "u": OLD_OWNER},
+        )
+
+    with pytest.raises(_Refused, match="case_other"):
+        await _apply(
+            organization_id=ORG,
+            case_ids=[*MOVED, "case_other"],
+            from_user_id=OLD_OWNER,
+            to_user_id=NEW_OWNER,
+            team_ids=[TEAM_A],
+            revoke_team_ids=[],
+            actor="tester@host",
+        )
+
+    rows = await _rows(
+        db, "SELECT user_id, organization_id FROM cases WHERE case_id = 'case_other'"
+    )
+    assert rows[0] == (OLD_OWNER, OTHER_ORG)
+
+
+async def test_the_old_owners_team_shares_are_revoked(db):
+    """`case_scope_where` admits any team holding a share row, so a share to a
+    team the OLD owner belonged to keeps that team reading a case that has been
+    moved away from them."""
+    async with db.begin() as conn:
+        for case_id in MOVED:
+            await conn.execute(
+                text(
+                    "INSERT INTO resource_shares "
+                    "(share_id, resource_type, resource_id, scope_type, scope_id, "
+                    " organization_id) "
+                    "VALUES (:s, 'case', :c, 'team', :t, :o)"
+                ),
+                {"s": f"old_{case_id}", "c": case_id, "t": "team-old", "o": ORG},
+            )
+
+    await _apply(
+        organization_id=ORG,
+        case_ids=MOVED,
+        from_user_id=OLD_OWNER,
+        to_user_id=NEW_OWNER,
+        team_ids=[TEAM_A],
+        revoke_team_ids=["team-old"],
+        actor="tester@host",
+    )
+
+    scopes = {r[0] for r in await _rows(db, "SELECT scope_id FROM resource_shares")}
+    assert scopes == {TEAM_A}
+
+
+async def test_a_team_both_owners_share_is_not_revoked(db):
+    """The overlap is re-granted, not flapped: revoking it would drop access the
+    new owner is entitled to, between two statements of one transaction."""
+    async with db.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO resource_shares "
+                "(share_id, resource_type, resource_id, scope_type, scope_id, "
+                " organization_id) VALUES ('keep', 'case', :c, 'team', :t, :o)"
+            ),
+            {"c": MOVED[0], "t": TEAM_A, "o": ORG},
+        )
+
+    await _apply(
+        organization_id=ORG,
+        case_ids=MOVED,
+        from_user_id=OLD_OWNER,
+        to_user_id=NEW_OWNER,
+        team_ids=[TEAM_A],
+        revoke_team_ids=[],
+        actor="tester@host",
+    )
+
+    rows = await _rows(
+        db,
+        "SELECT scope_id FROM resource_shares WHERE resource_id = :c",
+        {"c": MOVED[0]},
+    )
+    assert [r[0] for r in rows] == [TEAM_A]
+
+
+async def test_the_reassignment_stamps_updated_at(db):
+    """`onupdate=func.now()` does not fire for Core text SQL, so a row would be
+    written while claiming it was not."""
+    before = (
+        await _rows(
+            db, "SELECT updated_at FROM cases WHERE case_id = :c", {"c": MOVED[0]}
+        )
+    )[0][0]
+
+    await _apply(
+        organization_id=ORG,
+        case_ids=MOVED,
+        from_user_id=OLD_OWNER,
+        to_user_id=NEW_OWNER,
+        team_ids=[TEAM_A],
+        revoke_team_ids=[],
+        actor="tester@host",
+    )
+
+    after = (
+        await _rows(
+            db, "SELECT updated_at FROM cases WHERE case_id = :c", {"c": MOVED[0]}
+        )
+    )[0][0]
+    assert after != before
+
+
+async def test_the_audit_row_names_no_false_actor(db):
+    """`user_id` is the row's SUBJECT. Attributing this to the new owner would
+    read as the service account having moved its own cases; a CLI has no
+    authenticated principal, so it claims none and records provenance instead."""
+    await _apply(
+        organization_id=ORG,
+        case_ids=MOVED,
+        from_user_id=OLD_OWNER,
+        to_user_id=NEW_OWNER,
+        team_ids=[TEAM_A],
+        revoke_team_ids=["team-old"],
+        actor="alice@ops-box",
+    )
+
+    rows = await _rows(db, "SELECT user_id, details FROM user_audit_log")
+    assert {r[0] for r in rows} == {None}
+    assert all("alice@ops-box" in r[1] for r in rows)
+    assert all("team-old" in r[1] for r in rows)

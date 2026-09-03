@@ -119,7 +119,9 @@ def wiring(monkeypatch, tmp_path):
     user_store.get_user.return_value = None
 
     teams = AsyncMock()
-    teams.list_all_user_team_ids.return_value = [TEAM]
+    teams.list_user_teams.side_effect = lambda uid: (
+        [SimpleNamespace(team_id=TEAM, organization_id=ORG)] if uid == NEW else []
+    )
 
     container = SimpleNamespace(
         initialize=AsyncMock(), get_user_store=lambda: user_store
@@ -159,6 +161,7 @@ async def _run(wiring, **overrides):
         to_identifier="slack-T0B9XNZDR44",
         case_ids_file=wiring.ids_file,
         allow_no_team=False,
+        move_unnamed_too=False,
         dry_run=False,
     )
     kwargs.update(overrides)
@@ -259,14 +262,14 @@ async def test_refuses_when_the_source_owns_a_case_the_file_does_not_name(
 async def test_refuses_when_the_target_belongs_to_no_team(wiring):
     """Without a Team the moved cases stay owner-only — invisible to every human
     while every case created after the bind is team-visible."""
-    wiring.teams.list_all_user_team_ids.return_value = []
+    wiring.teams.list_user_teams.side_effect = lambda _uid: []
     assert await _run(wiring) == 1
     wiring.apply.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_allow_no_team_moves_ownership_only(wiring):
-    wiring.teams.list_all_user_team_ids.return_value = []
+    wiring.teams.list_user_teams.side_effect = lambda _uid: []
     assert await _run(wiring, allow_no_team=True) == 0
     assert wiring.apply.await_args.kwargs["team_ids"] == []
 
@@ -324,3 +327,108 @@ def test_main_rejects_dry_run_together_with_yes():
             ]
         )
     assert exit_info.value.code == 2  # argparse usage error
+
+
+# -- the RLS binding, and the guards a review proved were untested ------------
+
+
+@pytest.mark.asyncio
+async def test_the_rls_scope_is_bound_before_any_session_is_opened(wiring, monkeypatch):
+    """`set_current_org_id` is what makes every later query tenant-scoped.
+
+    The engine applies `app.current_org_id` per transaction from this
+    contextvar, so a session opened before the bind runs unscoped (#935 was
+    exactly that bug). A code review proved this line could be deleted with the
+    whole suite green — a guard no test can see removed is one that will be.
+    """
+    from faultmaven.config import tenant_context
+
+    bound: list[str] = []
+    monkeypatch.setattr(tenant_context, "set_current_org_id", bound.append)
+    # The sweep is the first thing to touch the database, so record when it ran.
+    monkeypatch.setattr(
+        reassign_cases,
+        "_swept_case_ids",
+        AsyncMock(side_effect=lambda *_a: bound.append("SESSION") or set(IDS)),
+    )
+
+    assert await _run(wiring) == 0
+    assert bound == [
+        ORG,
+        "SESSION",
+    ], "the org scope must be bound before the first session, not after"
+
+
+@pytest.mark.asyncio
+async def test_teams_in_another_organization_are_not_shared_to(wiring):
+    """`list_user_teams` is RLS-scoped in production, but this command must also
+    be right on a connection that is not — sharing a case to a stranger's team
+    is the error that would print success."""
+    wiring.teams.list_user_teams.side_effect = lambda uid: [
+        SimpleNamespace(team_id=TEAM, organization_id=ORG),
+        SimpleNamespace(team_id="team-elsewhere", organization_id="another-org"),
+    ]
+
+    assert await _run(wiring) == 0
+    assert wiring.apply.await_args.kwargs["team_ids"] == [TEAM]
+
+
+@pytest.mark.asyncio
+async def test_the_old_owners_teams_are_revoked_except_the_shared_one(wiring):
+    wiring.teams.list_user_teams.side_effect = lambda uid: (
+        [
+            SimpleNamespace(team_id=TEAM, organization_id=ORG),
+            SimpleNamespace(team_id="team-both", organization_id=ORG),
+        ]
+        if uid == NEW
+        else [
+            SimpleNamespace(team_id="team-old", organization_id=ORG),
+            SimpleNamespace(team_id="team-both", organization_id=ORG),
+        ]
+    )
+
+    assert await _run(wiring) == 0
+    assert wiring.apply.await_args.kwargs["revoke_team_ids"] == ["team-old"]
+
+
+@pytest.mark.asyncio
+async def test_an_inactive_flag_that_is_absent_entirely_is_refused(wiring):
+    """`getattr(..., True)` passed any object without the attribute — an
+    unrecognised user shape is exactly what this guard must not wave through."""
+    wiring.users["slack-T0B9XNZDR44"] = SimpleNamespace(
+        user_id=NEW, username="slack-T0B9XNZDR44", email="b@x.test"
+    )
+    assert await _run(wiring) == 1
+    wiring.apply.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unnamed_cases_may_be_left_behind_deliberately(wiring, monkeypatch):
+    """The two-workspace case the cross-check exists to detect must not also be
+    the one situation the command can never serve."""
+    monkeypatch.setattr(
+        reassign_cases,
+        "_swept_case_ids",
+        AsyncMock(return_value=set(IDS) | {"case_other_workspace"}),
+    )
+
+    assert await _run(wiring, move_unnamed_too=True) == 0
+    assert wiring.apply.await_args.kwargs["case_ids"] == IDS
+
+
+@pytest.mark.asyncio
+async def test_a_named_case_that_is_not_owned_has_no_escape_hatch(wiring, monkeypatch):
+    """The other direction stays a hard refusal: it is a typo, the wrong
+    organization, or an already-completed run, and no flag makes it right."""
+    monkeypatch.setattr(
+        reassign_cases, "_swept_case_ids", AsyncMock(return_value={IDS[0]})
+    )
+    assert await _run(wiring, move_unnamed_too=True) == 1
+    wiring.apply.assert_not_awaited()
+
+
+def test_a_file_that_is_not_utf8_is_refused_not_a_traceback(tmp_path):
+    path = tmp_path / "ids.bin"
+    path.write_bytes(b"\xff\xfe\x00case_aaa111")
+    with pytest.raises(_Refused, match="could not read"):
+        read_case_ids(str(path))

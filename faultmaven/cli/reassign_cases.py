@@ -40,9 +40,15 @@ Why ``version`` must be bumped
 :expected_version`` — it writes the owner back from the in-memory ``Case``. A
 turn that loaded a case before this command runs and saves after it would
 therefore pass the optimistic-concurrency check and silently restore the old
-owner. Bumping ``version`` makes that save miss, raise ``StaleCaseException``,
-reload, and keep the reassignment. Run with the agent stopped as well; do not
-rely on it.
+owner. Bumping ``version`` makes that save miss and raise
+``StaleCaseException``, so the reassignment survives.
+
+**The in-flight turn does not.** ``POST /cases/{id}/turns`` deliberately does
+not retry on an OCC conflict — "LLM turns are expensive and non-idempotent"
+(``modules/case/api/routes.py``) — it returns 409 and the caller decides. So the
+bump protects the migration by *discarding* a concurrent turn, which the Slack
+agent surfaces as "the case is busy" and the user re-sends. That makes running
+with the agent stopped a real instruction, not belt-and-braces.
 
 Why the team share is created rather than carried
 -------------------------------------------------
@@ -95,6 +101,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+from collections import Counter
 from pathlib import Path
 
 #: argparse's ``description``. A literal, not derived from ``__doc__``: ``python
@@ -103,6 +110,24 @@ _SUMMARY = (
     "Reassign a named set of cases to a new owner within one organization, "
     "sharing them to the new owner's Teams and recording the move."
 )
+
+
+def _actor() -> str:
+    """Best-effort provenance for the audit row's ``details``.
+
+    Not an authenticated principal and never presented as one — this is a CLI,
+    and the OS user plus host is the most an operator run can honestly claim.
+    It goes in ``details``, never in ``user_id``, so nothing reads it as the
+    row's subject.
+    """
+
+    import getpass
+    import socket
+
+    try:
+        return f"{getpass.getuser()}@{socket.gethostname()}"
+    except Exception:  # noqa: BLE001 — provenance must not fail a migration
+        return "unknown"
 
 
 class _Refused(Exception):
@@ -120,7 +145,10 @@ def read_case_ids(path: str) -> list[str]:
     """
     try:
         raw = Path(path).read_text()
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
+        # ValueError covers UnicodeDecodeError: a file that is not text at all
+        # (the wrong path, a sqlite database, a gzip) is an operator mistake and
+        # belongs in the refusal contract, not in a traceback.
         raise _Refused(f"could not read --case-ids-file {path!r}: {exc}") from exc
 
     ids: list[str] = []
@@ -135,7 +163,8 @@ def read_case_ids(path: str) -> list[str]:
             "treating an empty file as 'nothing to do': an empty file is what a "
             "failed extraction looks like."
         )
-    duplicates = sorted({i for i in ids if ids.count(i) > 1})
+    counts = Counter(ids)
+    duplicates = sorted(i for i, n in counts.items() if n > 1)
     if duplicates:
         raise _Refused(
             f"--case-ids-file {path!r} lists {', '.join(duplicates)} more than "
@@ -213,6 +242,28 @@ async def _swept_case_ids(organization_id: str, from_user_id: str) -> set[str]:
         return {row[0] for row in result.fetchall()}
 
 
+async def _team_ids_in_org(user_id: str, organization_id: str) -> list[str]:
+    """The user's teams **in this organization**, by id.
+
+    ``list_all_user_team_ids`` returns ids only and leans entirely on RLS to
+    keep them same-tenant. That is the same assumption ``_swept_case_ids``
+    deliberately refuses to make: this command must also be correct on a
+    connection that is not RLS-enforcing, and sharing a case to another
+    tenant's team is precisely the error that would not announce itself — it
+    would print success while making the cases visible to strangers and to
+    nobody who should see them. ``list_user_teams`` carries
+    ``organization_id``, so the predicate can be applied here rather than
+    assumed.
+    """
+
+    from faultmaven.infrastructure.persistence.sessionless_team_repository import (
+        SessionlessTeamRepository,
+    )
+
+    teams = await SessionlessTeamRepository().list_user_teams(user_id)
+    return [t.team_id for t in teams if t.organization_id == organization_id]
+
+
 async def _apply(
     *,
     organization_id: str,
@@ -220,6 +271,8 @@ async def _apply(
     from_user_id: str,
     to_user_id: str,
     team_ids: list[str],
+    revoke_team_ids: list[str],
+    actor: str,
 ) -> None:
     """Write the reassignment, the shares and the audit rows in one transaction.
 
@@ -228,12 +281,17 @@ async def _apply(
     makes that detection possible: it turns "someone else changed this case
     between the sweep and now" into a matched-zero-rows outcome instead of an
     UPDATE that quietly re-owns a case this run never checked.
+
+    ``revoke_team_ids`` are the teams the OLD owner belonged to and the new one
+    does not. Their share rows outlive the owner swap otherwise, and
+    ``case_scope_where`` admits any team holding one — so the previous owner's
+    teams would keep reading every case this command moved away from them.
     """
     import json
     import uuid
     from datetime import datetime, timezone
 
-    from sqlalchemy import text
+    from sqlalchemy import bindparam, text
 
     from faultmaven.infrastructure.persistence.database import get_db_session
     from faultmaven.infrastructure.persistence.db_compat import dialect_insert
@@ -243,10 +301,23 @@ async def _apply(
     )
     from faultmaven.models.interfaces_user import AuditCategory, AuditEventType
 
+    # `organization_id` is in the predicate as well as bound into the RLS
+    # scope, for the same reason the sweep carries it: this command also has to
+    # be correct when run against a connection that is not RLS-enforcing, and a
+    # cross-tenant write is the one error that would not announce itself.
+    #
+    # `updated_at` is set explicitly because the ORM's `onupdate=func.now()`
+    # does NOT fire for Core text SQL — without it the row is written while
+    # claiming it was not. `last_activity_at` is deliberately left alone: that
+    # is the case's activity clock, and re-attribution is not activity.
     reassign = text(
-        "UPDATE cases SET user_id = :to_user_id, version = version + 1 "
-        "WHERE case_id = :case_id AND user_id = :from_user_id"
+        "UPDATE cases SET user_id = :to_user_id, version = version + 1, "
+        "updated_at = :now "
+        "WHERE case_id = :case_id AND user_id = :from_user_id "
+        "AND organization_id = :org_id"
     )
+
+    moved_at = datetime.now(timezone.utc)
 
     async with get_db_session() as session:
         for case_id in case_ids:
@@ -256,6 +327,8 @@ async def _apply(
                     "to_user_id": to_user_id,
                     "case_id": case_id,
                     "from_user_id": from_user_id,
+                    "org_id": organization_id,
+                    "now": moved_at,
                 },
             )
             if result.rowcount != 1:
@@ -295,15 +368,44 @@ async def _apply(
                     )
                 )
 
-        # One row per case, not one summary row: event_type and resource_id are
-        # the indexed, queried columns, so "what happened to this case" must be
-        # answerable without parsing a JSON blob (the reasoning ROLE_REMOVED
-        # records for splitting itself out of ROLE_ASSIGNED).
-        moved_at = datetime.now(timezone.utc)
+        # The owner swap does not move share rows: `case_scope_where` admits any
+        # team holding one, so a share to a team the OLD owner belonged to keeps
+        # that team reading the case after it has been moved away from them.
+        # Only teams the new owner is NOT in are revoked — the overlap is about
+        # to be (re)granted above, and dropping it would flap access.
+        if revoke_team_ids:
+            await session.execute(
+                text(
+                    "DELETE FROM resource_shares "
+                    "WHERE resource_type = 'case' AND scope_type = 'team' "
+                    "AND organization_id = :org_id "
+                    "AND resource_id IN :case_ids AND scope_id IN :team_ids"
+                ).bindparams(
+                    bindparam("case_ids", expanding=True),
+                    bindparam("team_ids", expanding=True),
+                ),
+                {
+                    "org_id": organization_id,
+                    "case_ids": case_ids,
+                    "team_ids": revoke_team_ids,
+                },
+            )
+
+        # One row per case, not one summary row: `event_type` is indexed and
+        # `resource_id` is the natural key an auditor filters on, so "what
+        # happened to THIS case" is a row rather than a JSON blob to parse.
+        # (`user_audit_log` indexes only (user_id, created_at) and
+        # (organization_id, created_at) — `resource_id` is queried, not indexed.)
+        #
+        # `user_id` is None on purpose. It is the row's SUBJECT, and attributing
+        # this to the new owner would read as the service account having moved
+        # its own cases. A CLI has no authenticated principal to name, and a
+        # false actor is worse than none — the operator is recorded in `details`
+        # as best-effort provenance instead.
         for case_id in case_ids:
             session.add(
                 UserAuditLogModel(
-                    user_id=to_user_id,
+                    user_id=None,
                     organization_id=organization_id,
                     event_type=AuditEventType.CASE_REASSIGNED.value,
                     event_category=AuditCategory.ADMINISTRATION.value,
@@ -314,7 +416,9 @@ async def _apply(
                             "from_user_id": from_user_id,
                             "to_user_id": to_user_id,
                             "shared_to_team_ids": team_ids,
+                            "revoked_team_ids": revoke_team_ids,
                             "tool": "fm-reassign-cases",
+                            "actor": actor,
                         }
                     ),
                     success=True,
@@ -330,6 +434,7 @@ async def reassign_cases(
     to_identifier: str,
     case_ids_file: str,
     allow_no_team: bool,
+    move_unnamed_too: bool,
     dry_run: bool,
 ) -> int:
     """Run the reassignment. Returns the process exit code."""
@@ -338,9 +443,6 @@ async def reassign_cases(
     from faultmaven.exceptions import UserLookupFailed
     from faultmaven.infrastructure.persistence.sessionless_organization_repository import (
         SessionlessOrganizationRepository,
-    )
-    from faultmaven.infrastructure.persistence.sessionless_team_repository import (
-        SessionlessTeamRepository,
     )
 
     print("=" * 80)
@@ -378,18 +480,31 @@ async def reassign_cases(
         print("\n❌ Failed to get user store from container")
         return 1
 
-    try:
-        from_user = await _resolve_user(user_store, from_identifier)
-        to_user = await _resolve_user(user_store, to_identifier)
-    except UserLookupFailed as exc:
-        print(
-            f"\n❌ Could not look up a user: the {exc.lookup} lookup FAILED.\n"
-            "   This is not 'no such user' — the store did not answer, so "
-            "NOTHING has been read reliably and nothing has been written.\n"
-            f"   Underlying error: {exc}\n"
-            "   Fix the store (check the API logs and the database), then re-run."
-        )
-        return 1
+    resolved = {}
+    for label, identifier in (
+        ("--from-user", from_identifier),
+        ("--to-user", to_identifier),
+    ):
+        try:
+            resolved[label] = await _resolve_user(user_store, identifier)
+        except UserLookupFailed as exc:
+            # Named per argument: "a user lookup failed" sends an operator to
+            # check both accounts, and the store's own identifier is the thing
+            # that says which one it was actually asked about.
+            print(
+                f"\n❌ Could not look up {label} "
+                f"{getattr(exc, 'identifier', identifier)!r}: the {exc.lookup} "
+                "lookup FAILED.\n"
+                "   This is not 'no such user' — the store did not answer, so "
+                "whether the account exists is unknown and NOTHING has been "
+                "written.\n"
+                f"   Underlying error: {exc}\n"
+                "   Fix the store (check the API logs and the database), then "
+                "re-run."
+            )
+            return 1
+    from_user = resolved["--from-user"]
+    to_user = resolved["--to-user"]
 
     for label, identifier, user in (
         ("--from-user", from_identifier, from_user),
@@ -410,7 +525,10 @@ async def reassign_cases(
         )
         return 1
 
-    if not getattr(to_user, "is_active", True):
+    # Read the attribute rather than getattr-with-a-default: a user object that
+    # does not carry `is_active` is an unrecognised shape, and defaulting it to
+    # True would pass exactly the case this guard exists to catch.
+    if not getattr(to_user, "is_active", False):
         print(
             f"\n❌ {to_user.username} is not active, so it cannot be given "
             "ownership of these cases — they would be owned by an account that "
@@ -435,19 +553,53 @@ async def reassign_cases(
         return 1
 
     owned_ids = await _swept_case_ids(organization_id, from_user.user_id)
-    if set(named_ids) != owned_ids:
+    named_set = set(named_ids)
+
+    # Split by direction, because the two mismatches mean opposite things.
+    #
+    # NAMED BUT NOT OWNED is always a mistake — a typo, the wrong organization,
+    # or a case already moved. Nothing good comes of proceeding, so it is a hard
+    # refusal with no flag.
+    unowned = sorted(named_set - owned_ids)
+    if unowned:
         print(
-            f"\n❌ The named case ids and what {from_user.username} actually "
-            f"owns in this organization are not the same set:\n"
-            f"{describe_set_mismatch(named_ids, owned_ids, from_user.username)}\n"
-            "   Refusing the whole run rather than moving the intersection: the "
-            "two sources disagree, and which one is right is not this command's "
-            "call. Re-derive the file from the agent's thread_cases map and "
-            "check the organization id."
+            f"\n❌ {len(unowned)} named case id(s) are NOT owned by "
+            f"{from_user.username} in this organization: {', '.join(unowned)}\n"
+            "   Refusing: that is what a typo, a wrong --organization-id, or an "
+            "already-completed run looks like. Re-derive the file from the "
+            "agent's thread_cases map and check the organization id."
         )
         return 1
 
-    team_ids = await SessionlessTeamRepository().list_all_user_team_ids(to_user.user_id)
+    # OWNED BUT NOT NAMED is the two-workspace case the cross-check exists to
+    # detect: one global account served more than one Slack workspace, and the
+    # file describes only one of them. Refusing by default is right — but
+    # refusing *unconditionally* would mean the situation this guard was built
+    # to catch is the one situation the command can never serve. So it is a
+    # deliberate flag, not a general --force: the ids left behind are printed,
+    # and they stay with the old account.
+    unnamed = sorted(owned_ids - named_set)
+    if unnamed and not move_unnamed_too:
+        print(
+            f"\n❌ {from_user.username} owns {len(unnamed)} case(s) this file "
+            f"does not name: {', '.join(unnamed)}\n"
+            "   Refusing: under a shared account that is what a SECOND Slack "
+            "workspace's history looks like, and moving it into this "
+            "workspace's account would merge two customers' investigations.\n"
+            "   If you have confirmed those cases belong to a different "
+            "workspace and should stay with the old account, re-run with "
+            "--leave-unnamed to move only the named ones."
+        )
+        return 1
+
+    team_ids = await _team_ids_in_org(to_user.user_id, organization_id)
+    # Teams the OLD owner is in and the new one is not: their share rows would
+    # otherwise survive the swap and keep those teams reading the moved cases.
+    revoke_team_ids = [
+        t
+        for t in await _team_ids_in_org(from_user.user_id, organization_id)
+        if t not in team_ids
+    ]
     if not team_ids and not allow_no_team:
         print(
             f"\n❌ {to_user.username} belongs to no Team in this organization, "
@@ -468,6 +620,10 @@ async def reassign_cases(
         "Share to:     "
         + (", ".join(team_ids) if team_ids else "(no Team — --allow-no-team)")
     )
+    if revoke_team_ids:
+        print(f"Revoke share: {', '.join(revoke_team_ids)} (the old owner's teams)")
+    if unnamed:
+        print(f"Left behind:  {', '.join(unnamed)} (--leave-unnamed)")
     print(
         "Untouched:    case_messages.author_id, uploaded_files.uploaded_by "
         "(attribution, not ownership), cases.organization_id"
@@ -487,6 +643,8 @@ async def reassign_cases(
             from_user_id=from_user.user_id,
             to_user_id=to_user.user_id,
             team_ids=team_ids,
+            revoke_team_ids=revoke_team_ids,
+            actor=_actor(),
         )
     except _Refused as exc:
         print(f"\n❌ {exc}")
@@ -555,6 +713,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--leave-unnamed",
+        action="store_true",
+        help=(
+            "Proceed when --from-user owns cases the file does not name, moving "
+            "only the named ones and leaving the rest with the old account. For "
+            "a shared account that served more than one Slack workspace"
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Report what would change and exit without writing",
@@ -590,6 +757,7 @@ def main() -> None:
                 to_identifier=args.to_user,
                 case_ids_file=args.case_ids_file,
                 allow_no_team=args.allow_no_team,
+                move_unnamed_too=args.leave_unnamed,
                 dry_run=args.dry_run,
             )
         )
