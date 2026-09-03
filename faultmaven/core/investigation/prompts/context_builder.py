@@ -120,6 +120,11 @@ HISTORY_AGENT_TRUNCATE_THRESHOLD = 600
 STATE_SUMMARY_TURN_THRESHOLD = 15
 # Max evidence digest items in state summary
 STATE_SUMMARY_MAX_EVIDENCE_DIGESTS = 8
+# Max hypotheses listed in the state summary. Every active/validated hypothesis
+# is listed (with its id) rather than the top 3: past the summary threshold the
+# summary is the only place a lower-ranked hypothesis's ``hyp_`` id appears, and
+# without it the model cannot link causal evidence to that hypothesis (#1116).
+STATE_SUMMARY_MAX_HYPOTHESES = 10
 # Max chars per evidence digest entry
 STATE_SUMMARY_DIGEST_CHARS = 180
 # Max chars per KB solution in context (prevents verbose runbooks from consuming budget)
@@ -864,18 +869,21 @@ def _build_state_summary(case: Case) -> str:
 
     verified = ", ".join(verified_items) if verified_items else "none"
 
-    # Active hypotheses — include top 3 so the agent retains awareness of
-    # competing theories when the full hypothesis block is absent.
+    # Active hypotheses — every one (bounded), each with its id, so the agent
+    # retains awareness of competing theories when the full hypothesis block is
+    # absent AND can still address any of them by id in
+    # hypothesis_evidence_links / hypotheses_to_update.
     active_h = [
         h for h in case.hypotheses.values() if h.state.value in ["active", "validated"]
     ]
     if active_h:
         sorted_h = sorted(active_h, key=lambda h: h.likelihood, reverse=True)
         hypothesis_lines = []
-        for h in sorted_h[:3]:
+        for h in sorted_h[:STATE_SUMMARY_MAX_HYPOTHESES]:
             status_tag = " [VALIDATED]" if h.state.value == "validated" else ""
             hypothesis_lines.append(
-                f"  - {h.statement[:100]} ({h.likelihood * 100:.0f}%{status_tag})"
+                f"  - [{h.hypothesis_id}] {h.statement[:100]} "
+                f"({h.likelihood * 100:.0f}%{status_tag})"
             )
         hypothesis_str = "\n".join(hypothesis_lines)
     else:
@@ -920,7 +928,7 @@ def _build_state_summary(case: Case) -> str:
 Investigation: {problem_desc}
 Stage: {stage}
 Verified: {verified}
-Active Hypotheses:
+Active Hypotheses (reference by [hyp_...] id in hypothesis_evidence_links / hypotheses_to_update):
 {hypothesis_str}
 Evidence: {evidence_str}
 Turns: {turns_total} total, {turns_since_progress} since last progress
@@ -3390,9 +3398,9 @@ def _build_causal_graph_block(case: Case) -> str:
         "<causal_graph>",
         "Chains built so far (D = the problem). REFERENCE these cn_... ids when "
         "extending — attach evidence or new rungs to an existing node rather "
-        "than re-stating a cause already present as a new node. Each hypothesis "
-        "is prefixed with its hyp_... id: use that id in hypothesis_evidence_links "
-        "and hypotheses_to_update instead of creating a duplicate hypothesis.",
+        "than re-stating a cause already present as a new node. Reference a "
+        "hypothesis by its [hyp_...] id in hypothesis_evidence_links and "
+        "hypotheses_to_update.",
     ]
     for h in active_h:
         lines.append(

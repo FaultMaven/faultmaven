@@ -627,6 +627,20 @@ def _withdraw_unlicensed_solution_offers(
     return count
 
 
+def _normalise_id_ref(ref: Any) -> Any:
+    """Strip whitespace and one enclosing ``[...]`` from a model-emitted id ref.
+
+    ``None`` and non-strings pass through untouched so callers that probe the
+    return value keep their contract.
+    """
+    if not isinstance(ref, str):
+        return ref
+    ref = ref.strip()
+    if len(ref) >= 2 and ref[0] == "[" and ref[-1] == "]":
+        ref = ref[1:-1].strip()
+    return ref
+
+
 def _add_system_feedback(
     metadata: dict[str, Any], message: str, *, prepend: bool = False
 ) -> None:
@@ -11066,7 +11080,13 @@ class MilestoneEngine:
 
         Linking is best-effort: the LLM may reference hypothesis or
         evidence IDs that don't resolve (timing issue), so failed links
-        are logged and skipped. The emitted stance is carried through
+        are logged and skipped. A link on a **terminal** hypothesis
+        (``REFUTED``/``RETIRED``) is refused and surfaced via
+        ``system_feedback``, mirroring ``_apply_hypothesis_updates``: the
+        prompt renders refuted hypotheses WITH their ids (so the model does
+        not re-create them), and without this guard one SUPPORTS link lifted a
+        refuted hypothesis from 0.0 to 0.35 and reset its progress counter
+        (#1116 review). The emitted stance is carried through
         verbatim — NEUTRAL links attach without any likelihood effect
         (#514) — EXCEPT on ``causal_absence`` rows, which carry no
         model-authored stance at all (the M2 trust boundary, #987; see
@@ -11100,6 +11120,21 @@ class MilestoneEngine:
                     f"(resolved from '{link.hypothesis_id_ref}'). "
                     f"Available hypotheses: {list(case.hypotheses.keys())}, "
                     f"Hypotheses added this turn: {metadata.get('hypotheses_generated', [])}"
+                )
+                continue
+
+            # Terminal states are immutable on every write path (see docstring).
+            hypothesis = case.hypotheses[h_id]
+            if hypothesis.state.is_terminal:
+                logger.warning(
+                    f"Hypothesis-evidence link refused: hypothesis '{h_id}' is "
+                    f"{hypothesis.state.value} (terminal)."
+                )
+                _add_system_feedback(
+                    metadata,
+                    f"Hypothesis {h_id} is {hypothesis.state.value} (terminal) "
+                    f"— evidence cannot be linked to it. Open a NEW hypothesis "
+                    f"if that theory is back in play.",
                 )
                 continue
 
@@ -12608,7 +12643,15 @@ class MilestoneEngine:
         or malformed, never raises — graceful degradation. A "did this
         resolve?" probe at the caller is the canonical pattern; do not
         switch this to ``Optional[str]`` without auditing every caller.
+
+        The ref is normalised first: surrounding whitespace and one pair of
+        square brackets are stripped. The prompt renders ids as ``[hyp_...]`` /
+        ``[ev_...]`` and a model that echoes the brackets otherwise misses the
+        lookup and has its link or update dropped with only a log line
+        (#1116 review). Applies to every prefix, real ids and placeholders
+        alike.
         """
+        ref = _normalise_id_ref(ref)
         if ref and ref.startswith("new_index_"):
             try:
                 idx_str = ref.replace("new_index_", "")

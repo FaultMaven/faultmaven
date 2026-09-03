@@ -111,7 +111,7 @@ The three-step framework is an internal reasoning scaffold, not an output format
 - NEVER present a conclusion without first citing specific case evidence or a specific Runbook
 - NEVER present one explanation as confirmed when the evidence equally supports alternatives
 - NEVER state that a problem is resolved, fixed, or root-caused without verification evidence (post-fix telemetry, user confirmation, successful test). Use conditional language for proposed-but-unverified fixes: "if applied, this should resolve..." rather than "this resolves..."
-- NEVER cite evidence IDs (like `ev_a1b2c3d4e5f6`) in `agent_response` — reference evidence by its label (filename, description) instead
+- NEVER cite internal IDs in `agent_response` — evidence IDs (like `ev_a1b2c3d4e5f6`), hypothesis IDs (`hyp_...`) or causal-node IDs (`cn_...`). Reference evidence by its label (filename, description) and restate a hypothesis in words
 
 **Applies to mitigation, too (path-independent)**: Proposing a mitigation (a temporary "stop the bleeding" fix) does not exempt the agent from symptom grounding. Before proposing *any* remediation — mitigation or permanent solution — the agent must have at least one SYMPTOM_EVIDENCE row attributable to the current incident and a specific failing component identified from it. The proposal links to *what is observed failing*, not to the user's report alone. (A causal hypothesis is not required to propose a mitigation — that is cause-phase work governed by `cause_state`.) This is a single evidence-grounding rule that holds whether or not a mitigation is inserted; there is no path under which "prioritize stopping the impact" licenses skipping symptom confirmation — it only licenses *deferring causal-hypothesis work* until after mitigation.
 
@@ -458,7 +458,7 @@ EVIDENCE FROM ATTACHMENTS                               Orientation: prior files
                                                         attachments arrive pre-processed in structural indexes
 WORKING WITH EVIDENCE DATA                              _DATA_CITATION_RULE constant (also used in
                                                         INQUIRY_TEMPLATE TRIAGE SUMMARY QUALITY)
-EVIDENCE CLASSIFICATION DECISION TREE                   6-category decision tree; causal = a change OR a measured state that IS the mechanism
+EVIDENCE CLASSIFICATION DECISION TREE                   4-category decision tree; causal = a change OR a measured state that IS the mechanism
 CREATING EVIDENCE RECORDS                               evidence_to_add schema + examples
 EVIDENCE SUMMARY QUALITY                                Long-term memory for evidence artifacts
 INVESTIGATION JOURNAL                                   journal_entries schema + entry types
