@@ -34,6 +34,10 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer
 from pydantic import BaseModel, ValidationError
 
+from faultmaven.api.operator_user_scope import (
+    OperatorUserScope,
+    get_operator_user_scope,
+)
 from faultmaven.api.v1.auth_dependencies import (
     check_auth_services_health,
     extract_bearer_token,
@@ -822,13 +826,35 @@ async def refresh_tokens(
 @trace("auth_list_users")
 async def list_users(
     request: Request,
-    _: DevUser = Depends(require_platform_admin),
+    operator: DevUser = Depends(require_platform_admin),
+    scope: OperatorUserScope = Depends(get_operator_user_scope),
 ) -> dict:
-    """List all users. Admin only."""
+    """List the users of the operator's own organization. Operator only.
+
+    Confined to the organization the request is bound to (#1318). ``total``
+    counts that organization, not the deployment — a deployment-wide count is
+    itself a disclosure about tenants the caller may not see. Under
+    single-tenancy the deployment is the organization and the listing is
+    unchanged.
+    """
+    # Resolved before the store read and outside the try: a caller with no
+    # tenant is a 403 and a missing membership store is a 503, neither of which
+    # should reach the blanket 500 below.
+    member_ids = await scope.member_ids(operator)
+
     try:
         user_store = await get_user_store(request)
         users = await user_store.list_users(limit=1000)
-        total_count = await user_store.count_users()
+        if member_ids is None:
+            total_count = await user_store.count_users()
+        else:
+            # `is None` is the "unconfined" test; an EMPTY set means this tenant
+            # has no users and must filter everything out.
+            users = [user for user in users if user.user_id in member_ids]
+            # The tenant's population, which is what `truncated` below has to be
+            # measured against. `count_users()` counts the deployment and would
+            # report this page as truncated whenever ANOTHER tenant has users.
+            total_count = len(member_ids)
 
         users_list = [
             {
@@ -849,8 +875,11 @@ async def list_users(
         ]
 
         # The listing is capped at 1000 with no pagination parameters, while
-        # `total` counts every user. Say so rather than letting a caller read
-        # a short list as the whole population.
+        # `total` counts every user the caller may see. Say so rather than
+        # letting a short list be read as the whole population. Under the tenant
+        # predicate the cap applies to the pre-filter fetch, so `truncated` can
+        # also mean "this tenant's users did not all fit in the first 1000 rows
+        # of the deployment" — which errs towards showing fewer, never more.
         return {
             "users": users_list,
             "total": total_count,
@@ -872,13 +901,27 @@ async def list_users(
 async def delete_user(
     username: str,
     request: Request,
-    _: DevUser = Depends(require_platform_admin),
+    operator: DevUser = Depends(require_platform_admin),
+    scope: OperatorUserScope = Depends(get_operator_user_scope),
 ) -> dict:
-    """Delete a user by username. Admin only."""
+    """Delete a user of the operator's own organization. Operator only.
+
+    A user of another organization answers exactly what an unknown username
+    answers (#1318), and nothing is revoked or deleted — the refusal must not
+    confirm that the account exists.
+    """
     try:
         user_store = await get_user_store(request)
 
         user = await user_store.get_user_by_username(username)
+        # One refusal for "no such username" and for "not yours", built once so
+        # the two cannot drift into distinguishable answers.
+        if user and not await scope.admits(operator, user.user_id):
+            logger.warning(
+                "Refused a cross-tenant user deletion",
+                extra={"operator_user_id": operator.user_id},
+            )
+            user = None
         if not user:
             raise HTTPException(
                 status_code=404,
@@ -1435,10 +1478,11 @@ async def _end_idp_session_best_effort(
 async def revoke_user_tokens(
     user_id: str,
     request: Request,
-    _: DevUser = Depends(require_platform_admin),
+    operator: DevUser = Depends(require_platform_admin),
     user_store=Depends(get_user_store),
+    scope: OperatorUserScope = Depends(get_operator_user_scope),
 ) -> RevokeUserTokensResponse:
-    """Revoke all tokens for a user. Platform admin only.
+    """Revoke all tokens for a user in the operator's own organization.
 
     Writes a per-user revocation watermark to the shared revocation store; the
     request path and both token generators then reject every token for this
@@ -1465,7 +1509,35 @@ async def revoke_user_tokens(
     revocation as landed and the identity as unverified. It has to be a 200 —
     the tokens really are dead, and a 5xx here would tell the admin the
     containment failed and send them to do it again.
+
+    **Under multi-tenancy the tenant predicate runs FIRST, and that reorders the
+    above** (#1318). Writing a revocation watermark for another tenant's user is
+    itself the cross-tenant mutation, so it cannot follow the check — the
+    containment-before-identity ordering only holds where every account is the
+    operator's to contain. The consequence is stated rather than hidden: under
+    ``multi`` a membership store that cannot answer refuses the revocation
+    instead of performing it, which is the fail-closed direction for an
+    authorization predicate and the opposite of the #703 trade-off this route
+    otherwise makes. Under ``single`` — the standalone deployment #703 was found
+    on, and what cloud runs today — nothing is consulted and the ordering below
+    is exactly as it was. Both refusals answer what an unknown id answers, so
+    neither confirms that the account exists.
     """
+    # Ahead of the revocation, and outside the try: this is the mutation gate,
+    # not part of the best-effort containment path below.
+    if not await scope.admits(operator, user_id):
+        logger.warning(
+            "Refused a cross-tenant token revocation; nothing was revoked",
+            extra={"operator_user_id": operator.user_id},
+        )
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No such user: '{user_id}' — nothing was revoked. "
+                "Verify the user ID."
+            ),
+        )
+
     try:
         auth_service = getattr(request.app.state, "auth_service", None)
         if auth_service is None:

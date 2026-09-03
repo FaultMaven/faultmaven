@@ -979,9 +979,9 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | Reports | `GET/POST /reports` | Terminal summaries (auto-generated) |
 | Teams | `GET /teams` | List the caller's teams (read-only; names for share badges + share-to-team picker). Team *management* is the Cloud-composed admin module. |
 | Sessions | `GET /sessions` | Session management |
-| Admin | `GET /admin/users` | List users (admin only) |
-| Admin | `GET /admin/users/{id}` | User details (admin only) |
-| Admin | `POST /admin/users/{id}/roles` | Assign role (admin only) |
+| Admin | `GET /admin/users` | List the operator's own organization's users — platform-admin only. Confined to the caller's tenant (#1318), `total` included |
+| Admin | `GET /admin/users/{id}` | User details — platform-admin only; a user of another organization answers the same 404 an absent id does |
+| Admin | `POST /admin/users/{id}/roles` | Assign an org-scoped role — platform-admin only, own tenant only |
 | Admin | `GET /admin/llm/config` | LLM provider status and fallback chain |
 | Admin | `POST /admin/llm/config/test` | Test provider connection |
 | Admin | `GET /admin/config/status` | Environment configuration status |

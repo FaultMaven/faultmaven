@@ -8,8 +8,11 @@ identically for all of them rather than being re-derived per handler.
 Scope note: this records operator access to tenant **case** data — the
 metadata/content boundary D8/D9 governs. Other operator-gated endpoints (user
 administration, LLM configuration, Global KB authoring) are not tenant-content
-reads and do not write here; durable audit for cross-tenant user administration
-is tracked separately.
+reads and do not write here. Cross-tenant user administration is not audited
+because it no longer happens: since #1318 those routes carry a tenant predicate
+and refuse outside the operator's own organization (``api/operator_user_scope``).
+Audited break-glass for that surface — ADR-012 D9's option A, which would write
+here — is a later change, deliberately not half-built.
 """
 
 import logging

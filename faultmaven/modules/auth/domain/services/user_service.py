@@ -24,7 +24,7 @@ import logging
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Collection, Dict, List, Optional, Tuple
 
 from faultmaven.config.settings import get_settings
 from faultmaven.models.interfaces_user import AuditEventType
@@ -859,6 +859,7 @@ class UserService(BaseService):
         is_active: Optional[bool] = None,
         role: Optional[str] = None,
         search: Optional[str] = None,
+        restrict_to_user_ids: Optional[Collection[str]] = None,
     ) -> Tuple[List[RepositoryUser], int]:
         """List users with pagination and optional filtering.
 
@@ -869,6 +870,15 @@ class UserService(BaseService):
             is_active: Filter by active status
             role: Filter by role (admin, member, viewer) - TASK-019
             search: Search by email or name (case-insensitive) - TASK-019
+            restrict_to_user_ids: The only users the caller may see, or ``None``
+                for no restriction. This is the tenant predicate the operator
+                surface resolves from ``organization_members``
+                (``api/operator_user_scope``, #1318) — it is applied BEFORE
+                pagination, so ``total`` counts the caller's tenant rather than
+                the deployment, and an empty collection returns nothing rather
+                than everything. ``organization_id`` above remains a context
+                label the repository does not filter on; passing it does not
+                confine anything, which is why the confined caller passes this.
 
         Returns:
             Tuple of (users, total_count)
@@ -880,9 +890,20 @@ class UserService(BaseService):
             is_active=is_active,
         )
 
+        # `is None` rather than truthiness: an EMPTY allowlist means "this
+        # tenant has no users", and reading it as "no restriction" would turn
+        # the tenant predicate into a deployment-wide listing — the fail-open
+        # inversion of the thing it exists to prevent.
+        allowlist = None if restrict_to_user_ids is None else set(restrict_to_user_ids)
+
         # Apply additional filters (TASK-019)
         filtered_users = []
         for user in users:
+            # The tenant predicate, applied before pagination so `total` is a
+            # count of what the caller may see.
+            if allowlist is not None and user.user_id not in allowlist:
+                continue
+
             # Ensure is_active filtering even if repository doesn't apply it
             if is_active is not None and user.is_active != is_active:
                 continue
@@ -929,6 +950,12 @@ class UserService(BaseService):
         - metadata.login_count (if tracked)
         - metadata.failed_login_attempts (if tracked)
 
+        No ``organization_id``. This service reads ``users``, which carries no
+        organization column — affiliation lives in ``organization_members`` —
+        so it cannot answer that question, and used to return the literal
+        ``"org-default"`` instead. The caller that HAS resolved a tenant stamps
+        it (``api/routes/admin.get_user_details``, #1318).
+
         Args:
             user_id: User identifier
 
@@ -946,7 +973,6 @@ class UserService(BaseService):
 
         return {
             "user_id": user.user_id,
-            "organization_id": "org-default",
             "email": user.email,
             "full_name": user.display_name,
             "roles": user_roles,

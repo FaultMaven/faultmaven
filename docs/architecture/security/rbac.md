@@ -306,6 +306,59 @@ despite their identical messages. Per-target `errors` carry no exception text.
 | POST | `/api/v1/knowledge/documents/bulk-update` | Bulk update documents | Per target, as above |
 | POST | `/api/v1/knowledge/documents/bulk-delete` | Bulk delete documents | Per target, as above |
 
+### User Administration
+
+Operator routes over user accounts. Every one requires `platform_admin` **and**
+resolves its target inside the organization the operator's request is bound to
+(`faultmaven/api/operator_user_scope.py`, #1318), per
+[Tenant-Scoped Resolution](#tenant-scoped-resolution): an id belonging to
+another tenant answers 404 — the same answer, with the same body, that an id
+naming nobody gets — and nothing is written. The two listings range over the
+caller's organization, `total` included: a deployment-wide population count is
+itself a disclosure about tenants the caller cannot see.
+
+The role and the predicate are separate questions. `platform_admin` is
+deployment-scoped and says what an operator may *do*; it never says *whose*
+accounts. An organization admin reaches none of these routes at all.
+
+| Method | Endpoint | Description | Required Role |
+|--------|----------|-------------|---------------|
+| GET | `/api/v1/admin/users` | List the operator's org's users | `platform_admin`, own org only |
+| GET | `/api/v1/admin/users/{id}` | User detail | `platform_admin`; 404 if out of tenant |
+| POST | `/api/v1/admin/users/{id}/deactivate` | Deactivate an account | `platform_admin`; 404 if out of tenant |
+| POST | `/api/v1/admin/users/{id}/activate` | Reactivate an account | `platform_admin`; 404 if out of tenant |
+| POST | `/api/v1/admin/users/{id}/roles` | Assign an org-scoped role | `platform_admin`; 404 if out of tenant |
+| DELETE | `/api/v1/admin/users/{id}/roles/{role}` | Remove an org-scoped role | `platform_admin`; 404 if out of tenant |
+| GET | `/api/v1/auth/users` | List the operator's org's users | `platform_admin`, own org only |
+| POST | `/api/v1/auth/users/{id}/revoke-tokens` | Revoke every token for a user | `platform_admin`; 404 if out of tenant |
+| DELETE | `/api/v1/auth/users/{username}` | Delete an account | `platform_admin`; 404 if out of tenant |
+
+**Where the predicate reads from.** Under `TENANT_PROVIDER=multi` the target
+must hold an `organization_members` row in the operator's organization — a
+table that is itself RLS-tenanted (migration 018), so the lookup is guarded
+twice. Under `single` the deployment *is* the organization and
+`organization_members` is not populated at all, so nothing is consulted; that is
+the same split `SingleTenantPermissionResolver` makes, and reading the table
+there would deny the only accounts a standalone install has.
+
+**There is no cross-tenant path.** Unlike case content, an operator cannot reach
+another tenant's user through a break-glass grant: the grant is case-scoped by
+construction (`operator_access_grants.target_case_id` is `NOT NULL`;
+`find_live_grant` keys on it; `bind_grant_org_scope` rebinds RLS to the
+organization the grant names), so using one here would mean recording a
+justification that names an unrelated case. Cross-tenant user administration is
+refused rather than granted, and therefore writes no `operator_access_audit`
+row — there is no access to record. The audited break-glass model for this
+surface (ADR-012 D9's fuller posture) is a later change, tracked on #1318.
+
+**One consequence, stated rather than buried.** `POST /auth/users/{id}/revoke-tokens`
+deliberately revokes *before* confirming the user exists, so an auth-database
+outage cannot stop an admin containing a compromised account (#703/#1043). Under
+`multi` the tenant predicate necessarily runs first — writing a revocation
+watermark for another tenant's user *is* the cross-tenant mutation — so there a
+membership store that cannot answer refuses the revocation instead of performing
+it. Under `single` the ordering is unchanged.
+
 ### Suggestion Review
 
 Knowledge suggestions extracted from cases. Every route requires

@@ -22,7 +22,10 @@ registration endpoint, no admin endpoint, and no script that does it:
   `"supports_registration": false`.
 - **`POST /admin/users` does not exist.** The admin API can list, activate,
   deactivate and assign roles on accounts that already exist — it cannot mint
-  one.
+  one. It is also **confined to the operator's own organization** (#1318): under
+  `TENANT_PROVIDER=multi` a platform admin bound to one tenant administers that
+  tenant's users only, and another tenant's account answers exactly what an
+  absent id answers.
 - `scripts/auth/create_user.py` and `./faultmaven.sh create-user` are
   local/self-hosted development conveniences. They are not in the wheel, not in
   the container image, and not a deployment procedure.
@@ -214,7 +217,9 @@ is a hard conflict, not a link target.
      python -c "import urllib.request,json; print(json.load(urllib.request.urlopen('http://localhost:8000/api/v1/auth/config')))"
    ```
 
-   …and, as a platform admin, `GET /api/v1/admin/users`.
+   …and, as a platform admin, `GET /api/v1/admin/users` — which lists the users
+   of **your own** organization, so run it as an operator bound to the tenant
+   you just provisioned into.
 
 ### Step 7 — grant elevated roles (only if needed)
 
