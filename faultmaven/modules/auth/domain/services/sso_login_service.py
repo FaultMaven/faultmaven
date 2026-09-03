@@ -65,7 +65,11 @@ from faultmaven.infrastructure.persistence.user_repository import (
 from faultmaven.models.interfaces_user import AuditCategory, AuditEventType
 from faultmaven.models.rbac import Role
 from faultmaven.models.rbac_seed import SYSTEM_ROLE_IDS
-from faultmaven.modules.auth.contracts import ISSOIdentityProvider, SSOIdentity
+from faultmaven.modules.auth.contracts import (
+    RETIREMENT_POLICY_FRESH_TENANT,
+    ISSOIdentityProvider,
+    SSOIdentity,
+)
 from faultmaven.modules.auth.domain.personal_tenant import (
     PERSONAL_ORG_NAME,
     personal_org_slug,
@@ -101,6 +105,15 @@ ERROR_ACCESS_DENIED = "sso_access_denied"
 # nothing — it says only that this deployment does not know that IdP org.
 ERROR_ORG_UNMAPPED = "sso_org_unmapped"
 ERROR_FAILED = "sso_failed"
+
+# What an account's enterprise anchor means to an org-less login (#1045 D8).
+# An anchor normally refuses the login outright; the exception is an anchor the
+# operator has RETIRED, which is not an affiliation any more. Three values
+# because the two refusals are different events an operator has to tell apart:
+# an employee who arrived unscoped, and a subject whose tenant was retired.
+_ANCHOR_HELD = "held"
+_ANCHOR_RETIRED_REFUSE = "retired_refuse"
+_ANCHOR_RELEASED = "released"
 
 _MAX_RETURN_TO_LENGTH = 512
 
@@ -682,20 +695,38 @@ class SSOLoginService:
                     user_id=user.user_id,
                 )
                 return ERROR_USER_INACTIVE
-            if getattr(user, "enterprise_id", None):
+            anchor = getattr(user, "enterprise_id", None)
+            if anchor:
                 # An account already anchored to an enterprise arriving with no
                 # IdP organization. Provisioning a personal tenant would either
                 # trip the enterprise guard later (a stray tenant plus a refused
                 # login) or, worse, anchor an employee to a personal enterprise
                 # and lock them out of their company. ADR-016 D5 as amended:
                 # refuse, with a distinct reason, and never provision.
-                logger.warning(
-                    "sso_personal_refused",
-                    reason="personal_account_already_anchored",
-                    provider=identity.provider,
-                    user_id=user.user_id,
-                )
-                return ERROR_ORG_UNMAPPED
+                #
+                # Unless the anchor is one an operator RETIRED. `users
+                # .enterprise_id` is NOT NULL (migration 006), so retiring a
+                # personal tenant cannot clear the account's anchor — it can
+                # only record what should happen next, and this is where that
+                # record is read.
+                verdict = await self._retired_anchor_verdict(identity, anchor)
+                if verdict == _ANCHOR_HELD:
+                    logger.warning(
+                        "sso_personal_refused",
+                        reason="personal_account_already_anchored",
+                        provider=identity.provider,
+                        user_id=user.user_id,
+                    )
+                    return ERROR_ORG_UNMAPPED
+                if verdict == _ANCHOR_RETIRED_REFUSE:
+                    logger.warning(
+                        "sso_personal_refused",
+                        reason="personal_tenant_retired",
+                        provider=identity.provider,
+                        user_id=user.user_id,
+                    )
+                    return ERROR_ORG_UNMAPPED
+                # _ANCHOR_RELEASED: fall through and provision a fresh tenant.
             return None
 
         if not _is_usable_email(identity.email):
@@ -716,6 +747,38 @@ class SSOLoginService:
             )
             return ERROR_FAILED
         return None
+
+    async def _retired_anchor_verdict(
+        self, identity: SSOIdentity, enterprise_id: str
+    ) -> str:
+        """What this account's enterprise anchor means, given any retirement.
+
+        Fail-closed by construction: every path that is not a marker written for
+        **this** subject, naming a policy this version implements, answers
+        ``_ANCHOR_HELD`` — the refusal the check had before retirements existed.
+        Releasing an anchor is the permissive outcome, so it may only come from
+        a marker whose derived key this login re-computes and matches; an
+        operator cannot release somebody by editing the wrong enterprise, and a
+        company enterprise cannot carry a marker that releases anyone.
+
+        A lookup that FAILS is held too, and logged. "The enterprises table did
+        not answer" must never read as "the anchor was retired".
+        """
+        try:
+            retirement = await self._personal_orgs.get_retirement(enterprise_id)
+        except Exception:
+            logger.exception(
+                "sso_personal_retirement_lookup_failed", provider=identity.provider
+            )
+            return _ANCHOR_HELD
+        if retirement is None or retirement.provider != identity.provider:
+            return _ANCHOR_HELD
+        expected = personal_tenant_key(identity.provider, identity.provider_user_id)
+        if retirement.key != expected:
+            return _ANCHOR_HELD
+        if retirement.policy == RETIREMENT_POLICY_FRESH_TENANT:
+            return _ANCHOR_RELEASED
+        return _ANCHOR_RETIRED_REFUSE
 
     async def _provision_personal_tenant(self, identity: SSOIdentity) -> str:
         """Create this subject's IdP organization and FaultMaven tenant.
@@ -838,6 +901,62 @@ class SSOLoginService:
             identity.provider, identity.provider_user_id
         )
 
+    async def _adopt_own_personal_anchor(self, user: Any, organization: Any) -> bool:
+        """Move a stale anchor onto the personal tenant this login resolved.
+
+        The mirror image of :meth:`_reanchor_from_personal`, and the two are
+        disjoint by construction: that one fires when the account's CURRENT
+        enterprise is its personal tenant's, this one when the RESOLVED
+        organization's is — and inside the mismatch branch those cannot both be
+        true, because the branch exists precisely because the two differ.
+
+        It exists because a retirement cannot clear an account's anchor:
+        ``users.enterprise_id`` is NOT NULL (migration 006). So a subject whose
+        retirement released them provisions a brand-new personal tenant on their
+        next login while still carrying the retired enterprise, and without this
+        the membership write below would refuse them ``enterprise_mismatch`` —
+        the tenant provisioned, the login refused, nobody able to enter it.
+
+        Nothing is retired here. The binding this consults is the one the login
+        just wrote, and deleting it would strand the tenant it names.
+
+        The narrowing is the same one the sibling makes: the personal tenant is
+        established from the untenanted ``sso_personal_orgs`` row keyed on
+        **this** subject, so no operator-provisioned company organization can
+        satisfy it and no other subject's anchor can be moved.
+        """
+        if self._personal_orgs is None:
+            return False
+        provider = getattr(user, "sso_provider", None)
+        subject = getattr(user, "sso_provider_id", None)
+        if not provider or not subject:
+            return False
+        try:
+            is_own_personal = await self._personal_orgs.find_by_enterprise(
+                provider, subject, organization.enterprise_id
+            )
+        except Exception:
+            logger.exception("sso_personal_anchor_lookup_failed", user_id=user.user_id)
+            return False
+        if not is_own_personal:
+            return False
+
+        user.enterprise_id = organization.enterprise_id
+        try:
+            await self._users.update(user)
+        except Exception:
+            # Refuse rather than proceed on an in-memory change: every later
+            # step of the callback would act on an anchor the database does not
+            # hold, and the next login would meet the same mismatch.
+            logger.exception("sso_personal_anchor_adopt_failed", user_id=user.user_id)
+            return False
+        logger.info(
+            "sso_personal_anchor_adopted",
+            user_id=user.user_id,
+            organization_id=organization.organization_id,
+        )
+        return True
+
     async def _reanchor_from_personal(
         self, user: Any, organization: Any, user_enterprise: str
     ) -> bool:
@@ -929,8 +1048,11 @@ class SSOLoginService:
             # between enterprises is a deliberate operator action, never an
             # implicit consequence of an IdP claim — with exactly one exception,
             # below.
-            if not await self._reanchor_from_personal(
-                user, organization, user_enterprise
+            if not (
+                await self._adopt_own_personal_anchor(user, organization)
+                or await self._reanchor_from_personal(
+                    user, organization, user_enterprise
+                )
             ):
                 logger.warning(
                     "sso_login_rejected",

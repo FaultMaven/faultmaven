@@ -470,6 +470,7 @@ def _build_registry() -> Dict[str, RegistryEntry]:
         ISSOIdentityProvider,
         ISSOOrgMappingRepository,
         ISSOPersonalOrgRepository,
+        ISSOTenantRetirementProvider,
         IUserRepository,
     )
     from faultmaven.modules.auth.domain.services.auth_service import AuthService
@@ -597,6 +598,10 @@ def _build_registry() -> Dict[str, RegistryEntry]:
         RegistryEntry(
             interface=ISSOPersonalOrgRepository,
             reals=(SessionlessSSOPersonalOrgRepository,),
+        ),
+        RegistryEntry(
+            interface=ISSOTenantRetirementProvider,
+            reals=(WorkOSIdentityProvider,),
         ),
     )
     return {entry.interface.__name__: entry for entry in entries}

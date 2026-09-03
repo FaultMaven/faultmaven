@@ -61,6 +61,7 @@ from faultmaven.modules.auth.contracts import (
     ISSOOrgMappingRepository,
     ISSOPersonalOrgRepository,
     PersonalOrgRecord,
+    PersonalTenantRetirement,
     SSOIdentity,
 )
 from faultmaven.modules.auth.domain.personal_tenant import (
@@ -294,8 +295,13 @@ class FakePersonalOrgRepository(ISSOPersonalOrgRepository):
         race_winner: str | None = None,
         write_error: Exception | None = None,
         minted_last_hour: int = 0,
+        retirements: dict[str, PersonalTenantRetirement] | None = None,
+        retirement_error: Exception | None = None,
     ):
         self.rows = dict(rows or {})
+        self.retirements = dict(retirements or {})
+        self.retirement_error = retirement_error
+        self.retirement_lookups: list[str] = []
         self.race_winner = race_winner
         self.write_error = write_error
         self.minted_last_hour = minted_last_hour
@@ -358,6 +364,12 @@ class FakePersonalOrgRepository(ISSOPersonalOrgRepository):
                 provider_org_id=record.provider_org_id,
                 membership_confirmed=True,
             )
+
+    async def get_retirement(self, enterprise_id):
+        self.retirement_lookups.append(enterprise_id)
+        if self.retirement_error is not None:
+            raise self.retirement_error
+        return self.retirements.get(enterprise_id)
 
     async def retire(self, provider, provider_user_id):
         self.retired.append((provider, provider_user_id))

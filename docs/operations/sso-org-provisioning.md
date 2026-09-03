@@ -259,6 +259,11 @@ logs for the reason slug:
   Provisioning a personal tenant would lock them out of their company, so the
   login is refused. Fix it in WorkOS by scoping the session to their
   organization; do not touch the database.
+- `reason=personal_tenant_retired` — the switch is on, and an operator retired
+  this subject's personal tenant with `--next-login refuse` (the default). This
+  is the refusal that choice asks for. To let them start over, re-run the
+  retirement with `--next-login fresh-tenant` (see [Retiring a personal
+  tenant](#retiring-a-personal-tenant)).
 
 ### Personal-tenant reason slugs (switch on only)
 
@@ -271,14 +276,23 @@ logs one:
 | logged `reason` | slug shown | what it means | operator action |
 | --- | --- | --- | --- |
 | `personal_account_already_anchored` | `sso_org_unmapped` | an account already in an enterprise arrived unscoped | scope the session in WorkOS |
+| `personal_tenant_retired` | `sso_org_unmapped` | an operator retired this subject's tenant with `--next-login refuse` | intended; re-retire with `--next-login fresh-tenant` to let them start over |
 | `personal_no_subject` | `sso_failed` | the IdP returned no stable subject | a provider fault; nothing to fix here |
 | `personal_user_inactive` | `sso_user_inactive` | the account is deactivated or deleted | reactivate, or leave refused |
 | `personal_unusable_email` | `sso_failed` | the IdP supplied no usable email address | fix the profile in WorkOS |
 | `personal_email_conflict` | `sso_failed` | another, unlinked account owns that email | ADR-015 D4: never linked automatically; resolve the duplicate account |
 | `personal_provisioning_ceiling` | `sso_failed` | `SSO_JIT_PERSONAL_TENANT_MAX_PER_HOUR` reached | expected under abuse; raise the ceiling only if the traffic is legitimate |
 | `personal_org_is_sentinel` | `sso_failed` | a subject row points at the Standalone org (fm#850) | a data fault; investigate before clearing |
-| `personal_org_unavailable` | `sso_failed` | the personal org is missing, soft-deleted or deactivated | reactivate it; do NOT delete the subject row, which would mint a second tenant |
+| `personal_org_unavailable` | `sso_failed` | the personal org is missing, soft-deleted or deactivated | reactivate it, or retire the tenant properly — see below. Do NOT delete the subject row by hand: that mints a second tenant while the IdP organization still holds the derived external id |
 | `personal_org_repository_unwired` | `sso_failed` | the switch is on but the personal-tenant repository is not wired | a deployment fault; the login refuses rather than falling through |
+
+`personal_org_unavailable` is what a **hand-made** retirement produces: soft-delete
+the organization and every later login for that subject fails there, with no path
+back — the enterprise does not cascade, the mapping and subject rows still point
+at the dead tenant, and the WorkOS organization still holds the derived external
+id, so the subject can never be given a new tenant either. `fm-personal-tenant
+retire` is the supported way to do it; see [Retiring a personal
+tenant](#retiring-a-personal-tenant).
 
 A collision is logged as its own **event** rather than a `reason=`:
 `sso_personal_tenant_collision`, carrying `colliding_key` and `colliding_value`.
@@ -375,6 +389,114 @@ organization automatically on their next login.
 Deactivate the organization (`is_active = false`). Logins for it then fail with
 the generic slug and `reason=org_unavailable`, and the mapping row can stay.
 Deleting the organization cascades the mapping away.
+
+That is the **company** tenant procedure. A personal tenant — one an org-less SSO
+identity provisioned for itself — has a subject binding, a derived slug and a
+WorkOS organization behind it, none of which that procedure touches, so it has
+its own command.
+
+### Retiring a personal tenant
+
+```bash
+kubectl exec -it deploy/faultmaven-api -n faultmaven -- \
+  env DATABASE_URL="$OWNER_DSN" \
+  fm-personal-tenant retire --subject user_01H…
+
+kubectl exec -it deploy/faultmaven-api -n faultmaven -- \
+  env DATABASE_URL="$OWNER_DSN" \
+  fm-personal-tenant retire --subject user_01H… --apply
+```
+
+**Dry run is the default**: without `--apply` the command reads, prints every
+side-effect it would apply, and writes nothing on either side. Pass the owner
+DSN, as with `fm-provision-sso-org` and for the same reason — it resolves the
+organization by a *derived slug*, which the RLS-scoped application role cannot
+read. A preflight refuses before any write if the connected role is scoped.
+
+Address the tenant by `--subject` (the IdP's opaque handle, `user_01H…`), by
+`--organization-id`, or by both — naming both is a cross-check, and the command
+refuses if they disagree. An organization whose slug was not derived from a
+subject is refused outright: it is not a personal tenant.
+
+**`--next-login` decides what that subject's next org-less sign-in gets:**
+
+| Value | The next org-less login |
+| --- | --- |
+| `refuse` (default) | is refused, logging `reason=personal_tenant_retired` |
+| `fresh-tenant` | provisions a brand-new personal tenant |
+
+The account stays anchored to the retired enterprise either way —
+`users.enterprise_id` is NOT NULL, so a retirement cannot clear it — so the
+choice is *recorded* on the retired enterprise (in `enterprises.settings`) and
+the login reads it there. The record is bound to the subject by the same derived
+key the provisioning path uses, and a login honours it only after re-deriving
+that key from its own identity: a marker on the wrong enterprise releases
+nobody.
+
+**What it does, and in this order** (each step idempotent, so re-running an
+interrupted run finishes it rather than starting a different one):
+
+1. soft-deletes the organization — the fence, after which no login can enter the
+   tenant;
+2. deletes the `sso_org_mappings` row;
+3. deletes the `sso_personal_orgs` subject binding — before the WorkOS calls,
+   because while it exists a login would ask WorkOS to *finish* the membership
+   and re-create the organization step 4 removes;
+4. deletes the WorkOS membership, then the WorkOS organization, freeing the
+   derived `external_id`;
+5. renames the organization's slug, freeing the derived slug;
+6. soft-deletes and renames the enterprise and records the `--next-login`
+   decision — last, because that record is what releases the anchor, and
+   releasing it earlier would send the next login into a collision with the
+   tenant being retired.
+
+**Cases, evidence and knowledge items are NOT deleted**, and neither is the
+organization row that owns them: it is soft-deleted and renamed. What a retired
+tenant keeps, and for how long, is a retention question (ADR-014) and
+deliberately not this command's.
+
+WorkOS must be configured where the command runs. It refuses rather than
+skipping the IdP half: leaving the WorkOS organization standing would keep the
+derived external id claimed, so the subject could never be given a second
+tenant — and the command would have reported a retirement it did not complete.
+
+Read the exit code:
+
+| Code | Meaning |
+|------|---------|
+| 0 | Done, or a dry run that reported what it would do |
+| 1 | Refused — nothing was written |
+| 2 | A bad flag (argparse usage error) — nothing was written |
+| 3 | Nothing to do: already retired with the same `--next-login` policy |
+| 4 | Incomplete: some steps landed and a later one failed. Re-run the same command to finish it |
+
+### Re-anchoring a personal account to a company organization
+
+A **mapped** login already does this by itself: an account anchored to its own
+personal enterprise that signs in through a mapped company organization is
+re-anchored, granted the `member` role, and has its personal binding retired.
+Use the command when no such login is coming — the account has to be moved
+before WorkOS knows about it, or its personal binding is already gone:
+
+```bash
+kubectl exec -it deploy/faultmaven-api -n faultmaven -- \
+  env DATABASE_URL="$OWNER_DSN" \
+  fm-personal-tenant re-anchor --subject user_01H… \
+    --organization-id <company organization id> --apply
+```
+
+The target must be a **mapped** company organization: an unmapped one is refused
+(no login could land in it, so the account would be stranded), and so is one that
+is itself a personal tenant. The account must be anchored to its **own** personal
+tenant's enterprise; moving one between company enterprises is a manual
+migration, not this command.
+
+The move is persisted *before* the binding is retired — the reverse order would
+strand an account anchored to a personal enterprise whose subject row no longer
+names it, which no login could repair. The personal tenant is left standing and
+dormant: its cases stay where they are. The command prints the exact
+`fm-personal-tenant retire --organization-id …` line to retire it when you are
+ready. Same exit codes as above.
 
 ### Revoking access for one user
 

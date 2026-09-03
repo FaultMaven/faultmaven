@@ -16,7 +16,12 @@ from typing import Any
 import jwt as jwt_lib
 import structlog
 
-from faultmaven.modules.auth.contracts import ISSOIdentityProvider, SSOIdentity
+from faultmaven.modules.auth.contracts import (
+    ISSOIdentityProvider,
+    ISSOTenantRetirementProvider,
+    RetiredIdPOrganization,
+    SSOIdentity,
+)
 from faultmaven.modules.auth.exceptions import (
     SSOAuthenticationError,
     SSOProvisioningError,
@@ -70,8 +75,13 @@ def _organization_id_of(organization: Any) -> str | None:
 _AUTHKIT_PROVIDER = "authkit"
 
 
-class WorkOSIdentityProvider(ISSOIdentityProvider):
-    """Hosted-login provider backed by WorkOS AuthKit (User Management)."""
+class WorkOSIdentityProvider(ISSOIdentityProvider, ISSOTenantRetirementProvider):
+    """Hosted-login provider backed by WorkOS AuthKit (User Management).
+
+    Implements two ports. :class:`ISSOIdentityProvider` is what the login flow
+    holds; :class:`ISSOTenantRetirementProvider` is the operator-only teardown,
+    kept separate so no login-path double ever acquires a destructive method.
+    """
 
     def __init__(self, *, client: Any, redirect_uri: str) -> None:
         self._client = client
@@ -285,6 +295,112 @@ class WorkOSIdentityProvider(ISSOIdentityProvider):
             )
             return False
         return bool(getattr(page, "data", None))
+
+    # -- operator teardown (ISSOTenantRetirementProvider) -------------------- #
+
+    def retire_personal_organization(
+        self, *, external_id: str
+    ) -> RetiredIdPOrganization:
+        """Remove the subject's membership and the organization holding it.
+
+        Addressed by ``external_id`` rather than by the organization id, because
+        that is the value an operator can re-derive from the subject alone —
+        after the database row that recorded the WorkOS id is gone, it is the
+        only handle left, and it is what makes an interrupted retirement
+        finishable by re-running the same command. The memberships are scoped
+        by organization for the same reason: the subject is not needed to
+        identify them, and the row that would have supplied it is already gone.
+
+        Idempotent in both steps. An absent organization is a completed
+        retirement, reported as ``organization_found=False`` rather than as an
+        error; a membership that has already gone is skipped. Only a lookup or a
+        delete that FAILED raises — the caller must be able to tell "there was
+        nothing left to remove" from "this step did not run", and reporting the
+        second as the first is exactly how a command claims success for work it
+        did not do.
+
+        Memberships go first so an interrupted run never leaves a member of an
+        organization nothing points at; deleting the organization would remove
+        them anyway, which is what covers any membership the listing did not
+        name.
+        """
+        organization_id = self._organization_by_external_id(external_id)
+        if organization_id is None:
+            return RetiredIdPOrganization(
+                organization_found=False,
+                memberships_deleted=0,
+                organization_deleted=False,
+            )
+        deleted = self._delete_memberships(organization_id=organization_id)
+        self._delete_organization(organization_id)
+        return RetiredIdPOrganization(
+            organization_found=True,
+            memberships_deleted=deleted,
+            organization_deleted=True,
+        )
+
+    def _delete_memberships(self, *, organization_id: str) -> int:
+        """Delete the organization's memberships, in any state.
+
+        ``statuses`` covers every value the SDK's enum defines, for the same
+        reason the provisioning check does: the default lists ``active`` only,
+        so a ``pending`` or ``inactive`` membership left by an earlier attempt
+        would be invisible here and survive a retirement that reported success.
+        """
+        from workos import NotFoundError
+
+        try:
+            page = self._client.organization_membership.list_organization_memberships(
+                organization_id=organization_id,
+                statuses=_membership_statuses(),
+                limit=100,
+            )
+        except Exception as exc:
+            logger.warning(
+                "workos_personal_org_membership_list_failed",
+                error=type(exc).__name__,
+            )
+            raise SSOProvisioningError(
+                "Personal organization memberships could not be listed"
+            ) from exc
+
+        deleted = 0
+        for membership in getattr(page, "data", None) or []:
+            membership_id = getattr(membership, "id", None)
+            if not isinstance(membership_id, str) or not membership_id:
+                continue
+            try:
+                self._client.organization_membership.delete_organization_membership(
+                    membership_id
+                )
+            except NotFoundError:
+                # Already gone: a completed step, not a failure.
+                continue
+            except Exception as exc:
+                logger.warning(
+                    "workos_personal_org_membership_delete_failed",
+                    error=type(exc).__name__,
+                )
+                raise SSOProvisioningError(
+                    "Personal organization membership could not be removed"
+                ) from exc
+            deleted += 1
+        return deleted
+
+    def _delete_organization(self, organization_id: str) -> None:
+        from workos import NotFoundError
+
+        try:
+            self._client.organizations.delete_organization(organization_id)
+        except NotFoundError:
+            return
+        except Exception as exc:
+            logger.warning(
+                "workos_personal_org_delete_failed", error=type(exc).__name__
+            )
+            raise SSOProvisioningError(
+                "Personal organization could not be removed"
+            ) from exc
 
     def revoke_session(self, *, provider_session_id: str) -> bool:
         if not provider_session_id:
