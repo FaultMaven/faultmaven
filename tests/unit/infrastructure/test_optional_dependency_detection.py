@@ -26,6 +26,7 @@ from types import ModuleType
 import pytest
 
 from faultmaven.utils.optional_dependency import dependency_is_usable, module_is_usable
+from tests.import_guard_ast import swallows_import_error
 
 pytestmark = pytest.mark.unit
 
@@ -63,7 +64,7 @@ def _scan(paths) -> list[str]:
     for path in sorted(paths):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Try) or not _catches_import_error(node):
+            if not isinstance(node, ast.Try) or not swallows_import_error(node):
                 continue
 
             bare = [
@@ -89,26 +90,6 @@ def _scan(paths) -> list[str]:
                     f"(faultmaven/utils/optional_dependency.py)."
                 )
     return violations
-
-
-def _catches_import_error(node: ast.Try) -> bool:
-    """Handlers that would swallow a failed import.
-
-    ``Exception`` and a bare ``except:`` count. They catch ImportError too, so
-    the same defect written that way is the same defect — and keying only on
-    the literal name ``ImportError`` left a one-keyword bypass.
-    """
-    names = {"ImportError", "ModuleNotFoundError", "Exception", "BaseException"}
-    for handler in node.handlers:
-        if handler.type is None:  # bare `except:`
-            return True
-        if isinstance(handler.type, ast.Name) and handler.type.id in names:
-            return True
-        if isinstance(handler.type, ast.Tuple) and any(
-            isinstance(e, ast.Name) and e.id in names for e in handler.type.elts
-        ):
-            return True
-    return False
 
 
 def _literal_true_assignments(body) -> list[tuple[str, int]]:
