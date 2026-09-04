@@ -211,6 +211,37 @@ def _create_investigation_tools(container: "BaseDIContainer") -> Any | None:
     return registry
 
 
+def _build_turn_cap_service():
+    """Compose the per-tenant turn cap from its ports (ADR-016 D5.3).
+
+    Here rather than beside the mechanism because this is where choosing the
+    concrete adapters belongs — and because the mechanism module must not reach
+    into the auth module's infrastructure to construct one (import-linter
+    contract 10 forbids exactly that, transitively, for every module that
+    imports it). The composition root carries the standing exemption for wiring
+    auth internals; the shared module does not, and should not.
+    """
+    from faultmaven.infrastructure.persistence.sessionless_organization_repository import (  # noqa: E501
+        SessionlessOrganizationRepository,
+    )
+    from faultmaven.infrastructure.protection.tenant_turn_cap import (
+        CapPolicyResolver,
+        SqlTurnLedger,
+        TurnCapService,
+    )
+    from faultmaven.modules.auth.infrastructure.repositories.sso_personal_org_repository import (  # noqa: E501
+        SessionlessSSOPersonalOrgRepository,
+    )
+
+    return TurnCapService(
+        CapPolicyResolver(
+            SessionlessSSOPersonalOrgRepository(),
+            SessionlessOrganizationRepository(),
+        ),
+        SqlTurnLedger(),
+    )
+
+
 def create_investigation_service(
     milestone_engine: Any | None,
     case_repository: Any | None,
@@ -232,6 +263,12 @@ def create_investigation_service(
             case_repository=case_repository,
             preprocessing_service=preprocessing_service,
             file_storage_service=file_storage_service,
+            # The per-tenant turn cap (ADR-016 D5.3), wired here rather than
+            # left to the service's lazy default so the composition root is
+            # where its ports are chosen — the SSO personal-org lookup, the
+            # organization repository and the SQL ledger. The lazy default
+            # stays for the callers that construct the service directly.
+            turn_cap=_build_turn_cap_service(),
         )
         logger.debug("InvestigationService initialized")
         return service

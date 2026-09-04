@@ -71,6 +71,8 @@ import argparse
 import asyncio
 import sys
 
+from faultmaven.cli._confirmation import require_confirmation
+
 #: argparse's ``description``. A literal, not derived from ``__doc__``: ``python
 #: -OO`` strips docstrings, and that expression would raise before argparse ran.
 _SUMMARY = (
@@ -401,27 +403,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # --dry-run with --yes is a usage error, not a preference. The two
-    # invocations differ by one flag, so an operator editing the previous command
-    # can end up with both — and silently taking the dry-run branch would exit 0
-    # and read as "access cut" when nothing was written.
-    if args.dry_run and args.yes:
-        parser.error(
-            "--dry-run and --yes are mutually exclusive: pass --dry-run to preview, "
-            "--yes to write."
-        )
-
-    # Refuse before touching anything: a run with neither flag is an operator
-    # who has not yet decided, and this write signs a user out everywhere. The
-    # check sits here, ahead of container initialisation and any database
-    # connection, so the refusal costs nothing and cannot half-run.
-    if not args.dry_run and not args.yes:
-        print(
-            "❌ Refusing to run without --yes. This removes the user's membership "
-            "and signs them out of every active session.\n"
-            "   Use --dry-run first to see what would change."
-        )
-        sys.exit(1)
+    require_confirmation(
+        parser,
+        args,
+        "This removes the user's membership and signs them out of every "
+        "active session.",
+    )
 
     sys.exit(
         asyncio.run(

@@ -806,6 +806,23 @@ class ISSOPersonalOrgRepository(ABC):
         """
 
     @abstractmethod
+    async def is_personal_organization(self, organization_id: str) -> bool:
+        """Whether ``organization_id`` is somebody's personal tenant.
+
+        The inverse direction of :meth:`get`, and the one the per-tenant turn
+        cap asks (ADR-016 D5.3): given a bound tenant, is this a self-service
+        personal organization — which the cap bounds — or a company one, which
+        it does not. Asked here rather than by reading ``sso_personal_orgs``
+        directly because that table is auth-owned; a caller outside this module
+        must not know its shape.
+
+        Answerable whatever tenant is bound, because the table is untenanted
+        (see the class docstring), and it has exactly one writer — the
+        just-in-time provisioning path — so no second source of truth for
+        "personal" can appear.
+        """
+
+    @abstractmethod
     async def count_created_since(self, provider: str, since: datetime) -> int:
         """How many personal tenants this provider has minted since ``since``.
 

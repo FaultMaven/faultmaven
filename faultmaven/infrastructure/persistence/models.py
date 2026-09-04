@@ -3,9 +3,10 @@
 Schema is organized into four domains:
 
 - **User domain** — `enterprises`, `users`, `organizations`, `teams` and their
-  membership/audit/auth tables. Three-tier tenancy: enterprises (corporate
-  umbrella) → organizations (customer tenants, hard isolation boundary) →
-  teams (routing buckets).
+  membership/audit/auth tables, plus `organization_turn_usage` (the per-UTC-day
+  investigation-turn ledger the tenant cap reserves against). Three-tier
+  tenancy: enterprises (corporate umbrella) → organizations (customer tenants,
+  hard isolation boundary) → teams (routing buckets).
 - **Case domain** — `cases` and its children: evidence, hypotheses, solutions,
   messages, files, actions, tags, checkpoints, entities, sessions, agent
   executions, tool calls, hypothesis-evidence junction, reports.
@@ -40,6 +41,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Column,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -372,6 +374,14 @@ class OrganizationModel(Base):
     )
     is_active = Column(Boolean, nullable=False, server_default="1")
     settings = Column(JsonBlob, nullable=True)  # JSON
+    #: Operator override for the per-UTC-day investigation-turn cap
+    #: (ADR-016 D5.3). Three-valued on purpose, because the policy it overrides
+    #: is itself conditional: ``NULL`` = no override (a personal tenant takes
+    #: the deployment default, a company tenant is uncapped), ``0`` = explicitly
+    #: uncapped, ``N > 0`` = capped at N turns per UTC day. Written by
+    #: ``fm-set-turn-cap``; read on every turn, so a change takes effect on the
+    #: next turn with no restart.
+    daily_turn_cap = Column(Integer, nullable=True)
     created_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -397,6 +407,10 @@ class OrganizationModel(Base):
         ),
         CheckConstraint("LENGTH(TRIM(name)) > 0", name="organizations_name_not_empty"),
         CheckConstraint("LENGTH(slug) > 0", name="organizations_slug_not_empty"),
+        CheckConstraint(
+            "daily_turn_cap IS NULL OR daily_turn_cap >= 0",
+            name="organizations_daily_turn_cap_non_negative",
+        ),
     )
 
 
@@ -439,6 +453,50 @@ class OrganizationMemberModel(Base):
     __table_args__ = (
         Index("ix_org_members_organization_id", "organization_id"),
         Index("ix_org_members_role_id", "role_id"),
+    )
+
+
+class OrganizationTurnUsageModel(Base):
+    """Investigation turns accepted for one organization on one UTC day.
+
+    The ledger behind the per-tenant turn cap (ADR-016 D5.3). ``usage_date`` is
+    a **UTC calendar day**, not a rolling window, because that is what the
+    refusal message promises the user ("resets at 00:00 UTC") and a sliding
+    window could not honour it.
+
+    Three columns, and no more. The composite primary key is what lets the
+    reservation be a single ``INSERT … ON CONFLICT … DO UPDATE SET turn_count =
+    turn_count + 1 WHERE turn_count < :cap RETURNING turn_count``: an empty
+    RETURNING *is* the refusal, so the check and the increment cannot interleave
+    and a refused turn increments nothing. There are deliberately no
+    ``created_at``/``updated_at`` columns — every write after the first arrives
+    through ``ON CONFLICT DO UPDATE``, which does not fire SQLAlchemy's
+    ``onupdate``, so a timestamp here would freeze at the day's first turn while
+    looking like it tracked the last one.
+
+    Rows are written for **every** tenant a cap decision reaches, capped or not.
+    A company tenant is never refused, but its counts are what the owner tunes
+    the default against — a ledger that only recorded refusable tenants could
+    not answer "what does a normal tenant actually use". A single-tenant
+    deployment writes nothing at all: it is answered from the deployment mode
+    before any port is touched.
+
+    Tenanted (migration 018's pattern, enrolled by migration 053): a tenant can
+    neither read nor write another tenant's row.
+    """
+
+    __tablename__ = "organization_turn_usage"
+
+    organization_id = Column(
+        String(36),
+        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    usage_date = Column(Date, primary_key=True)
+    turn_count = Column(Integer, nullable=False, server_default=text("0"), default=0)
+
+    __table_args__ = (
+        CheckConstraint("turn_count >= 0", name="organization_turn_usage_non_negative"),
     )
 
 

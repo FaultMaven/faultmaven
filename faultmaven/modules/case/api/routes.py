@@ -76,6 +76,10 @@ from faultmaven.infrastructure.base_client import CircuitBreakerError
 from faultmaven.infrastructure.knowledge.runbook_kb import RESULTS_UNREADABLE_CODE
 from faultmaven.infrastructure.llm.router import resolve_chat_provider_name
 from faultmaven.infrastructure.observability.tracing import trace
+from faultmaven.infrastructure.protection.tenant_turn_cap import (
+    TenantTurnCapExceeded,
+    TenantTurnCapUnavailable,
+)
 
 # TD-001: IReportStore removed - reports now accessed via CaseRepository
 from faultmaven.models.api import (
@@ -3073,6 +3077,44 @@ async def submit_turn(
                 "x-error-code": "CASE_VERSION_CONFLICT",
                 "x-expected-version": str(e.expected_version),
                 "x-actual-version": str(e.actual_version),
+            },
+        )
+    except TenantTurnCapExceeded as capped:
+        # The per-tenant daily cap (ADR-016 D5.3). Raised from
+        # ``InvestigationService.process_turn`` once the request is known to be
+        # a real turn on a case this caller may write to; the route's job is
+        # only to render it. 429 with a distinct ``x-error-code`` because a
+        # rate-limit 429 and a cap 429 want opposite reactions from a client:
+        # one means slow down, this one means come back tomorrow.
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=capped.user_message,
+            headers={
+                "x-correlation-id": correlation_id,
+                "x-error-code": "TENANT_TURN_CAP_EXCEEDED",
+                "Retry-After": str(capped.retry_after_seconds),
+            },
+        )
+    except TenantTurnCapUnavailable as unavailable:
+        # Fail closed, but do not claim the caller spent an allowance they did
+        # not: telling somebody their day is gone when the ledger merely failed
+        # to write is a false statement about their own account, and it sends
+        # them away until midnight for a fault that may clear in seconds.
+        logger.error(
+            "Turn refused: the tenant turn cap could not be applied: %s",
+            unavailable,
+            extra={"correlation_id": correlation_id},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Your usage allowance could not be checked just now. "
+                "Please try again in a moment."
+            ),
+            headers={
+                "x-correlation-id": correlation_id,
+                "x-error-code": "TENANT_TURN_CAP_UNAVAILABLE",
+                "Retry-After": "10",
             },
         )
     except NotFoundError as e:

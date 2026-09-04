@@ -168,6 +168,15 @@ class Organization(BaseModel):
     #: with it) but must not accept logins — the SSO org-mapping path refuses
     #: to land a user in one (#869).
     is_active: bool = True
+    #: Operator override for the per-UTC-day investigation-turn cap
+    #: (ADR-016 D5.3). Three-valued because the policy it overrides is itself
+    #: conditional: ``None`` = no override (a personal tenant takes the
+    #: deployment default, a company tenant is uncapped), ``0`` = explicitly
+    #: uncapped, ``N > 0`` = capped at N turns per UTC day. Carried on the
+    #: domain object rather than read off the ORM by the enforcement, so the
+    #: cap resolves through the same repository every other organization read
+    #: goes through — and inherits its ``deleted_at`` filter.
+    daily_turn_cap: Optional[int] = Field(default=None, ge=0)
     created_at: datetime
     updated_at: datetime
     deleted_at: Optional[datetime] = None

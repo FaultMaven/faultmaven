@@ -663,6 +663,8 @@ fm-personal-tenant retire --subject user_01H... --apply       # Retire a JIT per
 fm-personal-tenant re-anchor --subject user_01H... --organization-id ... --apply  # Move a personal account onto a mapped company organization
 fm-personal-tenant purge-idp-org --provider-org-id org_01H... --apply             # Remove a provider-side organization no tenant claims (explicit id only)
 fm-reassign-cases --organization-id ... --from-user slack-agent --to-user slack-T0123 --case-ids-file ids.txt --dry-run  # Move cases to a new owner within one org, with the team share and an audit row (faultmaven-slack-agent#61)
+fm-set-turn-cap --organization-id ... --show                # Read one tenant's daily investigation-turn cap and today's usage
+fm-set-turn-cap --organization-id ... --cap 200 --yes       # Raise/lower it, or --unlimited / --clear; effective on that tenant's NEXT turn, no restart (ADR-016 D5.3)
 fm-reset-kb --dry-run                      # Wipe/re-bootstrap the KB (refuses under TENANT_PROVIDER=multi)
 fm-wipe-deployment                         # Inventory every wipe surface (resolved targets, writes nothing)
 fm-wipe-deployment --verify                # Positively verify a clean slate; exit 5 on residue (#819)
@@ -860,7 +862,7 @@ Key configuration in `.env`:
 | OAuth consent skip | `OAUTH_FIRST_PARTY_CLIENTS`, `OAUTH_FIRST_PARTY_REDIRECT_PATTERNS` | Which clients skip the consent screen. **Both are required and only the redirect proves anything** — `client_id` is caller-supplied, so the clients list narrows the field but identifies nobody. `OAUTH_FIRST_PARTY_REDIRECT_PATTERNS` defaults to `[]`, so **nothing skips consent** until a deployment pins its published extension id (#1066). Deliberate: a wrong consent skip fails silently — what goes wrong is that nothing appears — so `GET /admin/config/status` reports `first_party_consent_skip` to distinguish "never activated" from "working". All three parse as JSON lists; a bare value fails at startup |
 | JWT | `JWT_ACCESS_TOKEN_EXPIRY_MINUTES`, `JWT_REFRESH_TOKEN_EXPIRY_DAYS` | Access token lifetime in minutes (default 15, max 1440); refresh token lifetime in DAYS (default 7, max 90). Single source, effective in **both** auth modes (local/HS256 and cloud/RS256). Out-of-range values fail at startup; the retired `JWT_*_EXPIRE_*` spelling is rejected at startup |
 | Security | `CORS_ALLOW_ORIGINS`, `CORS_ALLOW_CREDENTIALS` | CORS settings |
-| Limits | `MAX_UPLOAD_SIZE_MB` | Evidence upload bounds. There is **no rate-limit knob** — limits, windows and the on/off decision live in the presets in `faultmaven/config/protection.py`, chosen by `ENVIRONMENT`. No environment variable switches it off — `SKIP_SERVICE_CHECKS` used to, and no longer does (fm#990). |
+| Limits | `MAX_UPLOAD_SIZE_MB`, `TENANT_DAILY_TURN_CAP` | Evidence upload bounds, and the per-tenant investigation-turn cap (default 30/UTC day, **personal tenants only**; company organizations are uncapped unless given a per-organization override via `fm-set-turn-cap`). There is **no rate-limit knob** — limits, windows and the on/off decision live in the presets in `faultmaven/config/protection.py`, chosen by `ENVIRONMENT`. No environment variable switches it off — `SKIP_SERVICE_CHECKS` used to, and no longer does (fm#990). |
 
 ### Storage Backends
 
@@ -905,6 +907,8 @@ alembic downgrade -1
 **Tenancy:** `enterprises` (top-tier container), with `users.enterprise_id` and `organizations.enterprise_id` NOT NULL FKs.
 
 **Sharing:** `resource_shares` — polymorphic `(resource_type, resource_id, scope_type, scope_id)` association (ADR-013 §D4). Single source of truth for team visibility of runbooks/cases/drafts; replaced the nullable `team_id` columns on `cases`/`knowledge_items`/`conversion_jobs`. v1 `scope_type=team`; `organization` reserved (D4a). Retrieval resolves it to a visible-id allowlist in SQL; ChromaDB metadata never carries team state.
+
+**Usage accounting:** `organization_turn_usage` — three columns (organization, UTC day, count) holding the investigation turns accepted that day. The ledger the per-tenant turn cap reserves against (ADR-016 D5.3): the reservation is a single `INSERT … ON CONFLICT … DO UPDATE … WHERE turn_count < :cap RETURNING`, so a refused turn increments nothing. Rows are written for every tenant, capped or not — a company organization is never refused, but its counts are what the default is tuned against. The cap itself is `organizations.daily_turn_cap` (NULL = deployment policy, 0 = uncapped, N = N/day), written by `fm-set-turn-cap` and read on every turn. Charged inside `InvestigationService.process_turn`, after the case load and access check — so a 404/409/422 and a cross-tenant probe cost nothing. Single-tenant deployments are never capped and never touch the ledger.
 
 **Config domain:** `config_overrides` (dashboard-managed settings, hot-reloaded at runtime — cloud mode only; local mode uses .env as sole source of truth)
 
