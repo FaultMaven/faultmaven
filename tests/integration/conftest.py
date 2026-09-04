@@ -1342,6 +1342,46 @@ def inmemory_session_repository():
     return InMemoryInvestigationSessionRepository()
 
 
+#: The URL the engine fixtures below point the process at. One spelling, in one
+#: place, so the isolating fixture and the engines it covers cannot drift into
+#: naming two different databases.
+IN_MEMORY_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+
+
+@pytest.fixture
+def in_memory_database_url(monkeypatch):
+    """Point ``DATABASE_URL`` at an in-memory SQLite for ONE test, and put the
+    process back afterwards.
+
+    Three modules here build their own engine and need the application to agree
+    with it, so they set ``DATABASE_URL``. They used to do it by assigning
+    ``os.environ`` outright, from *function*-scoped fixtures that never restored
+    it — so the first such test permanently repointed the whole process at an
+    in-memory database, and ``tests/integration`` runs before ``tests/unit`` in
+    a whole-suite run.
+
+    That was invisible for as long as nothing rebuilt the settings afterwards:
+    ``get_settings()`` caches a process-wide singleton, and the one built before
+    these tests ran kept the real URL. The moment anything downstream reset that
+    singleton, the rebuild picked this value up and the application booted
+    against an empty database — ``no such table: enterprises`` out of
+    ``bootstrap_application``, in tests that have nothing to do with any of this
+    (fm#1325). A fixture whose blast radius is the rest of the process is a trap
+    with a delay on it, and the delay is why it survived.
+
+    ``monkeypatch`` is the whole fix: it restores the variable after each test,
+    so a later rebuild resolves what it would have resolved before. The settings
+    singleton is deliberately NOT snapshotted here as well. It would only matter
+    if something built the singleton *inside* this window, and measured against
+    these three modules nothing does — the guard in
+    ``test_database_url_fixture_isolation.py`` asserts the resolved URL after the
+    session rather than trusting that, so if that ever changes it goes red and
+    the machinery can be added with evidence instead of on speculation.
+    """
+    monkeypatch.setenv("DATABASE_URL", IN_MEMORY_DATABASE_URL)
+    return IN_MEMORY_DATABASE_URL
+
+
 # ``tests/integration`` has its own ``pytest.ini``, so the repository-root
 # ``tests/conftest.py`` is not loaded here. Re-export the shared personal-tenant
 # fixtures rather than growing a second copy of them (#1045 D8 R8): a double
