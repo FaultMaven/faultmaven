@@ -236,7 +236,7 @@ or absent with the marker accounting for it.
 
 **Mechanism** (`_tool_augmented_generate()` in `milestone_engine.py`):
 
-1. All turns get tools when `investigation_tools` is registered. The LLM decides which tool to invoke based on the user's question and tool descriptions.
+1. A turn gets tools when `investigation_tools` is registered **and** the turn has something for them to target. A turn with no searchable material takes the single-shot structured path instead — see [§5.5](#55-generation-path-selection-v61). On the loop, the LLM decides which tool to invoke based on the user's question and tool descriptions.
 2. `tool_choice` varies by query context:
    - **Directed Analysis + evidence**: `tool_choice="required"` — LLM must search evidence before answering
    - **All other turns** (knowledge queries, triage, terminal Q&A): `tool_choice="auto"` — LLM decides whether to use tools
@@ -304,6 +304,27 @@ Evidence is user-submitted case data (logs, metrics, configs) — only user-subm
 - `kb_qa` results are formatted with relay instructions and source citation guidance
 
 See [Data Preprocessing Design §5.0](../data-processing/data-preprocessing-design-specification.md) for the scenario-driven processing model that determines when DA mode is selected.
+
+### 5.5 Generation-Path Selection (v6.1)
+
+**Problem**: on the `gpt-5.x` family the API rejects function tools alongside any reasoning effort, so the provider pins `reasoning_effort: "none"` on every tool-bearing call (see [adding-llm-providers.md](../../guides/adding-llm-providers.md)). A turn whose case holds no evidence rows and no indexed upload has nothing for `search_file` or `deep_analysis` to target, so it paid that pin for tools it could not use. Those turns are also the inference-dense ones: with no tool to gather from, the whole causal step has to happen in one pass over the conversation.
+
+**Mechanism** (`_route_toolless_turn_single_shot()` in `milestone_engine.py`): a turn takes the single-shot structured path rather than the tool loop when all three hold.
+
+| condition | why |
+|---|---|
+| tools are not forced (`_should_force_tools()` is False) | a Directed-Analysis turn must search before concluding; that guarantee outranks reasoning |
+| the case has no searchable material (`_has_searchable_material()` is False) | no evidence row, and no upload with a searchable structural index — the loop would offer tools with nothing to target |
+| the turn is not `knowledge_query` | `kb_qa` and `web_search` exist only inside the loop, and a knowledge question needs them |
+
+On that path the call declares `ReasoningIntent.INFERENCE` with `min_output_tokens=TOOLLESS_INFERENCE_OUTPUT_FLOOR` (2048). The intent is what lifts the structured-call effort from the `"low"` shape default to `"medium"`; the floor is mandatory alongside `INFERENCE` (#1117) because the intent lifts provider starvation guards and reasoning bills against the same budget as the visible answer. The prompt for this route is built with `tools_available=False`, so no evidence extract is replaced by an index stub that no `search_file` will recover.
+
+The route is decided from case state, not configuration. It stops firing for a case as soon as the case holds anything searchable, which is normally the first upload.
+
+**Why the effort matters here** (`case_bf484a484a77` turn 9 replayed through the engine, 20 reps per arm): a `causal_evidence` row linked to a hypothesis persisted in 8/20 runs at `"none"`, 19/20 at `"low"`, 17/20 at `"medium"`. Reasoning does not change whether the model *notices* the decisive datum — the prose named it in every run at every effort — it changes whether the model finishes the state emission that records and links it. The visible answer did not shrink at any effort (1,208–2,121 tokens) and no body approached the 8,000-token cap (worst observed 3,636), so the floor guards a misconfiguration rather than an observed squeeze.
+
+**Degradation parity**: this path validates through `_validate_with_degradation()`, the same ladder the tool path uses. Before that was true, one rejected list entry — for example a `suggested_follow_ups` item carrying `evidence_need_id` under a non-`EVIDENCE` `action_type` — failed the entire turn here while the tool path pruned the entry and continued.
+
 
 ## 6. Terminal Observability
 

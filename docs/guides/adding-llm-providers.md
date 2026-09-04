@@ -95,7 +95,12 @@ A call site can state *what it needs from reasoning* rather than leaving the pro
 |--------|---------|--------|--------|
 | `EXTRACTION` | Grounded transformation of supplied context | the shape's own minimum (`"none"` on plain gpt-5.6, else `"low"`) | `thinkingLevel: "low"` on 3.x, **every** shape |
 | `INFERENCE` | Reasoning over candidates | `"medium"` | no `thinkingConfig` — native dynamic thinking **is** the honoured translation |
-| *(absent — every call today)* | — | the shape defaults above, unchanged | the shape default, unchanged |
+| *(absent — most calls)* | — | the shape defaults above, unchanged | the shape default, unchanged |
+
+The first call site to declare an intent is the tool-less structured turn
+(`_route_toolless_turn_single_shot`, fm#1116) — see
+[Orchestration Capabilities §5.5](../architecture/investigation-engine/orchestration-capabilities.md#55-generation-path-selection-v61).
+Every other call leaves the shape default in place.
 
 Three rules govern it, and a new provider must honour all three:
 
