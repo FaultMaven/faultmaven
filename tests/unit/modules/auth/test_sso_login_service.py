@@ -89,6 +89,18 @@ class FakeProvider(ISSOIdentityProvider):
             raise SSOAuthenticationError("SSO code exchange failed")
         return self.identity
 
+    def provision_personal_organization(
+        self, *, provider_user_id: str, external_id: str, name: str
+    ) -> str:
+        """Not exercised here — personal tenants have their own module (#1045).
+
+        Present because the port is abstract: a provider that cannot mint a
+        personal organization must fail at construction, not on a user's first
+        sign-up. A fake that stubbed it into silence would defeat that, so this
+        raises instead.
+        """
+        raise NotImplementedError("not part of this module's scope")
+
 
 class FakeUserRepository:
     """Duck-typed user repository with JIT-provisioning support.

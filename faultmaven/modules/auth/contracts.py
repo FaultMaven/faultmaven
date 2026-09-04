@@ -633,6 +633,34 @@ class ISSOIdentityProvider(ABC):
         """
         return False
 
+    @abstractmethod
+    def provision_personal_organization(
+        self, *, provider_user_id: str, external_id: str, name: str
+    ) -> str:
+        """Return the IdP organization id holding ``provider_user_id`` alone.
+
+        The IdP half of a personal tenant (#1045, ADR-016 D5): an organization
+        that exists to hold exactly one member, so an individual who signs up
+        with no company still has an organization-scoped identity at the IdP.
+
+        **Must be idempotent in ``external_id``.** The caller derives that value
+        deterministically from the subject and calls this before it writes
+        anything of its own, so a retry after a failed database commit has to
+        find the organization the previous attempt created rather than mint a
+        second one. Adding the member is idempotent for the same reason, and
+        must tolerate every membership state a previous attempt could have left.
+
+        Returns the IdP's organization id. Raises
+        :class:`~faultmaven.modules.auth.exceptions.SSOProvisioningError` on any
+        failure, with no provider detail attached — this runs inside an
+        unauthenticated callback, which must not become an error oracle.
+
+        **Abstract rather than a raising default.** A default that raised would
+        be indistinguishable at the call site from a provider outage, and would
+        let a provider silently ship without the capability; making it abstract
+        moves that from a runtime refusal to a construction-time one.
+        """
+
 
 class ISSOOrgMappingRepository(ABC):
     """IdP organization → FaultMaven organization lookup port.
@@ -657,6 +685,121 @@ class ISSOOrgMappingRepository(ABC):
         Args:
             provider: SSO provider key (e.g. ``"workos"``).
             provider_org_id: The IdP's organization identifier.
+        """
+
+
+@dataclass(frozen=True)
+class PersonalOrgRecord:
+    """One subject's personal-tenant binding, as the untenanted table holds it.
+
+    ``membership_confirmed`` is why this is a record rather than a bare id: a
+    login that resolved an existing tenant still has to know whether the IdP
+    half was finished, and that answer cannot come from the organization row.
+    """
+
+    organization_id: str
+    enterprise_id: str
+    provider_org_id: str
+    membership_confirmed: bool
+
+
+class ISSOPersonalOrgRepository(ABC):
+    """IdP subject → the personal FaultMaven organization it owns (#1045).
+
+    The sibling of :class:`ISSOOrgMappingRepository`, and untenanted for exactly
+    the same reason: both are read on the **unauthenticated** SSO callback,
+    before a tenant is bound, and binding the tenant is what the lookup decides.
+
+    It cannot be folded into that port. ``sso_org_mappings`` is keyed on the
+    IdP's *organization* id, which a returning individual's login need not
+    carry at all; and it is 1:1 per organization, so a personal tenant's row
+    there is already spent on the IdP organization that holds the member.
+    Membership cannot serve either — ``organization_members`` is RLS-tenanted
+    (migration 018) and invisible at callback time.
+
+    Writes are hostile-input-facing: the caller is a login, not an operator.
+    """
+
+    @abstractmethod
+    async def get(
+        self, provider: str, provider_user_id: str
+    ) -> Optional["PersonalOrgRecord"]:
+        """Return the subject's personal-tenant record, or None if it has none."""
+
+    @abstractmethod
+    async def find_by_enterprise(
+        self, provider: str, provider_user_id: str, enterprise_id: str
+    ) -> bool:
+        """Whether this subject's personal tenant lives in ``enterprise_id``.
+
+        Read on the **mapped** branch, where the session is bound to the company
+        tenant and the personal organization row is invisible under RLS. It is
+        what lets a company login tell "this account is anchored to a personal
+        enterprise I may re-anchor" from "this account belongs to a different
+        company" (ADR-016 D5 as amended).
+        """
+
+    @abstractmethod
+    async def count_created_since(self, provider: str, since: datetime) -> int:
+        """How many personal tenants this provider has minted since ``since``.
+
+        Backs the provisioning ceiling: the switch alone bounds nothing, so an
+        unauthenticated sign-up loop could exhaust the IdP's organization quota.
+        Counting is deliberately global rather than per-subject — the abuse
+        shape is many subjects, not one subject retrying.
+        """
+
+    @abstractmethod
+    async def provision(
+        self,
+        *,
+        provider: str,
+        provider_user_id: str,
+        provider_org_id: str,
+        name: str,
+        slug: str,
+    ) -> str:
+        """Create the tenant for one subject, atomically, and return its org id.
+
+        Writes the enterprise, the organization, its default team, the
+        ``sso_org_mappings`` row binding ``provider_org_id`` to it and the
+        ``sso_personal_orgs`` row binding the subject — in that order and in a
+        **single transaction**, which is the ordering
+        ``fm-provision-sso-org`` already encodes.
+
+        Implementations must be idempotent and race-safe: a second call for the
+        same subject, whether sequential or concurrent, returns the organization
+        the first one created and writes no second tenant. A failure part-way
+        must leave nothing behind for a later login to adopt.
+
+        The organization id is generated and **bound as the tenant context by
+        the implementation**, not by the caller: the write runs under the
+        RLS-scoped application role, so the binding is an implementation detail
+        of persisting the row, and a caller that had to know about it could also
+        forget — or leave a nonexistent organization bound after a failure.
+        """
+
+    @abstractmethod
+    async def confirm_membership(self, provider: str, provider_user_id: str) -> None:
+        """Record that the IdP-side membership for this subject now exists.
+
+        The IdP membership is established *after* the tenant commits, because a
+        membership is what makes the IdP start echoing the organization — and an
+        echoed organization with no committed mapping sends every later login
+        down the mapped branch to a permanent ``sso_org_unmapped``. This marks
+        the IdP half finished so a returning login does not pay a provider
+        round-trip to re-confirm it.
+        """
+
+    @abstractmethod
+    async def retire(self, provider: str, provider_user_id: str) -> bool:
+        """Drop the subject's personal binding; True if a row was removed.
+
+        Called when a mapped (company) login re-anchors an account that was
+        anchored to a personal enterprise. The personal organization and its
+        cases are deliberately left alone — this is not a migration (#1045
+        non-goal) — but the *binding* must go, or a later unscoped login would
+        resolve the user back into a tenant they can no longer enter.
         """
 
 

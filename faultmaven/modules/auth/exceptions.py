@@ -41,6 +41,21 @@ class SSOAuthenticationError(AuthException):
     """
 
 
+class SSOProvisioningError(AuthException):
+    """Raised when the IdP half of a personal tenant cannot be provisioned.
+
+    Distinct from :class:`SSOAuthenticationError` because the identity is not in
+    doubt: the code exchange already succeeded and the subject is known. What
+    failed is creating (or confirming) the IdP organization that holds that one
+    member — a provider outage, a rejected request, or a provider with no such
+    concept at all.
+
+    Carries no provider-specific detail, for the same no-error-oracle reason.
+    The login refuses; the next attempt can complete from where this one stopped
+    because the IdP-side work is keyed on a deterministic external id.
+    """
+
+
 class TokenError(AuthException):
     """Raised when token operations fail.
 

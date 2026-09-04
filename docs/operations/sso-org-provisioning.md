@@ -248,8 +248,62 @@ logs for the reason slug:
 - `reason=no_idp_org` — the WorkOS session is not organization-scoped. The user
   authenticated outside any organization (typically a personal AuthKit account,
   or an SSO connection not attached to an organization). Fix it in WorkOS.
+  **This slug cannot occur while `SSO_JIT_PERSONAL_TENANT_ENABLED` is on** — that
+  is the branch the switch redirects into personal-tenant provisioning. If you
+  see it, the switch is off.
 - `reason=org_unmapped` — the `provider_org_id` in the log line has no mapping.
-  Run step 2 with that id.
+  Run step 2 with that id. Unaffected by the switch: a company is onboarded
+  deliberately, never by whoever signs in first.
+- `reason=personal_account_already_anchored` — the switch is on, and an account
+  that already belongs to an enterprise arrived with **no** IdP organization.
+  Provisioning a personal tenant would lock them out of their company, so the
+  login is refused. Fix it in WorkOS by scoping the session to their
+  organization; do not touch the database.
+
+### Personal-tenant reason slugs (switch on only)
+
+`SSO_JIT_PERSONAL_TENANT_ENABLED` adds one more way to reach the two existing
+error slugs. The **slugs are unchanged** — a browser-visible vocabulary is a
+cross-repo contract and this feature does not extend it — so the `reason=` in
+the log is the only thing that tells these apart. Every personal-path refusal
+logs one:
+
+| logged `reason` | slug shown | what it means | operator action |
+| --- | --- | --- | --- |
+| `personal_account_already_anchored` | `sso_org_unmapped` | an account already in an enterprise arrived unscoped | scope the session in WorkOS |
+| `personal_no_subject` | `sso_failed` | the IdP returned no stable subject | a provider fault; nothing to fix here |
+| `personal_user_inactive` | `sso_user_inactive` | the account is deactivated or deleted | reactivate, or leave refused |
+| `personal_unusable_email` | `sso_failed` | the IdP supplied no usable email address | fix the profile in WorkOS |
+| `personal_email_conflict` | `sso_failed` | another, unlinked account owns that email | ADR-015 D4: never linked automatically; resolve the duplicate account |
+| `personal_provisioning_ceiling` | `sso_failed` | `SSO_JIT_PERSONAL_TENANT_MAX_PER_HOUR` reached | expected under abuse; raise the ceiling only if the traffic is legitimate |
+| `personal_org_is_sentinel` | `sso_failed` | a subject row points at the Standalone org (fm#850) | a data fault; investigate before clearing |
+| `personal_org_unavailable` | `sso_failed` | the personal org is missing, soft-deleted or deactivated | reactivate it; do NOT delete the subject row, which would mint a second tenant |
+| `personal_org_repository_unwired` | `sso_failed` | the switch is on but the personal-tenant repository is not wired | a deployment fault; the login refuses rather than falling through |
+
+A collision is logged as its own **event** rather than a `reason=`:
+`sso_personal_tenant_collision`, carrying `colliding_key` and `colliding_value`.
+It fires when a key this subject derives is already held by something that is
+not a concurrent attempt by the same subject — start at the named key. Its
+sibling `sso_personal_tenant_race_adopted` is the benign case (a concurrent
+first login won; this one adopted its tenant) and needs no action.
+
+Two more are informational rather than refusals: `sso_personal_membership_resuming`
+(a previous attempt committed the tenant but not the IdP membership; this login
+finished it) and `sso_personal_tenant_reanchored` (a mapped login moved an
+account off its personal enterprise onto the company one, retiring the personal
+binding — ADR-016 D5 as amended).
+
+### `?error=sso_failed` with `reason=org_is_sentinel`
+
+The mapping points at the **Standalone** organization
+(`00000000-0000-0000-0000-000000000001`). Under multi-tenant that id identifies
+the deployment, not a tenant, and binding it would pool logins into the
+single-tenant sentinel (fm#850). Repoint the mapping at a real organization; do
+not "fix" it by relaxing the guard.
+
+This refusal applies to operator-provisioned mappings as well as personal
+tenants — both resolution paths end in the same bind-and-verify tail, so neither
+can lose a check the other has.
 
 ### `?error=sso_failed` with `reason=org_unavailable`
 

@@ -397,6 +397,17 @@ def test_default_port_implementation_offers_no_single_logout():
         def build_authorization_url(self, *, state):
             return "https://idp/authorize"
 
+        def provision_personal_organization(
+            self, *, provider_user_id, external_id, name
+        ):
+            # Abstract on the port (#1045): a provider that cannot mint a
+            # personal organization must fail at CONSTRUCTION rather than on a
+            # user's first sign-up, so "minimal" still has to declare it. What
+            # this test is about is the single-logout defaults below, which
+            # remain optional-with-a-default precisely because a provider
+            # without single-logout is supported.
+            raise NotImplementedError
+
         def exchange_code(self, code):
             return SSOIdentity(
                 provider="minimal",

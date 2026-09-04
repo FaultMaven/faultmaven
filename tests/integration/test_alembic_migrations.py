@@ -34,7 +34,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
-HEAD_REVISION = "d4e5f6a7b8c9"  # current head (050 — strip_cause_record_metadata)
+HEAD_REVISION = "e5f6a7b8c9d0"  # current head (051 — sso_personal_orgs)
 # Parent of the RBAC-seed migration (029). Downgrading here reverses the seed
 # (029) regardless of no-op migrations stacked above it — more robust than a
 # relative "downgrade -1", which follows whatever the current head is.
@@ -169,6 +169,7 @@ EXPECTED_TABLES = [
     "roles",
     "solutions",
     "sso_org_mappings",
+    "sso_personal_orgs",
     "team_members",
     "teams",
     "uploaded_files",

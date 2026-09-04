@@ -1572,6 +1572,56 @@ class AuthSettings(BaseSettings):
         ),
     )
 
+    # Self-service personal tenants (ADR-016 D5, #1045). Default OFF: with the
+    # switch off, an SSO identity that carries NO IdP organization is refused
+    # exactly as it is today (``sso_org_unmapped``), and nothing about the
+    # unmapped-organization branch changes in either state. Turning it on lets
+    # the FIRST sign-in of an org-less identity provision a personal tenant
+    # just-in-time — a real, distinct organization row, never the Standalone
+    # sentinel, whose single member holds the ``member`` role.
+    #
+    # Read through ``get_settings()`` at the point of use rather than captured
+    # at composition time, so the value cannot become the kind of documented
+    # knob nothing reads. That is NOT a live-reload claim: ``get_settings()`` is
+    # a process singleton built once per process, so changing the variable takes
+    # effect on the next process — a restart or a redeploy, like every other
+    # setting here.
+    #
+    # Multi-tenant (Cloud) only: single-tenant has one organization and never
+    # reaches the branch this gates.
+    sso_jit_personal_tenant_enabled: bool = Field(
+        default=False,
+        validation_alias="SSO_JIT_PERSONAL_TENANT_ENABLED",
+        description=(
+            "Allow an SSO identity with no IdP organization to provision a "
+            "personal tenant on first sign-in (Cloud/multi-tenant only). "
+            "Default false: an org-less identity is refused."
+        ),
+    )
+    # The ceiling on NEW personal tenants, per rolling hour, across the whole
+    # deployment. The switch on its own bounds nothing: every subject the IdP
+    # vouches for would mint an IdP organization and five rows, so a scripted
+    # sign-up loop exhausts the IdP's organization quota (#1045 review, item 7).
+    #
+    # Deliberately finite by default rather than "0 means unlimited": a ceiling
+    # whose default is off is a ceiling nobody has. It bounds PROVISIONING only
+    # — an existing tenant signs in normally at any rate, so tripping it cannot
+    # lock out the people already using the product. Global rather than
+    # per-subject because the abuse shape is many subjects, not one retrying.
+    #
+    # This is NOT the per-tenant LLM usage cap (ADR-016 D5.3), which bounds what
+    # a tenant may spend and ships separately.
+    sso_jit_personal_tenant_max_per_hour: int = Field(
+        default=20,
+        ge=1,
+        le=100000,
+        validation_alias="SSO_JIT_PERSONAL_TENANT_MAX_PER_HOUR",
+        description=(
+            "Maximum NEW personal tenants provisioned per rolling hour, "
+            "deployment-wide. Existing tenants sign in regardless."
+        ),
+    )
+
     # Local mode settings (only used when auth_mode=local)
     local_token_expiry_hours: int = Field(
         default=24,

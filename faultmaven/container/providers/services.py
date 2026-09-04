@@ -1005,6 +1005,9 @@ def create_sso_login_service(
     from faultmaven.modules.auth.infrastructure.repositories.sso_org_mapping_repository import (
         SessionlessSSOOrgMappingRepository,
     )
+    from faultmaven.modules.auth.infrastructure.repositories.sso_personal_org_repository import (
+        SessionlessSSOPersonalOrgRepository,
+    )
     from faultmaven.modules.auth.infrastructure.stores.sso_ephemeral_store import (
         SSOEphemeralStore,
     )
@@ -1024,6 +1027,10 @@ def create_sso_login_service(
         # never consults them.
         org_mapping_repository=SessionlessSSOOrgMappingRepository(),
         organization_repository=SessionlessOrganizationRepository(),
+        # Personal tenants (#1045). Wired unconditionally; the login path
+        # consults it only on the no-IdP-organization branch and only when
+        # SSO_JIT_PERSONAL_TENANT_ENABLED is on, which it is not by default.
+        personal_org_repository=SessionlessSSOPersonalOrgRepository(),
     )
     logger.info("✅ SSO login service initialized")
     return service
