@@ -1623,37 +1623,43 @@ class TestPersonalTenantLimitsAreReported:
 
     @pytest.mark.asyncio
     async def test_the_report_binds_to_the_env_names_an_operator_sets(
-        self, monkeypatch, mock_admin_user, rate_limited_app
+        self, monkeypatch, mock_admin_user, mock_settings, rate_limited_app
     ):
-        """Against the REAL settings object, driven by the REAL env names.
+        """Against the REAL settings sections, driven by the REAL env names.
 
         Every test above drives a ``MagicMock``, which answers any attribute
         name — including a misspelled one, and including one that no longer
-        exists. This one goes end to end from the three environment variables
-        the operator types to the three numbers the endpoint prints, so a
-        rename of a field or of a ``validation_alias`` lands here rather than
-        silently reporting a default nothing set.
+        exists. Here the two sections the block reads are the shipped classes,
+        built from the three environment variables an operator actually types,
+        so a rename of a field or of a ``validation_alias`` lands here rather
+        than silently reporting a default nobody set — and so does the endpoint
+        reading an attribute that is not there, which now raises instead of
+        being answered by a mock.
 
-        The singleton is reset on both sides: it is built once per process, so
-        without the first reset this reads whatever an earlier test built, and
-        without the second every later test inherits these values.
+        Constructed DIRECTLY rather than through ``get_settings()``, and that is
+        not a shortcut. ``get_settings()`` caches a process-wide singleton, so
+        driving it from here means resetting that singleton — and a reset is not
+        local: every later ``get_settings()`` in the process rebuilds from the
+        environment as it stands THEN. Three integration modules assign
+        ``os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"`` outright
+        rather than through ``monkeypatch``, and they run before this file in a
+        whole-suite run, so that rebuild repoints the application at an empty
+        in-memory database and the composition-root tests fail on "no such table:
+        enterprises" — an endpoint report test breaking application bootstrap two
+        files later. ``AuthSettings`` and ``AgentSettings`` declare no
+        ``env_file``, so constructing them reads ``os.environ`` and nothing else,
+        and mutates nothing.
         """
-        from tests.utils import get_live_settings, reset_settings_singleton
+        from faultmaven.config.settings import AgentSettings, AuthSettings
 
         monkeypatch.setenv("SSO_JIT_PERSONAL_TENANT_ENABLED", "true")
         monkeypatch.setenv("SSO_JIT_PERSONAL_TENANT_MAX_PER_HOUR", "7")
         monkeypatch.setenv("TENANT_DAILY_TURN_CAP", "11")
-        reset_settings_singleton()
-        try:
-            with patch(SETTINGS_PATCH, return_value=get_live_settings()):
-                result = await get_env_config_status(
-                    request=_request_for(rate_limited_app),
-                    current_user=mock_admin_user,
-                )
-        finally:
-            reset_settings_singleton()
+        mock_settings.auth = AuthSettings()
+        mock_settings.agent = AgentSettings()
 
-        limits = result.personal_tenant_limits
+        limits = await _limits(mock_admin_user, mock_settings, rate_limited_app)
+
         assert limits.sso_jit_personal_tenant_enabled is True
         assert limits.sso_jit_personal_tenant_max_per_hour == 7
         assert limits.tenant_daily_turn_cap == 11
