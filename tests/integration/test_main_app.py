@@ -255,22 +255,31 @@ def test_capabilities_team_flags_gate_on_team_service():
             app.state.team_service = None
 
 
-#: Headers that cannot match across two separate requests whatever the handler
-#: does: a per-request correlation id, and the rate limiter's own counter and
-#: window clock. Everything else is compared — content type, the rate-limit
-#: LIMIT and POLICY, and any cache header either path might grow — so a
-#: middleware that keys on the path and treats the two differently fails here
-#: rather than in a client.
+#: Headers that say something about the request rather than about the route: a
+#: per-request correlation id and timing. Everything not listed here (and not
+#: rate-limit, below) is compared — content type, `vary`, `content-encoding`,
+#: and any cache header either path might grow — so a middleware that keys on
+#: the path and treats the two differently fails here rather than in a client.
 _PER_REQUEST_HEADERS = frozenset(
     {
         "date",
         "x-correlation-id",
         "x-process-time",
-        "x-ratelimit-remaining",
-        "x-ratelimit-reset",
         "x-request-id",
     }
 )
+
+#: The whole `X-RateLimit-*` family is excluded, not just the counter and the
+#: clock. `_add_rate_limit_headers` writes NONE of them when it holds no
+#: advertisable result — which is what a check reports after failing open, and
+#: what the first request through a cold limiter produced on CI: the canonical
+#: request (sent first) came back with no rate-limit headers at all and the
+#: alias, sent second, carried `Limit`/`Policy`. That asymmetry is limiter
+#: state, not the path, so comparing the family across two sequential requests
+#: is comparing a clock. `_assert_rate_limit_agrees` below keeps the part that
+#: IS about the route: when both responses carry a policy, it must be the same
+#: one, which is what a path-keyed rate-limit rule would break.
+_RATE_LIMIT_PREFIX = "x-ratelimit-"
 
 
 def _stable_headers(headers) -> dict:
@@ -278,7 +287,18 @@ def _stable_headers(headers) -> dict:
         name.lower(): value
         for name, value in headers.items()
         if name.lower() not in _PER_REQUEST_HEADERS
+        and not name.lower().startswith(_RATE_LIMIT_PREFIX)
     }
+
+
+def _assert_rate_limit_agrees(alias, canonical) -> None:
+    """Where both responses name a rate-limit bucket, it has to be one bucket."""
+    for header in ("x-ratelimit-limit", "x-ratelimit-policy"):
+        if header in alias.headers and header in canonical.headers:
+            assert alias.headers[header] == canonical.headers[header], (
+                f"the two paths were rate limited under different {header} "
+                f"values — the limiter is keying on the path"
+            )
 
 
 def test_capabilities_is_the_same_response_under_both_paths():
@@ -323,6 +343,7 @@ def test_capabilities_is_the_same_response_under_both_paths():
             assert _stable_headers(alias.headers) == _stable_headers(
                 canonical.headers
             ), "the two paths returned different headers"
+            _assert_rate_limit_agrees(alias, canonical)
 
             bodies.append(canonical.content)
 
