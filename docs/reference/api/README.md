@@ -5379,6 +5379,7 @@ Read-only environment configuration status for dashboard display.
 - `deployment` (string, required) — 'standalone' or 'cloud' — from DEPLOYMENT_MODE (ADR-004)
 - `features` (object, optional) — Optional features and their configuration status
 - `llm_provider` (string, required) — Primary LLM provider name
+- `personal_tenant_limits` (object, required) — Effective values of the settings that bound self-service sign-up: whether an org-less SSO identity may provision a personal tenant, how many such tenants may be provisioned per hour deployment-wide, and how many investigation turns each one gets per UTC day.
 - `pii_redaction_enabled` (boolean, required)
 - `rate_limit_enabled` (boolean, required) — Rate limiting middleware is installed on this deployment. Read from the running middleware stack rather than from configuration: no rate-limit setting exists, the protection presets decide by environment name, and no environment variable turns it off. A deployment reports false here only if protection setup raised and the development carve-out let it boot anyway.
 - `session_storage` (string, required) — 'inmemory' or 'redis'
@@ -5851,6 +5852,35 @@ never from anything echoed back here.
 
 - `name` (string, required) — Human-readable organization name
 - `organization_id` (string, required) — Organization identifier
+
+---
+
+### PersonalTenantLimitsStatus
+
+The three settings that bound self-service sign-up, at their effective
+values.
+
+Reported as VALUES rather than as ``features`` entries. Two of the three are
+numbers, which ``FeatureStatus`` has nowhere to put, and the ``features``
+contract is stricter than this: ``enabled`` there must report a runtime
+EFFECT (#1234), which "did you set this knob" is not. They sit here with
+``auth_mode`` and ``pii_redaction_enabled``, whose claim is the same one —
+this is the configuration the process is running with.
+
+Reporting them at all is the ``first_party_consent_skip`` argument (#1234)
+applied to configuration: all three are silent by construction. A
+deployment with self-service sign-up off refuses org-less identities with
+the same message it would give a misconfigured IdP; a deployment at its
+hourly provisioning ceiling refuses the same way; and a personal tenant at
+its daily turn cap gets a usage-allowance message that names no setting.
+None of the three appears in ``/health``, and a startup log line has rolled
+out of ``kubectl logs`` long before anyone asks.
+
+**Properties:**
+
+- `sso_jit_personal_tenant_enabled` (boolean, required) — SSO_JIT_PERSONAL_TENANT_ENABLED — whether an SSO identity with no IdP organization may provision a personal tenant on its first sign-in, i.e. whether self-service sign-up is open. Multi-tenant (Cloud) deployments only: a single-tenant deployment has one organization and never reaches the branch this gates.
+- `sso_jit_personal_tenant_max_per_hour` (integer, required) — SSO_JIT_PERSONAL_TENANT_MAX_PER_HOUR — the ceiling on NEW personal tenants provisioned per rolling hour, deployment-wide. It bounds provisioning only; tenants that already exist sign in regardless.
+- `tenant_daily_turn_cap` (integer, required) — TENANT_DAILY_TURN_CAP — investigation turns a PERSONAL tenant may take per UTC day before further turns are refused with 429. The deployment DEFAULT only: a company organization is uncapped, a single-tenant deployment is never capped, and a per-organization override set with fm-set-turn-cap beats this value.
 
 ---
 

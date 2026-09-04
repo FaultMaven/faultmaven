@@ -25,6 +25,7 @@ from faultmaven.api.models import (
     LLMConnectionTestRequest,
     LLMConnectionTestResponse,
     LLMProviderDetail,
+    PersonalTenantLimitsStatus,
 )
 from faultmaven.api.v1.dependencies import get_llm_provider
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
@@ -822,6 +823,37 @@ async def get_env_config_status(
             ),
         )
 
+        # The three settings that bound self-service sign-up, at the values
+        # this process is running with (fm#1320, fm#1324).
+        #
+        # Read off the settings object this request already resolved, so it is
+        # the live configuration rather than anything captured at import — the
+        # same discipline the enforcement paths keep
+        # (``sso_login_service._jit_personal_tenant_enabled`` and
+        # ``tenant_turn_cap._default_limit`` both read through
+        # ``get_settings()`` at the point of use). That is not a live-reload
+        # claim: ``get_settings()`` is a process singleton, so changing any of
+        # the three still takes a restart.
+        #
+        # Here rather than in ``features`` because ``FeatureStatus`` cannot
+        # carry a number and its ``enabled`` means something stricter — see
+        # ``PersonalTenantLimitsStatus``.
+        #
+        # Deliberately NOT wrapped in a try/except, for the reason the retry
+        # ladder above states: a defensive catch would drop the block from the
+        # response on a settings shape it could not read, and a field that is
+        # simply absent reads as "nothing to report", which is the exact
+        # failure this exists to close.
+        personal_tenant_limits = PersonalTenantLimitsStatus(
+            sso_jit_personal_tenant_enabled=(
+                settings.auth.sso_jit_personal_tenant_enabled
+            ),
+            sso_jit_personal_tenant_max_per_hour=(
+                settings.auth.sso_jit_personal_tenant_max_per_hour
+            ),
+            tenant_daily_turn_cap=settings.agent.tenant_daily_turn_cap,
+        )
+
         # Report actual runtime state, not raw setting defaults.
         # Bootstrap may create persistent stores even when settings say "inmemory".
         from pathlib import Path
@@ -892,6 +924,7 @@ async def get_env_config_status(
             pii_redaction_enabled=settings.protection.protection_enabled,
             rate_limit_enabled=_rate_limiting_installed(request.app),
             features=features,
+            personal_tenant_limits=personal_tenant_limits,
             timestamp=datetime.now(timezone.utc),
         )
 

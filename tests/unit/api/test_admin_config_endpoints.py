@@ -162,6 +162,15 @@ def mock_settings():
     settings.llm.timeout_for_provider.return_value = 30
     settings.agent.agent_request_timeout = 120
     settings.agent.timeout_for_provider.return_value = 120
+    # The self-service sign-up bounds (#1320, #1324), reported as VALUES
+    # rather than as ``features`` entries. Real values for the same reason as
+    # ``workers`` above and then some: the response model types two of them as
+    # ``int``, so a MagicMock attribute would fail every test in this file on a
+    # ValidationError rather than on what it is about. These are the shipped
+    # defaults, which is the state an operator who has set nothing is in.
+    settings.auth.sso_jit_personal_tenant_enabled = False
+    settings.auth.sso_jit_personal_tenant_max_per_hour = 20
+    settings.agent.tenant_daily_turn_cap = 30
     settings.database.case_storage_type = "sqlite"
     settings.database.session_storage_type = "inmemory"
     settings.database.vector_storage_type = "chromadb"
@@ -1472,6 +1481,195 @@ class TestWebSearchReportsEffect:
         assert "ENABLE_WEB_SEARCH" in feature.config_hint
         assert "TAVILY_API_KEY" in feature.config_hint
         assert "WEB_SEARCH_ENGINE_ID" in feature.config_hint
+
+
+# ============================================================
+# The self-service sign-up bounds (#1320, #1324)
+# ============================================================
+#
+# Each field, where it lives on the settings tree, and a PAIR of distinct
+# values to drive it through. A pair rather than one value because what can go
+# wrong for a reported setting is not echoing an instruction back — it is being
+# a constant, and only the pair falsifies that. The numbers are mutually
+# distinct as well, so a field wired to its neighbour's source fails too.
+PERSONAL_TENANT_LIMIT_SETTINGS = {
+    "sso_jit_personal_tenant_enabled": ("auth", False, True),
+    "sso_jit_personal_tenant_max_per_hour": ("auth", 20, 3),
+    "tenant_daily_turn_cap": ("agent", 30, 5),
+}
+
+
+async def _limits(user, settings, app):
+    with patch(SETTINGS_PATCH, return_value=settings):
+        result = await get_env_config_status(
+            request=_request_for(app), current_user=user
+        )
+    return result.personal_tenant_limits
+
+
+class TestPersonalTenantLimitsAreReported:
+    """The three knobs that bound self-service sign-up, reported as values.
+
+    The ``first_party_consent_skip`` argument (#1234) applied to
+    configuration. Each of the three is silent by construction: sign-up being
+    closed looks like an IdP misconfiguration to the person refused, the
+    hourly provisioning ceiling refuses the same way, and a personal tenant at
+    its daily turn cap gets a usage-allowance message that names no setting.
+    Nothing else reports them — not ``/health``, and not a startup log line,
+    which has rolled out of ``kubectl logs`` long before anyone asks.
+
+    They are reported OUTSIDE ``features`` deliberately, and the population
+    rule at the end of this file is why: an entry there owes an ``enabled``
+    that reports a runtime EFFECT, which "did you set this knob" is not, and
+    two of the three are numbers ``FeatureStatus`` has nowhere to put. They
+    belong with ``auth_mode`` and ``pii_redaction_enabled``, whose claim is
+    the same one.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_defaults_an_operator_who_set_nothing_is_running(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        """Sign-up closed, 20 tenants an hour, 30 turns a day."""
+        limits = await _limits(mock_admin_user, mock_settings, rate_limited_app)
+
+        assert limits.sso_jit_personal_tenant_enabled is False
+        assert limits.sso_jit_personal_tenant_max_per_hour == 20
+        assert limits.tenant_daily_turn_cap == 30
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("field", sorted(PERSONAL_TENANT_LIMIT_SETTINGS))
+    async def test_flipping_the_setting_changes_what_is_reported(
+        self, mock_admin_user, mock_settings, rate_limited_app, field
+    ):
+        """Both verdicts on one member, in one test.
+
+        Split into a "reports A" test and a "reports B" test, either half would
+        pass alone against a field hardcoded to that half's value. Asserting
+        the pair together is what makes this a claim about the report tracking
+        the setting.
+        """
+        section, first, second = PERSONAL_TENANT_LIMIT_SETTINGS[field]
+        assert first != second
+
+        setattr(getattr(mock_settings, section), field, first)
+        before = await _limits(mock_admin_user, mock_settings, rate_limited_app)
+
+        setattr(getattr(mock_settings, section), field, second)
+        after = await _limits(mock_admin_user, mock_settings, rate_limited_app)
+
+        assert getattr(before, field) == first
+        assert getattr(after, field) == second
+
+    @pytest.mark.asyncio
+    async def test_no_two_fields_read_the_same_setting(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        """Three sources, driven apart in ONE call.
+
+        The per-field test above moves one knob at a time, which a report that
+        read ``tenant_daily_turn_cap`` for both numbers would still pass — each
+        assertion would be made against the value just written. Setting all
+        three to distinct non-default values at once is what separates them.
+        """
+        mock_settings.auth.sso_jit_personal_tenant_enabled = True
+        mock_settings.auth.sso_jit_personal_tenant_max_per_hour = 3
+        mock_settings.agent.tenant_daily_turn_cap = 5
+
+        limits = await _limits(mock_admin_user, mock_settings, rate_limited_app)
+
+        assert limits.sso_jit_personal_tenant_enabled is True
+        assert limits.sso_jit_personal_tenant_max_per_hour == 3
+        assert limits.tenant_daily_turn_cap == 5
+
+    @pytest.mark.asyncio
+    async def test_the_report_agrees_with_the_readers_that_enforce_the_limits(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        """Cross-check against the three functions the product actually obeys.
+
+        ``sso_login_service`` decides whether an org-less identity provisions
+        and how many may provision per hour; ``tenant_turn_cap`` decides the
+        default daily allowance. All three read through ``get_settings()`` at
+        the point of use, so under one patched settings object they and this
+        endpoint must agree — otherwise the status page is describing a
+        configuration the enforcement paths are not using, which is the whole
+        failure this reporting exists to prevent.
+        """
+        from faultmaven.infrastructure.protection.tenant_turn_cap import _default_limit
+        from faultmaven.modules.auth.domain.services.sso_login_service import (
+            _jit_personal_tenant_enabled,
+            _personal_tenant_hourly_ceiling,
+        )
+
+        mock_settings.auth.sso_jit_personal_tenant_enabled = True
+        mock_settings.auth.sso_jit_personal_tenant_max_per_hour = 3
+        mock_settings.agent.tenant_daily_turn_cap = 5
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+            limits = result.personal_tenant_limits
+
+            assert (
+                limits.sso_jit_personal_tenant_enabled is _jit_personal_tenant_enabled()
+            )
+            assert (
+                limits.sso_jit_personal_tenant_max_per_hour
+                == _personal_tenant_hourly_ceiling()
+            )
+            assert limits.tenant_daily_turn_cap == _default_limit()
+
+    @pytest.mark.asyncio
+    async def test_the_report_binds_to_the_env_names_an_operator_sets(
+        self, monkeypatch, mock_admin_user, rate_limited_app
+    ):
+        """Against the REAL settings object, driven by the REAL env names.
+
+        Every test above drives a ``MagicMock``, which answers any attribute
+        name — including a misspelled one, and including one that no longer
+        exists. This one goes end to end from the three environment variables
+        the operator types to the three numbers the endpoint prints, so a
+        rename of a field or of a ``validation_alias`` lands here rather than
+        silently reporting a default nothing set.
+
+        The singleton is reset on both sides: it is built once per process, so
+        without the first reset this reads whatever an earlier test built, and
+        without the second every later test inherits these values.
+        """
+        from tests.utils import get_live_settings, reset_settings_singleton
+
+        monkeypatch.setenv("SSO_JIT_PERSONAL_TENANT_ENABLED", "true")
+        monkeypatch.setenv("SSO_JIT_PERSONAL_TENANT_MAX_PER_HOUR", "7")
+        monkeypatch.setenv("TENANT_DAILY_TURN_CAP", "11")
+        reset_settings_singleton()
+        try:
+            with patch(SETTINGS_PATCH, return_value=get_live_settings()):
+                result = await get_env_config_status(
+                    request=_request_for(rate_limited_app),
+                    current_user=mock_admin_user,
+                )
+        finally:
+            reset_settings_singleton()
+
+        limits = result.personal_tenant_limits
+        assert limits.sso_jit_personal_tenant_enabled is True
+        assert limits.sso_jit_personal_tenant_max_per_hour == 7
+        assert limits.tenant_daily_turn_cap == 11
+
+    def test_the_block_cannot_become_optional(self):
+        """A required field, asserted, for the reason the endpoint refuses to
+        wrap the block in a try/except: a field that is simply absent from a
+        response reads as "nothing to report", and an operator cannot tell that
+        from "there was nothing to report". Giving it a default — the natural
+        way to make a response model tolerant — would reintroduce exactly that.
+        """
+        from faultmaven.api.models import EnvConfigStatusResponse
+
+        assert EnvConfigStatusResponse.model_fields[
+            "personal_tenant_limits"
+        ].is_required()
 
 
 # ============================================================
