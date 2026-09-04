@@ -89,6 +89,8 @@ run, which is the pre-ADR-010 posture.
 Mutation (reverted from an in-memory copy after each run)          Went red
 =================================================================  ==========================================
 app connects as the table owner (RLS bypassed) — alone             ``..._debug_causal_graph_...`` only
+                                                                   (superseded: that route now carries its
+                                                                   own case-access check, #1318)
 ``CaseService.get_case``'s owner ∪ shared check removed — alone    nothing (RLS caught every one)
 the same, with RLS bypassed                                        15 cases: detail, ui, transcript,
                                                                    analytics, evidence, files, case data,
@@ -111,6 +113,18 @@ RLS bypassed                                                       by_id_...``
 ``is_platform_admin`` also accepts the org ``admin`` role          ``..._tenant_admin_reaches_no_admin_
                                                                    route...`` + ``..._suggestions_are_
                                                                    scoped_to_the_operators_own_tenant``
+``OperatorUserScope.admits`` returns ``True`` unconditionally      ``..._operator_cannot_read_another_
+(the pre-#1318 behaviour) — alone                                  tenants_user`` + ``..._operator_cannot_
+                                                                   mutate_another_tenants_user_account``
+``OperatorUserScope.member_ids`` returns ``None`` (unconfined)     ``..._neither_user_listing_names_or_
+                                                                   counts_the_other_tenant``
+the user-listing id predicate dropped, at any one of its three     the same case
+sites (the service→repository argument, the repository ``WHERE``,
+``DatabaseUserStore``'s pass-through)
+the ``user_id`` argument dropped from the debug causal-graph       nothing here — RLS caught it. The
+read — alone                                                       witness is ``tests/integration/api/
+                                                                   test_debug_causal_graph_access.py``,
+                                                                   which is why that module exists
 ``authorize_content_read`` returns standing access in cloud        both break-glass cases
 (pre-#815)
 ``find_live_grant`` stops keying on ``target_case_id``             ``..._grant_unlocks_exactly_the_case_
@@ -127,13 +141,15 @@ the ``ENVIRONMENT`` pin removed, run under an ambient           the same case (i
 Two of those runs are findings in their own right, recorded here because a
 mutation that changes nothing is evidence too:
 
-* **``/debug/cases/{case_id}/causal-graph`` is guarded by RLS alone.** It takes
-  no authentication and performs no case-access check — it calls
-  ``repo.get(case_id)`` directly. Under the deployed cloud posture RLS covers
-  it, and it is not registered when ``ENVIRONMENT=production``. On a
-  non-production deployment without RLS (standalone on SQLite) it would serve
-  any case to any caller. Left as an observation for the owner rather than
-  fixed here; this module is test-only.
+* **``/debug/cases/{case_id}/causal-graph`` was guarded by RLS alone.** It took
+  no authentication and performed no case-access check — it called
+  ``repo.get(case_id)`` directly. Under the deployed cloud posture RLS covered
+  it, and it is not registered when ``ENVIRONMENT=production``; on a
+  non-production deployment without RLS (standalone on SQLite) it served any
+  case to any caller. Recorded here as an observation, then **closed with
+  #1318**: the route now requires authentication and resolves the case through
+  ``CaseService.get_case(case_id, user_id=...)``, the same owner ∪ shared check
+  every other single-case read carries.
 * **The knowledge and session surfaces each hold on two independent
   predicates.** Neither single-layer mutation moved an assertion. Worth knowing
   before anyone "simplifies" one of them on the grounds that the other exists.
@@ -1698,8 +1714,20 @@ async def test_a_tenant_admin_reaches_no_admin_route_at_all(world):
             },
         ),
         ("GET", "/api/v1/admin/audit/operator-access", None),
+        # The whole operator user-administration surface, not two of it. The
+        # tenant predicate #1318 added narrows WHOSE accounts an operator
+        # reaches; it must not be mistaken for the gate that decides WHO is an
+        # operator, and a route that traded one for the other would still look
+        # confined to every case in surface 5b.
         ("GET", "/api/v1/admin/users", None),
         ("GET", f"/api/v1/admin/users/{world.b.user_id}", None),
+        ("POST", f"/api/v1/admin/users/{world.b.user_id}/deactivate", None),
+        ("POST", f"/api/v1/admin/users/{world.b.user_id}/activate", None),
+        ("POST", f"/api/v1/admin/users/{world.b.user_id}/roles", {"role": "admin"}),
+        ("DELETE", f"/api/v1/admin/users/{world.b.user_id}/roles/member", None),
+        ("GET", "/api/v1/auth/users", None),
+        ("POST", f"/api/v1/auth/users/{world.b.user_id}/revoke-tokens", None),
+        ("DELETE", f"/api/v1/auth/users/{world.b.user_id}", None),
     ]
     for method, path, body in routes:
         response = await as_a(world, method, path, json=body)
@@ -1837,57 +1865,65 @@ async def test_a_break_glass_grant_unlocks_exactly_the_case_it_names(world):
 
 
 # =============================================================================
-# Surface 5b — FINDING: the operator user-administration surface is not
-# tenant-confined, and unlike the case surface it is neither granted nor audited
+# Surface 5b — the operator user-administration surface is tenant-confined
 # =============================================================================
 #
-# These two cases assert what the code DOES, not what the invariant wants, and
-# they are written that way deliberately — the same discipline the KB probe
-# applies to its F1/F2 findings. An executable description goes red when someone
-# fixes it, which is a prompt to update this file; a comment would not.
+# These two cases were written as FINDINGS: they asserted what #1318 measured —
+# an operator bound to A reading and mutating B's user account, unaudited, with
+# ``get_user_details``' docstring claiming a confinement the handler did not
+# implement. The fix landed, so they now assert the invariant instead.
 #
 # Scope, stated precisely so this is not over-read: an ORGANISATION admin is
 # refused every one of these routes (``test_a_tenant_admin_reaches_no_admin_
-# route_at_all`` covers that), so this is not "tenant A reads tenant B". It is
-# the deployment operator, and the point is the INCONSISTENCY: on case content
-# the same role must hold a live break-glass grant naming the case and every
-# read lands in ``operator_access_audit`` (ADR-012 D9); on user identity and
-# user administration it needs neither, and ``/admin/cases`` even refuses a
-# cross-tenant LISTING under multi for a reason that applies here verbatim.
+# route_at_all`` covers that), so this was never "tenant A reads tenant B". It
+# is the deployment operator, and the point was the INCONSISTENCY with the case
+# surface next door: there, the same role must hold a live break-glass grant
+# naming the case and every read lands in ``operator_access_audit`` (ADR-012
+# D9); here it needed neither.
 #
-# The route docstrings claim the confinement the code does not implement:
-# ``get_user_details`` says "Admin can only view users in their own
-# organization" and documents a 403 for "user belongs to different
-# organization". No such check exists. ``list_users`` takes no organization
-# filter at all and stamps ``organization_id=current_user.organization_id`` onto
-# every row it returns, so another tenant's user is reported as belonging to the
-# caller's organization.
+# What closed it is a tenant PREDICATE, not a grant, and the asymmetry is
+# deliberate: the break-glass grant is case-scoped by construction
+# (``operator_access_grants.target_case_id`` is NOT NULL, ``find_live_grant``
+# keys on it), so reaching a USER through it would mean recording a
+# justification naming an unrelated case. Cross-tenant user administration is
+# therefore refused outright and writes no audit row — there is nothing to
+# audit. The audited break-glass model for this surface (ADR-012 D9 option A)
+# is a later change, still tracked on #1318.
 #
-# Filed as FaultMaven/faultmaven#1318.
+# So the assertions below are: refused, refused with the answer an ABSENT id
+# gets, and — because a 200 that changed a row is a different bug from a 200
+# that did not — the row is re-read afterwards.
 
 
-async def test_finding_an_operator_reads_another_tenants_user_without_a_grant(world):
-    """FINDING: ``GET /admin/users/{user_id}`` crosses the tenant boundary.
+async def test_an_operator_cannot_read_another_tenants_user(world):
+    """``GET /admin/users/{user_id}`` resolves inside the operator's own tenant.
 
-    Red when fixed. If this starts failing, the fix landed — make it the
-    assertion the invariant wants (``status_code in REFUSED``) and drop the
-    finding note above.
+    The refusal is compared against the one an id naming NOBODY gets. A 404 that
+    reads differently for a real account in another tenant is an existence
+    oracle, and the id the caller sent is the only thing allowed to differ.
     """
-    response = await _call(
+    absent = f"user_absent_{_RUN}"
+
+    foreign = await _call(
         world, world.token_operator_a, "GET", f"/api/v1/admin/users/{world.b.user_id}"
     )
-
-    assert response.status_code == 200, (
-        "the operator user read is now refused — #1318 appears fixed; turn "
-        "this case into the invariant assertion"
-    )
-    body = response.json()
-    assert body["email"] == f"{world.b.user_id}@example.com"
-    assert body["organization_id"] != world.b.org_id, (
-        "the response now reports the target's real organization; it used to "
-        "report the CALLER's, which is the mislabelling half of #1318"
+    nobody = await _call(
+        world, world.token_operator_a, "GET", f"/api/v1/admin/users/{absent}"
     )
 
+    assert_refused(foreign, f"GET /api/v1/admin/users/{world.b.user_id}")
+    assert foreign.status_code == nobody.status_code
+    assert foreign.text.replace(world.b.user_id, "<id>") == nobody.text.replace(
+        absent, "<id>"
+    ), (
+        f"the out-of-tenant refusal is distinguishable from the absent-id one: "
+        f"{foreign.text[:200]} vs {nobody.text[:200]}"
+    )
+    assert f"{world.b.user_id}@example.com" not in foreign.text
+
+    # And still no audit row. The refusal means there is nothing to audit; the
+    # audited break-glass model for this surface is ADR-012 D9's option A, which
+    # #1318 deliberately did not half-build.
     async with world.superuser_engine.begin() as conn:
         trail = (
             await conn.execute(
@@ -1898,49 +1934,124 @@ async def test_finding_an_operator_reads_another_tenants_user_without_a_grant(wo
                 {"o": world.b.org_id},
             )
         ).scalar()
-    assert (
-        trail == 0
-    ), "the operator user read is now audited — #1318 appears partly fixed"
+    assert trail == 0
 
 
-async def test_finding_an_operator_mutates_another_tenants_user_account(world):
-    """FINDING: the same surface writes, too — deactivate and token revocation.
+async def test_an_operator_cannot_mutate_another_tenants_user_account(world):
+    """The same surface writes, too — and none of the writes land.
 
-    Asserted against the ROW, not the response: a route that answers 200 and
-    changes nothing would be a different (and much smaller) problem than this
-    one, and only the database can tell them apart.
+    Asserted against the ROW, not the response: a route that answers 404 after
+    mutating is a worse bug than one that answers 200, and only the database can
+    tell them apart. Every id-addressed operation on the surface is swept, so a
+    predicate applied to six of seven cannot pass here.
     """
+    operations = [
+        ("POST", f"/api/v1/admin/users/{world.b.user_id}/deactivate", None),
+        ("POST", f"/api/v1/admin/users/{world.b.user_id}/activate", None),
+        ("POST", f"/api/v1/admin/users/{world.b.user_id}/roles", {"role": "admin"}),
+        ("DELETE", f"/api/v1/admin/users/{world.b.user_id}/roles/member", None),
+        ("POST", f"/api/v1/auth/users/{world.b.user_id}/revoke-tokens", None),
+        # Reachable across tenants before the fix, and the only one that used to
+        # be left out of this sweep because it DESTROYED the account and would
+        # have perturbed every later assertion. Safe to exercise now precisely
+        # because it is expected to refuse — and the row check below is what
+        # says it did.
+        ("DELETE", f"/api/v1/auth/users/{world.b.user_id}", None),
+    ]
+
+    for method, path, body in operations:
+        response = await _call(world, world.token_operator_a, method, path, json=body)
+        assert_refused(response, f"{method} {path}")
+
+    async with world.superuser_engine.begin() as conn:
+        row = (
+            await conn.execute(
+                text("SELECT is_active, dev_roles FROM users WHERE user_id = :u"),
+                {"u": world.b.user_id},
+            )
+        ).first()
+
+    assert row is not None, "the cross-tenant DELETE removed B's account"
+    is_active, dev_roles = row
+    assert is_active is True, "the cross-tenant deactivation landed"
+    assert "admin" not in (dev_roles or ""), "the cross-tenant role assignment landed"
+
+
+async def test_the_operator_still_administers_their_own_tenants_users(world):
+    """The positive control. Refusing everything would pass the two above.
+
+    ``world.a.user_id`` is a member of the operator's own organization, so every
+    one of these must work exactly as it did before the predicate.
+    """
+    detail = await _call(
+        world, world.token_operator_a, "GET", f"/api/v1/admin/users/{world.a.user_id}"
+    )
+    assert detail.status_code == 200, (
+        f"control: the operator was refused a user of their OWN organization "
+        f"({detail.status_code}): {detail.text[:300]}"
+    )
+    assert detail.json()["email"] == f"{world.a.user_id}@example.com"
+
     deactivate = await _call(
         world,
         world.token_operator_a,
         "POST",
-        f"/api/v1/admin/users/{world.b.user_id}/deactivate",
+        f"/api/v1/admin/users/{world.a.user_id}/deactivate",
     )
-    revoke = await _call(
-        world,
-        world.token_operator_a,
-        "POST",
-        f"/api/v1/auth/users/{world.b.user_id}/revoke-tokens",
+    assert deactivate.status_code == 200, (
+        f"control: deactivating a user of the operator's OWN organization was "
+        f"refused ({deactivate.status_code}): {deactivate.text[:300]}"
     )
-
-    assert (
-        deactivate.status_code == 200
-    ), "cross-tenant deactivation is now refused — #1318 appears fixed"
-    assert (
-        revoke.status_code == 200
-    ), "cross-tenant token revocation is now refused — #1318 appears fixed"
 
     async with world.superuser_engine.begin() as conn:
         is_active = (
             await conn.execute(
                 text("SELECT is_active FROM users WHERE user_id = :u"),
-                {"u": world.b.user_id},
+                {"u": world.a.user_id},
             )
         ).scalar()
-    assert is_active is False, (
-        "the 200 did not actually deactivate the account; re-read #1318 before "
-        "changing this case"
+    assert is_active is False, "control: the 200 did not deactivate the account"
+
+
+async def test_neither_user_listing_names_or_counts_the_other_tenant(world):
+    """The two listings, including the ``total`` — which is itself a disclosure.
+
+    #1318 measured ``GET /auth/users`` answering ``{"total": 83, "truncated":
+    true}`` — a deployment-wide population count — while ``/admin/users`` served
+    another tenant's rows stamped with the CALLER's organization id.
+    """
+    admin_list = await _call(
+        world, world.token_operator_a, "GET", "/api/v1/admin/users"
     )
+    auth_list = await _call(world, world.token_operator_a, "GET", "/api/v1/auth/users")
+
+    for name, response in (("admin", admin_list), ("auth", auth_list)):
+        assert response.status_code == 200, f"{name}: {response.text[:300]}"
+        assert (
+            world.b.user_id not in response.text
+        ), f"{name} listing names a user of the other tenant"
+        # The control. An empty listing satisfies "does not name B" trivially,
+        # and this deployment carries rows written by every other module in the
+        # run — so what matters is that A's OWN user is still here.
+        assert world.a.user_id in response.text, (
+            f"control: the {name} listing does not name the operator's own "
+            f"tenant's user, so 'B is absent' proves nothing: "
+            f"{response.text[:300]}"
+        )
+        assert response.json()["total"] <= len(_org_a_members(world)), (
+            f"{name} listing reports a total larger than its own tenant: "
+            f"{response.text[:300]}"
+        )
+
+    # Every row the admin listing stamps with the caller's org really is in it.
+    for row in admin_list.json()["users"]:
+        assert row["organization_id"] == world.a.org_id
+        assert row["user_id"] in _org_a_members(world)
+
+
+def _org_a_members(world) -> set[str]:
+    """Who ``_seed_tenant_rows`` put in organization A."""
+    return {world.a.user_id, *world.a.extra_members}
 
 
 # =============================================================================
@@ -2176,14 +2287,19 @@ async def test_report_generation_by_case_id_refuses_the_other_tenant(world):
     assert_no_b_content(attack, f"POST {path}")
 
 
-async def test_the_debug_causal_graph_answers_200_to_everyone_and_content_to_one(world):
+async def test_the_debug_causal_graph_answers_content_to_one_tenant_only(world):
     """A development-only route that is NOT in the published contract.
 
-    It answers 200 regardless, so the status code says nothing — which is why
-    this case reads the body. B gets the graph; A gets ``case not found`` in a
-    200 envelope. Included precisely because the generator excludes debug
-    endpoints from ``openapi.json``: a route absent from the contract is still a
-    route, and this is the one that carries a ``{case_id}``.
+    It answers 200 to any AUTHENTICATED caller, so the status code says little —
+    which is why this case reads the body. B gets the graph; A gets ``case not
+    found`` in a 200 envelope. Included precisely because the generator excludes
+    debug endpoints from ``openapi.json``: a route absent from the contract is
+    still a route, and this is the one that carries a ``{case_id}``.
+
+    Since #1318 the refusal is the route's own owner ∪ shared check rather than
+    RLS alone, and an anonymous caller is refused outright — asserted in
+    ``tests/integration/api/test_debug_causal_graph_access.py``, since this
+    module's callers all hold valid tokens by construction.
     """
     path = f"/debug/cases/{world.b.case.case_id}/causal-graph"
 
@@ -2655,35 +2771,34 @@ SURFACE_INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
         "tenant-admin arm is covered by the all-admin-routes battery.",
     ),
     ("GET", "/api/v1/admin/users/{user_id}"): (
-        _FINDING,
-        "#1318 — an operator bound to A reads B's user, unaudited",
+        _PROBED,
+        "tenant admin refused; operator confined to their own org (#1318), "
+        "with the absent-id answer as the comparison",
     ),
     ("POST", "/api/v1/admin/users/{user_id}/deactivate"): (
-        _FINDING,
-        "#1318 — an operator bound to A deactivates B's user",
+        _PROBED,
+        "operator mutation battery, row-checked (#1318)",
     ),
     ("POST", "/api/v1/admin/users/{user_id}/activate"): (
-        _FINDING,
-        "#1318 — same handler family as deactivate; the tenant-admin arm is "
-        "probed, the operator arm is the finding",
+        _PROBED,
+        "operator mutation battery, row-checked (#1318)",
     ),
     ("POST", "/api/v1/admin/users/{user_id}/roles"): (
-        _FINDING,
-        "#1318 — an operator bound to A assigns roles on B's user",
+        _PROBED,
+        "operator mutation battery, row-checked (#1318)",
     ),
     ("DELETE", "/api/v1/admin/users/{user_id}/roles/{role}"): (
-        _FINDING,
-        "#1318 — an operator bound to A removes roles on B's user",
+        _PROBED,
+        "operator mutation battery, row-checked (#1318)",
     ),
     ("POST", "/api/v1/auth/users/{user_id}/revoke-tokens"): (
-        _FINDING,
-        "#1318 — an operator bound to A revokes B's user's tokens",
+        _PROBED,
+        "operator mutation battery, row-checked (#1318)",
     ),
     ("DELETE", "/api/v1/auth/users/{username}"): (
-        _FINDING,
-        "#1318 — reachable across tenants; deliberately NOT exercised here "
-        "because it destroys the account, which would perturb every later "
-        "assertion in the run",
+        _PROBED,
+        "operator mutation battery — exercisable now that it refuses; the row "
+        "check afterwards is what says the account survived (#1318)",
     ),
     # --- auth sessions (Redis-backed, not a SQL tenant surface) ------------
     ("GET", "/api/v1/sessions"): (

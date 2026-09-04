@@ -38,6 +38,7 @@ from unittest.mock import patch
 import pytest
 from fastapi import HTTPException
 
+from faultmaven.api.operator_user_scope import OperatorUserScope
 from faultmaven.exceptions import ServiceError
 from faultmaven.modules.auth.domain.services.auth_service import (
     AuthService,
@@ -215,8 +216,9 @@ class TestAdminEndpointActuallyRevokes:
         response = await auth_routes.revoke_user_tokens(
             USER_ID,
             _admin_request(auth_service),
-            _=user,
+            operator=user,
             user_store=_FakeUserStore(USER_ID),
+            scope=OperatorUserScope(organizations=None),
         )
 
         # The token no longer authenticates on any path.
@@ -241,7 +243,8 @@ class TestAdminEndpointActuallyRevokes:
         response = await auth_routes.revoke_user_tokens(
             USER_ID,
             _admin_request(auth_service),
-            _=_user(),
+            operator=_user(),
+            scope=OperatorUserScope(organizations=None),
             user_store=_FakeUserStore(USER_ID),
         )
 
@@ -270,7 +273,8 @@ class TestAdminEndpointActuallyRevokes:
             await auth_routes.revoke_user_tokens(
                 "revoked-user",  # the username, not the user_id
                 _admin_request(auth_service),
-                _=_user(),
+                operator=_user(),
+                scope=OperatorUserScope(organizations=None),
                 user_store=_FakeUserStore(USER_ID),
             )
 
@@ -308,7 +312,8 @@ class TestAdminEndpointActuallyRevokes:
             await auth_routes.revoke_user_tokens(
                 USER_ID,
                 _admin_request(auth_service),
-                _=_user(),
+                operator=_user(),
+                scope=OperatorUserScope(organizations=None),
                 user_store=_BrokenUserStore(),
             )
 
@@ -333,7 +338,8 @@ class TestAdminEndpointActuallyRevokes:
             await auth_routes.revoke_user_tokens(
                 USER_ID,
                 _admin_request(auth_service),
-                _=_user(),
+                operator=_user(),
+                scope=OperatorUserScope(organizations=None),
                 user_store=_FakeUserStore(USER_ID),
             )
         assert exc_info.value.status_code == 500

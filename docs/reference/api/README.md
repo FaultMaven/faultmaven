@@ -456,10 +456,13 @@ Raises:
 
 **List Users**
 
-List all users in organization (admin only).
+List the users of the operator's own organization.
 
-Returns paginated list of users with filtering options.
-Admin can only see users in their own organization.
+Returns a paginated list with filtering options. Confined to the
+organization the operator's request is bound to (#1318): the page, the
+filters and ``total`` all range over that tenant, so ``total`` is a count of
+it rather than of the deployment. Under single-tenancy the deployment is the
+organization and the listing is unchanged.
 
 Query Parameters:
     is_active: Filter by active/inactive status
@@ -473,7 +476,8 @@ Returns:
 
 Raises:
     401 Unauthorized: No valid JWT token
-    403 Forbidden: User lacks admin role
+    403 Forbidden: Caller is not a platform admin, or carries no
+        organization to be confined to
     422 Unprocessable Entity: Invalid query parameters
 
 **Tags:** `Admin - User Management`
@@ -501,10 +505,12 @@ Raises:
 
 **Get User Details**
 
-Get detailed user information (admin only).
+Get detailed user information (operator only).
 
-Returns complete user information including derived permissions.
-Admin can only view users in their own organization.
+Returns complete user information including derived permissions. The
+operator can view users in their own organization; a user of another
+organization answers exactly what an absent id answers (#1318), so the
+refusal cannot be used to confirm that the account exists.
 
 Path Parameters:
     user_id: User ID to retrieve
@@ -514,8 +520,10 @@ Returns:
 
 Raises:
     401 Unauthorized: No valid JWT token
-    403 Forbidden: User lacks admin role OR user belongs to different organization
-    404 Not Found: User does not exist
+    403 Forbidden: Caller is not a platform admin, or carries no
+        organization to be confined to
+    404 Not Found: User does not exist, or is not in the operator's
+        organization — one answer for both, deliberately
 
 **Tags:** `Admin - User Management`
 
@@ -538,9 +546,12 @@ Raises:
 
 **Activate User**
 
-Activate user account (admin only).
+Activate a user account in the operator's own organization.
 
-Sets user is_active=True. User can log in after activation.
+Sets user is_active=True. User can log in after activation. Another
+organization's user answers what an absent id answers (#1318) — including
+in place of the 409 below, which would otherwise report that the account
+exists and is already active.
 
 Path Parameters:
     user_id: User ID to activate
@@ -550,8 +561,10 @@ Returns:
 
 Raises:
     401 Unauthorized: No valid JWT token
-    403 Forbidden: User lacks admin role
-    404 Not Found: User does not exist
+    403 Forbidden: Caller is not a platform admin, or carries no
+        organization to be confined to
+    404 Not Found: User does not exist, or is not in the operator's
+        organization — one answer for both, deliberately
     409 Conflict: User already active
 
 **Tags:** `Admin - User Management`
@@ -575,10 +588,11 @@ Raises:
 
 **Deactivate User**
 
-Deactivate user account (admin only).
+Deactivate a user account in the operator's own organization.
 
-Sets user is_active=False and revokes all JWT tokens.
-Admin cannot deactivate themselves.
+Sets user is_active=False and revokes all JWT tokens. The operator cannot
+deactivate themselves, and cannot reach another organization's user (#1318):
+that answers what an absent id answers, and nothing is written.
 
 Path Parameters:
     user_id: User ID to deactivate
@@ -588,8 +602,10 @@ Returns:
 
 Raises:
     401 Unauthorized: No valid JWT token
-    403 Forbidden: User lacks admin role OR trying to deactivate self
-    404 Not Found: User does not exist
+    403 Forbidden: Caller is not a platform admin, is deactivating self, or
+        carries no organization to be confined to
+    404 Not Found: User does not exist, or is not in the operator's
+        organization — one answer for both, deliberately
     409 Conflict: User already deactivated
 
 **Tags:** `Admin - User Management`
@@ -619,7 +635,9 @@ Replaces the user's organization-scoped role (`admin`, `member`, `viewer`)
 and leaves roles on other axes untouched — notably `platform_admin`, which
 is granted and revoked only by `fm-promote-platform-admin` /
 `fm-demote-platform-admin`, and the base `user` marker. Revokes all JWT
-tokens. Callers cannot modify their own roles.
+tokens. Callers cannot modify their own roles, and cannot re-role a user of
+another organization (#1318): that answers what an absent id answers, and no
+role is written.
 
 Path Parameters:
     user_id: User ID to assign role to
@@ -632,8 +650,10 @@ Returns:
 
 Raises:
     401 Unauthorized: No valid JWT token
-    403 Forbidden: Caller is not a platform admin OR trying to modify own roles
-    404 Not Found: User does not exist
+    403 Forbidden: Caller is not a platform admin, is modifying own roles,
+        or carries no organization to be confined to
+    404 Not Found: User does not exist, or is not in the operator's
+        organization — one answer for both, deliberately
     409 Conflict: User already has this organization-scoped role
     422 Unprocessable Entity: Invalid role
 
@@ -668,7 +688,9 @@ Drops the role from the user's organization-scoped axis; if that leaves no
 organization-scoped role, the user lands on `viewer` (minimum privilege).
 Roles on other axes are preserved — removing an org role never revokes
 `platform_admin` (use `fm-demote-platform-admin` for that). Revokes all
-JWT tokens. Callers cannot remove their own roles.
+JWT tokens. Callers cannot remove their own roles, and cannot re-role a user
+of another organization (#1318): that answers what an absent id answers, and
+no role is removed.
 
 Path Parameters:
     user_id: User ID to remove role from
@@ -679,8 +701,10 @@ Returns:
 
 Raises:
     401 Unauthorized: No valid JWT token
-    403 Forbidden: Caller is not a platform admin OR trying to modify own roles
-    404 Not Found: User does not exist OR user doesn't have this role
+    403 Forbidden: Caller is not a platform admin, is modifying own roles,
+        or carries no organization to be confined to
+    404 Not Found: User does not exist, does not hold this role, or is not
+        in the operator's organization — one answer for all three
     422 Unprocessable Entity: Invalid role or attempting to remove viewer role
 
 **Tags:** `Admin - User Management`
@@ -1329,7 +1353,13 @@ Start the hosted-login flow: mint state, redirect to the IdP.
 
 **List Users**
 
-List all users. Admin only.
+List the users of the operator's own organization. Operator only.
+
+Confined to the organization the request is bound to (#1318). ``total``
+counts that organization, not the deployment — a deployment-wide count is
+itself a disclosure about tenants the caller may not see. Under
+single-tenancy the deployment is the organization and the listing is
+unchanged.
 
 **Tags:** `authentication`
 
@@ -1347,7 +1377,7 @@ List all users. Admin only.
 
 **Revoke User Tokens**
 
-Revoke all tokens for a user. Platform admin only.
+Revoke all tokens for a user in the operator's own organization.
 
 Writes a per-user revocation watermark to the shared revocation store; the
 request path and both token generators then reject every token for this
@@ -1375,6 +1405,19 @@ revocation as landed and the identity as unverified. It has to be a 200 —
 the tokens really are dead, and a 5xx here would tell the admin the
 containment failed and send them to do it again.
 
+**Under multi-tenancy the tenant predicate runs FIRST, and that reorders the
+above** (#1318). Writing a revocation watermark for another tenant's user is
+itself the cross-tenant mutation, so it cannot follow the check — the
+containment-before-identity ordering only holds where every account is the
+operator's to contain. The consequence is stated rather than hidden: under
+``multi`` a membership store that cannot answer refuses the revocation
+instead of performing it, which is the fail-closed direction for an
+authorization predicate and the opposite of the #703 trade-off this route
+otherwise makes. Under ``single`` — the standalone deployment #703 was found
+on, and what cloud runs today — nothing is consulted and the ordering below
+is exactly as it was. Both refusals answer what an unknown id answers, so
+neither confirms that the account exists.
+
 **Tags:** `authentication`
 
 **Auth:** `HTTPBearer`
@@ -1396,7 +1439,11 @@ containment failed and send them to do it again.
 
 **Delete User**
 
-Delete a user by username. Admin only.
+Delete a user of the operator's own organization. Operator only.
+
+A user of another organization answers exactly what an unknown username
+answers (#1318), and nothing is revoked or deleted — the refusal must not
+confirm that the account exists.
 
 **Tags:** `authentication`
 

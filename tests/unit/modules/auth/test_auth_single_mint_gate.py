@@ -714,6 +714,7 @@ async def test_deleting_a_user_revokes_their_outstanding_tokens_first():
     from types import SimpleNamespace
     from unittest.mock import MagicMock
 
+    from faultmaven.api.operator_user_scope import OperatorUserScope
     from faultmaven.modules.auth.api import auth as auth_routes
 
     order = []
@@ -741,7 +742,10 @@ async def test_deleting_a_user_revokes_their_outstanding_tokens_first():
         auth_routes, "get_user_store", AsyncMock(return_value=user_store)
     ):
         result = await auth_routes.delete_user(
-            username="doomed", request=request, _=None
+            username="doomed",
+            request=request,
+            operator=None,
+            scope=OperatorUserScope(organizations=None),
         )
 
     assert result["user_id"] == "user_123"
@@ -760,6 +764,7 @@ async def test_a_failed_revocation_blocks_the_delete():
     from types import SimpleNamespace
     from unittest.mock import MagicMock
 
+    from faultmaven.api.operator_user_scope import OperatorUserScope
     from faultmaven.exceptions import ServiceError
     from faultmaven.modules.auth.api import auth as auth_routes
 
@@ -781,6 +786,11 @@ async def test_a_failed_revocation_blocks_the_delete():
         auth_routes, "get_user_store", AsyncMock(return_value=user_store)
     ):
         with pytest.raises(Exception):
-            await auth_routes.delete_user(username="doomed", request=request, _=None)
+            await auth_routes.delete_user(
+                username="doomed",
+                request=request,
+                operator=None,
+                scope=OperatorUserScope(organizations=None),
+            )
 
     assert deleted == [], "the account was deleted despite revocation failing"

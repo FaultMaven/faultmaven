@@ -26,7 +26,7 @@ import logging
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Collection, List, Optional
 
 from faultmaven.exceptions import (
     ConflictError,
@@ -427,21 +427,34 @@ class RedisUserStore:
             logger.error(f"Failed to delete user {user_id}: {e}")
             return False
 
-    async def list_users(self, limit: int = 100, offset: int = 0) -> List[DevUser]:
-        """List all users with pagination
+    async def list_users(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        user_ids: Optional[Collection[str]] = None,
+    ) -> List[DevUser]:
+        """List all users with pagination, optionally restricted to an allowlist
 
         Args:
             limit: Maximum number of users to return
             offset: Number of users to skip
+            user_ids: The only users the caller may see, or ``None`` for no
+                restriction — the operator surface's tenant predicate (#1318).
+                Applied before pagination so the window is the tenant's.
 
         Returns:
             List of DevUser objects
         """
         try:
-            user_ids = await self._redis_smembers(self.user_list_key)
+            known_ids = await self._redis_smembers(self.user_list_key)
+
+            # `is not None`, not truthiness: an empty allowlist selects nothing.
+            if user_ids is not None:
+                allowed = set(user_ids)
+                known_ids = [uid for uid in known_ids if uid in allowed]
 
             # Apply pagination
-            paginated_ids = user_ids[offset : offset + limit]
+            paginated_ids = known_ids[offset : offset + limit]
 
             users = []
             for user_id in paginated_ids:

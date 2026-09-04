@@ -186,6 +186,19 @@ grant model covers it unchanged — same gate, same audit action — but the fil
 download surface carries its own storage and redaction concerns and is tracked
 separately.
 
+**User administration is deliberately outside this model, not pending inside
+it.** The operator user routes (`/api/v1/admin/users*` and the two
+`/api/v1/auth/users*`) are confined to the operator's own organization by a
+tenant predicate and have no cross-tenant path at all (#1318,
+`docs/architecture/security/rbac.md` → "User Administration"). A grant cannot
+serve them as it stands: `target_case_id` is `NOT NULL`, the lookup keys on it,
+and the rebind derives the tenant from the case's organization — so reaching a
+*user* would mean minting a grant whose stated justification names an unrelated
+case, and writing that into an append-only trail. Making the case id optional
+would be a second grant model wearing this one's schema. Extending break-glass
+to user administration is a design change with its own target type, and is
+tracked on #1318 rather than approximated here.
+
 ## Immutability
 
 The audit trail (`operator_access_audit`) rejects UPDATE, DELETE and TRUNCATE at

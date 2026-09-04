@@ -10,7 +10,7 @@ Adapters:
 
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Collection, Dict, List, Optional
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -166,8 +166,23 @@ class UserRepository(ABC):
         limit: int = 50,
         offset: int = 0,
         is_active: Optional[bool] = None,
+        user_ids: Optional[Collection[str]] = None,
     ) -> tuple[List[User], int]:
-        """List users with pagination and optional active filter."""
+        """List users with pagination, an optional active filter and an id allowlist.
+
+        ``user_ids`` is the tenant predicate the operator surface resolves from
+        ``organization_members`` (``api/operator_user_scope``, #1318). It is a
+        query predicate rather than a post-filter on purpose: the operator
+        listings otherwise load every user row in the deployment and project the
+        caller's tenant out of them, which makes ``total`` a deployment-wide
+        count and couples one tenant's listing to every other tenant's rows —
+        a single row that fails hydration (an email the model rejects, say)
+        takes the listing down for everyone.
+
+        ``None`` means no restriction. An EMPTY collection means "this tenant
+        has no users" and must return nothing; implementations must not read it
+        as ``None``.
+        """
         pass
 
     @abstractmethod
@@ -273,9 +288,14 @@ class InMemoryUserRepository(UserRepository):
         limit: int = 50,
         offset: int = 0,
         is_active: Optional[bool] = None,
+        user_ids: Optional[Collection[str]] = None,
     ) -> tuple[List[User], int]:
-        """List users with pagination and optional active filter."""
+        """List users with pagination, an optional active filter and an id allowlist."""
         all_users = list(self._users.values())
+        # `is not None`, not truthiness: an empty allowlist selects nothing.
+        if user_ids is not None:
+            allowed = set(user_ids)
+            all_users = [u for u in all_users if u.user_id in allowed]
         if is_active is not None:
             all_users = [u for u in all_users if u.is_active == is_active]
         all_users.sort(key=lambda u: u.created_at, reverse=True)
@@ -543,8 +563,9 @@ class PostgreSQLUserRepository(UserRepository):
         limit: int = 50,
         offset: int = 0,
         is_active: Optional[bool] = None,
+        user_ids: Optional[Collection[str]] = None,
     ) -> tuple[List[User], int]:
-        """List users with pagination and optional active filter."""
+        """List users with pagination, an optional active filter and an id allowlist."""
         from sqlalchemy import func, select
 
         from faultmaven.infrastructure.persistence.models import UserModel
@@ -552,6 +573,12 @@ class PostgreSQLUserRepository(UserRepository):
         base_filter = []
         if is_active is not None:
             base_filter.append(UserModel.is_active == is_active)
+        # `is not None`, not truthiness: an empty allowlist becomes `IN ()`,
+        # which selects nothing — the fail-CLOSED reading. Treating it as "no
+        # filter" would turn a tenant with no members into a deployment-wide
+        # listing.
+        if user_ids is not None:
+            base_filter.append(UserModel.user_id.in_(list(user_ids)))
 
         count_stmt = select(func.count()).select_from(UserModel).where(*base_filter)
         count_result = await self.db.execute(count_stmt)
@@ -717,12 +744,13 @@ class SessionlessUserRepository(UserRepository):
         limit: int = 50,
         offset: int = 0,
         is_active: Optional[bool] = None,
+        user_ids: Optional[Collection[str]] = None,
     ) -> tuple[List[User], int]:
         from faultmaven.infrastructure.persistence.database import get_db_session
 
         async with get_db_session() as session:
             return await PostgreSQLUserRepository(session).list_users(
-                limit=limit, offset=offset, is_active=is_active
+                limit=limit, offset=offset, is_active=is_active, user_ids=user_ids
             )
 
     async def update(self, user: User) -> User:
