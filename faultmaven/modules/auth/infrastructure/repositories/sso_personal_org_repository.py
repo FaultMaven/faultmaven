@@ -72,15 +72,9 @@ from faultmaven.infrastructure.persistence.tenant_bootstrap import (
     RemapRefused,
     bootstrap_tenant,
 )
-from faultmaven.infrastructure.persistence.tenant_retirement import (
-    read_retirement_marker,
-)
 from faultmaven.modules.auth.contracts import (
-    PERSONAL_TENANT_RETIREMENT_KEY,
-    RETIREMENT_POLICIES,
     ISSOPersonalOrgRepository,
     PersonalOrgRecord,
-    PersonalTenantRetirement,
 )
 
 logger = structlog.get_logger(__name__)
@@ -150,55 +144,6 @@ class SessionlessSSOPersonalOrgRepository(ISSOPersonalOrgRepository):
                 )
                 .values(membership_confirmed=True, updated_at=datetime.now(UTC))
             )
-
-    async def get_retirement(
-        self, enterprise_id: str
-    ) -> Optional[PersonalTenantRetirement]:
-        """Read the operator's retirement decision off the enterprise row.
-
-        ``enterprises`` is untenanted — it carries no ``organization_id`` and
-        migration 018 does not enrol it — so this read answers on the
-        unauthenticated callback with no tenant bound, exactly like the subject
-        lookup above and for the same reason.
-
-        Everything unusable answers ``None`` rather than raising: no marker, a
-        marker that is not an object, one missing the fields that bind it to a
-        subject, or one naming a policy this version does not implement. An
-        ordinary company enterprise reaches this lookup on every mapped login
-        whose account is anchored elsewhere, so "no marker" is the common case;
-        and an unknown policy must fail closed — releasing an anchor is the
-        permissive outcome, and it may only come from a value this code
-        recognises.
-        """
-        async with get_db_session() as session:
-            enterprise = await session.get(EnterpriseModel, enterprise_id)
-            if enterprise is None:
-                return None
-            marker = read_retirement_marker(
-                enterprise.settings, PERSONAL_TENANT_RETIREMENT_KEY
-            )
-        if marker is None:
-            return None
-        provider = marker.get("provider")
-        key = marker.get("key")
-        policy = marker.get("policy")
-        if not isinstance(provider, str) or not provider:
-            return None
-        if not isinstance(key, str) or not key:
-            return None
-        if policy not in RETIREMENT_POLICIES:
-            return None
-        organization_id = marker.get("organization_id")
-        retired_at = marker.get("retired_at")
-        return PersonalTenantRetirement(
-            provider=provider,
-            key=key,
-            policy=policy,
-            organization_id=(
-                organization_id if isinstance(organization_id, str) else None
-            ),
-            retired_at=retired_at if isinstance(retired_at, str) else None,
-        )
 
     async def retire(self, provider: str, provider_user_id: str) -> bool:
         """Drop the binding. The organization and its cases are left in place."""
@@ -284,10 +229,15 @@ class SessionlessSSOPersonalOrgRepository(ISSOPersonalOrgRepository):
                 return PersonalTenantCollision(
                     "sso_org_mappings.provider_org_id", provider_org_id
                 )
+            # LIVE rows only, matching the partial uniqueness rule (migration
+            # 052). A retired tenant keeps its slug, so naming it as the
+            # collision would point an operator at a row that is not in
+            # anybody's way — the "log names the wrong thing" failure again.
             enterprise = (
                 await session.execute(
                     select(EnterpriseModel.enterprise_id).where(
-                        EnterpriseModel.slug == slug
+                        EnterpriseModel.slug == slug,
+                        EnterpriseModel.deleted_at.is_(None),
                     )
                 )
             ).scalar_one_or_none()
@@ -296,7 +246,8 @@ class SessionlessSSOPersonalOrgRepository(ISSOPersonalOrgRepository):
             organization = (
                 await session.execute(
                     select(OrganizationModel.organization_id).where(
-                        OrganizationModel.slug == slug
+                        OrganizationModel.slug == slug,
+                        OrganizationModel.deleted_at.is_(None),
                     )
                 )
             ).scalar_one_or_none()

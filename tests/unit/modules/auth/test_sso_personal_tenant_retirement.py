@@ -1,48 +1,50 @@
-"""What a retired subject's next org-less login does (#1045 D8).
+"""What a retired subject's next login does (#1045 D8, ADR-016 D5/D8 amended).
 
 The operator command decides; the login is where that decision becomes
 behaviour, so this module drives the **login service** rather than the rows.
-Every case here goes through the real ``complete_callback``.
+Every case goes through the real ``complete_callback``.
 
-The decision cannot be expressed by clearing the account's anchor —
-``users.enterprise_id`` is NOT NULL (migration 006) — so a retirement records a
-**marker** on the retired enterprise and the login reads it. That makes the
-marker a permission, which is why most of what follows is about the ways it must
-NOT be honoured:
+The decision is carried by **typed columns**, not by a marker: ``users
+.enterprise_id`` is nullable since migration 052, so "released" is an absent
+anchor and nothing else, and ``enterprises.deleted_at`` +
+``enterprises.personal_tenant_retirement`` say a soft-deleted enterprise was
+somebody's retired personal tenant. What is pinned here:
 
-* a marker written for a different subject releases nobody;
-* a marker naming a policy this version does not implement releases nobody;
-* a lookup that FAILS releases nobody — "the table did not answer" must never
-  read as "the anchor was retired";
-* an enterprise with no marker behaves exactly as it did before any of this
-  existed.
-
-Releasing an anchor is the permissive outcome, so every one of those answers the
-refusal, and the one path that releases requires a key this login re-derives
-from its own identity and matches.
+* exactly one anchor state releases provisioning, and every other state — live,
+  retired, deleted, dangling — refuses, so an unreadable or unexpected value can
+  never produce the permissive answer;
+* the refusals are told apart in the log, because their remedies are opposite;
+* **no login moves an already-anchored account onto a personal enterprise.**
+  That is the reverse move the previous design allowed: a partial state left by
+  an interrupted re-anchor could be turned, by a user action, into a demotion
+  back into the tenant the account had left.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 import pytest
 
 from faultmaven.config.settings import TenantProvider
+from faultmaven.infrastructure.persistence.account_anchor import (
+    AnchorKind,
+    AnchorState,
+    move_is_permitted,
+)
 from faultmaven.modules.auth.contracts import (
     RETIREMENT_POLICY_FRESH_TENANT,
     RETIREMENT_POLICY_REFUSE,
-    PersonalTenantRetirement,
 )
-from faultmaven.modules.auth.domain.personal_tenant import personal_tenant_key
 from faultmaven.modules.auth.domain.services.sso_login_service import (
+    ERROR_FAILED,
     ERROR_ORG_UNMAPPED,
 )
 from tests.unit.modules.auth.test_sso_personal_tenant import (  # noqa: F401
+    COMPANY_IDENTITY_SAME_SUBJECT,
     INDIVIDUAL,
+    MAPPED_FM_ORG,
     PERSONAL_ENTERPRISE,
-    PERSONAL_FM_ORG,
     SUBJECT,
+    FakeMappingRepository,
     FakeOrgRepository,
     FakePersonalOrgRepository,
     FakeProvider,
@@ -50,33 +52,34 @@ from tests.unit.modules.auth.test_sso_personal_tenant import (  # noqa: F401
     as_tenant_provider,
     build_service,
     isolate_settings,
+    make_organization,
     make_returning_user,
     redirect_params,
-    restore_tenant_context,
     run_callback,
     store,
     switch,
 )
 
-pytestmark = [pytest.mark.unit, pytest.mark.security]
+pytestmark = [
+    pytest.mark.unit,
+    pytest.mark.security,
+    pytest.mark.usefixtures("restore_tenant_context", "anchor_db"),
+]
 
-#: The enterprise an operator retired. The account is still anchored to it,
-#: because a retirement cannot clear an anchor.
+#: The enterprise an operator retired. The account stays anchored to it under
+#: ``--next-login refuse``; under ``fresh-tenant`` the retirement clears it.
 RETIRED_ENTERPRISE = "77777777-7777-7777-7777-777777777777"
-
-KEY = personal_tenant_key("workos", SUBJECT)
+COMPANY_ENTERPRISE = "cccccccc-cccc-cccc-cccc-cccccccccccc"
 
 
 @pytest.fixture
 def logged(monkeypatch):
     """Every event the login service logged, as ``(event, kwargs)``.
 
-    Asserted on the **structured fields** rather than on captured stdout.
-    structlog's sink is process-wide configuration that other modules in the
-    same suite change, so a substring test over stdout passes or fails on
-    collection order — which it did, green alone and red in the full selection.
-    The real logger still runs underneath, so nothing about the log itself is
-    suppressed.
+    Asserted on the **structured fields** rather than on captured stdout:
+    structlog's sink is process-wide configuration other modules change, so a
+    substring test over stdout passes or fails on collection order. The real
+    logger still runs underneath.
     """
     from faultmaven.modules.auth.domain.services import sso_login_service
 
@@ -99,66 +102,42 @@ def _reasons(records) -> list[str]:
     return [kwargs["reason"] for _event, kwargs in records if "reason" in kwargs]
 
 
-def _events(records) -> list[str]:
-    return [event for event, _kwargs in records]
-
-
-def _marker(
-    *,
-    policy: str = RETIREMENT_POLICY_FRESH_TENANT,
-    key: str = KEY,
-    provider: str = "workos",
-) -> PersonalTenantRetirement:
-    return PersonalTenantRetirement(
-        provider=provider,
-        key=key,
-        policy=policy,
-        organization_id=PERSONAL_FM_ORG,
-        retired_at=datetime(2026, 9, 3, tzinfo=UTC).isoformat(),
-    )
-
-
-def _retired_user():
-    """The account as a retirement leaves it: alive, anchored to the retired
-    enterprise, with no subject binding."""
+def _service(store, *, anchor, users=None, personal=None, mappings=None, orgs=None):
     user = make_returning_user()
-    user.enterprise_id = RETIRED_ENTERPRISE
-    return user
-
-
-def _service(store, *, retirements=None, retirement_error=None, orgs=None):
-    user = _retired_user()
-    users = FakeUserRepository({("workos", SUBJECT): user})
-    personal = FakePersonalOrgRepository(
-        retirements=retirements, retirement_error=retirement_error
-    )
+    user.enterprise_id = anchor
+    users = users or FakeUserRepository({("workos", SUBJECT): user})
+    personal = personal if personal is not None else FakePersonalOrgRepository()
     provider = FakeProvider(INDIVIDUAL)
     service = build_service(
         store,
         provider=provider,
         users=users,
         personal=personal,
+        mappings=mappings,
         orgs=orgs if orgs is not None else FakeOrgRepository(answer_any=True),
     )
     return service, provider, personal, users, user
 
 
 # =============================================================================
-# The flag decides, and the login is where it decides
+# The verdict is a column, and only one value releases
 # =============================================================================
 
 
 async def test_a_refuse_retirement_refuses_with_its_own_reason(
-    store, as_tenant_provider, switch, logged
+    store, as_tenant_provider, switch, anchor_db, logged
 ):
-    """Not ``personal_account_already_anchored``: an operator reading the logs
-    has to be able to tell "an employee arrived unscoped" from "I retired
-    this"."""
+    """Not ``personal_account_already_anchored``: the remedies are opposite.
+
+    That slug's documented remedy is "scope the session in WorkOS", which points
+    an operator away from the cause when the truth is that they retired this
+    subject themselves.
+    """
     as_tenant_provider(TenantProvider.MULTI)
     switch(True)
+    await anchor_db(RETIRED_ENTERPRISE, retired=True, policy=RETIREMENT_POLICY_REFUSE)
     service, provider, personal, _users, _user = _service(
-        store,
-        retirements={RETIRED_ENTERPRISE: _marker(policy=RETIREMENT_POLICY_REFUSE)},
+        store, anchor=RETIRED_ENTERPRISE
     )
 
     params = redirect_params(await run_callback(service))
@@ -166,150 +145,243 @@ async def test_a_refuse_retirement_refuses_with_its_own_reason(
     assert params == {"error": ERROR_ORG_UNMAPPED}
     assert "personal_tenant_retired" in _reasons(logged)
     assert "personal_account_already_anchored" not in _reasons(logged)
-    # And nothing was provisioned on either side.
     assert provider.provision_calls == []
     assert personal.provisioned == []
 
 
 async def test_a_fresh_tenant_retirement_provisions_a_new_one(
-    store, as_tenant_provider, switch
+    store, as_tenant_provider, switch, anchor_db
 ):
     """The whole point of the flag: the subject starts over.
 
-    Driven through the callback, so it also covers the half that is easy to
-    miss — the account is still anchored to the RETIRED enterprise when the new
-    tenant is written, and the membership write would refuse it
-    ``enterprise_mismatch`` unless the stale anchor is adopted.
+    A ``fresh-tenant`` retirement leaves the anchor NULL, which is the one state
+    that releases provisioning. Driven through the callback so it also covers
+    the half that is easy to miss: the account is anchored to nothing when the
+    new tenant is written, and the membership write has to set that anchor
+    rather than refuse the login.
     """
     as_tenant_provider(TenantProvider.MULTI)
     switch(True)
-    service, provider, personal, users, user = _service(
-        store, retirements={RETIRED_ENTERPRISE: _marker()}
-    )
+    service, provider, personal, users, user = _service(store, anchor=None)
 
     params = redirect_params(await run_callback(service))
 
     assert "code" in params, params
     assert len(personal.provisioned) == 1
-    minted = personal.provisioned[0]["organization_id"]
-    assert minted != PERSONAL_FM_ORG
-    assert provider.provision_calls  # the IdP organization was minted too
-    # The anchor moved onto the tenant this login resolved, and it was
-    # PERSISTED — an in-memory move would meet the same mismatch next login.
+    assert provider.provision_calls
+    # The anchor was SET to the tenant this login resolved, and persisted.
     assert user.enterprise_id == PERSONAL_ENTERPRISE
     assert users.updated and users.updated[-1] is user
-    # The NEW binding was not retired on the way through: retiring it would
-    # strand the tenant this login just created.
+    # The new binding was not retired on the way through.
     assert personal.retired == []
 
 
-# =============================================================================
-# Every way the marker must NOT be honoured
-# =============================================================================
-
-
-async def test_a_marker_for_a_different_subject_releases_nobody(
-    store, as_tenant_provider, switch, logged
+@pytest.mark.parametrize(
+    "kind,policy,expected_reason",
+    [
+        (AnchorKind.LIVE, None, "personal_account_already_anchored"),
+        (
+            AnchorKind.RETIRED_PERSONAL,
+            RETIREMENT_POLICY_REFUSE,
+            "personal_tenant_retired",
+        ),
+        (AnchorKind.DELETED, None, "personal_anchor_enterprise_deleted"),
+    ],
+)
+async def test_every_anchor_state_but_absent_refuses(
+    store, as_tenant_provider, switch, anchor_db, logged, kind, policy, expected_reason
 ):
-    """The key is what binds a marker to one person. An operator who stamps the
-    wrong enterprise must not hand its occupants a self-service tenant."""
+    """One state releases; the rest refuse, each with its own reason.
+
+    Fail-closed by construction — the permissive answer is reachable from
+    exactly one column value, not from the absence of a marker or from a parse
+    that returned nothing.
+    """
     as_tenant_provider(TenantProvider.MULTI)
     switch(True)
-    service, provider, personal, _users, _user = _service(
-        store,
-        retirements={
-            RETIRED_ENTERPRISE: _marker(key=personal_tenant_key("workos", "user_OTHER"))
-        },
+    await anchor_db(
+        RETIRED_ENTERPRISE,
+        retired=kind is not AnchorKind.LIVE,
+        policy=policy,
     )
-
-    params = redirect_params(await run_callback(service))
-
-    assert params == {"error": ERROR_ORG_UNMAPPED}
-    assert "personal_account_already_anchored" in _reasons(logged)
-    assert personal.provisioned == []
-    assert provider.provision_calls == []
-
-
-async def test_a_marker_from_another_provider_releases_nobody(
-    store, as_tenant_provider, switch
-):
-    """Two providers' identically-spelled subjects are different people."""
-    as_tenant_provider(TenantProvider.MULTI)
-    switch(True)
     service, provider, personal, _users, _user = _service(
-        store, retirements={RETIRED_ENTERPRISE: _marker(provider="okta")}
+        store, anchor=RETIRED_ENTERPRISE
     )
 
     assert redirect_params(await run_callback(service)) == {"error": ERROR_ORG_UNMAPPED}
+    assert expected_reason in _reasons(logged)
     assert personal.provisioned == []
+    assert provider.provision_calls == []
 
 
-async def test_an_unknown_policy_releases_nobody(store, as_tenant_provider, switch):
-    """Fail closed on a value this version does not implement — a marker that
-    was hand-edited, or written by a later version, must not be guessed at."""
+async def test_an_anchor_naming_a_missing_enterprise_refuses(
+    store, as_tenant_provider, switch, anchor_db, logged
+):
+    """A dangling anchor is a data fault, not an absent one.
+
+    Reading it as "no anchor" would hand a broken account a fresh tenant, which
+    is the permissive direction on the evidence that something is wrong.
+    """
     as_tenant_provider(TenantProvider.MULTI)
     switch(True)
     service, provider, personal, _users, _user = _service(
-        store, retirements={RETIRED_ENTERPRISE: _marker(policy="delete_everything")}
+        store, anchor="99999999-9999-9999-9999-999999999999"
     )
 
     assert redirect_params(await run_callback(service)) == {"error": ERROR_ORG_UNMAPPED}
-    assert personal.provisioned == []
-    assert provider.provision_calls == []
-
-
-async def test_a_failed_retirement_lookup_releases_nobody(
-    store, as_tenant_provider, switch, logged
-):
-    """ "The enterprises table did not answer" must never read as "retired"."""
-    as_tenant_provider(TenantProvider.MULTI)
-    switch(True)
-    service, provider, personal, _users, _user = _service(
-        store, retirement_error=RuntimeError("enterprises unavailable")
-    )
-
-    params = redirect_params(await run_callback(service))
-
-    assert params == {"error": ERROR_ORG_UNMAPPED}
-    assert "sso_personal_retirement_lookup_failed" in _events(logged)
+    assert "personal_anchor_enterprise_missing" in _reasons(logged)
     assert personal.provisioned == []
 
 
-async def test_an_unmarked_anchor_behaves_exactly_as_before(
-    store, as_tenant_provider, switch, logged
+# =============================================================================
+# R2 — one mover, and it never moves an anchor toward a personal tenant
+# =============================================================================
+
+
+async def test_an_unscoped_login_cannot_move_a_company_anchor_back(
+    store, as_tenant_provider, switch, anchor_db, logged
 ):
-    """The employee-arriving-unscoped case, unchanged by any of this."""
+    """The reverse-move defect, constructed exactly as it was reachable.
+
+    The partial state is "anchor already moved to the company, personal binding
+    not yet retired" — reachable from an interrupted re-anchor, from an exit-4
+    ``re-anchor`` run, or from an IdP echo. Before the redesign an unscoped
+    login turned that into a move back onto the personal tenant, which the code
+    two lines away said must never happen implicitly.
+
+    The binding is deliberately present and pointing at the personal enterprise,
+    so a rule keyed on "is this the subject's own personal tenant?" alone would
+    permit the move; only the direction rule refuses it.
+    """
     as_tenant_provider(TenantProvider.MULTI)
     switch(True)
-    service, provider, personal, _users, _user = _service(store, retirements={})
-
-    params = redirect_params(await run_callback(service))
-
-    assert params == {"error": ERROR_ORG_UNMAPPED}
-    assert "personal_account_already_anchored" in _reasons(logged)
-    assert personal.provisioned == []
-    assert provider.provision_calls == []
-    # The lookup was made against the account's own anchor and nothing else.
-    assert personal.retirement_lookups == [RETIRED_ENTERPRISE]
-
-
-async def test_an_unanchored_account_never_reaches_the_retirement_lookup(
-    store, as_tenant_provider, switch
-):
-    """No anchor, nothing to release: the marker read is not on the hot path."""
-    as_tenant_provider(TenantProvider.MULTI)
-    switch(True)
-    user = make_returning_user()
-    user.enterprise_id = None
-    users = FakeUserRepository({("workos", SUBJECT): user})
+    await anchor_db(COMPANY_ENTERPRISE, name="Acme")
     personal = FakePersonalOrgRepository()
+    # A LIVE binding that still names the personal tenant: the half-finished
+    # re-anchor, not a fabricated fake.
+    from faultmaven.modules.auth.contracts import PersonalOrgRecord
+
+    personal.rows[("workos", SUBJECT)] = PersonalOrgRecord(
+        organization_id="55555555-5555-5555-5555-555555555555",
+        enterprise_id=PERSONAL_ENTERPRISE,
+        provider_org_id="org_01PERSONAL",
+        membership_confirmed=True,
+    )
+    service, provider, personal, users, user = _service(
+        store, anchor=COMPANY_ENTERPRISE, personal=personal
+    )
+
+    params = redirect_params(await run_callback(service))
+
+    # The login is refused and — the part that matters — the anchor did not
+    # move. Before the redesign this callback returned a completion code with
+    # the account quietly demoted back onto the personal tenant.
+    assert params == {"error": ERROR_FAILED}
+    assert user.enterprise_id == COMPANY_ENTERPRISE
+    assert users.updated == []
+    assert "enterprise_mismatch" in _reasons(logged)
+    assert personal.retired == []
+
+
+def test_the_direction_rule_is_one_expression():
+    """The rule itself, without I/O, over every state it can be asked about."""
+    absent = AnchorState(AnchorKind.ABSENT, None, None)
+    live = AnchorState(AnchorKind.LIVE, "e", None)
+    retired = AnchorState(AnchorKind.RETIRED_PERSONAL, "e", "refuse")
+    dangling = AnchorState(AnchorKind.DANGLING, "e", None)
+
+    # A set is always permitted; it takes nothing away.
+    assert move_is_permitted(absent, destination_is_personal=True)
+    assert move_is_permitted(absent, destination_is_personal=False)
+    # Toward a personal enterprise, from an anchor that already exists: never.
+    assert not move_is_permitted(live, destination_is_personal=True)
+    assert not move_is_permitted(retired, destination_is_personal=True)
+    # Toward a company: from a retirement, and from a live anchor only when the
+    # caller has established it is the subject's own personal tenant.
+    assert move_is_permitted(retired, destination_is_personal=False)
+    assert move_is_permitted(live, destination_is_personal=False)
+    # A broken anchor is not a licence to move.
+    assert not move_is_permitted(dangling, destination_is_personal=False)
+
+
+# =============================================================================
+# R6 — a retired subject a company invites can sign in
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    "anchor_is_retired", [True, False], ids=["retired-refuse", "released"]
+)
+async def test_a_retired_subject_invited_to_a_company_can_sign_in(
+    store, as_tenant_provider, switch, anchor_db, anchor_is_retired
+):
+    """Both retirement policies leave an account a company can still adopt.
+
+    ``refuse`` leaves the anchor on the retired enterprise and ``fresh-tenant``
+    clears it; R2 makes both movable toward a company, so neither locks a person
+    out of a job offer. The binding is gone in both cases — retirement deletes
+    it — which is exactly the state the old re-anchor path could not handle.
+    """
+    as_tenant_provider(TenantProvider.MULTI)
+    switch(True)
+    anchor = RETIRED_ENTERPRISE if anchor_is_retired else None
+    if anchor_is_retired:
+        await anchor_db(
+            RETIRED_ENTERPRISE, retired=True, policy=RETIREMENT_POLICY_REFUSE
+        )
+    company = make_organization(
+        organization_id=MAPPED_FM_ORG, enterprise_id=COMPANY_ENTERPRISE
+    )
+    user = make_returning_user()
+    user.enterprise_id = anchor
+    users = FakeUserRepository({("workos", SUBJECT): user})
     service = build_service(
         store,
-        provider=FakeProvider(INDIVIDUAL),
+        provider=FakeProvider(COMPANY_IDENTITY_SAME_SUBJECT),
         users=users,
-        personal=personal,
-        orgs=FakeOrgRepository(answer_any=True),
+        personal=FakePersonalOrgRepository(),  # the binding is gone
+        mappings=FakeMappingRepository({("workos", "org_01HWORKOS"): MAPPED_FM_ORG}),
+        orgs=FakeOrgRepository({MAPPED_FM_ORG: company}),
     )
 
+    params = redirect_params(await run_callback(service))
+
+    assert "code" in params, params
+    assert user.enterprise_id == COMPANY_ENTERPRISE
+    assert users.updated and users.updated[-1] is user
+
+
+async def test_the_login_tells_the_mover_when_the_destination_is_personal(
+    store, as_tenant_provider, switch, anchor_db, monkeypatch
+):
+    """A wiring assertion, and it is here because the behaviour it protects has
+    no independently reachable path today.
+
+    The direction rule refuses "already anchored → a personal enterprise". On the
+    org-less branch the pre-flight already refuses every non-absent anchor, and
+    on the mapped branch the destination is a company, so the rule is currently
+    defence in depth: mutating the login to pass ``destination_is_personal=False``
+    changes no observable outcome. That is exactly the state in which a
+    pass-through quietly rots, so what is pinned is the argument itself — the
+    rule's own coverage lives in
+    ``test_the_direction_rule_is_one_expression``.
+    """
+    as_tenant_provider(TenantProvider.MULTI)
+    switch(True)
+    seen: list[dict] = []
+
+    from faultmaven.modules.auth.domain.services import sso_login_service
+
+    real = sso_login_service.move_account_anchor
+
+    async def _spy(users, user, **kwargs):
+        seen.append(kwargs)
+        return await real(users, user, **kwargs)
+
+    monkeypatch.setattr(sso_login_service, "move_account_anchor", _spy)
+
+    service, _provider, _personal, _users, _user = _service(store, anchor=None)
     assert "code" in redirect_params(await run_callback(service))
-    assert personal.retirement_lookups == []
+
+    assert seen, "the login did not go through the shared anchor-mover"
+    assert seen[-1]["destination_is_personal"] is True

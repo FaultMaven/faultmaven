@@ -688,63 +688,29 @@ class ISSOOrgMappingRepository(ABC):
         """
 
 
-#: Key under which a retired personal tenant's marker is recorded in
-#: ``enterprises.settings``. The enterprise is where it lives because that row
-#: is the account's own anchor (``users.enterprise_id``), it is **untenanted** —
-#: ``enterprises`` carries no ``organization_id`` and is not enrolled in
-#: migration 018's policy — and it therefore answers on the unauthenticated
-#: callback, at the one moment the login has to decide what a retired subject
-#: gets. A column on ``users`` would have been cheaper to read and wrong to
-#: own: ``users`` deliberately carries no tenancy of its own.
-PERSONAL_TENANT_RETIREMENT_KEY = "personal_tenant_retirement"
-
-#: The account stays anchored to the retired enterprise, so a later org-less
-#: login is refused with ``reason=personal_tenant_retired``. The default,
-#: because letting a retired subject silently mint a second tenant is the
-#: outcome an operator has to opt into rather than discover.
+#: The operator's ``--next-login`` choice, as
+#: ``enterprises.personal_tenant_retirement`` stores it. A retired subject's next
+#: org-less sign-in is refused: the account stays anchored to the retired
+#: enterprise, and that anchor is what the login reads.
 RETIREMENT_POLICY_REFUSE = "refuse"
 
-#: The retirement releases the anchor: the subject's next org-less login runs
-#: the ordinary provisioning path and gets a brand-new personal tenant. The
-#: anchor cannot simply be cleared instead — ``users.enterprise_id`` is NOT NULL
-#: (migration 006) — so "released" has to be a recorded decision rather than an
-#: absent value.
+#: The retirement releases the account — its anchor is cleared — so the next
+#: org-less sign-in provisions a brand-new personal tenant. Expressible only
+#: because migration 052 made ``users.enterprise_id`` nullable.
 RETIREMENT_POLICY_FRESH_TENANT = "fresh_tenant"
-
-#: Every policy a marker may carry. A marker naming anything else is treated as
-#: no marker at all (fail closed), so a hand-edited or future value cannot
-#: release an anchor by accident.
-RETIREMENT_POLICIES = (RETIREMENT_POLICY_REFUSE, RETIREMENT_POLICY_FRESH_TENANT)
-
-
-@dataclass(frozen=True)
-class PersonalTenantRetirement:
-    """An operator's recorded decision about one retired personal tenant.
-
-    ``key`` is the derived personal-tenant key (``personal_tenant_key``), which
-    is what binds the marker to **one subject**: a login honours a marker only
-    when it re-derives the same value from its own identity. A company
-    enterprise can therefore never carry a marker that releases anybody, and a
-    marker copied onto another enterprise releases nobody.
-    """
-
-    provider: str
-    key: str
-    policy: str
-    organization_id: Optional[str]
-    retired_at: Optional[str]
 
 
 @dataclass(frozen=True)
 class RetiredIdPOrganization:
     """What the IdP half of a retirement actually removed.
 
-    Reported rather than assumed so the operator log can say which side-effects
-    landed on this run and which a previous run had already completed — the
-    difference between "done" and "reported success for a step it did not do".
+    Every field reports what happened, never what was intended: an organization
+    that was already gone answers ``organization_deleted=False`` and
+    ``organization_absent=True``. A delete that swallowed a "not found" and
+    reported success is a command claiming work it did not do.
     """
 
-    organization_found: bool
+    organization_absent: bool
     memberships_deleted: int
     organization_deleted: bool
 
@@ -762,28 +728,29 @@ class ISSOTenantRetirementProvider(ABC):
 
     @abstractmethod
     def retire_personal_organization(
-        self, *, external_id: str
+        self, *, provider_org_id: str
     ) -> "RetiredIdPOrganization":
-        """Remove the subject's membership and the organization holding it.
+        """Remove the memberships and the IdP organization named by its **id**.
 
-        Addressed by ``external_id`` alone — the deterministic value the
-        provisioning path derived from the subject — because that is the only
-        handle that survives every step of a retirement. The subject row that
-        recorded the IdP organization id is deleted before this runs, on
-        purpose, and the memberships are therefore scoped by organization
-        rather than by user: a personal organization holds one member by
-        construction, and taking the organization down removes any it does not.
+        Addressed by the ``provider_org_id`` the tenant's own mapping row
+        records — **never** by an id re-derived from the subject. The derived
+        ``external_id`` is a function of the subject, so a *later* tenant of the
+        same subject answers to it too, and a re-run aimed at a retired
+        predecessor would delete the live successor's organization. The recorded
+        id names one organization and stops naming anything once it is gone.
 
-        **Must be idempotent.** An absent organization is a completed step, not
-        an error: a run interrupted after the delete has to be finishable by
-        re-running the same command. Memberships are removed before the
-        organization so an interrupted run never leaves a member of an
-        organization nothing points at.
+        Memberships are scoped by organization: a personal organization holds
+        one member by construction, and taking the organization down removes any
+        the listing did not name. They go first, so an interrupted run never
+        leaves a member of an organization nothing points at.
+
+        Idempotent: an organization that is already gone is a completed step,
+        reported as ``organization_absent`` rather than raised. Only a lookup or
+        a delete that FAILED raises — the caller must be able to tell "nothing
+        left to remove" from "this step did not run".
 
         Raises:
-            SSOProvisioningError: if the IdP could not be asked, or refused. The
-                caller must treat that as "this step did not complete" and say
-                so, never as "there was nothing to remove".
+            SSOProvisioningError: the IdP could not be asked, or refused.
         """
 
 
@@ -901,28 +868,6 @@ class ISSOPersonalOrgRepository(ABC):
         resolve the user back into a tenant they can no longer enter.
         """
 
-    @abstractmethod
-    async def get_retirement(
-        self, enterprise_id: str
-    ) -> Optional["PersonalTenantRetirement"]:
-        """Return the retirement recorded on ``enterprise_id``, or None.
-
-        Answers the one question a retired subject's next login has to ask:
-        *this account is anchored to an enterprise — is that anchor a personal
-        tenant an operator retired, and what did they decide should happen?*
-
-        It belongs on this port, and not on an enterprise port, because it is
-        read at the same moment and under the same constraint as everything
-        else here: on the **unauthenticated** callback, with no tenant bound.
-        ``enterprises`` is readable there for the same reason ``users`` is —
-        it carries no ``organization_id`` and migration 018 does not enrol it.
-
-        Implementations must answer ``None`` for an enterprise carrying no
-        marker, or one whose marker is unreadable or names a policy this
-        version does not know. Never raise for those: an ordinary company
-        enterprise reaching this lookup is the common case, not an error.
-        """
-
 
 # ============================================================
 # Team Membership Policy
@@ -981,13 +926,10 @@ __all__ = [
     "AuthTokenDTO",
     "SSOIdentity",
     "PersonalOrgRecord",
-    "PersonalTenantRetirement",
     "RetiredIdPOrganization",
     # Personal-tenant retirement vocabulary
-    "PERSONAL_TENANT_RETIREMENT_KEY",
     "RETIREMENT_POLICY_REFUSE",
     "RETIREMENT_POLICY_FRESH_TENANT",
-    "RETIREMENT_POLICIES",
     # Repository Protocols
     "IUserRepository",
     "IUserQuery",

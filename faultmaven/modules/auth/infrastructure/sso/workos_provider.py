@@ -299,53 +299,47 @@ class WorkOSIdentityProvider(ISSOIdentityProvider, ISSOTenantRetirementProvider)
     # -- operator teardown (ISSOTenantRetirementProvider) -------------------- #
 
     def retire_personal_organization(
-        self, *, external_id: str
+        self, *, provider_org_id: str
     ) -> RetiredIdPOrganization:
-        """Remove the subject's membership and the organization holding it.
+        """Remove the memberships and the organization named by ``provider_org_id``.
 
-        Addressed by ``external_id`` rather than by the organization id, because
-        that is the value an operator can re-derive from the subject alone —
-        after the database row that recorded the WorkOS id is gone, it is the
-        only handle left, and it is what makes an interrupted retirement
-        finishable by re-running the same command. The memberships are scoped
-        by organization for the same reason: the subject is not needed to
-        identify them, and the row that would have supplied it is already gone.
+        Addressed by the **recorded** id, never by one re-derived from the
+        subject. The derived ``external_id`` is a function of the subject, so a
+        later tenant of the same subject answers to it as well — a retirement
+        aimed at a retired predecessor would then delete the live successor's
+        organization, and report success for it.
 
-        Idempotent in both steps. An absent organization is a completed
-        retirement, reported as ``organization_found=False`` rather than as an
-        error; a membership that has already gone is skipped. Only a lookup or a
-        delete that FAILED raises — the caller must be able to tell "there was
-        nothing left to remove" from "this step did not run", and reporting the
-        second as the first is exactly how a command claims success for work it
-        did not do.
-
-        Memberships go first so an interrupted run never leaves a member of an
-        organization nothing points at; deleting the organization would remove
-        them anyway, which is what covers any membership the listing did not
-        name.
+        Idempotent in both steps, and honest about which one did anything: an
+        organization that is already gone comes back ``organization_absent``,
+        never ``organization_deleted``. Only a call that FAILED raises.
         """
-        organization_id = self._organization_by_external_id(external_id)
-        if organization_id is None:
+        memberships_deleted, absent = self._delete_memberships(
+            organization_id=provider_org_id
+        )
+        if absent:
             return RetiredIdPOrganization(
-                organization_found=False,
+                organization_absent=True,
                 memberships_deleted=0,
                 organization_deleted=False,
             )
-        deleted = self._delete_memberships(organization_id=organization_id)
-        self._delete_organization(organization_id)
+        deleted = self._delete_organization(provider_org_id)
         return RetiredIdPOrganization(
-            organization_found=True,
-            memberships_deleted=deleted,
-            organization_deleted=True,
+            organization_absent=not deleted,
+            memberships_deleted=memberships_deleted,
+            organization_deleted=deleted,
         )
 
-    def _delete_memberships(self, *, organization_id: str) -> int:
-        """Delete the organization's memberships, in any state.
+    def _delete_memberships(self, *, organization_id: str) -> tuple[int, bool]:
+        """Delete the organization's memberships. Returns (deleted, absent).
 
         ``statuses`` covers every value the SDK's enum defines, for the same
-        reason the provisioning check does: the default lists ``active`` only,
-        so a ``pending`` or ``inactive`` membership left by an earlier attempt
-        would be invisible here and survive a retirement that reported success.
+        reason the provisioning check does: the default lists ``active`` only, so
+        a ``pending`` or ``inactive`` membership left by an earlier attempt would
+        be invisible here and survive a retirement that reported success.
+
+        A ``NotFoundError`` from the listing means the organization itself is
+        gone — reported as absent rather than as zero memberships, so the caller
+        does not then try to delete it and call that a success.
         """
         from workos import NotFoundError
 
@@ -355,6 +349,8 @@ class WorkOSIdentityProvider(ISSOIdentityProvider, ISSOTenantRetirementProvider)
                 statuses=_membership_statuses(),
                 limit=100,
             )
+        except NotFoundError:
+            return 0, True
         except Exception as exc:
             logger.warning(
                 "workos_personal_org_membership_list_failed",
@@ -374,7 +370,8 @@ class WorkOSIdentityProvider(ISSOIdentityProvider, ISSOTenantRetirementProvider)
                     membership_id
                 )
             except NotFoundError:
-                # Already gone: a completed step, not a failure.
+                # Already gone: a completed step, and not counted as one this
+                # run performed.
                 continue
             except Exception as exc:
                 logger.warning(
@@ -385,15 +382,16 @@ class WorkOSIdentityProvider(ISSOIdentityProvider, ISSOTenantRetirementProvider)
                     "Personal organization membership could not be removed"
                 ) from exc
             deleted += 1
-        return deleted
+        return deleted, False
 
-    def _delete_organization(self, organization_id: str) -> None:
+    def _delete_organization(self, organization_id: str) -> bool:
+        """True when this call deleted it; False when it was already gone."""
         from workos import NotFoundError
 
         try:
             self._client.organizations.delete_organization(organization_id)
         except NotFoundError:
-            return
+            return False
         except Exception as exc:
             logger.warning(
                 "workos_personal_org_delete_failed", error=type(exc).__name__
@@ -401,6 +399,7 @@ class WorkOSIdentityProvider(ISSOIdentityProvider, ISSOTenantRetirementProvider)
             raise SSOProvisioningError(
                 "Personal organization could not be removed"
             ) from exc
+        return True
 
     def revoke_session(self, *, provider_session_id: str) -> bool:
         if not provider_session_id:

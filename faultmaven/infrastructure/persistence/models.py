@@ -215,7 +215,7 @@ class EnterpriseModel(Base):
 
     enterprise_id = Column(String(36), primary_key=True)
     name = Column(String(255), nullable=False)
-    slug = Column(String(100), nullable=False, unique=True)
+    slug = Column(String(100), nullable=False)
     plan_tier = Column(String(20), nullable=False, server_default="free")
     max_members = Column(Integer, nullable=False, server_default="5")
     max_cases = Column(Integer, nullable=True)
@@ -231,13 +231,38 @@ class EnterpriseModel(Base):
         onupdate=func.now(),
     )
     deleted_at = Column(DateTime(timezone=True), nullable=True)
+    #: The operator's ``--next-login`` choice when this enterprise was retired as
+    #: somebody's personal tenant (#1045 D8), or NULL when it was not.
+    #:
+    #: It is a **typed column and not a settings blob** because the login reads
+    #: it: a non-NULL value beside a non-NULL ``deleted_at`` is what tells an
+    #: org-less sign-in "this subject's own tenant was retired" apart from "the
+    #: company that owned this account is gone". A JSON marker made that a parse,
+    #: and a parse fails open.
+    personal_tenant_retirement = Column(String(16), nullable=True)
 
     __table_args__ = (
-        Index("ix_enterprises_slug", "slug", unique=True),
+        # Unique among LIVE rows only. A retired tenant keeps its slug, and the
+        # next tenant for the same subject derives exactly the same one — the
+        # derived key is a function of the subject, not of the tenant — so
+        # deployment-wide uniqueness would force a rename on every retirement.
+        Index(
+            "ix_enterprises_slug_live",
+            "slug",
+            unique=True,
+            sqlite_where=text("deleted_at IS NULL"),
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_enterprises_slug", "slug"),
         CheckConstraint("LENGTH(TRIM(name)) > 0", name="enterprises_name_not_empty"),
         CheckConstraint(
             "plan_tier IN ('free', 'starter', 'pro', 'business')",
             name="enterprises_plan_tier_check",
+        ),
+        CheckConstraint(
+            "personal_tenant_retirement IS NULL OR personal_tenant_retirement IN "
+            "('refuse', 'fresh_tenant')",
+            name="enterprises_personal_tenant_retirement_check",
         ),
     )
 
@@ -252,10 +277,14 @@ class UserModel(Base):
     # Every user belongs to exactly one enterprise. In single-tenant mode
     # this is the default enterprise seeded by SingleTenantProvider /
     # migration 006; in multi-tenant mode, the OAuth flow populates it.
+    # Nullable since migration 052: an account anchored to nothing is a real
+    # state, and the one a ``--next-login fresh-tenant`` retirement leaves. It is
+    # what makes the org-less login's verdict a column read rather than a marker
+    # parse — NULL means "may provision a fresh personal tenant".
     enterprise_id = Column(
         String(36),
         ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
     username = Column(String(100), nullable=False, unique=True)
@@ -355,8 +384,16 @@ class OrganizationModel(Base):
     deleted_at = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
-        UniqueConstraint(
-            "enterprise_id", "slug", name="organizations_slug_unique_per_enterprise"
+        # Partial, for the reason ``enterprises`` is: a retired organization keeps
+        # its slug and the subject's next tenant derives the same one. A UNIQUE
+        # constraint cannot carry a WHERE clause, so this is an index.
+        Index(
+            "ix_organizations_slug_live",
+            "enterprise_id",
+            "slug",
+            unique=True,
+            sqlite_where=text("deleted_at IS NULL"),
+            postgresql_where=text("deleted_at IS NULL"),
         ),
         CheckConstraint("LENGTH(TRIM(name)) > 0", name="organizations_name_not_empty"),
         CheckConstraint("LENGTH(slug) > 0", name="organizations_slug_not_empty"),

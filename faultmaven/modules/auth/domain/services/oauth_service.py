@@ -681,6 +681,28 @@ class OAuthServiceImpl(IOAuthService):
         # so this is a no-op there.
         setattr(user, "organization_id", payload.get("organization_id") or None)
 
+        # The tenant the chain carries must still be usable (#1045 D8 R5). Same
+        # reasoning as POST /auth/refresh step 2c: nothing else on this path
+        # reads the organization row, so a retired tenant's refresh chain would
+        # keep rotating forever.
+        from faultmaven.infrastructure.persistence.organization_liveness import (
+            organization_id_is_usable,
+        )
+
+        if not await organization_id_is_usable(getattr(user, "organization_id", None)):
+            logger.warning(
+                "OAuth token refresh failed: organization unavailable",
+                extra={
+                    "user_id": user_id,
+                    "client_id": client_id,
+                    "error": "ORGANIZATION_UNAVAILABLE",
+                },
+            )
+            raise InvalidGrantError(
+                "Organization is no longer available",
+                error_code="ORGANIZATION_UNAVAILABLE",
+            )
+
         # Generate new access token
         new_access_token = await self.token_generator.generate_access_token(
             user, state_read_at=state_read_at

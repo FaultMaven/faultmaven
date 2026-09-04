@@ -483,7 +483,7 @@ def test_the_conflict_classes_are_the_sdks_own():
 
 
 def test_the_teardown_calls_the_sdk_with_the_parameters_it_declares():
-    """Exact keyword names again, against the installed SDK.
+    """Exact keyword names, against the installed SDK.
 
     ``delete_organization`` and ``delete_organization_membership`` both take a
     POSITIONAL id in workos 10.2.0 while everything else on these services is
@@ -491,63 +491,83 @@ def test_the_teardown_calls_the_sdk_with_the_parameters_it_declares():
     is what makes the distinction a checked fact.
     """
     provider, orgs, members = build_provider()
-    orgs.get_organization_by_external_id.return_value = _organization()
     members.list_organization_memberships.return_value = _page(
         [SimpleNamespace(id="om_1")]
     )
 
-    outcome = provider.retire_personal_organization(external_id=EXTERNAL_ID)
+    outcome = provider.retire_personal_organization(provider_org_id=ORG_ID)
 
     assert (
-        outcome.organization_found,
+        outcome.organization_absent,
         outcome.memberships_deleted,
         outcome.organization_deleted,
-    ) == (True, 1, True)
-    orgs.get_organization_by_external_id.assert_called_once_with(EXTERNAL_ID)
+    ) == (False, 1, True)
     members.delete_organization_membership.assert_called_once_with("om_1")
     orgs.delete_organization.assert_called_once_with(ORG_ID)
 
 
-def test_the_teardown_lists_every_membership_state_the_sdk_defines():
-    """``active`` alone would leave a pending membership behind.
+def test_the_teardown_never_resolves_an_id_from_the_subject():
+    """The defect this addressing exists to prevent.
 
-    The listing default is ``active``; a ``pending`` or ``inactive`` membership
-    left by an interrupted provisioning would then be invisible, and the
-    retirement would report success having removed nothing.
+    The derived ``external_id`` is a function of the subject, so a LATER tenant
+    of the same subject answers to it too — a retirement aimed at a retired
+    predecessor would delete the live successor's organization. The recorded id
+    names one organization, so the lookup must not happen at all.
     """
     provider, orgs, members = build_provider()
-    orgs.get_organization_by_external_id.return_value = _organization()
     members.list_organization_memberships.return_value = _page([])
 
-    provider.retire_personal_organization(external_id=EXTERNAL_ID)
+    provider.retire_personal_organization(provider_org_id=ORG_ID)
+
+    orgs.get_organization_by_external_id.assert_not_called()
+
+
+def test_the_teardown_lists_every_membership_state_the_sdk_defines():
+    """``active`` alone would leave a pending membership behind."""
+    provider, orgs, members = build_provider()
+    members.list_organization_memberships.return_value = _page([])
+
+    provider.retire_personal_organization(provider_org_id=ORG_ID)
 
     kwargs = members.list_organization_memberships.call_args.kwargs
     assert kwargs["organization_id"] == ORG_ID
     assert set(kwargs["statuses"]) == {
         status.value for status in UserManagementOrganizationMembershipStatuses
     }
-    # Scoped by ORGANIZATION, not by user: the subject row that would supply the
-    # user id is deleted before this call, by design.
     assert "user_id" not in kwargs
 
 
-def test_an_absent_organization_is_a_completed_retirement():
-    """Idempotency. A re-run after a successful delete must not raise."""
+def test_an_absent_organization_is_reported_absent_not_deleted():
+    """Idempotency, and honesty about which of the two it was.
+
+    Reporting ``organization_deleted=True`` for an organization that was already
+    gone is a command claiming work it did not do — the shape the review found
+    in the ``NotFoundError``-swallowing delete.
+    """
     provider, orgs, members = build_provider()
-    orgs.get_organization_by_external_id.side_effect = _api_error(NotFoundError)
+    members.list_organization_memberships.side_effect = _api_error(NotFoundError)
 
-    outcome = provider.retire_personal_organization(external_id=EXTERNAL_ID)
+    outcome = provider.retire_personal_organization(provider_org_id=ORG_ID)
 
-    assert outcome.organization_found is False
+    assert outcome.organization_absent is True
     assert outcome.organization_deleted is False
+    assert outcome.memberships_deleted == 0
     orgs.delete_organization.assert_not_called()
-    members.list_organization_memberships.assert_not_called()
 
 
-def test_a_membership_that_vanished_between_list_and_delete_is_not_an_error():
-    """The concurrent-retirement case, and the second half of idempotency."""
+def test_an_organization_that_vanishes_between_list_and_delete_is_not_deleted():
     provider, orgs, members = build_provider()
-    orgs.get_organization_by_external_id.return_value = _organization()
+    members.list_organization_memberships.return_value = _page([])
+    orgs.delete_organization.side_effect = _api_error(NotFoundError)
+
+    outcome = provider.retire_personal_organization(provider_org_id=ORG_ID)
+
+    assert outcome.organization_deleted is False
+    assert outcome.organization_absent is True
+
+
+def test_a_membership_that_vanished_between_list_and_delete_is_not_counted():
+    provider, orgs, members = build_provider()
     members.list_organization_memberships.return_value = _page(
         [SimpleNamespace(id="om_1"), SimpleNamespace(id="om_2")]
     )
@@ -556,20 +576,20 @@ def test_a_membership_that_vanished_between_list_and_delete_is_not_an_error():
         None,
     ]
 
-    outcome = provider.retire_personal_organization(external_id=EXTERNAL_ID)
+    outcome = provider.retire_personal_organization(provider_org_id=ORG_ID)
 
     assert outcome.memberships_deleted == 1
     orgs.delete_organization.assert_called_once_with(ORG_ID)
 
 
-def test_a_lookup_outage_is_not_read_as_an_absent_organization():
+def test_a_listing_outage_is_not_read_as_an_absent_organization():
     """Reading an outage as "already gone" would report a retirement that did
-    not happen, and leave the external id claimed forever."""
+    not happen, and leave the provider organization standing."""
     provider, orgs, members = build_provider()
-    orgs.get_organization_by_external_id.side_effect = _api_error(ServerError)
+    members.list_organization_memberships.side_effect = _api_error(ServerError)
 
     with pytest.raises(SSOProvisioningError):
-        provider.retire_personal_organization(external_id=EXTERNAL_ID)
+        provider.retire_personal_organization(provider_org_id=ORG_ID)
     orgs.delete_organization.assert_not_called()
 
 
@@ -577,40 +597,33 @@ def test_a_failed_membership_delete_stops_before_the_organization_goes():
     """The organization delete is what makes the residue unreachable.
 
     Running it after a membership removal that FAILED would hide the failure:
-    the memberships die with the organization, so the operator would be told
-    the retirement succeeded and never learn which step did not.
+    the memberships die with the organization, so the operator would be told the
+    retirement succeeded and never learn which step did not.
     """
     provider, orgs, members = build_provider()
-    orgs.get_organization_by_external_id.return_value = _organization()
     members.list_organization_memberships.return_value = _page(
         [SimpleNamespace(id="om_1")]
     )
     members.delete_organization_membership.side_effect = _api_error(ServerError)
 
     with pytest.raises(SSOProvisioningError):
-        provider.retire_personal_organization(external_id=EXTERNAL_ID)
+        provider.retire_personal_organization(provider_org_id=ORG_ID)
     orgs.delete_organization.assert_not_called()
 
 
 def test_a_failed_organization_delete_raises_rather_than_reporting_success():
     provider, orgs, members = build_provider()
-    orgs.get_organization_by_external_id.return_value = _organization()
     members.list_organization_memberships.return_value = _page([])
     orgs.delete_organization.side_effect = _api_error(ServerError)
 
     with pytest.raises(SSOProvisioningError) as exc:
-        provider.retire_personal_organization(external_id=EXTERNAL_ID)
+        provider.retire_personal_organization(provider_org_id=ORG_ID)
     # No provider detail escapes, here as everywhere else on this adapter.
     assert "500" not in str(exc.value)
 
 
 def test_the_teardown_port_is_separate_from_the_login_port():
-    """A login-path double must not acquire a destructive method.
-
-    The adapter implements both ports; nothing in the login flow holds the
-    teardown one, which is why it is declared separately rather than as three
-    more methods on ``ISSOIdentityProvider``.
-    """
+    """A login-path double must not acquire a destructive method."""
     from faultmaven.modules.auth.contracts import (
         ISSOIdentityProvider,
         ISSOTenantRetirementProvider,

@@ -107,9 +107,18 @@ async def get_or_create_enterprise(
             raise LookupError(f"No enterprise with enterprise_id={enterprise_id}")
         return found, False
 
+    # LIVE rows only. Since migration 052 the slug uniqueness rules are partial
+    # on ``deleted_at IS NULL`` — a retired tenant keeps its slug — so a writer
+    # that adopted a soft-deleted row would hand a "fresh" tenant straight back
+    # to the retired one it is supposed to replace. The lookup has to be scoped
+    # exactly the way the constraint is, or the two disagree about what "already
+    # exists" means.
     existing = (
         await session.execute(
-            select(EnterpriseModel).where(EnterpriseModel.slug == slug)
+            select(EnterpriseModel).where(
+                EnterpriseModel.slug == slug,
+                EnterpriseModel.deleted_at.is_(None),
+            )
         )
     ).scalar_one_or_none()
     if existing is not None:
@@ -144,11 +153,13 @@ async def get_or_create_organization(
     path escapes that because it never has to look one up without an id: its
     untenanted subject row answered that question before this call.
     """
+    # LIVE rows only, for the reason ``get_or_create_enterprise`` states.
     existing = (
         await session.execute(
             select(OrganizationModel).where(
                 OrganizationModel.enterprise_id == enterprise_id,
                 OrganizationModel.slug == slug,
+                OrganizationModel.deleted_at.is_(None),
             )
         )
     ).scalar_one_or_none()
