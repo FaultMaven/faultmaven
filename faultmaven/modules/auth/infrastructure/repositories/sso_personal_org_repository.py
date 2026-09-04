@@ -229,10 +229,15 @@ class SessionlessSSOPersonalOrgRepository(ISSOPersonalOrgRepository):
                 return PersonalTenantCollision(
                     "sso_org_mappings.provider_org_id", provider_org_id
                 )
+            # LIVE rows only, matching the partial uniqueness rule (migration
+            # 052). A retired tenant keeps its slug, so naming it as the
+            # collision would point an operator at a row that is not in
+            # anybody's way — the "log names the wrong thing" failure again.
             enterprise = (
                 await session.execute(
                     select(EnterpriseModel.enterprise_id).where(
-                        EnterpriseModel.slug == slug
+                        EnterpriseModel.slug == slug,
+                        EnterpriseModel.deleted_at.is_(None),
                     )
                 )
             ).scalar_one_or_none()
@@ -241,7 +246,8 @@ class SessionlessSSOPersonalOrgRepository(ISSOPersonalOrgRepository):
             organization = (
                 await session.execute(
                     select(OrganizationModel.organization_id).where(
-                        OrganizationModel.slug == slug
+                        OrganizationModel.slug == slug,
+                        OrganizationModel.deleted_at.is_(None),
                     )
                 )
             ).scalar_one_or_none()

@@ -688,6 +688,72 @@ class ISSOOrgMappingRepository(ABC):
         """
 
 
+#: The operator's ``--next-login`` choice, as
+#: ``enterprises.personal_tenant_retirement`` stores it. A retired subject's next
+#: org-less sign-in is refused: the account stays anchored to the retired
+#: enterprise, and that anchor is what the login reads.
+RETIREMENT_POLICY_REFUSE = "refuse"
+
+#: The retirement releases the account — its anchor is cleared — so the next
+#: org-less sign-in provisions a brand-new personal tenant. Expressible only
+#: because migration 052 made ``users.enterprise_id`` nullable.
+RETIREMENT_POLICY_FRESH_TENANT = "fresh_tenant"
+
+
+@dataclass(frozen=True)
+class RetiredIdPOrganization:
+    """What the IdP half of a retirement actually removed.
+
+    Every field reports what happened, never what was intended: an organization
+    that was already gone answers ``organization_deleted=False`` and
+    ``organization_absent=True``. A delete that swallowed a "not found" and
+    reported success is a command claiming work it did not do.
+    """
+
+    organization_absent: bool
+    memberships_deleted: int
+    organization_deleted: bool
+
+
+class ISSOTenantRetirementProvider(ABC):
+    """IdP-side teardown of a personal tenant — the **operator** path only.
+
+    Deliberately a port of its own rather than three more methods on
+    :class:`ISSOIdentityProvider`. Nothing in the login flow may take an IdP
+    organization down, so putting the capability on the login port would hand
+    every login-path double a destructive method it must never call, and would
+    make every existing fake declare it. An adapter implements both ports; the
+    operator command asks for this one.
+    """
+
+    @abstractmethod
+    def retire_personal_organization(
+        self, *, provider_org_id: str
+    ) -> "RetiredIdPOrganization":
+        """Remove the memberships and the IdP organization named by its **id**.
+
+        Addressed by the ``provider_org_id`` the tenant's own mapping row
+        records — **never** by an id re-derived from the subject. The derived
+        ``external_id`` is a function of the subject, so a *later* tenant of the
+        same subject answers to it too, and a re-run aimed at a retired
+        predecessor would delete the live successor's organization. The recorded
+        id names one organization and stops naming anything once it is gone.
+
+        Memberships are scoped by organization: a personal organization holds
+        one member by construction, and taking the organization down removes any
+        the listing did not name. They go first, so an interrupted run never
+        leaves a member of an organization nothing points at.
+
+        Idempotent: an organization that is already gone is a completed step,
+        reported as ``organization_absent`` rather than raised. Only a lookup or
+        a delete that FAILED raises — the caller must be able to tell "nothing
+        left to remove" from "this step did not run".
+
+        Raises:
+            SSOProvisioningError: the IdP could not be asked, or refused.
+        """
+
+
 @dataclass(frozen=True)
 class PersonalOrgRecord:
     """One subject's personal-tenant binding, as the untenanted table holds it.
@@ -859,6 +925,11 @@ __all__ = [
     "OAuthCodeDTO",
     "AuthTokenDTO",
     "SSOIdentity",
+    "PersonalOrgRecord",
+    "RetiredIdPOrganization",
+    # Personal-tenant retirement vocabulary
+    "RETIREMENT_POLICY_REFUSE",
+    "RETIREMENT_POLICY_FRESH_TENANT",
     # Repository Protocols
     "IUserRepository",
     "IUserQuery",
@@ -872,4 +943,7 @@ __all__ = [
     "IPermissionChecker",
     "ISessionService",
     "ISSOIdentityProvider",
+    "ISSOOrgMappingRepository",
+    "ISSOPersonalOrgRepository",
+    "ISSOTenantRetirementProvider",
 ]

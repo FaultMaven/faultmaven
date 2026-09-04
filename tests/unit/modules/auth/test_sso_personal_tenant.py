@@ -80,7 +80,13 @@ from faultmaven.modules.auth.infrastructure.stores.sso_ephemeral_store import (
 from faultmaven.providers.tenancy import factory as tenancy_factory
 from tests.utils import get_live_settings, reset_settings_singleton
 
-pytestmark = [pytest.mark.unit, pytest.mark.security]
+pytestmark = [
+    pytest.mark.unit,
+    pytest.mark.security,
+    # The tenant-context reset and the ``enterprises`` table the anchor reads
+    # need are shared fixtures now (tests/conftest.py), not a per-module copy.
+    pytest.mark.usefixtures("restore_tenant_context", "anchor_db"),
+]
 
 DASHBOARD_URL = "https://app.faultmaven.test"
 
@@ -142,13 +148,6 @@ COMPANY_IDENTITY = SSOIdentity(
 # =============================================================================
 # Fixtures & fakes
 # =============================================================================
-
-
-@pytest.fixture(autouse=True)
-def restore_tenant_context():
-    """Keep a bound organization from leaking into the next test."""
-    yield
-    set_current_org_id(STANDALONE_ORG_ID)
 
 
 @pytest.fixture(autouse=True)
@@ -1394,13 +1393,14 @@ async def test_a_membership_failure_refuses_and_leaves_the_flag_unset(
 
 
 async def test_a_mapped_login_reanchors_an_account_off_its_personal_enterprise(
-    store, as_tenant_provider, switch
+    anchor_db, store, as_tenant_provider, switch
 ):
     """The owner's stated intent in #1045: switching to a company works.
 
     Without this the user is refused ``enterprise_mismatch`` forever, because
     their account is anchored to the enterprise their personal tenant owns.
     """
+    await anchor_db(PERSONAL_ENTERPRISE)
     as_tenant_provider(TenantProvider.MULTI)
     switch(True)
     company_org = make_organization(

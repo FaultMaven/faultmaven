@@ -1340,3 +1340,10 @@ def inmemory_session_repository():
 
     # Return the singleton instance
     return InMemoryInvestigationSessionRepository()
+
+
+# ``tests/integration`` has its own ``pytest.ini``, so the repository-root
+# ``tests/conftest.py`` is not loaded here. Re-export the shared personal-tenant
+# fixtures rather than growing a second copy of them (#1045 D8 R8): a double
+# that drifts between modules stops being evidence about the same thing.
+from tests.conftest import restore_tenant_context  # noqa: E402,F401

@@ -769,6 +769,33 @@ async def refresh_tokens(
         #     anyway, so this is a no-op there.
         setattr(user, "organization_id", claims.get("organization_id") or None)
 
+        # 2c. The tenant the chain carries must still be usable (#1045 D8 R5).
+        #     Membership and account liveness are both checked above, and
+        #     neither notices a tenant that was retired: the organization row is
+        #     soft-deleted, the claim is re-attached from the presented token,
+        #     and nothing on this path had ever read the row. A live refresh
+        #     chain therefore kept minting for a retired personal tenant
+        #     indefinitely. Retirement also bumps the user's revocation
+        #     watermark, which stops the chain at step 1 — this is the second
+        #     leg, for a chain minted after the watermark or for a tenant
+        #     retired by any other means.
+        from faultmaven.infrastructure.persistence.organization_liveness import (
+            organization_id_is_usable,
+        )
+
+        if not await organization_id_is_usable(getattr(user, "organization_id", None)):
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "organization_unavailable",
+                    "message": (
+                        "The organization this session belongs to is no longer "
+                        "available. Please log in again."
+                    ),
+                },
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
         # 3. Mint a fresh pair.
         new_access_token = await jwt_generator.generate_access_token(
             user, state_read_at=state_read_at

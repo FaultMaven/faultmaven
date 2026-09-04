@@ -1224,3 +1224,159 @@ def case_with_conversation():
         message_count=len(messages),
         current_turn=3,
     )
+
+
+# =============================================================================
+# Personal-tenant retirement — shared fixtures (#1045 D8 R8)
+# =============================================================================
+#
+# Four modules exercise this feature (the CLI's, the login path's, the WorkOS
+# adapter's and the PostgreSQL one), and three of them had grown their own copy
+# of the same tenant-context reset and their own recording double. One copy
+# each, here, because a double that drifts between modules stops being evidence
+# about the same thing.
+
+
+@pytest.fixture
+def restore_tenant_context():
+    """Keep a bound organization from leaking into the next test.
+
+    Deliberately NOT autouse at this scope: it resets a process-wide contextvar,
+    and the modules that need it say so with ``pytestmark = pytest.mark
+    .usefixtures("restore_tenant_context")`` rather than every test in the suite
+    paying for a reset it never asked for.
+    """
+    from faultmaven.config.constants import STANDALONE_ORG_ID
+    from faultmaven.config.tenant_context import set_current_org_id
+
+    yield
+    set_current_org_id(STANDALONE_ORG_ID)
+
+
+class RecordingIdP:
+    """The IdP teardown port, recording every call and its order.
+
+    A hand-written double is right here because what the SDK signatures must be
+    is pinned against the real classes with ``autospec`` in
+    ``tests/unit/modules/auth/test_sso_personal_org_provider.py``. What the other
+    modules need from the port is whether it was called, with which id, and when.
+
+    ``present`` is the set of provider organization ids that still exist. A
+    delete removes one — so a second delete of the same id reports it absent,
+    exactly as WorkOS would, and a delete of an id that was never present cannot
+    masquerade as success.
+    """
+
+    def __init__(self, present=(), *, error: Exception | None = None):
+        from faultmaven.modules.auth.contracts import RetiredIdPOrganization
+
+        self._result = RetiredIdPOrganization
+        self.present = set(present)
+        self.error = error
+        self.calls: list[str] = []
+
+    def retire_personal_organization(self, *, provider_org_id: str):
+        self.calls.append(provider_org_id)
+        if self.error is not None:
+            raise self.error
+        if provider_org_id not in self.present:
+            return self._result(
+                organization_absent=True,
+                memberships_deleted=0,
+                organization_deleted=False,
+            )
+        self.present.discard(provider_org_id)
+        return self._result(
+            organization_absent=False, memberships_deleted=1, organization_deleted=True
+        )
+
+
+class RecordingRevoker:
+    """The auth service, for the one method a retirement uses."""
+
+    def __init__(self, error: Exception | None = None):
+        self.revoked: list[str] = []
+        self.error = error
+
+    async def revoke_user_tokens(self, user_id: str):
+        if self.error is not None:
+            raise self.error
+        self.revoked.append(user_id)
+        from datetime import UTC, datetime
+
+        return datetime.now(UTC)
+
+
+@pytest.fixture
+def recording_idp():
+    """Factory for :class:`RecordingIdP`, so a test names what exists."""
+    return RecordingIdP
+
+
+@pytest.fixture
+def recording_revoker():
+    return RecordingRevoker
+
+
+@pytest.fixture
+def anchor_db(monkeypatch):
+    """A real ``enterprises`` table behind ``account_anchor``'s reads.
+
+    The login's org-less verdict and its one anchor-mover both read typed
+    columns — ``enterprises.deleted_at`` and
+    ``enterprises.personal_tenant_retirement`` — so a unit test that wants to
+    exercise them needs those rows to exist. Real SQLite built from the ORM
+    metadata, with only the session factory patched, so the reads under test are
+    the production ones rather than a stand-in that could disagree with them.
+
+    Yields a seeder: ``seed(enterprise_id, retired=..., policy=...)``.
+    """
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from faultmaven.infrastructure.persistence.models import Base
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    created = {"done": False}
+
+    @asynccontextmanager
+    async def _session(database_url=None):
+        if not created["done"]:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            created["done"] = True
+        session = sessions()
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.persistence.account_anchor.get_db_session", _session
+    )
+
+    async def seed(enterprise_id, *, retired=False, policy=None, name="Personal"):
+        async with _session() as session:
+            await session.execute(
+                text(
+                    "INSERT INTO enterprises (enterprise_id, name, slug, deleted_at, "
+                    " personal_tenant_retirement) "
+                    "VALUES (:e, :n, :s, :d, :p)"
+                ),
+                {
+                    "e": enterprise_id,
+                    "n": name,
+                    "s": f"slug-{enterprise_id[:8]}",
+                    "d": "2026-09-04 00:00:00" if retired else None,
+                    "p": policy,
+                },
+            )
+
+    yield seed

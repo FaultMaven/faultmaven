@@ -74,3 +74,70 @@ def personal_org_slug(key: str) -> str:
     the two to drift.
     """
     return f"{PERSONAL_SLUG_PREFIX}{key}"
+
+
+#: What separates a retired tenant's slug from the derived key it was built
+#: from. Retirement has to free the derived slug — the next tenant for the same
+#: subject derives exactly the same string, and ``enterprises.slug`` is unique
+#: deployment-wide — while keeping the retired rows findable by an operator who
+#: only knows the subject. Suffixing rather than renaming outright does both:
+#: ``personal-<key>`` is free again, and ``personal-<key>-retired-%`` still
+#: names every tenant that subject has ever had.
+RETIRED_SLUG_MARKER = "-retired-"
+
+
+def retired_slug(slug: str, discriminator: str) -> str:
+    """The slug a retired organization or enterprise is renamed to.
+
+    ``discriminator`` is the row's own id, so a subject retired twice does not
+    collide with itself on the second retirement — which is not hypothetical:
+    with ``fresh_tenant`` the subject provisions again under the derived slug
+    the first retirement just freed, and that tenant can be retired in turn.
+
+    Dashes are stripped from the id, not shortened away: a truncated
+    discriminator would reintroduce exactly the collision this exists to
+    prevent, and the full form still fits — 41 + 9 + 32 = 82 characters,
+    inside the 100-character ``slug`` columns.
+    """
+    if not slug or not discriminator:
+        raise ValueError("a retired slug needs both a slug and a discriminator")
+    return f"{slug}{RETIRED_SLUG_MARKER}{discriminator.replace('-', '')}"
+
+
+def retired_slug_pattern(slug: str) -> str:
+    """SQL ``LIKE`` pattern matching every retired form of ``slug``.
+
+    The derived slug is hex and dashes only, so it carries no ``LIKE``
+    metacharacter and needs no escaping — asserted by the tests rather than
+    assumed, because the day it stops being true this becomes a wildcard.
+    """
+    return f"{slug}{RETIRED_SLUG_MARKER}%"
+
+
+def personal_key_of_slug(slug: str) -> str | None:
+    """The derived key inside a personal tenant's slug, live or retired.
+
+    The inverse of :func:`personal_org_slug` (composed with
+    :func:`retired_slug`), and it is what lets an operator command addressed by
+    **organization id** know it is looking at a personal tenant at all. Without
+    it, pointing ``--organization-id`` at a company organization would retire a
+    customer's tenant and stamp it with a marker naming a subject that does not
+    own it.
+
+    Returns None for anything that is not one of those two shapes. The check is
+    exact rather than a prefix test: the key is 32 lowercase hex characters by
+    construction, so a hand-made ``personal-acme`` slug is not a personal tenant
+    and must not be read as one.
+    """
+    if not slug or not slug.startswith(PERSONAL_SLUG_PREFIX):
+        return None
+    remainder = slug[len(PERSONAL_SLUG_PREFIX) :]
+    key, marker, _ = remainder.partition(RETIRED_SLUG_MARKER)
+    if marker and not _:
+        # "…-retired-" with nothing after it: not a slug this code produced.
+        return None
+    if len(key) != _DIGEST_BYTES * 2:
+        return None
+    if any(character not in "0123456789abcdef" for character in key):
+        return None
+    return key

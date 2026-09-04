@@ -16,7 +16,12 @@ from typing import Any
 import jwt as jwt_lib
 import structlog
 
-from faultmaven.modules.auth.contracts import ISSOIdentityProvider, SSOIdentity
+from faultmaven.modules.auth.contracts import (
+    ISSOIdentityProvider,
+    ISSOTenantRetirementProvider,
+    RetiredIdPOrganization,
+    SSOIdentity,
+)
 from faultmaven.modules.auth.exceptions import (
     SSOAuthenticationError,
     SSOProvisioningError,
@@ -70,8 +75,13 @@ def _organization_id_of(organization: Any) -> str | None:
 _AUTHKIT_PROVIDER = "authkit"
 
 
-class WorkOSIdentityProvider(ISSOIdentityProvider):
-    """Hosted-login provider backed by WorkOS AuthKit (User Management)."""
+class WorkOSIdentityProvider(ISSOIdentityProvider, ISSOTenantRetirementProvider):
+    """Hosted-login provider backed by WorkOS AuthKit (User Management).
+
+    Implements two ports. :class:`ISSOIdentityProvider` is what the login flow
+    holds; :class:`ISSOTenantRetirementProvider` is the operator-only teardown,
+    kept separate so no login-path double ever acquires a destructive method.
+    """
 
     def __init__(self, *, client: Any, redirect_uri: str) -> None:
         self._client = client
@@ -285,6 +295,111 @@ class WorkOSIdentityProvider(ISSOIdentityProvider):
             )
             return False
         return bool(getattr(page, "data", None))
+
+    # -- operator teardown (ISSOTenantRetirementProvider) -------------------- #
+
+    def retire_personal_organization(
+        self, *, provider_org_id: str
+    ) -> RetiredIdPOrganization:
+        """Remove the memberships and the organization named by ``provider_org_id``.
+
+        Addressed by the **recorded** id, never by one re-derived from the
+        subject. The derived ``external_id`` is a function of the subject, so a
+        later tenant of the same subject answers to it as well — a retirement
+        aimed at a retired predecessor would then delete the live successor's
+        organization, and report success for it.
+
+        Idempotent in both steps, and honest about which one did anything: an
+        organization that is already gone comes back ``organization_absent``,
+        never ``organization_deleted``. Only a call that FAILED raises.
+        """
+        memberships_deleted, absent = self._delete_memberships(
+            organization_id=provider_org_id
+        )
+        if absent:
+            return RetiredIdPOrganization(
+                organization_absent=True,
+                memberships_deleted=0,
+                organization_deleted=False,
+            )
+        deleted = self._delete_organization(provider_org_id)
+        return RetiredIdPOrganization(
+            organization_absent=not deleted,
+            memberships_deleted=memberships_deleted,
+            organization_deleted=deleted,
+        )
+
+    def _delete_memberships(self, *, organization_id: str) -> tuple[int, bool]:
+        """Delete the organization's memberships. Returns (deleted, absent).
+
+        ``statuses`` covers every value the SDK's enum defines, for the same
+        reason the provisioning check does: the default lists ``active`` only, so
+        a ``pending`` or ``inactive`` membership left by an earlier attempt would
+        be invisible here and survive a retirement that reported success.
+
+        A ``NotFoundError`` from the listing means the organization itself is
+        gone — reported as absent rather than as zero memberships, so the caller
+        does not then try to delete it and call that a success.
+        """
+        from workos import NotFoundError
+
+        try:
+            page = self._client.organization_membership.list_organization_memberships(
+                organization_id=organization_id,
+                statuses=_membership_statuses(),
+                limit=100,
+            )
+        except NotFoundError:
+            return 0, True
+        except Exception as exc:
+            logger.warning(
+                "workos_personal_org_membership_list_failed",
+                error=type(exc).__name__,
+            )
+            raise SSOProvisioningError(
+                "Personal organization memberships could not be listed"
+            ) from exc
+
+        deleted = 0
+        for membership in getattr(page, "data", None) or []:
+            membership_id = getattr(membership, "id", None)
+            if not isinstance(membership_id, str) or not membership_id:
+                continue
+            try:
+                self._client.organization_membership.delete_organization_membership(
+                    membership_id
+                )
+            except NotFoundError:
+                # Already gone: a completed step, and not counted as one this
+                # run performed.
+                continue
+            except Exception as exc:
+                logger.warning(
+                    "workos_personal_org_membership_delete_failed",
+                    error=type(exc).__name__,
+                )
+                raise SSOProvisioningError(
+                    "Personal organization membership could not be removed"
+                ) from exc
+            deleted += 1
+        return deleted, False
+
+    def _delete_organization(self, organization_id: str) -> bool:
+        """True when this call deleted it; False when it was already gone."""
+        from workos import NotFoundError
+
+        try:
+            self._client.organizations.delete_organization(organization_id)
+        except NotFoundError:
+            return False
+        except Exception as exc:
+            logger.warning(
+                "workos_personal_org_delete_failed", error=type(exc).__name__
+            )
+            raise SSOProvisioningError(
+                "Personal organization could not be removed"
+            ) from exc
+        return True
 
     def revoke_session(self, *, provider_session_id: str) -> bool:
         if not provider_session_id:
