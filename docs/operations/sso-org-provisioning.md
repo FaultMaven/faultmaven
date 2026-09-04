@@ -589,7 +589,7 @@ Personal tenants are capped at `TENANT_DAILY_TURN_CAP` (default **30**)
 investigation turns per UTC day; company organizations are uncapped unless given
 an override, and a **single-tenant (self-hosted) deployment is never capped at
 all** — that is decided from the deployment mode, so an install that has not run
-migration 052 keeps serving turns. A tenant at its cap is refused with a 429 that names the limit and
+migration 053 keeps serving turns. A tenant at its cap is refused with a 429 that names the limit and
 the reset instant — its reads, its sign-in and the knowledge base are
 unaffected. The design is in
 [SSO Organization Mapping → The daily turn cap](../architecture/security/sso-org-mapping.md#the-daily-turn-cap).

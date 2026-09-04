@@ -1,4 +1,4 @@
-"""052_tenant_turn_cap
+"""053_tenant_turn_cap
 
 The per-tenant investigation-turn cap (ADR-016 D5.3, owner decision 2026-09-03).
 
@@ -54,9 +54,9 @@ clause, so ``USING`` doubles as ``WITH CHECK`` and a tenant can neither read nor
 write another tenant's ledger row. ``organizations`` is already enrolled; the new
 column inherits that policy and needs nothing here.
 
-Revision ID: f6a7b8c9d0e1
-Revises: e5f6a7b8c9d0
-Create Date: 2026-09-04 12:00:00.000000
+Revision ID: ddee78b60664
+Revises: f6a7b8c9d0e1
+Create Date: 2026-09-05 12:00:00.000000
 """
 
 from typing import Sequence, Union
@@ -65,8 +65,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "f6a7b8c9d0e1"
-down_revision: Union[str, Sequence[str], None] = "e5f6a7b8c9d0"
+revision: str = "ddee78b60664"
+down_revision: Union[str, Sequence[str], None] = "f6a7b8c9d0e1"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

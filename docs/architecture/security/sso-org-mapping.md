@@ -431,7 +431,7 @@ exists so an operator can.
 
 ### The daily turn cap
 
-**Refs:** ADR-016 D5.3, owner decision 2026-09-03, migration 052.
+**Refs:** ADR-016 D5.3, owner decision 2026-09-03, migration 053.
 
 The third precondition. Self-service sign-up hands anyone who can authenticate
 an organization of their own, and an investigation turn is the one operation in

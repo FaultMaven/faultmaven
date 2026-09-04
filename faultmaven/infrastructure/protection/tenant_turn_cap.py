@@ -38,7 +38,7 @@ either, override ``N``  N turns per UTC day
 **Single-tenant is answered before any port is touched.** A self-hosted install
 has one organization, pays for its own compute, and is not what D5.3 exists to
 bound — and deciding it from the deployment mode rather than from a table means
-an install that has not run migration 052 (``RUN_STARTUP_MIGRATIONS=false``, a
+an install that has not run migration 053 (``RUN_STARTUP_MIGRATIONS=false``, a
 supported posture) keeps working instead of losing every turn to a
 usage-allowance message it could never have earned.
 
@@ -486,7 +486,7 @@ class TurnCapService:
         policy = await self._resolver.resolve(organization_id)
         if policy.limit is None and policy.source == "single_tenant":
             # Decided without touching a port, so a single-tenant deployment
-            # that has never run migration 052 keeps serving turns.
+            # that has never run migration 053 keeps serving turns.
             return Reservation(
                 organization_id, used=0, limit=None, source=policy.source
             )

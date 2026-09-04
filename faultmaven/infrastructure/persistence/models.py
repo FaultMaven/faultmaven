@@ -481,7 +481,7 @@ class OrganizationTurnUsageModel(Base):
     deployment writes nothing at all: it is answered from the deployment mode
     before any port is touched.
 
-    Tenanted (migration 018's pattern, enrolled by migration 052): a tenant can
+    Tenanted (migration 018's pattern, enrolled by migration 053): a tenant can
     neither read nor write another tenant's row.
     """
 

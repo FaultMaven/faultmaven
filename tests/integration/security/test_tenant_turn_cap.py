@@ -248,7 +248,7 @@ async def test_the_role_under_test_is_actually_subject_to_rls(limited_role_env):
                 )
             ).scalar()
             assert enabled is True, (
-                "migration 052 did not enrol the ledger in RLS, so one tenant's "
+                "migration 053 did not enrol the ledger in RLS, so one tenant's "
                 "usage row is readable by every other tenant"
             )
     finally:
