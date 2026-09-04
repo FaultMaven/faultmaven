@@ -93,7 +93,7 @@ class TestTheLimiterKeysOnTheResolvedAddress:
         middleware = _middleware([])
         recorded = {}
 
-        async def capture(specs, **_):
+        async def capture(specs):
             recorded["specs"] = list(specs)
             return [
                 RateLimitResult(

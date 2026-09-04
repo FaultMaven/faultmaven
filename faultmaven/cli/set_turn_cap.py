@@ -62,6 +62,8 @@ import argparse
 import asyncio
 import sys
 
+from faultmaven.cli._confirmation import require_confirmation
+
 #: argparse's ``description``. A literal, not derived from ``__doc__``: ``python
 #: -OO`` strips docstrings, and that expression would raise before argparse ran.
 _SUMMARY = (
@@ -70,18 +72,35 @@ _SUMMARY = (
 )
 
 
-def _describe(override, is_personal: bool, default_cap: int) -> str:
-    """The effective cap, in the same words the enforcement decides it in."""
-    if override is None:
-        if is_personal:
-            return (
-                f"no override → {default_cap} turns/day "
-                "(the deployment default, because this is a personal tenant)"
-            )
-        return "no override → uncapped (a company organization)"
-    if override == 0:
-        return "override 0 → uncapped (explicitly)"
-    return f"override {override} → {override} turns/day"
+#: How each ``CapPolicy.source`` the resolver can answer with reads to a human.
+#: Keyed on the source rather than re-deriving the rule from the override, which
+#: is the whole point: what an operator is shown is the verdict the next turn
+#: will actually meet, resolved by the same object, not a second description of
+#: the policy that can drift from it.
+_SOURCE_WORDS = {
+    "single_tenant": "uncapped — single-tenant deployments are never capped",
+    "override_unlimited": "override 0 → uncapped (explicitly)",
+    "override": "override {limit} → {limit} turns/day",
+    "default_personal": (
+        "no override → {limit} turns/day "
+        "(the deployment default, because this is a personal tenant)"
+    ),
+    "company_uncapped": "no override → uncapped (a company organization)",
+    "indeterminate": (
+        "could not be determined → {limit} turns/day "
+        "(the default, applied fail-closed)"
+    ),
+    "cleared": (
+        "no override → the deployment policy "
+        "(the default cap for a personal tenant, uncapped for a company)"
+    ),
+}
+
+
+def _describe(policy) -> str:
+    """One line for a resolved :class:`CapPolicy`."""
+    words = _SOURCE_WORDS.get(policy.source, "{limit}")
+    return words.format(limit=policy.limit)
 
 
 async def set_turn_cap(
@@ -90,104 +109,124 @@ async def set_turn_cap(
     new_value: object,
     show_only: bool,
     dry_run: bool,
+    resolver=None,
+    organizations=None,
+    ledger=None,
 ) -> int:
     """Read, and optionally write, one organization's cap. Returns the exit code.
 
     ``new_value`` is the value to store: an ``int`` (0 for unlimited) or ``None``
     to clear the override. It is ignored when ``show_only``.
-    """
-    from sqlalchemy import select, update
 
-    from faultmaven.config.settings import get_settings
+    Everything is reached through the same ports the enforcement uses — the
+    ``CapPolicyResolver``, the organization repository and the ledger — rather
+    than through SQL of its own. Three things follow, and each was a defect
+    before: what ``--show`` prints is the verdict the next turn will meet rather
+    than a second rendering of the policy; a soft-deleted organization stops
+    resolving, because the repository filters ``deleted_at`` and this no longer
+    goes around it; and the write goes through ``update_organization``, so the
+    domain object is what carries the value.
+    """
     from faultmaven.config.tenant_context import set_current_org_id
-    from faultmaven.infrastructure.persistence.database import get_db_session
-    from faultmaven.infrastructure.persistence.models import (
-        OrganizationModel,
-        OrganizationTurnUsageModel,
-        SSOPersonalOrgModel,
+    from faultmaven.infrastructure.persistence.sessionless_organization_repository import (  # noqa: E501
+        SessionlessOrganizationRepository,
     )
-    from faultmaven.infrastructure.protection.tenant_turn_cap import utc_day
+    from faultmaven.infrastructure.protection.tenant_turn_cap import (
+        CapPolicyResolver,
+        SqlTurnLedger,
+        utc_day,
+    )
+    from faultmaven.modules.auth.infrastructure.repositories.sso_personal_org_repository import (  # noqa: E501
+        SessionlessSSOPersonalOrgRepository,
+    )
 
     print("=" * 80)
     print("Tenant Daily Turn Cap")
     print("=" * 80)
 
     # RLS (migration 018) scopes `organizations` and the usage ledger by
-    # `app.current_org_id`. Bind it before opening a transaction so both the
-    # read and the UPDATE run under the pod's own application role, exactly as
-    # the request path does.
+    # `app.current_org_id`. Bind it before any read so everything below runs
+    # under the pod's own application role, exactly as the request path does.
     set_current_org_id(organization_id)
 
-    default_cap = get_settings().agent.tenant_daily_turn_cap
+    organizations = organizations or SessionlessOrganizationRepository()
+    resolver = resolver or CapPolicyResolver(
+        SessionlessSSOPersonalOrgRepository(),
+        organizations,
+        # An operator asking about a tenant is asking about the multi-tenant
+        # policy even on a box where the API happens to run single-tenant, so
+        # the deployment short-circuit is deliberately not applied here — it
+        # would print "uncapped" for every organization and answer nothing.
+        multi_tenant=lambda: True,
+    )
+    ledger = ledger or SqlTurnLedger()
     today = utc_day()
 
-    async with get_db_session() as session:
-        row = (
-            await session.execute(
-                select(OrganizationModel.name, OrganizationModel.daily_turn_cap).where(
-                    OrganizationModel.organization_id == organization_id
-                )
-            )
-        ).first()
-        if row is None:
-            print(
-                f"\n❌ No organization '{organization_id}' is visible.\n"
-                "   Check the id (it is an id, not a slug); a deleted "
-                "organization does not resolve."
-            )
-            return 1
-
-        is_personal = (
-            await session.execute(
-                select(SSOPersonalOrgModel.organization_id)
-                .where(SSOPersonalOrgModel.organization_id == organization_id)
-                .limit(1)
-            )
-        ).scalar_one_or_none() is not None
-
-        used_today = (
-            await session.execute(
-                select(OrganizationTurnUsageModel.turn_count).where(
-                    OrganizationTurnUsageModel.organization_id == organization_id,
-                    OrganizationTurnUsageModel.usage_date == today,
-                )
-            )
-        ).scalar_one_or_none() or 0
-
-        print(f"\nOrganization: {row.name} ({organization_id})")
-        print(f"Kind:         {'personal tenant' if is_personal else 'company'}")
+    organization = await organizations.get_organization(organization_id)
+    if organization is None:
         print(
-            f"Current cap:  {_describe(row.daily_turn_cap, is_personal, default_cap)}"
+            f"\n❌ No organization '{organization_id}' is visible.\n"
+            "   Check the id (it is an id, not a slug); a deleted "
+            "organization does not resolve."
         )
-        print(f"Used today:   {used_today} turns (UTC day {today.isoformat()})")
+        return 1
 
-        if show_only:
-            return 0
+    policy = await resolver.resolve(organization_id)
+    used_today = await ledger.usage(organization_id, today)
 
-        print(f"New cap:      {_describe(new_value, is_personal, default_cap)}")
+    print(f"\nOrganization: {organization.name} ({organization_id})")
+    print(f"Current cap:  {_describe(policy)}")
+    print(f"Used today:   {used_today} turns (UTC day {today.isoformat()})")
 
-        if dry_run:
-            print("\nDry run — nothing was written. Re-run with --yes to apply.")
-            return 0
+    if show_only:
+        return 0
 
-        result = await session.execute(
-            update(OrganizationModel)
-            .where(OrganizationModel.organization_id == organization_id)
-            .values(daily_turn_cap=new_value)
+    print(f"New cap:      {_describe(_policy_for(new_value, policy))}")
+
+    if dry_run:
+        print("\nDry run — nothing was written. Re-run with --yes to apply.")
+        return 0
+
+    organization.daily_turn_cap = new_value
+    if not await organizations.update_organization(organization):
+        # The organization was readable moments ago on the same bound tenant,
+        # so this is a concurrent change rather than a scoping mistake.
+        # Reporting success would tell an operator a spend control moved when
+        # it did not.
+        print(
+            "\n❌ The organization was readable but the update matched no "
+            "row. Nothing was written — re-run and check the id."
         )
-        if result.rowcount == 0:
-            # The row was visible moments ago on the same bound tenant, so this
-            # is a concurrent change rather than a scoping mistake. Reporting
-            # success would tell an operator a spend control moved when it did
-            # not.
-            print(
-                "\n❌ The organization was readable but the update matched no "
-                "row. Nothing was written — re-run and check the id."
-            )
-            return 1
+        return 1
 
     print("\n✅ Cap updated. It applies to this tenant's next turn; no restart.")
     return 0
+
+
+def _policy_for(new_value, current: "object") -> "object":
+    """What the cap will read as once ``new_value`` is stored.
+
+    Derived by asking the same question the resolver asks, in the same order:
+    an override decides on its own, and only its absence falls back to the kind
+    the current policy already established.
+    """
+    from faultmaven.infrastructure.protection.tenant_turn_cap import (
+        UNLIMITED_OVERRIDE,
+        CapPolicy,
+    )
+
+    if new_value is None:
+        # Back to the deployment policy. Which one that is depends on the
+        # tenant's kind, which the CURRENT policy already tells us whenever it
+        # was not itself an override.
+        if current.source in ("default_personal", "company_uncapped", "indeterminate"):
+            return current
+        # The current policy is an override, so it says nothing about the kind.
+        # Say so rather than guess.
+        return CapPolicy(limit=None, source="cleared")
+    if new_value == UNLIMITED_OVERRIDE:
+        return CapPolicy(limit=None, source="override_unlimited")
+    return CapPolicy(limit=int(new_value), source="override")
 
 
 def main() -> None:
@@ -251,31 +290,16 @@ def main() -> None:
         # which flag they wanted rather than reading an integrity error.
         parser.error("--cap must be at least 1; use --unlimited to remove the cap.")
 
-    if args.show:
-        new_value: object = None
-    elif args.unlimited:
-        new_value = 0
-    elif args.clear:
-        new_value = None
-    else:
-        new_value = args.cap
+    # ``--show`` and ``--clear`` both mean "store nothing / store NULL", and the
+    # ``show_only`` flag below is what distinguishes them — so there is one
+    # expression here rather than an ``if args.show`` arm that computed the same
+    # value the ``--clear`` arm already does.
+    new_value: object = 0 if args.unlimited else args.cap
 
     if not args.show:
-        # --dry-run with --yes is a usage error, not a preference: the two
-        # invocations differ by one flag, and silently taking the dry-run branch
-        # would exit 0 and read as "the cap moved" when nothing was written.
-        if args.dry_run and args.yes:
-            parser.error(
-                "--dry-run and --yes are mutually exclusive: pass --dry-run to "
-                "preview, --yes to write."
-            )
-        if not args.dry_run and not args.yes:
-            print(
-                "❌ Refusing to run without --yes. This changes what a tenant is "
-                "allowed to spend.\n"
-                "   Use --show to read the current cap, or --dry-run to preview."
-            )
-            sys.exit(1)
+        require_confirmation(
+            parser, args, "This changes what a tenant is allowed to spend."
+        )
 
     sys.exit(
         asyncio.run(

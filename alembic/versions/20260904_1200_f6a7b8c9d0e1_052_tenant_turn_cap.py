@@ -41,6 +41,13 @@ turn_count = turn_count + 1 WHERE turn_count < :cap RETURNING turn_count``. An
 empty RETURNING *is* the refusal, so two concurrent turns at the boundary cannot
 both be admitted, and a refused turn increments nothing.
 
+**Three columns, and no more.** There are no ``created_at``/``updated_at``
+columns here, deliberately: every write after the day's first arrives through
+``ON CONFLICT DO UPDATE``, which does not fire SQLAlchemy's ``onupdate``, so an
+``updated_at`` would freeze at the first turn of the day while looking like it
+tracked the last one. A column that cannot mean what its name says is worse than
+its absence.
+
 RLS: ``organization_turn_usage`` carries ``organization_id`` and is enrolled
 exactly like every other tenanted table (migration 018) — policy with no ``FOR``
 clause, so ``USING`` doubles as ``WITH CHECK`` and a tenant can neither read nor
@@ -85,18 +92,6 @@ def upgrade() -> None:
             "turn_count",
             sa.Integer(),
             server_default=sa.text("0"),
-            nullable=False,
-        ),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("(CURRENT_TIMESTAMP)"),
-            nullable=False,
-        ),
-        sa.Column(
-            "updated_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("(CURRENT_TIMESTAMP)"),
             nullable=False,
         ),
         sa.ForeignKeyConstraint(

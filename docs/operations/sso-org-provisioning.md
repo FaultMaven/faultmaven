@@ -587,7 +587,9 @@ actually ends the session, and it is the one that gets forgotten.
 
 Personal tenants are capped at `TENANT_DAILY_TURN_CAP` (default **30**)
 investigation turns per UTC day; company organizations are uncapped unless given
-an override. A tenant at its cap is refused with a 429 that names the limit and
+an override, and a **single-tenant (self-hosted) deployment is never capped at
+all** — that is decided from the deployment mode, so an install that has not run
+migration 052 keeps serving turns. A tenant at its cap is refused with a 429 that names the limit and
 the reset instant — its reads, its sign-in and the knowledge base are
 unaffected. The design is in
 [SSO Organization Mapping → The daily turn cap](../architecture/security/sso-org-mapping.md#the-daily-turn-cap).
@@ -633,6 +635,11 @@ Raising a cap does **not** give back a day already spent: the ledger holds what
 was used, and the tenant resumes against the new, higher number. Lowering a cap
 below a tenant's standing count refuses its next turn immediately, and the log
 line reports the true count rather than the new limit.
+
+`--show` renders the verdict the enforcement itself resolves (the same
+`CapPolicyResolver` object), so what you read is what the tenant's next turn
+will meet — not a second description of the policy. A soft-deleted organization
+does not resolve at all.
 
 | Code | Meaning |
 |------|---------|

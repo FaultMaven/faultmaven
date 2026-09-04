@@ -2266,6 +2266,46 @@ async def test_every_case_addressed_operation_refuses_the_other_tenant(
     assert_refused(response, f"{method} {path}")
 
 
+async def test_a_refused_cross_tenant_turn_charges_nobodys_daily_allowance(world):
+    """The per-tenant turn cap must not be spendable by probing (ADR-016 D5.3).
+
+    A's turn at B's case is refused by the case check. The cap is charged inside
+    ``InvestigationService.process_turn``, *after* that check, so nothing should
+    be written for either tenant — and this is the case that says so, because
+    when the cap was a route dependency it ran BEFORE the check and the probe
+    above silently spent a unit of A's day on every parametrisation.
+
+    Read back as the OWNER, so "no row" cannot be RLS hiding one.
+
+    What this case can and cannot see: it catches the cap being charged at the
+    ROUTE (a dependency, ahead of the case lookup), which is the shape it
+    replaced. It cannot see the reservation being hoisted *within*
+    ``process_turn``, because this module wires a tripwire investigation service
+    and no request here reaches the real one — that placement is pinned by
+    ``tests/unit/modules/agent/test_turn_cap_reservation.py`` instead.
+    """
+    path = f"/api/v1/cases/{world.b.case.case_id}/turns"
+    response = await as_a(world, "POST", path, data={"query": "probe"})
+    assert_refused(response, f"POST {path}")
+
+    async with world.superuser_engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                text(
+                    "SELECT organization_id, turn_count "
+                    "FROM organization_turn_usage "
+                    "WHERE organization_id IN (:a, :b)"
+                ),
+                {"a": world.a.org_id, "b": world.b.org_id},
+            )
+        ).fetchall()
+
+    assert rows == [], (
+        "a refused cross-tenant turn wrote a usage row — the cap is being "
+        f"charged before the case check: {rows}"
+    )
+
+
 async def test_report_generation_by_case_id_refuses_the_other_tenant(world):
     """``POST /reports/generate?case_id=...`` — the case id rides in the query.
 

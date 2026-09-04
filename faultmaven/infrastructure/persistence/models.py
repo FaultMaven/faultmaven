@@ -459,21 +459,27 @@ class OrganizationMemberModel(Base):
 class OrganizationTurnUsageModel(Base):
     """Investigation turns accepted for one organization on one UTC day.
 
-    The ledger behind the per-tenant turn cap (ADR-016 D5.3). One row per
-    ``(organization_id, usage_date)``; ``usage_date`` is a **UTC calendar day**,
-    not a rolling window, because that is what the refusal message promises the
-    user ("resets at 00:00 UTC") and a sliding window could not honour it.
+    The ledger behind the per-tenant turn cap (ADR-016 D5.3). ``usage_date`` is
+    a **UTC calendar day**, not a rolling window, because that is what the
+    refusal message promises the user ("resets at 00:00 UTC") and a sliding
+    window could not honour it.
 
-    The composite primary key is load-bearing rather than incidental: it is what
-    lets the reservation be a single ``INSERT … ON CONFLICT … DO UPDATE SET
-    turn_count = turn_count + 1 WHERE turn_count < :cap RETURNING turn_count``.
-    An empty RETURNING *is* the refusal, so the check and the increment cannot
-    interleave and a refused turn increments nothing.
+    Three columns, and no more. The composite primary key is what lets the
+    reservation be a single ``INSERT … ON CONFLICT … DO UPDATE SET turn_count =
+    turn_count + 1 WHERE turn_count < :cap RETURNING turn_count``: an empty
+    RETURNING *is* the refusal, so the check and the increment cannot interleave
+    and a refused turn increments nothing. There are deliberately no
+    ``created_at``/``updated_at`` columns — every write after the first arrives
+    through ``ON CONFLICT DO UPDATE``, which does not fire SQLAlchemy's
+    ``onupdate``, so a timestamp here would freeze at the day's first turn while
+    looking like it tracked the last one.
 
-    Rows are written for **every** tenant, capped or not. A company tenant is
-    never refused by the cap, but its counts are what the owner tunes the
-    default against — a ledger that only recorded refusable tenants could not
-    answer "what does a normal tenant actually use".
+    Rows are written for **every** tenant a cap decision reaches, capped or not.
+    A company tenant is never refused, but its counts are what the owner tunes
+    the default against — a ledger that only recorded refusable tenants could
+    not answer "what does a normal tenant actually use". A single-tenant
+    deployment writes nothing at all: it is answered from the deployment mode
+    before any port is touched.
 
     Tenanted (migration 018's pattern, enrolled by migration 052): a tenant can
     neither read nor write another tenant's row.
@@ -488,15 +494,6 @@ class OrganizationTurnUsageModel(Base):
     )
     usage_date = Column(Date, primary_key=True)
     turn_count = Column(Integer, nullable=False, server_default=text("0"), default=0)
-    created_at = Column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-    updated_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
 
     __table_args__ = (
         CheckConstraint("turn_count >= 0", name="organization_turn_usage_non_negative"),

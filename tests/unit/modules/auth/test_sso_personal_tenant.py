@@ -320,6 +320,14 @@ class FakePersonalOrgRepository(ISSOPersonalOrgRepository):
         self.count_calls.append((provider, since))
         return self.minted_last_hour
 
+    async def is_personal_organization(self, organization_id):
+        # The inverse lookup the turn cap asks (#1045 / ADR-016 D5.3). Answered
+        # from the same rows, so a fake that drifts from the real adapter's
+        # notion of "personal" cannot pass here.
+        return any(
+            record.organization_id == organization_id for record in self.rows.values()
+        )
+
     async def provision(
         self, *, provider, provider_user_id, provider_org_id, name, slug
     ):

@@ -1,37 +1,27 @@
-"""One door, and a gate that fails when a second one appears (ADR-016 D5.3).
+"""One door for an investigation turn, and a gate that fails when a second appears.
 
-The per-tenant turn cap is enforced in exactly one place —
-``POST /cases/{case_id}/turns``, through
-``modules/case/api/turn_cap.enforce_tenant_turn_cap``. That is only a bound on
-spend while it stays true, and "it is true today" is not a property a reader can
-check. So this module asks the **running application** two questions on every
-run:
+The per-tenant turn cap is charged inside
+``InvestigationService.process_turn`` (ADR-016 D5.3), so the invariant "every
+turn is bounded" holds for every caller of that service **by construction** —
+no route can forget a dependency, because there is none to forget.
 
-1. Which operations can accept an investigation turn? Every one of them must be
-   classified in :data:`TURN_SURFACE_INVENTORY` — as capped, or as exempt with a
-   stated reason. A turn-accepting route added tomorrow fails this module until
-   somebody decides which it is.
-2. Does every operation classified as capped actually carry the guard, and does
-   no other operation carry it? The second half is not symmetry for its own
-   sake: the guard *reserves a turn*, so a copy of it landing on a read would
-   spend the tenant's allowance on reading, and invariant 1's promise that reads
-   and sign-in keep working at the cap would quietly stop being true.
-
-Modelled on ``tests/integration/security/test_two_tenant_surface_probe.py``'s
-``test_every_tenant_scoped_route_is_in_the_inventory``, and for the same reason:
-it is the only kind of assertion here that cannot rot silently, because it reads
-the live surface rather than a list written when the module was.
+That leaves one thing worth asserting at the HTTP surface, and it is the reason
+this module still exists: *how many ways in are there?* If a second operation
+ever reaches the investigation service, the cap still bounds it — but the
+product has grown a surface nobody costed, and the person adding it should have
+to say so. So this asks the **running application**, through two independent
+detectors, and requires every operation either flags to carry a recorded
+verdict.
 
 Two detectors, deliberately
 ---------------------------
-**Shape**, from the OpenAPI document: an operation whose success response is a
-``TurnResponse``, or whose request body carries the turn form fields, or whose
-path ends in ``/turns``. **Reachability**, from the route objects: an operation
-whose handler can reach ``InvestigationService.process_turn``, through a
-declared dependency or an import in its body. Either one alone has a blind spot
-— a new route could consume a turn while returning a different model, or could
-reach the service through a name this file has never heard of — and a route
-flagged by either must be classified.
+**Shape**, from the live OpenAPI document: an operation whose success response
+is a ``TurnResponse``, whose request body carries the turn form fields, or whose
+path ends in ``/turns``. **Reachability**, from the live route objects: a
+handler that can reach the investigation service through a declared dependency
+or an import in its body. Either alone has a blind spot — a new route could
+consume a turn while returning a different model, or reach the service through a
+name this file has never heard of.
 
 The reachability half walks the routers listed in ``MOUNTS``, which this module
 **imports** from the read-cost probe rather than copying: that table is asserted
@@ -50,14 +40,6 @@ import textwrap
 
 import pytest
 
-from faultmaven.modules.case.api.turn_cap import enforce_tenant_turn_cap
-
-# The routers mounted in ``main.py``, imported from the read-cost probe rather
-# than copied. That is the point rather than convenience: a second table here
-# would drift on its own, and ``test_the_mount_table_matches_main`` — which
-# asserts THIS object against ``main.py``'s own ``include_router`` calls — would
-# keep passing while this module quietly stopped seeing a whole router. One
-# table, one guard.
 from tests.unit.api.middleware.test_rate_limit_read_cost_classification import (
     MOUNTS as _MOUNTS,
 )
@@ -70,31 +52,31 @@ _EXEMPT = "exempt"
 
 #: Every operation that can accept an investigation turn, and what guards it.
 #:
-#: The inventory is tiny because the surface is: one route consumes a turn.
-#: Entries are ``(method, path) -> (verdict, reason)``; a verdict of ``capped``
-#: additionally requires the guard to be present in that route's dependency
-#: tree, which is asserted separately.
+#: Entries are ``(method, path) -> (verdict, reason)``. A verdict of ``capped``
+#: means the operation reaches ``process_turn`` and is therefore bounded by the
+#: reservation inside it; ``exempt`` means the probe flagged it but it consumes
+#: no turn, and the reason has to say why.
 TURN_SURFACE_INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     ("POST", "/api/v1/cases/{case_id}/turns"): (
         _CAPPED,
         "the single entry point: every client — Copilot, Dashboard, the Slack "
         "agent, any API caller — submits turns here, and it is the only route "
-        "that reaches InvestigationService.process_turn.",
+        "that reaches InvestigationService.process_turn, where the reservation "
+        "is taken.",
     ),
     ("PATCH", "/api/v1/cases/{case_id}/evidence/{evidence_id}/classification"): (
         _EXEMPT,
-        "flagged by reachability because it holds the investigation service, but "
-        "it calls reclassify_evidence, not process_turn: it re-runs the Tier 0/1 "
-        "mechanical preprocessor over bytes already stored, consumes no turn "
-        "number and reaches no model. It is also off by default "
-        "(FAULTMAVEN_RECLASSIFY_ENABLED). Capping it would charge a tenant's "
-        "daily allowance for correcting the classifier's mistake.",
+        "flagged by reachability because it holds the investigation service, "
+        "but it calls reclassify_evidence, not process_turn: it re-runs the "
+        "Tier 0/1 mechanical preprocessor over bytes already stored, consumes "
+        "no turn number and reaches no model. It is also off by default "
+        "(FAULTMAVEN_RECLASSIFY_ENABLED). Charging it would bill a tenant for "
+        "correcting the classifier's mistake.",
     ),
 }
 
-#: Request-body fields that only a turn submission carries. ``query`` alone is
-#: deliberately NOT here — it is a search parameter on several read routes, and
-#: including it would make this detector fire on things that consume nothing.
+#: Request-body fields only a turn submission carries. ``query`` alone is
+#: deliberately NOT here — it is a search parameter on several read routes.
 _TURN_BODY_FIELDS = frozenset({"pasted_content", "intent_type", "intent_data"})
 
 #: The response model a turn produces.
@@ -209,8 +191,7 @@ def turn_reaching_routes() -> dict[tuple[str, str], str]:
                 continue
             for method in getattr(route, "methods", None) or set():
                 # HEAD and OPTIONS are added by the framework for a declared GET
-                # and are not separate operations; counting them would put a
-                # phantom entry in the inventory for every flagged read.
+                # and are not separate operations.
                 if method.upper() in ("HEAD", "OPTIONS"):
                     continue
                 found[(method.upper(), prefix + route.path)] = ",".join(sorted(hits))
@@ -231,127 +212,31 @@ def flagged_operations(spec) -> dict[tuple[str, str], str]:
     return merged
 
 
-def guarded_routes() -> set[tuple[str, str]]:
-    """Every mounted route carrying ``enforce_tenant_turn_cap``."""
-    guarded: set[tuple[str, str]] = set()
-    for prefix, module_name in _MOUNTS:
-        router = importlib.import_module(module_name).router
-        for route in router.routes:
-            if enforce_tenant_turn_cap not in _dependency_calls(route):
-                continue
-            for method in getattr(route, "methods", None) or set():
-                guarded.add((method.upper(), prefix + route.path))
-    return guarded
+def test_the_turn_surface_is_exactly_what_is_recorded(spec):
+    """One equality, both directions.
 
-
-# =============================================================================
-# The inventory cannot rot silently
-# =============================================================================
-
-
-def test_every_turn_accepting_operation_is_in_the_inventory(spec):
-    """Invariant 4. A second door fails this module until somebody classifies it.
-
-    Both directions, on purpose. An operation missing from the inventory is an
-    unguarded way to spend a tenant's compute. An inventory entry naming an
-    operation the app no longer exposes is a guard aimed at nothing — which,
+    An operation either probe flags and the inventory does not name is an
+    uncosted way into the investigation engine. An inventory entry neither probe
+    flags any more is a verdict about a route that no longer exists — which,
     left alone, is a green test asserting nothing about anything.
+
+    It is one assertion rather than the three it used to be because the cap no
+    longer lives on the routes: with the reservation inside ``process_turn``
+    there is no per-route guard to check for presence or absence, and asking
+    "which routes carry the dependency" would now be asking about a thing that
+    does not exist.
     """
     live = flagged_operations(spec)
 
-    unclassified = {
-        key: why for key, why in live.items() if key not in TURN_SURFACE_INVENTORY
-    }
-    assert not unclassified, (
-        "these operations look like they accept an investigation turn and are "
-        "not in TURN_SURFACE_INVENTORY. Guard them with "
-        "enforce_tenant_turn_cap and record them as capped, or add an entry "
-        "saying why they cost a tenant nothing:\n"
-        + "\n".join(
-            f"  {m} {p}  ({why})" for (m, p), why in sorted(unclassified.items())
-        )
+    assert set(live) == set(TURN_SURFACE_INVENTORY), (
+        "the turn-accepting surface has changed.\n"
+        "  flagged but not recorded: "
+        + str(sorted(set(live) - set(TURN_SURFACE_INVENTORY)))
+        + "\n  recorded but no longer flagged: "
+        + str(sorted(set(TURN_SURFACE_INVENTORY) - set(live)))
+        + "\nRecord a new operation as capped (it reaches process_turn and is "
+        "bounded by the reservation there) or as exempt, with the reason."
     )
-
-    stale = sorted(set(TURN_SURFACE_INVENTORY) - set(live))
-    assert not stale, (
-        "these TURN_SURFACE_INVENTORY entries name operations neither probe "
-        "flags any more — the route was renamed or removed, and the verdict is "
-        "now a guard aimed at nothing:\n" + "\n".join(f"  {m} {p}" for m, p in stale)
-    )
-
-
-def test_every_route_that_can_reach_the_turn_service_is_in_the_inventory():
-    """The detector the OpenAPI shape cannot be: reachability.
-
-    A route could consume a turn while returning some other model and taking a
-    body this file has never seen — the shape probe would miss it entirely. This
-    asks the route objects instead: can the handler get at the investigation
-    service at all, through a declared dependency or an import in its body?
-    """
-    reaching = turn_reaching_routes()
-    assert reaching, "the reachability probe resolved no routes at all"
-
-    unclassified = {
-        key: why for key, why in reaching.items() if key not in TURN_SURFACE_INVENTORY
-    }
-    assert not unclassified, (
-        "these routes can reach the investigation service and are not "
-        "classified in TURN_SURFACE_INVENTORY:\n"
-        + "\n".join(
-            f"  {m} {p}  ({why})" for (m, p), why in sorted(unclassified.items())
-        )
-    )
-
-
-def test_every_capped_operation_actually_carries_the_guard():
-    """A verdict of "capped" has to be a fact about the running app.
-
-    Read off the route's dependency tree rather than by grepping the handler:
-    the guard is declared as a route dependency precisely so this question has
-    a structural answer.
-    """
-    expected = {
-        key
-        for key, (verdict, _) in TURN_SURFACE_INVENTORY.items()
-        if verdict == _CAPPED
-    }
-    guarded = guarded_routes()
-
-    missing = sorted(expected - guarded)
-    assert not missing, (
-        "these operations are recorded as capped but do not carry "
-        f"enforce_tenant_turn_cap: {missing}"
-    )
-
-
-def test_the_guard_is_on_no_other_operation(spec):
-    """Invariant 1's other half, structurally.
-
-    The guard RESERVES a turn, so it is not a harmless thing to over-apply: a
-    copy on a read route would spend the tenant's daily allowance on reading,
-    and "reads and sign-in keep working at the cap" would stop being true
-    without a single test failing. So the guarded set must be exactly the capped
-    set — and, said again in the terms the promise is made in, must contain no
-    read and no auth route.
-    """
-    expected = {
-        key
-        for key, (verdict, _) in TURN_SURFACE_INVENTORY.items()
-        if verdict == _CAPPED
-    }
-    guarded = guarded_routes()
-
-    unexpected = sorted(guarded - expected)
-    assert not unexpected, (
-        "these operations carry the turn cap guard but are not recorded as "
-        f"capped — each one now spends a tenant's daily allowance: {unexpected}"
-    )
-
-    reads = sorted((m, p) for (m, p) in guarded if m in {"GET", "HEAD", "OPTIONS"})
-    assert not reads, f"a read operation reserves a turn: {reads}"
-
-    auth = sorted((m, p) for (m, p) in guarded if "/auth" in p)
-    assert not auth, f"an authentication operation reserves a turn: {auth}"
 
 
 def test_each_inventory_entry_states_a_reason_somebody_wrote():
@@ -361,13 +246,8 @@ def test_each_inventory_entry_states_a_reason_somebody_wrote():
         assert len(reason) > 40, f"{key} carries no real reason: {reason!r}"
 
 
-def test_exactly_one_operation_is_capped():
-    """States the claim the design rests on, so a widening is visible in a diff.
-
-    Not "the inventory has one entry" — it may grow exemptions, and each of
-    those is a decision somebody recorded. The claim is narrower and is the one
-    the cap's soundness depends on: exactly one operation spends a turn.
-    """
+def test_exactly_one_operation_consumes_a_turn():
+    """States the claim the design rests on, so a widening is visible in a diff."""
     capped = {
         key
         for key, (verdict, _) in TURN_SURFACE_INVENTORY.items()

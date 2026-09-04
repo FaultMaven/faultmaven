@@ -104,6 +104,8 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+from faultmaven.cli._confirmation import require_confirmation
+
 #: argparse's ``description``. A literal, not derived from ``__doc__``: ``python
 #: -OO`` strips docstrings, and that expression would raise before argparse ran.
 _SUMMARY = (
@@ -733,21 +735,11 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Same reasoning as fm-remove-org-member: the two invocations differ by one
-    # flag, so an operator editing the previous command can end up with both, and
-    # silently taking the dry-run branch would exit 0 and read as "moved".
-    if args.dry_run and args.yes:
-        parser.error(
-            "--dry-run and --yes are mutually exclusive: pass --dry-run to "
-            "preview, --yes to write."
-        )
-    if not args.dry_run and not args.yes:
-        print(
-            "❌ Refusing to run without --yes. This changes who owns these cases "
-            "and who can see them.\n"
-            "   Use --dry-run first to see what would change."
-        )
-        sys.exit(1)
+    require_confirmation(
+        parser,
+        args,
+        "This changes who owns these cases and who can see them.",
+    )
 
     sys.exit(
         asyncio.run(

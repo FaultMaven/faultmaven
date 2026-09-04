@@ -9,7 +9,6 @@ import asyncio
 import logging
 import re
 import time
-import uuid
 from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import Request, Response
@@ -80,21 +79,6 @@ READ_ONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 EXPENSIVE_READ_PATTERNS = (
     # Runbook similarity search over the knowledge base.
     re.compile(r"^/api/v1/cases/[^/]+/report-recommendations/?$"),
-)
-
-
-# ``request.state`` attribute an inner enforcer sets to say "this request was
-# refused and ran none of the work these windows meter". Only the per-session
-# WRITE pair is released; ``global`` keeps its entry, because that window bounds
-# request volume and a refused caller still generated a request. The name is
-# shared with ``modules/case/api/turn_cap.py``, its one live setter — kept as a
-# constant on both sides rather than a literal, so a rename cannot silently turn
-# the release into a no-op that nothing fails on.
-REFUND_MARKER_ATTR = "rate_limit_refund"
-
-# Which windows a refund gives back. Not ``global``: see above.
-REFUNDABLE_LIMIT_TYPES = frozenset(
-    {LimitType.PER_SESSION, LimitType.PER_SESSION_HOURLY}
 )
 
 
@@ -387,54 +371,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # ``limit == 0``). Only a fail-CLOSED deployment re-raises, and there the
         # request is refused rather than served.
         if results is not None:
-            await self._refund_if_marked(request)
             self._add_rate_limit_headers(results, request, response)
             self._update_metrics(check_duration, blocked=False)
 
         return response
-
-    async def _refund_if_marked(self, request: Request) -> None:
-        """Give back the LLM-compute quota a no-compute refusal consumed.
-
-        The counterpart to ``request.state.rate_limit_results``: that attribute
-        is the inbox an inner enforcer publishes *through*, this is the flag an
-        inner enforcer refuses *with*. The per-tenant turn cap
-        (``modules/case/api/turn_cap.py``) is the one live setter — a turn it
-        refused ran no model, and ``per_session``/``per_session_hourly`` exist
-        to bound model spend, so leaving the entry there would meter one event
-        against two independent quotas and let a capped tenant throttle its own
-        reads by retrying.
-
-        Deliberately narrow in three ways. It runs only where a check actually
-        happened (``results is not None``); it releases only the per-session
-        write pair, never ``global``, which bounds request volume rather than
-        compute; and it removes only this request's own member, so it can widen
-        a window by exactly one entry and nothing else.
-
-        What it does NOT do is rewrite the headers. ``results`` was measured
-        during the check, so a refunded response still advertises the count that
-        included this request — one entry pessimistic, for one response, on a
-        path the client is being told to retry tomorrow anyway. Recomputing them
-        would cost a second Redis round trip on the refusal path to correct a
-        number by one.
-        """
-        if not getattr(request.state, REFUND_MARKER_ATTR, False):
-            return
-        ticket = getattr(request.state, "rate_limit_ticket", None)
-        if not ticket:
-            return
-
-        specs, member = ticket
-        refundable = [
-            spec for spec in specs if spec.limit_type in REFUNDABLE_LIMIT_TYPES
-        ]
-        if not refundable:
-            return
-
-        try:
-            await self.rate_limiter.release(refundable, member)
-        except Exception as e:  # pragma: no cover - release is already non-raising
-            self.logger.warning("Rate limit refund failed: %s: %s", type(e).__name__, e)
 
     def _may_serve_without_a_limiter(self) -> bool:
         """Whether a request that would be limited may be served with no client.
@@ -664,10 +604,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # ``global`` is keyed on the client address and covers unauthenticated
         # traffic; the session pair is keyed on the session and bounded by it.
         specs = [RateLimitSpec(key=client_ip, limit_type=LimitType.GLOBAL)]
-        # One member for the whole request, generated HERE rather than inside
-        # the limiter, so this request's entries have a name the way out can
-        # still use. See ``_refund_if_marked``.
-        member = uuid.uuid4().hex
 
         if session_id:
             if self._read_limits_configured and is_cheap_read(
@@ -682,20 +618,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             specs.append(RateLimitSpec(key=session_id, limit_type=per_minute_type))
             specs.append(RateLimitSpec(key=session_id, limit_type=hourly_type))
 
-        results = await self.rate_limiter.check_rate_limits(specs, member=member)
-
-        # The ticket, not the verdict. ``dispatch``'s docstring explains why the
-        # verdict comes back as a value instead of via ``request.state``: a
-        # stash written as the checks ran could describe a decision only
-        # partially. This is the opposite shape — written after every window has
-        # been decided, and recording what was CONSUMED rather than what was
-        # decided.
-        #
-        # It is written on a refused request too, and that costs nothing: the
-        # raise below leaves ``dispatch`` without ever calling ``call_next``, so
-        # the release path is unreachable for it — and a refusal inserts nothing
-        # into any window, so there would be nothing to give back.
-        request.state.rate_limit_ticket = (tuple(specs), member)
+        results = await self.rate_limiter.check_rate_limits(specs)
 
         for result in results:
             if not result.allowed:

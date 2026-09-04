@@ -447,79 +447,105 @@ Which tenants are capped:
 
 | tenant | override | cap |
 | --- | --- | --- |
+| **single-tenant deployment** | any | **uncapped, decided without a query** |
 | personal | none | `TENANT_DAILY_TURN_CAP` (default **30**) |
 | company | none | **uncapped** |
 | either | `0` | uncapped, explicitly |
 | either | `N > 0` | N turns per UTC day |
 
-Company organizations are uncapped by default because the cap exists to bound
-what *self-service* can spend, not to meter customers. "Personal" is not a flag:
-it is the existence of an `sso_personal_orgs` row naming the organization, so
-the question is answered by the same table the JIT path writes and needs no
-second source of truth. The Standalone sentinel of a self-hosted deployment has
-no such row, so a self-hosted install is uncapped.
+Single-tenant is answered from the deployment mode before either port is
+touched. A self-hosted install has one organization, pays for its own compute,
+and is not what D5.3 exists to bound — and deciding it this way means an install
+running with `RUN_STARTUP_MIGRATIONS=false` keeps working instead of losing
+every turn to a usage-allowance message it could never have earned.
 
-**Where it is enforced.** `POST /cases/{case_id}/turns` — the one route that
-reaches `InvestigationService.process_turn`, and the route every client uses
-(Copilot, Dashboard, the Slack agent, any API caller). The guard is declared as
-a route dependency (`modules/case/api/turn_cap.enforce_tenant_turn_cap`) rather
-than called from inside the handler, so it is part of the route's signature.
-`tests/integration/api/test_turn_cap_surface_inventory.py` reads the live
-OpenAPI document and the live route objects on every run and fails when a second
-turn-accepting operation appears without a verdict.
+Company organizations are uncapped by default because the cap bounds what
+*self-service* can spend, not customers. "Personal" is not a flag: it is the
+existence of an `sso_personal_orgs` row naming the organization, asked through
+`ISSOPersonalOrgRepository.is_personal_organization` so no caller outside the
+auth module knows that table's shape.
 
-**The ledger.** `organization_turn_usage`, one row per (organization, UTC day),
-RLS-tenanted like every other table carrying `organization_id`. The reservation
-is a single statement — `INSERT … ON CONFLICT … DO UPDATE SET turn_count =
-turn_count + 1 WHERE turn_count < :cap RETURNING turn_count` — so the check and
-the increment cannot interleave, and an empty `RETURNING` *is* the refusal.
-Consequently **a refused turn increments nothing**. A table rather than a Redis
-counter because ADR-016 D5.3 requires the cap to fail closed: a counter whose
-store can be unavailable fails open, and a Redis blip would silently un-cap every
-tenant until it healed. The turn cannot be served without this database anyway.
+**Where it is charged.** Inside `InvestigationService.process_turn`, after the
+case is loaded, after the access check, and before attachment preprocessing.
+The position is the decision:
 
-Usage is recorded for **every** tenant, capped or not — a company tenant is
-never refused, but its counts are what the default is tuned against.
+- everything that can refuse the request for a reason other than "you have spent
+  your day" has already run — the route's validation (400/413/422), its case
+  lookup (404) and the closed-case check (409) — so a malformed turn, a turn to
+  a case that does not exist, and a **probe at another tenant's case id** all
+  cost nothing;
+- it is ahead of classification and extraction, so a capped tenant does not have
+  its files written to storage for a turn that will not run;
+- and the invariant holds for **every** caller of the service by construction,
+  rather than for every caller that remembered a route dependency.
+
+`tests/integration/api/test_turn_cap_surface_inventory.py` remains as the
+secondary check: it reads the live OpenAPI document *and* the live route objects
+on every run and fails when an operation that can reach the investigation
+service appears without a recorded verdict.
+
+**The ledger.** `organization_turn_usage`, RLS-tenanted, **three columns** —
+organization, UTC day, count. There is no `created_at`/`updated_at`: every write
+after the day's first arrives through `ON CONFLICT DO UPDATE`, which does not
+fire SQLAlchemy's `onupdate`, so a timestamp would freeze at the first turn
+while looking like it tracked the last. The reservation is a single statement —
+`INSERT … ON CONFLICT … DO UPDATE SET turn_count = turn_count + 1 WHERE
+turn_count < :cap RETURNING turn_count` — so the check and the increment cannot
+interleave, and an empty `RETURNING` *is* the refusal. Consequently **a refused
+turn increments nothing**. A table rather than a Redis counter because D5.3
+requires the cap to fail closed: a counter whose store can be unavailable fails
+open, and a Redis blip would silently un-cap every tenant until it healed.
+
+The ledger is a **port** (`ITurnLedger`) with a SQL implementation and an
+in-memory one. The in-memory one is not a convenience: it is what lets the
+enforcement be exercised in unit tests instead of blanked out because it happens
+to need a database.
+
+Usage is recorded for every tenant a cap decision reaches, capped or not — a
+company tenant is never refused, but its counts are what the default is tuned
+against.
 
 **At the cap** the turn is refused with **429**, `x-error-code:
-TENANT_TURN_CAP_EXCEEDED`, a `Retry-After` naming the next UTC midnight, and a
-message that states the limit, that it is daily, when it returns, and that
-reading cases and the knowledge base is unaffected. Nothing else is refused:
-sign-in, every read, case listing and the knowledge base carry no such guard,
-and the surface-inventory test asserts that the guard is on no read and no auth
-operation — the guard *reserves* a turn, so over-applying it would spend the
-allowance on reading.
+TENANT_TURN_CAP_EXCEEDED`, a `Retry-After` naming the next UTC midnight
+(rounded by the same `window_math` helper the rate limiter uses), and a message
+that states the limit, that it is daily, when it returns, and that reading cases
+and the knowledge base is unaffected. `x-error-code` is in
+`cors_expose_headers`, because the built-in Dashboard panel is a cross-origin
+caller and this header is the only thing distinguishing "come back tomorrow"
+from the rate limiter's "slow down".
 
-**A refusal costs no LLM-compute quota.** `per_session` and
-`per_session_hourly` exist to bound model spend (see
-[Rate limiting](rate-limiting-sliding-window.md#releasing-a-request-that-cost-nothing));
-a turn this cap refused reached no model, so the guard marks the request and the
-rate-limit middleware releases that request's own entry from those two windows on
-the way out. The address-keyed `global` window keeps its entry — it bounds
-request volume, which a refused caller still generates.
+Nothing else is refused: sign-in, every read, case listing and the knowledge
+base never reach `process_turn`. A capped tenant also keeps its reading
+throughput — since fm#994 reads sit on their own per-session rate-limit windows,
+so a refused turn cannot exhaust the quota a caller needs to look at its own
+cases.
 
-**Failure direction.** If the personal/company question cannot be answered — the
-lookup raises, the table is missing on a half-migrated deployment — the tenant
-is treated as **personal** and capped at the default. The other direction is
-exactly what ADR-016 D5.3 exists to prevent, and it is the one a partial rollout
-would take by accident. If the reservation itself cannot be written, the turn is
-refused with **503** and `x-error-code: TENANT_TURN_CAP_UNAVAILABLE` — a
-distinct answer from the 429, because telling somebody their daily allowance is
-spent when the ledger merely failed to write is a false statement about their
-own account.
+**Failure direction.** Whichever question cannot be answered — the tenant's kind
+or its override — the tenant is capped at `TENANT_DAILY_TURN_CAP`. An unreadable
+*override* is emphatically not "no override": a company tenant carrying an
+override of 50 would otherwise degrade to uncapped on a failed read, the exact
+inversion D5.3 exists to prevent. If the reservation itself cannot be written
+the turn is refused with **503** and `x-error-code:
+TENANT_TURN_CAP_UNAVAILABLE` — a distinct answer from the 429, because telling
+somebody their daily allowance is spent when the ledger merely failed to write
+is a false statement about their own account.
+
+**The clock is sampled once** per reservation and both the charged day and the
+reset instant derive from it, so a turn refused at 23:59:59.98 cannot be charged
+to day D and told to return at the midnight after D+1.
 
 **The unit is consumed when the turn is accepted**, before the model runs, and
 is not refunded if the turn later fails. Refunding would be a free-retry channel
-for anyone who can make a turn fail. The guard runs as a route dependency, so a
-turn the handler would itself have refused — no query and no attachment, an
-unknown case, a closed case — also consumes a unit; the cost falls on the tenant
-that sent the malformed request.
+for anyone who can make a turn fail.
 
 **The operator control** is `fm-set-turn-cap`, which writes
-`organizations.daily_turn_cap`. The value is read from the row on every turn, so
-raising or clearing one tenant's cap takes effect on its **next turn**, with no
-restart and no redeploy. `TENANT_DAILY_TURN_CAP` itself is an ordinary setting
-and moves only with a redeploy. See
+`organizations.daily_turn_cap` through the organization repository and renders
+its `--show` output from the same `CapPolicyResolver` the enforcement uses — so
+an operator reads the verdict the next turn will meet rather than a second
+description of the policy. The value is read on every turn, so raising or
+clearing one tenant's cap takes effect on its **next turn**, with no restart and
+no redeploy. `TENANT_DAILY_TURN_CAP` itself is an ordinary setting and moves
+only with a redeploy. See
 [the operator runbook](../../operations/sso-org-provisioning.md#changing-one-tenants-daily-turn-cap).
 
 ### Switching to a company organization (ADR-016 D5 as amended)

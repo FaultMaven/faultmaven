@@ -17,6 +17,7 @@ from datetime import UTC, datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from faultmaven.config.tenant_context import get_current_org_id
 from faultmaven.core.investigation.case_telemetry import (
     TELEMETRY_HANDOFF_KEY,
     TurnPath,
@@ -61,6 +62,9 @@ from faultmaven.infrastructure.observability.evidence_metrics import (
     EVIDENCE_RECLASSIFICATION_TOTAL,
 )
 from faultmaven.infrastructure.observability.tracing import trace
+from faultmaven.infrastructure.protection.tenant_turn_cap import (
+    TenantTurnCapError,
+)
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import (
     AttachmentResult,
@@ -1166,6 +1170,7 @@ class InvestigationService:
         case_repository: CaseRepository,
         preprocessing_service=None,
         file_storage_service=None,
+        turn_cap=None,
     ):
         """
         Initialize investigation service.
@@ -1175,16 +1180,34 @@ class InvestigationService:
             case_repository: Case persistence layer
             preprocessing_service: Classification and extraction pipeline
             file_storage_service: Raw file storage (local/S3)
+            turn_cap: Per-tenant daily turn cap (ADR-016 D5.3). Left ``None``
+                by every caller that does not care: the default is built once,
+                lazily, and under single-tenant it answers "uncapped" from the
+                deployment mode without touching a port — so a test that never
+                heard of the cap neither reaches a database nor has to blank a
+                guard out to get its turn served.
         """
         self.engine = milestone_engine
         self.repository = case_repository
         self.preprocessing_service = preprocessing_service
         self.file_storage_service = file_storage_service
+        self._turn_cap = turn_cap
         self.intent_resolver = IntentResolver(milestone_engine.llm_provider)
         # Fail-fast: refuse to construct if the intent dispatch table is
         # missing any IntentType value (or vice-versa). The system cannot
         # honor the API contract if it can't route every advertised intent.
         _validate_intent_dispatch_completeness()
+
+    @property
+    def turn_cap(self):
+        """The cap service, built on first use if nobody injected one."""
+        if self._turn_cap is None:
+            from faultmaven.infrastructure.protection.tenant_turn_cap import (
+                UnconfiguredTurnCap,
+            )
+
+            self._turn_cap = UnconfiguredTurnCap()
+        return self._turn_cap
 
     @trace("investigation_service_process_turn")
     async def process_turn(
@@ -1246,6 +1269,28 @@ class InvestigationService:
                 raise PermissionDeniedException(
                     f"User {user_id} not authorized for case {case_id}"
                 )
+
+            # ── The per-tenant daily turn cap (ADR-016 D5.3) ──
+            # HERE, and the position is the decision. Everything that can refuse
+            # this request for a reason that is not "you have spent your day"
+            # has already run: the route's own validation (no query and no
+            # attachment → 400, oversize → 413, unknown intent → 422, a closed
+            # case → 409), the route's case lookup, and the two refusals
+            # immediately above. So a malformed turn, a probe at another
+            # tenant's case id, and a turn to a case that does not exist all
+            # cost the tenant nothing — where a route-level guard charged them
+            # a unit each, and a cross-tenant probe charged the *prober*.
+            #
+            # And it is before STEP 1, which classifies and preprocesses every
+            # attachment: a capped tenant must not have its files extracted and
+            # written to storage for a turn that will not run.
+            #
+            # In the service rather than at the route because this is where the
+            # invariant actually lives: every caller of ``process_turn`` is
+            # bounded by construction, rather than every caller having to
+            # remember a dependency. The OpenAPI inventory test remains as the
+            # secondary check that no second HTTP door appears.
+            await self.turn_cap.reserve(get_current_org_id())
 
             next_turn = case.current_turn + 1
 
@@ -1961,13 +2006,18 @@ class InvestigationService:
             NotFoundError,
             PermissionDeniedException,
             StaleCaseException,
+            TenantTurnCapError,
             ValidationException,
         ):
             # NotFoundError → 404, PermissionDeniedException → 403,
-            # StaleCaseException → 409, ValidationException → 422.
+            # StaleCaseException → 409, TenantTurnCapExceeded → 429,
+            # TenantTurnCapUnavailable → 503, ValidationException → 422.
             # All must pass through unwrapped so the FastAPI exception
             # handlers can map them to the correct HTTP status; wrapping
             # them in ServiceException would mask the contract error as 500.
+            # The cap pair is here for exactly that reason: wrapped, a
+            # capped tenant would be told its turn failed with a 500 and the
+            # route's 429 arm would be unreachable code.
             #
             # #1142: these get a row too when the turn was already consumed.
             # StaleCaseException is the case that matters — on an engine-routed

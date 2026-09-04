@@ -126,6 +126,22 @@ class SessionlessSSOPersonalOrgRepository(ISSOPersonalOrgRepository):
         record = await self.get(provider, provider_user_id)
         return record is not None and record.enterprise_id == enterprise_id
 
+    async def is_personal_organization(self, organization_id: str) -> bool:
+        """Whether any subject's personal tenant IS this organization.
+
+        Keyed on ``organization_id``, which the unique ``(provider,
+        organization_id)`` constraint makes at most one row — so ``limit(1)``
+        is the whole query and no provider needs naming: a personal tenant is a
+        personal tenant whichever IdP minted it.
+        """
+        async with get_db_session() as session:
+            stmt = (
+                select(SSOPersonalOrgModel.organization_id)
+                .where(SSOPersonalOrgModel.organization_id == organization_id)
+                .limit(1)
+            )
+            return (await session.execute(stmt)).scalar_one_or_none() is not None
+
     async def count_created_since(self, provider: str, since: datetime) -> int:
         async with get_db_session() as session:
             stmt = select(func.count()).where(

@@ -1,157 +1,105 @@
-"""The per-tenant turn cap's decision, against a real database (ADR-016 D5.3).
+"""The turn cap's decision, through its ports (ADR-016 D5.3).
 
-The mechanism is small and every one of its rules is a claim someone will rely
-on, so this module pins each of them separately: which tenants are capped, what
-an override does, which direction ambiguity falls in, and — the one that makes
-the cap a cap rather than a suggestion — that a refused turn consumes nothing.
+The mechanism is small and every rule in it is a claim someone will rely on, so
+each is pinned separately: which tenants are capped, what an override does,
+which direction each ambiguity falls in, and — the one that makes it a cap
+rather than a suggestion — that a refused turn consumes nothing.
 
-Why a real SQLite engine rather than a mocked session
------------------------------------------------------
-The enforcement *is* one SQL statement: ``INSERT … ON CONFLICT … DO UPDATE SET
-turn_count = turn_count + 1 WHERE turn_count < :cap RETURNING turn_count``. A
-mocked session would assert that this module built the statement it builds,
-which is a restatement rather than a test — the interesting behaviour (an empty
-RETURNING at the boundary, and nothing written) lives in the database. The
-PostgreSQL half of the same behaviour, under RLS and with real concurrency, is
-``tests/integration/security/test_tenant_turn_cap.py``; this half is what the
-standalone lane can run.
+Driven through the real :class:`CapPolicyResolver` and the real
+:class:`TurnCapService` against fakes of the two ports and the in-memory ledger.
+That is the point of the ledger being a port: these cases exercise the
+enforcement rather than a stand-in for it, and they need no database to do it.
+The properties that only a real database can answer — the atomic reservation
+under concurrency, and RLS — are asserted against PostgreSQL in
+``tests/integration/security/test_tenant_turn_cap.py``.
 """
 
 from __future__ import annotations
 
-import contextlib
+import logging
 from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.infrastructure.persistence.models import (
-    Base,
-    EnterpriseModel,
-    OrganizationModel,
-    OrganizationTurnUsageModel,
-    SSOPersonalOrgModel,
-)
 from faultmaven.infrastructure.protection import tenant_turn_cap as cap
+from faultmaven.infrastructure.protection.tenant_turn_cap import (
+    CapPolicyResolver,
+    InMemoryTurnLedger,
+    TenantTurnCapExceeded,
+    TenantTurnCapUnavailable,
+    TurnCapService,
+)
 
 pytestmark = pytest.mark.unit
 
-ENTERPRISE_ID = "33333333-3333-3333-3333-333333333333"
-PERSONAL_ORG = "11111111-1111-1111-1111-111111111111"
-COMPANY_ORG = "22222222-2222-2222-2222-222222222222"
-OTHER_PERSONAL_ORG = "44444444-4444-4444-4444-444444444444"
+PERSONAL = "org-personal"
+OTHER_PERSONAL = "org-personal-2"
+COMPANY = "org-company"
 
 
-def _now():
-    return datetime.now(timezone.utc)
+class FakePersonalOrgs:
+    """The one question the resolver asks of the auth port."""
+
+    def __init__(self, personal=(), error: Exception | None = None):
+        self.personal = set(personal)
+        self.error = error
+        self.asked: list[str] = []
+
+    async def is_personal_organization(self, organization_id):
+        self.asked.append(organization_id)
+        if self.error is not None:
+            raise self.error
+        return organization_id in self.personal
 
 
-@pytest.fixture
-async def engine():
-    eng = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
-    async with eng.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    yield eng
-    await eng.dispose()
+class FakeOrganizations:
+    """The one question the resolver asks of the organization repository."""
 
+    def __init__(self, caps=None, error: Exception | None = None):
+        self.caps = dict(caps or {})
+        self.error = error
+        self.asked: list[str] = []
 
-@pytest.fixture
-async def factory(engine):
-    maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with maker() as session:
-        session.add(
-            EnterpriseModel(
-                enterprise_id=ENTERPRISE_ID,
-                name="Acme",
-                slug="acme",
-                created_at=_now(),
-                updated_at=_now(),
-            )
+    async def get_organization(self, organization_id):
+        self.asked.append(organization_id)
+        if self.error is not None:
+            raise self.error
+        if organization_id not in self.caps:
+            return None
+        return SimpleNamespace(
+            organization_id=organization_id,
+            daily_turn_cap=self.caps[organization_id],
         )
-        for org_id, slug in (
-            (PERSONAL_ORG, "personal-a"),
-            (COMPANY_ORG, "acme-corp"),
-            (OTHER_PERSONAL_ORG, "personal-b"),
-        ):
-            session.add(
-                OrganizationModel(
-                    organization_id=org_id,
-                    enterprise_id=ENTERPRISE_ID,
-                    name=slug,
-                    slug=slug,
-                    is_active=True,
-                    created_at=_now(),
-                    updated_at=_now(),
-                )
-            )
-        # Two personal tenants and one company organization. "Personal" is the
-        # existence of this row and nothing else — the same rule the login path
-        # writes and the enforcement reads, rather than a flag invented here.
-        for subject, org in (("user_a", PERSONAL_ORG), ("user_b", OTHER_PERSONAL_ORG)):
-            session.add(
-                SSOPersonalOrgModel(
-                    provider="workos",
-                    provider_user_id=subject,
-                    organization_id=org,
-                    provider_org_id=f"org_{subject}",
-                    enterprise_id=ENTERPRISE_ID,
-                    created_at=_now(),
-                    updated_at=_now(),
-                )
-            )
-        await session.commit()
-    yield maker
 
 
-@pytest.fixture(autouse=True)
-def bind_sessions(monkeypatch, factory):
-    """Point ``reserve_turn`` at this test's engine.
-
-    ``reserve_turn`` opens its own session through
-    ``persistence.database.get_db_session``; it is imported inside the function,
-    so patching the module attribute is what the call actually resolves.
-    """
-    from faultmaven.infrastructure.persistence import database
-
-    @contextlib.asynccontextmanager
-    async def _session():
-        session = factory()
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
-        finally:
-            await session.close()
-
-    monkeypatch.setattr(database, "get_db_session", _session)
-    return _session
-
-
-async def _set_override(factory, organization_id, value):
-    async with factory() as session:
-        await session.execute(
-            text(
-                "UPDATE organizations SET daily_turn_cap = :v "
-                "WHERE organization_id = :o"
-            ),
-            {"v": value, "o": organization_id},
-        )
-        await session.commit()
-
-
-async def _ledger(factory, organization_id, day=None):
-    async with factory() as session:
-        return (
-            await session.execute(
-                select(OrganizationTurnUsageModel.turn_count).where(
-                    OrganizationTurnUsageModel.organization_id == organization_id,
-                    OrganizationTurnUsageModel.usage_date == (day or cap.utc_day()),
-                )
-            )
-        ).scalar_one_or_none()
+def _service(
+    *,
+    personal=(PERSONAL, OTHER_PERSONAL),
+    caps=None,
+    multi=True,
+    personal_error=None,
+    org_error=None,
+    ledger=None,
+    default=30,
+):
+    orgs = FakeOrganizations(
+        caps={PERSONAL: None, OTHER_PERSONAL: None, COMPANY: None, **(caps or {})},
+        error=org_error,
+    )
+    people = FakePersonalOrgs(personal, error=personal_error)
+    resolver = CapPolicyResolver(
+        people,
+        orgs,
+        default_limit=lambda: default,
+        multi_tenant=lambda: multi,
+    )
+    return (
+        TurnCapService(resolver, ledger or InMemoryTurnLedger()),
+        resolver,
+        people,
+        orgs,
+    )
 
 
 # =============================================================================
@@ -161,8 +109,6 @@ async def _ledger(factory, organization_id, day=None):
 
 def test_the_charged_day_is_the_utc_calendar_day():
     """A local-midnight boundary would reset the wrong tenants at the wrong time."""
-    # 23:30 in a +05:30 zone is the PREVIOUS UTC day, and that is the day the
-    # turn is charged to.
     local = datetime(
         2026, 9, 4, 23, 30, tzinfo=timezone(timedelta(hours=5, minutes=30))
     )
@@ -181,17 +127,41 @@ def test_the_charged_day_is_the_utc_calendar_day():
     ],
 )
 def test_the_reset_instant_is_always_the_next_utc_midnight(moment):
-    """Strictly after the moment, and never more than a day away."""
     reset = cap.next_utc_midnight(moment)
     assert reset > moment
     assert reset - moment <= timedelta(days=1)
     assert (reset.hour, reset.minute, reset.second) == (0, 0, 0)
 
 
+async def test_the_charged_day_and_the_reset_come_from_one_clock_reading():
+    """One ``now`` per reservation, or the refusal can name the wrong midnight.
+
+    Sampled twice, a turn refused at 23:59:59.98 is charged to day D by the
+    first reading and told to come back at the midnight after D+1 by the second
+    — a whole extra day's wait produced by nothing but the clock ticking
+    between two calls. The service therefore takes ``now`` once; this drives it
+    at the boundary and asserts the two agree.
+    """
+    service, *_ = _service(caps={PERSONAL: 1})
+    # Deliberately far from the wall clock. An earlier version of this case used
+    # a date near "today", and a mutation replacing ``next_utc_midnight(moment)``
+    # with ``next_utc_midnight()`` still passed — the real clock happened to
+    # land on the same day. The instant under test has to be one the ambient
+    # clock cannot coincide with, or the assertion is about nothing.
+    edge = datetime(2031, 3, 17, 23, 59, 59, 980000, tzinfo=timezone.utc)
+
+    await service.reserve(PERSONAL, now=edge)
+    with pytest.raises(TenantTurnCapExceeded) as raised:
+        await service.reserve(PERSONAL, now=edge)
+
+    # Charged to the 17th, so the allowance returns at the midnight opening the
+    # 18th — derived from the SAME reading, not from a second one.
+    assert raised.value.reset_at == datetime(2031, 3, 18, tzinfo=timezone.utc)
+
+
 def test_the_message_names_the_limit_and_when_it_comes_back():
-    """The refusal has to be actionable by the person reading it, not just correct."""
-    refusal = cap.TenantTurnCapExceeded(
-        organization_id=PERSONAL_ORG,
+    refusal = TenantTurnCapExceeded(
+        organization_id=PERSONAL,
         limit=30,
         used=30,
         reset_at=datetime(2026, 9, 5, 0, 0, tzinfo=timezone.utc),
@@ -205,19 +175,19 @@ def test_the_message_names_the_limit_and_when_it_comes_back():
     assert "knowledge base" in message
 
 
-def test_the_retry_header_and_the_message_name_the_same_instant():
-    """A client sleeping on Retry-After must wake when the sentence says it will."""
+def test_the_wait_goes_through_the_shared_window_math():
+    """One rounding rule in the codebase, not two that can disagree."""
     reset = datetime.now(timezone.utc) + timedelta(seconds=90)
-    refusal = cap.TenantTurnCapExceeded(
-        organization_id=PERSONAL_ORG, limit=1, used=1, reset_at=reset
+    refusal = TenantTurnCapExceeded(
+        organization_id=PERSONAL, limit=1, used=1, reset_at=reset
     )
-    assert 89 <= refusal.retry_after_seconds <= 92
+    assert 89 <= refusal.retry_after_seconds <= 91
 
 
 def test_a_reset_already_past_still_asks_for_a_positive_wait():
-    """``Retry-After: 0`` invites an immediate retry loop; the floor is one second."""
-    refusal = cap.TenantTurnCapExceeded(
-        organization_id=PERSONAL_ORG,
+    """``Retry-After: 0`` invites an immediate retry loop; the floor is one."""
+    refusal = TenantTurnCapExceeded(
+        organization_id=PERSONAL,
         limit=1,
         used=1,
         reset_at=datetime.now(timezone.utc) - timedelta(minutes=5),
@@ -230,108 +200,101 @@ def test_a_reset_already_past_still_asks_for_a_positive_wait():
 # =============================================================================
 
 
-async def test_a_personal_tenant_with_no_override_takes_the_deployment_default(factory):
-    async with factory() as session:
-        policy = await cap.resolve_policy(session, PERSONAL_ORG)
+async def test_single_tenant_is_uncapped_without_touching_a_port():
+    """A self-hosted install pays for its own compute — and may not be migrated.
+
+    The assertion that matters is not just "uncapped": it is that **neither
+    port was asked and the ledger was never written**. A deployment running
+    with ``RUN_STARTUP_MIGRATIONS=false`` has no ledger table, and a policy that
+    queried before deciding would lose every turn to a 503 about a usage
+    allowance it could never have earned.
+    """
+    ledger = InMemoryTurnLedger()
+    service, _, people, orgs = _service(multi=False, ledger=ledger)
+
+    for _ in range(100):
+        reservation = await service.reserve(PERSONAL)
+        assert reservation.limit is None
+        assert reservation.source == "single_tenant"
+
+    assert people.asked == []
+    assert orgs.asked == []
+    assert await ledger.usage(PERSONAL, cap.utc_day()) == 0
+
+
+async def test_a_personal_tenant_takes_the_deployment_default():
+    _, resolver, *_ = _service()
+    policy = await resolver.resolve(PERSONAL)
     assert policy.limit == 30
     assert policy.source == "default_personal"
 
 
-async def test_a_company_organization_with_no_override_is_uncapped(factory):
+async def test_a_company_organization_with_no_override_is_uncapped():
     """Invariant 2. The cap bounds self-service sign-up, not customers."""
-    async with factory() as session:
-        policy = await cap.resolve_policy(session, COMPANY_ORG)
+    _, resolver, *_ = _service()
+    policy = await resolver.resolve(COMPANY)
     assert policy.limit is None
     assert policy.source == "company_uncapped"
 
 
-async def test_a_company_tenant_is_never_refused_however_many_turns_it_takes(factory):
-    """Invariant 2, at the reservation rather than at the policy.
-
-    Well past the personal default, so a regression that applied the default to
-    every tenant would be caught rather than merely made more likely.
-    """
+async def test_a_company_tenant_is_never_refused_however_many_turns_it_takes():
+    """Well past the personal default, so applying it to everyone fails here."""
+    service, _, _, _ = _service()
+    ledger_service = service
     for expected in range(1, 41):
-        reservation = await cap.reserve_turn(COMPANY_ORG)
+        reservation = await ledger_service.reserve(COMPANY)
         assert reservation.used == expected
         assert reservation.limit is None
-    # And the usage is still recorded, because the default is tuned against what
-    # ordinary tenants actually do.
-    assert await _ledger(factory, COMPANY_ORG) == 40
 
 
-async def test_an_override_caps_a_company_organization(factory):
-    await _set_override(factory, COMPANY_ORG, 2)
-    await cap.reserve_turn(COMPANY_ORG)
-    await cap.reserve_turn(COMPANY_ORG)
-    with pytest.raises(cap.TenantTurnCapExceeded):
-        await cap.reserve_turn(COMPANY_ORG)
+async def test_an_override_caps_a_company_organization():
+    service, *_ = _service(caps={COMPANY: 2})
+    await service.reserve(COMPANY)
+    await service.reserve(COMPANY)
+    with pytest.raises(TenantTurnCapExceeded):
+        await service.reserve(COMPANY)
 
 
-async def test_an_override_of_zero_means_uncapped(factory):
-    await _set_override(factory, PERSONAL_ORG, cap.UNLIMITED_OVERRIDE)
-    async with factory() as session:
-        policy = await cap.resolve_policy(session, PERSONAL_ORG)
+async def test_an_override_of_zero_means_uncapped():
+    _, resolver, *_ = _service(caps={PERSONAL: cap.UNLIMITED_OVERRIDE})
+    policy = await resolver.resolve(PERSONAL)
     assert policy.limit is None
     assert policy.source == "override_unlimited"
 
 
-async def test_clearing_the_override_returns_the_tenant_to_the_policy(factory):
-    """``--clear`` and ``--unlimited`` are different actions on a personal tenant."""
-    await _set_override(factory, PERSONAL_ORG, 500)
-    async with factory() as session:
-        assert (await cap.resolve_policy(session, PERSONAL_ORG)).limit == 500
-    await _set_override(factory, PERSONAL_ORG, None)
-    async with factory() as session:
-        policy = await cap.resolve_policy(session, PERSONAL_ORG)
-    assert policy.limit == 30
-    assert policy.source == "default_personal"
+async def test_an_override_moves_only_the_tenant_it_names():
+    service, *_ = _service(caps={PERSONAL: 1})
+    await service.reserve(PERSONAL)
+    with pytest.raises(TenantTurnCapExceeded):
+        await service.reserve(PERSONAL)
 
-
-async def test_an_override_moves_only_the_tenant_it_names(factory):
-    """Invariant 3, the isolation half."""
-    await _set_override(factory, PERSONAL_ORG, 1)
-    await cap.reserve_turn(PERSONAL_ORG)
-    with pytest.raises(cap.TenantTurnCapExceeded):
-        await cap.reserve_turn(PERSONAL_ORG)
-
-    # The sibling personal tenant is untouched and still on the default.
     for _ in range(5):
-        await cap.reserve_turn(OTHER_PERSONAL_ORG)
-    assert await _ledger(factory, OTHER_PERSONAL_ORG) == 5
+        await service.reserve(OTHER_PERSONAL)
 
 
-async def test_an_override_takes_effect_on_the_next_turn_with_no_restart(factory):
-    """Invariant 3, the liveness half.
+async def test_an_override_takes_effect_on_the_next_turn_with_no_restart():
+    """The override is read from the port on every turn, not cached."""
+    service, _, _, orgs = _service(caps={PERSONAL: 1})
+    await service.reserve(PERSONAL)
+    with pytest.raises(TenantTurnCapExceeded):
+        await service.reserve(PERSONAL)
 
-    The override is read from the row on every turn rather than cached in the
-    process, so an operator raising a tenant's cap does not need a redeploy —
-    and this asserts it inside one running process, which a restart-based test
-    could not distinguish from a cached value being rebuilt.
-    """
-    await _set_override(factory, PERSONAL_ORG, 1)
-    await cap.reserve_turn(PERSONAL_ORG)
-    with pytest.raises(cap.TenantTurnCapExceeded):
-        await cap.reserve_turn(PERSONAL_ORG)
+    orgs.caps[PERSONAL] = 3
 
-    await _set_override(factory, PERSONAL_ORG, 3)
-
-    reservation = await cap.reserve_turn(PERSONAL_ORG)
+    reservation = await service.reserve(PERSONAL)
     assert reservation.used == 2
     assert reservation.limit == 3
 
 
-async def test_a_cap_lowered_below_the_standing_count_refuses_and_reports_the_truth(
-    factory,
-):
+async def test_a_cap_lowered_below_the_standing_count_reports_the_truth():
     """The log must not rename an over-limit day as an exactly-at-limit one."""
-    await _set_override(factory, PERSONAL_ORG, 5)
+    service, _, _, orgs = _service(caps={PERSONAL: 5})
     for _ in range(5):
-        await cap.reserve_turn(PERSONAL_ORG)
-    await _set_override(factory, PERSONAL_ORG, 2)
+        await service.reserve(PERSONAL)
+    orgs.caps[PERSONAL] = 2
 
-    with pytest.raises(cap.TenantTurnCapExceeded) as raised:
-        await cap.reserve_turn(PERSONAL_ORG)
+    with pytest.raises(TenantTurnCapExceeded) as raised:
+        await service.reserve(PERSONAL)
     assert raised.value.limit == 2
     assert raised.value.used == 5
 
@@ -342,7 +305,6 @@ async def test_a_cap_lowered_below_the_standing_count_refuses_and_reports_the_tr
 
 
 def test_the_default_is_named_by_the_environment_variable_operators_set():
-    """A field whose declared alias drifts from the documented name is unreachable."""
     from faultmaven.config.settings import AgentSettings
 
     field = AgentSettings.model_fields["tenant_daily_turn_cap"]
@@ -350,22 +312,23 @@ def test_the_default_is_named_by_the_environment_variable_operators_set():
     assert field.default == 30
 
 
-async def test_the_default_reaches_the_enforcement(monkeypatch, factory):
-    """Through the real settings singleton, not a patched module predicate.
-
-    Patching ``_default_limit`` would leave the wiring — env var → field →
-    ``get_settings().agent`` → this call — untested, which is the failure mode
-    this repo has been bitten by.
-    """
+async def test_the_default_reaches_the_enforcement(monkeypatch):
+    """Through the real settings singleton, not a patched module predicate."""
     from faultmaven.config.settings import reset_settings
 
     monkeypatch.setenv("TENANT_DAILY_TURN_CAP", "3")
     reset_settings()
     try:
+        resolver = CapPolicyResolver(
+            FakePersonalOrgs([PERSONAL]),
+            FakeOrganizations({PERSONAL: None}),
+            multi_tenant=lambda: True,
+        )
+        service = TurnCapService(resolver, InMemoryTurnLedger())
         for _ in range(3):
-            await cap.reserve_turn(PERSONAL_ORG)
-        with pytest.raises(cap.TenantTurnCapExceeded) as raised:
-            await cap.reserve_turn(PERSONAL_ORG)
+            await service.reserve(PERSONAL)
+        with pytest.raises(TenantTurnCapExceeded) as raised:
+            await service.reserve(PERSONAL)
         assert raised.value.limit == 3
     finally:
         monkeypatch.delenv("TENANT_DAILY_TURN_CAP", raising=False)
@@ -377,50 +340,49 @@ async def test_the_default_reaches_the_enforcement(monkeypatch, factory):
 # =============================================================================
 
 
-async def test_a_refused_turn_consumes_nothing(factory):
-    """Invariant 1's sharpest half.
-
-    A cap that charged for its own refusals would be indistinguishable from one
-    that worked, right up until an operator raised it and found the day already
-    spent.
-    """
-    await _set_override(factory, PERSONAL_ORG, 2)
-    await cap.reserve_turn(PERSONAL_ORG)
-    await cap.reserve_turn(PERSONAL_ORG)
-    assert await _ledger(factory, PERSONAL_ORG) == 2
+async def test_a_refused_turn_consumes_nothing():
+    """A cap that charged for its own refusals would be indistinguishable from
+    one that worked, right up until an operator raised it and found the day
+    already spent."""
+    ledger = InMemoryTurnLedger()
+    service, *_ = _service(caps={PERSONAL: 2}, ledger=ledger)
+    await service.reserve(PERSONAL)
+    await service.reserve(PERSONAL)
+    assert await ledger.usage(PERSONAL, cap.utc_day()) == 2
 
     for _ in range(5):
-        with pytest.raises(cap.TenantTurnCapExceeded):
-            await cap.reserve_turn(PERSONAL_ORG)
+        with pytest.raises(TenantTurnCapExceeded):
+            await service.reserve(PERSONAL)
 
-    assert await _ledger(factory, PERSONAL_ORG) == 2
-
-
-async def test_counting_is_per_organization(factory):
-    """Invariant 1. One tenant's usage must not spend another's allowance."""
-    await cap.reserve_turn(PERSONAL_ORG)
-    await cap.reserve_turn(PERSONAL_ORG)
-    await cap.reserve_turn(OTHER_PERSONAL_ORG)
-
-    assert await _ledger(factory, PERSONAL_ORG) == 2
-    assert await _ledger(factory, OTHER_PERSONAL_ORG) == 1
+    assert await ledger.usage(PERSONAL, cap.utc_day()) == 2
 
 
-async def test_counting_is_per_utc_day(factory):
-    """Invariant 1. Yesterday's turns must not be charged against today."""
+async def test_counting_is_per_organization():
+    ledger = InMemoryTurnLedger()
+    service, *_ = _service(ledger=ledger)
+    await service.reserve(PERSONAL)
+    await service.reserve(PERSONAL)
+    await service.reserve(OTHER_PERSONAL)
+
+    today = cap.utc_day()
+    assert await ledger.usage(PERSONAL, today) == 2
+    assert await ledger.usage(OTHER_PERSONAL, today) == 1
+
+
+async def test_counting_is_per_utc_day():
+    ledger = InMemoryTurnLedger()
+    service, *_ = _service(caps={PERSONAL: 2}, ledger=ledger)
     yesterday = datetime.now(timezone.utc) - timedelta(days=1)
-    await _set_override(factory, PERSONAL_ORG, 2)
 
-    await cap.reserve_turn(PERSONAL_ORG, now=yesterday)
-    await cap.reserve_turn(PERSONAL_ORG, now=yesterday)
-    with pytest.raises(cap.TenantTurnCapExceeded):
-        await cap.reserve_turn(PERSONAL_ORG, now=yesterday)
+    await service.reserve(PERSONAL, now=yesterday)
+    await service.reserve(PERSONAL, now=yesterday)
+    with pytest.raises(TenantTurnCapExceeded):
+        await service.reserve(PERSONAL, now=yesterday)
 
-    # A new UTC day is a new allowance, in its own row.
-    today = await cap.reserve_turn(PERSONAL_ORG)
+    today = await service.reserve(PERSONAL)
     assert today.used == 1
-    assert await _ledger(factory, PERSONAL_ORG, cap.utc_day(yesterday)) == 2
-    assert await _ledger(factory, PERSONAL_ORG) == 1
+    assert await ledger.usage(PERSONAL, cap.utc_day(yesterday)) == 2
+    assert await ledger.usage(PERSONAL, cap.utc_day()) == 1
 
 
 # =============================================================================
@@ -428,44 +390,91 @@ async def test_counting_is_per_utc_day(factory):
 # =============================================================================
 
 
-async def test_an_indeterminate_tenant_kind_is_capped_at_the_default(
-    monkeypatch, factory
-):
-    """Invariant 5. Unknown means personal, not unlimited.
+async def test_an_unreadable_tenant_kind_is_capped_at_the_default():
+    """Unknown means personal, not unlimited.
 
-    Staged as the live shape of the branch: the personal-tenant lookup fails
-    (a half-migrated deployment where ``sso_personal_orgs`` is not there yet).
-    The other direction would hand every tenant an uncapped day the moment that
-    table became unreadable, which is exactly the state a partial rollout is in.
+    Asked of a COMPANY organization — uncapped when the question is answerable
+    — so a pass can only come from the fail-closed branch.
     """
-    async with factory() as session:
-        await session.execute(text("DROP TABLE sso_personal_orgs"))
-        await session.commit()
-
-    # A COMPANY organization, which is uncapped when the question is answerable.
-    async with factory() as session:
-        policy = await cap.resolve_policy(session, COMPANY_ORG)
-    assert policy.limit == 30, "an unanswerable kind must fall back to the default"
+    _, resolver, *_ = _service(personal_error=RuntimeError("relation does not exist"))
+    policy = await resolver.resolve(COMPANY)
+    assert policy.limit == 30
     assert policy.source == "indeterminate"
 
 
-async def test_a_ledger_failure_refuses_rather_than_serving_uncounted(factory):
-    """Invariant 5's other half: a cap that cannot be applied refuses the turn."""
-    async with factory() as session:
-        await session.execute(text("DROP TABLE organization_turn_usage"))
-        await session.commit()
+async def test_an_unreadable_override_is_the_default_not_no_override():
+    """The inversion the review caught, and the reason this branch exists.
 
-    with pytest.raises(cap.TenantTurnCapUnavailable):
-        await cap.reserve_turn(PERSONAL_ORG)
-
-
-async def test_the_two_refusals_are_distinguishable(factory):
-    """They are not the same event and must not render as the same message.
-
-    Telling somebody their daily allowance is spent when the ledger merely
-    failed to write is a false statement about their own account, and it sends
-    them away until midnight for a fault that may clear in seconds.
+    Reading a failed override lookup as "no override" drops a COMPANY tenant —
+    which is uncapped without one — straight to uncapped, so the failure is
+    invisible. Worse, a company tenant carrying an explicit cap of 50 would be
+    un-capped by a transient read error. The direction is: unreadable ⇒ the
+    default cap.
     """
-    assert issubclass(cap.TenantTurnCapExceeded, cap.TenantTurnCapError)
-    assert issubclass(cap.TenantTurnCapUnavailable, cap.TenantTurnCapError)
-    assert not issubclass(cap.TenantTurnCapUnavailable, cap.TenantTurnCapExceeded)
+    _, resolver, *_ = _service(org_error=RuntimeError("connection reset"))
+    policy = await resolver.resolve(COMPANY)
+    assert policy.limit == 30
+    assert policy.source == "indeterminate"
+
+
+async def test_a_ledger_failure_refuses_rather_than_serving_uncounted():
+    class BrokenLedger(InMemoryTurnLedger):
+        async def reserve(self, organization_id, day, limit):
+            raise RuntimeError("no such table: organization_turn_usage")
+
+    service, *_ = _service(ledger=BrokenLedger())
+    with pytest.raises(TenantTurnCapUnavailable):
+        await service.reserve(PERSONAL)
+
+
+async def test_a_multi_tenant_request_with_no_bound_tenant_is_capped():
+    """This must not be the place that decides an unscoped request is free."""
+    _, resolver, *_ = _service()
+    policy = await resolver.resolve("")
+    assert policy.limit == 30
+    assert policy.source == "indeterminate"
+
+
+def test_the_two_refusals_are_distinguishable():
+    """They are not the same event and must not render as the same message."""
+    assert issubclass(TenantTurnCapExceeded, cap.TenantTurnCapError)
+    assert issubclass(TenantTurnCapUnavailable, cap.TenantTurnCapError)
+    assert not issubclass(TenantTurnCapUnavailable, TenantTurnCapExceeded)
+
+
+async def test_the_refusal_is_logged_with_the_organization_and_the_count(caplog):
+    """The operator's next action — raise this cap, or leave it — needs both."""
+    service, *_ = _service(caps={PERSONAL: 2})
+    await service.reserve(PERSONAL)
+    await service.reserve(PERSONAL)
+
+    with caplog.at_level(logging.INFO, logger=cap.logger.name):
+        with pytest.raises(TenantTurnCapExceeded):
+            await service.reserve(PERSONAL)
+
+    lines = [record.getMessage() for record in caplog.records]
+    named = [line for line in lines if PERSONAL in line]
+    assert named, f"no log line names the organization: {lines}"
+    assert any("2/2" in line for line in named), named
+    assert any("override" in line for line in named), named
+
+
+# =============================================================================
+# The in-memory ledger is the same contract as the SQL one
+# =============================================================================
+
+
+async def test_the_in_memory_ledger_refuses_without_writing():
+    """Otherwise the unit cases above would be proving a laxer contract."""
+    ledger = InMemoryTurnLedger()
+    day = cap.utc_day()
+    assert await ledger.reserve(PERSONAL, day, 1) == 1
+    assert await ledger.reserve(PERSONAL, day, 1) is None
+    assert await ledger.usage(PERSONAL, day) == 1
+
+
+async def test_the_in_memory_ledger_counts_without_a_ceiling():
+    ledger = InMemoryTurnLedger()
+    day = cap.utc_day()
+    for expected in range(1, 6):
+        assert await ledger.reserve(COMPANY, day, None) == expected

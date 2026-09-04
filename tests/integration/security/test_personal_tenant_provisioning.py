@@ -54,6 +54,11 @@ from faultmaven.modules.auth.domain.personal_tenant import (
     personal_org_slug,
     personal_tenant_key,
 )
+from tests.integration.security.conftest import (
+    create_limited_role,
+    drop_limited_role,
+    limited_url,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -67,67 +72,25 @@ pytestmark = [
 
 PROVIDER = "workos"
 
+# The limited-role setup is shared with ``test_tenant_turn_cap`` via
+# ``conftest.py``: both modules need a role RLS actually applies to, and two
+# byte copies of the grant list would let one module's idea of the deployed
+# posture drift from the other's without failing anything. The role NAME stays
+# per-module — both create and drop roles inside one ``-m postgres`` session.
 _LIMITED_ROLE = f"fm_pt_probe_{uuid.uuid4().hex[:8]}"
 _LIMITED_PW = "fm_pt_probe_pw"
-_DROP_ROLE_SQL = f"""
-DO $$ BEGIN
-  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{_LIMITED_ROLE}') THEN
-    DROP OWNED BY {_LIMITED_ROLE};
-    DROP ROLE {_LIMITED_ROLE};
-  END IF;
-END $$;
-"""
 
 
 def _limited_url(superuser_url: str) -> str:
-    from sqlalchemy.engine import make_url
-
-    # ``render_as_string(hide_password=False)``: ``URL.__str__`` masks the
-    # password as ``***``, which fails authentication with a message naming the
-    # role rather than the mask.
-    return (
-        make_url(superuser_url)
-        .set(username=_LIMITED_ROLE, password=_LIMITED_PW)
-        .render_as_string(hide_password=False)
-    )
+    return limited_url(superuser_url, _LIMITED_ROLE, _LIMITED_PW)
 
 
 async def _create_limited_role(superuser_url: str) -> None:
-    """A role with the deployed ``faultmaven_app`` grants and no ownership."""
-    engine = create_async_engine(superuser_url, future=True)
-    try:
-        async with engine.begin() as conn:
-            dbname = (await conn.exec_driver_sql("SELECT current_database()")).scalar()
-            await conn.exec_driver_sql(_DROP_ROLE_SQL)
-            await conn.exec_driver_sql(
-                f"CREATE ROLE {_LIMITED_ROLE} LOGIN PASSWORD '{_LIMITED_PW}' "
-                "NOSUPERUSER NOBYPASSRLS"
-            )
-            await conn.exec_driver_sql(
-                f'GRANT CONNECT ON DATABASE "{dbname}" TO {_LIMITED_ROLE}'
-            )
-            await conn.exec_driver_sql(
-                f"GRANT USAGE ON SCHEMA public TO {_LIMITED_ROLE}"
-            )
-            await conn.exec_driver_sql(
-                "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public "
-                f"TO {_LIMITED_ROLE}"
-            )
-            await conn.exec_driver_sql(
-                "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public "
-                f"TO {_LIMITED_ROLE}"
-            )
-    finally:
-        await engine.dispose()
+    await create_limited_role(superuser_url, _LIMITED_ROLE, _LIMITED_PW)
 
 
 async def _drop_limited_role(superuser_url: str) -> None:
-    engine = create_async_engine(superuser_url, future=True)
-    try:
-        async with engine.begin() as conn:
-            await conn.exec_driver_sql(_DROP_ROLE_SQL)
-    finally:
-        await engine.dispose()
+    await drop_limited_role(superuser_url, _LIMITED_ROLE)
 
 
 @pytest.fixture(scope="module")

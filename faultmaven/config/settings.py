@@ -1329,6 +1329,14 @@ class SecuritySettings(BaseSettings):
             # a header that was not sent, and the Copilot and Dashboard are the
             # clients that pace themselves against these.
             "X-RateLimit-Policy",
+            # Which KIND of refusal a 429 is. The per-tenant turn cap
+            # (ADR-016 D5.3) and the rate limiter both answer 429 and want
+            # opposite reactions — "come back tomorrow" versus "slow down" —
+            # and this header is the only thing that distinguishes them. The
+            # built-in Dashboard panel (ADR-016) is a cross-origin caller, so
+            # withholding it would leave the one client that must branch on it
+            # unable to read it.
+            "x-error-code",
         ],
     )
 

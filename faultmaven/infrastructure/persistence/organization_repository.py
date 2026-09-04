@@ -99,6 +99,7 @@ def _model_to_domain(model: OrganizationModel) -> Organization:
         slug=model.slug,
         description=model.description,
         is_active=bool(model.is_active),
+        daily_turn_cap=model.daily_turn_cap,
         created_at=model.created_at,
         updated_at=model.updated_at,
         deleted_at=model.deleted_at,
@@ -174,6 +175,11 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
                 name=org.name,
                 slug=org.slug,
                 description=org.description,
+                # Carried, because the operator command that sets a tenant's
+                # turn cap has no other way through: a field the mapper reads
+                # but the writer drops is an override that reverts on the next
+                # unrelated update.
+                daily_turn_cap=org.daily_turn_cap,
                 updated_at=org.updated_at,
             )
         )
