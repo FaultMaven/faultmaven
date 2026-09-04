@@ -2528,6 +2528,10 @@
             "title": "Llm Provider",
             "type": "string"
           },
+          "personal_tenant_limits": {
+            "$ref": "#/components/schemas/PersonalTenantLimitsStatus",
+            "description": "Effective values of the settings that bound self-service sign-up: whether an org-less SSO identity may provision a personal tenant, how many such tenants may be provisioned per hour deployment-wide, and how many investigation turns each one gets per UTC day."
+          },
           "pii_redaction_enabled": {
             "title": "Pii Redaction Enabled",
             "type": "boolean"
@@ -2562,6 +2566,7 @@
           "llm_provider",
           "pii_redaction_enabled",
           "rate_limit_enabled",
+          "personal_tenant_limits",
           "timestamp"
         ],
         "title": "EnvConfigStatusResponse",
@@ -4064,6 +4069,33 @@
           "name"
         ],
         "title": "OrganizationSummary",
+        "type": "object"
+      },
+      "PersonalTenantLimitsStatus": {
+        "description": "The three settings that bound self-service sign-up, at their effective\nvalues.\n\nReported as VALUES rather than as ``features`` entries. Two of the three are\nnumbers, which ``FeatureStatus`` has nowhere to put, and the ``features``\ncontract is stricter than this: ``enabled`` there must report a runtime\nEFFECT (#1234), which \"did you set this knob\" is not. They sit here with\n``auth_mode`` and ``pii_redaction_enabled``, whose claim is the same one \u2014\nthis is the configuration the process is running with.\n\nReporting them at all is the ``first_party_consent_skip`` argument (#1234)\napplied to configuration: all three are silent by construction. A\ndeployment with self-service sign-up off refuses org-less identities with\nthe same message it would give a misconfigured IdP; a deployment at its\nhourly provisioning ceiling refuses the same way; and a personal tenant at\nits daily turn cap gets a usage-allowance message that names no setting.\nNone of the three appears in ``/health``, and a startup log line has rolled\nout of ``kubectl logs`` long before anyone asks.",
+        "properties": {
+          "sso_jit_personal_tenant_enabled": {
+            "description": "SSO_JIT_PERSONAL_TENANT_ENABLED \u2014 whether an SSO identity with no IdP organization may provision a personal tenant on its first sign-in, i.e. whether self-service sign-up is open. Multi-tenant (Cloud) deployments only: a single-tenant deployment has one organization and never reaches the branch this gates.",
+            "title": "Sso Jit Personal Tenant Enabled",
+            "type": "boolean"
+          },
+          "sso_jit_personal_tenant_max_per_hour": {
+            "description": "SSO_JIT_PERSONAL_TENANT_MAX_PER_HOUR \u2014 the ceiling on NEW personal tenants provisioned per rolling hour, deployment-wide. It bounds provisioning only; tenants that already exist sign in regardless.",
+            "title": "Sso Jit Personal Tenant Max Per Hour",
+            "type": "integer"
+          },
+          "tenant_daily_turn_cap": {
+            "description": "TENANT_DAILY_TURN_CAP \u2014 investigation turns a PERSONAL tenant may take per UTC day before further turns are refused with 429. The deployment DEFAULT only: a company organization is uncapped, a single-tenant deployment is never capped, and a per-organization override set with fm-set-turn-cap beats this value.",
+            "title": "Tenant Daily Turn Cap",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sso_jit_personal_tenant_enabled",
+          "sso_jit_personal_tenant_max_per_hour",
+          "tenant_daily_turn_cap"
+        ],
+        "title": "PersonalTenantLimitsStatus",
         "type": "object"
       },
       "ProblemVerificationData": {
@@ -6251,7 +6283,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "2.4.0"
+    "version": "2.5.0"
   },
   "openapi": "3.1.0",
   "paths": {

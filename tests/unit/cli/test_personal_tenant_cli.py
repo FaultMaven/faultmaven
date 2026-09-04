@@ -81,6 +81,45 @@ IDP_ORG_B = "org_01IDPB"
 IDP_ORG_CO = "org_01IDPCO"
 
 
+@pytest.fixture(autouse=True)
+def sqlite_role_preflight(monkeypatch):
+    """Keep the RLS-role preflight off the ambient database.
+
+    ``retire()`` and ``reanchor()`` both open with
+    ``assert_provisioning_db_role_bypasses_rls()``, which — given no engine —
+    probes the SHARED one from ``persistence.database``. That engine is built
+    from ``DATABASE_URL``, not from the SQLite file ``db`` below creates, so in
+    any process where ``DATABASE_URL`` names a real PostgreSQL these unit tests
+    connected to it: a pooled asyncpg connection made in one test's event loop,
+    handed to the next test's loop, and "attached to a different loop" /
+    "Event loop is closed" for 17 of the 42 cases here. No CI lane combines the
+    two — Test PostgreSQL Integration selects ``-m postgres``, which deselects
+    this module — so the coupling was invisible to CI and appeared only when
+    somebody ran the suites together locally.
+
+    The knob is not the fix. Whether a unit test reaches a database must not
+    depend on what the environment happens to hold, so the preflight is
+    replaced here the way the sibling CLI unit tests replace it
+    (``test_provision_sso_org.py``; ``test_wipe_deployment_cli.py`` installs a
+    stand-in engine for the same reason). ``None`` is not a weakened
+    assertion — it is exactly what the real guard returns for the SQLite
+    database this module actually runs against, because SQLite has no
+    row-level security for a role to be scoped by.
+
+    Autouse rather than folded into ``db``: a test added later that drives the
+    command without the database fixture must not quietly reacquire the
+    dependency. The role posture itself is covered where it belongs, against a
+    real engine, in ``tests/unit/infrastructure/persistence/test_rls_role_guard.py``.
+    """
+
+    async def sqlite_has_no_rls(**_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        cli, "assert_provisioning_db_role_bypasses_rls", sqlite_has_no_rls
+    )
+
+
 @pytest_asyncio.fixture
 async def db(tmp_path, monkeypatch):
     """Two personal tenants and one company tenant, in a real database."""

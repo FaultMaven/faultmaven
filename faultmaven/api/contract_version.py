@@ -30,6 +30,33 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
+# 2.5.0 — MINOR. `EnvConfigStatusResponse` gains a required
+# `personal_tenant_limits` object, and `PersonalTenantLimitsStatus` joins
+# `components` (#1320, #1324). It reports the effective values of the three
+# settings that bound self-service sign-up — whether an org-less SSO identity
+# may provision a personal tenant, the deployment-wide hourly ceiling on that
+# provisioning, and the default daily investigation-turn allowance a personal
+# tenant gets. All three were reported nowhere, and all three fail silently:
+# each refusal reads to the person refused as something other than a
+# configured limit.
+#
+# MINOR rather than MAJOR because it is a new field on a response-only schema
+# reached by one operator endpoint, GET /api/v1/admin/config/status. No request
+# shape changes, nothing is removed, and no existing field changes meaning — a
+# client that ignores it renders exactly what it renders today. Required rather
+# than optional is deliberate and is a strengthened guarantee, the same shape as
+# 2.1.0: the server sends it on every response, and a block that could be absent
+# would read as "nothing to report", which is the failure the field exists to
+# close.
+#
+# No client can break on it, verified by reading them. The Dashboard declares
+# `EnvConfigStatus` by hand in `src/types/llm.ts` — a compile-time TypeScript
+# shape it does not validate against, so an extra JSON key is inert. The Copilot
+# carries the schema only in the generated `src/types/api.generated.ts`, and a
+# regeneration widens a response type nothing narrows. The Slack agent's
+# `EnvConfigStatusResponse` lives in the generated `faultmaven/api_generated.py`
+# and is referenced nowhere outside it; pydantic ignores unknown fields besides.
+#
 # 2.4.0 — MINOR. `CaseReport.format` widens from `const: "markdown"` to
 # `enum: ["markdown", "html"]` (#520). `reports_format_check` has admitted both
 # since the clean baseline, and the repository hydrates `format=row.format`
@@ -102,4 +129,4 @@ asked to accept, and it belongs to a person.
 # cannot tell two contracts apart is not doing its job. The first act of the
 # version is therefore to give the contract on main an identity distinct from
 # the 1.0.0 the clients are written against.
-API_CONTRACT_VERSION = "2.4.0"
+API_CONTRACT_VERSION = "2.5.0"
