@@ -15,7 +15,6 @@ Requirements:
 """
 
 import asyncio
-import os
 from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
 from uuid import uuid4
@@ -91,13 +90,20 @@ TEST_USER_IDS = (
 
 
 @pytest.fixture(scope="function")
-async def test_engine():
-    """Create test engine with in-memory SQLite with foreign key constraints enabled."""
-    os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
+async def test_engine(in_memory_database_url):
+    """Create test engine with in-memory SQLite with foreign key constraints enabled.
+
+    ``in_memory_database_url`` sets ``DATABASE_URL`` for the duration of one
+    test and puts the process back afterwards. This fixture used to assign
+    ``os.environ`` itself and never restore it, which repointed every later
+    test in the process at an empty database (fm#1325) — see that fixture in
+    ``conftest.py``. The engine below is built from the URL it hands back, so
+    the application and this engine cannot name two different databases.
+    """
     reset_engine()
 
     engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
+        in_memory_database_url,
         echo=False,
     )
 
