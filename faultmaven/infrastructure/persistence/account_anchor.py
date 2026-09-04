@@ -15,7 +15,8 @@ only ever move toward a company enterprise.**
 * **a retired personal enterprise → a company enterprise** is the move a
   retired subject makes when a company invites them.
 * **the subject's own live personal enterprise → a company enterprise** is the
-  switch #1320 shipped, kept unchanged.
+  switch #1320 shipped, kept unchanged — the caller establishes "its own" from
+  the untenanted subject binding and passes it in, and the rule weighs it.
 * **anything → a personal enterprise, when the anchor is already set**, is
   refused. That direction has no legitimate caller: it is what the reverse-move
   defect did, turning a half-finished re-anchor into a silent demotion back into
@@ -98,15 +99,39 @@ async def read_anchor(enterprise_id: Optional[str]) -> AnchorState:
         return AnchorState(kind, enterprise_id, policy)
 
 
-def move_is_permitted(current: AnchorState, *, destination_is_personal: bool) -> bool:
-    """The rule, as one expression with no I/O. See the module docstring."""
+def move_is_permitted(
+    current: AnchorState,
+    *,
+    destination_is_personal: bool,
+    own_live_personal: bool = False,
+) -> bool:
+    """The rule — **the whole rule** — as one expression with no I/O.
+
+    ``own_live_personal`` belongs here rather than in the mover. It was a second
+    guard beside this one, and that made the claim "the rule is one expression"
+    false in a way a mutation exposed: forcing this function to True left the
+    reverse move still refused, by the other guard, so a test that said the
+    direction rule was what refused it was passing for the wrong reason.
+
+    It says the caller has established — from the untenanted subject binding,
+    keyed on this subject — that the account's current LIVE anchor is its own
+    personal tenant. That is the only way a live anchor may move, and it is
+    #1320's personal→company switch. Without it a live anchor is a company
+    affiliation and stays put.
+    """
     if current.kind is AnchorKind.ABSENT:
         # A set, not a move.
         return True
     if destination_is_personal:
         # Never drag an already-anchored account onto a personal tenant.
         return False
-    return current.kind in (AnchorKind.LIVE, AnchorKind.RETIRED_PERSONAL)
+    if current.kind is AnchorKind.RETIRED_PERSONAL:
+        return True
+    if current.kind is AnchorKind.LIVE:
+        return own_live_personal
+    # DELETED (a removed company) and DANGLING (a broken row) are not licences
+    # to move: neither is evidence about where this account belongs.
+    return False
 
 
 async def move_account_anchor(
@@ -119,11 +144,9 @@ async def move_account_anchor(
 ) -> bool:
     """Set or move ``user``'s anchor to ``to_enterprise_id``. True when written.
 
-    ``own_live_personal`` says the caller has established — from the untenanted
-    subject binding, keyed on this subject — that the account's *current* live
-    anchor is its own personal tenant. That is the only way a LIVE anchor may
-    move, and it is #1320's personal→company switch. Without it a live anchor is
-    a company affiliation and stays put.
+    ``own_live_personal`` is passed straight through to
+    :func:`move_is_permitted`, which owns the whole rule. This function does the
+    I/O — read the current anchor, write the new one — and decides nothing.
 
     Returns False without writing when the rule refuses, so a caller can turn
     that into its own refusal. Raises nothing on the refusal path.
@@ -133,20 +156,17 @@ async def move_account_anchor(
         return True
 
     current = await read_anchor(current_id)
-    if not move_is_permitted(current, destination_is_personal=destination_is_personal):
+    if not move_is_permitted(
+        current,
+        destination_is_personal=destination_is_personal,
+        own_live_personal=own_live_personal,
+    ):
         logger.warning(
             "account_anchor_move_refused",
             user_id=getattr(user, "user_id", None),
             from_kind=current.kind.value,
             destination_is_personal=destination_is_personal,
-        )
-        return False
-    if current.kind is AnchorKind.LIVE and not own_live_personal:
-        logger.warning(
-            "account_anchor_move_refused",
-            user_id=getattr(user, "user_id", None),
-            from_kind=current.kind.value,
-            reason="live_company_anchor",
+            own_live_personal=own_live_personal,
         )
         return False
 

@@ -251,7 +251,9 @@ async def test_an_unscoped_login_cannot_move_a_company_anchor_back(
 
     The binding is deliberately present and pointing at the personal enterprise,
     so a rule keyed on "is this the subject's own personal tenant?" alone would
-    permit the move; only the direction rule refuses it.
+    permit the move; the direction arm of ``move_is_permitted`` is what refuses
+    it. That claim is checked rather than asserted: forcing the rule to True
+    turns this test red (mutation table row 12).
     """
     as_tenant_provider(TenantProvider.MULTI)
     switch(True)
@@ -284,24 +286,55 @@ async def test_an_unscoped_login_cannot_move_a_company_anchor_back(
 
 
 def test_the_direction_rule_is_one_expression():
-    """The rule itself, without I/O, over every state it can be asked about."""
+    """The rule itself, without I/O, over every state it can be asked about.
+
+    ``own_live_personal`` is an argument here rather than a second guard in the
+    mover. It used to live beside this function, which made "the rule is one
+    expression" false: forcing this to True still left the reverse move refused,
+    by the other guard, so the reverse-move test was passing for a reason its
+    own docstring denied.
+    """
     absent = AnchorState(AnchorKind.ABSENT, None, None)
     live = AnchorState(AnchorKind.LIVE, "e", None)
     retired = AnchorState(AnchorKind.RETIRED_PERSONAL, "e", "refuse")
+    deleted = AnchorState(AnchorKind.DELETED, "e", None)
     dangling = AnchorState(AnchorKind.DANGLING, "e", None)
 
     # A set is always permitted; it takes nothing away.
     assert move_is_permitted(absent, destination_is_personal=True)
     assert move_is_permitted(absent, destination_is_personal=False)
-    # Toward a personal enterprise, from an anchor that already exists: never.
+
+    # Toward a personal enterprise, from an anchor that already exists: never —
+    # and not even when the caller says the current anchor is the subject's own.
     assert not move_is_permitted(live, destination_is_personal=True)
+    assert not move_is_permitted(
+        live, destination_is_personal=True, own_live_personal=True
+    )
     assert not move_is_permitted(retired, destination_is_personal=True)
-    # Toward a company: from a retirement, and from a live anchor only when the
-    # caller has established it is the subject's own personal tenant.
+
+    # Toward a company, from a retirement: always. That is R6 — a retired
+    # subject a company invites must not be stranded.
     assert move_is_permitted(retired, destination_is_personal=False)
-    assert move_is_permitted(live, destination_is_personal=False)
-    # A broken anchor is not a licence to move.
-    assert not move_is_permitted(dangling, destination_is_personal=False)
+
+    # Toward a company, from a LIVE anchor: only when the caller has established
+    # the anchor is the subject's OWN personal tenant. A live company
+    # affiliation stays put, which is what stops an IdP claim moving an account
+    # between customers.
+    assert move_is_permitted(
+        live, destination_is_personal=False, own_live_personal=True
+    )
+    assert not move_is_permitted(live, destination_is_personal=False)
+    assert not move_is_permitted(
+        live, destination_is_personal=False, own_live_personal=False
+    )
+
+    # Neither a removed company nor a broken row is a licence to move, whatever
+    # the caller claims about it.
+    for state in (deleted, dangling):
+        assert not move_is_permitted(state, destination_is_personal=False)
+        assert not move_is_permitted(
+            state, destination_is_personal=False, own_live_personal=True
+        )
 
 
 # =============================================================================
