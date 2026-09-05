@@ -107,10 +107,20 @@ class TestCaseSettingsMapping:
 class TestLoggingSettingsMapping:
     """Tests for logging configuration mapping."""
 
-    def test_logging_defaults(self):
-        """Test that logging settings have correct defaults."""
-        from faultmaven.config.settings import get_settings
+    def test_logging_defaults(self, monkeypatch):
+        """Test that logging settings have correct defaults.
 
+        ``LOG_FORMAT`` is deleted from the environment first. It binds
+        ``log_output_format`` now, so without this the assertion below reads
+        whatever the shell or a loaded .env exported: red on a developer box
+        that sets console, and vacuously green in the production image, where
+        the ConfigMap sets json and flipping the Field default would not be
+        caught.
+        """
+        from faultmaven.config.settings import get_settings, reset_settings
+
+        monkeypatch.delenv("LOG_FORMAT", raising=False)
+        reset_settings()
         settings = get_settings()
 
         # Check defaults
@@ -441,6 +451,109 @@ class TestSettingsIntegration:
                 )  # Accept default or env value
                 assert config.LOG_FORMAT == "console"
                 assert config.LOG_DEDUPE is False
+
+
+class TestLogFormatSelectsTheRenderer:
+    """``LOG_FORMAT`` must reach the renderer, not merely parse.
+
+    The knob was inert for as long as it existed: ``LoggingSettings.format``
+    bound ``LOG_FORMAT`` to a printf template nothing read, while the renderer
+    keyed off ``log_output_format`` under a name set nowhere. Asserting the
+    settings hop alone is what let that survive — these assert the last hop,
+    which processor is installed.
+    """
+
+    @staticmethod
+    def _renderer_for(monkeypatch, **env):
+        import logging
+
+        import structlog
+
+        from faultmaven.config.settings import get_settings, reset_settings
+        from faultmaven.infrastructure.logging.config import (
+            FaultMavenLogger,
+            LoggingConfig,
+        )
+
+        for key in ("LOG_FORMAT", "LOG_HUMAN_READABLE"):
+            monkeypatch.delenv(key, raising=False)
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        reset_settings()
+        get_settings()
+        FaultMavenLogger(config=LoggingConfig())
+        # Rendering happens once, on the stdlib ProcessorFormatter the handler
+        # carries — structlog's own chain ends at wrap_for_formatter — so the
+        # renderer is the last processor of that formatter.
+        handler = next(
+            h
+            for h in logging.getLogger().handlers
+            if getattr(h, FaultMavenLogger._ROOT_HANDLER_MARKER, False)
+        )
+        return handler.formatter.processors[-1]
+
+    def test_console_selects_the_console_renderer(self, monkeypatch):
+        import structlog
+
+        renderer = self._renderer_for(monkeypatch, LOG_FORMAT="console")
+        assert isinstance(renderer, structlog.dev.ConsoleRenderer)
+
+    def test_json_selects_the_json_renderer(self, monkeypatch):
+        import structlog
+
+        renderer = self._renderer_for(monkeypatch, LOG_FORMAT="json")
+        assert isinstance(renderer, structlog.processors.JSONRenderer)
+
+    def test_human_readable_alone_selects_console(self, monkeypatch):
+        """The override must work without also setting LOG_FORMAT.
+
+        It could not before: the guard was ``LOG_FORMAT != "json"`` and json is
+        the default, so this switch did nothing on its own.
+        """
+        import structlog
+
+        renderer = self._renderer_for(monkeypatch, LOG_HUMAN_READABLE="true")
+        assert isinstance(renderer, structlog.dev.ConsoleRenderer)
+
+    def test_console_renderer_does_not_colour_a_non_tty(self, monkeypatch):
+        """ANSI escapes must not reach a pod's log stream.
+
+        structlog turns colour on whenever it is not running on Windows, with no
+        isatty check, so the escapes would land in kubectl output and in the log
+        collector verbatim.
+        """
+        renderer = self._renderer_for(monkeypatch, LOG_FORMAT="console")
+        rendered = renderer(None, "info", {"event": "hello"})
+        assert "\x1b[" not in rendered
+
+
+class TestLogFormatHasOneField:
+    """``LOG_FORMAT`` may bind exactly one field, and it must be the live one.
+
+    Same guard as ``TestRateLimitingIsNotASetting`` below and for the same
+    reason: ``LoggingSettings.format`` bound this env name to a stdlib printf
+    template that no code read, so the documented knob did nothing while the
+    renderer keyed off an undocumented name. A field that looks like it holds a
+    knob is how that survives.
+    """
+
+    def test_no_second_field_binds_log_format(self):
+        from faultmaven.config.settings import LoggingSettings
+
+        bound = [
+            name
+            for name, field in LoggingSettings.model_fields.items()
+            if getattr(field, "validation_alias", None) == "LOG_FORMAT"
+        ]
+        assert bound == ["log_output_format"], (
+            f"LOG_FORMAT must bind only log_output_format, got {bound}. "
+            "A second field on this env name is the inert-knob defect."
+        )
+
+    def test_no_printf_template_field_returns(self):
+        from faultmaven.config.settings import LoggingSettings
+
+        assert "format" not in LoggingSettings.model_fields
 
 
 class TestRateLimitingIsNotASetting:
