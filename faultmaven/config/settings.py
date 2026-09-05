@@ -1834,13 +1834,10 @@ class ObservabilitySettings(BaseSettings):
     # Basic tracing configuration
     # COMMUNITY DEFAULT: Disabled (enterprise feature)
     tracing_enabled: bool = Field(default=False)
-    trace_llm_calls: bool = Field(default=False)
-    trace_agent_workflows: bool = Field(default=False)
 
     # Metrics
     # COMMUNITY DEFAULT: Disabled (enterprise feature)
     metrics_enabled: bool = Field(default=False)
-    metrics_port: int = Field(default=9090)
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 
@@ -1876,16 +1873,6 @@ class LoggingSettings(BaseSettings):
 
     # Human-readable output (console renderer instead of JSON)
     log_human_readable: bool = Field(default=False)
-
-    # File logging
-    log_to_file: bool = Field(default=False)
-    log_file_path: str = Field(default="logs/faultmaven.log")
-    log_file_max_bytes: int = Field(default=10 * 1024 * 1024)  # 10MB
-    log_file_backup_count: int = Field(default=5)
-
-    # Structured logging
-    structured_logging: bool = Field(default=True)
-    include_trace_id: bool = Field(default=True)
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 
