@@ -30,6 +30,17 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
+# 2.7.0 — MINOR. `TurnResponse` gains `investigation_turn` (nullable integer,
+# #1329): how many of the case's turns so far were investigation work.
+# `turn_number` keeps its meaning as the message clock and still advances on
+# every exchange; an out-of-band turn (small talk, trivia, a question about
+# FaultMaven itself) is now answered outside the investigation and recorded as
+# such, and this is the count a client should display as "Turn N". Nullable so
+# an older server that lacks it reads as "absent", not as zero. Nothing is
+# removed or reshaped, so every existing client survives it unchanged; the
+# clients' adoption is tracked in faultmaven-slack-agent#64,
+# faultmaven-dashboard#127 and faultmaven-copilot#251.
+#
 # 2.6.0 — MINOR. Capability discovery gains a second path,
 # `GET /api/v1/meta/capabilities`, served by the same handler as the existing
 # `GET /v1/meta/capabilities`; the old path stays, and is published
@@ -158,4 +169,4 @@ asked to accept, and it belongs to a person.
 # cannot tell two contracts apart is not doing its job. The first act of the
 # version is therefore to give the contract on main an identity distinct from
 # the 1.0.0 the clients are written against.
-API_CONTRACT_VERSION = "2.6.0"
+API_CONTRACT_VERSION = "2.7.0"
