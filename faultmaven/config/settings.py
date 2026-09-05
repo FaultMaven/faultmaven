@@ -1863,6 +1863,28 @@ class LoggingSettings(BaseSettings):
     # the documented knob therefore did nothing. One field, the documented name.
     log_output_format: str = Field(default="json", validation_alias="LOG_FORMAT")
 
+    @field_validator("log_output_format")
+    @classmethod
+    def normalize_log_output_format(cls, v):
+        """Accept only the two renderers, case-insensitively, and fail SOFT.
+
+        The renderer check downstream is an equality test against ``"console"``,
+        so an unrecognised value used to select JSON with no signal at all —
+        exactly the silent no-op this field was fixed to remove. A typo, or one
+        of the ``text`` / ``structured`` values the monitoring guide advertised
+        before it was corrected, now says so in the log. Soft rather than a
+        raise, matching ``normalize_anthropic_thinking_mode``: an operator
+        turning a display knob must not be able to down the process.
+        """
+        normalized = str(v).strip().lower()
+        if normalized in ("json", "console"):
+            return normalized
+        logging.getLogger(__name__).warning(
+            "Unrecognized LOG_FORMAT %r — using 'json'. Valid values: json, console.",
+            v,
+        )
+        return "json"
+
     # Log deduplication (prevents repeated log messages)
     log_dedupe: bool = Field(default=True)
 
@@ -1871,9 +1893,15 @@ class LoggingSettings(BaseSettings):
     log_flush_interval: float = Field(default=5.0)
 
     # Human-readable output (console renderer instead of JSON)
+    # An explicit override of the renderer, independent of LOG_FORMAT. It used
+    # to be reachable only when LOG_FORMAT held a third value that is not in the
+    # accepted set, i.e. never; see FaultMavenLogger.configure_structlog.
     log_human_readable: bool = Field(default=False)
 
-    model_config = {"env_prefix": "", "extra": "ignore"}
+    # populate_by_name: with a validation_alias set, the field name alone
+    # would be swallowed by extra="ignore" and silently take the default —
+    # LoggingSettings(log_output_format="console") returned "json".
+    model_config = {"env_prefix": "", "extra": "ignore", "populate_by_name": True}
 
 
 class UploadSettings(BaseSettings):

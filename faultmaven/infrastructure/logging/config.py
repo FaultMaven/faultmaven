@@ -176,10 +176,18 @@ class FaultMavenLogger:
             shared_processors.append(self.deduplicate_fields)
 
         # Renderer: JSON for production, human-readable console for dev.
-        if self.config.LOG_FORMAT == "console" or (
-            self.config.LOG_FORMAT != "json" and self.config.LOG_HUMAN_READABLE
-        ):
-            renderer = structlog.dev.ConsoleRenderer()
+        #
+        # LOG_HUMAN_READABLE is an override in its own right. It used to be
+        # guarded by ``LOG_FORMAT != "json"``, and since LOG_FORMAT defaults to
+        # "json" and now accepts nothing but json/console, that guard could
+        # never be true: setting LOG_HUMAN_READABLE alone did nothing.
+        #
+        # colors: structlog enables them whenever it is not on Windows —
+        # ``structlog.dev._has_colors`` has no isatty() check — so the console
+        # renderer would write ANSI escapes into a pod's log stream, where they
+        # reach kubectl and the log collector verbatim. Decide from the stream.
+        if self.config.LOG_FORMAT == "console" or self.config.LOG_HUMAN_READABLE:
+            renderer = structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty())
         else:
             renderer = structlog.processors.JSONRenderer()
 

@@ -43,7 +43,6 @@ KNOWN_ENV_ACCESS = {
     "faultmaven/config/protection.py": 2,
     "faultmaven/infrastructure/llm/pricing.py": 1,
     "faultmaven/infrastructure/llm/router.py": 3,
-    "faultmaven/infrastructure/logging/coordinator.py": 5,
     "faultmaven/infrastructure/observability/tracing.py": 8,
     "faultmaven/infrastructure/persistence/repository_factory.py": 3,
     "faultmaven/infrastructure/shims/metrics.py": 1,
