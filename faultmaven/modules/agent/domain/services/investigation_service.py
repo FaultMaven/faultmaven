@@ -1048,6 +1048,34 @@ _EVIDENCE_REROUTE_MODES = (
 )
 
 
+def _attachment_reroute(
+    state: CaseState, mode: ProcessingMode
+) -> Optional[ProcessingMode]:
+    """Mode a turn that DELIVERS evidence should run in instead of *mode*.
+
+    - INVESTIGATING: TRIAGE / KNOWLEDGE_QUERY / AGENT_META → DIRECTED_ANALYSIS
+      (#708): tools are forced so the fresh upload is analysed rather than
+      talked past. For AGENT_META that is a deliberate trade: the meta
+      question is then answered by the backstop rule under the DA prompt,
+      while the upload gets its analysis; the alternative — keeping the meta
+      prompt, which tells the model to leave the case untouched — skips the
+      upload, which is the very failure #708 closed. The DA system
+      instruction's Type D covers the mixed turn explicitly.
+    - INQUIRY: AGENT_META → TRIAGE (#1328). The #708 reroute is scoped to
+      INVESTIGATING because INQUIRY characterises an upload through the
+      structural index rather than forcing analysis, and TRIAGE is the mode
+      that does exactly that. Without this, "before we start, what model are
+      you?" + dmesg.log renders the meta block ahead of the INQUIRY role and
+      the file is never looked at.
+    - Anything else: None (no reroute).
+    """
+    if state == CaseState.INVESTIGATING and mode in _EVIDENCE_REROUTE_MODES:
+        return ProcessingMode.DIRECTED_ANALYSIS
+    if state == CaseState.INQUIRY and mode == ProcessingMode.AGENT_META:
+        return ProcessingMode.TRIAGE
+    return None
+
+
 def _turn_delivers_evidence_bearing_attachment(
     preprocess_results: List["_PreprocessedAttachment"],
 ) -> bool:
@@ -1311,7 +1339,6 @@ class InvestigationService:
             # ── STEP 1: PRE-LLM DATA INGESTION ──
             # Classify query for scenario-driven processing mode
             from faultmaven.modules.agent.domain.services.query_classifier import (
-                ProcessingMode,
                 QueryClassification,
                 classify_query,
             )
@@ -1362,14 +1389,15 @@ class InvestigationService:
             # index, not forced into directed analysis before the problem
             # statement is confirmed. (Terminal turns never reach the engine's
             # generation path — they short-circuit to _process_terminal_turn.)
-            if (
-                case.state == CaseState.INVESTIGATING
-                and classification.mode in _EVIDENCE_REROUTE_MODES
-                and _turn_delivers_evidence_bearing_attachment(preprocess_results)
+            # (The INQUIRY exception is AGENT_META → TRIAGE, #1328 — see
+            # ``_attachment_reroute``.)
+            rerouted = _attachment_reroute(case.state, classification.mode)
+            if rerouted is not None and _turn_delivers_evidence_bearing_attachment(
+                preprocess_results
             ):
                 prior_mode = classification.mode.value
                 classification = QueryClassification(
-                    mode=ProcessingMode.DIRECTED_ANALYSIS,
+                    mode=rerouted,
                     detected_entities=classification.detected_entities,
                     confidence=0.8,
                 )
@@ -1378,9 +1406,10 @@ class InvestigationService:
                 # is only consumed by preprocessing (already run above), so it
                 # is intentionally not reassigned here.
                 logger.info(
-                    "Query re-routed %s→DIRECTED_ANALYSIS on case %s turn %s: "
-                    "fresh evidence-bearing attachment (#708)",
+                    "Query re-routed %s→%s on case %s turn %s: "
+                    "fresh evidence-bearing attachment (#708/#1328)",
                     prior_mode,
+                    rerouted.value.upper(),
                     case_id,
                     next_turn,
                 )

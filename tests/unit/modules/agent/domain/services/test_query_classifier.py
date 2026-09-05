@@ -480,6 +480,13 @@ class TestAgentSelfReference:
             "Do you use ChromaDB or Postgres for retrieval?",
             "What is FaultMaven?",
             "tell me about faultmaven",
+            "How does FaultMaven work?",
+            "what are your limitations?",
+            "who are you exactly?",
+            # The issue's own sentence WITHOUT its "how you work" preamble, and
+            # the "powered by" shape — both missed by the first cut (PR #1334).
+            "what LLM model and provider are currently generating these responses?",
+            "Are you powered by GPT-4?",
         ],
     )
     def test_self_referential_phrasings(self, message):
@@ -508,6 +515,25 @@ class TestAgentSelfReference:
             # General knowledge stays KNOWLEDGE_QUERY.
             "How does the OOM killer choose a victim?",
             "What is Redis used for?",
+            # PR #1334 review: model/provider/vector-DB nouns with no binding to
+            # the assistant are the USER'S systems.
+            "Which model is serving the /predict endpoint in the inference pod?",
+            "What provider is behind the DNS failures, Cloudflare or Route53?",
+            "Which LLM is generating the 500s in our chat service?",
+            "What LLM is behind the chatbot that is failing?",
+            "The vector database behind our search keeps timing out under load",
+            # The verb must END the clause.
+            "how do you work around the ulimit on the worker nodes?",
+            "How do you decide which hypothesis to test next?",
+            "How do you retrieve the runbook for postgres OOM?",
+            # Addressing the agent by name about the case, or a self-hosting
+            # operator opening a case ON FaultMaven.
+            "What does FaultMaven think caused the outage?",
+            "faultmaven's embedding model fails to load on startup with a permission denied",
+            # "your"/"you" in case-directed phrasings.
+            "your stack trace shows a null pointer at line 42, is that the cause?",
+            "What are your capabilities in terms of parsing this kind of dump?",
+            "what are you doing right now?",
         ],
     )
     def test_case_and_knowledge_questions_are_not_self_reference(self, message):
@@ -531,4 +557,20 @@ class TestAgentSelfReference:
         assert _is_agent_self_reference("who are you", {}) is True
         assert (
             _is_agent_self_reference("who are you", {"timestamps": ["14:00"]}) is False
+        )
+
+    def test_error_keywords_anchor_self_reference_but_not_knowledge(self):
+        """The two gates share one helper and differ in exactly one input."""
+        ents = {"error_keywords": ["permission denied"]}
+        assert _is_agent_self_reference("who are you?", ents) is False
+        assert _is_knowledge_question("what is permission denied?", ents) is True
+
+    def test_how_do_you_retrieve_runbooks_generic_vs_specific(self):
+        assert (
+            classify_query("how do you retrieve runbooks?").mode
+            == ProcessingMode.AGENT_META
+        )
+        assert (
+            classify_query("How do you retrieve the runbook for postgres OOM?").mode
+            == ProcessingMode.KNOWLEDGE_QUERY
         )

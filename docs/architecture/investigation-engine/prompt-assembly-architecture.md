@@ -44,7 +44,7 @@ To prevent drift between templates that share behavior, the module defines sever
 | `_EVIDENCE_GROUNDING_BLOCK` | Anti-hallucination hard constraints, USING EVIDENCE DATA by question type, 4-step procedure, EXAMPLES | INVESTIGATION_BASE via `{evidence_grounding}` placeholder |
 | `_DIAGNOSTIC_REASONING_BLOCK` | OBSERVATION → ANALYSIS → CONCLUSION + confidence calibration + no premature resolution + PROHIBITED PATTERNS | INVESTIGATION_BASE via `{diagnostic_reasoning}` placeholder |
 
-The two constants ending in `_BLOCK` and injected via placeholders (`_EVIDENCE_GROUNDING_BLOCK` and `_DIAGNOSTIC_REASONING_BLOCK`) are gated to `""` in `knowledge_query` mode — see §4.
+The two constants ending in `_BLOCK` and injected via placeholders (`_EVIDENCE_GROUNDING_BLOCK` and `_DIAGNOSTIC_REASONING_BLOCK`) are gated to `""` in `knowledge_query` and `agent_meta` modes — see §4.
 
 ### 2.1 XML Element Conventions in the Fenced Blocks
 
@@ -196,9 +196,9 @@ The `{adaptive_instructions}` placeholder is filled by `_select_diagnosis_block(
 
 ---
 
-## 4. `knowledge_query` Mode Bypass
+## 4. `knowledge_query` / `agent_meta` Mode Bypass
 
-When `processing_mode == "knowledge_query"`, the user is asking a general technical question rather than progressing the investigation. The dispatcher:
+When `processing_mode == "knowledge_query"`, the user is asking a general technical question rather than progressing the investigation; when it is `"agent_meta"` (#1328), the user is asking about FaultMaven itself. The dispatcher (shown for `knowledge_query`; `agent_meta` substitutes `AGENT_META_INSTRUCTIONS`, and in INQUIRY renders the same block through the `{agent_meta_instructions}` slot, empty for every other mode):
 
 1. Sets `adaptive_instructions = KNOWLEDGE_QUERY_INSTRUCTIONS`. This block waives evidence-grounding and diagnostic-reasoning expectations: *"The DIAGNOSTIC REASONING REQUIREMENTS and EVIDENCE GROUNDING rules do not apply. Connect to the case context when relevant — but this is optional."*
 2. Sets `evidence_grounding = ""` so `_EVIDENCE_GROUNDING_BLOCK` is absent from the rendered prompt.
@@ -220,8 +220,8 @@ The single entry point is `templates.get_prompt_for_case(case, user_message, ...
    - `INVESTIGATING` → see step 3
    - `RESOLVED` / `CLOSED` → `TERMINAL_TEMPLATE.format(...)`
 3. For INVESTIGATING:
-   - Picks `adaptive_instr` per stage (DIAGNOSIS / MITIGATION / TREATMENT) or replaces it entirely with `KNOWLEDGE_QUERY_INSTRUCTIONS` when `processing_mode == "knowledge_query"`.
-   - Sets `evidence_grounding` and `diagnostic_reasoning` to either their respective `_*_BLOCK` constants or `""` based on the same `is_knowledge_query` flag.
+   - Picks `adaptive_instr` per stage (DIAGNOSIS / MITIGATION / TREATMENT) or replaces it entirely with `KNOWLEDGE_QUERY_INSTRUCTIONS` when `processing_mode == "knowledge_query"`, or with `AGENT_META_INSTRUCTIONS` when it is `"agent_meta"`.
+   - Sets `evidence_grounding` and `diagnostic_reasoning` to either their respective `_*_BLOCK` constants or `""` based on the same `waive_grounding` flag (true for both bypass modes).
    - Renders `INVESTIGATION_BASE.format(adaptive_instructions=..., evidence_grounding=..., diagnostic_reasoning=..., **ctx)`.
 
 The dispatcher is the only place where mode-conditional gating happens. The templates themselves are mode-agnostic — they only know how to interpolate their placeholders.

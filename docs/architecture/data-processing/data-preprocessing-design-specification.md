@@ -1127,6 +1127,7 @@ class ProcessingMode(str, Enum):
     DIRECTED_ANALYSIS = "directed_analysis"
     KNOWLEDGE_QUERY = "knowledge_query"
     SEMANTIC_SEARCH = "semantic_search"
+    AGENT_META = "agent_meta"  # a question about FaultMaven itself (#1328)
 
 @dataclass
 class QueryClassification:
@@ -1143,11 +1144,12 @@ def classify_query(user_message: str, has_attachments: bool) -> QueryClassificat
 **Classification logic:**
 
 1. No message + attachments → **TRIAGE** (confidence 0.95)
-2. Knowledge-seeking phrasing WITHOUT hard entities or case references → **KNOWLEDGE_QUERY** (confidence 0.85)
-3. Specific entities + interrogative structure ("what", "why", "how") → **DIRECTED_ANALYSIS** (confidence 0.9)
-4. Entities + non-generic phrasing → **DIRECTED_ANALYSIS** (confidence 0.75)
-5. Generic phrasing without entities → **TRIAGE** (confidence 0.85)
-6. Generic phrasing WITH entities → entities win → **DIRECTED_ANALYSIS** (confidence 0.65)
+2. Self-reference phrasing bound to the assistant ("what model are you?", "how do you work?", "generating these responses") WITHOUT hard entities, error keywords or case references → **AGENT_META** (confidence 0.85, #1328)
+3. Knowledge-seeking phrasing WITHOUT hard entities or case references → **KNOWLEDGE_QUERY** (confidence 0.85)
+4. Specific entities + interrogative structure ("what", "why", "how") → **DIRECTED_ANALYSIS** (confidence 0.9)
+5. Entities + non-generic phrasing → **DIRECTED_ANALYSIS** (confidence 0.75)
+6. Generic phrasing without entities → **TRIAGE** (confidence 0.85)
+7. Generic phrasing WITH entities → entities win → **DIRECTED_ANALYSIS** (confidence 0.65)
 7. Interrogative without entities → **DIRECTED_ANALYSIS** (confidence 0.6)
 8. Ambiguous → **DIRECTED_ANALYSIS** (confidence 0.5, DA subsumes Triage)
 
@@ -1196,6 +1198,8 @@ temporal distribution). The DA mode prompt governs tool selection strategy; the
 evidence grounding block governs what source to answer from.
 
 **Knowledge Query mode**: Knowledge queries get tool access with `tool_choice="auto"` — the LLM can invoke `kb_qa` for runbook content or answer from built-in knowledge. `KNOWLEDGE_QUERY_INSTRUCTIONS` is injected as `adaptive_instructions` and `evidence_grounding=""` is passed, so the EVIDENCE GROUNDING block is absent from the rendered prompt entirely. Diagnostic reasoning validation is also skipped.
+
+**Agent Meta mode** (#1328): the same two waivers, with `AGENT_META_INSTRUCTIONS` (a high-level self-knowledge profile plus an answer discipline: a few sentences, docs link, say the model is not told which provider serves the deployment, no tool calls, never request FaultMaven's configuration as evidence, case state untouched) as `adaptive_instructions`. Tools are never forced. A turn that delivers evidence is re-routed before the prompt is built: to Directed Analysis in INVESTIGATING, to Triage in INQUIRY.
 
 **System Instruction (Type A/B/C routing)**: The system instruction includes question routing guidance:
 

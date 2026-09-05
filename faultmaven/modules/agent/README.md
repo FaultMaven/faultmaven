@@ -75,7 +75,8 @@ reporting, and session integration.
 ### QueryClassifier
 
 Classifies a user message into a processing mode — `TRIAGE`,
-`DIRECTED_ANALYSIS`, or `KNOWLEDGE_QUERY` — from entity-detection heuristics.
+`DIRECTED_ANALYSIS`, `KNOWLEDGE_QUERY`, or `AGENT_META` (a question about
+FaultMaven itself, #1328) — from entity-detection heuristics.
 Deterministic and LLM-free, so it is cheap enough to run on every turn.
 
 ---

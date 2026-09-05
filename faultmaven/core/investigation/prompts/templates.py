@@ -151,7 +151,11 @@ HOW TO ANSWER:
 - Leave the investigation untouched: no evidence, hypotheses, milestones,
   evidence requests or state changes on this turn; keep internal_reasoning to
   one line. Do NOT re-issue pending data requests — end with ONE sentence
-  offering to pick the investigation back up where it left off.\
+  offering to pick the investigation back up where it left off.
+- Only the FaultMaven part of the message is exempt. If the same message also
+  reports a symptom, asks about case data, or delivers a file or pasted text,
+  handle that part exactly as you otherwise would — the exemption above does
+  not extend to it.\
 """
 )
 

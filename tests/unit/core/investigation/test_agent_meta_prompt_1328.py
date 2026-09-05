@@ -42,6 +42,7 @@ from faultmaven.core.investigation.prompts.templates import (
 )
 from faultmaven.modules.agent.domain.services.investigation_service import (
     _EVIDENCE_REROUTE_MODES,
+    _attachment_reroute,
 )
 from faultmaven.modules.agent.domain.services.query_classifier import (
     ProcessingMode,
@@ -250,7 +251,7 @@ class TestEngineRouting:
             ["search_file", "deep_analysis", "kb_qa"], "submit_investigation_response"
         )
         assert "TYPE D — ABOUT FAULTMAVEN" in instruction
-        assert "Do NOT search the evidence or the knowledge base" in instruction
+        assert "do NOT search the evidence or the knowledge base" in instruction
         # The uncertainty default is scoped to the case/knowledge types.
         assert "When uncertain between Types A–C" in instruction
 
@@ -259,3 +260,40 @@ class TestEngineRouting:
         assert ProcessingMode.AGENT_META in _EVIDENCE_REROUTE_MODES
         assert ProcessingMode.TRIAGE in _EVIDENCE_REROUTE_MODES
         assert ProcessingMode.KNOWLEDGE_QUERY in _EVIDENCE_REROUTE_MODES
+        for mode in _EVIDENCE_REROUTE_MODES:
+            assert (
+                _attachment_reroute(CaseState.INVESTIGATING, mode)
+                == ProcessingMode.DIRECTED_ANALYSIS
+            )
+
+    def test_inquiry_upload_with_meta_question_reroutes_to_triage(self):
+        """PR #1334 review: 'before we start, what model are you?' + dmesg.log
+        on a fresh case must characterise the file, not render the meta block
+        ahead of the INQUIRY role. TRIAGE is INQUIRY's file-drop mode."""
+        assert (
+            _attachment_reroute(CaseState.INQUIRY, ProcessingMode.AGENT_META)
+            == ProcessingMode.TRIAGE
+        )
+        # The #708 scope is unchanged: other INQUIRY modes are not rerouted.
+        assert _attachment_reroute(CaseState.INQUIRY, ProcessingMode.TRIAGE) is None
+        assert (
+            _attachment_reroute(CaseState.INQUIRY, ProcessingMode.KNOWLEDGE_QUERY)
+            is None
+        )
+        assert (
+            _attachment_reroute(
+                CaseState.INVESTIGATING, ProcessingMode.DIRECTED_ANALYSIS
+            )
+            is None
+        )
+
+    def test_mixed_turn_clauses_present(self):
+        """Both instruction layers scope the exemption to the FaultMaven part."""
+        assert (
+            "Only the FaultMaven part of the message is exempt"
+            in AGENT_META_INSTRUCTIONS
+        )
+        instruction = MilestoneEngine._build_da_system_instruction(
+            ["search_file", "deep_analysis", "kb_qa"], "submit_investigation_response"
+        )
+        assert "that part is Type A/B/C" in instruction
