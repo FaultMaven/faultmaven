@@ -129,7 +129,7 @@ class TestLoggingSettingsMapping:
         with patch.dict(
             os.environ,
             {
-                "LOG_OUTPUT_FORMAT": "console",
+                "LOG_FORMAT": "console",
                 "LOG_DEDUPE": "false",
                 "LOG_BUFFER_SIZE": "200",
                 "LOG_FLUSH_INTERVAL": "10.0",
@@ -422,7 +422,7 @@ class TestSettingsIntegration:
             {
                 "CONFIG_PRESET": "",  # Disable preset auto-detection
                 "LOG_LEVEL": "DEBUG",
-                "LOG_OUTPUT_FORMAT": "console",
+                "LOG_FORMAT": "console",
                 "LOG_DEDUPE": "false",
             },
         ):

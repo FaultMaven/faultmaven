@@ -1856,13 +1856,12 @@ class LoggingSettings(BaseSettings):
     """Logging configuration"""
 
     level: LogLevel = Field(default=LogLevel.INFO, validation_alias="LOG_LEVEL")
-    format: str = Field(
-        default="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        validation_alias="LOG_FORMAT",
-    )
-
-    # Structlog format type: 'json' or 'console'
-    log_output_format: str = Field(default="json")
+    # Renderer selection. ``LOG_FORMAT`` is the name operators are given and the
+    # one the production ConfigMap sets; it used to bind a stdlib printf template
+    # that nothing read, while the switch that actually chooses the renderer was
+    # ``log_output_format`` under the undocumented ``LOG_OUTPUT_FORMAT``. Setting
+    # the documented knob therefore did nothing. One field, the documented name.
+    log_output_format: str = Field(default="json", validation_alias="LOG_FORMAT")
 
     # Log deduplication (prevents repeated log messages)
     log_dedupe: bool = Field(default=True)
