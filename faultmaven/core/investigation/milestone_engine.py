@@ -410,6 +410,8 @@ def _route_toolless_turn_single_shot(
     Kept on the tool loop: forced-tool (directed-analysis) turns, turns with
     searchable material, and ``knowledge_query`` turns — the last rely on
     ``kb_qa``/``web_search``, which the single-shot path cannot call.
+    ``agent_meta`` turns (#1328) need no tool and follow the material rule
+    like any other non-forced turn.
     """
     if force_tools or processing_mode == "knowledge_query":
         return False
@@ -8234,10 +8236,20 @@ class MilestoneEngine:
             "'Are these SSH settings secure?'\n"
             "→ Search evidence first to understand the current state, then use "
             "your knowledge, web_search, or KB tools for the reference baseline.\n\n"
-            "DEFAULT: When uncertain, treat it as Type A (case question) — "
-            "evidence search is always safe. Only skip evidence search when "
-            "the question clearly cannot be answered from log files, configs, "
-            "or other submitted data.\n\n"
+            "TYPE D — ABOUT FAULTMAVEN (the assistant itself):\n"
+            "Questions about YOU — which model or provider generates these "
+            "responses, how you retrieve runbooks, who built you, what you can "
+            "do. Examples: 'What LLM are you running on?', 'How do you work "
+            "under the hood?'\n"
+            "→ Do NOT search the evidence or the knowledge base: FaultMaven is "
+            "not the system under investigation and nothing about it is in the "
+            "case. Answer briefly from the ABOUT FAULTMAVEN / self-reference "
+            "guidance in your instructions, never request FaultMaven's own "
+            f"configuration as evidence, then call {schema_tool_name}.\n\n"
+            "DEFAULT: When uncertain between Types A–C, treat it as Type A "
+            "(case question) — evidence search is always safe. Only skip "
+            "evidence search when the question clearly cannot be answered from "
+            "log files, configs, or other submitted data.\n\n"
             "IMPORTANT — Search for the specific entity, not the event type:\n"
             "When the user asks about a specific IP, hostname, username, error "
             "code, or timestamp, search for THAT value directly — e.g., "

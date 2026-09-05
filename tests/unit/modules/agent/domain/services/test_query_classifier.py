@@ -1,7 +1,7 @@
 """Tests for the query classifier — scenario-driven processing mode routing.
 
 Validates that classify_query() correctly routes user messages to
-TRIAGE, KNOWLEDGE_QUERY, or DIRECTED_ANALYSIS based on heuristic
+TRIAGE, KNOWLEDGE_QUERY, AGENT_META, or DIRECTED_ANALYSIS based on heuristic
 entity detection and phrasing analysis. No LLM involved — this is deterministic.
 """
 
@@ -13,6 +13,7 @@ from faultmaven.modules.agent.domain.services.query_classifier import (
     _extract_entities,
     _has_case_reference,
     _has_interrogative_structure,
+    _is_agent_self_reference,
     _is_generic_request,
     _is_knowledge_question,
     classify_query,
@@ -432,3 +433,102 @@ class TestClassifyQueryKnowledgeMode:
         """Knowledge query classification has no entities."""
         result = classify_query("What is Opik?")
         assert result.detected_entities == {}
+
+
+# ============================================================
+# Agent self-reference (#1328)
+# ============================================================
+
+
+class TestAgentSelfReference:
+    """#1328: a question about FaultMaven ITSELF routes to AGENT_META.
+
+    Before this mode existed the reported message classified as
+    DIRECTED_ANALYSIS (question words, no knowledge phrasing, no entities),
+    so in INVESTIGATING it was sent with ``tool_choice=required`` under the
+    EVIDENCE GROUNDING block — and the agent asked the user for FaultMaven's
+    own deployment manifests as case evidence.
+    """
+
+    REPORTED = (
+        "Curious about how you work under the hood though: what LLM model and "
+        "provider are currently generating these responses? Are you using a "
+        "single model or routing tasks across different models, and what "
+        "embedding model and vector database power your runbook retrieval?"
+    )
+
+    def test_reported_message_routes_to_agent_meta(self):
+        result = classify_query(self.REPORTED)
+        assert result.mode == ProcessingMode.AGENT_META
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "What model are you?",
+            "Which LLM provider is generating these responses?",
+            "Who built you?",
+            "How do you work?",
+            "how were you built",
+            "What is your architecture?",
+            "Are you open source?",
+            "are you an AI?",
+            "Can you explain how you retrieve runbooks?",
+            "what vector db do you use",
+            "Which embedding model powers your runbook retrieval?",
+            "are you using a single model or routing across several?",
+            "what is your context window",
+            "Do you use ChromaDB or Postgres for retrieval?",
+            "What is FaultMaven?",
+            "tell me about faultmaven",
+        ],
+    )
+    def test_self_referential_phrasings(self, message):
+        assert classify_query(message).mode == ProcessingMode.AGENT_META
+
+    def test_service_names_do_not_block(self):
+        """The subject can name a service and still be about the assistant."""
+        result = classify_query("Do you use ChromaDB or Postgres for retrieval?")
+        assert result.mode == ProcessingMode.AGENT_META
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            # Addressing the advisor about the CASE is not self-reference.
+            "Could you check the logs for me?",
+            "what do you see in this file?",
+            "do you think the deploy caused this?",
+            "Are you sure the OOM killer killed postgres?",
+            "what is your recommendation for the next step?",
+            # "model" / "you" / "your" in a diagnostic sense.
+            "What model of NIC is in the server?",
+            "Which model is the load balancer using for health checks?",
+            "Which model do you recommend for the replacement GPU node?",
+            "Explain your reasoning for that hypothesis.",
+            "What is your version of the timeline?",
+            # General knowledge stays KNOWLEDGE_QUERY.
+            "How does the OOM killer choose a victim?",
+            "What is Redis used for?",
+        ],
+    )
+    def test_case_and_knowledge_questions_are_not_self_reference(self, message):
+        assert classify_query(message).mode != ProcessingMode.AGENT_META
+
+    def test_case_reference_blocks_self_reference(self):
+        """A question anchored to case data is about the case however phrased."""
+        result = classify_query("What does the log say about you?")
+        assert result.mode != ProcessingMode.AGENT_META
+
+    def test_hard_entities_block_self_reference(self):
+        result = classify_query("What model are you, and what happened at 14:00?")
+        assert result.mode == ProcessingMode.DIRECTED_ANALYSIS
+
+    def test_precedes_knowledge_classification(self):
+        """'How do you work?' also matches knowledge phrasing; self-reference wins."""
+        assert _is_knowledge_question("How do you work?", {})
+        assert classify_query("How do you work?").mode == ProcessingMode.AGENT_META
+
+    def test_predicate_is_exposed(self):
+        assert _is_agent_self_reference("who are you", {}) is True
+        assert (
+            _is_agent_self_reference("who are you", {"timestamps": ["14:00"]}) is False
+        )

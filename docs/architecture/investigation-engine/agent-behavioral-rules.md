@@ -45,10 +45,12 @@ Rules that fail this test belong elsewhere:
 | 6 | [Knowledge First](#rule-6-knowledge-first) | INQUIRY + INVESTIGATING + DA | Three injection points | Structural: KB lookup as default over independent diagnosis |
 | 7 | [Signal Extraction](#rule-7-signal-extraction) | Substantive turns | INQUIRY + INVESTIGATION_BASE | Internal scaffold: operational content identified before response |
 | 8 | [Full-Context Reasoning](#rule-8-full-context-reasoning) | Diagnostic turns | INVESTIGATION_BASE | Prompt-layer prescription: response must reference prior-case context when drawing conclusions |
+| 9 | [Know Thyself](#rule-9-know-thyself) | All active turns | Shared advisor block (backstop) + `agent_meta` mode block | Conditional routing: question about the assistant → self-knowledge profile, grounding waived, no evidence request |
 
 **Rules 1–3, 6** govern **what the agent does** (effectiveness).
 **Rules 4–5** govern **how the agent handles adversity** (resilience).
 **Rules 7–8** govern **how the agent reads its inputs** (reading quality).
+**Rule 9** governs **which system a question is about** (target disambiguation).
 
 Cross-turn concerns (stall detection, progress pressure, goal pursuit) are not prompt rules — they are handled by the progress transparency system at the orchestration layer. See [Progress Transparency](./progress-transparency.md).
 
@@ -378,6 +380,35 @@ explicitly. The latest turn is not the only input.
 **Why it matters**: Recency bias is the LLM's strongest default failure in multi-turn conversations. Without counter-pressure, the agent re-proposes refuted hypotheses, re-asks for data already provided, and re-opens closed questions. Each of these wastes a turn and signals to the user that the agent isn't tracking the investigation.
 
 **Complements Rule 7**: Rule 7 extracts the operational signal from the current input. Rule 8 integrates that signal with the rest of the investigation. Together they form the intake discipline — read what's in front of you, read what came before, then respond.
+
+---
+
+## Rule 9: Know Thyself
+
+**What it prevents**: A question about FaultMaven itself ("what LLM model and provider are generating these responses?", "how do you retrieve runbooks?", "who built you?") is treated as a diagnostic request about the system under investigation. Under Rule 2 the agent cannot find FaultMaven's architecture in the case evidence, so it asks the user for FaultMaven's own deployment manifests and runtime configuration as evidence (#1328). The opposite failure — confidently naming a vendor or model the prompt never told it — is a confabulation in exactly Rule 2's sense.
+
+**Behavior**: Answer about the assistant, briefly and honestly, at a high level: what FaultMaven is (a source-available, self-hostable troubleshooting copilot), how it investigates (milestone engine, hypotheses, evidence grounding), how it retrieves knowledge (vector KB with BGE-M3 embeddings and a rerank), and that it routes across multiple LLM providers by capability. The model is **not told which provider or model serves the deployment**; the honest answer says so and points the operator at the Dashboard's LLM Config rather than guessing. Depth is delegated to the repository docs, which keeps the answer to a few sentences. The case is left untouched: no evidence, hypotheses, milestones, evidence requests or state changes on that turn.
+
+**Injection points** — two layers, sized to how often each is paid:
+
+1. **Backstop, every active turn** — `_SELF_REFERENCE_RULE`, a few lines inside `_ACTIVE_ADVISOR_ROLE_BLOCK` (INQUIRY + INVESTIGATION_BASE). Catches phrasings the heuristic classifier misses; forbids requesting FaultMaven's configuration as evidence and guessing a model name.
+2. **Full profile, `agent_meta` turns only** — `classify_query` routes self-referential questions to `ProcessingMode.AGENT_META` (checked before the knowledge gate; same two blocking gates — no hard case entity, no case reference — so "what does the log say about you" stays a case question). `get_prompt_for_case` then renders `AGENT_META_INSTRUCTIONS` (the `ABOUT FAULTMAVEN` profile + answer discipline) as the stage instructions in INVESTIGATING, or through the `{agent_meta_instructions}` slot in INQUIRY, and waives `{evidence_grounding}` and `{diagnostic_reasoning}` exactly as for `knowledge_query`. The tool-loop system instruction gains a matching **Type D** so its "when uncertain, search the evidence" default stops at Types A–C. Tools are never forced for the mode; a fresh evidence-bearing upload on the same turn still re-routes to Directed Analysis (#708).
+
+**Prompt injection** (backstop):
+
+```text
+Questions about YOU — which model or provider you run on, how you retrieve
+runbooks, who built you, what you can do — are about FaultMaven, not about
+the system under investigation. Answer them briefly and honestly: ... you are
+not told which model serves this deployment (the operator can see it under
+LLM Config). Point to https://github.com/FaultMaven/faultmaven for detail.
+NEVER ask for FaultMaven's own configuration, manifests or logs as case
+evidence, and never guess a vendor or model name.
+```
+
+**Why not inject the live provider/model name**: the engine knows it (`provider_name`/`model_name` reach `get_prompt_for_case` for token budgeting). Deliberately withheld from the prompt: it is operator configuration, it can differ per role (chat / classifier / synthesis), it would be paid on every turn or add a second mode-specific slot, and a self-hosted operator already has it in `.env` while a Cloud tenant's user has no standing to it. Honest "I am not told; the operator can see it here" is cheaper and cannot go stale.
+
+**Enforcement**: `tests/unit/modules/agent/domain/services/test_query_classifier.py::TestAgentSelfReference` (routing, positives and the case-question negatives) and `tests/unit/core/investigation/test_agent_meta_prompt_1328.py` (prompt dispatch, waiver, backstop presence, Type D, routing predicates, #708 composition).
 
 ---
 

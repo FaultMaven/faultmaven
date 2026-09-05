@@ -74,6 +74,9 @@ from faultmaven.models.api_models import (
     SuggestedActionResponse,
     TurnResponse,
 )
+from faultmaven.modules.agent.domain.services.query_classifier import (
+    ProcessingMode,
+)
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.case.contracts import (
@@ -1034,6 +1037,17 @@ class _PreprocessedAttachment:
     attachment_filename: Optional[str] = None
 
 
+# Modes a fresh evidence-bearing attachment re-routes to DIRECTED_ANALYSIS
+# (#708). TRIAGE and KNOWLEDGE_QUERY were the original two; AGENT_META joined
+# in #1328 for the same reason — a question about the assistant delivered
+# alongside a new upload must not let the agent skip the upload.
+_EVIDENCE_REROUTE_MODES = (
+    ProcessingMode.TRIAGE,
+    ProcessingMode.KNOWLEDGE_QUERY,
+    ProcessingMode.AGENT_META,
+)
+
+
 def _turn_delivers_evidence_bearing_attachment(
     preprocess_results: List["_PreprocessedAttachment"],
 ) -> bool:
@@ -1348,10 +1362,9 @@ class InvestigationService:
             # index, not forced into directed analysis before the problem
             # statement is confirmed. (Terminal turns never reach the engine's
             # generation path — they short-circuit to _process_terminal_turn.)
-            _reroute_modes = (ProcessingMode.TRIAGE, ProcessingMode.KNOWLEDGE_QUERY)
             if (
                 case.state == CaseState.INVESTIGATING
-                and classification.mode in _reroute_modes
+                and classification.mode in _EVIDENCE_REROUTE_MODES
                 and _turn_delivers_evidence_bearing_attachment(preprocess_results)
             ):
                 prior_mode = classification.mode.value

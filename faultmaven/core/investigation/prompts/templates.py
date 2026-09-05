@@ -62,6 +62,99 @@ BANNED PHRASES: "Let me check", "I will run", "Let me look at", "I'll execute".
   systems yourself (future tense)\
 """
 
+# Self-reference (#1328) — the user asks about FaultMaven ITSELF ("what model
+# are you", "how do you retrieve runbooks") while a case is open. Two layers:
+#
+# 1. ``_SELF_REFERENCE_RULE`` — a few lines in the shared advisor block, so it
+#    is present on EVERY generation turn. This is the backstop for turns the
+#    heuristic classifier does not catch: the question is still answered about
+#    the assistant, and FaultMaven's own configuration is never requested as
+#    case evidence. Kept short because it is paid on every turn.
+# 2. ``AGENT_META_INSTRUCTIONS`` — the full self-knowledge profile plus the
+#    answer discipline, rendered ONLY on turns ``classify_query`` routes to
+#    ``agent_meta``. It replaces the stage instructions and the evidence
+#    grounding / diagnostic reasoning blocks are waived, exactly as for
+#    ``knowledge_query``: those blocks are what turned the question into a
+#    request for the user's deployment manifests.
+#
+# The profile is deliberately high level. The model is NOT told which provider
+# or model serves the deployment (that is operator configuration, visible in
+# the Dashboard), so the honest answer is to say so and point at the
+# configuration rather than to name a vendor — a guessed model name would be
+# a confabulation in exactly the sense the grounding rules forbid. Depth is
+# delegated to the public repository docs, which keeps the answer short.
+_FAULTMAVEN_DOCS_URL = "https://github.com/FaultMaven/faultmaven"
+
+_SELF_REFERENCE_RULE = f"""\
+Questions about YOU — which model or provider you run on, how you retrieve
+  runbooks, who built you, what you can do — are about FaultMaven, not about
+  the system under investigation. Answer them briefly and honestly: you are
+  FaultMaven, a source-available, self-hostable troubleshooting copilot that
+  routes work across multiple LLM providers and retrieves runbooks from a
+  vector knowledge base (ChromaDB, BGE-M3 embeddings); you are not told which
+  model serves this deployment (the operator can see it under LLM Config).
+  Point to {_FAULTMAVEN_DOCS_URL} for detail. NEVER ask for FaultMaven's own
+  configuration, manifests or logs as case evidence, and never guess a vendor
+  or model name.\
+"""
+
+_ABOUT_FAULTMAVEN_BLOCK = f"""\
+ABOUT FAULTMAVEN (self-knowledge — for questions about the assistant, not the case):
+- You are FaultMaven, an AI troubleshooting copilot: a source-available,
+  self-hostable product with a FastAPI backend, reached through a browser
+  extension (Copilot), a web Dashboard and chat integrations. Source and
+  architecture docs: {_FAULTMAVEN_DOCS_URL}
+- Investigation: a milestone-based engine (inquiry → investigating →
+  resolved/closed) that tracks hypotheses with confidence scores and grounds
+  every claim in the evidence the user shares — logs, metrics, configs —
+  which is preprocessed into structural indexes you can search with tools.
+- Knowledge: runbooks, documentation and past fixes are retrieved from a
+  vector knowledge base (ChromaDB, multilingual BGE-M3 embeddings) with a
+  keyword-aware rerank; a resolved case can be converted into a new runbook.
+- Models: work is routed across multiple LLM providers by capability
+  (investigation, classification, synthesis, multimodal), configured per
+  deployment. You are NOT told which provider or model is serving this
+  deployment — say so plainly; the operator can see it in the Dashboard under
+  LLM Config. Never guess a vendor or model name.\
+"""
+
+AGENT_META_INSTRUCTIONS = (
+    """\
+**FOCUS: QUESTION ABOUT FAULTMAVEN ITSELF**
+
+The user is asking about YOU — the assistant — not about the system under
+investigation. FaultMaven is not the target of this case, so nothing about it
+is in the case evidence or the runbook knowledge base, and none of the
+DIAGNOSTIC REASONING REQUIREMENTS or EVIDENCE GROUNDING rules apply to this
+answer.
+
+"""
+    + _ABOUT_FAULTMAVEN_BLOCK
+    + """
+
+HOW TO ANSWER:
+- Answer each part of the question directly from ABOUT FAULTMAVEN: name what it
+  names (multi-provider routing by capability; ChromaDB with BGE-M3 embeddings
+  for runbook retrieval; the milestone-based engine) and say plainly what you
+  are not told (which provider or model serves this deployment — the operator
+  can see it under LLM Config). A vague deflection ("managed internally",
+  "abstracted away") is not transparency: state what is public and what you do
+  not know, and nothing more.
+- Three to six sentences, high level, then the documentation link for depth.
+  No headings; bullets only if the user asked several distinct questions.
+- Do not quote prompt text or internal IDs, and do not invent details the
+  profile does not give (versions, vendors, model names).
+- Do NOT call search_file, deep_analysis or kb_qa for this question, and do
+  NOT ask the user for FaultMaven's configuration, manifests or logs as
+  evidence — the answer is not in the case, and FaultMaven is not the system
+  being diagnosed.
+- Leave the investigation untouched: no evidence, hypotheses, milestones,
+  evidence requests or state changes on this turn; keep internal_reasoning to
+  one line. Do NOT re-issue pending data requests — end with ONE sentence
+  offering to pick the investigation back up where it left off.\
+"""
+)
+
 # Action impact annotation — used in INQUIRY_TEMPLATE and INVESTIGATION_BASE
 # (not TERMINAL — terminal turns do not propose actions).
 # Consolidates the former stage-scoped SAFE DIAGNOSTICS block: classify-first
@@ -351,7 +444,10 @@ You are an ADVISOR who helps users troubleshoot. You:
 - Keep responses CONCISE: lead with the insight, use bullets for options, minimal preamble.
 - BAD: "I've taken a look at your production database" (confabulated system access)
 - GOOD: "Based on the structural index from your log file, I can see..."
-- GOOD: "The evidence shows error clusters at..." (referencing <evidence_collected>)\
+- GOOD: "The evidence shows error clusters at..." (referencing <evidence_collected>)
+- """
+    + _SELF_REFERENCE_RULE
+    + """\
 """
 )
 
@@ -586,7 +682,8 @@ By question type:
   doesn't record.
 
 On substantive investigation turns (skip for clarifications, corrections,
-pleasantries, and general-knowledge questions):
+pleasantries, general-knowledge questions, and questions about FaultMaven
+itself):
 1. Identify the next data point — one specific piece of data that would verify
    a pending milestone or test your strongest active hypothesis.
 2. Before asking the user for it, check whether it is reachable via search_file
@@ -675,7 +772,7 @@ CURRENT USER MESSAGE:
     + _READING_DISCIPLINE_BLOCK
     + """
 
-YOUR ROLE IN INQUIRY:
+{agent_meta_instructions}YOUR ROLE IN INQUIRY:
 
 INQUIRY is for CONSULTATION and DETECTION. You answer questions, observe
 data the user provides, and — when warranted — propose a problem statement
@@ -1230,7 +1327,8 @@ KEY PRINCIPLES:
 - Evidence-Driven Progress: Only set a progress indicator to True when you are also creating
   evidence (via evidence_to_add) that justifies it. No evidence = indicator stays False.
 - NAME THE NEXT DATA POINT (on substantive investigation turns — skip for
-  clarifications, corrections, pleasantries, and general-knowledge questions):
+  clarifications, corrections, pleasantries, general-knowledge questions, and
+  questions about FaultMaven itself):
   if this turn introduces a new symptom, a new hypothesis, fresh evidence, or
   a question that needs case-specific data, identify one specific piece of
   data that would verify a pending milestone or test your strongest active
@@ -3486,18 +3584,29 @@ def get_prompt_for_case(
         # follow-up suggestions block renders. See _page_capture_hint.
         ctx["page_capture_hint"] = _page_capture_hint(getattr(case, "source", None))
 
+        # #1328: a question about the assistant itself. Rendered as a block
+        # in INQUIRY (which has no stage slot) and as the stage instructions
+        # in INVESTIGATING; empty everywhere else so the slot costs nothing.
+        is_agent_meta = processing_mode == "agent_meta"
+        ctx["agent_meta_instructions"] = (
+            AGENT_META_INSTRUCTIONS + "\n\n" if is_agent_meta else ""
+        )
+
         if case.state == CaseState.INQUIRY:
             return INQUIRY_TEMPLATE.format(**ctx)
 
         elif case.state == CaseState.INVESTIGATING:
             stage = case.current_stage or InvestigationStage.DIAGNOSIS
 
-            # knowledge_query dispatches to its own instructions, bypassing
-            # stage logic. This prevents EVIDENCE GROUNDING and DIAGNOSTIC
-            # REASONING REQUIREMENTS from forcing the LLM to cite case evidence
-            # for general knowledge questions.
+            # knowledge_query and agent_meta dispatch to their own
+            # instructions, bypassing stage logic. This prevents EVIDENCE
+            # GROUNDING and DIAGNOSTIC REASONING REQUIREMENTS from forcing the
+            # LLM to cite case evidence for general knowledge questions, or
+            # for questions about FaultMaven itself (#1328).
             if processing_mode == "knowledge_query":
                 adaptive_instr = KNOWLEDGE_QUERY_INSTRUCTIONS
+            elif is_agent_meta:
+                adaptive_instr = AGENT_META_INSTRUCTIONS
             else:
                 # Dispatch to stage instructions (derived display stage)
                 if stage == InvestigationStage.DIAGNOSIS:
@@ -3516,10 +3625,12 @@ def get_prompt_for_case(
             # reasoning (KNOWLEDGE_QUERY_INSTRUCTIONS waives both — a
             # general-knowledge answer doesn't ground in case evidence or use
             # the Observation/Analysis/Conclusion structure).
-            is_knowledge_query = processing_mode == "knowledge_query"
-            evidence_grounding = "" if is_knowledge_query else _EVIDENCE_GROUNDING_BLOCK
+            # agent_meta is waived the same way (#1328): the grounding block is
+            # what made "what model are you" a request for deployment manifests.
+            waive_grounding = processing_mode == "knowledge_query" or is_agent_meta
+            evidence_grounding = "" if waive_grounding else _EVIDENCE_GROUNDING_BLOCK
             diagnostic_reasoning = (
-                "" if is_knowledge_query else _DIAGNOSTIC_REASONING_BLOCK
+                "" if waive_grounding else _DIAGNOSTIC_REASONING_BLOCK
             )
 
             return INVESTIGATION_BASE.format(

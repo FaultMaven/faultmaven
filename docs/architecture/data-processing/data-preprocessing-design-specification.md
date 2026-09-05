@@ -212,7 +212,7 @@ Three changes close a class of first-request cold-start incidents where a 225 KB
 
 ### 1.1 Scenario-Driven Processing Model
 
-Data submitted to FaultMaven — whether uploaded files or pasted text — is always preprocessed through Tier 0+1 (structural indexing). Subsequent processing is determined by a **mechanical query classifier** that routes to one of three processing modes based on heuristic entity detection and phrasing analysis. No LLM is involved in mode selection.
+Data submitted to FaultMaven — whether uploaded files or pasted text — is always preprocessed through Tier 0+1 (structural indexing). Subsequent processing is determined by a **mechanical query classifier** that routes to one of four processing modes (Triage, Directed Analysis, Knowledge Query, Agent Meta — the last for questions about FaultMaven itself, #1328) based on heuristic entity detection and phrasing analysis. No LLM is involved in mode selection.
 
 ```
                     SUBMISSION
