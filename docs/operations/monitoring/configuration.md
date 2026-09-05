@@ -23,7 +23,7 @@ This document provides a comprehensive reference for configuring the FaultMaven 
 | Environment Variable | Default Value | Description | Valid Values |
 |---------------------|---------------|-------------|--------------|
 | `LOG_LEVEL` | `INFO` | Global log level | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
-| `LOG_FORMAT` | `json` | Log output format | `json`, `text`, `structured` |
+| `LOG_FORMAT` | `json` | Renderer for structured log output | `json`, `console` |
 | `LOG_ENABLE_TRACING` | `true` | Enable OpenTelemetry tracing integration | `true`, `false` |
 | `LOG_ENABLE_METRICS` | `true` | Enable metrics collection and export | `true`, `false` |
 | `LOG_ENABLE_REQUEST_CONTEXT` | `true` | Enable request context management | `true`, `false` |

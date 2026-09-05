@@ -17,6 +17,18 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from ...exceptions import ErrorSeverity, RecoveryResult
 
 
+def _log_settings():
+    """LoggingSettings, resolved at call time.
+
+    At call time on purpose: importing settings at module import would bootstrap
+    the settings singleton during import, which ``llm/router.py`` documents as
+    harmful (it runs load_dotenv and applies presets that mutate os.environ).
+    """
+    from faultmaven.config.settings import get_settings
+
+    return get_settings().logging
+
+
 @dataclass
 class RequestContext:
     """
@@ -877,11 +889,18 @@ class LoggingCoordinator:
                 if ctx and ctx.performance_tracker
                 else 0
             ),
+            # Report the EFFECTIVE settings, not the raw environment. Reading
+            # os.getenv here made this a second source of truth for the same
+            # knobs: it echoed whatever string was exported while the renderer
+            # used the parsed, normalised value, so LOG_FORMAT=CONSOLE was
+            # reported as "CONSOLE" against a console renderer and LOG_FORMAT=text
+            # as "text" against a JSON one. A health endpoint that can disagree
+            # with the running configuration is the fm#1029 shape.
             "configuration": {
-                "log_level": os.getenv("LOG_LEVEL", "INFO"),
-                "log_format": os.getenv("LOG_FORMAT", "json"),
-                "deduplication": os.getenv("LOG_DEDUPE", "true"),
-                "buffer_size": os.getenv("LOG_BUFFER_SIZE", "100"),
-                "flush_interval": os.getenv("LOG_FLUSH_INTERVAL", "5"),
+                "log_level": _log_settings().level.value.upper(),
+                "log_format": _log_settings().log_output_format,
+                "deduplication": str(_log_settings().log_dedupe).lower(),
+                "buffer_size": str(_log_settings().log_buffer_size),
+                "flush_interval": str(_log_settings().log_flush_interval),
             },
         }

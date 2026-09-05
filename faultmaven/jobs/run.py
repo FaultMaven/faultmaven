@@ -119,12 +119,40 @@ AVAILABLE_JOBS: Dict[str, str] = {
 }
 
 
+def _job_log_format() -> str:
+    """Line format for a job, honouring LOG_FORMAT like the API does.
+
+    ``json`` is the shipped default and what the ConfigMap sets, so a CronJob's
+    output is parsed by the log collector's JSON stage and carries a `level`
+    label; anything else renders the plain-text line. Read through settings, not
+    os.getenv, so the value is the same normalised one the API renders with.
+    """
+    try:
+        from faultmaven.config.settings import get_settings
+
+        if get_settings().logging.log_output_format == "json":
+            return (
+                '{"timestamp": "%(asctime)s", "logger": "%(name)s", '
+                '"level": "%(levelname)s", "event": "%(message)s"}'
+            )
+    except Exception:  # settings unavailable: keep the job runnable
+        pass
+    return "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+
 def setup_logging(verbose: bool = False) -> None:
     """Configure logging for CLI execution."""
     level = logging.DEBUG if verbose else logging.INFO
+    # ``format`` mirrors the console renderer's shape for the plain-text case.
+    # Jobs deliberately do NOT go through FaultMavenLogger: they are short-lived
+    # processes whose output the collector reads as-is, and structlog's
+    # configuration is global state a job has no reason to install. What they DO
+    # honour is the same knob the API honours — LOG_FORMAT=json emits JSON here
+    # too, so a CronJob's lines carry the `level` label the collector extracts.
+    fmt = _job_log_format()
     logging.basicConfig(
         level=level,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        format=fmt,
         handlers=[logging.StreamHandler(sys.stdout)],
     )
 
