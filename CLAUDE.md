@@ -627,7 +627,6 @@ python scripts/backfill_closed_at_timestamps.py  # Backfill case timestamps
 
 # Architecture & Validation
 python scripts/check_import_violations.py  # Check architecture
-python scripts/check_config_compliance.py  # Validate configuration
 python scripts/generate_api_docs.py --check  # Detect API reference drift (CI gate)
 
 # Development & Testing

@@ -135,6 +135,11 @@ celerybeat.pid
 # ".env-back" is exactly how live provider keys reached this repo's history.
 # Only the tracked template is exempt.
 .env*
+
+# Local import-pinning shim used when testing a git worktree against the
+# shared editable install. Dev scaffolding: it strips the editable finder from
+# sys.meta_path, so it must never ship.
+.pin/
 !.env.example
 # Same mistake without the leading dot.
 env.backup*
