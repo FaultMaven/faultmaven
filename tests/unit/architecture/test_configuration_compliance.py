@@ -26,32 +26,85 @@ from faultmaven.models.exceptions import ConfigurationError
 from tests.utils import get_live_settings as get_settings
 from tests.utils import reset_settings_singleton as reset_settings
 
+# Direct ``os.getenv`` reads that predate this gate being repaired, frozen
+# 2026-09-05 (#1332). The scanner pointed at a non-existent directory from the
+# moment this file moved to ``tests/unit/architecture/``, so these accumulated
+# behind a green check. Repointing it without a baseline fails CI on 40
+# pre-existing findings and says nothing about the change that turned it red.
+#
+# A RATCHET, not a target: a new offending file, or a higher count in one
+# already listed, fails. Lowering an entry is always welcome — reduce the count,
+# or delete the entry when it reaches zero. Which of these are legitimate
+# (``config/presets.py`` writes the environment by design, ``bootstrap/`` runs
+# before settings exist) and which are real bypasses is triaged in #1332.
+KNOWN_ENV_ACCESS = {
+    "faultmaven/bootstrap/data_init.py": 2,
+    "faultmaven/config/presets.py": 11,
+    "faultmaven/config/protection.py": 2,
+    "faultmaven/infrastructure/llm/pricing.py": 1,
+    "faultmaven/infrastructure/llm/router.py": 3,
+    "faultmaven/infrastructure/logging/coordinator.py": 5,
+    "faultmaven/infrastructure/observability/tracing.py": 8,
+    "faultmaven/infrastructure/persistence/repository_factory.py": 3,
+    "faultmaven/infrastructure/shims/metrics.py": 1,
+    "faultmaven/infrastructure/shims/observability.py": 1,
+    "faultmaven/infrastructure/shims/security.py": 1,
+    "faultmaven/infrastructure/tasks/job_runners.py": 2,
+}
+
 
 class ConfigurationViolationScanner:
     """Scans codebase for configuration architecture violations"""
 
     def __init__(self, source_root: Path):
         self.source_root = source_root
+        # Repo-relative paths, compared EXACTLY. These used to be matched with
+        # ``any(allowed in str(py_file))``, a substring test that would also
+        # exempt a future ``faultmaven/tools/faultmaven/main.py``. The third
+        # entry named ``tests/architecture/…`` — the pre-relocation path of this
+        # very file — and matched nothing.
         self.allowed_files = {
             "faultmaven/config/settings.py",  # Main configuration module
             "faultmaven/main.py",  # Composition root / bootstrap
-            "tests/architecture/test_configuration_compliance.py",  # This test file
         }
+        # Proof the walk happened. A scanner that silently walks nothing is the
+        # defect this file shipped for months (#1332); both tests assert on it.
+        self.files_scanned = 0
+
+    def _rel(self, py_file: Path) -> str:
+        """Repo-relative posix path, so findings read and compare the same
+        wherever the scanner is rooted (the test uses an absolute root, a manual
+        run may use a relative one)."""
+        try:
+            return (
+                py_file.resolve()
+                .relative_to(self.source_root.resolve().parent)
+                .as_posix()
+            )
+        except ValueError:
+            return str(py_file)
+
+    def _is_allowed(self, py_file: Path) -> bool:
+        return self._rel(py_file) in self.allowed_files
 
     def scan_for_os_getenv_violations(self) -> List[Dict[str, Any]]:
         """Find all os.getenv() calls outside of allowed files"""
         violations = []
+        self.files_scanned = 0
 
         for py_file in self.source_root.rglob("*.py"):
             # Skip test files, __pycache__, and allowed files
             if (
                 "__pycache__" in str(py_file)
                 or "test_" in py_file.name
-                or any(allowed in str(py_file) for allowed in self.allowed_files)
+                or self._is_allowed(py_file)
             ):
                 continue
 
-            violations.extend(self._scan_file_for_env_access(py_file))
+            self.files_scanned += 1
+            for violation in self._scan_file_for_env_access(py_file):
+                violation["file"] = self._rel(Path(violation["file"]))
+                violations.append(violation)
 
         return violations
 
@@ -78,12 +131,16 @@ class ConfigurationViolationScanner:
     def scan_for_legacy_config_imports(self) -> List[Dict[str, Any]]:
         """Find imports of legacy configuration modules"""
         violations = []
+        self.files_scanned = 0
 
         for py_file in self.source_root.rglob("*.py"):
             if "__pycache__" in str(py_file) or "test_" in py_file.name:
                 continue
 
-            violations.extend(self._scan_file_for_legacy_imports(py_file))
+            self.files_scanned += 1
+            for violation in self._scan_file_for_legacy_imports(py_file):
+                violation["file"] = self._rel(Path(violation["file"]))
+                violations.append(violation)
 
         return violations
 
@@ -228,7 +285,11 @@ class TestConfigurationArchitectureCompliance:
     @pytest.fixture(scope="class")
     def scanner(self):
         """Create violation scanner for the FaultMaven codebase"""
-        source_root = Path(__file__).parent.parent.parent / "faultmaven"
+        # parents[3], not parents[2]: this file moved from tests/architecture/
+        # to tests/unit/architecture/ and the arithmetic was never updated, so
+        # the scanner pointed at a non-existent tests/faultmaven, walked zero
+        # files, and both tests below passed on an empty result set (#1332).
+        source_root = Path(__file__).parents[3] / "faultmaven"
         return ConfigurationViolationScanner(source_root)
 
     def test_no_direct_environment_variable_access(self, scanner):
@@ -239,18 +300,35 @@ class TestConfigurationArchitectureCompliance:
         All other modules must receive configuration via dependency injection.
         """
         violations = scanner.scan_for_os_getenv_violations()
+        assert scanner.files_scanned > 0, (
+            "The scanner walked zero files, so this test proves nothing. That is "
+            "exactly how it passed for months (#1332) — check source_root."
+        )
 
-        if violations:
-            violation_summary = []
-            for violation in violations:
-                violation_summary.append(
-                    f"  {violation['file']}:{violation['line']} - {violation['message']}"
+        counts: Dict[str, int] = {}
+        for violation in violations:
+            counts[violation["file"]] = counts.get(violation["file"], 0) + 1
+
+        regressions = {
+            path: n for path, n in counts.items() if n > KNOWN_ENV_ACCESS.get(path, 0)
+        }
+        if regressions:
+            summary = []
+            for path, n in sorted(regressions.items()):
+                summary.append(
+                    f"  {path}: {n} (baseline {KNOWN_ENV_ACCESS.get(path, 0)})"
                 )
-
+                for violation in violations:
+                    if violation["file"] == path:
+                        summary.append(
+                            f"      :{violation['line']} - {violation['message']}"
+                        )
             pytest.fail(
-                f"Found {len(violations)} direct environment variable access violations:\n"
-                + "\n".join(violation_summary)
-                + "\n\nOnly faultmaven/config/settings.py should access environment variables directly."
+                "New direct environment variable access:\n"
+                + "\n".join(summary)
+                + "\n\nRead configuration through faultmaven.config.settings. If the "
+                "access genuinely must happen before settings exist, raise the "
+                "baseline in KNOWN_ENV_ACCESS with the reason (#1332)."
             )
 
     def test_no_legacy_configuration_imports(self, scanner):
@@ -261,6 +339,9 @@ class TestConfigurationArchitectureCompliance:
         anywhere in the codebase.
         """
         violations = scanner.scan_for_legacy_config_imports()
+        assert (
+            scanner.files_scanned > 0
+        ), "The scanner walked zero files, so this test proves nothing (#1332)."
 
         if violations:
             violation_summary = []
