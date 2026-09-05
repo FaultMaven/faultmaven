@@ -74,6 +74,11 @@ from faultmaven.models.api_models import (
     SuggestedActionResponse,
     TurnResponse,
 )
+from faultmaven.modules.agent.domain.services.orientation import (
+    OrientationKind,
+    build_orientation,
+    detect_orientation,
+)
 from faultmaven.modules.agent.domain.services.out_of_band import (
     OutOfBandKind,
     OutOfBandTriage,
@@ -1465,6 +1470,21 @@ class InvestigationService:
 
             intent = payload.intent
             intent_type = intent.type if intent else IntentType.CONVERSATION
+            # GREETING is server-minted: the service derives it from the text
+            # (or from its absence) below. A client-sent GREETING used to be
+            # obeyed as-is — any text, any state, with any attachment — and
+            # answered from the static onboarding string. It is now read as
+            # plain conversation and re-derived; the enum value stays on the
+            # wire for the clients' generated types.
+            if intent is not None and intent_type == IntentType.GREETING:
+                logger.info(
+                    "Ignoring client-sent GREETING intent on case %s; deriving "
+                    "the intent from the message instead",
+                    case_id,
+                )
+                intent = None
+                intent_type = IntentType.CONVERSATION
+            orientation_kind: Optional[OrientationKind] = None
 
             user_message_obj = {
                 "message_id": f"msg_{uuid4().hex[:12]}",
@@ -1522,16 +1542,17 @@ class InvestigationService:
             # Analysis. Any attachment disqualifies, not just a novel one: a
             # re-submission still belongs on the path that knows what to do
             # with a duplicate.
-            if (
-                intent_type == IntentType.CONVERSATION
-                and query
-                and not payload.has_attachments
-            ):
-                heuristic_intent = self._detect_intent_heuristic(query)
-                if heuristic_intent:
-                    intent_type = heuristic_intent
+            if intent_type == IntentType.CONVERSATION and not payload.has_attachments:
+                # ``query`` may be empty here: a bare @mention in Slack arrives
+                # with no text and no file, and used to be refused by the route.
+                # That is the EMPTY orientation — "where are we, what can I do".
+                orientation_kind = detect_orientation(query)
+                if orientation_kind is not None:
+                    intent_type = IntentType.GREETING
                     logger.info(
-                        f"Heuristic detected intent {intent_type.value} for message: '{query}'"
+                        "Orientation turn (%s) on case %s",
+                        orientation_kind.value,
+                        case_id,
                     )
 
             # Intent resolution: match typed text against the choices still
@@ -1720,7 +1741,9 @@ class InvestigationService:
                     )
                 elif intent_type == IntentType.GREETING:
                     result = await self._handle_greeting(
-                        case=case, attachments=attachment_metadata or None
+                        case=case,
+                        attachments=attachment_metadata or None,
+                        kind=orientation_kind or OrientationKind.GREETING,
                     )
                 elif intent_type == IntentType.FILE_RECLASSIFICATION:
                     result = await self._handle_file_reclassification(
@@ -2988,67 +3011,41 @@ class InvestigationService:
         self,
         case: "Case",
         attachments: Optional[List[Dict[str, Any]]] = None,
+        kind: OrientationKind = OrientationKind.GREETING,
     ) -> Dict[str, Any]:
-        """Handle greeting intent without LLM.
+        """Answer an orientation turn — greeting, "help", or an empty message —
+        from the case's own state, without an LLM.
+
+        The reply says where the investigation stands (state, stage, the last
+        thing asked for) and what the user can do next; see
+        ``orientation.build_orientation`` for the per-state wording. The
+        intent is always server-minted (``detect_orientation``); a client-sent
+        GREETING is re-derived in ``process_turn``.
 
         Args:
             case: Case entity
-            attachments: The turn's engine attachment metadata (#1229).
-                Normally empty here — the heuristic that mints this intent is
-                now barred from firing on a turn that carried an attachment,
-                and an explicit client-sent GREETING with a file is the only
-                way to arrive with one. Reported anyway, because "normally
-                empty" is not "provably empty" and a dropped signal is exactly
-                what #1229 is about.
-
-        Returns:
-            Result dict with static agent response and updated case
+            attachments: The turn's engine attachment metadata (#1229). Always
+                empty on this route now — the heuristic never fires on a turn
+                that carried an attachment and the client-sent intent is no
+                longer obeyed — but reported anyway: "normally empty" is not
+                "provably empty", and a dropped signal is what #1229 is about.
+            kind: Which orientation the text asked for.
         """
-        logger.info(f"Processing greeting for case {case.case_id}")
-
-        # Static response (saving tokens and latency)
-        agent_response = (
-            "Hello! I'm FaultMaven, your AI-powered troubleshooting copilot. "
-            "I can help you diagnose issues, analyze logs, and verify solutions. "
-            "Please describe the problem you're observing."
+        logger.info(
+            "Processing orientation (%s) for case %s in state %s",
+            kind.value,
+            case.case_id,
+            case.state.value,
         )
-
-        # No engine call needed - manually construct result
+        reply = build_orientation(case, kind)
         return {
-            "agent_response": agent_response,
-            "suggested_follow_ups": [
-                {
-                    "label": "Describe your issue",
-                    "action_type": "FREE_SPEECH",
-                    "hints": [
-                        "symptoms",
-                        "error messages",
-                        "timeline",
-                        "affected services",
-                    ],
-                },
-                {
-                    "label": "Share error logs from the affected service",
-                    "action_type": "EVIDENCE",
-                    "body": "Error logs will help identify the root cause faster.",
-                },
-            ],
+            "agent_response": reply["agent_response"],
+            "suggested_follow_ups": reply["suggested_follow_ups"],
             "case_updated": case,
             "metadata": {
-                # These two handlers never reach the engine, so they report the
-                # turn's uploads but decide nothing about progress themselves.
-                # ``False`` is the SEED, not the verdict: ``_backfill_consumed_turn``
-                # scores this dict with ``score_progress`` at the chokepoint and
-                # writes the reading back, so a greeting that carried a genuinely
-                # novel upload reports progress on every surface at once (#1270).
-                #
-                # This comment used to argue the hardcoded flag was
-                # self-consistent because the counter was untouched too. #1264
-                # made the backstop touch the counter and left the flag behind,
-                # which is the disagreement #1229 exists to remove — one
-                # decision, not two derivations.
                 "progress_made": False,
                 "milestones_completed": [],
+                "orientation": kind.value,
                 **report_turn_uploads(case.case_id, case.current_turn, attachments),
             },
         }
@@ -3091,24 +3088,12 @@ class InvestigationService:
         }
 
     def _detect_intent_heuristic(self, message: str) -> Optional[IntentType]:
-        """Detect intent from message content using simple heuristics.
-
-        Args:
-            message: User message text
-
-        Returns:
-            Detected IntentType or None
-        """
-        clean_msg = message.strip().lower()
-
-        # Greeting patterns (case-insensitive)
-        # Matches: "Hi", "Hello", "Hi FaultMaven", "Greetings", "Help"
-        # Does NOT match: "Hi, the db is down", "Hello, I have an error"
-        greeting_pattern = r"^(hi|hello|hey|greetings|help)( faultmaven)?[\.!]*$"
-
-        if re.match(greeting_pattern, clean_msg):
+        """Server-side intent from message text: GREETING for any orientation
+        (greeting, "help"), else ``None``. The empty message is handled by the
+        caller, which has the attachment context this method does not."""
+        kind = detect_orientation(message)
+        if kind is not None and kind != OrientationKind.EMPTY:
             return IntentType.GREETING
-
         return None
 
     @trace("investigation_service_transition_to_investigating")

@@ -402,6 +402,7 @@ class TestTurnEndpointNamesTheCase:
 
         with TestClient(app) as client:
             client.fm_service = service
+            client.fm_investigation_service = investigation_service
             yield client
 
     def test_a_turn_names_a_placeholder_case(self, client, case):
@@ -432,10 +433,20 @@ class TestTurnEndpointNamesTheCase:
         client.fm_service.update_case.assert_not_awaited()
 
     def test_a_failing_turn_schedules_no_titling(self, client, case):
-        """A turn that never produced an answer has nothing new to name from."""
-        response = client.post(f"/api/v1/cases/{case.case_id}/turns", data={})
+        """A turn that never produced an answer has nothing new to name from.
 
-        assert response.status_code == 400
+        An EMPTY post is no longer the way to make a turn fail — it is accepted
+        as an orientation turn now — so the service itself is made to fail.
+        """
+        client.fm_investigation_service.process_turn.side_effect = RuntimeError(
+            "provider down"
+        )
+        response = client.post(
+            f"/api/v1/cases/{case.case_id}/turns",
+            data={"query": "The checkout API is throwing 502s."},
+        )
+
+        assert response.status_code >= 500
         assert _is_default_case_title(case.title)
 
     def test_an_upload_only_turn_names_the_case(self, client, case):

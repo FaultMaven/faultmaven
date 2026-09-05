@@ -685,7 +685,7 @@ class IntentType(str, Enum):
     HYPOTHESIS_ACTION = "hypothesis_action"  # Validate/refute/retire hypothesis
     EVIDENCE_NEED = "evidence_need"  # User-initiated action on a persistent EvidenceNeed (stays NOT_IMPLEMENTED until a frontend feature requires it)
     CONFIRMATION = "confirmation"  # Yes/No confirmation response
-    GREETING = "greeting"  # Heuristic greeting response
+    GREETING = "greeting"  # Server-minted orientation (greeting / help / empty message); a client-sent value is re-derived from the text
     FILE_RECLASSIFICATION = "file_reclassification"  # Resolve classification_failed: re-run preprocessing on an UploadedFile under a user-chosen DataType
 
 

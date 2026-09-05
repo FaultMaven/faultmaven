@@ -30,6 +30,18 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
+# 2.8.0 — MINOR. `POST /cases/{case_id}/turns` accepts an EMPTY turn — no
+# `query`, no `files`, no `pasted_content` — and answers it with a state-aware
+# orientation (where the investigation stands, what was last asked for, what
+# the user can do next). It used to be a 400 the client had to swallow, which
+# is how a bare `@FaultMaven` in Slack produced silence. Nothing a client sends
+# today is rejected or reshaped, so every existing client survives it; a
+# client that previously synthesised text for a bare mention can now send the
+# turn as it is. In the same release, `intent.type = "greeting"` sent by a
+# client is no longer obeyed: the server derives that intent from the text
+# itself (the value stays in the enum for generated types), so a client that
+# sent it gets the same answer it would have got for the text alone.
+#
 # 2.7.0 — MINOR. `TurnResponse` gains `investigation_turn` (nullable integer,
 # #1329): how many of the case's turns so far were investigation work.
 # `turn_number` keeps its meaning as the message clock and still advances on
@@ -169,4 +181,4 @@ asked to accept, and it belongs to a person.
 # cannot tell two contracts apart is not doing its job. The first act of the
 # version is therefore to give the contract on main an identity distinct from
 # the 1.0.0 the clients are written against.
-API_CONTRACT_VERSION = "2.7.0"
+API_CONTRACT_VERSION = "2.8.0"

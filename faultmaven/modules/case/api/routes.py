@@ -2818,13 +2818,10 @@ async def submit_turn(
     correlation_id = str(uuid.uuid4())
 
     try:
-        # Validate at least one input provided
-        if not query and not files and not pasted_content:
-            raise HTTPException(
-                status_code=400,
-                detail="At least one of query, files, or pasted_content must be provided",
-                headers={"x-correlation-id": correlation_id},
-            )
+        # An EMPTY turn — no query, no file, no paste — is accepted: it is a
+        # bare @mention in Slack, and the service answers it with a state-aware
+        # orientation (where the case stands, what to do next) rather than the
+        # 400 the client used to have to swallow.
 
         # Validate case_id
         if not case_id or case_id.strip() in ("", "undefined", "null"):

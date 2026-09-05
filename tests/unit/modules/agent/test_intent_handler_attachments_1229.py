@@ -268,7 +268,9 @@ class TestTheGreetingHeuristicDoesNotSwallowData:
         )
 
         assert seen == {}, "a bare greeting must not reach the engine"
-        assert "FaultMaven" in response.agent_response
+        # The reply is the state-aware orientation (the case is INVESTIGATING),
+        # not the onboarding boilerplate.
+        assert "We're investigating" in response.agent_response
 
 
 class TestTheNonEngineHandlersStillReportUploads:

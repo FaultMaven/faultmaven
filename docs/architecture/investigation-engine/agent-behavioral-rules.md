@@ -75,6 +75,10 @@ directly. Do NOT create a problem statement or initiate an investigation.
 
 ---
 
+### Orientation turns (greeting, "help", the empty message)
+
+Three inputs are answered from the case's own state with no LLM call (`modules/agent/domain/services/orientation.py`, wired through the GREETING route in `InvestigationService`): a whole-message greeting ("hi", "hello FaultMaven"), a whole-message request for help ("help", "?", "what can you do"), and an EMPTY message — no text, no file — which is what a bare `@FaultMaven` in Slack sends. The reply depends on where the case is: onboarding on a fresh INQUIRY; the pending problem statement when one awaits confirmation; on INVESTIGATING the title, the stage and the last thing asked for (the newest open evidence need, else the last investigation message — asides skipped) with a "Back to: <title>" follow-up; on a terminal case its disposition and the offer to open a new case. The intent is **server-minted only**: a client-sent `intent.type = "greeting"` is re-derived from the text, so a client cannot turn arbitrary text (or an upload) into the static reply. "Hi, the db is down" and "help, nginx returns 502s" are incident turns and fall through.
+
 ## Rule 2: Evidence-Grounded
 
 **What it prevents**: Agent fabricates data, speculates without evidence, or gives generic advice disconnected from the specific case.
