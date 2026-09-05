@@ -45,10 +45,12 @@ Rules that fail this test belong elsewhere:
 | 6 | [Knowledge First](#rule-6-knowledge-first) | INQUIRY + INVESTIGATING + DA | Three injection points | Structural: KB lookup as default over independent diagnosis |
 | 7 | [Signal Extraction](#rule-7-signal-extraction) | Substantive turns | INQUIRY + INVESTIGATION_BASE | Internal scaffold: operational content identified before response |
 | 8 | [Full-Context Reasoning](#rule-8-full-context-reasoning) | Diagnostic turns | INVESTIGATION_BASE | Prompt-layer prescription: response must reference prior-case context when drawing conclusions |
+| 9 | [Know Thyself](#rule-9-know-thyself) | All active turns | Shared advisor block (backstop) + `agent_meta` mode block | Conditional routing: question about the assistant → self-knowledge profile, grounding waived, no evidence request |
 
 **Rules 1–3, 6** govern **what the agent does** (effectiveness).
 **Rules 4–5** govern **how the agent handles adversity** (resilience).
 **Rules 7–8** govern **how the agent reads its inputs** (reading quality).
+**Rule 9** governs **which system a question is about** (target disambiguation).
 
 Cross-turn concerns (stall detection, progress pressure, goal pursuit) are not prompt rules — they are handled by the progress transparency system at the orchestration layer. See [Progress Transparency](./progress-transparency.md).
 
@@ -82,7 +84,7 @@ directly. Do NOT create a problem statement or initiate an investigation.
 - **EVIDENCE GROUNDING** (hard constraints + 4-step procedure + USING EVIDENCE DATA): stored in `_EVIDENCE_GROUNDING_BLOCK` and injected via `{evidence_grounding}`. Appears after `READING DISCIPLINE` and before the evidence-handling rules (EVIDENCE FROM ATTACHMENTS, WORKING WITH EVIDENCE DATA, CLASSIFICATION, etc.).
 - **DIAGNOSTIC REASONING REQUIREMENTS** (OBSERVATION → ANALYSIS → CONCLUSION structure + confidence calibration + no premature resolution + EXAMPLES + PROHIBITED PATTERNS): stored in `_DIAGNOSTIC_REASONING_BLOCK` and injected via `{diagnostic_reasoning}`. Appears after `CONCISENESS` and before `CRITICAL: REASONING-FIRST REQUIREMENT`.
 
-For `knowledge_query` mode, **both** placeholders gate to `""` so neither block appears in the rendered prompt. This matches the `KNOWLEDGE_QUERY_INSTRUCTIONS` waiver ("The DIAGNOSTIC REASONING REQUIREMENTS and EVIDENCE GROUNDING rules do not apply") — rather than sandwiching the exemption text between constraint blocks.
+For `knowledge_query` mode — and for `agent_meta` (Rule 9) — **both** placeholders gate to `""` so neither block appears in the rendered prompt. This matches the `KNOWLEDGE_QUERY_INSTRUCTIONS` waiver ("The DIAGNOSTIC REASONING REQUIREMENTS and EVIDENCE GROUNDING rules do not apply") — rather than sandwiching the exemption text between constraint blocks.
 
 **Prompt injection**:
 
@@ -381,6 +383,35 @@ explicitly. The latest turn is not the only input.
 
 ---
 
+## Rule 9: Know Thyself
+
+**What it prevents**: A question about FaultMaven itself ("what LLM model and provider are generating these responses?", "how do you retrieve runbooks?", "who built you?") is treated as a diagnostic request about the system under investigation. Under Rule 2 the agent cannot find FaultMaven's architecture in the case evidence, so it asks the user for FaultMaven's own deployment manifests and runtime configuration as evidence (#1328). The opposite failure — confidently naming a vendor or model the prompt never told it — is a confabulation in exactly Rule 2's sense.
+
+**Behavior**: Answer about the assistant, briefly and honestly, at a high level: what FaultMaven is (a source-available, self-hostable troubleshooting copilot), how it investigates (milestone engine, hypotheses, evidence grounding), how it retrieves knowledge (vector KB with BGE-M3 embeddings and a rerank), and that it routes across multiple LLM providers by capability. The model is **not told which provider or model serves the deployment**; the honest answer says so and points the operator at the Dashboard's LLM Config rather than guessing. Depth is delegated to the repository docs, which keeps the answer to a few sentences. The case is left untouched: no evidence, hypotheses, milestones, evidence requests or state changes on that turn.
+
+**Injection points** — two layers, sized to how often each is paid:
+
+1. **Backstop, every active turn** — `_SELF_REFERENCE_RULE`, a few lines inside `_ACTIVE_ADVISOR_ROLE_BLOCK` (INQUIRY + INVESTIGATION_BASE). Catches phrasings the heuristic classifier misses; forbids requesting FaultMaven's configuration as evidence and guessing a model name.
+2. **Full profile, `agent_meta` turns only** — `classify_query` routes self-referential questions to `ProcessingMode.AGENT_META` (checked before the knowledge gate; blocking gates are hard case entities, error keywords and case references, so "what does the log say about you" and "your stack trace shows a null pointer" stay case questions; every pattern is bound to the assistant, so "which model is serving the /predict endpoint" and "what does FaultMaven think caused the outage" stay case questions too). `get_prompt_for_case` then renders `AGENT_META_INSTRUCTIONS` (the `ABOUT FAULTMAVEN` profile + answer discipline) as the stage instructions in INVESTIGATING, or through the `{agent_meta_instructions}` slot in INQUIRY, and waives `{evidence_grounding}` and `{diagnostic_reasoning}` exactly as for `knowledge_query`. The tool-loop system instruction gains a matching **Type D** so its "when uncertain, search the evidence" default stops at Types A–C. Tools are never forced for the mode. A turn that also delivers evidence is re-routed before the prompt is built — to Directed Analysis in INVESTIGATING (#708) and to Triage in INQUIRY — so the file is analysed and the meta question is answered by the backstop; both instruction layers state that only the FaultMaven part of a mixed message is exempt.
+
+**Prompt injection** (backstop):
+
+```text
+Questions about YOU — which model or provider you run on, how you retrieve
+runbooks, who built you, what you can do — are about FaultMaven, not about
+the system under investigation. Answer them briefly and honestly: ... you are
+not told which model serves this deployment (the operator can see it under
+LLM Config). Point to https://github.com/FaultMaven/faultmaven for detail.
+NEVER ask for FaultMaven's own configuration, manifests or logs as case
+evidence, and never guess a vendor or model name.
+```
+
+**Why not inject the live provider/model name**: the engine knows it (`provider_name`/`model_name` reach `get_prompt_for_case` for token budgeting). Deliberately withheld from the prompt: it is operator configuration, it can differ per role (chat / classifier / synthesis), it would be paid on every turn or add a second mode-specific slot, and a self-hosted operator already has it in `.env` while a Cloud tenant's user has no standing to it. Honest "I am not told; the operator can see it here" is cheaper and cannot go stale.
+
+**Enforcement**: `tests/unit/modules/agent/domain/services/test_query_classifier.py::TestAgentSelfReference` (routing, positives and the case-question negatives) and `tests/unit/core/investigation/test_agent_meta_prompt_1328.py` (prompt dispatch, waiver, backstop presence, Type D, routing predicates, #708 composition).
+
+---
+
 ## Prompt Injection Architecture
 
 ### Where Rules Live in the Code
@@ -390,7 +421,7 @@ Rules are injected into template strings in `templates.py` and assembled at runt
 | Rule | Template | Section in Template | Position |
 | ---- | -------- | ------------------- | -------- |
 | 1 (Answer First) | INQUIRY only | YOUR TASK instructions | Early (after context header) |
-| 2 (Evidence-Grounded) | INVESTIGATION_BASE | DIAGNOSTIC REASONING + EVIDENCE GROUNDING + hard constraints (includes confidence calibration + no premature resolution) | EVIDENCE GROUNDING via `{evidence_grounding}` before evidence-handling rules; DIAGNOSTIC REASONING via `{diagnostic_reasoning}` placeholder after CONCISENESS. Both placeholders gate to `""` in `knowledge_query` mode so the blocks are absent rather than exempted. |
+| 2 (Evidence-Grounded) | INVESTIGATION_BASE | DIAGNOSTIC REASONING + EVIDENCE GROUNDING + hard constraints (includes confidence calibration + no premature resolution) | EVIDENCE GROUNDING via `{evidence_grounding}` before evidence-handling rules; DIAGNOSTIC REASONING via `{diagnostic_reasoning}` placeholder after CONCISENESS. Both placeholders gate to `""` in `knowledge_query` and `agent_meta` modes so the blocks are absent rather than exempted. |
 | 3 (Advisor Role) | All three templates | ASSISTANT ROLE via `_ADVISOR_ROLE_CONSTRAINT` (voice) + `_ACTION_IMPACT_BLOCK` (action impact annotation) | `_ADVISOR_ROLE_CONSTRAINT` shared across INQUIRY_TEMPLATE, INVESTIGATION_BASE, and TERMINAL_TEMPLATE (voice must be preserved in terminal Q&A too). `_ACTION_IMPACT_BLOCK` shared across INQUIRY_TEMPLATE and INVESTIGATION_BASE only (TERMINAL has no action proposals). |
 | 4 (Graceful Pivot) | INVESTIGATION_BASE | KEY PRINCIPLES | After YOUR TASK |
 | 5 (Work With What You Get) | INVESTIGATION_BASE | KEY PRINCIPLES (behavior table + one-ask-per-turn principle + CHECK BACK ON SUGGESTED ACTIONS for terse user replies that don't reference a prior diagnostic suggestion) | After YOUR TASK |
@@ -453,7 +484,7 @@ CONTEXT HEADER
 READING DISCIPLINE (Rules 7, 8)                         _READING_DISCIPLINE_BLOCK constant
                                                         Signal Extraction + Full-Context Reasoning
 {evidence_grounding} (Rule 2 extension)                 _EVIDENCE_GROUNDING_BLOCK constant; set to "" for
-                                                        knowledge_query (block entirely absent, not exempted)
+                                                        knowledge_query / agent_meta (block entirely absent, not exempted)
 EVIDENCE FROM ATTACHMENTS                               Orientation: prior files remain searchable;
                                                         attachments arrive pre-processed in structural indexes
 WORKING WITH EVIDENCE DATA                              _DATA_CITATION_RULE constant (also used in
@@ -476,7 +507,7 @@ ACTION IMPACT                                           _ACTION_IMPACT_BLOCK
                                                         (diagnostic vs state-modifying classification)
 CONCISENESS
 {diagnostic_reasoning} (Rule 2)                         _DIAGNOSTIC_REASONING_BLOCK constant; set to "" for
-                                                        knowledge_query (block entirely absent, not exempted)
+                                                        knowledge_query / agent_meta (block entirely absent, not exempted)
                                                         OBSERVATION -> ANALYSIS -> CONCLUSION +
                                                         confidence calibration + no premature resolution
 CRITICAL: REASONING-FIRST REQUIREMENT                   internal_reasoning emission gate for milestones
@@ -485,7 +516,7 @@ CRITICAL: REASONING-FIRST REQUIREMENT                   internal_reasoning emiss
 
 **Why this order**: evidence-handling rules precede `YOUR TASK` so the LLM internalizes the input-quality and classification framework *before* reading its stage-specific playbook. The dynamic context block above READING DISCIPLINE is where actual evidence appears; the rules section below READING DISCIPLINE tells the LLM how to interpret it. The instruction layer (`adaptive_instructions` + KEY PRINCIPLES + FOLLOW-UP SUGGESTIONS) follows. Output-shaping rules (ASSISTANT ROLE, ACTION IMPACT, CONCISENESS, DIAGNOSTIC REASONING, REASONING-FIRST) come last so they're freshest in the LLM's working context when it composes its response.
 
-**`processing_mode == "knowledge_query"` bypass**: When this mode is set, `get_prompt_for_case()` skips stage dispatch entirely and passes `evidence_grounding=""` AND `diagnostic_reasoning=""`. `KNOWLEDGE_QUERY_INSTRUCTIONS` is injected as `adaptive_instructions`. Both the EVIDENCE GROUNDING and DIAGNOSTIC REASONING blocks are absent from the rendered prompt entirely — rather than inserting exemption clauses sandwiched between other constraint blocks. This matches the `KNOWLEDGE_QUERY_INSTRUCTIONS` waiver text ("The DIAGNOSTIC REASONING REQUIREMENTS and EVIDENCE GROUNDING rules do not apply").
+**`processing_mode == "knowledge_query"` bypass** (and `"agent_meta"`, Rule 9, which substitutes `AGENT_META_INSTRUCTIONS`): When this mode is set, `get_prompt_for_case()` skips stage dispatch entirely and passes `evidence_grounding=""` AND `diagnostic_reasoning=""`. `KNOWLEDGE_QUERY_INSTRUCTIONS` is injected as `adaptive_instructions`. Both the EVIDENCE GROUNDING and DIAGNOSTIC REASONING blocks are absent from the rendered prompt entirely — rather than inserting exemption clauses sandwiched between other constraint blocks. This matches the `KNOWLEDGE_QUERY_INSTRUCTIONS` waiver text ("The DIAGNOSTIC REASONING REQUIREMENTS and EVIDENCE GROUNDING rules do not apply").
 
 ### Design Rationale
 
