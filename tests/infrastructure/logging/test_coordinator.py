@@ -108,7 +108,6 @@ class TestErrorContext:
         assert error_ctx.original_error is None
         assert isinstance(error_ctx.layer_errors, dict)
         assert len(error_ctx.layer_errors) == 0
-        assert error_ctx.recovery_attempts == 0
 
     def test_add_layer_error_first_error(self):
         """Test adding first error sets it as original."""
@@ -157,18 +156,21 @@ class TestErrorContext:
         assert error_ctx.should_log_error("api")
         assert error_ctx.should_log_error("core")
 
-    def test_should_log_error_during_recovery(self):
-        """Test that errors can be logged during recovery attempts."""
+    def test_a_layer_that_already_logged_stays_quiet(self):
+        """Cascade prevention is the whole of the rule.
+
+        This replaces a test that set ``recovery_attempts`` by hand and
+        asserted the layer could log again. Nothing in the codebase ever
+        incremented that counter, so the test proved a branch that could not
+        be reached in production -- the reason both it and the counter are
+        gone.
+        """
         error_ctx = ErrorContext()
-        test_error = ValueError("Test error")
 
-        # Add error to service layer
-        error_ctx.add_layer_error("service", test_error)
+        error_ctx.add_layer_error("service", ValueError("Test error"))
+
         assert not error_ctx.should_log_error("service")
-
-        # During recovery, service should be able to log again
-        error_ctx.recovery_attempts = 1
-        assert error_ctx.should_log_error("service")
+        assert error_ctx.should_log_error("api")
 
 
 class TestPerformanceTracker:

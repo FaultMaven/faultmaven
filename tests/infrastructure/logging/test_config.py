@@ -405,33 +405,6 @@ class TestFaultMavenLogger:
             assert "agent_phase" not in result
             assert result["message"] == "test"
 
-    def test_deduplicate_fields_removes_duplicates(self):
-        """Test deduplicate_fields removes duplicate field entries."""
-        event_dict = {
-            "field1": "value1",
-            "field2": "value2",
-            "field1": "value1_duplicate",  # This will be the final value
-            "field3": "value3",
-        }
-
-        result = FaultMavenLogger.deduplicate_fields(Mock(), "info", event_dict)
-
-        # Should have unique fields only
-        assert len(result) == 3
-        assert "field1" in result
-        assert "field2" in result
-        assert "field3" in result
-        # Python dict will keep the last value for duplicated keys
-        assert result["field1"] == "value1_duplicate"
-        assert result["field2"] == "value2"
-        assert result["field3"] == "value3"
-
-    def test_deduplicate_fields_empty_dict(self):
-        """Test deduplicate_fields with empty dict."""
-        event_dict = {}
-        result = FaultMavenLogger.deduplicate_fields(Mock(), "info", event_dict)
-        assert result == {}
-
     def test_add_trace_context_no_span(self):
         """Test add_trace_context when no active span exists."""
         with patch("opentelemetry.trace.get_current_span") as mock_get_span:
@@ -616,10 +589,7 @@ class TestProcessorIntegration:
                 # 1. Add request context
                 event = FaultMavenLogger.add_request_context(Mock(), "info", event)
 
-                # 2. Deduplicate fields
-                event = FaultMavenLogger.deduplicate_fields(Mock(), "info", event)
-
-                # 3. Add trace context
+                # 2. Add trace context
                 event = FaultMavenLogger.add_trace_context(Mock(), "info", event)
 
                 # Verify final event has all expected fields
@@ -667,7 +637,6 @@ class TestProcessorIntegration:
                 # Apply processors
                 event = initial_event.copy()
                 event = FaultMavenLogger.add_request_context(Mock(), "info", event)
-                event = FaultMavenLogger.deduplicate_fields(Mock(), "info", event)
                 event = FaultMavenLogger.add_trace_context(Mock(), "info", event)
 
                 # Existing values should be preserved (no overwriting)

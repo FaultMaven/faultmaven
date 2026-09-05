@@ -140,7 +140,6 @@ class ErrorContext:
 
     original_error: Optional[Exception] = None
     layer_errors: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    recovery_attempts: int = 0
 
     # Enhanced features
     layer_configs: Dict[str, LayerErrorConfig] = field(default_factory=dict)
@@ -291,8 +290,14 @@ class ErrorContext:
         Returns:
             True if layer should log the error, False to prevent duplicates
         """
-        # Only log at the first layer that catches it or during recovery
-        return layer not in self.layer_errors or self.recovery_attempts > 0
+        # Only the first layer to catch an error logs it.
+        #
+        # There used to be an ``or self.recovery_attempts > 0`` clause here, so
+        # that a layer could log again while a recovery was under way. Nothing
+        # ever incremented that counter -- no recovery path exists in this
+        # coordinator -- so the clause was always False, and the only thing that
+        # exercised it was a test that set the counter by hand.
+        return layer not in self.layer_errors
 
     def _update_escalation_level(self, layer: str, severity: ErrorSeverity) -> None:
         """Update overall escalation level based on new error."""
@@ -899,8 +904,5 @@ class LoggingCoordinator:
             "configuration": {
                 "log_level": _log_settings().level.value.upper(),
                 "log_format": _log_settings().log_output_format,
-                "deduplication": str(_log_settings().log_dedupe).lower(),
-                "buffer_size": str(_log_settings().log_buffer_size),
-                "flush_interval": str(_log_settings().log_flush_interval),
             },
         }

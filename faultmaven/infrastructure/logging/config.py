@@ -93,9 +93,6 @@ class LoggingConfig:
 
         self.LOG_LEVEL = settings.logging.level.value.upper()
         self.LOG_FORMAT = settings.logging.log_output_format.lower()
-        self.LOG_DEDUPE = settings.logging.log_dedupe
-        self.LOG_BUFFER_SIZE = settings.logging.log_buffer_size
-        self.LOG_FLUSH_INTERVAL = settings.logging.log_flush_interval
         self.LOG_HUMAN_READABLE = settings.logging.log_human_readable
 
     def get_log_level(self) -> int:
@@ -172,9 +169,6 @@ class FaultMavenLogger:
             self.add_request_context,
             self.add_trace_context,
         ]
-        if self.config.LOG_DEDUPE:
-            shared_processors.append(self.deduplicate_fields)
-
         # Renderer: JSON for production, human-readable console for dev.
         #
         # LOG_HUMAN_READABLE is an override in its own right. It used to be
@@ -301,34 +295,6 @@ class FaultMavenLogger:
                 event_dict["agent_phase"] = ctx.agent_phase
 
         return event_dict
-
-    @staticmethod
-    def deduplicate_fields(
-        logger, method_name: str, event_dict: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """
-        Remove duplicate fields from log entries.
-
-        This processor ensures that each field appears only once in the log entry,
-        preventing cluttered logs with repeated information.
-
-        Args:
-            logger: Logger instance
-            method_name: Log method name
-            event_dict: Event dictionary to process
-
-        Returns:
-            Deduplicated event dictionary
-        """
-        seen = set()
-        deduped = {}
-
-        for key, value in event_dict.items():
-            if key not in seen:
-                deduped[key] = value
-                seen.add(key)
-
-        return deduped
 
     @staticmethod
     def add_trace_context(
