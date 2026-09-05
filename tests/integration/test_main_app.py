@@ -255,6 +255,120 @@ def test_capabilities_team_flags_gate_on_team_service():
             app.state.team_service = None
 
 
+#: Headers that say something about the request rather than about the route: a
+#: per-request correlation id and timing. Everything not listed here (and not
+#: rate-limit, below) is compared — content type, `vary`, `content-encoding`,
+#: and any cache header either path might grow — so a middleware that keys on
+#: the path and treats the two differently fails here rather than in a client.
+_PER_REQUEST_HEADERS = frozenset(
+    {
+        "date",
+        "x-correlation-id",
+        "x-process-time",
+        "x-request-id",
+    }
+)
+
+#: The whole `X-RateLimit-*` family is excluded, not just the counter and the
+#: clock. `_add_rate_limit_headers` writes NONE of them when it holds no
+#: advertisable result — which is what a check reports after failing open, and
+#: what the first request through a cold limiter produced on CI: the canonical
+#: request (sent first) came back with no rate-limit headers at all and the
+#: alias, sent second, carried `Limit`/`Policy`. That asymmetry is limiter
+#: state, not the path, so comparing the family across two sequential requests
+#: is comparing a clock. `_assert_rate_limit_agrees` below keeps the part that
+#: IS about the route: when both responses carry a policy, it must be the same
+#: one, which is what a path-keyed rate-limit rule would break.
+_RATE_LIMIT_PREFIX = "x-ratelimit-"
+
+
+def _stable_headers(headers) -> dict:
+    return {
+        name.lower(): value
+        for name, value in headers.items()
+        if name.lower() not in _PER_REQUEST_HEADERS
+        and not name.lower().startswith(_RATE_LIMIT_PREFIX)
+    }
+
+
+def _assert_rate_limit_agrees(alias, canonical) -> None:
+    """Where both responses name a rate-limit bucket, it has to be one bucket."""
+    for header in ("x-ratelimit-limit", "x-ratelimit-policy"):
+        if header in alias.headers and header in canonical.headers:
+            assert alias.headers[header] == canonical.headers[header], (
+                f"the two paths were rate limited under different {header} "
+                f"values — the limiter is keying on the path"
+            )
+
+
+def test_capabilities_is_the_same_response_under_both_paths():
+    """``/api/v1/meta/capabilities`` and ``/v1/meta/capabilities`` are one route.
+
+    The canonical path is the ``/api`` one: it is the only prefix the ingress
+    forwards to this service (alongside ``/health`` and ``/metrics``), so a
+    same-origin Dashboard asking for the bare ``/v1`` path is answered with the
+    SPA's HTML and silently loses every capability. The bare path stays for
+    extensions already installed against it.
+
+    Two paths onto one handler is only worth having if they cannot diverge, so
+    this compares the bytes and the headers rather than a field or two — a
+    second handler copied alongside the first, or a middleware that keys on the
+    path, fails here.
+
+    The two team-service states are the positive control: they make the
+    canonical body genuinely differ from itself, so the equality below is
+    asserting agreement between two live handlers rather than between two
+    constants.
+    """
+    bodies = []
+
+    with TestClient(app) as client:
+        for wired in (None, Mock()):
+            app.state.team_service = wired
+            try:
+                canonical = client.get("/api/v1/meta/capabilities")
+                alias = client.get("/v1/meta/capabilities")
+            finally:
+                # Restore the standalone default so later tests see a clean state.
+                app.state.team_service = None
+
+            assert canonical.status_code == 200
+            assert canonical.headers["content-type"].startswith("application/json")
+
+            assert alias.status_code == canonical.status_code
+            assert alias.content == canonical.content, (
+                "the two paths returned different bytes — they are supposed to "
+                "be one handler"
+            )
+            assert _stable_headers(alias.headers) == _stable_headers(
+                canonical.headers
+            ), "the two paths returned different headers"
+            _assert_rate_limit_agrees(alias, canonical)
+
+            bodies.append(canonical.content)
+
+    assert bodies[0] != bodies[1], (
+        "the capabilities body did not move with app.state.team_service, so "
+        "the equality above compared two constants and proves nothing"
+    )
+
+
+def test_the_bare_v1_capabilities_path_is_published_as_deprecated():
+    """The alias says in the document that it is the one being retired.
+
+    A client reading the spec has no other way to tell which of two paths
+    serving one response is the one to write against.
+    """
+    paths = app.openapi()["paths"]
+
+    canonical = paths["/api/v1/meta/capabilities"]["get"]
+    alias = paths["/v1/meta/capabilities"]["get"]
+
+    assert alias.get("deprecated") is True
+    assert "/api/v1/meta/capabilities" in alias["description"]
+    assert not canonical.get("deprecated", False)
+
+
 def test_root_endpoint():
     """
     Tests the root (/) endpoint to ensure it returns the correct API

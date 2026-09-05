@@ -30,6 +30,35 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
+# 2.6.0 — MINOR. Capability discovery gains a second path,
+# `GET /api/v1/meta/capabilities`, served by the same handler as the existing
+# `GET /v1/meta/capabilities`; the old path stays, and is published
+# `deprecated: true` with a description naming its replacement.
+#
+# `/v1/meta/capabilities` was the only client-facing route outside `/api`, and
+# outside `/api` is where the deployed topology stops carrying it: the ingress
+# forwards `/api` (prefix), `/health` and `/metrics` to this service and
+# everything else to the Dashboard SPA. A same-origin Dashboard — `VITE_API_URL=""`,
+# which is the deployed default — therefore asks its own origin for
+# `/v1/meta/capabilities` and is answered with the SPA's HTML, and both clients
+# treat that as "no capabilities": the Copilot catches the JSON parse failure
+# and serves its degraded self-hosted fallback (`src/lib/capabilities.ts`), and
+# the Dashboard's `getCapabilities` rejects (`src/lib/meta/capabilities.ts`).
+# The endpoint that exists to say what the deployment supports could not be
+# reached by the client that most needs it.
+#
+# MINOR rather than MAJOR because nothing is removed or changed underneath a
+# caller. The old path answers exactly what it answered before — one handler,
+# two registrations, held byte-identical by
+# `tests/integration/test_main_app.py::test_capabilities_is_the_same_response_under_both_paths`
+# — so an extension already installed against it keeps working, which is why
+# the alias is kept rather than moved. `deprecated: true` is documentation: it
+# is what tells a client reading the spec which of two paths serving one
+# response to write against, and OpenAPI generators emit a deprecated operation
+# like any other (the Copilot and Dashboard already carry two such operations,
+# POST /api/v1/auth/dev-login and /dev-register, in their generated
+# `src/types/api.generated.ts`).
+#
 # 2.5.0 — MINOR. `EnvConfigStatusResponse` gains a required
 # `personal_tenant_limits` object, and `PersonalTenantLimitsStatus` joins
 # `components` (#1320, #1324). It reports the effective values of the three
@@ -129,4 +158,4 @@ asked to accept, and it belongs to a person.
 # cannot tell two contracts apart is not doing its job. The first act of the
 # version is therefore to give the contract on main an identity distinct from
 # the 1.0.0 the clients are written against.
-API_CONTRACT_VERSION = "2.5.0"
+API_CONTRACT_VERSION = "2.6.0"

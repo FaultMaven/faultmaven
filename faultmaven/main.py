@@ -1926,7 +1926,19 @@ async def root():
     }
 
 
-@app.get("/v1/meta/capabilities")
+@app.get("/api/v1/meta/capabilities")
+@app.get(
+    "/v1/meta/capabilities",
+    deprecated=True,
+    description=(
+        "Deprecated: use `GET /api/v1/meta/capabilities`, which serves the "
+        "identical response. This path is kept for already-installed browser "
+        "extensions and is unreachable for a same-origin client: the "
+        "Kubernetes ingress routes `/api`, `/health` and `/metrics` to this "
+        "service and everything else to the Dashboard SPA, so this path is "
+        "answered with the SPA's HTML."
+    ),
+)
 async def get_capabilities(request: Request):
     """
     Return backend capabilities for browser extension configuration.
@@ -1934,6 +1946,15 @@ async def get_capabilities(request: Request):
     This endpoint is called by the FaultMaven Copilot browser extension
     and the Dashboard to detect the deployment mode and gate features
     (e.g. team sharing, the org/team management console) accordingly.
+
+    Served at two paths for one handler, so both answer byte-identically.
+    ``/api/v1/meta/capabilities`` is the canonical one: every other
+    client-facing route lives under ``/api``, and that is the only prefix the
+    Kubernetes ingress forwards here — a same-origin Dashboard
+    (``VITE_API_URL=""``, the deployed default) asking for the bare ``/v1``
+    path receives the SPA's own HTML and degrades its capabilities silently.
+    The bare ``/v1`` path stays as a deprecated alias because extensions
+    already installed are pinned to it.
 
     Returns:
         Backend capabilities including deployment mode, dashboard URL, and feature flags

@@ -6283,7 +6283,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "2.5.0"
+    "version": "2.6.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -12717,6 +12717,23 @@
         ]
       }
     },
+    "/api/v1/meta/capabilities": {
+      "get": {
+        "description": "Return backend capabilities for browser extension configuration.\n\nThis endpoint is called by the FaultMaven Copilot browser extension\nand the Dashboard to detect the deployment mode and gate features\n(e.g. team sharing, the org/team management console) accordingly.\n\nServed at two paths for one handler, so both answer byte-identically.\n``/api/v1/meta/capabilities`` is the canonical one: every other\nclient-facing route lives under ``/api``, and that is the only prefix the\nKubernetes ingress forwards here \u2014 a same-origin Dashboard\n(``VITE_API_URL=\"\"``, the deployed default) asking for the bare ``/v1``\npath receives the SPA's own HTML and degrades its capabilities silently.\nThe bare ``/v1`` path stays as a deprecated alias because extensions\nalready installed are pinned to it.\n\nReturns:\n    Backend capabilities including deployment mode, dashboard URL, and feature flags",
+        "operationId": "get_capabilities_api_v1_meta_capabilities_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Capabilities"
+      }
+    },
     "/api/v1/reports/case/{case_id}": {
       "get": {
         "description": "Get all reports associated with a specific case",
@@ -14142,7 +14159,8 @@
     },
     "/v1/meta/capabilities": {
       "get": {
-        "description": "Return backend capabilities for browser extension configuration.\n\nThis endpoint is called by the FaultMaven Copilot browser extension\nand the Dashboard to detect the deployment mode and gate features\n(e.g. team sharing, the org/team management console) accordingly.\n\nReturns:\n    Backend capabilities including deployment mode, dashboard URL, and feature flags",
+        "deprecated": true,
+        "description": "Deprecated: use `GET /api/v1/meta/capabilities`, which serves the identical response. This path is kept for already-installed browser extensions and is unreachable for a same-origin client: the Kubernetes ingress routes `/api`, `/health` and `/metrics` to this service and everything else to the Dashboard SPA, so this path is answered with the SPA's HTML.",
         "operationId": "get_capabilities_v1_meta_capabilities_get",
         "responses": {
           "200": {

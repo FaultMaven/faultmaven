@@ -1015,7 +1015,8 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | `GET /metrics/realtime` | Real-time metrics |
 | `GET /metrics/alerts` | Alert status |
 | `GET /metrics/optimization` | System optimization metrics |
-| `GET /v1/meta/capabilities` | Backend capabilities for extension |
+| `GET /api/v1/meta/capabilities` | Backend capabilities for extension and dashboard |
+| `GET /v1/meta/capabilities` | Deprecated alias of the above, kept for installed extensions |
 
 **Debug Endpoints (development only):**
 
