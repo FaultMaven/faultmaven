@@ -349,12 +349,12 @@ A third threshold — `LOW_CONFIDENCE_THRESHOLD = 0.65` — lives in `core/prepr
 
 ### Confidence boosts by content origin
 
-The `_origin_boost()` step in `_classify_with_rules` adds a small confidence bump for signals that ride alongside the content:
+Two classification paths add a small confidence bump for signals that ride alongside the content. They are applied at their own sites, not by a shared step. `_classify_from_source_url` adds the page-capture bump **inside its URL-pattern loop**, so it is reached only when a pattern matches; a capture from an unlisted host falls through to a later priority and receives nothing. `_classify_with_rules` computes the file-upload bump once and applies it at each of its return sites, including the extension-definitive image branch that does no content scoring at all. **Every site clamps**, so the realised bump is often smaller than the table's nominal value — the image branch caps at 0.99 against a 0.98 base, yielding 0.01 rather than 0.03.
 
 | Origin | Boost | Reason |
 | --- | --- | --- |
-| `file_upload` | `FILE_UPLOAD_CONFIDENCE_BOOST = 0.03` | A real filename + extension is a weak but real signal. |
-| `page_capture` | `PAGE_CAPTURE_CONFIDENCE_BOOST = 0.02` | Captured DOM carries structural hints (panels, headings) the raw classifier underweights. |
+| `file_upload` | `FILE_UPLOAD_CONFIDENCE_BOOST = 0.03` | A real filename + extension is a weak but real signal. Nominal: each return site clamps, so a branch already near its ceiling realises less. |
+| `page_capture` | `PAGE_CAPTURE_CONFIDENCE_BOOST = 0.02` | The URL is the strongest available signal for that source type. Applied only on a URL-pattern match; no DOM structure is inspected on this path. |
 | `text_paste` / chat-paste | `TEXT_PASTE_CONFIDENCE_BOOST = 0.0` | **Deliberately zero.** Paste content is format-neutral — there is no filename, no extension, no source URL. A nonzero boost would override rule-based signals that are doing the actual work. ISS-053. |
 
 The explicit zero is documented as a constant rather than left implicit because the boost table is the single audit point operators check when classification confidence looks off.
