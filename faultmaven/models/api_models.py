@@ -897,8 +897,9 @@ class TurnResponse(BaseModel):
             "How many of the case's turns so far were investigation work. "
             "turn_number is the message clock and advances on every exchange; "
             "this excludes out-of-band turns (small talk, trivia, questions "
-            "about FaultMaven itself), which are answered but neither counted "
-            "nor charged against the tenant's daily turn cap (#1329). Clients "
+            "about FaultMaven itself), which are answered outside the "
+            "investigation and recorded as such (#1329). Every message, aside "
+            "or not, is charged against the tenant's daily turn cap. Clients "
             "that display a turn counter should prefer this."
         ),
     )

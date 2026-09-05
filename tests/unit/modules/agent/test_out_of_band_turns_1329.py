@@ -7,12 +7,14 @@ and it landed in the investigation history. These tests drive the real
 real ``TurnCapService`` with an in-memory ledger, with the two LLM calls the
 lane makes (one-token triage, short answer) doubled on the router.
 
-What must hold: the ledger is untouched; the engine is never called; the
-message clock STILL advances by one (every persisted exchange does — the
-#500/#1264 invariant); the recorded turn carries ``OUT_OF_BAND`` and is
-excluded from the investigation-turn count the response reports. And the
-controls: an attachment, a typed answer to an offered choice, a pending gate
-or a "1" from the triage all keep the old, charged path.
+What must hold: the turn is CHARGED like any other (the issue owner's
+ruling — the cap bounds compute, not progress); the engine is never called;
+the message clock still advances by one (every persisted exchange does — the
+#500/#1264 invariant); the recorded turn carries ``OUT_OF_BAND``, is labelled
+as its own telemetry path, and is excluded from the investigation-turn count
+the response reports. And the controls: an attachment, a typed answer to an
+offered choice, a pending gate, a terminal case or a "1" from the triage all
+keep the engine path.
 """
 
 from __future__ import annotations
@@ -178,15 +180,30 @@ async def _turn(service, repo, case, query=HAIKU, **payload):
 
 
 class TestOutOfBandTurn:
-    async def test_not_charged_and_engine_untouched(
+    async def test_charged_like_any_turn_but_engine_untouched(
         self, engine, recording_case_repository, case
     ):
+        """Owner ruling on #1329: every message pays; what changes is the route."""
         ledger = InMemoryTurnLedger()
         service = _service(engine, recording_case_repository, ledger)
         resp, before, saved = await _turn(service, recording_case_repository, case)
-        assert await ledger.usage(ORG, utc_day()) == 0
+        assert await ledger.usage(ORG, utc_day()) == 1
         engine.process_turn.assert_not_called()
         assert resp.agent_response == ANSWER
+
+    async def test_telemetry_row_carries_its_own_path(
+        self, engine, recording_case_repository, case, caplog
+    ):
+        import logging
+
+        from faultmaven.core.investigation.case_telemetry import TELEMETRY_LOGGER_NAME
+
+        service = _service(engine, recording_case_repository, InMemoryTurnLedger())
+        with caplog.at_level(logging.INFO, logger=TELEMETRY_LOGGER_NAME):
+            await _turn(service, recording_case_repository, case)
+        rows = [r for r in caplog.records if getattr(r, "path", None)]
+        assert rows and rows[-1].path == "out_of_band"
+        assert rows[-1].outcome == "out_of_band"
 
     async def test_message_clock_still_advances_and_turn_is_recorded_out_of_band(
         self, engine, recording_case_repository, case
@@ -228,7 +245,7 @@ class TestOutOfBandTurn:
         labels = [a.label for a in resp.suggested_actions]
         assert any(label.startswith("Back to: Nightly OOM kills") for label in labels)
 
-    async def test_agent_meta_is_free_without_a_triage_call(
+    async def test_agent_meta_skips_the_engine_without_a_triage_call(
         self, engine, recording_case_repository, case
     ):
         ledger = InMemoryTurnLedger()
@@ -236,7 +253,7 @@ class TestOutOfBandTurn:
         resp, before, saved = await _turn(
             service, recording_case_repository, case, query="What model are you?"
         )
-        assert await ledger.usage(ORG, utc_day()) == 0
+        assert await ledger.usage(ORG, utc_day()) == 1
         engine.process_turn.assert_not_called()
         caps = [
             c.kwargs.get("max_tokens") for c in engine.llm_provider.route.call_args_list
@@ -288,6 +305,26 @@ class TestControls:
         except Exception:
             pass  # the stubbed preprocessing is not the subject; the charge is
         assert await ledger.usage(ORG, utc_day()) == 1
+        caps = [
+            c.kwargs.get("max_tokens") for c in engine.llm_provider.route.call_args_list
+        ]
+        assert TRIAGE_MAX_TOKENS not in caps
+
+    async def test_a_terminal_case_keeps_its_terminal_path(
+        self, engine, recording_case_repository, case
+    ):
+        """Terminal Q&A has its own cards and refuses new data; no aside lane there."""
+        ledger = InMemoryTurnLedger()
+        service = _service(engine, recording_case_repository, ledger, verdict="2")
+        case.resolved_at = datetime.now(
+            timezone.utc
+        )  # before state: validate_assignment
+        case.state = CaseState.RESOLVED
+        resp, before, saved = await _turn(
+            service, recording_case_repository, case, query="What model are you?"
+        )
+        engine.process_turn.assert_called_once()
+        assert saved.turn_history[-1].outcome != TurnOutcome.OUT_OF_BAND
         caps = [
             c.kwargs.get("max_tokens") for c in engine.llm_provider.route.call_args_list
         ]

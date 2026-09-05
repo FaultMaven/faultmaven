@@ -2297,10 +2297,7 @@ def _build_turn_summary(turn) -> str:
     # poem or the trivia answer is not investigation context, and rendering it
     # invites the model to treat the exchange as a thread to pick back up.
     if turn.outcome and turn.outcome.value == "out_of_band":
-        return (
-            f"TURN {turn.turn_number}: (off-topic exchange — not part of the "
-            "investigation)"
-        )
+        return f"TURN {turn.turn_number}: {ASIDE_LINE}"
 
     parts = []
 
@@ -2368,6 +2365,23 @@ def _fence_conversation(body: str, fence: PromptFence) -> str:
     the transcript if what it records IS the transcript (#1256 review).
     """
     return fence.element("conversation_history", body)
+
+
+ASIDE_LINE = "(off-topic exchange — not part of the investigation)"
+
+
+def _aside_turns(messages: list) -> set:
+    """Turn numbers whose rows are tagged out-of-band (#1329).
+
+    Read off the persisted user row's metadata — the service tags both rows
+    of an aside — so every fidelity of the history agrees with the
+    ``turn_history`` outcome without needing the record in hand.
+    """
+    return {
+        m.get("turn_number")
+        for m in messages
+        if (m.get("metadata") or {}).get("out_of_band")
+    }
 
 
 def _build_graduated_history(case: Case, fence: PromptFence) -> str:
@@ -2440,6 +2454,7 @@ def _build_graduated_history(case: Case, fence: PromptFence) -> str:
     # --- RECENT TURNS (verbatim with smart agent truncation) ---
     result += "RECENT TURNS:\n"
     current_turn_num = None
+    asides = _aside_turns(messages)
     for msg in messages:
         turn_num = msg.get("turn_number")
         if turn_num not in recent_turn_nums:
@@ -2455,6 +2470,13 @@ def _build_graduated_history(case: Case, fence: PromptFence) -> str:
                 result += "\n"
             result += f"TURN {turn_num}:\n"
             current_turn_num = turn_num
+            if turn_num in asides:
+                # One line for the whole turn (#1329): the poem is not
+                # investigation context, and quoting it invites the model to
+                # pick the tangent back up.
+                result += f"{ASIDE_LINE}\n"
+        if turn_num in asides:
+            continue
 
         if role == "ASSISTANT":
             content = _smart_truncate_agent_response(content)
@@ -2468,6 +2490,7 @@ def _build_verbatim_history(messages: list, fence: PromptFence) -> str:
     """Build full verbatim history for short conversations (≤3 turns)."""
     result = ""
     current_turn_num = None
+    asides = _aside_turns(messages)
 
     for msg in messages[-20:]:
         turn_num = msg.get("turn_number", "?")
@@ -2481,6 +2504,10 @@ def _build_verbatim_history(messages: list, fence: PromptFence) -> str:
                 result += "\n"
             result += f"TURN {turn_num}:\n"
             current_turn_num = turn_num
+            if turn_num in asides:
+                result += f"{ASIDE_LINE}\n"  # #1329, see _build_graduated_history
+        if turn_num in asides:
+            continue
 
         result += f"{role}: {content}\n"
 
@@ -2933,11 +2960,16 @@ def _build_compact_history(
     if case.turn_history:
         last_turn = case.turn_history[-1]
         recent_history += "\n\n<previous_turn>\n"
-        if last_turn.evidence_added:
+        last_is_aside = bool(
+            last_turn.outcome and last_turn.outcome.value == "out_of_band"
+        )
+        if last_is_aside:
+            recent_history += f"{ASIDE_LINE}\n"  # #1329
+        elif last_turn.evidence_added:
             recent_history += (
                 f"User provided: {len(last_turn.evidence_added)} evidence artifacts\n"
             )
-        if last_turn.agent_response_summary:
+        if last_turn.agent_response_summary and not last_is_aside:
             recent_history += f"Agent: {last_turn.agent_response_summary[:200]}\n"
         recent_history += "</previous_turn>"
     recent_history += "\n\n<current_turn>\n"

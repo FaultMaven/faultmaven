@@ -142,6 +142,10 @@ class TurnPath(str, Enum):
     TERMINAL = "terminal"
     GREETING = "greeting"
     RECLASSIFICATION = "reclassification"
+    #: #1329 — answered from a small prompt outside the engine; charged like
+    #: any turn, recorded ``OUT_OF_BAND``. Without its own label a chatty
+    #: session reads as an engine that produced nothing.
+    OUT_OF_BAND = "out_of_band"
     ERROR = "error"
 
 

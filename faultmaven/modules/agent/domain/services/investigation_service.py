@@ -1341,19 +1341,17 @@ class InvestigationService:
             # remember a dependency. The OpenAPI inventory test remains as the
             # secondary check that no second HTTP door appears.
             #
-            # #1329 refines the position by one step: a text-only CONVERSATION
-            # message is first asked "is this incident work at all?"
-            # (``_triage_out_of_band`` — mechanical classification plus, for
-            # the open cases, a one-token classifier call). An aside — small
-            # talk, trivia, a question about FaultMaven itself — is answered
-            # from a small prompt on a cheap model and is NOT charged: the cap
-            # bounds investigation turns, and a haiku is not one. Every
-            # uncertain or failed triage lands on "incident" and is charged,
-            # so the lane cannot be widened by phrasing; a turn carrying an
-            # attachment, a structured intent, a pending gate reply, or a
-            # typed answer to an offered choice never enters it at all. The
-            # triage runs on the message text alone, so the ordering promise
-            # above still holds: nothing is preprocessed before the charge.
+            # #1329 asked for out-of-band turns (small talk, trivia, questions
+            # about FaultMaven itself) to be exempt from this charge. The issue
+            # owner ruled otherwise (issue comment, 2026-09-05): the cap bounds
+            # COMPUTE, not diagnostic progress, and an exemption keyed on a
+            # classifier's verdict is a free channel — phrase the extra turns as
+            # tangents. So every message is charged here, unconditionally, and
+            # the out-of-band lane below changes only what the turn DOES with
+            # the charge: no engine, no case mutation, no place in the
+            # investigation's history.
+            await self.turn_cap.reserve(get_current_org_id())
+
             next_turn = case.current_turn + 1
 
             classification = classify_query(
@@ -1362,41 +1360,7 @@ class InvestigationService:
             )
             processing_mode = classification.mode.value
 
-            oob_kind: Optional[OutOfBandKind] = None
-            # Typed-choice resolution done once, early, and reused by the
-            # adoption site below (``pre_resolution_attempted`` says whether
-            # it ran, so that site neither repeats the LLM call nor mistakes
-            # "not attempted" for "attempted and found nothing").
-            pre_resolution_attempted = False
-            pre_resolved_intent: Optional[Dict[str, Any]] = None
-            if (
-                payload.query
-                and not payload.has_attachments
-                and payload.intent is None
-                and not getattr(case, "pending_transition", None)
-                # A bare greeting has its own deterministic route below; it is
-                # charged as before and never reaches the classifier call.
-                and not self._detect_intent_heuristic(payload.query)
-            ):
-                (
-                    oob_kind,
-                    pre_resolved_intent,
-                    pre_resolution_attempted,
-                ) = await self._triage_out_of_band(
-                    case, payload.query, next_turn, classification
-                )
-            if oob_kind is None:
-                await self.turn_cap.reserve(get_current_org_id())
-            else:
-                logger.info(
-                    "Turn not charged on case %s turn %s: out of band (%s) (#1329)",
-                    case_id,
-                    next_turn,
-                    oob_kind.value,
-                )
-
             # ── STEP 1: PRE-LLM DATA INGESTION ──
-            # (``classification`` was computed above, before the charge.)
 
             # Post-010 strict evidence model: preprocessing creates only
             # UploadedFile rows (no auto-Evidence). Evidence is born
@@ -1515,7 +1479,6 @@ class InvestigationService:
                     "has_attachments": payload.has_attachments,
                     "attachment_count": len(payload.attachments),
                     "intent_type": intent_type.value,
-                    **({"out_of_band": oob_kind.value} if oob_kind else {}),
                     "intent_metadata": (
                         intent.model_dump(exclude_unset=True, exclude={"type"})
                         if intent
@@ -1592,22 +1555,17 @@ class InvestigationService:
                 and not payload.has_attachments
                 and case.last_suggestions
             ):
-                if pre_resolution_attempted:
-                    # Resolved before the cap charge (#1329) against the same
-                    # live set at the same turn number; do not pay twice.
-                    resolved_intent = pre_resolved_intent
-                else:
-                    on_offer = live_suggestions(
-                        case.last_suggestions, case, as_of_turn=case.current_turn
+                on_offer = live_suggestions(
+                    case.last_suggestions, case, as_of_turn=case.current_turn
+                )
+                resolved_intent = (
+                    await self.intent_resolver.resolve(
+                        user_message=query,
+                        last_suggestions=on_offer,
                     )
-                    resolved_intent = (
-                        await self.intent_resolver.resolve(
-                            user_message=query,
-                            last_suggestions=on_offer,
-                        )
-                        if on_offer
-                        else None
-                    )
+                    if on_offer
+                    else None
+                )
                 if resolved_intent:
                     try:
                         resolved_qi = QueryIntent(**resolved_intent)
@@ -1650,6 +1608,35 @@ class InvestigationService:
             # is guaranteed to be present in ``_INTENT_DISPATCH`` because
             # _validate_intent_dispatch_completeness ran at service
             # construction and would have refused to start otherwise.
+            # ── #1329: is this text-only CONVERSATION turn incident work at all? ──
+            # Decided AFTER the typed-choice resolution and the greeting
+            # heuristic above (a resolved or minted intent is never an aside),
+            # never on a turn that carries an attachment or a structured
+            # intent, never while a gate reply is pending, and never on a
+            # terminal case (its Q&A path has its own cards and refuses new
+            # data). The turn is already charged; what the verdict changes is
+            # the route: an aside skips the engine and is recorded OUT_OF_BAND.
+            oob_kind: Optional[OutOfBandKind] = None
+            if (
+                intent_type == IntentType.CONVERSATION
+                and intent is None
+                and query
+                and not payload.has_attachments
+                and not case.is_terminal
+                and not getattr(case, "pending_transition", None)
+            ):
+                oob_kind = await self.out_of_band_triage.triage(
+                    case, query, classification
+                )
+                if oob_kind is not None:
+                    user_message_obj["metadata"]["out_of_band"] = oob_kind.value
+                    logger.info(
+                        "Out-of-band turn on case %s turn %s: %s (#1329)",
+                        case_id,
+                        next_turn,
+                        oob_kind.value,
+                    )
+
             dispatch_kind = _INTENT_DISPATCH[intent_type]
 
             # Attachment metadata for the engine. Post-010: uploads create only
@@ -1993,6 +1980,8 @@ class InvestigationService:
             )
             if turn_telemetry.get("path"):
                 turn_path = turn_telemetry["path"]
+            elif oob_kind is not None:
+                turn_path = TurnPath.OUT_OF_BAND
             elif intent_type == IntentType.GREETING:
                 turn_path = TurnPath.GREETING
             elif intent_type == IntentType.FILE_RECLASSIFICATION:
@@ -3064,59 +3053,18 @@ class InvestigationService:
             },
         }
 
-    async def _triage_out_of_band(
-        self,
-        case: "Case",
-        query: str,
-        next_turn: int,
-        classification: QueryClassification,
-    ) -> tuple[Optional[OutOfBandKind], Optional[Dict[str, Any]], bool]:
-        """Decide before the cap charge whether a text-only message is an aside.
-
-        Returns ``(kind, resolved_intent, resolution_attempted)``. A message
-        that answers one of the choices still on offer is incident work by
-        definition, so typed-choice resolution runs FIRST — against the same
-        live set, at the same turn number, that the adoption site below uses —
-        and its result is handed back so that site does not pay for a second
-        classifier call. Only when nothing was resolved does the out-of-band
-        triage itself run.
-        """
-        from faultmaven.modules.agent.domain.services.out_of_band import (
-            needs_llm_triage,
-        )
-
-        is_meta = classification.mode == ProcessingMode.AGENT_META
-        if not is_meta and not needs_llm_triage(classification):
-            return None, None, False
-
-        resolved: Optional[Dict[str, Any]] = None
-        attempted = False
-        if case.last_suggestions:
-            on_offer = live_suggestions(
-                case.last_suggestions, case, as_of_turn=next_turn
-            )
-            if on_offer:
-                attempted = True
-                resolved = await self.intent_resolver.resolve(
-                    user_message=query, last_suggestions=on_offer
-                )
-                if resolved:
-                    return None, resolved, True
-
-        kind = await self.out_of_band_triage.triage(case, query, classification)
-        return kind, None, attempted
-
     async def _handle_out_of_band(
         self, case: "Case", user_message: str, kind: OutOfBandKind
     ) -> Dict[str, Any]:
         """Answer an aside without touching the investigation (#1329).
 
-        Same result shape as ``_handle_greeting``: the message clock has
-        already advanced, so the turn IS consumed and ``_backfill_consumed_turn``
-        records it — with ``OUT_OF_BAND`` as its outcome, which is what keeps it
-        out of every investigative-turn count and out of the EARLIER TURNS
-        summaries. The reply comes from a small fixed prompt on the synthesis
-        role; the engine, the tools and the case context are never involved.
+        Same result shape as ``_handle_greeting``: the turn is charged and the
+        message clock has advanced, so the turn IS consumed and
+        ``_backfill_consumed_turn`` records it — with ``OUT_OF_BAND`` as its
+        outcome, which is what keeps it out of every investigative-turn count
+        and out of every fidelity of the conversation history. The reply comes
+        from a small fixed prompt on the synthesis role; the engine, the tools
+        and the case context are never involved.
         """
         agent_response = await answer_out_of_band(
             self.engine.llm_provider, case, user_message, kind

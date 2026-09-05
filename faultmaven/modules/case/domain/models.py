@@ -5580,16 +5580,21 @@ class Case(BaseModel):
         ``current_turn`` is the MESSAGE clock — every persisted exchange
         advances it, because ``case_messages``, ``turn_history``, telemetry
         and suggestion liveness are keyed on it. This is the count a user
-        means by "turn 7": recorded turns minus the asides (out-of-band
-        exchanges) and the synthetic ``skipped`` placeholders. It is derived,
-        not stored, so it cannot drift from the history that defines it.
+        means by "turn 7": the clock minus the asides (out-of-band exchanges).
+        Subtracted from ``current_turn`` rather than counted from
+        ``turn_history`` on purpose: older cases carry turns that were consumed
+        without a record (the #500/#1264 corpus — 8 of 283 dev cases), and
+        ``reconcile_turn_sequence`` fills those with ``skipped`` placeholders.
+        Every such turn ran the engine, so it IS investigation work; counting
+        only recorded, non-skipped entries would silently undercount exactly
+        those cases. Derived, not stored, so it cannot drift from the clock.
         """
-        return sum(
+        asides = sum(
             1
             for t in self.turn_history
-            if not t.is_skipped
-            and not (t.outcome and t.outcome.value == TurnOutcome.OUT_OF_BAND.value)
+            if t.outcome and t.outcome.value == TurnOutcome.OUT_OF_BAND.value
         )
+        return max(0, self.current_turn - asides)
 
     @property
     def effective_current_turn(self) -> int:
