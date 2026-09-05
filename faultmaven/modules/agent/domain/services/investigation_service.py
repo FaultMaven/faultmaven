@@ -74,8 +74,15 @@ from faultmaven.models.api_models import (
     SuggestedActionResponse,
     TurnResponse,
 )
+from faultmaven.modules.agent.domain.services.out_of_band import (
+    OutOfBandKind,
+    OutOfBandTriage,
+    answer_out_of_band,
+)
 from faultmaven.modules.agent.domain.services.query_classifier import (
     ProcessingMode,
+    QueryClassification,
+    classify_query,
 )
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
@@ -1235,6 +1242,7 @@ class InvestigationService:
         self.file_storage_service = file_storage_service
         self._turn_cap = turn_cap
         self.intent_resolver = IntentResolver(milestone_engine.llm_provider)
+        self.out_of_band_triage = OutOfBandTriage(milestone_engine.llm_provider)
         # Fail-fast: refuse to construct if the intent dispatch table is
         # missing any IntentType value (or vice-versa). The system cannot
         # honor the API contract if it can't route every advertised intent.
@@ -1332,22 +1340,27 @@ class InvestigationService:
             # bounded by construction, rather than every caller having to
             # remember a dependency. The OpenAPI inventory test remains as the
             # secondary check that no second HTTP door appears.
+            #
+            # #1329 asked for out-of-band turns (small talk, trivia, questions
+            # about FaultMaven itself) to be exempt from this charge. The issue
+            # owner ruled otherwise (issue comment, 2026-09-05): the cap bounds
+            # COMPUTE, not diagnostic progress, and an exemption keyed on a
+            # classifier's verdict is a free channel — phrase the extra turns as
+            # tangents. So every message is charged here, unconditionally, and
+            # the out-of-band lane below changes only what the turn DOES with
+            # the charge: no engine, no case mutation, no place in the
+            # investigation's history.
             await self.turn_cap.reserve(get_current_org_id())
 
             next_turn = case.current_turn + 1
-
-            # ── STEP 1: PRE-LLM DATA INGESTION ──
-            # Classify query for scenario-driven processing mode
-            from faultmaven.modules.agent.domain.services.query_classifier import (
-                QueryClassification,
-                classify_query,
-            )
 
             classification = classify_query(
                 payload.query or "",
                 has_attachments=payload.has_attachments,
             )
             processing_mode = classification.mode.value
+
+            # ── STEP 1: PRE-LLM DATA INGESTION ──
 
             # Post-010 strict evidence model: preprocessing creates only
             # UploadedFile rows (no auto-Evidence). Evidence is born
@@ -1595,6 +1608,35 @@ class InvestigationService:
             # is guaranteed to be present in ``_INTENT_DISPATCH`` because
             # _validate_intent_dispatch_completeness ran at service
             # construction and would have refused to start otherwise.
+            # ── #1329: is this text-only CONVERSATION turn incident work at all? ──
+            # Decided AFTER the typed-choice resolution and the greeting
+            # heuristic above (a resolved or minted intent is never an aside),
+            # never on a turn that carries an attachment or a structured
+            # intent, never while a gate reply is pending, and never on a
+            # terminal case (its Q&A path has its own cards and refuses new
+            # data). The turn is already charged; what the verdict changes is
+            # the route: an aside skips the engine and is recorded OUT_OF_BAND.
+            oob_kind: Optional[OutOfBandKind] = None
+            if (
+                intent_type == IntentType.CONVERSATION
+                and intent is None
+                and query
+                and not payload.has_attachments
+                and not case.is_terminal
+                and not getattr(case, "pending_transition", None)
+            ):
+                oob_kind = await self.out_of_band_triage.triage(
+                    case, query, classification
+                )
+                if oob_kind is not None:
+                    user_message_obj["metadata"]["out_of_band"] = oob_kind.value
+                    logger.info(
+                        "Out-of-band turn on case %s turn %s: %s (#1329)",
+                        case_id,
+                        next_turn,
+                        oob_kind.value,
+                    )
+
             dispatch_kind = _INTENT_DISPATCH[intent_type]
 
             # Attachment metadata for the engine. Post-010: uploads create only
@@ -1619,7 +1661,17 @@ class InvestigationService:
                 _engine_attachment_metadata(res) for res in preprocess_results
             ]
 
-            if dispatch_kind == _IntentDispatchKind.NOT_IMPLEMENTED:
+            if oob_kind is not None and intent_type == IntentType.CONVERSATION:
+                # #1329: an aside. Answered outside the investigation; the
+                # message clock still advanced above, and the TurnProgress this
+                # produces carries OUT_OF_BAND so nothing downstream counts it
+                # as diagnostic work. Guarded on CONVERSATION so a heuristic or
+                # resolved intent (a greeting, a typed choice) keeps its own
+                # route even when triage had an opinion.
+                result = await self._handle_out_of_band(
+                    case=case, user_message=query or "", kind=oob_kind
+                )
+            elif dispatch_kind == _IntentDispatchKind.NOT_IMPLEMENTED:
                 # Intent value is defined in the IntentType enum (API
                 # contract) but no handler exists in this build. Surface as
                 # 422 with a clear message rather than a 500 — this is a
@@ -1631,7 +1683,7 @@ class InvestigationService:
                     {"intent_type": intent_type.value},
                 )
 
-            if dispatch_kind == _IntentDispatchKind.SERVICE:
+            elif dispatch_kind == _IntentDispatchKind.SERVICE:
                 # Service-level handlers — special-cased because each does
                 # pre-LLM work (no LLM call, state mutation only, etc.)
                 # and the handler signatures vary.
@@ -1928,6 +1980,8 @@ class InvestigationService:
             )
             if turn_telemetry.get("path"):
                 turn_path = turn_telemetry["path"]
+            elif oob_kind is not None:
+                turn_path = TurnPath.OUT_OF_BAND
             elif intent_type == IntentType.GREETING:
                 turn_path = TurnPath.GREETING
             elif intent_type == IntentType.FILE_RECLASSIFICATION:
@@ -1998,6 +2052,7 @@ class InvestigationService:
             response = TurnResponse(
                 agent_response=agent_response_text,
                 turn_number=updated_case.current_turn,
+                investigation_turn=updated_case.investigation_turn_count,
                 milestones_completed=turn_meta.get("milestones_completed", []),
                 case_state=updated_case.state,
                 progress_made=turn_meta.get("progress_made", False),
@@ -2995,6 +3050,43 @@ class InvestigationService:
                 "progress_made": False,
                 "milestones_completed": [],
                 **report_turn_uploads(case.case_id, case.current_turn, attachments),
+            },
+        }
+
+    async def _handle_out_of_band(
+        self, case: "Case", user_message: str, kind: OutOfBandKind
+    ) -> Dict[str, Any]:
+        """Answer an aside without touching the investigation (#1329).
+
+        Same result shape as ``_handle_greeting``: the turn is charged and the
+        message clock has advanced, so the turn IS consumed and
+        ``_backfill_consumed_turn`` records it — with ``OUT_OF_BAND`` as its
+        outcome, which is what keeps it out of every investigative-turn count
+        and out of every fidelity of the conversation history. The reply comes
+        from a small fixed prompt on the synthesis role; the engine, the tools
+        and the case context are never involved.
+        """
+        agent_response = await answer_out_of_band(
+            self.engine.llm_provider, case, user_message, kind
+        )
+        title = (case.title or "the investigation")[:80]
+        return {
+            "agent_response": agent_response,
+            "suggested_follow_ups": [
+                {
+                    "label": f"Back to: {title}",
+                    "action_type": "FREE_SPEECH",
+                    "hints": ["new data", "what you tried", "next step"],
+                },
+                {"label": "Ask another question", "action_type": "FREE_SPEECH"},
+            ],
+            "case_updated": case,
+            "metadata": {
+                "progress_made": False,
+                "milestones_completed": [],
+                "outcome": TurnOutcome.OUT_OF_BAND.value,
+                "out_of_band": kind.value,
+                **report_turn_uploads(case.case_id, case.current_turn, None),
             },
         }
 

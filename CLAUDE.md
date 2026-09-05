@@ -377,8 +377,8 @@ but only when the same call also declares an output floor, without which the
 provider refuses the lift and warns. (On the 3.7+ surface `INFERENCE` also
 lifts the all-shape default on plain calls, floor or no floor — plain-call
 starvation is non-fatal.) So "3.x structured calls are capped" holds
-for every structured call shipped today. Exactly two call sites declare an
-intent (see below) and both declare `EXTRACTION`, which asks for *less*
+for every structured call shipped today. Exactly four call sites declare an
+intent (see below) and all declare `EXTRACTION`, which asks for *less*
 reasoning and can never lift the cap — and both are plain calls in any case,
 so no structured call ships with an intent at all.
 
@@ -455,14 +455,16 @@ models that accept tools but time out on forced `tool_choice=required`).
 **A caller can declare what a call needs from reasoning, and the minimum
 output it can use.** Two optional, per-call-site knobs on `LLMRouter.route()`
 (#1118 / #1117). Both default to absent, and where a call site passes neither
-the shape-based provider defaults above are what runs. **Two call sites ship
-declaring them**, both `EXTRACTION` — the direction that asks for *less*
+the shape-based provider defaults above are what runs. **Four call sites ship
+declaring them**, all `EXTRACTION` — the direction that asks for *less*
 reasoning, so neither lifts a starvation guard:
 
 | Call site | Declares |
 |-----------|----------|
 | `core/investigation/intent_resolver.py` (intent classifier) | `reasoning_intent=EXTRACTION`, `min_output_tokens=CLASSIFIER_MIN_OUTPUT_TOKENS` |
 | `modules/agent/tools/document_qa_tool.py` (KB/doc answer synthesis) | `reasoning_intent=EXTRACTION` |
+| `modules/agent/domain/services/out_of_band.py` (out-of-band triage, #1329) | `reasoning_intent=EXTRACTION`, `min_output_tokens=TRIAGE_MIN_OUTPUT_TOKENS` |
+| `modules/agent/domain/services/out_of_band.py` (out-of-band answer, #1329) | `reasoning_intent=EXTRACTION` |
 
 Both are grounded transformations of supplied context rather than reasoning
 over candidates. `document_qa_tool` declares the intent specifically so its
@@ -907,7 +909,7 @@ alembic downgrade -1
 
 **Sharing:** `resource_shares` — polymorphic `(resource_type, resource_id, scope_type, scope_id)` association (ADR-013 §D4). Single source of truth for team visibility of runbooks/cases/drafts; replaced the nullable `team_id` columns on `cases`/`knowledge_items`/`conversion_jobs`. v1 `scope_type=team`; `organization` reserved (D4a). Retrieval resolves it to a visible-id allowlist in SQL; ChromaDB metadata never carries team state.
 
-**Usage accounting:** `organization_turn_usage` — three columns (organization, UTC day, count) holding the investigation turns accepted that day. The ledger the per-tenant turn cap reserves against (ADR-016 D5.3): the reservation is a single `INSERT … ON CONFLICT … DO UPDATE … WHERE turn_count < :cap RETURNING`, so a refused turn increments nothing. Rows are written for every tenant, capped or not — a company organization is never refused, but its counts are what the default is tuned against. The cap itself is `organizations.daily_turn_cap` (NULL = deployment policy, 0 = uncapped, N = N/day), written by `fm-set-turn-cap` and read on every turn. Charged inside `InvestigationService.process_turn`, after the case load and access check — so a 404/409/422 and a cross-tenant probe cost nothing. Single-tenant deployments are never capped and never touch the ledger.
+**Usage accounting:** `organization_turn_usage` — three columns (organization, UTC day, count) holding the investigation turns accepted that day. The ledger the per-tenant turn cap reserves against (ADR-016 D5.3): the reservation is a single `INSERT … ON CONFLICT … DO UPDATE … WHERE turn_count < :cap RETURNING`, so a refused turn increments nothing. Rows are written for every tenant, capped or not — a company organization is never refused, but its counts are what the default is tuned against. The cap itself is `organizations.daily_turn_cap` (NULL = deployment policy, 0 = uncapped, N = N/day), written by `fm-set-turn-cap` and read on every turn. Charged inside `InvestigationService.process_turn`, after the case load and access check — so a 404/409/422 and a cross-tenant probe cost nothing. **Every message pays, asides included** (#1329, owner ruling: the cap bounds compute, not diagnostic progress, and a classifier-keyed exemption would be a free channel). What an out-of-band aside (small talk, trivia, a question about FaultMaven itself) changes is the route, not the charge: it is answered from a small prompt outside the engine, recorded with `TurnOutcome.OUT_OF_BAND`, excluded from every investigative-turn count, and hidden from every history fidelity; the message clock (`current_turn`) still advances, and `TurnResponse.investigation_turn` is the count clients should display. Single-tenant deployments are never capped and never touch the ledger.
 
 **Config domain:** `config_overrides` (dashboard-managed settings, hot-reloaded at runtime — cloud mode only; local mode uses .env as sole source of truth)
 

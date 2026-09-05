@@ -392,6 +392,7 @@ class CaseDTO:
 # directly (per the layer-boundary import-linter contract).
 from faultmaven.modules.case.domain.models import (  # noqa: E402
     CONFIRMED_ESTABLISHED_BY,
+    NON_INVESTIGATIVE_OUTCOMES,
     TERMINAL_HYPOTHESIS_STATES,
     ActionAttempt,
     Case,
@@ -555,6 +556,7 @@ __all__ = [
     "MitigationRecord",
     "TemporalState",
     "TERMINAL_HYPOTHESIS_STATES",
+    "NON_INVESTIGATIVE_OUTCOMES",
     "TurnOutcome",
     "TurnProgress",
     "UploadedFile",

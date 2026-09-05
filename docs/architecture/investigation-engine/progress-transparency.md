@@ -44,7 +44,7 @@ When N turns pass without a milestone completing in the current stage, transpare
 | Silent → Transparent | N data-bearing turns without a milestone completing in current stage |
 | Transparent → Silent | Any milestone is completed                                           |
 
-**What counts toward the counter:** Turns where the user submitted data (files or pasted content attached) OR the agent executed diagnostic tools (search_file, deep_analysis, etc.) against existing evidence. These are **investigative turns** — turns where diagnostic work was attempted. Conversational turns (questions, off-topic chat, acknowledgments without data or tool calls) do not increment the counter.
+**What counts toward the counter:** Turns where the user submitted data (files or pasted content attached) OR the agent executed diagnostic tools (search_file, deep_analysis, etc.) against existing evidence. These are **investigative turns** — turns where diagnostic work was attempted. Conversational turns (questions, off-topic chat, acknowledgments without data or tool calls) do not increment the counter. Since #1329 an off-topic aside is also routed **around** the engine (`TurnOutcome.OUT_OF_BAND`, see [Agent Behavioral Rules §Rule 9](./agent-behavioral-rules.md#rule-9-know-thyself)); the shared `NON_INVESTIGATIVE_OUTCOMES` set is what this counter, the UI adapter and `Case.investigation_turn_count` all read.
 
 This means the counter tracks "N turns of investigative work without a milestone advancing." Whether the user provided new data or the agent dug deeper into existing data, diagnostic effort was spent without result.
 

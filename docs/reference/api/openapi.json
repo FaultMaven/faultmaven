@@ -5666,6 +5666,18 @@
             "description": "True when the case's conclusion claims 'verified' certainty while the assurance grade is below 'confirmed' (conclusion_overclaims seam). None when no cause is stated.",
             "title": "Cause Overclaim"
           },
+          "investigation_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How many of the case's turns so far were investigation work. turn_number is the message clock and advances on every exchange; this excludes out-of-band turns (small talk, trivia, questions about FaultMaven itself), which are answered outside the investigation and recorded as such (#1329). Every message, aside or not, is charged against the tenant's daily turn cap. Clients that display a turn counter should prefer this.",
+            "title": "Investigation Turn"
+          },
           "milestones_completed": {
             "items": {
               "type": "string"
@@ -6283,7 +6295,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "2.6.0"
+    "version": "2.7.0"
   },
   "openapi": "3.1.0",
   "paths": {
