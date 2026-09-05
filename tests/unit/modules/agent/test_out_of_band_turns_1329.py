@@ -316,10 +316,15 @@ class TestControls:
         """Terminal Q&A has its own cards and refuses new data; no aside lane there."""
         ledger = InMemoryTurnLedger()
         service = _service(engine, recording_case_repository, ledger, verdict="2")
-        case.resolved_at = datetime.now(
-            timezone.utc
-        )  # before state: validate_assignment
-        case.state = CaseState.RESOLVED
+        # model_copy: state and resolved_at validate against each other on
+        # assignment, so neither can be set first.
+        case = case.model_copy(
+            update={
+                "state": CaseState.RESOLVED,
+                "resolved_at": datetime.now(timezone.utc),
+                "closed_at": datetime.now(timezone.utc),
+            }
+        )
         resp, before, saved = await _turn(
             service, recording_case_repository, case, query="What model are you?"
         )
