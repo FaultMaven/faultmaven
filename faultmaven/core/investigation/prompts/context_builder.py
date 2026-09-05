@@ -2293,6 +2293,15 @@ def _build_turn_summary(turn) -> str:
     Includes both structural metadata (milestones, evidence counts) AND the
     agent_response_summary so the LLM knows WHAT was analyzed, not just counts.
     """
+    # An aside (#1329) is summarised as what it was, not as what was said: the
+    # poem or the trivia answer is not investigation context, and rendering it
+    # invites the model to treat the exchange as a thread to pick back up.
+    if turn.outcome and turn.outcome.value == "out_of_band":
+        return (
+            f"TURN {turn.turn_number}: (off-topic exchange — not part of the "
+            "investigation)"
+        )
+
     parts = []
 
     # Milestones completed this turn

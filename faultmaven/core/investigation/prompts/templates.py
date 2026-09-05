@@ -118,6 +118,11 @@ ABOUT FAULTMAVEN (self-knowledge — for questions about the assistant, not the 
   LLM Config. Never guess a vendor or model name.\
 """
 
+# Public name for the profile: the out-of-band lane (#1329) answers an
+# ``agent_meta`` message from a small prompt of its own instead of the full
+# investigation template, and needs the same text.
+ABOUT_FAULTMAVEN_PROFILE = _ABOUT_FAULTMAVEN_BLOCK
+
 AGENT_META_INSTRUCTIONS = (
     """\
 **FOCUS: QUESTION ABOUT FAULTMAVEN ITSELF**

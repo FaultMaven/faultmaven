@@ -4212,6 +4212,11 @@ class TurnOutcome(str, Enum):
     )
     # Maintainer note: synthesized by Case.reconcile_turn_sequence to backfill a
     # turn whose record was lost (e.g. an interrupted save). Not LLM-emitted.
+    OUT_OF_BAND = (
+        "out_of_band",
+        "the message was an aside — small talk, trivia, or about FaultMaven "
+        "itself — answered briefly with no investigation work.",
+    )
     SKIPPED = (
         "skipped",
         "turn not recorded — recovered after an interrupted turn.",
@@ -4249,6 +4254,14 @@ class InvestigationMomentum(str, Enum):
     Critical evidence unavailable, investigation stalled.
     Likely to enter degraded mode if continues.
     """
+
+
+#: Outcomes that are NOT investigative work. Shared by every "investigative
+#: turns since the last milestone" counter (``progress_monitor``,
+#: ``case_ui_adapter``) and by ``Case.investigation_turn_count`` so the three
+#: cannot disagree about which turns count. ``out_of_band`` joined in #1329:
+#: an aside answered outside the investigation is not diagnostic effort.
+NON_INVESTIGATIVE_OUTCOMES = frozenset({"conversation", "other", "out_of_band"})
 
 
 class TurnProgress(BaseModel):
@@ -5559,6 +5572,24 @@ class Case(BaseModel):
                     )
                     break
         return v
+
+    @property
+    def investigation_turn_count(self) -> int:
+        """How many consumed turns were part of the investigation (#1329).
+
+        ``current_turn`` is the MESSAGE clock — every persisted exchange
+        advances it, because ``case_messages``, ``turn_history``, telemetry
+        and suggestion liveness are keyed on it. This is the count a user
+        means by "turn 7": recorded turns minus the asides (out-of-band
+        exchanges) and the synthetic ``skipped`` placeholders. It is derived,
+        not stored, so it cannot drift from the history that defines it.
+        """
+        return sum(
+            1
+            for t in self.turn_history
+            if not t.is_skipped
+            and not (t.outcome and t.outcome.value == TurnOutcome.OUT_OF_BAND.value)
+        )
 
     @property
     def effective_current_turn(self) -> int:

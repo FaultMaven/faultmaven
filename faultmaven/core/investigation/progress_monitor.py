@@ -50,6 +50,7 @@ from faultmaven.core.investigation.exhaustion_thresholds import (
     WORK_GATE_MIN_EVIDENCE,
 )
 from faultmaven.modules.case.contracts import (
+    NON_INVESTIGATIVE_OUTCOMES,
     Case,
     CaseState,
     HypothesisState,
@@ -338,7 +339,8 @@ class ProgressMonitor:
             is_investigative = not turn.is_skipped and (
                 bool(turn.evidence_added)
                 or (
-                    turn.outcome and turn.outcome.value not in ("conversation", "other")
+                    turn.outcome
+                    and turn.outcome.value not in NON_INVESTIGATIVE_OUTCOMES
                 )
             )
 
