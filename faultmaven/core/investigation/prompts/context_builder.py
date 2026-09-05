@@ -446,7 +446,6 @@ def _rerank_page_capture_sections(content: str, query: str) -> str:
             extra={
                 "reason": "no_heading_delimiter",
                 "content_length": len(content),
-                "first_120_chars": content[:120],
             },
         )
         return content

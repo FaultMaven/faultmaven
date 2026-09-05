@@ -9,6 +9,7 @@ at runtime, not at import time.
 """
 
 import logging
+import re
 import sys
 from typing import Any, Dict, Optional, TextIO
 
@@ -26,6 +27,44 @@ from opentelemetry import trace
 # signal we want when an LLM provider starts returning 429s. It has no DEBUG
 # output, so pinning it would cost that line and suppress nothing.
 NOISY_THIRD_PARTY_LOGGERS = ("httpcore",)
+
+# Third-party loggers that print a request URL. A URL's query string is a
+# credential channel: the web-search tool reaches Google CSE as
+# ``?key=<GOOGLE_API_KEY>&q=<the investigation's search text>``, and httpx logs
+# the whole thing at INFO — so with web search on (the default) every search
+# wrote an API key and a slice of case content into a record that ships to the
+# log store. These loggers keep their level; only the query string is dropped.
+URL_LOGGING_THIRD_PARTY_LOGGERS = ("httpx", "aiohttp.client", "urllib3.connectionpool")
+
+# Everything after the first "?" up to whitespace or a quote. Deliberately not
+# a URL parser: the record is a formatted sentence with the URL embedded in it,
+# and the goal is to drop a value whose shape we do not control rather than to
+# understand it.
+_QUERY_STRING = re.compile(r"\?[^\s\"']*")
+
+
+class RedactQueryStringsFilter(logging.Filter):
+    """Strip query strings from a third-party logger's records.
+
+    A filter rather than a structlog processor because these records are
+    emitted by libraries that never touch structlog's chain, and rather than a
+    log-store-side rule because the value must not leave the process.
+
+    Formatting is collapsed here (``msg`` rewritten, ``args`` cleared) so the
+    redaction holds whatever shape the library passes its arguments in — httpx
+    passes an ``httpx.URL`` object as a positional arg, so redacting only the
+    ``msg`` template would miss it entirely.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:  # pragma: no cover - a broken record is not ours to fix
+            return True
+        if "?" in message:
+            record.msg = _QUERY_STRING.sub("?<redacted>", message)
+            record.args = ()
+        return True
 
 
 class LateBindingStreamHandler(logging.StreamHandler):
@@ -251,7 +290,7 @@ class FaultMavenLogger:
 
     @staticmethod
     def quiet_noisy_third_party_loggers() -> None:
-        """Pin per-connection network tracing at WARNING.
+        """Pin per-connection network tracing at WARNING, and redact URLs.
 
         An explicit level set on the logger by anyone else wins — an operator
         debugging HTTP, or ``caplog.set_level(..., logger="httpcore")`` — so
@@ -263,6 +302,13 @@ class FaultMavenLogger:
             third_party_logger = logging.getLogger(logger_name)
             if third_party_logger.level == logging.NOTSET:
                 third_party_logger.setLevel(logging.WARNING)
+
+        for logger_name in URL_LOGGING_THIRD_PARTY_LOGGERS:
+            url_logger = logging.getLogger(logger_name)
+            if not any(
+                isinstance(f, RedactQueryStringsFilter) for f in url_logger.filters
+            ):
+                url_logger.addFilter(RedactQueryStringsFilter())
 
     @staticmethod
     def add_request_context(
