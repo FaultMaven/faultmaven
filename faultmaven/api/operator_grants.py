@@ -86,6 +86,37 @@ def validate_identifier(value: str, field_name: str) -> str:
     return value
 
 
+def refuse_retired_filter(retired: dict, replacement: str) -> None:
+    """422 if any retired query-filter name was sent. Raises, or returns None.
+
+    ADR-017 renamed two filters on the operator surfaces
+    (``/admin/grants?organization_id`` → ``enterprise_id``,
+    ``/admin/audit/operator-access?target_organization_id`` →
+    ``target_enterprise_id``). FastAPI drops an undeclared query parameter
+    silently, so a client still sending the old name would get a **200 with
+    every row in it** — an unfiltered answer presented as a filtered one, with
+    nothing in the response saying the filter was not applied.
+
+    On break-glass surfaces that is leak-shaped: the caller asked "who reached
+    THAT tenant's data" and is handed every tenant's. A 422 naming the
+    replacement is the honest answer. It is not a compatibility arm — nothing is
+    ever served under the old name; the parameter is declared solely so it can be
+    refused, and it is kept out of the published schema.
+    """
+    sent = sorted(name for name, value in retired.items() if value is not None)
+    if not sent:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail=(
+            f"{', '.join(sent)} is no longer a filter on this endpoint; the "
+            f"tenant a row belongs to is the enterprise (ADR-017). Use "
+            f"'{replacement}'. Ignoring it would return every row as though the "
+            "filter had been applied."
+        ),
+    )
+
+
 @dataclass(frozen=True)
 class OperatorContentAccess:
     """How an operator content read was authorised.

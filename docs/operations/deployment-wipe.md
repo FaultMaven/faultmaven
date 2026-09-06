@@ -151,6 +151,18 @@ job has no role to run under.
 Then run the **migration Job** — `RUN_STARTUP_MIGRATIONS` is false on
 Kubernetes, so migrations do not come from app startup.
 
+**Then run `provision-maintenance-role.sh` again**, after the migration:
+
+```bash
+scripts/apps/provision-maintenance-role.sh    # a SECOND time, post-migration
+```
+
+Its `knowledge_items` grant is `to_regclass`-guarded, so the pre-migration run
+skipped it with a `NOTICE` while the table did not exist yet. Miss the second run
+and `kb_seed` fails with `permission denied for table knowledge_items` — after
+the flip, with users already signing in to an empty knowledge base. Re-running is
+safe: the script preserves what is already granted.
+
 ### SQLite (Standalone)
 
 The equivalent, with the API stopped:
@@ -173,20 +185,23 @@ alembic upgrade head
  5. DROP DATABASE + CREATE DATABASE        (operator, owner DSN)
  6. provision-rls-app-role.sh + provision-maintenance-role.sh   ← BEFORE migrating
  7. Run the migration Job.
- 8. Delete BOTH credentials.db and cases.db from the Slack agent PVC.
+ 8. provision-maintenance-role.sh AGAIN   ← AFTER migrating; the knowledge_items
+    grant is to_regclass-guarded and step 6 skipped it with a NOTICE.
+ 9. Delete BOTH credentials.db and cases.db from the Slack agent PVC.
     The cleanup pod must run as the agent's uid/gid, not the wipe Job's.
- 9. fm-wipe-deployment --verify            # ← must pass before provisioning
-10. Provision, in this order:
+10. fm-wipe-deployment --verify            # ← must pass before provisioning
+11. Provision, in this order:
       fm-provision-sso-org --name … --slug … --workos-org-id org_…   (owner DSN)
       human signs in via WorkOS
       fm-promote-platform-admin <username>     (verify the derived username first)
-      fm-provision-service-account -u slack-agent -o <enterprise_id>
+      fm-provision-service-account -u slack-agent --enterprise-id <enterprise_id>
       python -m faultmaven.jobs.run kb_seed --cross-tenant-maintenance
-11. Scale the API back up; redeploy the Slack agent.
+12. Scale the API back up; redeploy the Slack agent.
 ```
 
-Step 9 gates step 10 deliberately: provisioning onto a half-wiped database is
+Step 10 gates step 11 deliberately: provisioning onto a half-wiped database is
 how you get an `enterprise_mismatch` tenant that needs manual migration to fix.
+Step 8 gates the `kb_seed` in step 11, and it fails late — after the flip.
 
 Step 10's order is unforgiving — see `docs/operations/sso-org-provisioning.md`.
 An unmapped IdP org fails closed (`sso_org_unmapped`), so the mapping must

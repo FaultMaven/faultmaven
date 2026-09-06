@@ -9133,7 +9133,7 @@
     },
     "/api/v1/cases/{case_id}": {
       "delete": {
-        "description": "Permanently delete a case and all associated data.\n\nThis endpoint provides hard delete functionality. Once deleted,\nthe case and all associated data are permanently removed.\n\nThe operation is idempotent - subsequent requests will return\n204 No Content even if the case has already been deleted.\n\nReturns 204 No Content on success.",
+        "description": "Permanently delete a case and all associated data.\n\nThis endpoint provides hard delete functionality. Once deleted,\nthe case and all associated data are permanently removed.\n\nThe operation is idempotent - subsequent requests will return\n204 No Content even if the case has already been deleted, and so does a\nrequest naming a case the caller cannot see.\n\nOnly the OWNER may delete. A teammate who can read the case through a team\nshare is refused with 403 (ADR-017 D4: a share is read visibility, not\nownership).\n\nReturns 204 No Content on success.",
         "operationId": "delete_case_api_v1_cases__case_id__delete",
         "parameters": [
           {

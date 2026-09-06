@@ -12,14 +12,17 @@ Features:
 - Pagination support
 - Support for both in-memory and database backends
 
-Tenancy posture: unlike the case repositories (whose reads ignore the org
+Tenancy posture: unlike the case repositories (whose reads ignore the tenant
 param and rely on PostgreSQL RLS alone, ADR-010), knowledge queries
 deliberately keep their per-query ``enterprise_id`` predicates on the
-org-owned tiers (personal | team, ADR-011/ADR-013) — defense-in-depth on top
+tenant-owned tiers (personal | team, ADR-011/ADR-013) — defense-in-depth on top
 of RLS. Do NOT remove them by analogy with the case module. Global-tier rows
-are the org-free platform corpus (#770): they carry NO enterprise_id
-(``knowledge_items_global_org_check``) and are readable by every tenant on
-both paths — SQL via the org-free ``scope='global'`` visibility arm here plus
+are the platform corpus (#770). They carry an ``enterprise_id`` like every other
+row — the column is NOT NULL and the platform tier's is the STANDALONE
+enterprise, which is exactly what the RLS global-write arm compares against;
+what they carry no ORGANIZATION for is billing
+(``knowledge_items_global_org_check``). They are readable by every tenant on
+both paths — SQL via the tenant-free ``scope='global'`` visibility arm here plus
 the RLS read exemption (``knowledge_items_tenant_read``, migration 033), and
 vector via ``build_kb_scope_filter`` (``global ∪ owner ∪ team-share
 allowlist``, owner ids globally unique, share ids resolved from RLS-scoped
@@ -148,31 +151,6 @@ class KnowledgeItemRepository(ABC):
     # =========================================================================
 
     @abstractmethod
-    async def list_by_enterprise_id(
-        self,
-        enterprise_id: str,
-        item_type: Optional[KnowledgeItemType] = None,
-        category: Optional[str] = None,
-        is_published: bool = True,
-        limit: int = 50,
-        offset: int = 0,
-    ) -> List[KnowledgeItem]:
-        """List knowledge items with filtering and pagination.
-
-        Args:
-            enterprise_id: Enterprise identifier
-            item_type: Optional filter by item type
-            category: Optional filter by category
-            is_published: Filter by publication status (default True)
-            limit: Maximum results to return
-            offset: Offset for pagination
-
-        Returns:
-            List of items ordered by created_at DESC
-        """
-        pass
-
-    @abstractmethod
     async def list_for_inventory(
         self,
         enterprise_id: str,
@@ -268,23 +246,6 @@ class KnowledgeItemRepository(ABC):
 
         Returns:
             List of items without embedding vectors
-        """
-        pass
-
-    @abstractmethod
-    async def count_by_enterprise_id(
-        self,
-        enterprise_id: str,
-        item_type: Optional[KnowledgeItemType] = None,
-    ) -> int:
-        """Count knowledge items for an enterprise.
-
-        Args:
-            enterprise_id: Enterprise identifier
-            item_type: Optional filter by item type
-
-        Returns:
-            Number of matching items
         """
         pass
 
@@ -513,48 +474,6 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
     # Query Operations
     # =========================================================================
 
-    async def list_by_enterprise_id(
-        self,
-        enterprise_id: str,
-        item_type: Optional[KnowledgeItemType] = None,
-        category: Optional[str] = None,
-        is_published: bool = True,
-        limit: int = 50,
-        offset: int = 0,
-    ) -> List[KnowledgeItem]:
-        """List knowledge items with filtering and pagination."""
-        try:
-            # Build query conditions
-            conditions = [
-                KnowledgeItemModel.enterprise_id == enterprise_id,
-                KnowledgeItemModel.is_published == is_published,
-            ]
-            if item_type:
-                conditions.append(KnowledgeItemModel.item_type == item_type.value)
-            if category:
-                conditions.append(KnowledgeItemModel.category == category)
-
-            where_clause = and_(*conditions)
-
-            stmt = (
-                select(KnowledgeItemModel)
-                .where(where_clause)
-                .order_by(KnowledgeItemModel.created_at.desc())
-                .limit(limit)
-                .offset(offset)
-            )
-
-            result = await self.db.execute(stmt)
-            item_models = result.scalars().all()
-
-            return [self._to_domain(model) for model in item_models]
-
-        except Exception as e:
-            logger.error(f"Failed to list items for enterprise {enterprise_id}: {e}")
-            raise KnowledgeItemRepositoryException(
-                f"Failed to list items for enterprise {enterprise_id}: {e}"
-            ) from e
-
     @staticmethod
     def _inventory_visibility_clause(
         enterprise_id: str,
@@ -781,31 +700,6 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 f"Failed to get items without embeddings: {e}"
             ) from e
 
-    async def count_by_enterprise_id(
-        self,
-        enterprise_id: str,
-        item_type: Optional[KnowledgeItemType] = None,
-    ) -> int:
-        """Count knowledge items for an enterprise."""
-        try:
-            conditions = [KnowledgeItemModel.enterprise_id == enterprise_id]
-            if item_type:
-                conditions.append(KnowledgeItemModel.item_type == item_type.value)
-
-            where_clause = and_(*conditions)
-
-            stmt = (
-                select(func.count()).select_from(KnowledgeItemModel).where(where_clause)
-            )
-            result = await self.db.execute(stmt)
-            return result.scalar() or 0
-
-        except Exception as e:
-            logger.error(f"Failed to count items for enterprise {enterprise_id}: {e}")
-            raise KnowledgeItemRepositoryException(
-                f"Failed to count items for enterprise {enterprise_id}: {e}"
-            ) from e
-
     async def get_most_helpful(
         self,
         enterprise_id: str,
@@ -976,36 +870,6 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
     # Query Operations
     # =========================================================================
 
-    async def list_by_enterprise_id(
-        self,
-        enterprise_id: str,
-        item_type: Optional[KnowledgeItemType] = None,
-        category: Optional[str] = None,
-        is_published: bool = True,
-        limit: int = 50,
-        offset: int = 0,
-    ) -> List[KnowledgeItem]:
-        """List knowledge items with filtering and pagination."""
-        items = [
-            i
-            for i in self._items.values()
-            if i.enterprise_id == enterprise_id and i.is_published == is_published
-        ]
-
-        if item_type:
-            items = [i for i in items if i.item_type == item_type]
-
-        if category:
-            items = [i for i in items if i.category == category]
-
-        # Sort by created_at descending
-        items.sort(key=lambda x: x.created_at, reverse=True)
-
-        # Apply pagination
-        paginated = items[offset : offset + limit]
-
-        return [deepcopy(i) for i in paginated]
-
     @staticmethod
     def _inventory_visible(item, enterprise_id, user_id) -> bool:
         scope = item.scope.value if hasattr(item.scope, "value") else str(item.scope)
@@ -1117,19 +981,6 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
 
         return [deepcopy(i) for i in items[:limit]]
 
-    async def count_by_enterprise_id(
-        self,
-        enterprise_id: str,
-        item_type: Optional[KnowledgeItemType] = None,
-    ) -> int:
-        """Count knowledge items for an enterprise."""
-        items = [i for i in self._items.values() if i.enterprise_id == enterprise_id]
-
-        if item_type:
-            items = [i for i in items if i.item_type == item_type]
-
-        return len(items)
-
     async def get_most_helpful(
         self,
         enterprise_id: str,
@@ -1158,20 +1009,3 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
     def clear(self) -> None:
         """Clear all data (for testing)."""
         self._items.clear()
-
-    def delete_items_for_enterprise(self, enterprise_id: str) -> int:
-        """Delete all items for an enterprise.
-
-        Returns:
-            Number of items deleted
-        """
-        to_delete = [
-            item_id
-            for item_id, item in self._items.items()
-            if item.enterprise_id == enterprise_id
-        ]
-
-        for item_id in to_delete:
-            del self._items[item_id]
-
-        return len(to_delete)

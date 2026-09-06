@@ -180,7 +180,7 @@ The clause is `{"$and": [{"document_type": "runbook"}, <scope_filter>]}` — the
 
 One runbook is N chunk rows, so the search fetches `top_k × 3` chunks, collapses by `parent_document_id` taking the **max** chunk similarity per runbook, and returns the top `top_k` distinct runbooks as honest KB-item references (`item_id`, `title`, `scope`, `similarity_score`).
 
-Full invariants: [runbook-dedup.md](./runbook-dedup.md). The id half of the isolation rule is `get_document_visible` / `get_suggestion_visible` ([rbac.md "Tenant-Scoped Resolution"](../security/rbac.md#tenant-scoped-resolution)), and the allowlist half is the `organization_id` predicate on `resource_shares` in both directions of the share resolution.
+Full invariants: [runbook-dedup.md](./runbook-dedup.md). The id half of the isolation rule is `get_document_visible` / `get_suggestion_visible` ([rbac.md "Tenant-Scoped Resolution"](../security/rbac.md#tenant-scoped-resolution)), and the allowlist half is the `enterprise_id` predicate on `resource_shares` in both directions of the share resolution — the ENTERPRISE, since ADR-017, which is what lets one team span two organizations of the same company.
 
 ### Chunking Strategy
 

@@ -31,16 +31,20 @@ asked to accept, and it belongs to a person.
 """
 
 # 3.0.0 — MAJOR. The tenant a client reads off a row is the **enterprise**, not
-# the organization (ADR-017). Ten schemas move, and seven of them REMOVE a
+# the organization (ADR-017). Ten schemas move, and SIX of them REMOVE a
 # required field, which is why this is a major bump rather than the minor one a
 # rename might suggest:
 #
 #   * `TeamResponse`, `AdminUserListItem`, `UserDetailResponse`,
 #     `InvestigationSessionResponse` — `organization_id` → `enterprise_id`;
-#   * `BreakGlassGrant`, `OperatorAccessAuditEntry` —
-#     `target_organization_id` → `target_enterprise_id`;
+#   * `BreakGlassGrant` — `target_organization_id` → `target_enterprise_id`;
 #   * `BreakGlassGrantRequest` — the REQUEST field `organization_id` becomes
 #     `enterprise_id`, so a client that keeps sending the old name is rejected;
+#   * `OperatorAccessAuditEntry` — `target_organization_id` →
+#     `target_enterprise_id`, and this one is the seventh rename but NOT a
+#     seventh removal of a required field: the old field was optional (a
+#     cross-tenant access has no single tenant to name), so a client that read
+#     it defensively survives the shape and only loses the value;
 #   * `CaseSummary`, `CaseDetail`, `AdminCaseMetadata` — `enterprise_id` is
 #     added as required and `organization_id` becomes optional. A case now
 #     carries both: the enterprise is what the read was scoped by, and the
@@ -48,7 +52,22 @@ asked to accept, and it belongs to a person.
 #     for the account (which, until organization assignment ships, is every
 #     account).
 #
-# No path is added or removed and no status code changes; what changed is what
+# Two QUERY parameters are renamed on the operator surfaces, and they are the
+# half a schema diff does not show:
+#
+#   * `GET /admin/grants` — `organization_id` → `enterprise_id`;
+#   * `GET /admin/audit/operator-access` — `target_organization_id` →
+#     `target_enterprise_id`.
+#
+# An ignored query parameter is WORSE than a rejected one here, and that is why
+# both old names are declared solely so they can be REFUSED with 422. FastAPI
+# drops an undeclared parameter silently, so a client still sending the old name
+# would get a 200 carrying every row — an unfiltered answer presented as a
+# filtered one, on the two surfaces that answer "who reached that tenant's
+# data". Nothing is ever served under the old name and neither appears in the
+# published schema; the refusal names its replacement.
+#
+# No path is added or removed and no OTHER status code changes; what changed is what
 # a row says about whose data it is. There is deliberately no transitional
 # period in which both fields are served: a tolerated old field is what keeps a
 # frontend reading it, and the whole point of moving the key is that the

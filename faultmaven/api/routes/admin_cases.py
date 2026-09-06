@@ -45,6 +45,7 @@ from faultmaven.api.operator_grants import (
     authorize_content_read,
     bind_grant_enterprise_scope,
     get_operator_grant_repository,
+    refuse_retired_filter,
     resolved_deployment_mode,
     validate_identifier,
 )
@@ -357,6 +358,14 @@ async def list_operator_access_audit(
     target_enterprise_id: Optional[str] = Query(
         None, description="Filter by the enterprise accessed"
     ),
+    target_organization_id: Optional[str] = Query(
+        None,
+        include_in_schema=False,
+        description=(
+            "Retired (ADR-017). Declared only so it can be REFUSED: undeclared, "
+            "it would be dropped and the caller handed the whole trail."
+        ),
+    ),
     target_case_id: Optional[str] = Query(None, description="Filter by case accessed"),
     action: Optional[OperatorAction] = Query(
         None, description="Filter by access kind (list | content_open)"
@@ -382,6 +391,10 @@ async def list_operator_access_audit(
     so no break-glass grant is required to read it, and withholding the trail
     in cloud would remove the governance record precisely where it matters most.
     """
+    refuse_retired_filter(
+        {"target_organization_id": target_organization_id}, "target_enterprise_id"
+    )
+
     entries, total = await audit_repo.list_access(
         operator_user_id=operator_user_id,
         target_enterprise_id=target_enterprise_id,

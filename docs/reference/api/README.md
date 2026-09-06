@@ -1696,7 +1696,12 @@ This endpoint provides hard delete functionality. Once deleted,
 the case and all associated data are permanently removed.
 
 The operation is idempotent - subsequent requests will return
-204 No Content even if the case has already been deleted.
+204 No Content even if the case has already been deleted, and so does a
+request naming a case the caller cannot see.
+
+Only the OWNER may delete. A teammate who can read the case through a team
+share is refused with 403 (ADR-017 D4: a share is read visibility, not
+ownership).
 
 Returns 204 No Content on success.
 

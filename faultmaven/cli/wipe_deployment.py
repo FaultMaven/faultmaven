@@ -1097,14 +1097,20 @@ ran, not a next step; if it was up, re-run the wipe with it down.
        scripts/apps/provision-rls-app-role.sh
        scripts/apps/provision-maintenance-role.sh
   3. Run the migration Job (RUN_STARTUP_MIGRATIONS is false on k8s).
-  4. Delete BOTH credentials.db and cases.db from the Slack agent PVC. cases.db
+  4. Re-run provision-maintenance-role.sh, AFTER the migration:
+       scripts/apps/provision-maintenance-role.sh
+     Its knowledge_items grant is to_regclass-guarded, so the step-2 run skipped
+     it with a NOTICE while the table did not exist yet. Miss this and kb-seed
+     fails with "permission denied for table knowledge_items" — after the flip,
+     with users already signing in to an empty knowledge base. Re-running is safe.
+  5. Delete BOTH credentials.db and cases.db from the Slack agent PVC. cases.db
      is the thread->case map: it holds case ids from the database you just
      dropped, on a volume no surface below can see. The cleanup pod must run as
      the agent's own uid/gid, or the delete is refused.
-  5. fm-wipe-deployment --verify   ← before provisioning anything
-  6. Provision: fm-provision-sso-org -> SSO sign-in -> fm-promote-platform-admin
+  6. fm-wipe-deployment --verify   ← before provisioning anything
+  7. Provision: fm-provision-sso-org -> SSO sign-in -> fm-promote-platform-admin
      -> fm-provision-service-account -> the kb_seed job.
-  7. Scale the API back up; redeploy the Slack agent.
+  8. Scale the API back up; redeploy the Slack agent.
 
 The full cutover runbook is docs/operations/cloud-mode-cutover.md in the infra
 repo; the core-repo half is docs/operations/deployment-wipe.md."""

@@ -165,7 +165,7 @@ async def remove_org_member(
     """Run the paired removal. Returns the process exit code."""
     from sqlalchemy.exc import DBAPIError
 
-    from faultmaven.config.tenant_context import set_current_enterprise_id
+    from faultmaven.cli._tenant import EnterpriseRefused, bind_and_load_enterprise
     from faultmaven.container import container
     from faultmaven.exceptions import UserLookupFailed
     from faultmaven.infrastructure.persistence.organization_repository import (
@@ -213,8 +213,16 @@ async def remove_org_member(
     # bound before anything is read — an organization id alone resolves nothing
     # under the pod's own application role. It is a required argument rather
     # than derived from the organization row for exactly that reason: deriving
-    # it would need the read the binding is a precondition of.
-    set_current_enterprise_id(enterprise_id)
+    # it would need the read the binding is a precondition of. The shared helper
+    # also refuses a sentinel or a retired enterprise, which this command
+    # checked not at all: it went straight to the organization, so a mistyped
+    # enterprise reported "no organization" and sent the operator hunting for
+    # the wrong thing.
+    try:
+        await bind_and_load_enterprise(enterprise_id)
+    except EnterpriseRefused as exc:
+        print(f"\n❌ {exc}")
+        return 1
 
     orgs = SessionlessOrganizationRepository()
     organization = await orgs.get_organization(organization_id)
@@ -278,7 +286,12 @@ async def remove_org_member(
             print(
                 f"\n❌ {user.username} is not a member of this organization, so "
                 "there is nothing to remove.\n"
-                "   Refusing rather than revoking: this is what a mistyped "
+                "   This is the ORDINARY state of an account nobody pays for: a "
+                "sign-in establishes the enterprise anchor and no organization "
+                "membership at all (ADR-017 D5/D9), so an account that was never "
+                "assigned to a subscription has none to remove. It is still "
+                "anchored, and still sees everything it saw before.\n"
+                "   Refusing rather than revoking: this is also what a mistyped "
                 "--organization-id looks like, and revoking anyway would end every "
                 "session of a user in some other tenant.\n"
                 "   Check the organization id and the user before doing anything "

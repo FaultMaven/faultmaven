@@ -9,11 +9,13 @@ Implemented by:
 - PostgreSQLTeamRepository
 - PostgreSQLUserRepository (enhanced)
 
-Hierarchy: Enterprise > Organization > Team > User. An enterprise owns
-billing, plan tier, and SSO/SAML config; organizations live underneath it
-as customer tenants (the hard data-isolation boundary). Single-tenant
-deployments (standalone) get one default enterprise containing one default
-organization.
+Hierarchy (ADR-017 D1): **Enterprise ⊃ {accounts, organizations, teams}** — not a
+chain. The enterprise ISOLATES (RLS keys on ``enterprise_id``; nothing crosses an
+enterprise line). An organization BILLS: it is a cost centre inside an
+enterprise, with no role in visibility. A team SHARES, by consent, inside one
+enterprise, and may span organizations. Single-tenant deployments (standalone)
+get one default enterprise and one default team, and **no organization row** —
+nothing is billed there.
 
 Cross-layer parity:
 - ``Enterprise.name``, ``Organization.name``, ``Team.name`` mirror DB
@@ -658,11 +660,13 @@ class ITeamRepository(ABC):
 
         Isolation posture: implementations MUST resolve membership by joining
         ``team_members`` through the ``teams`` table (which carries
-        ``organization_id`` and is RLS-tenanted), so that under the limited
-        ``faultmaven_app`` role a cross-organization membership row fails
-        closed. ``team_members`` itself is intentionally not RLS-tenanted (it
-        has no ``organization_id`` column); the join through ``teams`` is the
-        isolation boundary. See ADR-013 (Enterprise/Organization/Team).
+        ``enterprise_id`` and is RLS-tenanted), so that under the limited
+        ``faultmaven_app`` role a cross-enterprise membership row fails closed.
+        ``team_members`` carries no tenant column of its own — it is a pure
+        ``(user_id, team_id)`` join — and its RLS policy reaches the key by that
+        same hop, so the join IS the isolation boundary. A database trigger
+        (``team_members_same_enterprise``) additionally refuses a member whose
+        own enterprise is not the team's. See ADR-017 D1/D4.
 
         Args:
             user_id: User identifier
