@@ -1105,7 +1105,8 @@ class CaseModel(Base):
     title = Column(String(200), nullable=False)
     description = Column(Text, nullable=False, server_default="")
     state = Column(String(50), nullable=False, server_default="inquiry", index=True)
-    # Case origin (ADR-012), derived from the creator's account_kind at creation:
+    # Case origin, derived from the creating account's service_channel
+    # (ADR-017 D6) at creation:
     # 'copilot' (individual), 'slack' (Slack service account), or 'api'.
     source = Column(String(20), nullable=False, server_default="copilot", index=True)
 

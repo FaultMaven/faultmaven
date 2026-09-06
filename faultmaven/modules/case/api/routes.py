@@ -916,32 +916,38 @@ async def delete_case(
         )
 
 
-async def _di_get_creator_account_kind(
+async def _di_get_creator_service_channel(
     raw_request: Request,
     current_user: UserDTO = Depends(require_authentication),
-) -> str:
-    """Resolve the creating user's ``account_kind`` (ADR-012) for source stamping.
+) -> Optional[str]:
+    """Resolve the creating account's ``service_channel`` for source stamping.
 
-    Best-effort: falls back to ``'individual'`` if the user service is
-    unavailable or the lookup fails, so case creation never depends on it.
+    The **channel**, not the kind (ADR-017 D6): there are exactly two kinds of
+    account — a human and a service — and which integration a service account
+    serves is a separate attribute, so a second integration is a new value here
+    rather than a third account kind. Reading the kind would answer 'service'
+    for every integration and could no longer say which one.
+
+    Best-effort: falls back to ``None`` if the user service is unavailable or
+    the lookup fails, so case creation never depends on it.
     """
     user_service = getattr(raw_request.app.state, "user_service", None)
     if user_service is None:
-        return "individual"
+        return None
     try:
         user = await user_service.get_user(current_user.user_id)
-        return getattr(user, "account_kind", "individual") if user else "individual"
+        return getattr(user, "service_channel", None) if user else None
     except Exception as e:
         # Don't fail case creation on this — but do NOT swallow silently: a
         # Slack case mislabeled 'copilot' (source is immutable) is otherwise
         # undetectable.
         logger.warning(
-            "Could not resolve account_kind for user %s; case source will "
+            "Could not resolve service_channel for user %s; case source will "
             "default to 'copilot': %s",
             getattr(current_user, "user_id", "?"),
             e,
         )
-        return "individual"
+        return None
 
 
 @router.post("", response_model=CaseSummary, status_code=status.HTTP_201_CREATED)
@@ -952,7 +958,7 @@ async def create_case(
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     session_service: ISessionService = Depends(_di_get_session_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
-    creator_account_kind: str = Depends(_di_get_creator_account_kind),
+    creator_service_channel: Optional[str] = Depends(_di_get_creator_service_channel),
 ) -> CaseSummary:
     """
     Create a new troubleshooting case (v2.0 milestone-based)
@@ -989,10 +995,11 @@ async def create_case(
                     headers={"x-correlation-id": correlation_id},
                 )
 
-        # Create case using new model. Origin (ADR-012) is derived from the
-        # creator's account kind: a Slack service account → 'slack', otherwise
-        # 'copilot'. Server-derived, not client-provided (not spoofable).
-        source = "slack" if creator_account_kind == "slack" else "copilot"
+        # Create case using new model. Origin is derived from the creating
+        # account's SERVICE CHANNEL (ADR-017 D6): a service account serving
+        # Slack → 'slack', otherwise 'copilot'. Server-derived, not
+        # client-provided (not spoofable).
+        source = "slack" if creator_service_channel == "slack" else "copilot"
         case_entity = await case_service.create_case(
             title=request.title,  # Pass None to trigger auto-generation in service
             description=request.description,

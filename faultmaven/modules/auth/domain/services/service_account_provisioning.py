@@ -26,11 +26,20 @@ from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     capture_state_read_at,
 )
 
-# ADR-012 account kinds. 'slack' is the service account that owns a workspace's
-# cases; 'individual' is a human.
-SERVICE_ACCOUNT_KIND = "slack"
+# There are exactly two kinds of account (ADR-017 D6): a human, and an agent
+# acting for an integration. A team is a group of accounts, never an account,
+# and the vocabulary that called this one a team is retired from every
+# identifier and every document — it is the naming that produced the conflation
+# ADR-017 untangles.
+SERVICE_ACCOUNT_KIND = "service"
 INDIVIDUAL_ACCOUNT_KIND = "individual"
 VALID_ACCOUNT_KINDS = frozenset({INDIVIDUAL_ACCOUNT_KIND, SERVICE_ACCOUNT_KIND})
+
+#: Which integration a service account serves. A separate attribute from the
+#: kind, so a second integration is a new value here rather than a third account
+#: kind — which is what "slack" as an account_kind would have forced.
+SLACK_SERVICE_CHANNEL = "slack"
+VALID_SERVICE_CHANNELS = frozenset({SLACK_SERVICE_CHANNEL})
 
 
 class ServiceAccountProvisioningError(Exception):
@@ -49,7 +58,7 @@ class ProvisionedCredential:
         expires_at: When this specific token expires if it is never used.
         account_created: True if the account did not exist and was created.
         account_kind_corrected: True if the account existed with the wrong
-            account_kind and was corrected.
+            ``account_kind`` or ``service_channel`` and was corrected.
     """
 
     user: DevUser
@@ -65,6 +74,7 @@ async def provision_service_account_credential(
     user_store: Any,
     token_generator: Any,
     account_kind: str = SERVICE_ACCOUNT_KIND,
+    service_channel: Optional[str] = SLACK_SERVICE_CHANNEL,
     enterprise_id: Optional[str] = None,
 ) -> ProvisionedCredential:
     """Ensure a service account exists and mint it an initial refresh token.
@@ -93,7 +103,10 @@ async def provision_service_account_credential(
         token_generator: The deployment's JWT generator, whose
             ``generate_refresh_token`` must be the same one the request path
             validates with — otherwise the credential will not verify.
-        account_kind: ADR-012 account kind to enforce on the account.
+        account_kind: ADR-017 D6 account kind to enforce ('individual' or
+            'service').
+        service_channel: Which integration a 'service' account serves
+            ('slack'); forced to ``None`` for an individual.
         enterprise_id: FaultMaven enterprise the credential acts within.
             Required under ``TENANT_PROVIDER=multi``, refused under
             single-tenant (which has exactly one tenant), and never the
@@ -118,14 +131,24 @@ async def provision_service_account_credential(
     enterprise_id = (enterprise_id or "").strip() or None
     _validate_enterprise(enterprise_id)
 
-    # The column has no CHECK constraint and case derivation matches 'slack'
-    # exactly, so an unvalidated typo ('Slack') would be persisted, reported as
-    # a successful correction, and then silently stamp every case the account
-    # opens with the wrong source.
+    # Case derivation matches the channel exactly, so an unvalidated typo
+    # ('Slack') would be persisted, reported as a successful correction, and
+    # then silently stamp every case the account opens with the wrong source.
+    # The kind now carries a CHECK constraint as well; the channel does not, so
+    # this is the only gate it has.
     if account_kind not in VALID_ACCOUNT_KINDS:
         raise ServiceAccountProvisioningError(
             f"Unknown account_kind {account_kind!r}; "
             f"expected one of {sorted(VALID_ACCOUNT_KINDS)}"
+        )
+    if account_kind == INDIVIDUAL_ACCOUNT_KIND:
+        # A human serves no integration. Refusing rather than silently dropping
+        # the value keeps "which channel is this?" answerable from the row.
+        service_channel = None
+    elif service_channel not in VALID_SERVICE_CHANNELS:
+        raise ServiceAccountProvisioningError(
+            f"Unknown service_channel {service_channel!r}; "
+            f"expected one of {sorted(VALID_SERVICE_CHANNELS)}"
         )
 
     if token_generator is None:
@@ -147,12 +170,20 @@ async def provision_service_account_credential(
             username=username,
             display_name=f"{username} (service account)",
             account_kind=account_kind,
+            service_channel=service_channel,
         )
         account_created = True
-    elif getattr(user, "account_kind", None) != account_kind:
-        # An account provisioned before ADR-012, or one demoted by a code path
-        # that round-tripped it through a model without account_kind.
+    elif (
+        getattr(user, "account_kind", None) != account_kind
+        or getattr(user, "service_channel", None) != service_channel
+    ):
+        # An account provisioned before ADR-017, or one demoted by a code path
+        # that round-tripped it through a model without these fields. Both are
+        # corrected together: the channel alone decides the derived case
+        # source, so an account carrying the right kind and a lost channel
+        # would stamp every case it opens as a copilot case.
         user.account_kind = account_kind
+        user.service_channel = service_channel
         user = await user_store.update_user(user)
         account_kind_corrected = True
 

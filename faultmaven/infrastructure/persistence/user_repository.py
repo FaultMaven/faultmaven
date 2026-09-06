@@ -76,7 +76,20 @@ class User(BaseModel):
     account_kind: str = Field(
         "individual",
         max_length=20,
-        description="Account kind (ADR-012): 'individual' or 'slack'",
+        description=(
+            "Account kind (ADR-017 D6): 'individual' (a human) or 'service' "
+            "(an agent acting for an integration). A team is a group of "
+            "accounts, never an account."
+        ),
+    )
+    service_channel: Optional[str] = Field(
+        None,
+        max_length=20,
+        description=(
+            "Which integration a 'service' account serves ('slack'), or None "
+            "for a human. Separate from the kind so a second integration is a "
+            "new value here rather than a third account kind."
+        ),
     )
 
     # ============================================================
@@ -446,6 +459,7 @@ class PostgreSQLUserRepository(UserRepository):
             deleted_at=model.deleted_at,
             roles=roles,
             account_kind=getattr(model, "account_kind", "individual"),
+            service_channel=getattr(model, "service_channel", None),
         )
 
     def _domain_to_dict(self, user: User) -> dict:
@@ -485,6 +499,7 @@ class PostgreSQLUserRepository(UserRepository):
             "last_password_change_at": user.last_password_change_at,
             "deleted_at": user.deleted_at,
             "account_kind": getattr(user, "account_kind", "individual"),
+            "service_channel": getattr(user, "service_channel", None),
             # dev_roles: JSON-serialised role list, and the canonical source of
             # the JWT role claim in BOTH auth modes (#706). Deriving the claim
             # from organization_members → roles is left unwired rather than

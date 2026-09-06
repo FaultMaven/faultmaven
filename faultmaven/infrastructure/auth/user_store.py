@@ -199,6 +199,7 @@ class RedisUserStore:
         email: str = None,
         display_name: str = None,
         account_kind: str = "individual",
+        service_channel: str = None,
     ) -> DevUser:
         """Create new development user
 
@@ -206,9 +207,12 @@ class RedisUserStore:
             username: Unique username
             email: User email address (optional)
             display_name: Human-readable display name (optional)
-            account_kind: ADR-012 account kind — 'individual' or 'slack'. Kept
-                in step with DatabaseUserStore: the container picks between the
-                two at runtime, so a caller cannot know which one it holds.
+            account_kind: ADR-017 D6 account kind — 'individual' or 'service'.
+                Kept in step with DatabaseUserStore: the container picks between
+                the two stores at runtime, so a caller cannot know which one it
+                holds.
+            service_channel: Which integration a 'service' account serves
+                ('slack'), or None for a human.
 
         Returns:
             Created DevUser
@@ -276,6 +280,7 @@ class RedisUserStore:
                 # Explicit, so this path and DatabaseUserStore visibly agree.
                 roles=["user"],
                 account_kind=account_kind,
+                service_channel=service_channel,
             )
 
             # Store in Redis

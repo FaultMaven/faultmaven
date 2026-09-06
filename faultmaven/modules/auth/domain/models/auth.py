@@ -55,11 +55,16 @@ class DevUser:
         organization_id: Organization UUID, or ``None`` — BILLING attribution
             only (ADR-017 D2). An account may be in no organization; ``None`` is
             the ordinary answer, and it grants and denies nothing.
-        account_kind: ADR-012 account kind — 'individual' (human) or 'slack'
-            (service account owning a workspace's cases). Carried here because
-            the user store round-trips users through DevUser on update; dropping
-            it would rewrite a service account as 'individual' and change the
-            derived ``cases.source`` for everything it later creates.
+        account_kind: ADR-017 D6 account kind — exactly two exist:
+            'individual' (a human) and 'service' (an agent acting for an
+            integration). A team is a group of accounts, never an account.
+        service_channel: Which integration a service account serves ('slack'),
+            or ``None`` for a human. Separate from the kind so a second
+            integration is a new value here rather than a third account kind.
+            Both are carried here because the user store round-trips users
+            through DevUser on update; dropping either would rewrite a service
+            account as an individual and change the derived ``cases.source``
+            for everything it later creates.
     """
 
     user_id: str
@@ -77,6 +82,7 @@ class DevUser:
     # a value some later reader mistakes for a tenant.
     organization_id: Optional[str] = None
     account_kind: str = "individual"
+    service_channel: Optional[str] = None
 
     def __post_init__(self):
         """Set default roles and enterprise_id if not provided"""
@@ -115,6 +121,7 @@ class DevUser:
             "enterprise_id": self.enterprise_id,
             "organization_id": self.organization_id,
             "account_kind": self.account_kind,
+            "service_channel": self.service_channel,
         }
 
     @classmethod
@@ -132,6 +139,7 @@ class DevUser:
             enterprise_id=data.get("enterprise_id"),
             organization_id=data.get("organization_id"),
             account_kind=data.get("account_kind", "individual"),
+            service_channel=data.get("service_channel"),
         )
 
 

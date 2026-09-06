@@ -85,6 +85,7 @@ class DatabaseUserStore:
             roles=user.roles if user.roles else ["user"],
             enterprise_id=user.enterprise_id,
             account_kind=user.account_kind,
+            service_channel=user.service_channel,
         )
 
     async def get_user(self, user_id: str) -> Optional[DevUser]:
@@ -187,6 +188,7 @@ class DatabaseUserStore:
         email: str = None,
         display_name: str = None,
         account_kind: str = "individual",
+        service_channel: str = None,
     ) -> DevUser:
         """Create new development user
 
@@ -194,9 +196,12 @@ class DatabaseUserStore:
             username: Unique username
             email: User email address (optional, auto-generated if not provided)
             display_name: Human-readable display name (optional, auto-generated if not provided)
-            account_kind: ADR-012 account kind — 'individual' (human) or 'slack'
-                (service account). Set at creation so a service account is never
-                briefly persisted as an individual.
+            account_kind: ADR-017 D6 account kind — 'individual' (a human) or
+                'service' (an agent acting for an integration). Set at creation
+                so a service account is never briefly persisted as an individual.
+            service_channel: Which integration a 'service' account serves
+                ('slack'), or None for a human. Set at creation for the same
+                reason: it is what decides the derived ``cases.source``.
 
         Returns:
             Created DevUser
@@ -272,6 +277,7 @@ class DatabaseUserStore:
                 deleted_at=None,
                 roles=["user"],
                 account_kind=account_kind,
+                service_channel=service_channel,
             )
 
             # Save via repository (upsert behavior - handles both insert and update)
@@ -320,6 +326,7 @@ class DatabaseUserStore:
             existing_user.is_active = user.is_active
             existing_user.roles = user.roles if user.roles else ["user"]
             existing_user.account_kind = user.account_kind
+            existing_user.service_channel = user.service_channel
             existing_user.updated_at = datetime.now(timezone.utc)
 
             saved_user = await self.user_repository.update(existing_user)
