@@ -21,7 +21,10 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.config.tenant_context import writable_enterprise_id
+from faultmaven.config.tenant_context import (
+    get_current_billing_organization_id,
+    writable_enterprise_id,
+)
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
@@ -605,8 +608,8 @@ class ConversionService:
         original_filename: str,
         scope: str,
         user_id: str,
-        enterprise_id: str = None,
-        team_id: str = None,
+        enterprise_id: Optional[str],
+        team_id: Optional[str] = None,
     ) -> ConversionResponse:
         """Full conversion pipeline: preprocess → analyze → convert → validate → persist."""
         await self._ensure_team_publish_allowed(scope, team_id, user_id)
@@ -675,14 +678,14 @@ class ConversionService:
 
         # Step 4: Convert each failure mode to a runbook
         drafts, errors = await self._convert_all_failure_modes(
-            preprocessing.extracted_text,
-            analysis.failure_modes,
-            scope,
-            original_filename,
-            conversion_id,
-            user_id,
-            team_id,
+            text=preprocessing.extracted_text,
+            failure_modes=analysis.failure_modes,
+            scope=scope,
+            filename=original_filename,
+            conversion_id=conversion_id,
+            user_id=user_id,
             enterprise_id=enterprise_id,
+            team_id=team_id,
         )
 
         if errors:
@@ -744,8 +747,8 @@ class ConversionService:
         self,
         request: "CaseConversionRequest",
         user_id: str,
-        enterprise_id: str = None,
-        team_id: str = None,
+        enterprise_id: Optional[str],
+        team_id: Optional[str] = None,
     ) -> ConversionResponse:
         """Generate a runbook draft from a resolved case using the canonical template.
 
@@ -787,8 +790,8 @@ class ConversionService:
         self,
         request: "CaseConversionRequest",
         user_id: str,
-        enterprise_id: str = None,
-        team_id: str = None,
+        enterprise_id: Optional[str],
+        team_id: Optional[str] = None,
     ) -> ConversionResponse:
         """Internal: the actual conversion pipeline. Always called via
         `convert_from_case`, which wraps this with the dedup registry."""
@@ -1101,8 +1104,8 @@ class ConversionService:
         filename: str,
         conversion_id: str,
         user_id: str,
-        team_id: str = None,
-        enterprise_id: str = None,
+        enterprise_id: Optional[str],
+        team_id: Optional[str] = None,
     ) -> Tuple[List[ConversionDraft], List[ConversionError]]:
         """Convert all failure modes, parallel for <=5, sequential for 6+."""
         drafts: List[ConversionDraft] = []
@@ -1147,14 +1150,14 @@ class ConversionService:
             # Parallel conversion
             tasks = [
                 self._convert_single_failure_mode(
-                    text,
-                    fm,
-                    scope,
-                    filename,
-                    conversion_id,
-                    user_id,
-                    team_id,
+                    text=text,
+                    failure_mode=fm,
+                    scope=scope,
+                    filename=filename,
+                    conversion_id=conversion_id,
+                    user_id=user_id,
                     enterprise_id=enterprise_id,
+                    team_id=team_id,
                 )
                 for fm in unique_modes
             ]
@@ -1188,14 +1191,14 @@ class ConversionService:
             # Sequential conversion (avoid rate limits)
             for fm in unique_modes:
                 result = await self._convert_single_failure_mode(
-                    text,
-                    fm,
-                    scope,
-                    filename,
-                    conversion_id,
-                    user_id,
-                    team_id,
+                    text=text,
+                    failure_mode=fm,
+                    scope=scope,
+                    filename=filename,
+                    conversion_id=conversion_id,
+                    user_id=user_id,
                     enterprise_id=enterprise_id,
+                    team_id=team_id,
                 )
                 if isinstance(result, ConversionError):
                     errors.append(result)
@@ -1212,8 +1215,8 @@ class ConversionService:
         filename: str,
         conversion_id: str,
         user_id: str,
-        team_id: str = None,
-        enterprise_id: str = None,
+        enterprise_id: Optional[str],
+        team_id: Optional[str] = None,
     ) -> ConversionDraft | ConversionError:
         """Convert a single failure mode to a runbook draft."""
         try:
@@ -1497,6 +1500,14 @@ class ConversionService:
         ``IntegrityError`` after this session has been returned to the pool.
         """
         async with self._db_session_factory() as session:
+            # Billing attribution for every row this writes (ADR-017 D2), read
+            # from the request binding exactly as ``CaseService.create_case``
+            # and the audit writer read it. ``None`` is the ordinary answer —
+            # nobody pays for this account — and it decides nothing about
+            # visibility, which is why it comes from a different binding than
+            # ``enterprise_id`` and is never a predicate anywhere below.
+            organization_id = get_current_billing_organization_id()
+
             # ``conversion_jobs`` carries a single ``source_file_id`` FK to
             # ``uploaded_files`` (ON DELETE RESTRICT). Create the upload row
             # first; the conversion_jobs row references it. Both tables
@@ -1505,6 +1516,7 @@ class ConversionService:
             upload = UploadedFileModel(
                 file_id=source_file_id,
                 enterprise_id=enterprise_id,
+                organization_id=organization_id,
                 case_id=None,  # KB-bound, not case-bound
                 uploaded_by=user_id,
                 filename=source_file.filename,
@@ -1534,6 +1546,7 @@ class ConversionService:
                 id=conversion_id,
                 user_id=user_id,
                 enterprise_id=enterprise_id,
+                organization_id=organization_id,
                 scope=scope,
                 status=status.value,
                 source_file_id=source_file_id,
@@ -1555,6 +1568,7 @@ class ConversionService:
                 draft_model = ConversionDraftModel(
                     id=draft.draft_id,
                     enterprise_id=enterprise_id,
+                    organization_id=organization_id,
                     conversion_id=conversion_id,
                     runbook_id=draft.runbook_id,
                     title=draft.title,
@@ -1776,7 +1790,7 @@ class ConversionService:
     ) -> None:
         """Translate the 046 unique-index violation into a 409, or return.
 
-        ``uq_conversion_drafts_org_runbook_id`` (migration 046) admits one LIVE
+        ``uq_conversion_drafts_enterprise_runbook_id`` (migration 046) admits one LIVE
         draft per ``(enterprise_id, runbook_id)``. Two drafts reaching the
         same id is ordinary — ``runbook_id_from_parts`` is deterministic on
         ``(service, title)``, deliberately, because the disk scan reconciles a
@@ -2617,8 +2631,8 @@ class ConversionService:
         causes: str,
         prevention: str,
         user_id: str,
-        enterprise_id: str = None,
-        team_id: str = None,
+        enterprise_id: Optional[str],
+        team_id: Optional[str] = None,
     ) -> ConversionDraft:
         """Create a v4 causal-chain runbook from user-provided template fields (no LLM).
 
@@ -2775,12 +2789,14 @@ status: draft
 
         Args:
             user_id: User triggering the scan (recorded as conversion job owner).
-            enterprise_id: Org for scoping the conversion job + source upload.
-                Falls back to the tenant the database session is bound to when
-                None (``writable_enterprise_id``) — which is the single-tenant org in
-                a standalone deployment, and the caller's tenant under multi.
+            enterprise_id: The enterprise the conversion job + source upload
+                are isolated to (ADR-017 D1). Falls back to the tenant the
+                database session is bound to when None
+                (``writable_enterprise_id``) — the Standalone enterprise in a
+                standalone deployment, and the caller's own under multi.
             is_platform_admin: Whether the caller may author global-scope KB. A file whose
-                inferred scope is ``global`` (the org-free platform corpus) is
+                inferred scope is ``global`` (the platform corpus, billed to no
+                organization) is
                 SKIPPED when the caller is not a platform operator (any tenant
                 session under multi, or a non-admin single-tenant) — minting a
                 global draft is platform-tier authoring (#770, R4). Personal/team

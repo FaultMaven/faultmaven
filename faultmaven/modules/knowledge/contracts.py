@@ -93,10 +93,20 @@ class IConversionService(Protocol):
         original_filename: str,
         scope: str,
         user_id: str,
-        enterprise_id: Optional[str] = None,
+        enterprise_id: Optional[str],
         team_id: Optional[str] = None,
     ) -> Any:
-        """Convert a document to one or more runbook drafts."""
+        """Convert a document to one or more runbook drafts.
+
+        ``enterprise_id`` is **required and has no default**, deliberately. It
+        may be ``None`` — that states "no explicit enterprise; stamp the one
+        this request is bound to", which the implementation resolves through
+        ``writable_enterprise_id`` — but a caller has to say so. A defaulted
+        tenancy parameter is the #1143 trap: a call site that simply forgets it
+        writes under whatever the ambient context happens to hold, which on
+        SQLite is silent and under multi-tenant PostgreSQL is an opaque
+        row-level-security refusal several frames later.
+        """
         ...
 
     async def get_conversion(self, conversion_id: str, user_id: str) -> Optional[Any]:
