@@ -31,20 +31,22 @@ be finished.
 The order, and why each step is where it is
 -------------------------------------------
 1. **Soft-delete the enterprise.** The fence. From here no login can enter the
-   tenant: both resolution branches end in the bind-and-verify tail, which
+   tenant: every resolution branch ends in the bind-and-verify tail, which
    refuses an enterprise carrying ``deleted_at``.
 2. **Revoke the subject's outstanding tokens.** The callback is not the only
    way in: a live refresh chain keeps minting for a tenant whose enterprise row
-   is gone. The watermark closes it (and the refresh paths re-check the
+   is fenced. The watermark closes it (and the refresh paths re-check the
    enterprise row — see ``enterprise_liveness``).
-3. **Record the retirement on the binding, then delete it.** The state lives on
-   ``sso_personal_enterprises`` (``retired_at``, ``retirement_state``) rather
-   than on ``enterprises``, because the sign-in that must tell "this subject's
-   own tenant was retired" from "the company that owned this account is gone"
-   reads the subject, not the enterprise. Recorded before the provider calls,
-   because while a live binding exists with ``membership_confirmed`` false a
-   login will ask the provider to *finish* the membership — re-creating, by its
-   deterministic external id, the IdP organization step 4 is about to remove.
+3. **Record the retirement on the binding**, and leave the row in place. The
+   state lives on ``sso_personal_enterprises`` (``retired_at``,
+   ``retirement_state``) rather than on ``enterprises``, because the sign-in
+   that must tell "this subject's own tenant was retired" from "the company
+   that owned this account is gone" reads the subject, not the enterprise.
+   Recorded before the provider calls, because while a **live** binding exists
+   with ``membership_confirmed`` false a login will ask the provider to *finish*
+   the membership — re-creating, by its deterministic external id, the IdP
+   organization step 4 is about to remove. Stamping ``retired_at`` is what makes
+   the binding stop being live: the repository's ``get`` reads live rows only.
 4. **Delete the IdP membership and organization**, addressed by the
    ``provider_org_id`` recorded in **this tenant's mapping row** — never by a
    subject-derived external id, which a *later* tenant of the same subject would
@@ -52,9 +54,21 @@ The order, and why each step is where it is
 5. **Delete the mapping row.** After step 4, so the recorded id is still there
    to read; and once the IdP organization is gone the derived external id is
    free, so a fresh tenant provisioned afterwards cannot collide at the provider.
-6. **``fresh-tenant`` only: clear the account's anchor.** Last, because it is the
-   step that lets the subject provision again, and it must not take effect while
-   any earlier step is outstanding.
+
+There is no sixth step, and its absence is the ADR-017 change. The old one
+cleared ``users.enterprise_id`` so an org-less login would provision again;
+that column is now NOT NULL (D3: every account is anchored to exactly one
+enterprise), so the release could no longer be an absence. It is step 3's
+``retirement_state`` instead — a positive record of what the operator chose,
+which ``account_anchor.releases_provisioning`` reads. The account stays anchored
+to the enterprise it was in, which is now fenced, and that is the whole of what
+"retired" means for it.
+
+The binding row therefore survives a retirement rather than being deleted. It has
+to: ``subject`` is its primary key, so the subject has exactly one, and it is the
+only place the operator's next-login decision can live. A later fresh
+provisioning **re-points** it (see the repository), which is also what clears the
+retirement it has by then honoured.
 """
 
 from __future__ import annotations
@@ -212,7 +226,7 @@ async def soft_delete_enterprise(session, *, enterprise_id: str) -> bool:
 
 
 async def record_retirement(session, *, enterprise_id: str, policy: str) -> bool:
-    """Step 3a — stamp the retirement on the SUBJECT's binding row.
+    """Step 3 — stamp the retirement on the SUBJECT's binding row.
 
     Here rather than on ``enterprises`` because the sign-in that has to tell
     "this subject's own tenant was retired" from "the company that owned this
@@ -234,7 +248,13 @@ async def record_retirement(session, *, enterprise_id: str, policy: str) -> bool
 
 
 async def delete_binding(session, *, enterprise_id: str) -> Optional[SubjectBinding]:
-    """Step 3b — drop the subject binding. Returns the row that was removed.
+    """Drop the subject binding outright. Returns the row that was removed.
+
+    **Not part of a retirement** — that stamps the row and keeps it, because the
+    stamp is what a later sign-in reads. This is the re-anchor path (#1320's
+    operator half): the account has moved onto a company enterprise, so there is
+    no next-login policy to record and a stamped row would tell the anchor check
+    the opposite of the truth.
 
     Keyed on the **enterprise**, not the subject: ``UNIQUE (enterprise_id)``
     means at most one subject can name it, so this reaches the right row however

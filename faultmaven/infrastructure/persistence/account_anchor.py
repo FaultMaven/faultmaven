@@ -1,23 +1,33 @@
 """The one place an account's enterprise anchor is read and moved (#1045 D8 R2).
 
-``users.enterprise_id`` says which enterprise owns an account. Two callers change
-it — the SSO login and the operator command — and before this module they each
-had their own mover with their own rule, which is how an unscoped login came to
-be able to drag a company-anchored account back onto a personal tenant. There is
-one rule now, it lives here, and both callers ask it rather than restating it.
+``users.enterprise_id`` says which enterprise owns an account — exactly one, NOT
+NULL (ADR-017 D3). Two callers change it — the SSO login and the operator
+command — and before this module they each had their own mover with their own
+rule, which is how an unscoped login came to be able to drag a company-anchored
+account back onto a personal tenant. There is one rule now, it lives here, and
+both callers ask it rather than restating it.
 
 The rule, in one sentence: **an anchor may be set when it is absent, and may
 only ever move toward a company enterprise.**
 
-* **absent → anything** is a *set*, not a move: an account anchored to nothing
-  is what a ``--next-login fresh-tenant`` retirement leaves and what a
-  freshly-provisioned personal tenant fills in. Nothing is being taken away.
+* **absent → anything** is a *set*, not a move: nothing is being taken away.
+  Under ADR-017 D3 ``users.enterprise_id`` is NOT NULL, so no persisted account
+  is in this state — it is the degenerate case of an in-memory account that has
+  not been anchored yet, kept because the rule has to answer for it.
 * **a retired personal enterprise → a company enterprise** is the move a
   retired subject makes when a company invites them.
 * **the subject's own live personal enterprise → a company enterprise** is the
   switch #1320 shipped, kept unchanged — the caller establishes "its own" from
   the untenanted subject binding and passes it in, and the rule weighs it.
-* **anything → a personal enterprise, when the anchor is already set**, is
+* **a personal enterprise retired with ``fresh_tenant`` → this subject's own new
+  personal enterprise** is the one move toward a personal tenant there is, and
+  it exists because ``users.enterprise_id`` is NOT NULL (ADR-017 D3): the
+  account cannot be parked at "anchored to nothing" while it waits to start
+  over, so it stays on the retired enterprise and moves off it on the sign-in
+  the operator authorised. Both halves are required — a recorded
+  ``fresh_tenant`` retirement AND a destination the caller established, from
+  this subject's own binding, to be personal.
+* **anything else → a personal enterprise, when the anchor is already set**, is
   refused. That direction has no legitimate caller: it is what the reverse-move
   defect did, turning a half-finished re-anchor into a silent demotion back into
   a tenant the account had left.
@@ -54,6 +64,7 @@ from faultmaven.infrastructure.persistence.models import (
     EnterpriseModel,
     SSOPersonalEnterpriseModel,
 )
+from faultmaven.modules.auth.contracts import RETIREMENT_POLICY_FRESH_TENANT
 
 logger = structlog.get_logger(__name__)
 
@@ -89,11 +100,31 @@ class AnchorState:
     def releases_provisioning(self) -> bool:
         """Whether an org-less login may provision a fresh personal tenant.
 
-        Exactly one state does: no anchor at all. Everything else — a live
-        anchor, a retired one, a dangling one — refuses, so the permissive
-        answer can never come from an unreadable or unexpected value.
+        Two states do, and both are **positive statements** rather than
+        absences, which is what keeps the permissive answer out of reach of an
+        unreadable or unexpected value:
+
+        * **no anchor at all** — unreachable for a persisted account since
+          ``users.enterprise_id`` became NOT NULL (ADR-017 D3), and kept for the
+          in-memory account that has not been anchored yet;
+        * **this subject's own personal tenant, retired with the
+          ``fresh_tenant`` policy** — the operator's recorded decision that this
+          subject may start over. This is what replaced "clear the anchor":
+          NOT NULL leaves no absence to mean it, so the release became the
+          typed value an operator actually chose.
+
+        Everything else refuses — a live anchor, a dangling one, a retired
+        company, and a personal retirement whose policy is ``refuse`` or was
+        never recorded. A retirement that failed before it stamped its policy
+        therefore refuses, which is the direction that cannot strand an
+        employee in a personal tenant.
         """
-        return self.kind is AnchorKind.ABSENT
+        if self.kind is AnchorKind.ABSENT:
+            return True
+        return (
+            self.kind is AnchorKind.RETIRED_PERSONAL
+            and self.retirement_policy == RETIREMENT_POLICY_FRESH_TENANT
+        )
 
 
 async def read_anchor(enterprise_id: Optional[str]) -> AnchorState:
@@ -135,6 +166,11 @@ def move_is_permitted(
     reverse move still refused, by the other guard, so a test that said the
     direction rule was what refused it was passing for the wrong reason.
 
+    ``current.retirement_policy`` is read here for the same reason: the one
+    permitted move toward a personal tenant is authorised by a value on the
+    subject row, and a caller that re-derived that authorisation would be a
+    second copy of the rule.
+
     It says the caller has established — from the untenanted subject binding,
     keyed on this subject — that the account's current LIVE anchor is its own
     personal tenant. That is the only way a live anchor may move, and it is
@@ -145,8 +181,15 @@ def move_is_permitted(
         # A set, not a move.
         return True
     if destination_is_personal:
-        # Never drag an already-anchored account onto a personal tenant.
-        return False
+        # Exactly one anchored account may move onto a personal tenant: one
+        # whose own personal tenant an operator retired with ``fresh_tenant``,
+        # moving onto the replacement that retirement authorised. Every other
+        # anchored account is refused — that is the reverse move, which turned a
+        # half-finished re-anchor into a silent demotion.
+        return (
+            current.kind is AnchorKind.RETIRED_PERSONAL
+            and current.retirement_policy == RETIREMENT_POLICY_FRESH_TENANT
+        )
     if current.kind is AnchorKind.RETIRED_PERSONAL:
         return True
     if current.kind is AnchorKind.LIVE:
@@ -216,9 +259,9 @@ async def accounts_anchored_to(enterprise_id: str) -> list[str]:
     """The ids of every account anchored to ``enterprise_id``.
 
     Addressed by the **enterprise**, not by an IdP subject, so a retirement can
-    find the accounts it has to release and revoke from the organization id
-    alone — after the subject binding that named them has been deleted. That is
-    what makes those two steps resumable.
+    find the accounts whose tokens it has to revoke from the enterprise id
+    alone, however the tenant was addressed. That is what makes the step
+    resumable after an interrupted run.
     """
     from sqlalchemy import select
 
@@ -229,30 +272,3 @@ async def accounts_anchored_to(enterprise_id: str) -> list[str]:
             select(UserModel.user_id).where(UserModel.enterprise_id == enterprise_id)
         )
         return [row[0] for row in rows.all()]
-
-
-async def clear_anchors_anchored_to(enterprise_id: str) -> list[str]:
-    """Release every account anchored to ``enterprise_id``. Returns the ids.
-
-    The write ``--next-login fresh-tenant`` makes, and the reason
-    ``users.enterprise_id`` had to become nullable: NULL is the only way to say
-    "anchored to nothing" in a typed column, and it is the single state that
-    lets an org-less login provision again.
-    """
-    from sqlalchemy import update
-
-    from faultmaven.infrastructure.persistence.models import UserModel
-
-    affected = await accounts_anchored_to(enterprise_id)
-    if not affected:
-        return []
-    async with get_db_session() as session:
-        await session.execute(
-            update(UserModel)
-            .where(UserModel.enterprise_id == enterprise_id)
-            .values(enterprise_id=None)
-        )
-    logger.info(
-        "account_anchors_cleared", enterprise_id=enterprise_id, accounts=len(affected)
-    )
-    return affected
