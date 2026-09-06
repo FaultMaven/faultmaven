@@ -546,21 +546,19 @@ async def test_the_audit_writer_records_the_subject_and_the_roles(monkeypatch):
 def test_the_role_actions_are_values_migration_042_admits(action):
     """The enum and the CHECK constraint must not drift.
 
-    Migration 035 pinned ``action`` to two values and 042 widens it; a value
-    spelled differently in Python would be rejected at INSERT time — on the
-    append-only table, during a privilege change, which is the worst place to
-    discover it.
+    The baseline's ``operator_access_audit_action_valid`` pins ``action`` to the
+    four values migrations 035 and 042 arrived at; a value spelled differently in
+    Python would be rejected at INSERT time — on the append-only table, during a
+    privilege change, which is the worst place to discover it.
     """
     import re
     from pathlib import Path
 
-    migration = next(
-        Path("alembic/versions").glob("*042_operator_audit_role_actions.py")
-    )
+    migration = next(Path("alembic/versions").glob("*_enterprise_baseline.py"))
     admitted = set(
         re.findall(
             r"'([a-z_]+)'",
-            re.search(r"_NEW = \"(.+?)\"", migration.read_text()).group(1),
+            re.search(r'"(action IN \([^)]*\))"', migration.read_text()).group(1),
         )
     )
     assert (
