@@ -61,6 +61,7 @@ from faultmaven.api.v1.dependencies import (
     get_session_service,
     get_suggestion_service,
 )
+from faultmaven.config.tenant_context import get_current_enterprise_id
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.core.investigation.turn_budget import bind_turn_deadline
 from faultmaven.exceptions import (
@@ -852,7 +853,12 @@ async def delete_case(
     the case and all associated data are permanently removed.
 
     The operation is idempotent - subsequent requests will return
-    204 No Content even if the case has already been deleted.
+    204 No Content even if the case has already been deleted, and so does a
+    request naming a case the caller cannot see.
+
+    Only the OWNER may delete. A teammate who can read the case through a team
+    share is refused with 403 (ADR-017 D4: a share is read visibility, not
+    ownership).
 
     Returns 204 No Content on success.
     """
@@ -860,13 +866,36 @@ async def delete_case(
     correlation_id = str(uuid.uuid4())
 
     try:
-        # Proceed to hard delete via service if supported; otherwise emulate success
-        # DELETE is idempotent - always returns 204 No Content regardless of whether case existed
-        await case_service.hard_delete_case(case_id, current_user.user_id)
-        # Service layer handles the deletion and cascade behavior
-        # Idempotent: No error even if case doesn't exist
+        # DELETE stays idempotent for a case the caller cannot see: the service
+        # answers True there, and 204 is indistinguishable from "already gone",
+        # which is the same refusal shape every other read on this surface uses.
+        #
+        # It answers **False** for exactly one situation — a case the caller CAN
+        # see (a team share) but does not OWN. That is not an absence and must
+        # not be reported as one: the caller demonstrably knows the case exists,
+        # so 404 would be a lie they can detect, and 204 would be a lie about
+        # what happened. The route used to discard this boolean and answer 204
+        # to both, which said "deleted" about a row that is still there.
+        deleted = await case_service.hard_delete_case(case_id, current_user.user_id)
+        if not deleted:
+            logger.warning(
+                f"Refused delete of case {case_id}: caller is not the owner",
+                extra={"correlation_id": correlation_id},
+            )
+            error_response = ErrorResponse(
+                schema_version="3.1.0",
+                error=ErrorDetail(
+                    code="FORBIDDEN",
+                    message="Only the owner of a case may delete it.",
+                ),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=error_response.model_dump(),
+                headers={"x-correlation-id": correlation_id},
+            )
 
-        # Success response with correlation header (always 204 for idempotent behavior)
+        # Success response with correlation header
         return Response(
             status_code=status.HTTP_204_NO_CONTENT,
             headers={"x-correlation-id": correlation_id},
@@ -3527,11 +3556,18 @@ async def get_report_recommendations(
             share_repository=getattr(request.app.state, "share_repository", None),
         )
 
-        # Get intelligent recommendations, scoped to the requester
+        # Get intelligent recommendations, scoped to the requester.
+        #
+        # The tenant term here is the ENTERPRISE the request is bound to, not the
+        # caller's organization claim. The team arm matches the share row's own
+        # ``enterprise_id`` (ADR-017 D1/D4), so feeding it an organization made
+        # the arm empty in every configuration — absent in standalone and for a
+        # cloud account in no organization, and a billing id where present — and
+        # a runbook shared to a common team stopped counting as a duplicate.
         recommendations = await recommendation_service.get_available_report_types(
             case=case,
             requester_user_id=current_user.user_id,
-            requester_organization_id=getattr(current_user, "organization_id", None),
+            requester_enterprise_id=get_current_enterprise_id(),
         )
 
         logger.info(
@@ -3610,7 +3646,13 @@ async def generate_case_reports(
     case_service = check_case_service_available(case_service)
 
     try:
-        case = await case_service.get_case(case_id, current_user.user_id)
+        # ``owner_only``: regeneration flips ``is_current`` across the case's
+        # reports, so it is a WRITE on rows a read share never covered (ADR-017
+        # D4). Inside one enterprise nothing else separates a teammate from the
+        # owner, so this flag is the whole of the boundary here.
+        case = await case_service.get_case(
+            case_id, current_user.user_id, owner_only=True
+        )
         if not case:
             raise HTTPException(status_code=404, detail="Case not found")
 
@@ -4415,8 +4457,13 @@ async def extract_knowledge_from_case(
     from faultmaven.utils.serialization import to_json_compatible
 
     try:
-        # Verify case exists and user has access
-        case = await case_service.get_case(case_id, current_user.user_id)
+        # Verify case exists and the caller OWNS it. Extraction mints a
+        # knowledge suggestion out of the case's transcript and evidence and
+        # attributes it to the extractor, so it is a write on the owner's
+        # material: a read share does not authorise it (ADR-017 D4).
+        case = await case_service.get_case(
+            case_id, current_user.user_id, owner_only=True
+        )
         if not case:
             raise HTTPException(status_code=404, detail="Case not found")
 

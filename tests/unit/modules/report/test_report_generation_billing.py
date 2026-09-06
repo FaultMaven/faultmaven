@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.exceptions import (
     QUOTA_EXHAUSTED,
     LLMException,
@@ -39,6 +40,10 @@ def _make_service():
 def _make_case():
     case = MagicMock()
     case.case_id = "case_abc123def456"
+    # The route compares the case's enterprise against the request binding
+    # directly, so a MagicMock attribute here reads as "another enterprise" and
+    # the call is refused before it reaches the mapping under test.
+    case.enterprise_id = STANDALONE_ENTERPRISE_ID
     return case
 
 
@@ -106,7 +111,6 @@ class TestGenerateReportRouteMapsBillingTo402:
             request=request,
             case_id="case_abc123def456",
             current_user=current_user,
-            tenant_provider=None,
             case_service=case_service,
             generation_service=generation_service,
         )

@@ -34,7 +34,7 @@ from faultmaven.modules.report.domain.services.report_recommendation_service imp
 pytestmark = [pytest.mark.unit]
 
 REQUESTER = "user-requester-1"
-ORG = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+ENTERPRISE = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
 
 class _RecordingRunbookKB(RunbookKnowledgeBase):
@@ -76,7 +76,7 @@ def _available_embedder():
 def _case() -> Case:
     return Case(
         user_id="case-owner-9",  # deliberately NOT the requester
-        enterprise_id=ORG,
+        enterprise_id=ENTERPRISE,
         title="Connection pool exhausted under load",
         description="DB queries timing out",
         state=CaseState.INVESTIGATING,
@@ -102,7 +102,7 @@ async def test_the_requesters_scope_governs_not_the_case_owners():
     service = ReportRecommendationService(runbook_kb=kb)
 
     await service._find_similar_runbooks(
-        _case(), requester_user_id=REQUESTER, requester_organization_id=ORG
+        _case(), requester_user_id=REQUESTER, requester_enterprise_id=ENTERPRISE
     )
 
     assert kb.scopes == [{"$or": [{"scope": "global"}, {"owner_id": REQUESTER}]}]
@@ -122,7 +122,7 @@ async def test_the_requesters_team_shared_items_widen_the_scope():
     )
 
     await service._find_similar_runbooks(
-        _case(), requester_user_id=REQUESTER, requester_organization_id=ORG
+        _case(), requester_user_id=REQUESTER, requester_enterprise_id=ENTERPRISE
     )
 
     (scope,) = kb.scopes
@@ -147,7 +147,7 @@ async def test_a_scope_resolution_failure_is_a_typed_refusal_not_a_narrower_sear
 
     with pytest.raises(KnowledgeBaseError) as excinfo:
         await service._find_similar_runbooks(
-            _case(), requester_user_id=REQUESTER, requester_organization_id=ORG
+            _case(), requester_user_id=REQUESTER, requester_enterprise_id=ENTERPRISE
         )
 
     assert excinfo.value.error_code == "RUNBOOK_SCOPE_RESOLUTION_FAILED"
@@ -163,7 +163,7 @@ async def test_standalone_without_team_deps_is_a_clean_search_not_a_failure():
     service = ReportRecommendationService(runbook_kb=kb)
 
     await service._find_similar_runbooks(
-        _case(), requester_user_id=REQUESTER, requester_organization_id=None
+        _case(), requester_user_id=REQUESTER, requester_enterprise_id=None
     )
 
     assert len(kb.scopes) == 1, "standalone must still search"
