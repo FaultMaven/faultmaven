@@ -183,6 +183,38 @@ async def seed_users(
     await session.commit()
 
 
+async def seed_enterprises(session, enterprise_ids: Iterable[str]) -> None:
+    """Insert enterprise rows so FK-bound tests can reference them.
+
+    The enterprise analogue of :func:`seed_organizations`, and the seam ADR-017
+    needs: once the enterprise is the isolation boundary, a probe has to be able
+    to build two of them without inventing an organization to hang them off.
+
+    ``enterprises.slug`` is unique among live rows (migration 052's partial
+    index) and is derived here from the enterprise id, which is the table's
+    PRIMARY KEY — so two slugs in one batch can only collide if two ids did,
+    which the key already forbids. That is why there is no de-duplication loop
+    here and there is one in ``seed_organizations``: an organization's slug is
+    unique per ENTERPRISE, so distinct org ids in different enterprises really
+    can collide on it. Idempotent per id: an enterprise that already exists is
+    left alone rather than re-stamped.
+    """
+    from faultmaven.infrastructure.persistence.models import EnterpriseModel
+
+    for enterprise_id in enterprise_ids:
+        existing = await session.get(EnterpriseModel, enterprise_id)
+        if existing is not None:
+            continue
+        session.add(
+            EnterpriseModel(
+                enterprise_id=enterprise_id,
+                name=f"Test Enterprise {enterprise_id}",
+                slug=enterprise_id,
+            )
+        )
+    await session.commit()
+
+
 async def seed_organizations(
     session,
     org_ids: Iterable[str],
