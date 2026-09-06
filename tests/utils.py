@@ -296,20 +296,29 @@ async def seed_teams(
 
 
 def install_org_autoseed(sync_session) -> None:
-    """Auto-create OrganizationModel rows for any new tenanted ORM object.
+    """Auto-create the parent ENTERPRISE and organization rows a flush needs.
 
-    Phase 9 added FK on tenanted tables. This hook seeds the parent org row
-    inside the same flush so FK constraints succeed without churning each test
-    to call seed_organizations() manually. Uses Core INSERT (not session.add)
-    so the rows materialize in the current transaction before child INSERTs;
-    objects added via session.add() inside before_flush defer to the next
-    flush, which is too late to satisfy the FK.
+    Every tenanted table carries ``enterprise_id NOT NULL`` with an FK
+    (ADR-017), and most carry a nullable ``organization_id`` FK beside it. This
+    hook seeds whichever parents a pending object references, inside the same
+    flush, so FK constraints succeed without churning each test to call
+    ``seed_enterprises`` / ``seed_organizations`` by hand. Uses Core INSERT (not
+    ``session.add``) so the rows materialize in the current transaction before
+    the child INSERTs; objects added via ``session.add()`` inside
+    ``before_flush`` defer to the next flush, which is too late to satisfy the
+    FK.
+
+    **The enterprise arm is seeded from the referenced ids, not only from the
+    default.** Before ADR-017 the only enterprise a test could reference was the
+    default one, so ensuring that single row was enough; now every tenanted
+    object names an enterprise of its own choosing, and seeding only the default
+    would fail the FK for every test that picks its own — which is most of them.
 
     NOTE: This hook only fires for ORM-mediated writes (via session flush).
     Tests that exercise raw-SQL repositories like ``SQLiteCaseRepository``
-    bypass the ORM flush path; those tests should call
-    ``seed_organizations(session, [...])`` explicitly before the first save,
-    or wrap the case repository with the ``seed_orgs_for_repo`` helper.
+    bypass the ORM flush path; those tests should call ``seed_enterprises`` /
+    ``seed_organizations`` explicitly before the first save, or wrap the case
+    repository with the ``seed_orgs_for_repo`` helper.
 
     Call once per AsyncSession with `session.sync_session` as the argument.
     """
@@ -321,14 +330,49 @@ def install_org_autoseed(sync_session) -> None:
     )
 
     @event.listens_for(sync_session, "before_flush")
-    def _seed_referenced_orgs(session, flush_context, instances):
+    def _seed_referenced_tenancy(session, flush_context, instances):
+        enterprise_ids: set[str] = set()
         org_ids: set[str] = set()
         for obj in session.new:
-            if isinstance(obj, OrganizationModel):
-                continue
-            oid = getattr(obj, "organization_id", None)
-            if oid:
-                org_ids.add(oid)
+            if not isinstance(obj, EnterpriseModel):
+                eid = getattr(obj, "enterprise_id", None)
+                if eid:
+                    enterprise_ids.add(eid)
+            if not isinstance(obj, OrganizationModel):
+                oid = getattr(obj, "organization_id", None)
+                if oid:
+                    org_ids.add(oid)
+
+        # An organization needs an enterprise to hang off, so the default is
+        # required whenever one is being seeded.
+        if org_ids:
+            enterprise_ids.add(DEFAULT_TEST_ENTERPRISE_ID)
+
+        if enterprise_ids:
+            existing_enterprises = {
+                row[0]
+                for row in session.execute(
+                    select(EnterpriseModel.enterprise_id).where(
+                        EnterpriseModel.enterprise_id.in_(enterprise_ids)
+                    )
+                ).all()
+            }
+            missing_enterprises = enterprise_ids - existing_enterprises
+            if missing_enterprises:
+                session.execute(
+                    insert(EnterpriseModel),
+                    [
+                        {
+                            "enterprise_id": eid,
+                            "name": f"Test Enterprise {eid}",
+                            # The slug is unique among live rows, so it has to
+                            # be derived from the id rather than shared.
+                            "slug": eid,
+                        }
+                        for eid in sorted(missing_enterprises)
+                    ],
+                )
+
         if not org_ids:
             return
         existing = {
@@ -341,20 +385,6 @@ def install_org_autoseed(sync_session) -> None:
         }
         missing = org_ids - existing
         if missing:
-            # Ensure the default enterprise exists so the orgs.enterprise_id
-            # FK target is satisfied.
-            default_ent = session.get(EnterpriseModel, DEFAULT_TEST_ENTERPRISE_ID)
-            if default_ent is None:
-                session.execute(
-                    insert(EnterpriseModel),
-                    [
-                        {
-                            "enterprise_id": DEFAULT_TEST_ENTERPRISE_ID,
-                            "name": "Default Test Enterprise",
-                            "slug": "default-test",
-                        }
-                    ],
-                )
             session.execute(
                 insert(OrganizationModel),
                 [
@@ -364,7 +394,7 @@ def install_org_autoseed(sync_session) -> None:
                         "name": f"Test Org {oid}",
                         "slug": oid,
                     }
-                    for oid in missing
+                    for oid in sorted(missing)
                 ],
             )
 

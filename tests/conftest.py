@@ -1324,7 +1324,7 @@ def anchor_db(monkeypatch):
 
     The login's org-less verdict and its one anchor-mover both read typed
     columns — ``enterprises.deleted_at`` and
-    ``enterprises.personal_tenant_retirement`` — so a unit test that wants to
+    ``sso_personal_enterprises.retirement_state`` — so a unit test that wants to
     exercise them needs those rows to exist. Real SQLite built from the ORM
     metadata, with only the session factory patched, so the reads under test are
     the production ones rather than a stand-in that could disagree with them.
@@ -1366,17 +1366,35 @@ def anchor_db(monkeypatch):
         async with _session() as session:
             await session.execute(
                 text(
-                    "INSERT INTO enterprises (enterprise_id, name, slug, deleted_at, "
-                    " personal_tenant_retirement) "
-                    "VALUES (:e, :n, :s, :d, :p)"
+                    "INSERT INTO enterprises "
+                    "(enterprise_id, name, slug, deleted_at) "
+                    "VALUES (:e, :n, :s, :d)"
                 ),
                 {
                     "e": enterprise_id,
                     "n": name,
                     "s": f"slug-{enterprise_id[:8]}",
                     "d": "2026-09-04 00:00:00" if retired else None,
-                    "p": policy,
                 },
             )
+            if policy is not None:
+                # The retirement state lives on the SUBJECT row (ADR-017 D9), so
+                # a retired personal tenant needs one — an enterprise on its own
+                # cannot express "somebody's personal tenant was retired".
+                await session.execute(
+                    text(
+                        "INSERT INTO sso_personal_enterprises "
+                        "(subject, provider, enterprise_id, provider_org_id, "
+                        " membership_confirmed, retired_at, retirement_state) "
+                        "VALUES (:s, 'workos', :e, :p, 1, :d, :st)"
+                    ),
+                    {
+                        "s": f"subject-{enterprise_id[:8]}",
+                        "e": enterprise_id,
+                        "p": f"org_{enterprise_id[:8]}",
+                        "d": "2026-09-04 00:00:00" if retired else None,
+                        "st": policy,
+                    },
+                )
 
     yield seed

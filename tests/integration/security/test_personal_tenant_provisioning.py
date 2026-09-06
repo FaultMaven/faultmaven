@@ -47,8 +47,11 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from faultmaven.config.constants import STANDALONE_ORG_ID
-from faultmaven.config.tenant_context import get_current_org_id, set_current_org_id
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.config.tenant_context import (
+    get_current_enterprise_id,
+    set_current_enterprise_id,
+)
 from faultmaven.modules.auth.domain.personal_tenant import (
     PERSONAL_ORG_NAME,
     personal_org_slug,
@@ -158,17 +161,17 @@ async def fresh_engine_per_loop(limited_role_env):
 
 @pytest.fixture
 def repository(limited_role_env):
-    from faultmaven.modules.auth.infrastructure.repositories.sso_personal_org_repository import (  # noqa: E501
-        SessionlessSSOPersonalOrgRepository,
+    from faultmaven.modules.auth.infrastructure.repositories.sso_personal_enterprise_repository import (  # noqa: E501
+        SessionlessSSOPersonalEnterpriseRepository,
     )
 
-    return SessionlessSSOPersonalOrgRepository()
+    return SessionlessSSOPersonalEnterpriseRepository()
 
 
 @pytest.fixture(autouse=True)
 def restore_tenant_context():
     yield
-    set_current_org_id(STANDALONE_ORG_ID)
+    set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
 
 
 @pytest.fixture
@@ -282,14 +285,14 @@ async def test_the_repository_binds_the_tenant_it_is_writing(repository, subject
     could not succeed), and that the policy really would refuse an unbound one.
     """
     unrelated = str(uuid.uuid4())
-    set_current_org_id(unrelated)
+    set_current_enterprise_id(unrelated)
 
     organization_id = await _provision(repository, subject)
 
     assert organization_id != unrelated
     # And the caller's scope is handed back untouched: a failed or successful
     # provision must never leave someone else's — or a nonexistent — org bound.
-    assert get_current_org_id() == unrelated
+    assert get_current_enterprise_id() == unrelated
 
 
 async def test_a_failed_provision_restores_the_callers_scope(
@@ -301,11 +304,11 @@ async def test_a_failed_provision_restores_the_callers_scope(
 
     intruder = f"user_pt_{uuid.uuid4().hex[:12]}"
     unrelated = str(uuid.uuid4())
-    set_current_org_id(unrelated)
+    set_current_enterprise_id(unrelated)
     with pytest.raises(Exception):
         await _provision(repository, intruder, provider_org_id=first_idp_org)
 
-    assert get_current_org_id() == unrelated
+    assert get_current_enterprise_id() == unrelated
 
 
 # =============================================================================
@@ -318,7 +321,7 @@ async def test_first_provisioning_writes_the_whole_tenant(
 ):
     """Enterprise, organization, default team, mapping and subject row."""
     org_id = await _provision(repository, subject)
-    assert org_id != STANDALONE_ORG_ID
+    assert org_id != STANDALONE_ENTERPRISE_ID
 
     rows = await _as_owner(
         limited_role_env,
@@ -329,7 +332,7 @@ async def test_first_provisioning_writes_the_whole_tenant(
                   WHERE t.organization_id = o.organization_id) AS teams,
                (SELECT count(*) FROM sso_org_mappings m
                   WHERE m.organization_id = o.organization_id) AS mappings,
-               (SELECT count(*) FROM sso_personal_orgs p
+               (SELECT count(*) FROM sso_personal_enterprises p
                   WHERE p.organization_id = o.organization_id) AS personal
           FROM organizations o
           JOIN enterprises e ON e.enterprise_id = o.enterprise_id
@@ -400,7 +403,7 @@ async def test_find_by_enterprise_answers_from_inside_another_tenant(
     org_id = await _provision(repository, subject)
     record = await repository.get(PROVIDER, subject)
 
-    set_current_org_id(str(uuid.uuid4()))  # a company tenant, not this one
+    set_current_enterprise_id(str(uuid.uuid4()))  # a company tenant, not this one
     assert await repository.find_by_enterprise(PROVIDER, subject, record.enterprise_id)
     assert not await repository.find_by_enterprise(PROVIDER, subject, str(uuid.uuid4()))
     assert org_id == record.organization_id
@@ -459,7 +462,7 @@ async def test_provisioning_twice_yields_one_organization(
 
     rows = await _as_owner(
         limited_role_env,
-        "SELECT count(*) AS n FROM sso_personal_orgs "
+        "SELECT count(*) AS n FROM sso_personal_enterprises "
         "WHERE provider = :p AND provider_user_id = :s",
         p=PROVIDER,
         s=subject,
@@ -510,7 +513,7 @@ async def test_concurrent_first_logins_yield_one_tenant_and_no_orphans(
                (SELECT count(*) FROM enterprises WHERE slug = :slug) AS enterprises,
                (SELECT count(*) FROM teams
                   WHERE organization_id = :org) AS teams,
-               (SELECT count(*) FROM sso_personal_orgs
+               (SELECT count(*) FROM sso_personal_enterprises
                   WHERE provider = :p AND provider_user_id = :s) AS personal,
                (SELECT count(*) FROM sso_org_mappings
                   WHERE provider = :p AND provider_org_id = :idp) AS mappings
@@ -540,15 +543,15 @@ async def test_a_write_beaten_to_the_constraint_adopts_the_winner(
     is the interleaving no pre-check can cover. Everything else — the
     transaction, the rollback, the re-read — is the real code.
     """
-    from faultmaven.modules.auth.infrastructure.repositories.sso_personal_org_repository import (  # noqa: E501
-        SessionlessSSOPersonalOrgRepository,
+    from faultmaven.modules.auth.infrastructure.repositories.sso_personal_enterprise_repository import (  # noqa: E501
+        SessionlessSSOPersonalEnterpriseRepository,
     )
 
     idp_org = f"org_{uuid.uuid4().hex[:12]}"
     slug = personal_org_slug(personal_tenant_key(PROVIDER, subject))
     winner_holder: dict[str, str] = {}
 
-    class BeatenRepository(SessionlessSSOPersonalOrgRepository):
+    class BeatenRepository(SessionlessSSOPersonalEnterpriseRepository):
         def __init__(self):
             self.conflicts = 0
 
@@ -557,7 +560,7 @@ async def test_a_write_beaten_to_the_constraint_adopts_the_winner(
                 self._seeded = True
                 winner_holder[
                     "id"
-                ] = await SessionlessSSOPersonalOrgRepository().provision(
+                ] = await SessionlessSSOPersonalEnterpriseRepository().provision(
                     provider=PROVIDER,
                     provider_user_id=subject,
                     provider_org_id=idp_org,
@@ -588,7 +591,7 @@ async def test_a_write_beaten_to_the_constraint_adopts_the_winner(
         """
         SELECT (SELECT count(*) FROM organizations WHERE slug = :slug) AS orgs,
                (SELECT count(*) FROM enterprises WHERE slug = :slug) AS enterprises,
-               (SELECT count(*) FROM sso_personal_orgs
+               (SELECT count(*) FROM sso_personal_enterprises
                   WHERE provider = :p AND provider_user_id = :s) AS personal
         """,
         slug=slug,
@@ -623,7 +626,7 @@ async def test_a_failed_transaction_leaves_nothing_to_adopt(
         """
         SELECT (SELECT count(*) FROM enterprises WHERE slug = :slug) AS enterprises,
                (SELECT count(*) FROM organizations WHERE slug = :slug) AS orgs,
-               (SELECT count(*) FROM sso_personal_orgs
+               (SELECT count(*) FROM sso_personal_enterprises
                   WHERE provider = :p AND provider_user_id = :s) AS personal
         """,
         slug=personal_org_slug(personal_tenant_key(PROVIDER, intruder)),
@@ -650,7 +653,7 @@ async def test_a_mapping_collision_names_the_idp_org_not_the_invented_id(
     never committed — an operator could not look it up anywhere. What they need
     is the key that actually collided.
     """
-    from faultmaven.modules.auth.infrastructure.repositories.sso_personal_org_repository import (  # noqa: E501
+    from faultmaven.modules.auth.infrastructure.repositories.sso_personal_enterprise_repository import (  # noqa: E501
         PersonalTenantCollision,
     )
 
@@ -726,10 +729,10 @@ async def test_the_lookup_answers_without_any_tenant_bound(repository, subject):
     """
     org_id = await _provision(repository, subject)
 
-    set_current_org_id(STANDALONE_ORG_ID)
+    set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
     assert (await repository.get(PROVIDER, subject)).organization_id == org_id
 
-    set_current_org_id(str(uuid.uuid4()))
+    set_current_enterprise_id(str(uuid.uuid4()))
     assert (await repository.get(PROVIDER, subject)).organization_id == org_id
 
 
@@ -770,7 +773,7 @@ async def test_the_sentinel_is_never_written_as_a_personal_tenant(
     """
     rows = await _as_owner(
         limited_role_env,
-        "SELECT count(*) AS n FROM sso_personal_orgs WHERE organization_id = :org",
-        org=STANDALONE_ORG_ID,
+        "SELECT count(*) AS n FROM sso_personal_enterprises WHERE organization_id = :org",
+        org=STANDALONE_ENTERPRISE_ID,
     )
     assert rows[0].n == 0

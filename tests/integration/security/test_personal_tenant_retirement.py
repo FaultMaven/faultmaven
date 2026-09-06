@@ -81,11 +81,11 @@ def subject() -> str:
 
 @pytest.fixture
 def repository():
-    from faultmaven.modules.auth.infrastructure.repositories.sso_personal_org_repository import (  # noqa: E501
-        SessionlessSSOPersonalOrgRepository,
+    from faultmaven.modules.auth.infrastructure.repositories.sso_personal_enterprise_repository import (  # noqa: E501
+        SessionlessSSOPersonalEnterpriseRepository,
     )
 
-    return SessionlessSSOPersonalOrgRepository()
+    return SessionlessSSOPersonalEnterpriseRepository()
 
 
 async def _as_owner(url: str, sql: str, **params):
@@ -185,7 +185,7 @@ async def _tenant_rows(url: str, organization_id: str) -> dict:
         "binding": await _as_owner(
             url,
             "SELECT provider, provider_user_id, enterprise_id, provider_org_id "
-            "FROM sso_personal_orgs WHERE organization_id = :o",
+            "FROM sso_personal_enterprises WHERE organization_id = :o",
             o=organization_id,
         ),
         "cases": await _as_owner(
@@ -475,7 +475,7 @@ def switch_on(monkeypatch):
     """The real switch, through the real settings singleton.
 
     The hourly ceiling is raised alongside it, and deliberately not silently:
-    ``count_created_since`` is a deployment-wide count over ``sso_personal_orgs``,
+    ``count_created_since`` is a deployment-wide count over ``sso_personal_enterprises``,
     so on a scratch database that accumulates rows every provisioning case here
     would refuse ``personal_provisioning_ceiling`` — a property of the fixture,
     not of anything under test. The ceiling is pinned where it belongs, in
@@ -579,8 +579,8 @@ async def test_a_refresh_is_refused_for_a_retired_tenant(
     afterwards. The **request** path is out of scope here — this pins the
     predicate both refresh surfaces call.
     """
-    from faultmaven.infrastructure.persistence.organization_liveness import (
-        organization_id_is_usable,
+    from faultmaven.infrastructure.persistence.enterprise_liveness import (
+        enterprise_id_is_usable,
     )
 
     organization_id = await _provision(repository, subject)
@@ -589,14 +589,14 @@ async def test_a_refresh_is_refused_for_a_retired_tenant(
         subject=subject,
         enterprise_id=await _enterprise_of(owner_url, organization_id),
     )
-    assert await organization_id_is_usable(organization_id) is True
+    assert await enterprise_id_is_usable(organization_id) is True
 
     assert await _retire(owner_url, organization_id) == 0
 
-    assert await organization_id_is_usable(organization_id) is False
+    assert await enterprise_id_is_usable(organization_id) is False
     # An absent claim is a different condition with its own handling, and must
     # not be turned into a refusal here.
-    assert await organization_id_is_usable(None) is True
+    assert await enterprise_id_is_usable(None) is True
 
 
 def test_the_module_is_not_silently_skipping():

@@ -4,19 +4,20 @@ The unit module pins the *decision* through fakes of the two ports. This module
 pins the three things only a real database can answer:
 
 * the ledger can be **written by the application role**, whose RLS policy
-  applies ``USING`` as ``WITH CHECK`` (migration 018's pattern, which migration
-  052 enrols the new table into) — so a row stamped with anything but the bound
-  tenant is *rejected*, not merely hidden;
+  applies ``USING`` as ``WITH CHECK`` — so a row stamped with anything but the
+  bound enterprise is *rejected*, not merely hidden;
 * one tenant's ledger row is **invisible** to another, so "counting is per
-  organization" is a property of the database and not only of the predicate this
-  code passes;
+  billing subject" is a property of the database and not only of the predicate
+  this code passes;
 * the reservation is **atomic** — twenty concurrent turns at a cap of five admit
   exactly five. A read-then-write pair would admit far more, silently, in the
   direction that costs money.
 
-It also drives the real ``CapPolicyResolver`` over the real repositories, so the
-two ports the policy depends on are exercised against the schema rather than
-against a fake of it.
+It also drives the real ``CapPolicyResolver`` over the real organization
+repository, so the one port the policy still depends on is exercised against the
+schema rather than against a fake of it. Under ADR-017 D5 there is no second
+port: "personal" means "no organization", which is a property of the subject
+rather than a row in a table, so the kind question needs no lookup at all.
 
 Why as a limited role
 ---------------------
@@ -41,10 +42,13 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from faultmaven.config.constants import STANDALONE_ORG_ID
-from faultmaven.config.tenant_context import set_current_org_id
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.config.tenant_context import set_current_enterprise_id
 from faultmaven.infrastructure.protection import tenant_turn_cap as cap
 from faultmaven.infrastructure.protection.tenant_turn_cap import (
+    SUBJECT_ACCOUNT,
+    SUBJECT_ORGANIZATION,
+    BillingSubject,
     CapPolicyResolver,
     SqlTurnLedger,
     TenantTurnCapExceeded,
@@ -129,7 +133,7 @@ async def fresh_engine_per_loop(limited_role_env):
 @pytest.fixture(autouse=True)
 def restore_tenant_context():
     yield
-    set_current_org_id(STANDALONE_ORG_ID)
+    set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
 
 
 @pytest.fixture
@@ -144,13 +148,9 @@ def service():
     from faultmaven.infrastructure.persistence.sessionless_organization_repository import (  # noqa: E501
         SessionlessOrganizationRepository,
     )
-    from faultmaven.modules.auth.infrastructure.repositories.sso_personal_org_repository import (  # noqa: E501
-        SessionlessSSOPersonalOrgRepository,
-    )
 
     return TurnCapService(
         CapPolicyResolver(
-            SessionlessSSOPersonalOrgRepository(),
             SessionlessOrganizationRepository(),
             multi_tenant=lambda: True,
         ),
@@ -169,7 +169,8 @@ async def _as_owner(superuser_url: str, sql: str, **params):
         await engine.dispose()
 
 
-async def _make_org(superuser_url: str, *, personal: bool, override=None) -> str:
+async def _make_org(superuser_url: str, *, override=None) -> BillingSubject:
+    """An ORGANIZATION billing subject: somebody is paying for this account."""
     organization_id = str(uuid.uuid4())
     slug = f"cap-{organization_id[:8]}"
     await _as_owner(
@@ -183,26 +184,28 @@ async def _make_org(superuser_url: str, *, personal: bool, override=None) -> str
         s=slug,
         c=override,
     )
-    if personal:
-        await _as_owner(
-            superuser_url,
-            "INSERT INTO sso_personal_orgs "
-            "(provider, provider_user_id, organization_id, provider_org_id, "
-            "enterprise_id) VALUES ('workos', :u, :o, :p, :e)",
-            u=f"user_{uuid.uuid4().hex[:12]}",
-            o=organization_id,
-            p=f"org_{uuid.uuid4().hex[:12]}",
-            e=DEFAULT_ENTERPRISE_ID,
-        )
-    return organization_id
+    return BillingSubject(SUBJECT_ORGANIZATION, organization_id)
 
 
-async def _ledger_as_owner(superuser_url: str, organization_id: str, day=None):
+def _make_account() -> BillingSubject:
+    """An ACCOUNT billing subject: nobody is paying, so it gets the default.
+
+    No row is written. That is the whole point of ADR-017 D5's re-statement —
+    "personal" stopped being a row in ``sso_personal_orgs`` and became the
+    absence of an organization, so there is nothing to insert and nothing whose
+    unreadability could invert the policy.
+    """
+    return BillingSubject(SUBJECT_ACCOUNT, f"user_{uuid.uuid4().hex[:12]}")
+
+
+async def _ledger_as_owner(superuser_url: str, subject: BillingSubject, day=None):
     rows = await _as_owner(
         superuser_url,
-        "SELECT turn_count FROM organization_turn_usage "
-        "WHERE organization_id = :o AND usage_date = :d",
-        o=organization_id,
+        "SELECT turn_count FROM turn_usage "
+        "WHERE billing_subject_kind = :k AND billing_subject_id = :i "
+        "AND usage_date = :d",
+        k=subject.kind,
+        i=subject.subject_id,
         d=day or cap.utc_day(),
     )
     return rows[0][0] if rows else None
@@ -243,37 +246,47 @@ async def test_the_role_under_test_is_actually_subject_to_rls(limited_role_env):
                 await conn.execute(
                     text(
                         "SELECT relrowsecurity FROM pg_class "
-                        "WHERE relname = 'organization_turn_usage'"
+                        "WHERE relname = 'turn_usage'"
                     )
                 )
             ).scalar()
             assert enabled is True, (
-                "migration 053 did not enrol the ledger in RLS, so one tenant's "
+                "the baseline did not enrol the ledger in RLS, so one tenant's "
                 "usage row is readable by every other tenant"
             )
     finally:
         await engine.dispose()
 
 
-async def test_the_ledger_is_three_columns(limited_role_env):
+async def test_the_ledger_carries_the_subject_key_and_no_timestamps(limited_role_env):
     """``created_at``/``updated_at`` are absent on purpose.
 
     Every write after the day's first arrives through ``ON CONFLICT DO UPDATE``,
     which does not fire SQLAlchemy's ``onupdate`` — so a timestamp here would
     freeze at the first turn of the day while looking like it tracked the last.
+
+    The columns that ARE here are the subject key (ADR-017 D5) plus the
+    enterprise every tenant-scoped table carries for RLS. The enterprise is not
+    part of the KEY: two accounts of one enterprise in different organizations
+    are charged separately, which is the whole reason the key moved.
     """
     rows = await _as_owner(
         limited_role_env,
         "SELECT column_name FROM information_schema.columns "
-        "WHERE table_name = 'organization_turn_usage' ORDER BY column_name",
+        "WHERE table_name = 'turn_usage' ORDER BY column_name",
     )
-    assert [r[0] for r in rows] == ["organization_id", "turn_count", "usage_date"]
+    assert [r[0] for r in rows] == [
+        "billing_subject_id",
+        "billing_subject_kind",
+        "enterprise_id",
+        "turn_count",
+        "usage_date",
+    ]
 
 
 async def test_a_mis_bound_ledger_write_is_refused_by_the_policy(limited_role_env):
     """The policy refuses, rather than merely hides, a row for another tenant."""
-    mine = await _make_org(limited_role_env, personal=False)
-    theirs = await _make_org(limited_role_env, personal=False)
+    subject = _make_account()
 
     engine = create_async_engine(_limited_url(limited_role_env), future=True)
     try:
@@ -282,16 +295,21 @@ async def test_a_mis_bound_ledger_write_is_refused_by_the_policy(limited_role_en
             # the latter takes no bind parameter, and interpolating the id would
             # make this the one place in the module that builds SQL by string.
             await conn.execute(
-                text("SELECT set_config('app.current_org_id', :o, true)"), {"o": mine}
+                text("SELECT set_config('app.current_enterprise_id', :e, true)"),
+                {"e": DEFAULT_ENTERPRISE_ID},
             )
             with pytest.raises(Exception) as raised:
                 await conn.execute(
                     text(
-                        "INSERT INTO organization_turn_usage "
-                        "(organization_id, usage_date, turn_count) "
-                        "VALUES (:o, CURRENT_DATE, 1)"
+                        "INSERT INTO turn_usage (enterprise_id, "
+                        "billing_subject_kind, billing_subject_id, usage_date, "
+                        "turn_count) VALUES (:e, :k, :i, CURRENT_DATE, 1)"
                     ),
-                    {"o": theirs},
+                    {
+                        "e": "ent_someone_else",
+                        "k": subject.kind,
+                        "i": subject.subject_id,
+                    },
                 )
             assert "row-level security" in str(raised.value).lower()
     finally:
@@ -303,15 +321,15 @@ async def test_a_mis_bound_ledger_write_is_refused_by_the_policy(limited_role_en
 # =============================================================================
 
 
-async def test_a_personal_tenant_is_refused_at_its_cap(limited_role_env, service):
-    organization_id = await _make_org(limited_role_env, personal=True, override=3)
-    set_current_org_id(organization_id)
+async def test_a_capped_subject_is_refused_at_its_cap(limited_role_env, service):
+    subject = await _make_org(limited_role_env, override=3)
+    set_current_enterprise_id(DEFAULT_ENTERPRISE_ID)
 
     for expected in (1, 2, 3):
-        assert (await service.reserve(organization_id)).used == expected
+        assert (await service.reserve(subject)).used == expected
 
     with pytest.raises(TenantTurnCapExceeded) as raised:
-        await service.reserve(organization_id)
+        await service.reserve(subject)
 
     assert raised.value.limit == 3
     assert raised.value.used == 3
@@ -321,32 +339,40 @@ async def test_a_personal_tenant_is_refused_at_its_cap(limited_role_env, service
 
 async def test_a_refused_turn_writes_nothing(limited_role_env, service):
     """Read back as the OWNER, so this cannot be RLS hiding a row."""
-    organization_id = await _make_org(limited_role_env, personal=True, override=1)
-    set_current_org_id(organization_id)
+    subject = await _make_org(limited_role_env, override=1)
+    set_current_enterprise_id(DEFAULT_ENTERPRISE_ID)
 
-    await service.reserve(organization_id)
-    assert await _ledger_as_owner(limited_role_env, organization_id) == 1
+    await service.reserve(subject)
+    assert await _ledger_as_owner(limited_role_env, subject) == 1
 
     for _ in range(4):
         with pytest.raises(TenantTurnCapExceeded):
-            await service.reserve(organization_id)
+            await service.reserve(subject)
 
-    assert await _ledger_as_owner(limited_role_env, organization_id) == 1
+    assert await _ledger_as_owner(limited_role_env, subject) == 1
 
 
-async def test_the_kind_is_read_through_the_sso_port(limited_role_env, service):
-    """A personal organization resolves as personal without a second lookup rule."""
-    from faultmaven.modules.auth.infrastructure.repositories.sso_personal_org_repository import (  # noqa: E501
-        SessionlessSSOPersonalOrgRepository,
-    )
+async def test_the_kind_is_the_subject_itself_and_needs_no_lookup(
+    limited_role_env, service
+):
+    """An ACCOUNT subject is capped; an ORGANIZATION subject is not.
 
-    personal = await _make_org(limited_role_env, personal=True)
-    company = await _make_org(limited_role_env, personal=False)
-    port = SessionlessSSOPersonalOrgRepository()
+    The replacement for the old ``sso_personal_orgs`` question (ADR-017 D5).
+    Asserted against the real resolver and the real repository, and asserted in
+    BOTH directions on the same run: "the account is capped" alone would also
+    hold if the resolver had stopped distinguishing them and capped everything.
+    """
+    account = _make_account()
+    company = await _make_org(limited_role_env)
+    set_current_enterprise_id(DEFAULT_ENTERPRISE_ID)
 
-    set_current_org_id(personal)
-    assert await port.is_personal_organization(personal) is True
-    assert await port.is_personal_organization(company) is False
+    personal_policy = await service._resolver.resolve(account)
+    assert personal_policy.limit == 30
+    assert personal_policy.source == "default_personal"
+
+    company_policy = await service._resolver.resolve(company)
+    assert company_policy.limit is None
+    assert company_policy.source == "company_uncapped"
 
 
 async def test_the_override_is_read_through_the_organization_repository(
@@ -361,8 +387,9 @@ async def test_the_override_is_read_through_the_organization_repository(
         SessionlessOrganizationRepository,
     )
 
-    organization_id = await _make_org(limited_role_env, personal=True, override=7)
-    set_current_org_id(organization_id)
+    subject = await _make_org(limited_role_env, override=7)
+    organization_id = subject.subject_id
+    set_current_enterprise_id(DEFAULT_ENTERPRISE_ID)
     repository = SessionlessOrganizationRepository()
 
     organization = await repository.get_organization(organization_id)
@@ -391,8 +418,8 @@ async def test_a_soft_deleted_organization_does_not_resolve(limited_role_env):
         SessionlessOrganizationRepository,
     )
 
-    organization_id = await _make_org(limited_role_env, personal=True, override=9)
-    set_current_org_id(organization_id)
+    organization_id = (await _make_org(limited_role_env, override=9)).subject_id
+    set_current_enterprise_id(DEFAULT_ENTERPRISE_ID)
     repository = SessionlessOrganizationRepository()
     assert await repository.get_organization(organization_id) is not None
 
@@ -404,35 +431,43 @@ async def test_a_soft_deleted_organization_does_not_resolve(limited_role_env):
     assert await repository.get_organization(organization_id) is None
 
 
-async def test_counting_is_per_organization_and_the_row_is_invisible(
+async def test_counting_is_per_subject_and_another_tenants_row_is_invisible(
     limited_role_env, service
 ):
-    first = await _make_org(limited_role_env, personal=True, override=2)
-    second = await _make_org(limited_role_env, personal=True, override=2)
+    """Two halves, and they are two different guarantees.
 
-    set_current_org_id(first)
+    Per-SUBJECT counting is an application property: two subjects inside ONE
+    enterprise keep separate ledgers, which is what stops a company's two cost
+    centres sharing one allowance. Invisibility is a database property, and it
+    is keyed on the ENTERPRISE — so it is checked against a subject in a
+    different one.
+    """
+    first = await _make_org(limited_role_env, override=2)
+    second = await _make_org(limited_role_env, override=2)
+    set_current_enterprise_id(DEFAULT_ENTERPRISE_ID)
+
     await service.reserve(first)
     await service.reserve(first)
     with pytest.raises(TenantTurnCapExceeded):
         await service.reserve(first)
 
-    set_current_org_id(second)
+    # Same enterprise, different billing subject: its own allowance.
     assert (await service.reserve(second)).used == 1
 
     engine = create_async_engine(_limited_url(limited_role_env), future=True)
     try:
         async with engine.begin() as conn:
             await conn.execute(
-                text("SELECT set_config('app.current_org_id', :o, true)"),
-                {"o": second},
+                text("SELECT set_config('app.current_enterprise_id', :e, true)"),
+                {"e": "ent_somewhere_else"},
             )
             visible = (
                 await conn.execute(
                     text(
-                        "SELECT count(*) FROM organization_turn_usage "
-                        "WHERE organization_id = :o"
+                        "SELECT count(*) FROM turn_usage "
+                        "WHERE billing_subject_id = :i"
                     ),
-                    {"o": first},
+                    {"i": first.subject_id},
                 )
             ).scalar()
             assert visible == 0
@@ -444,47 +479,44 @@ async def test_counting_is_per_organization_and_the_row_is_invisible(
 
 
 async def test_counting_is_per_utc_day(limited_role_env, service):
-    organization_id = await _make_org(limited_role_env, personal=True, override=2)
-    set_current_org_id(organization_id)
+    subject = await _make_org(limited_role_env, override=2)
+    set_current_enterprise_id(DEFAULT_ENTERPRISE_ID)
 
     yesterday = datetime.now(UTC) - timedelta(days=1)
-    await service.reserve(organization_id, now=yesterday)
-    await service.reserve(organization_id, now=yesterday)
+    await service.reserve(subject, now=yesterday)
+    await service.reserve(subject, now=yesterday)
     with pytest.raises(TenantTurnCapExceeded):
-        await service.reserve(organization_id, now=yesterday)
+        await service.reserve(subject, now=yesterday)
 
-    assert (await service.reserve(organization_id)).used == 1
+    assert (await service.reserve(subject)).used == 1
     assert (
-        await _ledger_as_owner(
-            limited_role_env, organization_id, cap.utc_day(yesterday)
-        )
-        == 2
+        await _ledger_as_owner(limited_role_env, subject, cap.utc_day(yesterday)) == 2
     )
-    assert await _ledger_as_owner(limited_role_env, organization_id) == 1
+    assert await _ledger_as_owner(limited_role_env, subject) == 1
 
 
 async def test_a_company_tenant_with_no_override_is_never_refused(
     limited_role_env, service
 ):
-    organization_id = await _make_org(limited_role_env, personal=False)
-    set_current_org_id(organization_id)
+    subject = await _make_org(limited_role_env)
+    set_current_enterprise_id(DEFAULT_ENTERPRISE_ID)
 
     for expected in range(1, 41):
-        reservation = await service.reserve(organization_id)
+        reservation = await service.reserve(subject)
         assert reservation.used == expected
         assert reservation.limit is None
         assert reservation.source == "company_uncapped"
 
-    assert await _ledger_as_owner(limited_role_env, organization_id) == 40
+    assert await _ledger_as_owner(limited_role_env, subject) == 40
 
 
 async def test_an_override_raises_one_tenants_cap_without_a_restart(
     limited_role_env, service
 ):
-    capped = await _make_org(limited_role_env, personal=True, override=1)
-    sibling = await _make_org(limited_role_env, personal=True, override=1)
+    capped = await _make_org(limited_role_env, override=1)
+    sibling = await _make_org(limited_role_env, override=1)
+    set_current_enterprise_id(DEFAULT_ENTERPRISE_ID)
 
-    set_current_org_id(capped)
     await service.reserve(capped)
     with pytest.raises(TenantTurnCapExceeded):
         await service.reserve(capped)
@@ -492,12 +524,11 @@ async def test_an_override_raises_one_tenants_cap_without_a_restart(
     await _as_owner(
         limited_role_env,
         "UPDATE organizations SET daily_turn_cap = 4 WHERE organization_id = :o",
-        o=capped,
+        o=capped.subject_id,
     )
 
     assert (await service.reserve(capped)).used == 2
 
-    set_current_org_id(sibling)
     await service.reserve(sibling)
     with pytest.raises(TenantTurnCapExceeded):
         await service.reserve(sibling)
@@ -506,33 +537,33 @@ async def test_an_override_raises_one_tenants_cap_without_a_restart(
 async def test_clearing_a_tenants_cap_lets_it_past_the_default(
     limited_role_env, service
 ):
-    organization_id = await _make_org(limited_role_env, personal=True, override=2)
-    set_current_org_id(organization_id)
+    subject = await _make_org(limited_role_env, override=2)
+    set_current_enterprise_id(DEFAULT_ENTERPRISE_ID)
 
-    await service.reserve(organization_id)
-    await service.reserve(organization_id)
+    await service.reserve(subject)
+    await service.reserve(subject)
     with pytest.raises(TenantTurnCapExceeded):
-        await service.reserve(organization_id)
+        await service.reserve(subject)
 
     await _as_owner(
         limited_role_env,
         "UPDATE organizations SET daily_turn_cap = 0 WHERE organization_id = :o",
-        o=organization_id,
+        o=subject.subject_id,
     )
 
-    reservation = await service.reserve(organization_id)
+    reservation = await service.reserve(subject)
     assert reservation.limit is None
     assert reservation.source == "override_unlimited"
 
 
 async def test_the_column_refuses_a_negative_cap(limited_role_env):
     """ "Unlimited" has one spelling, and the database keeps it that way."""
-    organization_id = await _make_org(limited_role_env, personal=True)
+    subject = await _make_org(limited_role_env)
     with pytest.raises(Exception) as raised:
         await _as_owner(
             limited_role_env,
             "UPDATE organizations SET daily_turn_cap = -1 WHERE organization_id = :o",
-            o=organization_id,
+            o=subject.subject_id,
         )
     assert "daily_turn_cap" in str(raised.value)
 
@@ -551,12 +582,12 @@ async def test_concurrent_turns_at_the_boundary_admit_exactly_the_limit(
     "five succeeded" alone would also hold if the ledger had been driven to
     twenty by writers whose results were discarded.
     """
-    organization_id = await _make_org(limited_role_env, personal=True, override=5)
-    set_current_org_id(organization_id)
+    subject = await _make_org(limited_role_env, override=5)
+    set_current_enterprise_id(DEFAULT_ENTERPRISE_ID)
 
     async def _attempt():
         try:
-            await service.reserve(organization_id)
+            await service.reserve(subject)
             return "admitted"
         except TenantTurnCapExceeded:
             return "refused"
@@ -565,7 +596,7 @@ async def test_concurrent_turns_at_the_boundary_admit_exactly_the_limit(
 
     assert outcomes.count("admitted") == 5, outcomes
     assert outcomes.count("refused") == 15, outcomes
-    assert await _ledger_as_owner(limited_role_env, organization_id) == 5
+    assert await _ledger_as_owner(limited_role_env, subject) == 5
 
 
 # =============================================================================
@@ -573,52 +604,29 @@ async def test_concurrent_turns_at_the_boundary_admit_exactly_the_limit(
 # =============================================================================
 
 
-async def test_an_unreadable_tenant_kind_is_capped_at_the_default(
-    limited_role_env, service
-):
-    """Fail closed, staged the way a deployment actually meets it.
-
-    ``SELECT`` on ``sso_personal_orgs`` revoked from the application role — a
-    permissions or migration-order mistake — on a **company** organization,
-    which is uncapped when the question is answerable. A pass can therefore only
-    come from the fail-closed branch.
-    """
-    organization_id = await _make_org(limited_role_env, personal=False)
-    set_current_org_id(organization_id)
-
-    await _as_owner(
-        limited_role_env,
-        f"REVOKE SELECT ON sso_personal_orgs FROM {_LIMITED_ROLE}",
-    )
-    try:
-        policy = await service._resolver.resolve(organization_id)
-        assert policy.limit == 30
-        assert policy.source == "indeterminate"
-    finally:
-        await _as_owner(
-            limited_role_env,
-            f"GRANT SELECT ON sso_personal_orgs TO {_LIMITED_ROLE}",
-        )
-
-
 async def test_an_unreadable_override_is_the_default_not_no_override(
     limited_role_env, service
 ):
     """The inversion the review caught, on the real schema.
 
-    ``SELECT`` on ``organizations`` revoked, again on a COMPANY organization:
-    read as "no override" this would resolve **uncapped**, so an override of 50
-    would be silently lifted by a transient permissions fault.
+    ``SELECT`` on ``organizations`` revoked, on an ORGANIZATION subject: read as
+    "no override" this would resolve **uncapped**, so an override of 50 would be
+    silently lifted by a transient permissions fault.
+
+    This is now the ONLY fail-closed branch the resolver has. Its sibling — "the
+    tenant's kind could not be read" — is gone with the table it read: under
+    ADR-017 D5 the kind IS the subject, so there is no lookup left to fail and
+    no branch left to invert.
     """
-    organization_id = await _make_org(limited_role_env, personal=False, override=50)
-    set_current_org_id(organization_id)
+    subject = await _make_org(limited_role_env, override=50)
+    set_current_enterprise_id(DEFAULT_ENTERPRISE_ID)
 
     await _as_owner(
         limited_role_env,
         f"REVOKE SELECT ON organizations FROM {_LIMITED_ROLE}",
     )
     try:
-        policy = await service._resolver.resolve(organization_id)
+        policy = await service._resolver.resolve(subject)
         assert policy.limit == 30
         assert policy.source == "indeterminate"
     finally:
@@ -626,3 +634,26 @@ async def test_an_unreadable_override_is_the_default_not_no_override(
             limited_role_env,
             f"GRANT SELECT ON organizations TO {_LIMITED_ROLE}",
         )
+
+
+async def test_no_billing_subject_is_capped_at_the_default_and_writes_nothing(
+    limited_role_env, service
+):
+    """Fail closed on an actor there is nobody to charge.
+
+    Unreachable through the front door — an authenticated request always has an
+    account — and guarded anyway, because this must not be the place that
+    decides an unidentifiable actor is free. The refusal is
+    ``TenantTurnCapUnavailable`` rather than ``TenantTurnCapExceeded``: telling
+    somebody their daily allowance is spent when there is no allowance to spend
+    would be a false statement about their own account.
+    """
+    from faultmaven.infrastructure.protection.tenant_turn_cap import (
+        TenantTurnCapUnavailable,
+    )
+
+    set_current_enterprise_id(DEFAULT_ENTERPRISE_ID)
+    assert (await service._resolver.resolve(None)).limit == 30
+
+    with pytest.raises(TenantTurnCapUnavailable):
+        await service.reserve(None)

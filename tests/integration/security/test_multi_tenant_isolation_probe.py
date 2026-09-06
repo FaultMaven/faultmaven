@@ -2,10 +2,10 @@
 
 Multi-tenant isolation in FaultMaven is a three-link chain:
 
-1. a token is minted carrying an ``organization_id`` claim;
-2. ``bind_request_org_context`` — a FastAPI **global dependency**, so it runs for
+1. a token is minted carrying an ``enterprise_id`` claim;
+2. ``bind_request_enterprise_context`` — a FastAPI **global dependency**, so it runs for
    every route — verifies that token and binds the claim to the tenant contextvar;
-3. the engine ``begin`` listener applies that contextvar as ``app.current_org_id``,
+3. the engine ``begin`` listener applies that contextvar as ``app.current_enterprise_id``,
    and the PostgreSQL RLS policies (migration 018) scope reads to it.
 
 Link 3 is exercised adversarially by ``tests/integration/test_rls_tenant_isolation.py``,
@@ -32,12 +32,12 @@ Shown to fail against a broken boundary
 ---------------------------------------
 A probe that has only ever been green is indistinguishable from one that asserts
 nothing, so each guard here was checked against a deliberate break of the code it
-watches (``bind_request_org_context``, reverted after each run):
+watches (``bind_request_enterprise_context``, reverted after each run):
 
 ======================================================  ====================================
 Mutation                                                Caught by
 ======================================================  ====================================
-honour a caller-supplied ``X-Organization-Id``          the two Attack-2 cases
+honour a caller-supplied ``X-Enterprise-Id``          the two Attack-2 cases
 skip the revocation check on a verified token           ``test_a_revoked_token_binds_no_tenant``
 fall through to the Standalone org instead of 403-ing   the three Attack-3 cases
 bind the claim without verifying the signature          eight of the nine Attack-1 cases
@@ -79,9 +79,12 @@ from fastapi import Depends, FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from faultmaven.api.middleware.auth import get_auth_service
-from faultmaven.api.middleware.tenant_scope import bind_request_org_context
-from faultmaven.config.constants import STANDALONE_ORG_ID
-from faultmaven.config.tenant_context import get_current_org_id, set_current_org_id
+from faultmaven.api.middleware.tenant_scope import bind_request_enterprise_context
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.config.tenant_context import (
+    get_current_enterprise_id,
+    set_current_enterprise_id,
+)
 from faultmaven.modules.auth.domain.services.auth_service import AuthService
 from faultmaven.providers.tenancy import factory as tenancy_factory
 from faultmaven.providers.tenancy.factory import BUILTIN_MULTI
@@ -178,14 +181,14 @@ def multi_tenant(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _reset_org_context():
-    set_current_org_id(STANDALONE_ORG_ID)
+    set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
     yield
-    set_current_org_id(STANDALONE_ORG_ID)
+    set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
 
 
 def _mint(
     *,
-    organization_id: str | None = ORG_A,
+    enterprise_id: str | None = ORG_A,
     user_id: str = USER_A,
     secret: str = SECRET,
     token_type: str = "access",
@@ -213,12 +216,12 @@ def _mint(
         "iat": now,
         "iss": issuer,
         "aud": audience,
-        "jti": f"jti-{user_id}-{organization_id}-{now.timestamp()}",
+        "jti": f"jti-{user_id}-{enterprise_id}-{now.timestamp()}",
         "type": token_type,
         "auth_mode": "local",
     }
-    if organization_id is not None:
-        payload["organization_id"] = organization_id
+    if enterprise_id is not None:
+        payload["enterprise_id"] = enterprise_id
     return jwt.encode(payload, secret, algorithm="HS256")
 
 
@@ -229,23 +232,23 @@ def _probe_app(auth_service) -> FastAPI:
     a separate task, so a contextvar it set would not reach the endpoint. The
     real app's registration is asserted separately, below.
     """
-    app = FastAPI(dependencies=[Depends(bind_request_org_context)])
+    app = FastAPI(dependencies=[Depends(bind_request_enterprise_context)])
 
     @app.get("/probe")
     async def probe():
         """Report the tenant this request was bound to — the thing under attack."""
-        return {"org": get_current_org_id()}
+        return {"org": get_current_enterprise_id()}
 
     @app.post("/probe")
     async def probe_post(body: dict | None = None):
-        return {"org": get_current_org_id()}
+        return {"org": get_current_enterprise_id()}
 
     @app.get("/probe-slow")
     async def probe_slow():
         # Long enough for other requests' binders to run in between this
         # request's binder and its read.
         await asyncio.sleep(0.05)
-        return {"org": get_current_org_id()}
+        return {"org": get_current_enterprise_id()}
 
     app.dependency_overrides[get_auth_service] = lambda: auth_service
     return app
@@ -268,7 +271,7 @@ async def _bound_org(client, token: str | None = None, **kwargs) -> tuple[int, s
 
 
 # =============================================================================
-# Attack 1 — forge the organization claim
+# Attack 1 — forge the enterprise claim
 # =============================================================================
 #
 # The claim is the whole boundary: whatever it says, the request reads. So the
@@ -277,7 +280,7 @@ async def _bound_org(client, token: str | None = None, **kwargs) -> tuple[int, s
 # assertion is what proves the attack failed rather than landing somewhere else.
 
 
-def _alg_none(organization_id: str) -> str:
+def _alg_none(enterprise_id: str) -> str:
     """The classic: declare ``alg: none`` and omit the signature entirely.
 
     Assembled by hand because a JWT library will not emit this without being
@@ -294,7 +297,7 @@ def _alg_none(organization_id: str) -> str:
     payload = seg(
         {
             "sub": USER_A,
-            "organization_id": organization_id,
+            "enterprise_id": enterprise_id,
             "roles": ["user"],
             "exp": int((now + timedelta(minutes=15)).timestamp()),
             "iat": int(now.timestamp()),
@@ -307,19 +310,19 @@ def _alg_none(organization_id: str) -> str:
     return f"{header}.{payload}."
 
 
-def _spliced_payload(organization_id: str) -> str:
+def _spliced_payload(enterprise_id: str) -> str:
     """Keep a genuine token's header and signature; swap the payload for ORG_B.
 
     What an attacker with a valid token of their own actually does first, and
     the reason signature verification must cover the payload rather than a
     digest computed after decoding.
     """
-    genuine = _mint(organization_id=ORG_A)
+    genuine = _mint(enterprise_id=ORG_A)
     header, _payload, signature = genuine.split(".")
     claims = jwt.decode(
         genuine, SECRET, algorithms=["HS256"], audience=AUDIENCE, issuer=ISSUER
     )
-    claims["organization_id"] = organization_id
+    claims["enterprise_id"] = enterprise_id
     raw = json.dumps(claims, separators=(",", ":"), default=str).encode()
     forged = base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
     return f"{header}.{forged}.{signature}"
@@ -329,24 +332,24 @@ FORGERIES = [
     pytest.param(lambda: _alg_none(ORG_B), id="alg-none"),
     pytest.param(lambda: _spliced_payload(ORG_B), id="payload-spliced"),
     pytest.param(
-        lambda: _mint(organization_id=ORG_B, secret=WRONG_SECRET),
+        lambda: _mint(enterprise_id=ORG_B, secret=WRONG_SECRET),
         id="signed-with-wrong-key",
     ),
     pytest.param(
-        lambda: _mint(organization_id=ORG_B, token_type="refresh"),
+        lambda: _mint(enterprise_id=ORG_B, token_type="refresh"),
         id="refresh-token-as-access",
     ),
     pytest.param(
-        lambda: _mint(organization_id=ORG_B, issuer="some-other-deployment"),
+        lambda: _mint(enterprise_id=ORG_B, issuer="some-other-deployment"),
         id="wrong-issuer",
     ),
     pytest.param(
-        lambda: _mint(organization_id=ORG_B, audience="some-other-audience"),
+        lambda: _mint(enterprise_id=ORG_B, audience="some-other-audience"),
         id="wrong-audience",
     ),
     pytest.param(
         lambda: _mint(
-            organization_id=ORG_B,
+            enterprise_id=ORG_B,
             issued_at=datetime.now(timezone.utc) - timedelta(hours=2),
             expires_in=timedelta(minutes=15),
         ),
@@ -362,7 +365,7 @@ async def test_a_forged_org_claim_binds_no_tenant(client, forge):
     """No forgery may put the request inside ORG_B — or inside anything.
 
     The second half matters as much as the first: an attack that bound some
-    other real organization would still be a cross-tenant breach, so this
+    other real enterprise would still be a cross-tenant breach, so this
     asserts the exact sentinel rather than merely `!= ORG_B`.
     """
     status, org = await _bound_org(client, forge())
@@ -382,14 +385,14 @@ async def test_a_forged_org_claim_binds_no_tenant(client, forge):
 
 async def test_a_genuine_token_still_binds_its_own_org(client):
     """The control. Without it every assertion above passes on a broken binder."""
-    status, org = await _bound_org(client, _mint(organization_id=ORG_A))
+    status, org = await _bound_org(client, _mint(enterprise_id=ORG_A))
 
     assert status == 200
     assert org == ORG_A
 
 
 # =============================================================================
-# Attack 2 — supply the organization out-of-band
+# Attack 2 — supply the enterprise out-of-band
 # =============================================================================
 #
 # If the claim cannot be forged, the next move is to get the app to read the org
@@ -399,13 +402,11 @@ async def test_a_genuine_token_still_binds_its_own_org(client):
 
 
 ORG_INJECTION_SURFACES = [
-    pytest.param(
-        {"headers": {"X-Organization-Id": ORG_B}}, id="header-x-organization-id"
-    ),
+    pytest.param({"headers": {"X-Enterprise-Id": ORG_B}}, id="header-x-enterprise-id"),
     pytest.param({"headers": {"X-Org-Id": ORG_B}}, id="header-x-org-id"),
     pytest.param({"headers": {"X-Tenant-Id": ORG_B}}, id="header-x-tenant-id"),
-    pytest.param({"headers": {"Organization": ORG_B}}, id="header-organization"),
-    pytest.param({"params": {"organization_id": ORG_B}}, id="query-organization-id"),
+    pytest.param({"headers": {"Enterprise": ORG_B}}, id="header-enterprise"),
+    pytest.param({"params": {"enterprise_id": ORG_B}}, id="query-enterprise-id"),
     pytest.param({"params": {"org_id": ORG_B}}, id="query-org-id"),
     pytest.param({"params": {"tenant": ORG_B}}, id="query-tenant"),
 ]
@@ -413,20 +414,20 @@ ORG_INJECTION_SURFACES = [
 
 @pytest.mark.parametrize("surface", ORG_INJECTION_SURFACES)
 async def test_an_out_of_band_org_never_overrides_the_claim(client, surface):
-    """A caller-supplied organization must not reach the tenant binding.
+    """A caller-supplied enterprise must not reach the tenant binding.
 
     Asserting a negative on purpose. The binder reads exactly one thing — the
-    verified ``organization_id`` claim — and this is the guard against that
+    verified ``enterprise_id`` claim — and this is the guard against that
     quietly gaining a second input. ``test_standalone_isolation_guard.py``
     forbids header-sourced tenancy in the core by source scan; this is its
     behavioural counterpart on the multi-tenant arm, where an injected org would
     name a *real* other tenant rather than being ignored by construction.
     """
-    status, org = await _bound_org(client, _mint(organization_id=ORG_A), **surface)
+    status, org = await _bound_org(client, _mint(enterprise_id=ORG_A), **surface)
 
     assert status == 200
     assert org == ORG_A, (
-        f"a caller-supplied organization moved the binding to {org!r}; the "
+        f"a caller-supplied enterprise moved the binding to {org!r}; the "
         "verified claim must be the only input"
     )
 
@@ -438,7 +439,7 @@ async def test_an_injected_org_cannot_rescue_an_unauthenticated_request(client):
     surface that only fills in a missing org would read as harmless while
     handing an anonymous caller a tenant.
     """
-    status, org = await _bound_org(client, None, headers={"X-Organization-Id": ORG_B})
+    status, org = await _bound_org(client, None, headers={"X-Enterprise-Id": ORG_B})
 
     assert status == 200
     assert org == UNSCOPED
@@ -456,10 +457,11 @@ async def test_an_injected_org_cannot_rescue_an_unauthenticated_request(client):
 
 
 ORGLESS_TOKENS = [
-    pytest.param(lambda: _mint(organization_id=None), id="claim-absent"),
-    pytest.param(lambda: _mint(organization_id=""), id="claim-empty"),
+    pytest.param(lambda: _mint(enterprise_id=None), id="claim-absent"),
+    pytest.param(lambda: _mint(enterprise_id=""), id="claim-empty"),
     pytest.param(
-        lambda: _mint(organization_id=STANDALONE_ORG_ID), id="claim-standalone-sentinel"
+        lambda: _mint(enterprise_id=STANDALONE_ENTERPRISE_ID),
+        id="claim-standalone-sentinel",
     ),
 ]
 
@@ -496,15 +498,15 @@ async def test_a_verified_user_without_a_usable_tenant_is_refused(client, mint):
 
 
 async def test_a_revoked_token_binds_no_tenant(client, revocation_store):
-    """ "Removed from the organization" has to mean "outstanding tokens die".
+    """ "Removed from the enterprise" has to mean "outstanding tokens die".
 
     Membership and role are verified at login only — nothing on the request path
-    re-reads ``organization_members`` — so the watermark is the only mechanism
+    re-reads ``enterprise_members`` — so the watermark is the only mechanism
     that ends a live session. If a revoked token still bound its org, the paired
     write (#874 removal, #1042 role change) would be doing bookkeeping and
     nothing else.
     """
-    token = _mint(organization_id=ORG_A)
+    token = _mint(enterprise_id=ORG_A)
     claims = jwt.decode(
         token, SECRET, algorithms=["HS256"], audience=AUDIENCE, issuer=ISSUER
     )
@@ -521,7 +523,7 @@ async def test_a_revoked_token_binds_no_tenant(client, revocation_store):
     assert org == UNSCOPED, (
         f"a revoked token still bound {org!r}; the revocation watermark does "
         "not reach the tenant binding, so a removed or demoted member keeps "
-        "acting inside the organization"
+        "acting inside the enterprise"
     )
 
 
@@ -537,7 +539,7 @@ async def test_revocation_is_scoped_to_the_revoked_user(client, revocation_store
     )
 
     status, org = await _bound_org(
-        client, _mint(organization_id=ORG_B, user_id="some-other-user")
+        client, _mint(enterprise_id=ORG_B, user_id="some-other-user")
     )
 
     assert status == 200
@@ -558,7 +560,12 @@ async def test_many_interleaved_tenants_do_not_bleed(auth_service):
     binder runs while others are mid-flight, so a shared context would show up
     as a wrong org rather than as a flaky ordering.
     """
-    orgs = [ORG_A, ORG_B, "cccccccc-cccc-cccc-cccc-cccccccccccc", STANDALONE_ORG_ID]
+    orgs = [
+        ORG_A,
+        ORG_B,
+        "cccccccc-cccc-cccc-cccc-cccccccccccc",
+        STANDALONE_ENTERPRISE_ID,
+    ]
     # The Standalone id is included on purpose: under multi it is refused, and a
     # refusal running alongside successes is the interleaving most likely to
     # leave a stale binding behind for whoever runs next.
@@ -570,7 +577,7 @@ async def test_many_interleaved_tenants_do_not_bleed(auth_service):
     ) as client:
 
         async def one(org: str, i: int):
-            token = _mint(organization_id=org, user_id=f"user-{org}-{i}")
+            token = _mint(enterprise_id=org, user_id=f"user-{org}-{i}")
             response = await client.get(
                 "/probe-slow", headers={"Authorization": f"Bearer {token}"}
             )
@@ -579,7 +586,7 @@ async def test_many_interleaved_tenants_do_not_bleed(auth_service):
         results = await asyncio.gather(*(one(org, i) for org, i in plan))
 
     for org, response in results:
-        if org == STANDALONE_ORG_ID:
+        if org == STANDALONE_ENTERPRISE_ID:
             assert response.status_code == 403
             continue
         assert response.status_code == 200
@@ -627,8 +634,8 @@ def test_the_real_app_binds_every_route():
         getattr(dependency.dependency, "__name__", None)
         for dependency in app.router.dependencies
     ]
-    assert bind_request_org_context.__name__ in registered, (
-        "the real app does not register bind_request_org_context as a global "
+    assert bind_request_enterprise_context.__name__ in registered, (
+        "the real app does not register bind_request_enterprise_context as a global "
         "dependency, so no route binds a tenant"
     )
 
