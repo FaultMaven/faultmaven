@@ -53,6 +53,19 @@ class TestRedactUrls:
         text = "Investigation note: did the disk fill? /var/lib is at 100%"
         assert redact_urls(text) == text
 
+    def test_prose_around_a_url_keeps_its_question_marks(self):
+        """This is the case that pins the anchor, and the earlier one is not.
+
+        A value with no "://" never reaches the pattern — the fast path
+        returns it — so the plain-prose test above passes even with the anchor
+        removed. Only a value carrying BOTH a URL and a question mark tells
+        the two apart: unanchored, the "fail?" below is eaten too.
+        """
+        assert (
+            redact_urls("did https://x.com/a?b=c fail? check the pod")
+            == "did https://x.com/a?<redacted> fail? check the pod"
+        )
+
     def test_a_url_with_no_query_is_untouched(self):
         assert redact_urls("GET https://x.com/a/b") == "GET https://x.com/a/b"
 
