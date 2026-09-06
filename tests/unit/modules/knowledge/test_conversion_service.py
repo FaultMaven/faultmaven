@@ -359,6 +359,7 @@ class TestConvertDocumentPipeline:
                     original_filename="test_document.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
         # Assert
@@ -400,6 +401,7 @@ class TestConvertDocumentPipeline:
                     original_filename="test_document.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
         # 1 analysis call + 1 conversion call
@@ -513,6 +515,7 @@ class TestMultiRunbookSplitting:
                     original_filename="test_document.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
         assert result.status == ConversionStatus.COMPLETED
@@ -553,6 +556,7 @@ class TestContentTriageRejection:
                     original_filename="architecture_overview.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
 
@@ -583,6 +587,7 @@ class TestTokenLimitRejection:
                     original_filename="huge_document.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
     @pytest.mark.asyncio
@@ -657,6 +662,7 @@ class TestPIIRedaction:
                     original_filename="test.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
         # The text sent to analysis LLM must contain the redaction placeholder
@@ -807,6 +813,7 @@ class TestPartialFailure:
                     original_filename="test_document.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
         assert result.status == ConversionStatus.PARTIAL
@@ -848,6 +855,7 @@ class TestPartialFailure:
                     original_filename="test_document.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
         assert result.status == ConversionStatus.FAILED
@@ -917,6 +925,7 @@ class TestDeduplication:
                     original_filename="test_document.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
         # Only 1 draft because duplicates removed
@@ -978,6 +987,7 @@ class TestDeduplication:
                     original_filename="test_document.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
         # Sorted symptom_class tuples match, so deduplicated to 1
@@ -1024,6 +1034,7 @@ class TestConversionRejectedError:
                     original_filename="architecture_overview.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
     @pytest.mark.asyncio
@@ -1053,6 +1064,7 @@ class TestConversionRejectedError:
                     original_filename="some_doc.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
     @pytest.mark.asyncio
@@ -1079,6 +1091,7 @@ class TestConversionRejectedError:
                     original_filename="binary.bin",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
 
@@ -1122,6 +1135,7 @@ class TestPersistenceSkipped:
                     original_filename="test.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
         # Should complete without DB errors
@@ -1163,6 +1177,7 @@ class TestSourceFileRetention:
                     original_filename="test_document.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
         # Source metadata should be captured (files not retained on disk per architecture)
@@ -1367,8 +1382,8 @@ class TestConvertFromCaseDedup:
 
         with patch.object(service, "_convert_from_case_impl", side_effect=slow_impl):
             results = await asyncio.gather(
-                service.convert_from_case(request, user_id="u1"),
-                service.convert_from_case(request, user_id="u1"),
+                service.convert_from_case(request, user_id="u1", enterprise_id=None),
+                service.convert_from_case(request, user_id="u1", enterprise_id=None),
             )
 
         assert call_count == 1, "Impl should run once when two callers race"
@@ -1389,8 +1404,12 @@ class TestConvertFromCaseDedup:
             return _make_fake_response(conversion_id=f"conv_seq_{call_count}")
 
         with patch.object(service, "_convert_from_case_impl", side_effect=fast_impl):
-            first = await service.convert_from_case(request, user_id="u1")
-            second = await service.convert_from_case(request, user_id="u1")
+            first = await service.convert_from_case(
+                request, user_id="u1", enterprise_id=None
+            )
+            second = await service.convert_from_case(
+                request, user_id="u1", enterprise_id=None
+            )
 
         assert call_count == 2, "Sequential calls should each run impl"
         assert first.conversion_id == "conv_seq_1"
@@ -1406,7 +1425,7 @@ class TestConvertFromCaseDedup:
             return _make_fake_response()
 
         with patch.object(service, "_convert_from_case_impl", side_effect=fast_impl):
-            await service.convert_from_case(request, user_id="u1")
+            await service.convert_from_case(request, user_id="u1", enterprise_id=None)
 
         assert request.case_id not in service._inflight_runbook
 
@@ -1421,7 +1440,9 @@ class TestConvertFromCaseDedup:
 
         with patch.object(service, "_convert_from_case_impl", side_effect=failing_impl):
             with pytest.raises(RuntimeError, match="boom"):
-                await service.convert_from_case(request, user_id="u1")
+                await service.convert_from_case(
+                    request, user_id="u1", enterprise_id=None
+                )
 
         assert request.case_id not in service._inflight_runbook
 
@@ -1442,8 +1463,8 @@ class TestConvertFromCaseDedup:
 
         with patch.object(service, "_convert_from_case_impl", side_effect=slow_impl):
             results = await asyncio.gather(
-                service.convert_from_case(req_a, user_id="u1"),
-                service.convert_from_case(req_b, user_id="u1"),
+                service.convert_from_case(req_a, user_id="u1", enterprise_id=None),
+                service.convert_from_case(req_b, user_id="u1", enterprise_id=None),
             )
 
         assert call_count == 2, "Different cases must each run impl"
@@ -1561,7 +1582,7 @@ class TestCaseConversionGuards:
     async def test_missing_root_cause_rejected(self, service):
         with pytest.raises(ConversionRejectedError) as ei:
             await service._convert_from_case_impl(
-                self._request(root_cause=None), user_id="u1"
+                self._request(root_cause=None), user_id="u1", enterprise_id=None
             )
         assert ei.value.error_code == ConversionErrorCode.MISSING_ROOT_CAUSE
 
@@ -1569,7 +1590,7 @@ class TestCaseConversionGuards:
     async def test_blank_root_cause_rejected(self, service):
         with pytest.raises(ConversionRejectedError) as ei:
             await service._convert_from_case_impl(
-                self._request(root_cause="   "), user_id="u1"
+                self._request(root_cause="   "), user_id="u1", enterprise_id=None
             )
         assert ei.value.error_code == ConversionErrorCode.MISSING_ROOT_CAUSE
 
@@ -1579,7 +1600,9 @@ class TestCaseConversionGuards:
             return_value=self._existing(DraftStatus.DRAFT)
         )
         with pytest.raises(ConversionRejectedError) as ei:
-            await service._convert_from_case_impl(self._request(), user_id="u1")
+            await service._convert_from_case_impl(
+                self._request(), user_id="u1", enterprise_id=None
+            )
         assert ei.value.error_code == ConversionErrorCode.CASE_RUNBOOK_EXISTS
 
     @pytest.mark.asyncio
@@ -1588,7 +1611,9 @@ class TestCaseConversionGuards:
             return_value=self._existing(DraftStatus.VERIFIED)
         )
         with pytest.raises(ConversionRejectedError) as ei:
-            await service._convert_from_case_impl(self._request(), user_id="u1")
+            await service._convert_from_case_impl(
+                self._request(), user_id="u1", enterprise_id=None
+            )
         assert ei.value.error_code == ConversionErrorCode.CASE_RUNBOOK_EXISTS
 
     @pytest.mark.asyncio
@@ -1602,7 +1627,9 @@ class TestCaseConversionGuards:
             side_effect=RuntimeError("reached generation")
         )
         with pytest.raises(RuntimeError, match="reached generation"):
-            await service._convert_from_case_impl(self._request(), user_id="u1")
+            await service._convert_from_case_impl(
+                self._request(), user_id="u1", enterprise_id=None
+            )
 
     @pytest.mark.asyncio
     async def test_no_prior_conversion_allows_generation(self, service):
@@ -1612,7 +1639,9 @@ class TestCaseConversionGuards:
             side_effect=RuntimeError("reached generation")
         )
         with pytest.raises(RuntimeError, match="reached generation"):
-            await service._convert_from_case_impl(self._request(), user_id="u1")
+            await service._convert_from_case_impl(
+                self._request(), user_id="u1", enterprise_id=None
+            )
 
 
 # =============================================================================
@@ -2011,8 +2040,12 @@ class TestCrossReplicaLiveCaseRace:
         winner = _stubbed_service()
         loser = _stubbed_service()
 
-        resp_winner = await winner.convert_from_case(request, user_id="u1")
-        resp_loser = await loser.convert_from_case(request, user_id="u1")
+        resp_winner = await winner.convert_from_case(
+            request, user_id="u1", enterprise_id=None
+        )
+        resp_loser = await loser.convert_from_case(
+            request, user_id="u1", enterprise_id=None
+        )
 
         # The loser does NOT raise; it returns the winner's conversion.
         assert resp_loser.conversion_id == resp_winner.conversion_id
@@ -2042,7 +2075,7 @@ class TestRegenerationAfterDiscard:
             return svc
 
         svc = _stubbed_service()
-        first = await svc.convert_from_case(request, user_id="u1")
+        first = await svc.convert_from_case(request, user_id="u1", enterprise_id=None)
         job = await _job_row(live_case_session_factory, first.conversion_id)
         assert job.live_case_id == "case-regen"
 
@@ -2052,7 +2085,7 @@ class TestRegenerationAfterDiscard:
         assert await _count_live_case_keys(live_case_session_factory) == 0
 
         # Second conversion succeeds (no unique violation) and now holds the key.
-        second = await svc.convert_from_case(request, user_id="u1")
+        second = await svc.convert_from_case(request, user_id="u1", enterprise_id=None)
         assert second.conversion_id != first.conversion_id
         assert second.status == ConversionStatus.COMPLETED
         new_job = await _job_row(live_case_session_factory, second.conversion_id)
@@ -2324,6 +2357,7 @@ class TestSymptomClassProducePath:
                 filename="case-derived",
                 conversion_id="conv_test",
                 user_id="user-123",
+                enterprise_id=None,
             )
 
         # The prompt sent to the model must not smuggle an off-vocab placeholder.
@@ -2370,7 +2404,9 @@ class TestSymptomClassProducePath:
             )
         )
         with patch.object(service, "_convert_single_failure_mode", capture):
-            await service._convert_from_case_impl(request, user_id="user-1")
+            await service._convert_from_case_impl(
+                request, user_id="user-1", enterprise_id=None
+            )
 
         built = capture.await_args.kwargs["failure_mode"]
         assert built.symptom_class == []
@@ -2402,7 +2438,9 @@ class TestSymptomClassProducePath:
             )
         )
         with patch.object(service, "_convert_single_failure_mode", capture):
-            await service._convert_from_case_impl(request, user_id="user-1")
+            await service._convert_from_case_impl(
+                request, user_id="user-1", enterprise_id=None
+            )
 
         assert capture.await_args.kwargs["failure_mode"].symptom_class == ["timeout"]
 
@@ -2476,6 +2514,7 @@ class TestTruncatedRunbookIsNeverPersisted:
                     original_filename="test_document.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
         assert result.drafts == []
@@ -2522,6 +2561,7 @@ class TestTruncatedRunbookIsNeverPersisted:
                     original_filename="test_document.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
         assert result.status == ConversionStatus.COMPLETED
@@ -2560,6 +2600,7 @@ class TestTruncatedRunbookIsNeverPersisted:
                         original_filename="test_document.md",
                         scope="global",
                         user_id="user-123",
+                        enterprise_id=None,
                     )
 
         assert "truncated" in str(exc.value).lower()

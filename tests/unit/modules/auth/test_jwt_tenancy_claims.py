@@ -119,10 +119,12 @@ def _devuser_from_user_store():
             "is_active",
             "roles",
             "account_kind",
+            "service_channel",
             "enterprise_id",
         ]
     )
     repo_user.enterprise_id = None
+    repo_user.service_channel = None
     repo_user.user_id = "user-1"
     repo_user.username = "sso-user"
     repo_user.email = "sso-user@example.com"

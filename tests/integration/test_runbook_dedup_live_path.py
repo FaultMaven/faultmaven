@@ -34,6 +34,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KB_COLLECTION,
     KnowledgeVectorStore,
@@ -50,6 +51,15 @@ pytestmark = [pytest.mark.integration]
 
 _DIM = 8
 _TOY_EMBEDDING = [0.1] * _DIM
+
+#: The ISOLATION key each published row is stamped with (ADR-017 D1). Required
+#: on every tier including global, where it is the standalone enterprise the
+#: global-write policy arm compares against (D8).
+_ENTERPRISE_ID = STANDALONE_ENTERPRISE_ID
+
+#: A billing organization (ADR-017 D2). Only the third test passes one, and
+#: only to show it is DROPPED on a global write.
+_BILLING_ORG_ID = "org-ignored-for-global"
 
 _RUNBOOK_MD = """# Runbook: Connection pool exhaustion
 
@@ -161,7 +171,7 @@ async def test_a_published_runbook_is_found_by_dedup_and_only_within_its_scope(
             document_id="kb-pool-exhaustion",
             title="Runbook: Connection pool exhaustion",
             content=_RUNBOOK_MD,
-            organization_id="org-1",
+            enterprise_id=_ENTERPRISE_ID,
             document_type="runbook",
             tags=["postgresql", "database"],
             scope="personal",
@@ -270,7 +280,7 @@ async def test_the_dedup_reader_binds_the_writers_collection_not_the_settings_on
                 document_id="kb-split-check",
                 title="Runbook: OOMKilled pods after deploy",
                 content="# Runbook: OOMKilled pods after deploy\n\nRaise the limit.",
-                organization_id="org-1",
+                enterprise_id=_ENTERPRISE_ID,
                 document_type="runbook",
                 scope="global",
             )
@@ -317,7 +327,12 @@ async def test_a_pack_published_global_runbook_is_found_by_every_principal(
         document_id="kb-shipped",
         title="Runbook: OOMKilled pods after deploy",
         content="# Runbook: OOMKilled pods after deploy\n\nRaise the limit.",
-        organization_id="org-ignored-for-global",
+        enterprise_id=_ENTERPRISE_ID,
+        # Named for what happens to it: a GLOBAL row is the organization-free
+        # platform tier, so this billing organization is forced to NULL
+        # (``knowledge_items_global_org_check``). The ENTERPRISE above is kept
+        # — it is NOT NULL for every tier (ADR-017 D1).
+        organization_id=_BILLING_ORG_ID,
         document_type="runbook",
         scope="global",
         prechunked=[

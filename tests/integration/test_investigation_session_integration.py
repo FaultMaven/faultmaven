@@ -36,7 +36,7 @@ from tests.utils import (
     generate_case_id,
     generate_session_id,
     install_org_autoseed,
-    seed_organizations,
+    seed_enterprises,
     seed_users,
 )
 
@@ -86,22 +86,25 @@ async def test_engine(in_memory_database_url):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    # Pre-seed every hardcoded org_id used across the file so the case
-    # repository's raw-SQL writes find their FK target. The ORM autoseed
-    # hook only fires for ORM flushes; raw INSERTs need orgs in place
-    # before the cursor executes.
+    # Pre-seed every hardcoded enterprise_id used across the file so the case
+    # repository's raw-SQL writes find their FK target. ``cases.enterprise_id``
+    # is the NOT NULL isolation key (ADR-017 D1); the nullable
+    # ``organization_id`` beside it is billing attribution these tests never
+    # set, so no organization row is needed. The ORM autoseed hook only fires
+    # for ORM flushes; raw INSERTs need the parents in place before the cursor
+    # executes.
     seed_factory = async_sessionmaker(
         engine, class_=AsyncSession, expire_on_commit=False
     )
     async with seed_factory() as seed_session:
-        await seed_organizations(
+        await seed_enterprises(
             seed_session,
             [
-                "integration-test-org",
-                "cascade-test-org",
-                "test-org",
-                "different-org",
-                "order-test-org",
+                "integration-test-enterprise",
+                "cascade-test-enterprise",
+                "test-enterprise",
+                "different-enterprise",
+                "order-test-enterprise",
             ],
         )
         await seed_users(
@@ -156,14 +159,14 @@ async def session_repository(test_session) -> DatabaseInvestigationSessionReposi
 async def sample_case(case_repository: SQLiteCaseRepository) -> Case:
     """Create a sample case for testing sessions.
 
-    The parent ``integration-test-org`` is pre-seeded by the
+    The parent ``integration-test-enterprise`` is pre-seeded by the
     ``test_engine`` fixture above, so this raw-SQL case write satisfies
     the FK without explicit per-test seeding.
     """
     case = Case(
         case_id=generate_case_id(),
         user_id="integration-test-user",
-        enterprise_id="integration-test-org",
+        enterprise_id="integration-test-enterprise",
         title="Investigation Session Integration Test Case",
         description="Testing investigation session management",
         state=CaseState.INVESTIGATING,
@@ -179,7 +182,7 @@ async def sample_case(case_repository: SQLiteCaseRepository) -> Case:
 def create_sample_session(
     case_id: str,
     user_id: str = "integration-test-user",
-    organization_id: str = "integration-test-org",
+    enterprise_id: str = "integration-test-enterprise",
     state: SessionState = SessionState.ACTIVE,
     session_goal: str = None,
     token_budget_limit: int = None,
@@ -189,7 +192,7 @@ def create_sample_session(
         session_id=generate_session_id(),
         case_id=case_id,
         user_id=user_id,
-        enterprise_id=organization_id,
+        enterprise_id=enterprise_id,
         state=state,
         session_goal=session_goal,
         token_budget_limit=token_budget_limit,
@@ -303,7 +306,7 @@ async def test_cascade_delete_case_to_sessions(
     case = Case(
         case_id=generate_case_id(),
         user_id="cascade-test-user",
-        enterprise_id="cascade-test-org",
+        enterprise_id="cascade-test-enterprise",
         title="CASCADE Delete Test Case",
         description="Testing CASCADE delete",
         state=CaseState.INVESTIGATING,
@@ -428,7 +431,7 @@ async def test_list_sessions_by_user_pagination(
         case = Case(
             case_id=generate_case_id(),
             user_id=user_id,
-            enterprise_id="test-org",
+            enterprise_id="test-enterprise",
             title=f"Pagination Test Case {i}",
             description="Testing pagination",
             state=CaseState.INVESTIGATING,
@@ -644,7 +647,7 @@ async def test_create_duplicate_session_fails(
         session_id=session.session_id,  # Same ID
         case_id=sample_case.case_id,
         user_id="different-user",
-        enterprise_id="different-org",
+        enterprise_id="different-enterprise",
     )
 
     with pytest.raises(ValueError, match="already exists"):
@@ -740,7 +743,7 @@ async def test_session_ordering_by_started_at(
             session_id=generate_session_id(),
             case_id=sample_case.case_id,
             user_id="order-test-user",
-            enterprise_id="order-test-org",
+            enterprise_id="order-test-enterprise",
             started_at=started_at,
         )
         await session_repository.create(session)

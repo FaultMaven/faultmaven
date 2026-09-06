@@ -25,13 +25,30 @@ def _store() -> RedisUserStore:
 
 
 async def test_created_user_is_not_an_admin():
-    created = await _store().create_user(username="slack-agent", account_kind="slack")
+    created = await _store().create_user(
+        username="slack-agent", account_kind="service", service_channel="slack"
+    )
 
     assert created.roles == ["user"]
     assert "admin" not in created.roles
 
 
-async def test_account_kind_is_recorded():
-    created = await _store().create_user(username="slack-agent", account_kind="slack")
+async def test_the_kind_and_the_channel_are_recorded():
+    """Both, because they answer different questions (ADR-017 D6): the kind
+    says a human or an agent, the channel says which integration — and only the
+    channel decides the derived ``cases.source``."""
+    created = await _store().create_user(
+        username="slack-agent", account_kind="service", service_channel="slack"
+    )
 
-    assert created.account_kind == "slack"
+    assert created.account_kind == "service"
+    assert created.service_channel == "slack"
+
+
+async def test_a_human_serves_no_channel():
+    """The default, and the direction that matters: a human whose channel came
+    back 'slack' would have every case they open stamped as a Slack case."""
+    created = await _store().create_user(username="alice")
+
+    assert created.account_kind == "individual"
+    assert created.service_channel is None

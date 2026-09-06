@@ -101,7 +101,7 @@ class TestSQLiteCaseRepository:
         test_case = Case(
             case_id=case_id,
             user_id="test_user_123",
-            enterprise_id="test_org_123",
+            enterprise_id="test_ent_123",
             title="Test Case for SQLite Compatibility",
             state=CaseState.INQUIRY,
             inquiry=InquiryData(),
@@ -150,7 +150,7 @@ class TestSQLiteCaseRepository:
         test_case = Case(
             case_id=case_id,
             user_id="test_user_456",
-            enterprise_id="test_org_456",
+            enterprise_id="test_ent_456",
             title="Retrieval Test Case",
             state=CaseState.INQUIRY,
             inquiry=InquiryData(),
@@ -200,7 +200,7 @@ class TestSQLiteCaseRepository:
             case = Case(
                 case_id=f"case_{uuid4().hex[:12]}",
                 user_id="search_user",
-                enterprise_id="search_org",
+                enterprise_id="search_ent",
                 title=title,
                 state=CaseState.INQUIRY,
                 inquiry=InquiryData(),
@@ -237,12 +237,12 @@ class TestSQLiteCaseRepository:
 
         # Create test cases
         user_id = f"user_{uuid4().hex[:8]}"
-        organization_id = f"org_{uuid4().hex[:8]}"
+        enterprise_id = f"ent_{uuid4().hex[:8]}"
         for i in range(3):
             case = Case(
                 case_id=f"case_{uuid4().hex[:12]}",
                 user_id=user_id,
-                enterprise_id=organization_id,
+                enterprise_id=enterprise_id,
                 title=f"List Test Case {i}",
                 state=CaseState.INQUIRY,
                 inquiry=InquiryData(),
@@ -280,14 +280,14 @@ class TestSQLiteCaseRepository:
 
         repo = SQLiteCaseRepository(sqlite_session)
         user_id = f"user_{uuid4().hex[:8]}"
-        organization_id = f"org_{uuid4().hex[:8]}"
+        enterprise_id = f"ent_{uuid4().hex[:8]}"
 
         # 4 active (current_turn > 0) + 2 empty (current_turn == 0) = 6 rows.
         for i in range(6):
             case = Case(
                 case_id=f"case_{uuid4().hex[:12]}",
                 user_id=user_id,
-                enterprise_id=organization_id,
+                enterprise_id=enterprise_id,
                 title=f"Paginate Case {i}",
                 state=CaseState.INQUIRY,
                 inquiry=InquiryData(),
@@ -350,7 +350,7 @@ class TestSQLiteCaseRepository:
         case = Case(
             case_id=case_id,
             user_id="msg_user",
-            enterprise_id="msg_org",
+            enterprise_id="msg_ent",
             title="Message Test Case",
             state=CaseState.INQUIRY,
             inquiry=InquiryData(),
@@ -399,7 +399,7 @@ class TestSQLiteCaseRepository:
         case = Case(
             case_id=case_id,
             user_id="analytics_user",
-            enterprise_id="analytics_org",
+            enterprise_id="analytics_ent",
             title="Analytics Test Case",
             state=CaseState.INQUIRY,
             inquiry=InquiryData(),
@@ -437,7 +437,7 @@ class TestSQLiteCaseRepository:
         case = Case(
             case_id=case_id,
             user_id="delete_user",
-            enterprise_id="delete_org",
+            enterprise_id="delete_ent",
             title="Delete Test Case",
             state=CaseState.INQUIRY,
             inquiry=InquiryData(),
@@ -549,7 +549,7 @@ class TestSQLiteCaseRepository:
         test_case = Case(
             case_id=case_id,
             user_id="test_user_evidence_links",
-            enterprise_id="test_org_evidence_links",
+            enterprise_id="test_ent_evidence_links",
             title="Test Case for Evidence Links Serialization",
             description="Testing hypothesis evidence links serialization with datetime fields",
             state=CaseState.INQUIRY,
@@ -882,7 +882,9 @@ class TestScopedAddUploadedFile:
         case = self._case(case_id)
         await repo.save(case)
 
-        await repo.add_uploaded_file(case_id, self._file(file_id), case.organization_id)
+        await repo.add_uploaded_file(
+            case_id, self._file(file_id), case.enterprise_id, case.organization_id
+        )
 
         async with self._fresh_session(sqlite_engine) as other:
             reloaded = await SQLiteCaseRepository(other).get(case_id)
@@ -911,7 +913,9 @@ class TestScopedAddUploadedFile:
         case = self._case(case_id)
         await repo.save(case)
 
-        await repo.add_uploaded_file(case_id, self._file(file_id), case.organization_id)
+        await repo.add_uploaded_file(
+            case_id, self._file(file_id), case.enterprise_id, case.organization_id
+        )
 
         async with self._fresh_session(sqlite_engine) as other:
             found = await SQLiteCaseRepository(
@@ -944,7 +948,9 @@ class TestScopedAddUploadedFile:
         assert blind_snapshot is not None
         assert blind_snapshot.uploaded_files == []
 
-        await repo.add_uploaded_file(case_id, self._file(file_id), case.organization_id)
+        await repo.add_uploaded_file(
+            case_id, self._file(file_id), case.enterprise_id, case.organization_id
+        )
 
         blind_snapshot.title = "updated mid-turn"
         await repo.save(blind_snapshot)
@@ -980,9 +986,14 @@ class TestScopedAddUploadedFile:
         case = self._case(case_id)
         await repo.save(case)
 
-        await repo.add_uploaded_file(case_id, self._file(file_id), case.organization_id)
         await repo.add_uploaded_file(
-            case_id, self._file(file_id, turn=2, summary=None), case.organization_id
+            case_id, self._file(file_id), case.enterprise_id, case.organization_id
+        )
+        await repo.add_uploaded_file(
+            case_id,
+            self._file(file_id, turn=2, summary=None),
+            case.enterprise_id,
+            case.organization_id,
         )
 
         async with self._fresh_session(sqlite_engine) as other:

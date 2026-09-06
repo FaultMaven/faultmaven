@@ -36,7 +36,16 @@ from faultmaven.modules.knowledge.domain.services.conversion_service import (
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 from faultmaven.utils.runbook_id import RunbookPathEscape
 
-ORG = SingleTenantProvider.DEFAULT_ENTERPRISE_ID
+#: The standalone deployment's one enterprise — the ISOLATION key every row
+#: below is stamped with (ADR-017 D1). It was called ``ORG`` while the
+#: organization was the isolation boundary; the provider constant it reads has
+#: already moved, so the name was the only thing still saying "organization".
+ENTERPRISE_ID = SingleTenantProvider.DEFAULT_ENTERPRISE_ID
+
+#: A billing organization inside that enterprise (ADR-017 D2). Seeded only as a
+#: parent row; no row these tests write carries it and no path they exercise
+#: reads it — which is the point: visibility never consults it.
+BILLING_ORG_ID = "org-billing-9999"
 
 # No ``asyncio`` mark: ``asyncio_mode = auto``, and marking the module would
 # also mark the synchronous helper tests.
@@ -94,7 +103,9 @@ def _job(scope: str = "personal"):
     j.scope = scope
     j.status = "completed"
     j.case_id = None
-    j.organization_id = "org_x"
+    # The job's ISOLATION key (ADR-017 D1) — what the read/verify paths scope
+    # on. The organization is billing attribution and no path here reads it.
+    j.enterprise_id = ENTERPRISE_ID
     j.analysis_result = None
     j.source_file_id = None
     j.created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -156,11 +167,14 @@ async def _real_db():
         await conn.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as session:
-        session.add(EnterpriseModel(enterprise_id=ORG, name="E", slug="e"))
+        session.add(EnterpriseModel(enterprise_id=ENTERPRISE_ID, name="E", slug="e"))
         await session.flush()
         session.add(
             OrganizationModel(
-                organization_id=ORG, name="O", slug="o", enterprise_id=ORG
+                organization_id=BILLING_ORG_ID,
+                name="O",
+                slug="o",
+                enterprise_id=ENTERPRISE_ID,
             )
         )
         await session.commit()
@@ -185,7 +199,7 @@ async def _seed_draft(factory, *, draft_id, file_path, status="draft"):
         session.add(
             UploadedFileModel(
                 file_id=file_id,
-                enterprise_id=ORG,
+                enterprise_id=ENTERPRISE_ID,
                 filename="src.md",
                 size_bytes=1,
                 content_type="text/markdown",
@@ -196,7 +210,7 @@ async def _seed_draft(factory, *, draft_id, file_path, status="draft"):
         session.add(
             ConversionJobModel(
                 id=f"conv_{draft_id}",
-                enterprise_id=ORG,
+                enterprise_id=ENTERPRISE_ID,
                 user_id="u1",
                 status="completed",
                 scope="global",
@@ -207,7 +221,7 @@ async def _seed_draft(factory, *, draft_id, file_path, status="draft"):
         session.add(
             ConversionDraftModel(
                 id=draft_id,
-                enterprise_id=ORG,
+                enterprise_id=ENTERPRISE_ID,
                 conversion_id=f"conv_{draft_id}",
                 runbook_id=f"rb-{draft_id}",
                 title="T",
@@ -464,6 +478,7 @@ class TestTheAssembledDraftPathIsGuardedToo:
             causes="x",
             prevention="x",
             user_id="user_x",
+            enterprise_id=None,
         )
 
         written = list((tmp_path / "data" / "knowledge").rglob("*.md"))
@@ -517,6 +532,7 @@ class TestTheAssembledDraftPathIsGuardedToo:
                 causes="x",
                 prevention="x",
                 user_id="user_x",
+                enterprise_id=None,
             )
 
         assert not (tmp_path / "data" / "escaped_dir").exists()
@@ -919,6 +935,7 @@ class TestTheEmptyIdFilename:
             causes="x",
             prevention="x",
             user_id="user_x",
+            enterprise_id=None,
         )
         a = await service.create_runbook_from_template(
             title="???", service_name="...", **common

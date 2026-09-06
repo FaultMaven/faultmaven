@@ -82,7 +82,15 @@ from tests.runbook_samples import valid_runbook
 
 pytestmark = pytest.mark.integration
 
-DEFAULT_ENTERPRISE_ID = "00000000-0000-0000-0000-000000000002"
+#: The one enterprise these fixtures live in — the ISOLATION key (ADR-017 D1)
+#: every suggestion, case and knowledge row is stamped with, and the value
+#: ``require_actor_enterprise`` resolves from the acting user below. It IS the
+#: standalone sentinel, named rather than re-spelled so the two cannot drift.
+DEFAULT_ENTERPRISE_ID = STANDALONE_ENTERPRISE_ID
+
+#: A billing organization inside it (ADR-017 D2). Seeded as a parent row only:
+#: nothing here is scoped by it and no read predicate may consult it.
+BILLING_ORG_ID = "00000000-0000-0000-0000-0000000000b1"
 CASE_ID = "case_aabb11223344"
 ADMIN_ID = "user-admin"
 
@@ -108,7 +116,7 @@ async def session_factory():
         )
         session.add(
             OrganizationModel(
-                organization_id=STANDALONE_ENTERPRISE_ID,
+                organization_id=BILLING_ORG_ID,
                 enterprise_id=DEFAULT_ENTERPRISE_ID,
                 name="Default Org",
                 slug="default-org",
@@ -143,7 +151,11 @@ class _Case:
     case_id = CASE_ID
     title = "Connection pool exhaustion"
     description = "Prod DB latency spike"
-    organization_id = STANDALONE_ENTERPRISE_ID
+    # A case row's ISOLATION key (ADR-017 D1). Its billing organization is
+    # ``None`` — an account may be in no organization, and nothing on this
+    # path reads it either way.
+    enterprise_id = DEFAULT_ENTERPRISE_ID
+    organization_id = None
 
 
 def _admin() -> DevUser:
@@ -154,7 +166,11 @@ def _admin() -> DevUser:
         display_name="Admin",
         created_at=datetime.now(timezone.utc),
         roles=["admin", "platform_admin"],
-        organization_id=STANDALONE_ENTERPRISE_ID,
+        # The extract route stamps the suggestion with
+        # ``require_actor_enterprise(current_user)``, so this is the tenant the
+        # whole flow is scoped by. Stated rather than left to DevUser's default
+        # so the count assertion below names the same value the write used.
+        enterprise_id=DEFAULT_ENTERPRISE_ID,
     )
 
 
@@ -376,10 +392,12 @@ class TestTheApprovalThatActuallyPublishes:
 
         rows = await _knowledge_rows(session_factory)
         assert [r.item_id for r in rows] == [item_id]
-        # The platform tier, and the shape migration 033's CHECK requires of it:
-        # a global row carries NO organization_id.
+        # The platform tier, and the shape ``knowledge_items_global_org_check``
+        # requires of it: a global row carries NO organization_id (billing,
+        # ADR-017 D2). Its enterprise is NOT NULL like every other tier's.
         assert rows[0].scope == "global"
         assert rows[0].organization_id is None
+        assert rows[0].enterprise_id == DEFAULT_ENTERPRISE_ID
 
     async def test_the_link_is_recorded_on_the_suggestion(self, wired):
         client, _app, _knowledge, suggestion_service = wired
@@ -559,8 +577,9 @@ class TestAnUnwiredDeploymentSaysSo:
 class TestAFullReviewInboxRefusesHonestly:
     """The store is bounded (#1214 review) and never evicts unreviewed work, so
     a queue full of pending reviews has to refuse rather than silently drop
-    something a reviewer has not seen. Since #1227 the ceiling is per
-    organization, over the durable table."""
+    something a reviewer has not seen. Since #1227 the ceiling is per tenant,
+    over the durable table — and the tenant is the ENTERPRISE (ADR-017 D1),
+    the same value every suggestion route scopes its reads by."""
 
     async def test_extract_answers_503_when_the_queue_is_full_of_pending_reviews(
         self, wired
@@ -574,8 +593,8 @@ class TestAFullReviewInboxRefusesHonestly:
         assert resp.status_code == 503, resp.text
         assert "queue is full" in resp.json()["detail"]
         assert (
-            await suggestion_service._repository.count_for_organization(
-                STANDALONE_ENTERPRISE_ID
+            await suggestion_service._repository.count_for_enterprise(
+                DEFAULT_ENTERPRISE_ID
             )
             == 1
         )

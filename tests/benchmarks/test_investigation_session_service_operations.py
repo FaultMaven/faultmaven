@@ -103,7 +103,7 @@ async def sample_case(case_repo) -> Case:
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id=create_test_user_id(),
-        enterprise_id=create_test_org_id(),
+        enterprise_id=create_test_enterprise_id(),
         title="Benchmark Test Case",
         description="Case for performance benchmarks",
         state=CaseState.INQUIRY,
@@ -117,9 +117,9 @@ async def sample_case(case_repo) -> Case:
 # ============================================================
 
 
-def create_test_org_id() -> str:
-    """Generate unique test organization ID."""
-    return f"org_{uuid4().hex[:8]}"
+def create_test_enterprise_id() -> str:
+    """Generate unique test enterprise ID (the isolation boundary, ADR-017 D1)."""
+    return f"ent_{uuid4().hex[:8]}"
 
 
 def create_test_user_id() -> str:
@@ -188,7 +188,7 @@ class TestCreateSessionBenchmarks:
             case = Case(
                 case_id=f"case_{uuid4().hex[:12]}",
                 user_id=sample_case.user_id,
-                enterprise_id=sample_case.organization_id,
+                enterprise_id=sample_case.enterprise_id,
                 title=f"Benchmark Case {i}",
                 description="",
                 state=CaseState.INQUIRY,
@@ -198,7 +198,7 @@ class TestCreateSessionBenchmarks:
             duration = await time_async_operation(
                 session_service.create_session(
                     case_id=case.case_id,
-                    organization_id=case.organization_id,
+                    enterprise_id=case.enterprise_id,
                     user_id=case.user_id,
                     session_goal=f"Benchmark session {i}",
                 )
@@ -223,7 +223,7 @@ class TestGetSessionBenchmarks:
         # Create a session first
         session = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
         )
 
@@ -234,7 +234,7 @@ class TestGetSessionBenchmarks:
             duration = await time_async_operation(
                 session_service.get_session(
                     session.session_id,
-                    sample_case.organization_id,
+                    sample_case.enterprise_id,
                 )
             )
             timings.append(duration)
@@ -256,7 +256,7 @@ class TestUpdateSessionBenchmarks:
         """Benchmark update_session operation - target <150ms p95."""
         session = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
         )
 
@@ -267,7 +267,7 @@ class TestUpdateSessionBenchmarks:
             duration = await time_async_operation(
                 session_service.update_session(
                     session.session_id,
-                    sample_case.organization_id,
+                    sample_case.enterprise_id,
                     {"session_goal": f"Updated goal {i}"},
                     case_id=session.case_id,
                 )
@@ -299,7 +299,7 @@ class TestPauseResumeSessionBenchmarks:
             case = Case(
                 case_id=f"case_{uuid4().hex[:12]}",
                 user_id=sample_case.user_id,
-                enterprise_id=sample_case.organization_id,
+                enterprise_id=sample_case.enterprise_id,
                 title=f"Pause Test Case {i}",
                 description="",
                 state=CaseState.INQUIRY,
@@ -308,14 +308,14 @@ class TestPauseResumeSessionBenchmarks:
 
             session = await session_service.create_session(
                 case_id=case.case_id,
-                organization_id=case.organization_id,
+                enterprise_id=case.enterprise_id,
                 user_id=case.user_id,
             )
 
             duration = await time_async_operation(
                 session_service.pause_session(
                     session.session_id,
-                    case.organization_id,
+                    case.enterprise_id,
                     case_id=session.case_id,
                 )
             )
@@ -337,7 +337,7 @@ class TestPauseResumeSessionBenchmarks:
             case = Case(
                 case_id=f"case_{uuid4().hex[:12]}",
                 user_id=sample_case.user_id,
-                enterprise_id=sample_case.organization_id,
+                enterprise_id=sample_case.enterprise_id,
                 title=f"Resume Test Case {i}",
                 description="",
                 state=CaseState.INQUIRY,
@@ -346,19 +346,19 @@ class TestPauseResumeSessionBenchmarks:
 
             session = await session_service.create_session(
                 case_id=case.case_id,
-                organization_id=case.organization_id,
+                enterprise_id=case.enterprise_id,
                 user_id=case.user_id,
             )
             await session_service.pause_session(
                 session.session_id,
-                case.organization_id,
+                case.enterprise_id,
                 case_id=session.case_id,
             )
 
             duration = await time_async_operation(
                 session_service.resume_session(
                     session.session_id,
-                    case.organization_id,
+                    case.enterprise_id,
                     case_id=session.case_id,
                 )
             )
@@ -389,7 +389,7 @@ class TestCompleteSessionBenchmarks:
             case = Case(
                 case_id=f"case_{uuid4().hex[:12]}",
                 user_id=sample_case.user_id,
-                enterprise_id=sample_case.organization_id,
+                enterprise_id=sample_case.enterprise_id,
                 title=f"Complete Test Case {i}",
                 description="",
                 state=CaseState.INQUIRY,
@@ -398,14 +398,14 @@ class TestCompleteSessionBenchmarks:
 
             session = await session_service.create_session(
                 case_id=case.case_id,
-                organization_id=case.organization_id,
+                enterprise_id=case.enterprise_id,
                 user_id=case.user_id,
             )
 
             duration = await time_async_operation(
                 session_service.complete_session(
                     session.session_id,
-                    case.organization_id,
+                    case.enterprise_id,
                     f"Findings summary {i}",
                     case_id=session.case_id,
                 )
@@ -431,12 +431,12 @@ class TestListSessionsBenchmarks:
         for i in range(50):
             session = await session_service.create_session(
                 case_id=sample_case.case_id,
-                organization_id=sample_case.organization_id,
+                enterprise_id=sample_case.enterprise_id,
                 user_id=sample_case.user_id,
             )
             await session_service.complete_session(
                 session.session_id,
-                sample_case.organization_id,
+                sample_case.enterprise_id,
                 f"Finding {i}",
                 case_id=session.case_id,
             )
@@ -448,7 +448,7 @@ class TestListSessionsBenchmarks:
             duration = await time_async_operation(
                 session_service.list_sessions(
                     sample_case.case_id,
-                    sample_case.organization_id,
+                    sample_case.enterprise_id,
                     limit=50,
                 )
             )
@@ -471,7 +471,7 @@ class TestCheckBudgetBenchmarks:
         """Benchmark check_budget_exceeded operation - target <100ms p95."""
         session = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
             token_budget_limit=10000,
         )
@@ -483,7 +483,7 @@ class TestCheckBudgetBenchmarks:
             duration = await time_async_operation(
                 session_service.check_budget_exceeded(
                     session.session_id,
-                    sample_case.organization_id,
+                    sample_case.enterprise_id,
                     case_id=session.case_id,
                 )
             )
@@ -510,12 +510,12 @@ class TestGetStatisticsBenchmarks:
         for i in range(100):
             session = await session_service.create_session(
                 case_id=sample_case.case_id,
-                organization_id=sample_case.organization_id,
+                enterprise_id=sample_case.enterprise_id,
                 user_id=sample_case.user_id,
             )
             await session_service.complete_session(
                 session.session_id,
-                sample_case.organization_id,
+                sample_case.enterprise_id,
                 f"Finding {i}",
                 case_id=session.case_id,
             )
@@ -527,7 +527,7 @@ class TestGetStatisticsBenchmarks:
             duration = await time_async_operation(
                 session_service.get_session_statistics(
                     sample_case.case_id,
-                    sample_case.organization_id,
+                    sample_case.enterprise_id,
                 )
             )
             timings.append(duration)

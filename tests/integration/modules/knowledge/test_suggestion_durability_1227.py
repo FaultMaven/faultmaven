@@ -43,6 +43,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.exceptions import ConflictError, ServiceUnavailableException
 from faultmaven.infrastructure.persistence.models import (
     Base,
@@ -68,9 +69,20 @@ from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_reposito
 
 pytestmark = pytest.mark.integration
 
-ENTERPRISE_ID = "00000000-0000-0000-0000-000000000002"
-ORG_ID = "org-alpha-1111"
-OTHER_ORG_ID = "org-beta-2222"
+#: The two tenants this file separates. They are ENTERPRISES: every place
+#: they appear, the question being asked is "may this principal see that row?",
+#: and under ADR-017 D1 that question is answered by the enterprise and by
+#: nothing else. They were named ``ENTERPRISE_ALPHA``/``ENTERPRISE_BETA`` while the
+#: organization was the isolation boundary; two organizations inside one
+#: enterprise would now be mutually VISIBLE (D2), so keeping them as
+#: organizations would have inverted the very property this file pins.
+ENTERPRISE_ALPHA = "00000000-0000-0000-0000-00000000a111"
+ENTERPRISE_BETA = "00000000-0000-0000-0000-00000000b222"
+
+#: A billing organization inside alpha (ADR-017 D2). Seeded to keep the flush
+#: ordering this fixture documents, and to make the separation explicit: a row
+#: may carry it, and no visibility decision here or in production consults it.
+BILLING_ORG_ID = "org-alpha-billing-1111"
 CASE_ID = "case_aabb11223344"
 USER_ID = "user-extractor"
 ADMIN_ID = "user-admin"
@@ -80,7 +92,7 @@ def _make_engine(db_path):
     """An engine with FK enforcement on, matching production's connect hook.
 
     Without the PRAGMA, SQLite ignores every foreign key and the
-    ``organization_id`` test below would pass against the literal ``"default"``
+    ``enterprise_id`` test below would pass against the literal ``"default"``
     the extract route used to send — proving nothing about a deployment where
     ``database.py`` turns enforcement on.
     """
@@ -104,23 +116,31 @@ async def db(tmp_path):
         await conn.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as session:
+        # BOTH enterprises exist. ``enterprise_id`` is a NOT NULL FK to
+        # ``enterprises`` on every tenanted table, so beta has to be a real row
+        # before a beta-owned suggestion can be written at all — which is what
+        # the cross-tenant tests below need.
         session.add(
-            EnterpriseModel(enterprise_id=ENTERPRISE_ID, name="Default", slug="default")
+            EnterpriseModel(enterprise_id=ENTERPRISE_ALPHA, name="Alpha", slug="alpha")
         )
         session.add(
-            OrganizationModel(
-                organization_id=ORG_ID,
-                enterprise_id=ENTERPRISE_ID,
-                name="Alpha",
-                slug="alpha",
+            EnterpriseModel(enterprise_id=ENTERPRISE_BETA, name="Beta", slug="beta")
+        )
+        # The platform enterprise. A published GLOBAL knowledge_items row is
+        # stamped with it, and its ``enterprise_id`` FK needs the parent row.
+        session.add(
+            EnterpriseModel(
+                enterprise_id=STANDALONE_ENTERPRISE_ID,
+                name="Standalone",
+                slug="standalone",
             )
         )
         session.add(
             OrganizationModel(
-                organization_id=OTHER_ORG_ID,
-                enterprise_id=ENTERPRISE_ID,
-                name="Beta",
-                slug="beta",
+                organization_id=BILLING_ORG_ID,
+                enterprise_id=ENTERPRISE_ALPHA,
+                name="Alpha Billing",
+                slug="alpha-billing",
             )
         )
         # Both are REAL users: extracted_by / reviewed_by / pii_remediated_by
@@ -129,7 +149,7 @@ async def db(tmp_path):
         session.add(
             UserModel(
                 user_id=USER_ID,
-                enterprise_id=ENTERPRISE_ID,
+                enterprise_id=ENTERPRISE_ALPHA,
                 username="extractor",
                 email="extractor@example.com",
                 display_name="Extractor",
@@ -138,7 +158,7 @@ async def db(tmp_path):
         session.add(
             UserModel(
                 user_id=ADMIN_ID,
-                enterprise_id=ENTERPRISE_ID,
+                enterprise_id=ENTERPRISE_ALPHA,
                 username="admin",
                 email="admin@example.com",
                 display_name="Admin",
@@ -152,7 +172,7 @@ async def db(tmp_path):
         session.add(
             CaseModel(
                 case_id=CASE_ID,
-                enterprise_id=ORG_ID,
+                enterprise_id=ENTERPRISE_ALPHA,
                 title="Connection pool exhaustion",
             )
         )
@@ -173,10 +193,10 @@ def _service(session_factory, *, capacity: Optional[int] = None) -> SuggestionSe
     )
 
 
-async def _extract(service, *, organization_id: str = ORG_ID):
+async def _extract(service, *, enterprise_id: str = ENTERPRISE_ALPHA):
     return await service.extract_knowledge_from_case(
         case_id=CASE_ID,
-        organization_id=organization_id,
+        enterprise_id=enterprise_id,
         extracted_by=USER_ID,
     )
 
@@ -214,7 +234,7 @@ class TestTheSuggestionSurvivesARestart:
             assert reloaded.suggestion_id == suggestion_id
             assert reloaded.status is SuggestionStatus.PENDING_REVIEW
             assert reloaded.case_id == CASE_ID
-            assert reloaded.organization_id == ORG_ID
+            assert reloaded.enterprise_id == ENTERPRISE_ALPHA
         finally:
             await restarted_engine.dispose()
 
@@ -263,7 +283,7 @@ class TestTheSuggestionSurvivesARestart:
         await repository.save(
             KnowledgeSuggestion(
                 suggestion_id="sug_unevaluated",
-                enterprise_id=ORG_ID,
+                enterprise_id=ENTERPRISE_ALPHA,
                 case_id=CASE_ID,
                 suggested_title="Never checked",
                 suggested_content="## Problem\n...",
@@ -315,7 +335,7 @@ class TestAReadHandsBackADetachedCopy:
         await repository.save(
             KnowledgeSuggestion(
                 suggestion_id="sug_copy_check",
-                enterprise_id=ORG_ID,
+                enterprise_id=ENTERPRISE_ALPHA,
                 case_id=CASE_ID,
                 suggested_title="Original",
                 suggested_content="## Problem\n...",
@@ -332,7 +352,7 @@ class TestAReadHandsBackADetachedCopy:
         # store behind its back.
         held = KnowledgeSuggestion(
             suggestion_id="sug_copy_check_2",
-            enterprise_id=ORG_ID,
+            enterprise_id=ENTERPRISE_ALPHA,
             case_id=CASE_ID,
             suggested_title="Original",
             suggested_content="## Problem\n...",
@@ -353,7 +373,7 @@ class TestAReadHandsBackADetachedCopy:
         repository = InMemorySuggestionRepository()
         seeded = KnowledgeSuggestion(
             suggestion_id="sug_seeded",
-            enterprise_id=ORG_ID,
+            enterprise_id=ENTERPRISE_ALPHA,
             case_id=CASE_ID,
             suggested_title="Original",
             suggested_content="## Problem\n...",
@@ -392,7 +412,7 @@ class TestTimestampsComeBackAware:
             suggestion_id=suggestion.suggestion_id,
             reviewed_by=ADMIN_ID,
             rejection_reason="not reusable",
-            organization_id=ORG_ID,
+            enterprise_id=ENTERPRISE_ALPHA,
         )
 
         reloaded = await _service(factory).get_suggestion(suggestion.suggestion_id)
@@ -437,7 +457,7 @@ class TestTwoWorkersSeeTheSameSuggestion:
         suggestion = await _extract(worker_a)
 
         found = await worker_b.get_suggestion_visible(
-            suggestion.suggestion_id, organization_id=ORG_ID
+            suggestion.suggestion_id, enterprise_id=ENTERPRISE_ALPHA
         )
         assert found is not None, (
             "worker B could not see worker A's suggestion — this is the "
@@ -455,7 +475,9 @@ class TestTwoWorkersSeeTheSameSuggestion:
         first = await _extract(worker_a)
         second = await _extract(worker_b)
 
-        listed = await _service(factory).list_suggestions(organization_id=ORG_ID)
+        listed = await _service(factory).list_suggestions(
+            enterprise_id=ENTERPRISE_ALPHA
+        )
         ids = {s.suggestion_id for s in listed["suggestions"]}
         assert {first.suggestion_id, second.suggestion_id} <= ids
         assert listed["total_count"] == 2
@@ -472,7 +494,7 @@ class TestTwoWorkersSeeTheSameSuggestion:
             suggestion_id=suggestion.suggestion_id,
             reviewed_by=ADMIN_ID,
             rejection_reason="not reusable",
-            organization_id=ORG_ID,
+            enterprise_id=ENTERPRISE_ALPHA,
         )
         assert rejected is True
 
@@ -489,11 +511,11 @@ class TestTwoWorkersSeeTheSameSuggestion:
 
         assert (
             await _service(factory).get_suggestion_visible(
-                suggestion.suggestion_id, organization_id=OTHER_ORG_ID
+                suggestion.suggestion_id, enterprise_id=ENTERPRISE_BETA
             )
             is None
         )
-        listed = await _service(factory).list_suggestions(organization_id=OTHER_ORG_ID)
+        listed = await _service(factory).list_suggestions(enterprise_id=ENTERPRISE_BETA)
         assert listed["suggestions"] == []
 
 
@@ -514,6 +536,14 @@ async def _publish_knowledge_item(factory, item_id: str) -> str:
         session.add(
             KnowledgeItemModel(
                 item_id=item_id,
+                # ``knowledge_items.enterprise_id`` is NOT NULL on EVERY tier
+                # (ADR-017 D1), global included. The platform tier's is the
+                # standalone enterprise — the value the global-write policy arm
+                # compares against (D8) — while its billing organization is
+                # NULL, which is what ``knowledge_items_global_org_check``
+                # actually constrains.
+                enterprise_id=STANDALONE_ENTERPRISE_ID,
+                organization_id=None,
                 title="Extracted runbook",
                 content="## Problem\n...",
                 item_type="runbook",
@@ -524,7 +554,7 @@ async def _publish_knowledge_item(factory, item_id: str) -> str:
     return item_id
 
 
-async def _seed_approved(factory, suggestion_id, *, org=ORG_ID, item_id=None):
+async def _seed_approved(factory, suggestion_id, *, org=ENTERPRISE_ALPHA, item_id=None):
     repository = DatabaseSuggestionRepository(factory)
     if item_id is not None:
         await _publish_knowledge_item(factory, item_id)
@@ -559,7 +589,7 @@ class TestNothingIsEverDeletedFromTheTable:
         assert await repository.get("sug_old") is not None
         assert await repository.get("sug_recent") is not None
         assert await repository.get(created.suggestion_id) is not None
-        assert await repository.count_for_organization(ORG_ID) == 3
+        assert await repository.count_for_enterprise(ENTERPRISE_ALPHA) == 3
 
     async def test_the_knowledge_item_link_is_what_would_have_been_lost(self, db):
         """``knowledge_items`` has no back-pointer, so this column IS the only
@@ -598,17 +628,17 @@ class TestTheUnreviewedQueueIsTheCeiling:
             is not None
         )
 
-    async def test_the_cap_is_scoped_to_one_organization(self, db):
+    async def test_the_cap_is_scoped_to_one_enterprise(self, db):
         """The durable store is ONE table shared by every tenant, so a
         deployment-wide count would let another tenant's undrained inbox refuse
-        this tenant's extraction. Org beta is full of unreviewed work; org
-        alpha must still be able to extract."""
+        this tenant's extraction. Enterprise beta is full of unreviewed work;
+        enterprise alpha must still be able to extract."""
         _db_path, factory = db
         repository = DatabaseSuggestionRepository(factory)
         await repository.save(
             KnowledgeSuggestion(
                 suggestion_id="sug_beta_pending",
-                enterprise_id=OTHER_ORG_ID,
+                enterprise_id=ENTERPRISE_BETA,
                 case_id=CASE_ID,
                 suggested_title="Beta's problem",
                 suggested_content="## Problem\n...",
@@ -670,7 +700,7 @@ class TestConcurrentWritesAreRejectedNotMerged:
             suggestion_id=suggestion.suggestion_id,
             reviewed_by=ADMIN_ID,
             rejection_reason="not reusable",
-            organization_id=ORG_ID,
+            enterprise_id=ENTERPRISE_ALPHA,
         )
 
         stale.suggested_title = "B's edit"
@@ -707,7 +737,7 @@ class TestConcurrentWritesAreRejectedNotMerged:
                 suggestion_id=suggestion.suggestion_id,
                 title=title,
                 content="## Problem\nStill a problem.\n",
-                organization_id=ORG_ID,
+                enterprise_id=ENTERPRISE_ALPHA,
             )
             assert updated is not None
 
@@ -795,17 +825,17 @@ class TestConcurrentApprovalPublishesOnce:
 
         # Both pods load the row BEFORE either commits — the TOCTOU window.
         a_view = await pod_a.get_suggestion_visible(
-            suggestion_id, organization_id=ORG_ID
+            suggestion_id, enterprise_id=ENTERPRISE_ALPHA
         )
         b_view = await pod_b.get_suggestion_visible(
-            suggestion_id, organization_id=ORG_ID
+            suggestion_id, enterprise_id=ENTERPRISE_ALPHA
         )
         assert a_view.version == b_view.version
 
         result = await pod_a.approve_suggestion(
             suggestion_id=suggestion_id,
             reviewed_by=ADMIN_ID,
-            organization_id=ORG_ID,
+            enterprise_id=ENTERPRISE_ALPHA,
         )
         assert result is not None
 
@@ -813,7 +843,7 @@ class TestConcurrentApprovalPublishesOnce:
             await pod_b.approve_suggestion(
                 suggestion_id=suggestion_id,
                 reviewed_by=ADMIN_ID,
-                organization_id=ORG_ID,
+                enterprise_id=ENTERPRISE_ALPHA,
             )
         assert excinfo.value.conflict_reason in (
             "already_approved",
@@ -847,7 +877,7 @@ class TestConcurrentApprovalPublishesOnce:
                 pod.approve_suggestion(
                     suggestion_id=suggestion_id,
                     reviewed_by=ADMIN_ID,
-                    organization_id=ORG_ID,
+                    enterprise_id=ENTERPRISE_ALPHA,
                 )
                 for pod in pods
             ),
@@ -866,34 +896,36 @@ class TestConcurrentApprovalPublishesOnce:
 
 
 # ---------------------------------------------------------------------------
-# 4. The organization id has to be a real one
+# 4. The tenant id has to be a real one
 # ---------------------------------------------------------------------------
 
 
-class TestTheOrganizationIdIsAForeignKey:
+class TestTheEnterpriseIdIsAForeignKey:
     async def test_the_literal_the_route_used_to_send_is_rejected(self, db):
         """``getattr(case, "organization_id", "default")`` — the extract
-        route's fallback until #1227 — is not an organization id.
+        route's fallback until #1227 — is not a tenant id.
 
         It was inert while the store was a dict keyed by nothing. Against the
-        table it fails the ``organizations`` foreign key outright, which is why
-        the org-resolution fix had to ship WITH the durable store rather than
-        after it. This test is the measurement of that claim, not a restatement
-        of it.
+        table it fails a foreign key outright, which is why the tenant
+        resolution fix had to ship WITH the durable store rather than after it.
+        The key it now fails is ``knowledge_suggestions.enterprise_id`` →
+        ``enterprises`` (ADR-017 D1): the stamped tenant moved one tier up, and
+        the claim — a placeholder string cannot be a tenant — moved with it.
+        This test is the measurement of that claim, not a restatement of it.
         """
         _db_path, factory = db
 
         with pytest.raises(Exception) as excinfo:
-            await _extract(_service(factory), organization_id="default")
+            await _extract(_service(factory), enterprise_id="default")
 
         assert "foreign key" in str(excinfo.value).lower(), str(excinfo.value)
 
-    async def test_a_real_organization_id_is_accepted(self, db):
+    async def test_a_real_enterprise_id_is_accepted(self, db):
         """The complement — without it the test above would pass on a store
         that refused everything."""
         _db_path, factory = db
 
-        suggestion = await _extract(_service(factory), organization_id=ORG_ID)
+        suggestion = await _extract(_service(factory), enterprise_id=ENTERPRISE_ALPHA)
 
         async with factory() as session:
             rows = (
@@ -909,4 +941,4 @@ class TestTheOrganizationIdIsAForeignKey:
                 .all()
             )
         assert len(rows) == 1
-        assert rows[0].organization_id == ORG_ID
+        assert rows[0].enterprise_id == ENTERPRISE_ALPHA

@@ -76,7 +76,12 @@ class _UserStore:
         return None
 
     async def create_user(
-        self, username, email=None, display_name=None, account_kind="individual"
+        self,
+        username,
+        email=None,
+        display_name=None,
+        account_kind="individual",
+        service_channel=None,
     ) -> DevUser:
         user = DevUser(
             user_id=f"user-{username}",
@@ -86,6 +91,7 @@ class _UserStore:
             created_at=datetime.now(timezone.utc),
             roles=["user"],
             account_kind=account_kind,
+            service_channel=service_channel,
         )
         self.users[user.user_id] = user
         return user
