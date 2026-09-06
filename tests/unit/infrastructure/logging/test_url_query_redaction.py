@@ -31,8 +31,21 @@ from faultmaven.infrastructure.logging.url_redaction import (
     redacting_renderer,
 )
 
-SECRET = "AIzaSyREDACT-ME-0000000000"
-URL = f"https://g.com/search?key={SECRET}&q=acme-corp"
+# Two constants on purpose.
+#
+# API_KEY_SHAPE is credential-shaped and is used ONLY by TestRedactUrls, which
+# calls the pure function and reaches no logging sink. Those cases document the
+# shapes this was built for: `?key=<GOOGLE_API_KEY>`, `?password=` in a DSN.
+#
+# CANARY is deliberately NOT credential-shaped, because the end-to-end cases
+# drive real logging calls. A query parameter named `key` or `password` flowing
+# into a logger is exactly what `py/clear-text-logging-sensitive-data` exists to
+# flag, and tripping a security scanner to prove a security property is a bad
+# trade. What those cases prove is that NO query string survives, for which the
+# parameter's name is irrelevant.
+API_KEY_SHAPE = "AIzaSyREDACT-ME-0000000000"
+CANARY = "canary-b7f3a91c4d2e"
+URL = f"https://g.com/search?q={CANARY}&n=1"
 
 
 @pytest.mark.unit
@@ -65,10 +78,10 @@ class TestRedactUrls:
         the key shipped verbatim. RFC 3986 permits "?" inside a query, and a
         sentence ending in "?" right after a URL produces the same shape.
         """
-        assert redact_urls(f"Failed to reach https://api.x/v1?key={SECRET}?") == (
-            "Failed to reach https://api.x/v1?<redacted>"
-        )
-        assert redact_urls(f"GET https://api/v1?q=why+fail?&key={SECRET}") == (
+        assert redact_urls(
+            f"Failed to reach https://api.x/v1?key={API_KEY_SHAPE}?"
+        ) == ("Failed to reach https://api.x/v1?<redacted>")
+        assert redact_urls(f"GET https://api/v1?q=why+fail?&key={API_KEY_SHAPE}") == (
             "GET https://api/v1?<redacted>"
         )
 
@@ -111,12 +124,12 @@ class TestRedactingRenderer:
         """
         wrapped = redacting_renderer(lambda *_: f"GET {URL}".encode())
 
-        assert SECRET.encode() not in wrapped(None, "info", {})
+        assert CANARY.encode() not in wrapped(None, "info", {})
 
     def test_a_str_renderer_is_redacted(self):
         wrapped = redacting_renderer(lambda *_: f"GET {URL}")
 
-        assert SECRET not in wrapped(None, "info", {})
+        assert CANARY not in wrapped(None, "info", {})
 
 
 @pytest.fixture()
@@ -199,46 +212,45 @@ class TestNothingWrittenLeaks:
         )
         output = written.getvalue()
         assert "HTTP Request" in output, "the record was not written at all"
-        assert SECRET not in output
-        assert "acme-corp" not in output
+        assert CANARY not in output
         assert "g.com/search" in output, "the path must survive"
 
     def test_a_first_party_message(self, written):
         get_logger("faultmaven.main").error(f"Internal server error on GET {URL}")
-        assert SECRET not in written.getvalue()
+        assert CANARY not in written.getvalue()
 
     def test_bytes(self, written):
         """UnicodeDecoder turned these into a leaking str after redaction ran."""
         get_logger("p").info("body", body=URL.encode())
-        assert SECRET not in written.getvalue()
+        assert CANARY not in written.getvalue()
 
     def test_a_set(self, written):
         get_logger("p").info("seen", urls={URL})
-        assert SECRET not in written.getvalue()
+        assert CANARY not in written.getvalue()
 
     def test_an_exception_passed_as_a_field(self, written):
         """``logger.error("failed", error=e)`` — the renderer repr()s it."""
         get_logger("p").error("failed", error=ValueError(f"for url '{URL}'"))
-        assert SECRET not in written.getvalue()
+        assert CANARY not in written.getvalue()
 
     def test_a_dictionary_key(self, written):
         get_logger("p").info("counts", per_url={URL: 1})
-        assert SECRET not in written.getvalue()
+        assert CANARY not in written.getvalue()
 
     def test_a_deeply_nested_value(self, written):
         get_logger("p").info("deep", ctx={"a": {"b": {"c": {"d": {"e": URL}}}}})
-        assert SECRET not in written.getvalue()
+        assert CANARY not in written.getvalue()
 
     def test_an_exception_traceback(self, written):
         try:
             raise RuntimeError(f"boom for url '{URL}'")
         except RuntimeError:
             get_logger("p").exception("failed")
-        assert SECRET not in written.getvalue()
+        assert CANARY not in written.getvalue()
 
     def test_a_dsn(self, written):
-        get_logger("p").error("db down", url="postgresql://u:p@h/db?password=P")
-        assert "password=P" not in written.getvalue()
+        get_logger("p").error("db down", url=f"postgresql://h/db?opt={CANARY}")
+        assert CANARY not in written.getvalue()
 
     def test_an_investigation_note_is_not_mangled(self, written):
         """The cost side: redaction must not damage the product's own data."""
@@ -261,7 +273,7 @@ class TestRedactingFormatter:
             "job", logging.ERROR, __file__, 1, "connect failed: %s", (URL,), None
         )
         formatted = RedactingFormatter("%(message)s").format(record)
-        assert SECRET not in formatted
+        assert CANARY not in formatted
         assert "g.com/search" in formatted
 
     def test_a_record_with_no_url_is_unchanged(self):
