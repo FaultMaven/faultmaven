@@ -21,7 +21,7 @@ class TestInvestigationSessionValidation:
                 session_id="",
                 case_id="case_123",
                 user_id="user_456",
-                enterprise_id="org_789",
+                enterprise_id="ent_789",
             )
 
     def test_empty_case_id_fails(self):
@@ -31,7 +31,7 @@ class TestInvestigationSessionValidation:
                 session_id="sess_123",
                 case_id="",
                 user_id="user_456",
-                enterprise_id="org_789",
+                enterprise_id="ent_789",
             )
 
     def test_empty_user_id_fails(self):
@@ -41,12 +41,12 @@ class TestInvestigationSessionValidation:
                 session_id="sess_123",
                 case_id="case_456",
                 user_id="",
-                enterprise_id="org_789",
+                enterprise_id="ent_789",
             )
 
-    def test_empty_organization_id_fails(self):
-        """Test that empty organization_id raises ValueError."""
-        with pytest.raises(ValueError, match="organization_id is required"):
+    def test_empty_enterprise_id_fails(self):
+        """Test that an empty enterprise_id raises ValueError."""
+        with pytest.raises(ValueError, match="enterprise_id is required"):
             InvestigationSession(
                 session_id="sess_123",
                 case_id="case_456",
@@ -552,7 +552,7 @@ class TestInvestigationSessionTouch:
             session_id="sess_touch",
             case_id="case_123",
             user_id="user_456",
-            enterprise_id="org_789",
+            enterprise_id="ent_789",
         )
 
         original = session.updated_at
@@ -568,7 +568,7 @@ class TestInvestigationSessionTouch:
             session_id="sess_activity",
             case_id="case_123",
             user_id="user_456",
-            enterprise_id="org_789",
+            enterprise_id="ent_789",
         )
 
         original_updated = session.updated_at

@@ -28,6 +28,8 @@ import pytest
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.infrastructure.protection.tenant_turn_cap import (
+    SUBJECT_ACCOUNT,
+    BillingSubject,
     CapPolicyResolver,
     InMemoryTurnLedger,
     TurnCapService,
@@ -44,7 +46,27 @@ from faultmaven.modules.case.domain.models import CaseState, TurnOutcome, TurnPr
 
 pytestmark = pytest.mark.unit
 
+#: The BILLING organization this deployment's turns are charged to. It is set
+#: on the case for realism only; the cap's subject comes from the request's
+#: billing context, which these tests leave unset — so the subject is the
+#: ACCOUNT (ADR-017 D5), which is what ``_subject`` below spells.
 ORG = "org-personal"
+#: The enterprise the request is bound to — isolation, and what the ledger row
+#: is stamped with.
+ENTERPRISE = "ent-personal"
+
+
+def _subject(user_id: str) -> BillingSubject:
+    """What these turns are charged to.
+
+    The ACCOUNT, not an organization: the cap's subject comes from the
+    request's BILLING context (ADR-017 D5), these turns run with none bound,
+    and "no organization pays for this account" is an ordinary state rather
+    than a misconfiguration.
+    """
+    return BillingSubject(SUBJECT_ACCOUNT, user_id)
+
+
 HAIKU = (
     "Forget the server for a second. Can you write a haiku about a sleepy cat, "
     "and also tell me what the capital of Australia is?"
@@ -57,16 +79,13 @@ class _Orgs:
         return SimpleNamespace(organization_id=organization_id, daily_turn_cap=None)
 
 
-class _People:
-    async def is_personal_organization(self, organization_id):
-        return True
-
-
 def _cap(ledger):
+    # ADR-017 D5: the cap's subject is the BILLING organization when one pays
+    # and the account otherwise, so the resolver needs the organization lookup
+    # and nothing else — there is no personal-organization predicate any more,
+    # because a personal account has no organization at all.
     return TurnCapService(
-        CapPolicyResolver(
-            _People(), _Orgs(), default_limit=lambda: 30, multi_tenant=lambda: True
-        ),
+        CapPolicyResolver(_Orgs(), default_limit=lambda: 30, multi_tenant=lambda: True),
         ledger,
     )
 
@@ -76,7 +95,7 @@ def bound_tenant():
     from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
     from faultmaven.config.tenant_context import set_current_enterprise_id
 
-    set_current_enterprise_id(ORG)
+    set_current_enterprise_id(ENTERPRISE)
     yield
     set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
 
@@ -187,7 +206,7 @@ class TestOutOfBandTurn:
         ledger = InMemoryTurnLedger()
         service = _service(engine, recording_case_repository, ledger)
         resp, before, saved = await _turn(service, recording_case_repository, case)
-        assert await ledger.usage(ORG, utc_day()) == 1
+        assert await ledger.usage(_subject(case.user_id), utc_day()) == 1
         engine.process_turn.assert_not_called()
         assert resp.agent_response == ANSWER
 
@@ -253,7 +272,7 @@ class TestOutOfBandTurn:
         resp, before, saved = await _turn(
             service, recording_case_repository, case, query="What model are you?"
         )
-        assert await ledger.usage(ORG, utc_day()) == 1
+        assert await ledger.usage(_subject(case.user_id), utc_day()) == 1
         engine.process_turn.assert_not_called()
         caps = [
             c.kwargs.get("max_tokens") for c in engine.llm_provider.route.call_args_list
@@ -272,7 +291,7 @@ class TestControls:
         ledger = InMemoryTurnLedger()
         service = _service(engine, recording_case_repository, ledger, verdict="1")
         resp, before, saved = await _turn(service, recording_case_repository, case)
-        assert await ledger.usage(ORG, utc_day()) == 1
+        assert await ledger.usage(_subject(case.user_id), utc_day()) == 1
         engine.process_turn.assert_called_once()
         assert saved.turn_history[-1].outcome != TurnOutcome.OUT_OF_BAND
         assert resp.investigation_turn == resp.turn_number
@@ -304,7 +323,7 @@ class TestControls:
             )
         except Exception:
             pass  # the stubbed preprocessing is not the subject; the charge is
-        assert await ledger.usage(ORG, utc_day()) == 1
+        assert await ledger.usage(_subject(case.user_id), utc_day()) == 1
         caps = [
             c.kwargs.get("max_tokens") for c in engine.llm_provider.route.call_args_list
         ]
@@ -344,7 +363,7 @@ class TestControls:
         await _turn(
             service, recording_case_repository, case, query="write me a haiku instead"
         )
-        assert await ledger.usage(ORG, utc_day()) == 1
+        assert await ledger.usage(_subject(case.user_id), utc_day()) == 1
         engine.process_turn.assert_called_once()
 
     async def test_a_typed_answer_to_an_offered_choice_is_incident_work(
@@ -370,7 +389,7 @@ class TestControls:
             case,
             query="return to the remediation please",
         )
-        assert await ledger.usage(ORG, utc_day()) == 1
+        assert await ledger.usage(_subject(case.user_id), utc_day()) == 1
         engine.process_turn.assert_called_once()
         assert service.intent_resolver.resolve.await_count == 1
 
@@ -383,5 +402,5 @@ class TestControls:
             side_effect=RuntimeError("classifier down")
         )
         await _turn(service, recording_case_repository, case)
-        assert await ledger.usage(ORG, utc_day()) == 1
+        assert await ledger.usage(_subject(case.user_id), utc_day()) == 1
         engine.process_turn.assert_called_once()

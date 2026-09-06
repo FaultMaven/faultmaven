@@ -880,7 +880,7 @@ async def test_uploaded_at_turn_is_immutable_across_a_deduped_reupload():
         async with factory() as session:
             repo = SQLiteCaseRepository(session)
             await repo._upsert_uploaded_files(
-                case.case_id, case.uploaded_files, "org_123"
+                case.case_id, case.uploaded_files, "ent_123", None
             )
             persisted = (
                 await session.execute(

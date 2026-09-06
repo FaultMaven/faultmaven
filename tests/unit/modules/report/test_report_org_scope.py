@@ -18,8 +18,8 @@ from faultmaven.config.tenant_context import set_current_enterprise_id
 from faultmaven.modules.report.api.routes import validate_enterprise_access
 from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider
 
-CTX_ORG = "22222222-2222-2222-2222-222222222222"
-OTHER_ORG = "33333333-3333-3333-3333-333333333333"
+CTX_ENTERPRISE = "22222222-2222-2222-2222-222222222222"
+OTHER_ENTERPRISE = "33333333-3333-3333-3333-333333333333"
 
 
 @pytest.fixture(autouse=True)
@@ -28,67 +28,75 @@ def _reset_tenant_context():
     set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
 
 
-def _current_user():
+def _current_user(enterprise_id=CTX_ENTERPRISE):
+    """An account ANCHORED to the bound enterprise (ADR-017 D3).
+
+    The anchor is the membership under multi-tenant — one column,
+    ``users.enterprise_id`` — so an account without one is refused. A bare
+    ``MagicMock`` would answer the attribute with another mock and pass the
+    comparison against nothing.
+    """
     user = MagicMock()
     user.user_id = "user_123"
     user.email = "user@example.com"
+    user.enterprise_id = enterprise_id
     return user
 
 
-def _multi_provider(org_id=CTX_ORG, is_member=True):
-    """A real MultiTenantProvider backed by a mock org repository."""
-    org = MagicMock()
-    org.organization_id = org_id
-    org.name = "Acme"
+def _multi_provider(enterprise_id=CTX_ENTERPRISE, is_member=True):
+    """A real MultiTenantProvider backed by a mock enterprise repository."""
+    enterprise = MagicMock()
+    enterprise.enterprise_id = enterprise_id
+    enterprise.name = "Acme"
     repo = MagicMock()
-    repo.get_organization = AsyncMock(return_value=org)
+    repo.get_enterprise = AsyncMock(return_value=enterprise)
     repo.get_member_role = AsyncMock(return_value="role_admin" if is_member else None)
-    return MultiTenantProvider(organization_repository=repo)
+    return MultiTenantProvider(enterprise_repository=repo)
 
 
 @pytest.mark.asyncio
-async def test_passes_context_org_to_provider():
-    """The context org (not None) is threaded to get_current_enterprise."""
+async def test_passes_the_bound_enterprise_to_the_provider():
+    """The bound enterprise (not None) reaches get_current_enterprise."""
     recording = MagicMock()
     resolved = MagicMock()
-    resolved.organization_id = CTX_ORG
+    resolved.enterprise_id = CTX_ENTERPRISE
     recording.get_current_enterprise = AsyncMock(return_value=resolved)
 
-    set_current_enterprise_id(CTX_ORG)
+    set_current_enterprise_id(CTX_ENTERPRISE)
     await validate_enterprise_access(recording, _current_user())
 
     recording.get_current_enterprise.assert_awaited_once()
     _, kwargs = recording.get_current_enterprise.call_args
-    assert kwargs.get("organization_id") == CTX_ORG
+    assert kwargs.get("enterprise_id") == CTX_ENTERPRISE
 
 
 @pytest.mark.asyncio
 async def test_multi_tenant_no_longer_403s_on_matching_case():
     """The bug fix: a real MultiTenantProvider validates instead of 403-ing."""
-    set_current_enterprise_id(CTX_ORG)
-    # No exception == access granted for a case in the caller's org.
+    set_current_enterprise_id(CTX_ENTERPRISE)
+    # No exception == access granted for a case in the caller's enterprise.
     await validate_enterprise_access(
-        _multi_provider(), _current_user(), case_organization_id=CTX_ORG
+        _multi_provider(), _current_user(), case_enterprise_id=CTX_ENTERPRISE
     )
 
 
 @pytest.mark.asyncio
-async def test_multi_tenant_rejects_cross_org_case():
-    """A case owned by a different org is denied with 403."""
-    set_current_enterprise_id(CTX_ORG)
+async def test_multi_tenant_rejects_a_case_from_another_enterprise():
+    """A case owned by a different enterprise is denied with 403."""
+    set_current_enterprise_id(CTX_ENTERPRISE)
     with pytest.raises(HTTPException) as exc:
         await validate_enterprise_access(
-            _multi_provider(), _current_user(), case_organization_id=OTHER_ORG
+            _multi_provider(), _current_user(), case_enterprise_id=OTHER_ENTERPRISE
         )
     assert exc.value.status_code == 403
 
 
 @pytest.mark.asyncio
 async def test_multi_tenant_rejects_non_member():
-    """A user who is not a member of the context org is denied with 403."""
-    set_current_enterprise_id(CTX_ORG)
+    """An account anchored to another enterprise is denied with 403."""
+    set_current_enterprise_id(CTX_ENTERPRISE)
     with pytest.raises(HTTPException) as exc:
         await validate_enterprise_access(
-            _multi_provider(is_member=False), _current_user()
+            _multi_provider(), _current_user(enterprise_id=OTHER_ENTERPRISE)
         )
     assert exc.value.status_code == 403

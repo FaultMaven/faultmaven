@@ -233,7 +233,7 @@ class ICaseRepository(Protocol):
         case_id: str,
         uploaded_file: "UploadedFile",
         enterprise_id: str,
-        organization_id: Optional[str] = None,
+        organization_id: Optional[str],
     ) -> None:
         """Commit ONE uploaded_file row on its own, outside the aggregate save.
 
