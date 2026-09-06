@@ -678,7 +678,7 @@ def main() -> None:
     parser.add_argument(
         "--enterprise-id",
         required=True,
-        help="Organization the cases live in (an id, not a slug)",
+        help="Enterprise the cases live in (an id, not a slug)",
     )
     parser.add_argument(
         "--from-user",
@@ -690,7 +690,7 @@ def main() -> None:
         required=True,
         help=(
             "New owner: username, email address, or user id. Must be an active "
-            "member of --enterprise-id"
+            "account anchored to --enterprise-id"
         ),
     )
     parser.add_argument(

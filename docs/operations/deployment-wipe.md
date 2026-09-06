@@ -111,18 +111,20 @@ kubectl -n faultmaven scale deploy/faultmaven-api --replicas=0
 **Do not `DELETE` or `TRUNCATE` your way to a clean database.** It does not
 produce one, and the ways it fails are quiet:
 
-- **Migration 029 seeds `roles` / `permissions` / `role_permissions` with a bare
+- **The baseline migration seeds `roles` / `permissions` / `role_permissions` with a bare
   `op.bulk_insert`**, and Alembic will not re-run it on an already-stamped
   database. Delete those rows and the SSO login path's membership write fails its
   `role_id` FK — **every SSO login fails closed**, with nothing to restore the
   seed but a hand-written INSERT.
-- **Migration 006 seeds the default `enterprises` row** that the user repository
-  still falls back to.
+- **The same migration seeds the default `enterprises` row** that the user
+  repository still falls back to, **and the standalone `teams` row** beside it
+  — a team is now parented by its enterprise (ADR-017 D4), and the standalone
+  enterprise's default sharing unit is created with it.
 - **`operator_access_grants` and `operator_access_audit` reject DELETE and
-  TRUNCATE by trigger** (migration 036), so a blanket truncate aborts part-way
-  and leaves the wipe half-applied.
+  TRUNCATE by trigger**, so a blanket truncate aborts part-way and leaves the
+  wipe half-applied.
 
-`fm-wipe-deployment --verify` checks for exactly this: the four seeded tables
+`fm-wipe-deployment --verify` checks for exactly this: the five seeded tables
 must be **non-empty**. An empty `roles` is the signature of a DELETE-based wipe.
 
 ### PostgreSQL (Cloud)
@@ -178,7 +180,7 @@ alembic upgrade head
       fm-provision-sso-org --name … --slug … --workos-org-id org_…   (owner DSN)
       human signs in via WorkOS
       fm-promote-platform-admin <username>     (verify the derived username first)
-      fm-provision-service-account -u slack-agent -o <organization_id>
+      fm-provision-service-account -u slack-agent -o <enterprise_id>
       python -m faultmaven.jobs.run kb_seed --cross-tenant-maintenance
 11. Scale the API back up; redeploy the Slack agent.
 ```
@@ -197,12 +199,13 @@ organization provision a personal tenant on first sign-in (ADR-016 D5, #1045).
 An unmapped *organization* is still refused either way — a company is never
 provisioned by whoever signs in first.
 
-If that switch is on, `sso_personal_orgs` is a second untenanted table this wipe
-must clear (`fm-wipe-deployment` classifies it beside `sso_org_mappings`), and
-the WorkOS organizations those tenants own are **not** removed by any wipe: they
-live at the IdP. Leaving them behind is harmless — the next sign-in adopts the
-one whose `external_id` matches the subject — but an operator wiping a
-deployment for good should retire them at WorkOS separately.
+If that switch is on, `sso_personal_enterprises` is a second untenanted table
+this wipe must clear (`fm-wipe-deployment` classifies it beside
+`sso_org_mappings`), and the WorkOS organizations those tenants own are **not**
+removed by any wipe: they live at the IdP. Leaving them behind is harmless —
+the next sign-in adopts the one whose `external_id` matches the subject — but
+an operator wiping a deployment for good should retire them at WorkOS
+separately.
 
 ---
 
@@ -214,11 +217,11 @@ on a half-wiped database and only fail later, at the first SSO login.
 
 `fm-wipe-deployment --verify` is the positive check. It exits **5** unless:
 
-- every data table is empty (33 tables — case domain, identity, tenancy,
+- every data table is empty (35 tables — case domain, identity, tenancy,
   operator-governance, config overrides);
 - every migration-seeded table is **non-empty** (`roles`, `permissions`,
-  `role_permissions`, `enterprises`);
-- the stamped `alembic_version` matches the migrations' head;
+  `role_permissions`, `enterprises`, `teams`);
+- the stamped `alembic_version` matches the migration's head;
 - the vector store has no collections;
 - object storage has no objects;
 - Redis has no keys.
@@ -278,9 +281,10 @@ so the pack comes from the audited `kb_seed` job — not from a restart.
 - **Counts distinguish objects from metadata sidecars.** The filesystem backend
   writes a `<key>.meta` beside every file, so a single count of `list_keys`
   roughly doubles the real figure.
-- **The service-account org claim is not persisted.** It lives only in the token
-  chain and is re-stamped on rotation. Lose the rotated refresh token and you
-  must re-run `fm-provision-service-account -o` — see fm#819.
+- **The service-account isolation claim is not persisted.** It lives only in
+  the token chain and is re-stamped on rotation. Lose the rotated refresh token
+  and you must re-run `fm-provision-service-account -o` (`--enterprise-id`) —
+  see fm#819.
 - **`faultmaven_rehearsal`** is the flip-rehearsal namespace's database. Rehearse
   this whole procedure there, including the drop-and-recreate, before the live
   cutover; drop it at close-out.

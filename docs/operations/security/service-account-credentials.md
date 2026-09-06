@@ -45,11 +45,21 @@ kubectl exec -it deploy/faultmaven-api -- \
 
 The script:
 
-1. Creates the account if it is missing, with `account_kind='slack'` (ADR-012),
-   or reuses the existing account — keeping its `user_id`, so historical Slack
-   cases stay attached to it.
-2. Corrects `account_kind` if the account exists with the wrong one.
+1. Creates the account if it is missing, with `account_kind='service'` and
+   `service_channel='slack'` (ADR-017 D6), or reuses the existing account —
+   keeping its `user_id`, so historical Slack cases stay attached to it.
+2. Corrects **both** fields if the account exists with either one wrong. Both,
+   because they answer different questions and only the second decides the
+   derived `cases.source`: an account carrying the right kind and a NULL channel
+   opens cases stamped `copilot`, permanently — `cases.source` is immutable.
 3. Mints an initial refresh token and prints it **once**.
+
+There are exactly two account kinds — `individual` (a human) and `service` (an
+agent acting for an integration) — and which integration a service account
+serves is the separate `service_channel` column. That separation is what lets a
+second integration be a new channel rather than a third account kind.
+`--service-channel` selects it (default `slack`); `--account-kind individual`
+serves none and the channel is forced to NULL.
 
 `--token-only` puts the token alone on stdout and all progress on stderr, so it
 can be redirected straight into a secret without touching the terminal.

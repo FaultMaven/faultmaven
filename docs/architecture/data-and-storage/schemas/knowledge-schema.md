@@ -282,7 +282,8 @@ Tracks conversion requests — both document-to-runbook and case-to-runbook.
 ```sql
 CREATE TABLE conversion_jobs (
     id VARCHAR(36) PRIMARY KEY,
-    organization_id VARCHAR(36),
+    enterprise_id VARCHAR(36) NOT NULL REFERENCES enterprises(enterprise_id) ON DELETE CASCADE,  -- isolation (ADR-017 D1)
+    organization_id VARCHAR(36) REFERENCES organizations(organization_id) ON DELETE SET NULL,     -- billing attribution, nullable
     user_id VARCHAR(36) NOT NULL,
     case_id VARCHAR(36),                     -- populated when source_type = 'case'
     -- Source upload is referenced by FK; the file's name/content-type/size/path
@@ -382,7 +383,8 @@ The ChromaDB vector store holds chunk embeddings for fast semantic search. The r
 | Column | Type | Notes |
 | --- | --- | --- |
 | `item_id` | VARCHAR(36) PK | Width updated in storage redesign 2026-04 Phase 4 (FK width normalization to VARCHAR(36)) |
-| `organization_id` | VARCHAR(36) | No FK — items persist independently of org lifecycle. Width updated in storage redesign 2026-04 Phase 4 (FK width normalization to VARCHAR(36)) |
+| `enterprise_id` | VARCHAR(36) NOT NULL | The isolation tenant (ADR-017 D1); FK to `enterprises`, `ON DELETE CASCADE`. The platform tier's global rows carry the Standalone enterprise id — the global-write RLS policy arm compares against it |
+| `organization_id` | VARCHAR(36) nullable | Billing attribution, never a visibility predicate. FK `ON DELETE SET NULL` — losing a cost centre must not destroy the item it paid for. A global row is always NULL here (`knowledge_items_global_org_check`); a personal or team row may also be NULL, because an account may be in no organization (ADR-017 D3/D5) |
 | `scope` | VARCHAR(20) | `personal\|team\|global` — enforced by CHECK (Tier 1) |
 | `owner_id` | VARCHAR(36) nullable | Set when scope = personal |
 | `title` | VARCHAR(512) NOT NULL | |
@@ -423,7 +425,8 @@ The ChromaDB vector store holds chunk embeddings for fast semantic search. The r
 | Column | Type | Notes |
 | --- | --- | --- |
 | `suggestion_id` | VARCHAR(36) PK | Width updated in storage redesign 2026-04 Phase 4 (FK width normalization to VARCHAR(36)) |
-| `organization_id` | VARCHAR(36) | Width updated in storage redesign 2026-04 Phase 4 (FK width normalization to VARCHAR(36)) |
+| `enterprise_id` | VARCHAR(36) NOT NULL | The isolation tenant (ADR-017 D1); FK to `enterprises`, `ON DELETE CASCADE` |
+| `organization_id` | VARCHAR(36) nullable | Billing attribution, never a visibility predicate; FK `ON DELETE SET NULL`. Width updated in storage redesign 2026-04 Phase 4 (FK width normalization to VARCHAR(36)) |
 | `case_id` | VARCHAR(36) | Source case (logical FK — no DB constraint). Width updated in storage redesign 2026-04 Phase 4 |
 | `status` | VARCHAR(32) | `pending_review\|approved\|rejected\|draft` |
 | `suggested_title` | VARCHAR(512) NOT NULL | |
