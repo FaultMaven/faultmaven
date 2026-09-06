@@ -148,27 +148,27 @@ MUST_BE_EMPTY = frozenset(
         "reports",
         "solutions",
         "uploaded_files",
-        # Identity / tenancy. ``sso_org_mappings`` and ``sso_personal_orgs`` are
-        # deliberately untenanted (the callback that reads them is
-        # unauthenticated, so no tenant is bound yet — #869, #1045) — which is
-        # exactly why a tenant-scoped wipe would miss them and the next SSO
-        # login would land in a stale tenant.
+        # Identity / tenancy. ``sso_org_mappings`` and
+        # ``sso_personal_enterprises`` are deliberately untenanted (the callback
+        # that reads them is unauthenticated, so no tenant is bound yet — #869,
+        # #1045) — which is exactly why a tenant-scoped wipe would miss them and
+        # the next SSO login would land in a stale tenant.
         "oauth_authorization_codes",
         "organization_members",
-        # The per-UTC-day turn ledger (ADR-016 D5.3). Rows here are usage
-        # accounting for organizations the wipe removes, so a surviving row is
-        # the previous deployment's spend attached to an organization id that
-        # may be minted again — and the new tenant would start its first day
-        # already partway to its cap.
-        "organization_turn_usage",
         "organizations",
         "resource_shares",
         "sso_org_mappings",
-        "sso_personal_orgs",
+        "sso_personal_enterprises",
+        "team_invitations",
         "team_members",
-        "teams",
         "user_audit_log",
         "users",
+        # The per-UTC-day turn ledger (ADR-016 D5.3, re-keyed on a billing
+        # subject by ADR-017 D5). Rows here are usage accounting for subjects the
+        # wipe removes, so a surviving row is the previous deployment's spend
+        # attached to an id that may be minted again — and the new tenant would
+        # start its first day already partway to its cap.
+        "turn_usage",
         # Operator governance. Append-only by trigger, so these survive only a
         # drop-and-recreate — their presence after a "wipe" proves DELETE was
         # used instead, and that the RBAC seed is probably gone with it.
@@ -183,10 +183,16 @@ MUST_BE_EMPTY = frozenset(
 #: not a clean one — and for the RBAC tables it means every SSO login is broken.
 MUST_BE_SEEDED = frozenset(
     {
-        "enterprises",  # migration 006's default enterprise row
-        "permissions",  # migration 029
-        "role_permissions",  # migration 029
-        "roles",  # migration 029
+        "enterprises",  # the baseline's standalone enterprise row
+        # The standalone default team. It moved out of MUST_BE_EMPTY when the
+        # baseline started seeding it: a team is now parented by its enterprise
+        # (ADR-017 D4), and the standalone enterprise's default sharing unit is
+        # created with it. An empty ``teams`` after a wipe means the seed did not
+        # run, not that the slate is clean.
+        "teams",
+        "permissions",
+        "role_permissions",
+        "roles",
     }
 )
 

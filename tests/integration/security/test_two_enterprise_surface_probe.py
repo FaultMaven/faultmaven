@@ -102,55 +102,91 @@ Binder and tokens (Phase 2):
 
 Repositories (Phase 3): the arm-2 and arm-3 assertions are the gate.
 
-The phase ratchet
------------------
+The phase ratchet, and its end
+-----------------------------
 ``world``, ``wall_world`` and ``shared_world`` all call
 :func:`_require_enterprise_schema` **first**, before importing a single Phase-2
 name, and it ``pytest.fail``s with the catalog's own account of what is missing.
 ``test_the_schema_carries_the_enterprise_key`` makes the identical assertion as a
-test, so the reason for the red is a FAIL row rather than only a fixture error.
+test, so the reason for a red run is a FAIL row rather than only a fixture error.
 
-Every test that cannot pass before its phase lands carries a **strict** xfail —
-:data:`phase1_pending` on the schema test, :data:`phase3_pending` on every
-world-backed test. Strict is what makes it a ratchet rather than a mute button:
-the moment a phase makes one of these pass, it turns XPASS → FAIL, and that
-phase's PR must remove the marker for exactly the tests it turned green. A
-fixture ``pytest.fail`` under an xfail marker is reported *xfailed*, not error
-(verified empirically, pytest ``_pytest/skipping.py`` applies the marker to any
-phase's exception, not only the call phase), so a run on main has zero ``error``,
-zero ``failed`` and zero ``skipped`` rows — which matters because CI's
-``-m postgres`` gate greps for ``skipped`` and ``needs: test-postgres`` blocks
-every other PR.
+Every test here once carried a **strict** xfail (``phase3_pending``), which is
+what forced each landing phase to unmark exactly the tests it turned green rather
+than leaving a mute button behind. **Every marker is now gone**: the schema test's
+went with Phase 1, and the world-backed ones went with Phase 2, which is the
+phase that made them pass. Nothing in this module is xfailed, xpassed or skipped
+any more — which matters because CI's ``-m postgres`` gate greps for ``skipped``
+and ``needs: test-postgres`` blocks every other PR.
 
-Two tests are deliberately **unmarked** because they pass on main today:
+Two tests were always unmarked, because they passed even on main:
 ``test_every_tenant_scoped_route_is_in_the_inventory`` and
 ``test_the_inventory_states_a_reason_for_every_unprobed_surface``. They read the
 OpenAPI document and :data:`SURFACE_INVENTORY` and nothing else, and the
 inventory is carried over from the predecessor entry for entry — so when Phase 1
-deletes that module, no coverage decision is lost with it.
+deleted that module, no coverage decision was lost with it.
 
 Shown to fail against a broken boundary
 ---------------------------------------
-Not yet, and the honest statement of why: **no mutation can be run on main,
-because the boundary this module probes does not exist**. The predecessor's
-mutation table was earned by breaking a guard and watching a named assertion go
-red; here every world-backed assertion is red already, for the reason the schema
-check prints, so a mutation would change nothing observable. The table below is
-left for the phase that first turns these green to fill in, and it is not
-optional: a probe that has only ever been red is exactly as uninformative as one
-that has only ever been green.
+Filled in on the revision that turned these green (Phase 2). Each guard the
+paragraph above names was broken on a working tree, the whole module was run, the
+red rows were recorded, and the file was restored **by content** (byte-for-byte
+against a pre-mutation copy, verified with ``git diff``), one mutation at a time.
 
-===============================================  ==========================
-Mutation (reverted from an in-memory copy)       Went red
-===============================================  ==========================
-*(Phase 3 fills this in, on the revision that    *(to be recorded)*
-turns the world-backed tests green: the
-enterprise arm of the case read filter, the
-share allowlist's enterprise match, the KB
-inventory clause, ``OperatorUserScope``'s
-enterprise confinement, and the binder's
-refusal of a claim-less token.)*
-===============================================  ==========================
+Two rows are negative results and are kept rather than replaced with a mutation
+that would have gone red. They say something this module could not otherwise
+state: the per-query tenant terms in the SQL are **defence in depth behind RLS,
+not the boundary**, and this probe — which deliberately connects as the limited
+``faultmaven_app`` role — cannot distinguish them from the policy underneath. A
+green run therefore does not attest to those two lines; the RLS suite
+(``tests/integration/test_rls_tenant_isolation.py``) is what does.
+
+==================================================  ============================
+Mutation (reverted by content afterwards)           Went red
+==================================================  ============================
+``CaseService._resolve_shared_case_ids`` passes a   4: the whole arm-2 battery —
+foreign enterprise to the share lookup (the         case list, detail/ui/
+enterprise arm of the case read filter)             transcript, search, team
+                                                    filter. The SHARED case
+                                                    vanishes, so every control
+                                                    fails: the arm is what makes
+                                                    a share visible at all.
+``IShareRepository.list_resource_ids`` drops        **nothing** — RLS on
+``ResourceShareModel.enterprise_id ==               ``resource_shares`` already
+enterprise_id`` (the share allowlist's              scopes the read to the bound
+enterprise match)                                   enterprise, and in arms 2
+                                                    and 3 both parties share
+                                                    one. Defence in depth, and
+                                                    unobservable from here.
+``IShareRepository.list_resource_ids`` drops        1:
+``scope_id.in_(scope_ids)`` (the same allowlist's   ``test_semantic_kb_retrieval
+team match)                                         _does_not_reach_the_other_
+                                                    party[same_enterprise_no_
+                                                    team]`` — A's allowlist
+                                                    swallows B's team-shared
+                                                    runbook, which is precisely
+                                                    the arm #1168 says the
+                                                    vector layer takes on trust.
+``_inventory_visibility_clause`` drops              **nothing** — same reason as
+``KnowledgeItemModel.enterprise_id ==               the share row above.
+enterprise_id`` (the KB inventory clause's
+tenant term)
+``_inventory_visibility_clause`` drops its          5: the KB inventory, by-id
+owner/share arms and admits every item in the       read and full-text search in
+bound enterprise (the same clause's                 arm 3, and both KB tests in
+consent term)                                       arm 2. The clause, not the
+                                                    tenant, is what keeps a
+                                                    colleague's runbook out.
+``OperatorUserScope.admits`` returns ``True`` and   3:
+``member_ids`` returns ``None`` (the enterprise     ``..._cannot_read_another_
+confinement)                                        enterprises_user``,
+                                                    ``..._cannot_mutate_...``,
+                                                    ``neither_user_listing_
+                                                    names_or_counts_...``.
+``bind_request_enterprise_context`` falls back to   2: ``test_a_token_without_an_
+``users.enterprise_id`` when the claim is absent    enterprise_claim_is_refused``
+(the binder's refusal of a claim-less token)        in both arms — the fallback
+                                                    ADR-017 forbids by name.
+==================================================  ============================
 """
 
 from __future__ import annotations
@@ -170,10 +206,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from faultmaven.config.constants import (
-    STANDALONE_ENTERPRISE_ID,
-    STANDALONE_ORG_ID,
-)
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from tests.integration.security.conftest import (
     create_limited_role,
     drop_limited_role,
@@ -189,32 +222,6 @@ pytestmark = [
         reason="PostgreSQL-only; set DATABASE_URL to a PG instance to run.",
     ),
 ]
-
-#: The schema test's ratchet. Removed by the Phase-1 PR, which is the PR that
-#: makes it pass.
-phase1_pending = pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "ADR-017 Phase 1 (schema): no table carries enterprise_id, every policy "
-        "is keyed on app.current_org_id, and the tables the ADR retires are "
-        "still present. Remove this marker in the Phase-1 PR."
-    ),
-)
-
-#: Every world-backed test's ratchet. The world fixtures cannot even be built
-#: until Phase 1 lands, and the assertions inside them cannot hold until the
-#: binder (Phase 2) and the repositories (Phase 3) key on the enterprise. Strict,
-#: so the phase that turns one of these green is *forced* to unmark it.
-phase3_pending = pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "ADR-017 Phase 3 (repositories & sharing): the isolation key is still "
-        "the organization, so the world fixtures refuse to build (Phase 1) and "
-        "the surfaces below are not enterprise-scoped (Phases 2-3). Remove this "
-        "marker for exactly the tests the landing phase turns green."
-    ),
-)
-
 
 # =============================================================================
 # The contract, as constants the schema check reads
@@ -283,12 +290,20 @@ NULLABLE_BILLING_ORG_TABLES = frozenset(
 TENANT_GUC = "app.current_enterprise_id"
 RETIRED_GUC = "app.current_org_id"
 
-#: The organization sentinel. ``knowledge_items``' global-write arms compare the
-#: bound tenant against a sentinel; under ADR-017 that comparison moves to
-#: ``STANDALONE_ENTERPRISE_ID`` and this value must appear in no policy body.
-#: Taken from ``config.constants`` rather than spelled out, so a probe asserting
-#: the sentinel is gone cannot go on passing after the constant is renumbered.
-RETIRED_ORG_SENTINEL = STANDALONE_ORG_ID
+#: The RETIRED organization sentinel. ``knowledge_items``' global-write arms
+#: compare the bound tenant against a sentinel; under ADR-017 that comparison
+#: moves to ``STANDALONE_ENTERPRISE_ID`` and this value must appear in no policy
+#: body.
+#:
+#: Spelled out rather than imported from ``config.constants``, which is where it
+#: was read from until Phase 2 DELETED ``STANDALONE_ORG_ID`` outright (the owner
+#: rule: retired mechanisms are deleted, not deprecated). A literal is the only
+#: way left to name a value that no longer exists in the code, and the thing this
+#: constant has to survive — a policy body still comparing against the old
+#: sentinel — is a fact about a database, not about a Python name. If a future
+#: baseline reintroduces the value under another name, the catalog check below
+#: still reads the body and still fails on this string.
+RETIRED_ORG_SENTINEL = "00000000-0000-0000-0000-000000000001"
 
 #: Deleted, not deprecated (owner rule, 2026-09-06).
 RETIRED_TABLES = ("organization_turn_usage", "sso_personal_orgs")
@@ -960,6 +975,9 @@ def _wire_services(app, chroma) -> None:
     )
     from faultmaven.infrastructure.observability.tracing import OpikTracer
     from faultmaven.infrastructure.persistence.database import get_db_session
+    from faultmaven.infrastructure.persistence.sessionless_enterprise_repository import (  # noqa: E501
+        SessionlessEnterpriseRepository,
+    )
     from faultmaven.infrastructure.persistence.sessionless_operator_audit_repository import (  # noqa: E501
         SessionlessOperatorAuditRepository,
     )
@@ -1044,7 +1062,7 @@ def _wire_services(app, chroma) -> None:
     app.state.knowledge_service = knowledge_service
     app.state.organization_repository = organization_repository
     app.state.tenant_provider = MultiTenantProvider(
-        organization_repository=organization_repository
+        enterprise_repository=SessionlessEnterpriseRepository()
     )
     app.state.operator_audit_repository = SessionlessOperatorAuditRepository()
     app.state.operator_grant_repository = SessionlessOperatorGrantRepository()
@@ -1210,7 +1228,21 @@ async def _seed_case_with_content(
         evidence_id=evidence_id,
         category=EvidenceCategory.SYMPTOM_EVIDENCE,
         primary_purpose="M1",
-        summary=f"{secret_prefix}-payroll-dsn",
+        # Padded past ``MIN_CONTENT_LENGTH_FOR_TITLE`` (200 characters of
+        # *titleable substance*, which on this case is the evidence summary —
+        # the transcript line is one word and the substance extractor drops it).
+        # ``POST /cases/{case_id}/title`` refuses a thinner case AFTER loading it
+        # and passing the tenant check, with a 422, and the case-addressed
+        # battery's control reads a 422 as "the body never reached the
+        # boundary". Without this the parametrisation measures the substance
+        # gate instead of the wall. The marker stays a PREFIX, so every
+        # assertion that scans for it is unaffected.
+        summary=(
+            f"{secret_prefix}-payroll-dsn: the connection pool saturates under "
+            "sustained load and the service begins timing out; a restart clears "
+            "it for a few minutes and then it returns, which is the symptom "
+            "this case exists to explain."
+        ),
         source_type=EvidenceSourceType.LOGS,
         source_file_id=file_id,
         collected_by=user_id,
@@ -2224,7 +2256,6 @@ def _keys(payload: Any) -> set[str]:
 # =============================================================================
 
 
-@phase1_pending
 async def test_the_schema_carries_the_enterprise_key(probe_app):
     """The same assertion the world fixtures make, so the red is a FAIL row.
 
@@ -2247,7 +2278,6 @@ async def test_the_schema_carries_the_enterprise_key(probe_app):
 # and nothing else — whichever layer happens to be doing the refusing.
 
 
-@phase3_pending
 async def test_the_case_list_shows_a_only_a_and_b_only_b(world):
     """The collection read. Both directions, because "empty" is not isolation."""
     mine = await as_a(world, "GET", "/api/v1/cases")
@@ -2264,7 +2294,6 @@ async def test_the_case_list_shows_a_only_a_and_b_only_b(world):
     assert_no_b_content(mine, "GET /api/v1/cases")
 
 
-@phase3_pending
 async def test_a_case_detail_read_by_the_other_party_is_refused(world):
     """The id-addressed read, which is where a missing predicate shows up.
 
@@ -2279,7 +2308,6 @@ async def test_a_case_detail_read_by_the_other_party_is_refused(world):
     assert_refused(attack, "GET /api/v1/cases/{case_id}")
 
 
-@phase3_pending
 async def test_the_case_ui_projection_is_refused_to_the_other_party(world):
     """``/ui`` is a second, independently written read of the same aggregate."""
     control = await as_b(world, "GET", f"/api/v1/cases/{world.b.case.case_id}/ui")
@@ -2289,7 +2317,6 @@ async def test_the_case_ui_projection_is_refused_to_the_other_party(world):
     assert_refused(attack, "GET /api/v1/cases/{case_id}/ui")
 
 
-@phase3_pending
 async def test_the_transcript_is_refused_to_the_other_party(world):
     """The transcript is the highest-value content on a case."""
     path = f"/api/v1/cases/{world.b.case.case_id}/messages"
@@ -2301,7 +2328,6 @@ async def test_the_transcript_is_refused_to_the_other_party(world):
     assert_refused(attack, "GET /api/v1/cases/{case_id}/messages")
 
 
-@phase3_pending
 async def test_case_search_does_not_match_the_other_partys_cases(world):
     """``POST /cases/search`` — a query aimed straight at B's marker string.
 
@@ -2322,7 +2348,6 @@ async def test_case_search_does_not_match_the_other_partys_cases(world):
     assert_no_b_content(attack, "POST /api/v1/cases/search")
 
 
-@phase3_pending
 async def test_a_search_body_naming_the_other_party_does_not_widen_the_scope(world):
     """The body carries tenant-shaped fields. Are they honoured?
 
@@ -2359,7 +2384,6 @@ async def test_a_search_body_naming_the_other_party_does_not_widen_the_scope(wor
     assert_no_b_content(attack, "POST /api/v1/cases/search (foreign ids injected)")
 
 
-@phase3_pending
 async def test_case_analytics_are_refused_to_the_other_party(world):
     """Counts are inference: "how many messages does that case have" is content."""
     path = f"/api/v1/cases/{world.b.case.case_id}/analytics"
@@ -2376,7 +2400,6 @@ async def test_case_analytics_are_refused_to_the_other_party(world):
 # =============================================================================
 
 
-@phase3_pending
 async def test_evidence_is_refused_to_the_other_party(world):
     """Evidence carries the verbatim system output — the sharpest content."""
     listing = f"/api/v1/cases/{world.b.case.case_id}/evidence"
@@ -2393,7 +2416,6 @@ async def test_evidence_is_refused_to_the_other_party(world):
     assert_refused(await as_a(world, "GET", item), "GET .../evidence/{evidence_id}")
 
 
-@phase3_pending
 async def test_uploaded_files_are_refused_to_the_other_party(world):
     """Filenames alone are content: they name systems, tenants and people."""
     listing = f"/api/v1/cases/{world.b.case.case_id}/uploaded-files"
@@ -2409,7 +2431,6 @@ async def test_uploaded_files_are_refused_to_the_other_party(world):
     assert_refused(await as_a(world, "GET", item), "GET .../uploaded-files/{file_id}")
 
 
-@phase3_pending
 async def test_the_case_data_surface_is_refused_to_the_other_party(world):
     """``/cases/{id}/data`` — read AND delete, both gated on the same case.
 
@@ -2436,7 +2457,6 @@ async def test_the_case_data_surface_is_refused_to_the_other_party(world):
 # =============================================================================
 
 
-@phase3_pending
 async def test_case_reports_are_refused_to_the_other_party(world):
     """Both report surfaces: the case-nested one and the report-id one."""
     nested = f"/api/v1/cases/{world.b.case.case_id}/reports"
@@ -2451,7 +2471,6 @@ async def test_case_reports_are_refused_to_the_other_party(world):
         assert_refused(await as_a(world, "GET", path), f"GET {path}")
 
 
-@phase3_pending
 async def test_a_report_cannot_be_edited_or_deleted_by_the_other_party(world):
     """Mutation, not just reading. The destructive half of the same surface.
 
@@ -2493,7 +2512,6 @@ async def test_a_report_cannot_be_edited_or_deleted_by_the_other_party(world):
     assert row[1] is False, "A's refused link-case closed B's report anyway"
 
 
-@phase3_pending
 async def test_report_recommendations_do_not_confirm_the_other_partys_case(world):
     """A refusal must not distinguish "not yours" from "wrong state".
 
@@ -2515,7 +2533,6 @@ async def test_report_recommendations_do_not_confirm_the_other_partys_case(world
     assert_no_b_content(attack, path)
 
 
-@phase3_pending
 async def test_conversion_jobs_and_drafts_are_refused_to_the_other_party(world):
     """The runbook-conversion surface: job listing, job detail, by-case, drafts."""
     listing = "/api/v1/knowledge/conversions"
@@ -2548,7 +2565,6 @@ async def test_conversion_jobs_and_drafts_are_refused_to_the_other_party(world):
     assert_refused(await as_a(world, "GET", by_case), f"GET {by_case}")
 
 
-@phase3_pending
 async def test_a_conversion_draft_cannot_be_edited_or_discarded_across_the_wall(world):
     """The draft mutations, checked against the row rather than the status."""
     draft = (
@@ -2579,7 +2595,6 @@ async def test_a_conversion_draft_cannot_be_edited_or_discarded_across_the_wall(
 # =============================================================================
 
 
-@phase3_pending
 async def test_the_knowledge_inventory_shows_each_party_only_its_own(world):
     """Both scopes at once: the personal item and the team-shared one.
 
@@ -2606,7 +2621,6 @@ async def test_the_knowledge_inventory_shows_each_party_only_its_own(world):
     assert_no_b_content(mine, "GET /api/v1/knowledge/documents")
 
 
-@phase3_pending
 async def test_a_knowledge_item_is_not_readable_by_id_across_the_wall(world):
     """404, identical to an absent id: the refusal must not confirm existence."""
     for item_id in (world.b.kb_personal_id, world.b.kb_team_id):
@@ -2623,7 +2637,6 @@ async def test_a_knowledge_item_is_not_readable_by_id_across_the_wall(world):
             assert_no_b_content(attack, f"GET {path}")
 
 
-@phase3_pending
 async def test_a_knowledge_item_cannot_be_edited_or_deleted_across_the_wall(world):
     """The write half, checked against the row.
 
@@ -2680,7 +2693,6 @@ async def test_a_knowledge_item_cannot_be_edited_or_deleted_across_the_wall(worl
         assert "pwned" not in (tags or []), "a refused bulk-update rewrote B's tags"
 
 
-@phase3_pending
 async def test_full_text_knowledge_search_does_not_reach_the_other_party(world):
     """The keyword arm, queried with B's marker string.
 
@@ -2704,7 +2716,6 @@ async def test_full_text_knowledge_search_does_not_reach_the_other_party(world):
     )
 
 
-@phase3_pending
 async def test_semantic_kb_retrieval_does_not_reach_the_other_party(world):
     """The **vector** surface — the one #1168 says is derived, not enforced.
 
@@ -2744,7 +2755,6 @@ async def test_semantic_kb_retrieval_does_not_reach_the_other_party(world):
 # exactly the shape a "delete is idempotent, absent is fine" refactor produces.
 
 
-@phase3_pending
 async def test_the_other_partys_case_survives_every_mutation_a_tries(world):
     """Update, close and delete, in that order, then read the row back."""
     case_id = world.b.case.case_id
@@ -2787,7 +2797,6 @@ async def test_the_other_partys_case_survives_every_mutation_a_tries(world):
     ), "control: B cannot update B's own case, so A's 404 proves nothing"
 
 
-@phase3_pending
 async def test_a_case_cannot_be_shared_into_the_other_partys_team(world):
     """``team-shares`` writes a ``resource_shares`` row — the KB allowlist arm.
 
@@ -2836,7 +2845,6 @@ async def test_a_case_cannot_be_shared_into_the_other_partys_team(world):
     )
 
 
-@phase3_pending
 async def test_the_team_listing_never_names_the_other_partys_team(world):
     """``GET /teams`` — the input to every share-mediated read.
 
@@ -2855,7 +2863,6 @@ async def test_the_team_listing_never_names_the_other_partys_team(world):
     assert _ids(mine.json(), "enterprise_id") == {world.a.enterprise_id}
 
 
-@phase3_pending
 async def test_a_tenant_admin_reaches_no_admin_route_at_all(world):
     """``roles: ["user", "admin"]`` is an organization role. It buys nothing here.
 
@@ -2905,7 +2912,6 @@ async def test_a_tenant_admin_reaches_no_admin_route_at_all(world):
         assert_no_b_content(response, f"{method} {path}")
 
 
-@phase3_pending
 async def test_a_token_without_an_enterprise_claim_is_refused(world):
     """No claim, no tenant — and no fallback to the user row (ADR-017 D6).
 
@@ -3008,7 +3014,12 @@ CASE_ADDRESSED_OPERATIONS = [
     pytest.param(
         "POST",
         "/api/v1/cases/{case_id}/sessions/sess_probe_0001/complete",
-        {},
+        # ``findings_summary`` is a REQUIRED field on this route's body, so an
+        # empty one dies in request validation and the control's 422 guard fires
+        # for a reason that has nothing to do with the boundary. Filled in for
+        # the same reason every other body here is: a parametrisation that never
+        # reaches the tenant check asserts nothing.
+        {"findings_summary": "probe"},
         id="session-complete",
     ),
     pytest.param(
@@ -3020,7 +3031,6 @@ CASE_ADDRESSED_OPERATIONS = [
 ]
 
 
-@phase3_pending
 @pytest.mark.parametrize("method,template,body", CASE_ADDRESSED_OPERATIONS)
 async def test_every_case_addressed_operation_refuses_the_other_party(
     world, method, template, body
@@ -3062,7 +3072,6 @@ async def test_every_case_addressed_operation_refuses_the_other_party(
     assert_refused(response, f"{method} {path}")
 
 
-@phase3_pending
 async def test_a_refused_cross_wall_turn_charges_nobodys_daily_allowance(world):
     """The per-tenant turn cap must not be spendable by probing (ADR-016 D5.3).
 
@@ -3098,7 +3107,6 @@ async def test_a_refused_cross_wall_turn_charges_nobodys_daily_allowance(world):
     )
 
 
-@phase3_pending
 async def test_report_generation_by_case_id_refuses_the_other_party(world):
     """``POST /reports/generate?case_id=...`` — the case id rides in the query.
 
@@ -3120,7 +3128,6 @@ async def test_report_generation_by_case_id_refuses_the_other_party(world):
     assert_no_b_content(attack, f"POST {path}")
 
 
-@phase3_pending
 async def test_the_debug_causal_graph_answers_content_to_one_party_only(world):
     """A development-only route that is NOT in the published contract.
 
@@ -3147,7 +3154,6 @@ async def test_the_debug_causal_graph_answers_content_to_one_party_only(world):
     assert_no_b_content(attack, f"GET {path}")
 
 
-@phase3_pending
 async def test_a_case_created_by_a_lands_in_as_enterprise_and_no_organization(world):
     """Creation, the one write where the tenant is chosen rather than checked.
 
@@ -3197,7 +3203,6 @@ async def test_a_case_created_by_a_lands_in_as_enterprise_and_no_organization(wo
             await _delete_case_rows(conn, [case_id])
 
 
-@phase3_pending
 async def test_the_case_list_team_filter_cannot_name_the_other_partys_team(world):
     """``GET /cases?team_id=`` — a caller-supplied team id on a read.
 
@@ -3213,7 +3218,6 @@ async def test_the_case_list_team_filter_cannot_name_the_other_partys_team(world
     assert_no_b_content(attack, "GET /api/v1/cases?team_id=<B's team>")
 
 
-@phase3_pending
 async def test_a_runbook_cannot_be_published_into_the_other_partys_team(world):
     """``POST /knowledge/runbooks/create`` with ``team_id`` naming B's team.
 
@@ -3314,7 +3318,6 @@ async def test_a_runbook_cannot_be_published_into_the_other_partys_team(world):
 # claim.
 
 
-@phase3_pending
 async def test_knowledge_suggestions_are_scoped_to_the_operators_own_enterprise(
     wall_world,
 ):
@@ -3366,7 +3369,6 @@ async def test_knowledge_suggestions_are_scoped_to_the_operators_own_enterprise(
     ), "a refused approve/reject changed B's suggestion anyway"
 
 
-@phase3_pending
 async def test_the_cross_tenant_case_listing_is_refused_under_multi_tenant(wall_world):
     """``/admin/cases`` refuses rather than serving an RLS-truncated answer.
 
@@ -3383,7 +3385,6 @@ async def test_the_cross_tenant_case_listing_is_refused_under_multi_tenant(wall_
     assert_no_b_content(response, "GET /api/v1/admin/cases")
 
 
-@phase3_pending
 async def test_an_operator_without_a_grant_cannot_open_another_enterprises_case(
     wall_world,
 ):
@@ -3406,7 +3407,6 @@ async def test_an_operator_without_a_grant_cannot_open_another_enterprises_case(
         assert_no_b_content(response, f"GET {path}")
 
 
-@phase3_pending
 async def test_a_break_glass_grant_unlocks_exactly_the_case_it_names(wall_world):
     """The audited escape hatch — and its bound.
 
@@ -3486,7 +3486,6 @@ async def test_a_break_glass_grant_unlocks_exactly_the_case_it_names(wall_world)
             await _delete_case_rows(conn, [second.case_id])
 
 
-@phase3_pending
 async def test_an_operator_cannot_read_another_enterprises_user(wall_world):
     """``GET /admin/users/{user_id}`` resolves inside the operator's enterprise.
 
@@ -3530,7 +3529,6 @@ async def test_an_operator_cannot_read_another_enterprises_user(wall_world):
     assert trail == 0
 
 
-@phase3_pending
 async def test_an_operator_cannot_mutate_another_enterprises_user_account(wall_world):
     """The same surface writes, too — and none of the writes land.
 
@@ -3567,7 +3565,6 @@ async def test_an_operator_cannot_mutate_another_enterprises_user_account(wall_w
     assert "admin" not in (dev_roles or ""), "the cross-enterprise role change landed"
 
 
-@phase3_pending
 async def test_the_operator_still_administers_their_own_enterprises_users(wall_world):
     """The positive control. Refusing everything would pass the two above."""
     world = wall_world
@@ -3601,7 +3598,6 @@ async def test_the_operator_still_administers_their_own_enterprises_users(wall_w
     assert is_active is False, "control: the 200 did not deactivate the account"
 
 
-@phase3_pending
 async def test_neither_user_listing_names_or_counts_the_other_enterprise(wall_world):
     """The two listings, including the ``total`` — itself a disclosure.
 
@@ -3642,7 +3638,6 @@ async def test_neither_user_listing_names_or_counts_the_other_enterprise(wall_wo
         assert row["user_id"] in own_members
 
 
-@phase3_pending
 async def test_the_grant_listing_filter_cannot_name_another_enterprise(wall_world):
     """``GET /admin/grants?enterprise_id=...`` — a caller-supplied filter.
 
@@ -3716,7 +3711,6 @@ async def as_teammate(world, method: str, path: str, **kwargs):
     return await _call(world, world.token_b, method, path, **kwargs)
 
 
-@phase3_pending
 async def test_the_case_list_shows_the_shared_case_and_not_the_private_one(
     shared_world,
 ):
@@ -3734,7 +3728,6 @@ async def test_the_case_list_shows_the_shared_case_and_not_the_private_one(
     assert_no_private_content(listing, "GET /api/v1/cases (teammate)")
 
 
-@phase3_pending
 async def test_detail_ui_and_transcript_follow_the_share(shared_world):
     """The id-addressed reads: shared opens, private is refused, per surface."""
     world = shared_world
@@ -3762,7 +3755,6 @@ async def test_detail_ui_and_transcript_follow_the_share(shared_world):
         assert_no_private_content(private, f"GET /api/v1/cases/<private>{suffix}")
 
 
-@phase3_pending
 async def test_case_search_finds_the_shared_case_and_not_the_private_one(shared_world):
     """Search: the caller supplies the term, so a leak looks like a good result."""
     world = shared_world
@@ -3810,7 +3802,6 @@ async def test_case_search_finds_the_shared_case_and_not_the_private_one(shared_
     )
 
 
-@phase3_pending
 async def test_the_team_filter_lists_the_shared_case_only(shared_world):
     """``GET /cases?team_id=T`` — the facet a share badge is rendered from."""
     world = shared_world
@@ -3828,7 +3819,6 @@ async def test_the_team_filter_lists_the_shared_case_only(shared_world):
     assert_no_private_content(filtered, "GET /api/v1/cases?team_id=T")
 
 
-@phase3_pending
 async def test_the_kb_inventory_and_by_id_read_follow_the_team_share(shared_world):
     """The knowledge surfaces, listing and id-addressed."""
     world = shared_world
@@ -3863,7 +3853,6 @@ async def test_the_kb_inventory_and_by_id_read_follow_the_team_share(shared_worl
         )
 
 
-@phase3_pending
 async def test_full_text_and_semantic_kb_search_follow_the_team_share(shared_world):
     """Both retrieval arms, keyword and vector.
 
@@ -3910,7 +3899,6 @@ async def test_full_text_and_semantic_kb_search_follow_the_team_share(shared_wor
     assert_no_private_content(semantic, "POST /api/v1/knowledge/search (teammate)")
 
 
-@phase3_pending
 async def test_the_team_listing_is_enterprise_keyed_and_names_no_organization(
     shared_world,
 ):
@@ -3938,7 +3926,6 @@ async def test_the_team_listing_is_enterprise_keyed_and_names_no_organization(
         )
 
 
-@phase3_pending
 async def test_a_created_case_is_stamped_with_the_enterprise_and_the_billing_org(
     shared_world,
 ):
@@ -3989,7 +3976,6 @@ async def test_a_created_case_is_stamped_with_the_enterprise_and_the_billing_org
             await _delete_case_rows(conn, [case_id])
 
 
-@phase3_pending
 async def test_only_the_owner_can_unshare_or_reshare(shared_world):
     """A share is read visibility, not ownership.
 
@@ -4052,7 +4038,6 @@ async def test_only_the_owner_can_unshare_or_reshare(shared_world):
     )
 
 
-@phase3_pending
 async def test_a_share_grants_read_not_write(shared_world):
     """The mutation battery against a case B can legitimately READ.
 

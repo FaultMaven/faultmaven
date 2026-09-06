@@ -104,7 +104,8 @@ from faultmaven.models.case import Case, CaseState
 # Create a case (just a Python object)
 case = Case(
     user_id="user_123",
-    organization_id="org_456",
+    enterprise_id="ent_456",   # required — the isolation boundary (ADR-017 D1)
+    organization_id=None,       # optional — billing attribution only (ADR-017 D2)
     title="API Error Investigation",
     state=CaseState.INVESTIGATING
 )
@@ -461,7 +462,7 @@ def mock_repository():
     # Configure mock behavior
     repo.save.return_value = Case(
         user_id="test",
-        organization_id="org",
+        enterprise_id="ent_test",
         title="Test Case",
         state=CaseState.INVESTIGATING
     )
@@ -482,7 +483,7 @@ async def test_process_turn_updates_case(mock_repository):
     # 2. Create test case
     case = Case(
         user_id="test",
-        organization_id="org",
+        enterprise_id="ent_test",
         title="Test",
         state=CaseState.INVESTIGATING
     )
@@ -532,7 +533,7 @@ async def test_engine_with_real_database(tmp_path):
     )
 
     # Test with real storage
-    case = Case(user_id="test", organization_id="org", title="Test")
+    case = Case(user_id="test", enterprise_id="ent_test", title="Test")
     result = await engine.process_turn(case, "Test")
 
     # Verify case was actually saved to database

@@ -524,7 +524,7 @@ FAKE_JOB_MODULE = "tests_fake_job_module_p3"
 def _fake_job(tenant_scope, mock_container, mock_settings, provider="multi"):
     """Register a fake job module and patch the runner's boot gates.
 
-    Yields (job_run_mock, rls_guard_mock, set_org_mock, maintenance_guard_mock).
+    Yields (job_run_mock, rls_guard_mock, set_enterprise_mock, maintenance_guard_mock).
     """
     module = types.ModuleType(FAKE_JOB_MODULE)
     module.run = AsyncMock(return_value={"status": "completed"})
@@ -534,7 +534,7 @@ def _fake_job(tenant_scope, mock_container, mock_settings, provider="multi"):
 
     rls_guard = AsyncMock()
     maintenance_guard = AsyncMock()
-    set_org = MagicMock()
+    set_enterprise = MagicMock()
     try:
         with (
             patch(
@@ -558,13 +558,16 @@ def _fake_job(tenant_scope, mock_container, mock_settings, provider="multi"):
                 ".assert_maintenance_db_role_posture",
                 maintenance_guard,
             ),
-            patch("faultmaven.config.tenant_context.set_current_org_id", set_org),
+            patch(
+                "faultmaven.config.tenant_context.set_current_enterprise_id",
+                set_enterprise,
+            ),
             patch.dict(
                 "faultmaven.jobs.run.AVAILABLE_JOBS",
                 {"fake_job": FAKE_JOB_MODULE},
             ),
         ):
-            yield module.run, rls_guard, set_org, maintenance_guard
+            yield module.run, rls_guard, set_enterprise, maintenance_guard
     finally:
         sys.modules.pop(FAKE_JOB_MODULE, None)
 
@@ -583,7 +586,7 @@ class TestJobTenantScopeGates:
         with _fake_job("cross_tenant", mock_container, mock_settings) as (
             job_run,
             _,
-            _set_org,
+            _set_enterprise,
             _maint,
         ):
             with pytest.raises(JobTenantScopeError):
@@ -594,17 +597,17 @@ class TestJobTenantScopeGates:
         mock_container.initialize.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_org_job_requires_explicit_org_under_multi(
+    async def test_org_job_requires_explicit_enterprise_under_multi(
         self, mock_container, mock_settings
     ):
-        """An org-scoped job without --organization-id fails closed under multi
-        (the contextvar default is the never-seeded Standalone org)."""
+        """An org-scoped job without --enterprise-id fails closed under multi
+        (the contextvar default is the never-seeded Standalone enterprise)."""
         from faultmaven.jobs.run import JobTenantScopeError, run_job
 
         with _fake_job("org", mock_container, mock_settings) as (
             job_run,
             _,
-            _set_org,
+            _set_enterprise,
             _maint,
         ):
             with pytest.raises(JobTenantScopeError):
@@ -616,51 +619,52 @@ class TestJobTenantScopeGates:
     async def test_org_job_binds_tenant_context_under_multi(
         self, mock_container, mock_settings
     ):
-        """An org-scoped job with an explicit org binds the tenant contextvar
-        before running, so every DB transaction is RLS-scoped to that org."""
+        """An org-scoped job with an explicit enterprise binds the tenant
+        contextvar before running, so every DB transaction is RLS-scoped to that
+        enterprise."""
         from faultmaven.jobs.run import run_job
 
         with _fake_job("org", mock_container, mock_settings) as (
             job_run,
             rls_guard,
-            set_org,
+            set_enterprise,
             _maint,
         ):
             # The binding must happen BEFORE the job executes — a run with the
             # contextvar still at its default is exactly the P3 hole.
             def _assert_bound_then_complete(**kwargs):
                 assert (
-                    set_org.called
+                    set_enterprise.called
                 ), "tenant context must be bound before the job runs"
                 return {"status": "completed"}
 
             job_run.side_effect = _assert_bound_then_complete
 
-            result = await run_job("fake_job", organization_id="org_alpha")
+            result = await run_job("fake_job", enterprise_id="ent_alpha")
 
         assert result["status"] == "completed"
-        set_org.assert_called_once_with("org_alpha")
+        set_enterprise.assert_called_once_with("ent_alpha")
         rls_guard.assert_awaited_once_with(is_multi_tenant=True)
         job_run.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_tenant_neutral_job_runs_under_multi_without_org(
+    async def test_tenant_neutral_job_runs_under_multi_without_enterprise(
         self, mock_container, mock_settings
     ):
         """A tenant-neutral job (no tenanted DB access) runs under multi with
-        no org binding."""
+        no enterprise binding."""
         from faultmaven.jobs.run import run_job
 
         with _fake_job("tenant_neutral", mock_container, mock_settings) as (
             job_run,
             _,
-            set_org,
+            set_enterprise,
             _maint,
         ):
             result = await run_job("fake_job")
 
         assert result["status"] == "completed"
-        set_org.assert_not_called()
+        set_enterprise.assert_not_called()
         job_run.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -673,7 +677,7 @@ class TestJobTenantScopeGates:
         with _fake_job(None, mock_container, mock_settings) as (
             job_run,
             _,
-            _set_org,
+            _set_enterprise,
             _maint,
         ):
             with pytest.raises(JobTenantScopeError):
@@ -692,13 +696,13 @@ class TestJobTenantScopeGates:
         with _fake_job(None, mock_container, mock_settings, provider="single") as (
             job_run,
             _,
-            set_org,
+            set_enterprise,
             _maint,
         ):
             result = await run_job("fake_job")
 
         assert result["status"] == "completed"
-        set_org.assert_not_called()
+        set_enterprise.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_invalid_scope_declaration_rejected_in_any_mode(
@@ -711,7 +715,7 @@ class TestJobTenantScopeGates:
         with _fake_job("per-org", mock_container, mock_settings, provider="single") as (
             job_run,
             _,
-            _set_org,
+            _set_enterprise,
             _maint,
         ):
             with pytest.raises(JobTenantScopeError):
@@ -789,7 +793,7 @@ class TestJobsPathBootGates:
         with _fake_job("tenant_neutral", mock_container, mock_settings) as (
             job_run,
             rls_guard,
-            _set_org,
+            _set_enterprise,
             _maint,
         ):
             rls_guard.side_effect = DeploymentCoherenceError("role is RLS-exempt")
@@ -811,7 +815,7 @@ class TestJobsPathBootGates:
         )
         with _fake_job(
             "tenant_neutral", mock_container, mock_settings, provider="single"
-        ) as (job_run, _, _set_org, _maint):
+        ) as (job_run, _, _set_enterprise, _maint):
             with pytest.raises(RuntimeError):
                 await run_job("fake_job")
 
@@ -826,7 +830,7 @@ class TestJobsPathBootGates:
         with _fake_job("cross_tenant", mock_container, mock_settings, "single") as (
             job_run,
             rls_guard,
-            _set_org,
+            _set_enterprise,
             _maint,
         ):
             result = await run_job("fake_job")
@@ -894,7 +898,7 @@ class TestCrossTenantMaintenancePath:
         with _fake_job("cross_tenant", mock_container, mock_settings) as (
             job_run,
             rls_guard,
-            set_org,
+            set_enterprise,
             maintenance_guard,
         ):
             maintenance_guard.return_value = "faultmaven_maintenance"
@@ -906,7 +910,7 @@ class TestCrossTenantMaintenancePath:
         assert "cross_tenant_maintenance" not in job_run.await_args.kwargs
         maintenance_guard.assert_awaited_once()
         rls_guard.assert_not_called()
-        set_org.assert_not_called()
+        set_enterprise.assert_not_called()
         audit_lines = [r for r in caplog.records if "AUDIT" in r.getMessage()]
         assert audit_lines, "cross-tenant maintenance run must be audit-logged"
         assert audit_lines[0].levelname == "WARNING"
@@ -925,7 +929,7 @@ class TestCrossTenantMaintenancePath:
         with _fake_job("cross_tenant", mock_container, mock_settings) as (
             job_run,
             _rls_guard,
-            _set_org,
+            _set_enterprise,
             maintenance_guard,
         ):
             maintenance_guard.return_value = "faultmaven_maintenance"
@@ -937,24 +941,22 @@ class TestCrossTenantMaintenancePath:
         assert audit_lines, "audit record must precede the job invocation"
 
     @pytest.mark.asyncio
-    async def test_flag_with_organization_id_refused(
-        self, mock_container, mock_settings
-    ):
-        """The maintenance path bypasses RLS entirely — an org id could not
-        scope anything, so passing both is contradictory manifest input."""
+    async def test_flag_with_enterprise_id_refused(self, mock_container, mock_settings):
+        """The maintenance path bypasses RLS entirely — an enterprise id could
+        not scope anything, so passing both is contradictory manifest input."""
         from faultmaven.jobs.run import JobTenantScopeError, run_job
 
         with _fake_job("cross_tenant", mock_container, mock_settings) as (
             job_run,
             _,
-            _set_org,
+            _set_enterprise,
             _maint,
         ):
             with pytest.raises(JobTenantScopeError, match="mutually"):
                 await run_job(
                     "fake_job",
                     cross_tenant_maintenance=True,
-                    organization_id="org-1",
+                    enterprise_id="ent-1",
                 )
 
         job_run.assert_not_called()
@@ -971,7 +973,7 @@ class TestCrossTenantMaintenancePath:
         with _fake_job("cross_tenant", mock_container, mock_settings) as (
             job_run,
             _rls_guard,
-            _set_org,
+            _set_enterprise,
             maintenance_guard,
         ):
             maintenance_guard.side_effect = DeploymentCoherenceError(
@@ -991,14 +993,14 @@ class TestCrossTenantMaintenancePath:
         with _fake_job("org", mock_container, mock_settings) as (
             job_run,
             _,
-            _set_org,
+            _set_enterprise,
             _maint,
         ):
             with pytest.raises(JobTenantScopeError):
                 await run_job(
                     "fake_job",
                     cross_tenant_maintenance=True,
-                    organization_id="org-1",
+                    enterprise_id="ent-1",
                 )
 
         job_run.assert_not_called()
@@ -1013,7 +1015,7 @@ class TestCrossTenantMaintenancePath:
         with _fake_job("tenant_neutral", mock_container, mock_settings) as (
             job_run,
             _,
-            _set_org,
+            _set_enterprise,
             _maint,
         ):
             with pytest.raises(JobTenantScopeError):
@@ -1031,7 +1033,7 @@ class TestCrossTenantMaintenancePath:
 
         with _fake_job(
             "cross_tenant", mock_container, mock_settings, provider="single"
-        ) as (job_run, _, _set_org, _maint):
+        ) as (job_run, _, _set_enterprise, _maint):
             with pytest.raises(JobTenantScopeError):
                 await run_job("fake_job", cross_tenant_maintenance=True)
 
@@ -1048,7 +1050,7 @@ class TestCrossTenantMaintenancePath:
         with _fake_job("cross_tenant", mock_container, mock_settings) as (
             job_run,
             _,
-            _set_org,
+            _set_enterprise,
             _maint,
         ):
             with pytest.raises(JobTenantScopeError, match="cross-tenant-maintenance"):
@@ -1240,7 +1242,7 @@ class TestJobSpecificFlagWiring:
         from faultmaven.jobs.run import _reject_unsupported_job_flags
 
         _reject_unsupported_job_flags(
-            case_cleanup, "case_cleanup", {"organization_id": "org_1"}
+            case_cleanup, "case_cleanup", {"enterprise_id": "ent_1"}
         )
 
 

@@ -44,7 +44,7 @@ from fastapi import (
 
 from faultmaven.api.v1.auth_dependencies import (
     get_current_user_optional,
-    require_actor_organization,
+    require_actor_enterprise,
     require_authentication,
     require_platform_admin,
 )
@@ -726,6 +726,7 @@ async def delete_document(
 @trace("api_search_documents")
 async def search_documents(
     request: SearchRequest,
+    http_request: Request,
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
     current_user: Optional[DevUser] = Depends(get_current_user_optional),
 ) -> dict:
@@ -761,6 +762,17 @@ async def search_documents(
         if request.filters and not document_type:
             document_type = request.filters.get("document_type")
 
+        # The team arm of the visible-id allowlist. Resolved HERE because the
+        # service cannot: ``team_service`` is composed onto the app, and a
+        # request that omits this leaves ``resolve_shared_kb_ids`` with no teams
+        # and silently drops every team-shared runbook from the vector surface —
+        # the sibling full-text route already resolves it, and the two must
+        # agree or "shared with my team" means different things per endpoint.
+        team_ids = await _resolve_team_ids(
+            http_request,
+            current_user.user_id if current_user else None,
+        )
+
         # Delegate to service layer
         return await knowledge_service.search_documents(
             query=request.query.strip(),
@@ -771,6 +783,7 @@ async def search_documents(
             similarity_threshold=request.similarity_threshold,
             rank_by=request.rank_by,
             user=current_user,
+            team_ids=team_ids,
         )
 
     except HTTPException:
@@ -1184,7 +1197,7 @@ async def list_suggestions(
     current_user: DevUser = Depends(require_platform_admin),
 ) -> dict:
     """
-    List the caller's organization's knowledge suggestions.
+    List the caller's enterprise's knowledge suggestions.
 
     Returns suggestions extracted from cases that are pending review.
     Includes lineage information for each suggestion (source case, extractor, timestamp).
@@ -1202,11 +1215,11 @@ async def list_suggestions(
     """
     logger = logging.getLogger(__name__)
 
-    organization_id = require_actor_organization(current_user)
+    enterprise_id = require_actor_enterprise(current_user)
 
     try:
         result = await suggestion_service.list_suggestions(
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             status=status,
             limit=limit,
             offset=offset,
@@ -1243,7 +1256,7 @@ async def get_suggestion(
     and lineage information.
 
     Resolved through the tenant-scoped lookup: an id belonging to another
-    organization answers 404, identically to an absent id, so the response is
+    enterprise answers 404, identically to an absent id, so the response is
     never an existence oracle.
 
     Args:
@@ -1254,11 +1267,11 @@ async def get_suggestion(
     """
     logger = logging.getLogger(__name__)
 
-    organization_id = require_actor_organization(current_user)
+    enterprise_id = require_actor_enterprise(current_user)
 
     try:
         suggestion = await suggestion_service.get_suggestion_visible(
-            suggestion_id, organization_id=organization_id
+            suggestion_id, enterprise_id=enterprise_id
         )
         if not suggestion:
             raise HTTPException(status_code=404, detail="Suggestion not found")
@@ -1286,7 +1299,7 @@ async def update_suggestion(
     Allows editing the suggested title, content, or type before approval.
     Content changes trigger a new PII scan.
 
-    Tenant-scoped: an id outside the caller's organization answers 404 and
+    Tenant-scoped: an id outside the caller's enterprise answers 404 and
     nothing is written.
 
     Args:
@@ -1298,7 +1311,7 @@ async def update_suggestion(
     """
     logger = logging.getLogger(__name__)
 
-    organization_id = require_actor_organization(current_user)
+    enterprise_id = require_actor_enterprise(current_user)
 
     try:
         suggestion = await suggestion_service.update_suggestion(
@@ -1306,7 +1319,7 @@ async def update_suggestion(
             title=update_data.get("title"),
             content=update_data.get("content"),
             suggested_type=update_data.get("suggested_type"),
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
         )
 
         if not suggestion:
@@ -1371,7 +1384,7 @@ async def approve_suggestion(
     # than inherited from a default (#1166).
     require_global_authoring_allowed()
 
-    organization_id = require_actor_organization(current_user)
+    enterprise_id = require_actor_enterprise(current_user)
 
     try:
         review_notes = None
@@ -1379,12 +1392,12 @@ async def approve_suggestion(
             review_notes = request_body.get("review_notes")
 
         # Resolve existence through the tenant-scoped lookup FIRST, so an
-        # absent id and another organization's id get the same 404. Folding
+        # absent id and another enterprise's id get the same 404. Folding
         # both into the "not found or not ready" 400 below would make the
         # status code an existence oracle: 400 would mean "it exists here,
         # just isn't ready" while an out-of-scope id fell somewhere else.
         if not await suggestion_service.get_suggestion_visible(
-            suggestion_id, organization_id=organization_id
+            suggestion_id, enterprise_id=enterprise_id
         ):
             raise HTTPException(status_code=404, detail="Suggestion not found")
 
@@ -1392,7 +1405,7 @@ async def approve_suggestion(
             suggestion_id=suggestion_id,
             reviewed_by=current_user.user_id,
             review_notes=review_notes,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
         )
 
         if not result:
@@ -1448,7 +1461,7 @@ async def reject_suggestion(
     """
     logger = logging.getLogger(__name__)
 
-    organization_id = require_actor_organization(current_user)
+    enterprise_id = require_actor_enterprise(current_user)
 
     try:
         rejection_reason = request_body.get("rejection_reason")
@@ -1462,7 +1475,7 @@ async def reject_suggestion(
             reviewed_by=current_user.user_id,
             rejection_reason=rejection_reason,
             review_notes=review_notes,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
         )
 
         if not success:
@@ -1503,13 +1516,13 @@ async def remediate_pii(
     """
     logger = logging.getLogger(__name__)
 
-    organization_id = require_actor_organization(current_user)
+    enterprise_id = require_actor_enterprise(current_user)
 
     try:
         suggestion = await suggestion_service.remediate_pii(
             suggestion_id=suggestion_id,
             remediated_by=current_user.user_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
         )
 
         if not suggestion:

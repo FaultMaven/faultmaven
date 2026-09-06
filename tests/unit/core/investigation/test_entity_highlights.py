@@ -189,7 +189,7 @@ class TestContextBuilderSlot:
         return Case(
             case_id="case_abcdef012345",
             user_id="u",
-            organization_id="o",
+            enterprise_id="o",
             title="t",
             description="d",
             state=CaseState.INVESTIGATING,

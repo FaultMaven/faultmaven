@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import jwt
 import pytest
 
-from faultmaven.config.constants import STANDALONE_ORG_ID
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.settings import TenantProvider
 from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
@@ -39,7 +39,8 @@ def _user(username: str = "slack-agent", **overrides) -> DevUser:
         display_name=username,
         created_at=datetime.now(timezone.utc),
         roles=["user"],
-        account_kind="slack",
+        account_kind="service",
+        service_channel="slack",
     )
     defaults.update(overrides)
     return DevUser(**defaults)
@@ -57,10 +58,26 @@ class _FakeUserStore:
         return self.users.get(username)
 
     async def create_user(
-        self, username, email=None, display_name=None, account_kind="individual"
+        self,
+        username,
+        email=None,
+        display_name=None,
+        account_kind="individual",
+        service_channel=None,
     ) -> DevUser:
-        self.created.append({"username": username, "account_kind": account_kind})
-        user = _user(username, account_kind=account_kind, display_name=display_name)
+        self.created.append(
+            {
+                "username": username,
+                "account_kind": account_kind,
+                "service_channel": service_channel,
+            }
+        )
+        user = _user(
+            username,
+            account_kind=account_kind,
+            service_channel=service_channel,
+            display_name=display_name,
+        )
         self.users[username] = user
         return user
 
@@ -89,7 +106,7 @@ def _token_generator(expires_in_days: int = 7):
 
 def _real_token_generator() -> HS256JWTTokenGenerator:
     """The real generator, so the ``organization_id`` claim comes from the real
-    ``resolve_organization_claim`` rather than from a stub that could agree with
+    ``resolve_enterprise_claim`` rather than from a stub that could agree with
     a broken implementation."""
     return HS256JWTTokenGenerator(
         secret_key=SECRET,
@@ -124,7 +141,14 @@ def as_tenant_provider(monkeypatch):
 
 class TestProvisioning:
     async def test_creates_missing_account_as_service_account(self):
-        """A fresh install has no slack-agent; it is created as account_kind='slack'."""
+        """A fresh install has no slack-agent; it is created as a SERVICE account
+        serving the 'slack' channel (ADR-017 D6).
+
+        Two fields, not one: there are exactly two account kinds, and which
+        integration a service account serves is a separate attribute — so a
+        second integration is a new channel rather than a third kind, and it is
+        the channel that decides the derived ``cases.source``.
+        """
         store = _FakeUserStore()
 
         credential = await provision_service_account_credential(
@@ -134,8 +158,15 @@ class TestProvisioning:
         )
 
         assert credential.account_created is True
-        assert store.created == [{"username": "slack-agent", "account_kind": "slack"}]
-        assert credential.user.account_kind == "slack"
+        assert store.created == [
+            {
+                "username": "slack-agent",
+                "account_kind": "service",
+                "service_channel": "slack",
+            }
+        ]
+        assert credential.user.account_kind == "service"
+        assert credential.user.service_channel == "slack"
 
     async def test_mints_a_usable_refresh_token(self):
         """The credential is a refresh token for that account, with an expiry."""
@@ -174,7 +205,7 @@ class TestProvisioning:
 
     async def test_corrects_a_wrong_account_kind(self):
         """An account recorded as 'individual' is corrected, not left divergent."""
-        store = _FakeUserStore(_user(account_kind="individual"))
+        store = _FakeUserStore(_user(account_kind="individual", service_channel=None))
 
         credential = await provision_service_account_credential(
             username="slack-agent",
@@ -183,7 +214,62 @@ class TestProvisioning:
         )
 
         assert credential.account_kind_corrected is True
-        assert store.updated[0].account_kind == "slack"
+        assert store.updated[0].account_kind == "service"
+        assert store.updated[0].service_channel == "slack"
+
+    async def test_corrects_a_lost_service_channel(self):
+        """The kind alone is not enough, and this is the half that bites.
+
+        An account carrying the right kind and a NULL channel signs in, opens
+        cases, and every one of them is stamped 'copilot' — permanently, because
+        ``cases.source`` is immutable. The correction has to reach the channel.
+        """
+        store = _FakeUserStore(_user(account_kind="service", service_channel=None))
+
+        credential = await provision_service_account_credential(
+            username="slack-agent",
+            user_store=store,
+            token_generator=_token_generator(),
+        )
+
+        assert credential.account_kind_corrected is True
+        assert store.updated[0].service_channel == "slack"
+
+    async def test_an_unknown_service_channel_is_refused(self):
+        """The channel has no CHECK constraint, so this is its only gate.
+
+        A typo ('Slack') would be persisted, reported as a successful
+        correction, and then stamp every case the account opens as a copilot
+        case.
+        """
+        store = _FakeUserStore()
+
+        with pytest.raises(ServiceAccountProvisioningError, match="service_channel"):
+            await provision_service_account_credential(
+                username="slack-agent",
+                user_store=store,
+                token_generator=_token_generator(),
+                service_channel="Slack",
+            )
+
+        assert store.created == []
+
+    async def test_an_individual_serves_no_channel(self):
+        """A human is not an integration, so the channel is forced to NULL
+        rather than silently kept — "which channel is this?" has to stay
+        answerable from the row."""
+        store = _FakeUserStore()
+
+        credential = await provision_service_account_credential(
+            username="alice",
+            user_store=store,
+            token_generator=_token_generator(),
+            account_kind="individual",
+        )
+
+        assert credential.user.account_kind == "individual"
+        assert credential.user.service_channel is None
+        assert store.created[0]["service_channel"] is None
 
     async def test_refuses_an_inactive_account(self):
         """A refresh reloads the user and rejects inactive accounts.
@@ -225,9 +311,14 @@ class TestProvisioning:
 
 class TestAccountKindValidation:
     async def test_rejects_an_unknown_account_kind(self):
-        """``cases.source`` matches 'slack' exactly and the column has no CHECK,
-        so a typo would be persisted, reported as a successful correction, and
-        then stamp every case the account opens with the wrong source."""
+        """The kind names one of exactly two things (ADR-017 D6), and a value
+        outside that pair would be persisted, reported as a successful
+        correction, and then read by everything that asks what this account is.
+
+        The column carries a CHECK constraint as well; this refuses at the door,
+        so the operator is told which value was wrong rather than reading an
+        integrity error.
+        """
         store = _FakeUserStore(_user())
 
         with pytest.raises(
@@ -237,7 +328,7 @@ class TestAccountKindValidation:
                 username="slack-agent",
                 user_store=store,
                 token_generator=_token_generator(),
-                account_kind="Slack",  # capitalised typo
+                account_kind="Service",  # capitalised typo
             )
 
         assert store.updated == []
@@ -259,7 +350,7 @@ class TestOrganizationClaim:
     ``DevUser.__post_init__`` stamps the Standalone sentinel on every user the
     store returns, and under multi-tenant the sentinel resolves to the *empty*
     claim — so a credential minted from a store-loaded user is refused at
-    ``bind_request_org_context`` on its very first request. The organization has
+    ``bind_request_enterprise_context`` on its very first request. The organization has
     to be stamped on the user before minting, exactly as `/auth/refresh` does.
     """
 
@@ -268,16 +359,16 @@ class TestOrganizationClaim:
     ):
         as_tenant_provider(TenantProvider.MULTI)
         store = _FakeUserStore(_user())
-        assert store.users["slack-agent"].organization_id == STANDALONE_ORG_ID
+        assert store.users["slack-agent"].enterprise_id == STANDALONE_ENTERPRISE_ID
 
         credential = await provision_service_account_credential(
             username="slack-agent",
             user_store=store,
             token_generator=_real_token_generator(),
-            organization_id=REAL_ORG,
+            enterprise_id=REAL_ORG,
         )
 
-        assert _claims(credential.refresh_token)["organization_id"] == REAL_ORG
+        assert _claims(credential.refresh_token)["enterprise_id"] == REAL_ORG
 
     async def test_a_surrounding_whitespace_only_organization_is_not_an_organization(
         self, as_tenant_provider
@@ -291,7 +382,7 @@ class TestOrganizationClaim:
                 username="slack-agent",
                 user_store=_FakeUserStore(_user()),
                 token_generator=_real_token_generator(),
-                organization_id="   ",
+                enterprise_id="   ",
             )
 
     async def test_organization_is_trimmed_before_it_reaches_the_claim(
@@ -303,10 +394,10 @@ class TestOrganizationClaim:
             username="slack-agent",
             user_store=_FakeUserStore(_user()),
             token_generator=_real_token_generator(),
-            organization_id=f"  {REAL_ORG}\n",
+            enterprise_id=f"  {REAL_ORG}\n",
         )
 
-        assert _claims(credential.refresh_token)["organization_id"] == REAL_ORG
+        assert _claims(credential.refresh_token)["enterprise_id"] == REAL_ORG
 
     async def test_multi_tenant_refuses_without_an_organization(
         self, as_tenant_provider
@@ -316,7 +407,7 @@ class TestOrganizationClaim:
         as_tenant_provider(TenantProvider.MULTI)
         store = _FakeUserStore(_user())
 
-        with pytest.raises(ServiceAccountProvisioningError, match="--organization-id"):
+        with pytest.raises(ServiceAccountProvisioningError, match="--enterprise-id"):
             await provision_service_account_credential(
                 username="slack-agent",
                 user_store=store,
@@ -341,7 +432,7 @@ class TestOrganizationClaim:
                 username="slack-agent",
                 user_store=store,
                 token_generator=_real_token_generator(),
-                organization_id=STANDALONE_ORG_ID,
+                enterprise_id=STANDALONE_ENTERPRISE_ID,
             )
 
         assert store.created == []
@@ -357,7 +448,7 @@ class TestOrganizationClaim:
                 username="slack-agent",
                 user_store=_FakeUserStore(_user()),
                 token_generator=_real_token_generator(),
-                organization_id=REAL_ORG,
+                enterprise_id=REAL_ORG,
             )
 
     async def test_single_tenant_without_an_organization_is_unchanged(
@@ -372,4 +463,7 @@ class TestOrganizationClaim:
             token_generator=_real_token_generator(),
         )
 
-        assert _claims(credential.refresh_token)["organization_id"] == STANDALONE_ORG_ID
+        assert (
+            _claims(credential.refresh_token)["enterprise_id"]
+            == STANDALONE_ENTERPRISE_ID
+        )

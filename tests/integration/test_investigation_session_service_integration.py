@@ -10,7 +10,7 @@ Tests include:
 - Execution linking
 - SET NULL on session delete
 - Statistics accuracy
-- Cross-organization isolation
+- Cross-enterprise isolation
 """
 
 import asyncio
@@ -111,7 +111,7 @@ async def sample_case(case_repo) -> Case:
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id=f"user_{uuid4().hex[:8]}",
-        organization_id=f"org_{uuid4().hex[:8]}",
+        enterprise_id=f"ent_{uuid4().hex[:8]}",
         title="Test Case",
         description="Test case for session testing",
         state=CaseState.INQUIRY,
@@ -131,9 +131,9 @@ def create_test_session_id() -> str:
     return f"session_{uuid4().hex[:12]}"
 
 
-def create_test_org_id() -> str:
-    """Generate unique test organization ID."""
-    return f"org_{uuid4().hex[:8]}"
+def create_test_enterprise_id() -> str:
+    """Generate unique test enterprise ID (the isolation boundary, ADR-017 D1)."""
+    return f"ent_{uuid4().hex[:8]}"
 
 
 def create_test_user_id() -> str:
@@ -158,13 +158,13 @@ class TestSessionLifecycle:
     async def test_session_full_lifecycle(self, session_service, sample_case):
         """Test complete session lifecycle."""
         case_id = sample_case.case_id
-        organization_id = sample_case.organization_id
+        enterprise_id = sample_case.enterprise_id
         user_id = sample_case.user_id
 
         # Step 1: Create session
         session = await session_service.create_session(
             case_id=case_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             user_id=user_id,
             session_goal="Debug authentication issue",
             token_budget_limit=10000,
@@ -176,16 +176,14 @@ class TestSessionLifecycle:
         assert session.token_budget_limit == 10000
 
         # Step 2: Retrieve session
-        retrieved = await session_service.get_session(
-            session.session_id, organization_id
-        )
+        retrieved = await session_service.get_session(session.session_id, enterprise_id)
         assert retrieved is not None
         assert retrieved.session_id == session.session_id
 
         # Step 3: Pause session
         paused = await session_service.pause_session(
             session.session_id,
-            organization_id,
+            enterprise_id,
             case_id=session.case_id,
         )
         assert paused.state == SessionState.PAUSED
@@ -193,7 +191,7 @@ class TestSessionLifecycle:
         # Step 4: Resume session
         resumed = await session_service.resume_session(
             session.session_id,
-            organization_id,
+            enterprise_id,
             case_id=session.case_id,
         )
         assert resumed.state == SessionState.ACTIVE
@@ -201,7 +199,7 @@ class TestSessionLifecycle:
         # Step 5: Complete session with findings
         completed = await session_service.complete_session(
             session.session_id,
-            organization_id,
+            enterprise_id,
             "Root cause identified: JWT token expiry issue",
             case_id=session.case_id,
         )
@@ -216,14 +214,14 @@ class TestSessionLifecycle:
         """Test session lifecycle ending with abandonment."""
         session = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
         )
 
         # Abandon without findings
         abandoned = await session_service.abandon_session(
             session.session_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             case_id=session.case_id,
         )
 
@@ -238,21 +236,21 @@ class TestSessionLifecycle:
         """Test pausing then abandoning a session."""
         session = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
         )
 
         # Pause first
         await session_service.pause_session(
             session.session_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             case_id=session.case_id,
         )
 
         # Then abandon
         abandoned = await session_service.abandon_session(
             session.session_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             case_id=session.case_id,
         )
 
@@ -266,7 +264,7 @@ class TestSessionLifecycle:
         # Create first session
         session1 = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
             session_goal="First investigation",
         )
@@ -274,7 +272,7 @@ class TestSessionLifecycle:
         # Complete first session
         await session_service.complete_session(
             session1.session_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             "First investigation complete",
             case_id=session1.case_id,
         )
@@ -282,7 +280,7 @@ class TestSessionLifecycle:
         # Create second session (should succeed since first is completed)
         session2 = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
             session_goal="Second investigation",
         )
@@ -307,18 +305,20 @@ class TestAuthorizationEnforcement:
         # Create session
         session = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
         )
 
-        # Access with correct org
+        # Access from the owning enterprise
         retrieved = await session_service.get_session(
-            session.session_id, sample_case.organization_id
+            session.session_id, sample_case.enterprise_id
         )
         assert retrieved is not None
 
-        # Access with wrong org returns None
-        result = await session_service.get_session(session.session_id, "different_org")
+        # Access from another enterprise returns None
+        result = await session_service.get_session(
+            session.session_id, "different_enterprise"
+        )
         assert result is None
 
     @pytest.mark.asyncio
@@ -328,15 +328,15 @@ class TestAuthorizationEnforcement:
         """Test that update_session checks authorization via parent case."""
         session = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
         )
 
-        # Update with wrong org raises error
+        # Update from another enterprise raises
         with pytest.raises(AuthorizationError):
             await session_service.update_session(
                 session.session_id,
-                "different_org",
+                "different_enterprise",
                 {"session_goal": "Hacked goal"},
                 case_id=session.case_id,
             )
@@ -348,13 +348,13 @@ class TestAuthorizationEnforcement:
         """Test that pause_session checks authorization via parent case."""
         session = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
         )
 
         with pytest.raises(AuthorizationError):
             await session_service.pause_session(
-                session.session_id, "different_org", case_id=session.case_id
+                session.session_id, "different_enterprise", case_id=session.case_id
             )
 
     @pytest.mark.asyncio
@@ -364,19 +364,19 @@ class TestAuthorizationEnforcement:
         """Test that resume_session checks authorization via parent case."""
         session = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
         )
 
         await session_service.pause_session(
             session.session_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             case_id=session.case_id,
         )
 
         with pytest.raises(AuthorizationError):
             await session_service.resume_session(
-                session.session_id, "different_org", case_id=session.case_id
+                session.session_id, "different_enterprise", case_id=session.case_id
             )
 
     @pytest.mark.asyncio
@@ -386,14 +386,14 @@ class TestAuthorizationEnforcement:
         """Test that complete_session checks authorization via parent case."""
         session = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
         )
 
         with pytest.raises(AuthorizationError):
             await session_service.complete_session(
                 session.session_id,
-                "different_org",
+                "different_enterprise",
                 "Findings",
                 case_id=session.case_id,
             )
@@ -405,13 +405,13 @@ class TestAuthorizationEnforcement:
         """Test that abandon_session checks authorization via parent case."""
         session = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
         )
 
         with pytest.raises(AuthorizationError):
             await session_service.abandon_session(
-                session.session_id, "different_org", case_id=session.case_id
+                session.session_id, "different_enterprise", case_id=session.case_id
             )
 
     @pytest.mark.asyncio
@@ -420,7 +420,9 @@ class TestAuthorizationEnforcement:
     ):
         """Test that list_sessions checks authorization via parent case."""
         with pytest.raises(AuthorizationError):
-            await session_service.list_sessions(sample_case.case_id, "different_org")
+            await session_service.list_sessions(
+                sample_case.case_id, "different_enterprise"
+            )
 
     @pytest.mark.asyncio
     async def test_authorization_via_parent_case_active_session(
@@ -429,7 +431,7 @@ class TestAuthorizationEnforcement:
         """Test that get_active_session checks authorization via parent case."""
         with pytest.raises(AuthorizationError):
             await session_service.get_active_session(
-                sample_case.case_id, "different_org"
+                sample_case.case_id, "different_enterprise"
             )
 
 
@@ -447,7 +449,7 @@ class TestActiveSessionEnforcement:
         # Create first active session
         session1 = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
         )
 
@@ -457,7 +459,7 @@ class TestActiveSessionEnforcement:
         with pytest.raises(ConflictError) as exc_info:
             await session_service.create_session(
                 case_id=sample_case.case_id,
-                organization_id=sample_case.organization_id,
+                enterprise_id=sample_case.enterprise_id,
                 user_id=sample_case.user_id,
             )
 
@@ -471,13 +473,13 @@ class TestActiveSessionEnforcement:
         # Create and complete first session
         session1 = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
         )
 
         await session_service.complete_session(
             session1.session_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             "Findings",
             case_id=session1.case_id,
         )
@@ -485,7 +487,7 @@ class TestActiveSessionEnforcement:
         # Create new session - should succeed
         session2 = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
         )
 
@@ -500,20 +502,20 @@ class TestActiveSessionEnforcement:
         # Create and abandon first session
         session1 = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
         )
 
         await session_service.abandon_session(
             session1.session_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             case_id=session1.case_id,
         )
 
         # Create new session - should succeed
         session2 = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
         )
 
@@ -527,13 +529,13 @@ class TestActiveSessionEnforcement:
         # Create and pause session
         session1 = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
         )
 
         await session_service.pause_session(
             session1.session_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             case_id=session1.case_id,
         )
 
@@ -543,7 +545,7 @@ class TestActiveSessionEnforcement:
         # So this should succeed since session1 is PAUSED
         session2 = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
         )
 
@@ -576,26 +578,26 @@ class TestListAndQuery:
         # Create sessions with different statuses
         s1 = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
         )
         await session_service.complete_session(
             s1.session_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             "Done",
             case_id=s1.case_id,
         )
 
         s2 = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
         )
 
         # List only completed
         completed = await session_service.list_sessions(
             sample_case.case_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             state=SessionState.COMPLETED,
         )
 
@@ -605,7 +607,7 @@ class TestListAndQuery:
         # List only active
         active = await session_service.list_sessions(
             sample_case.case_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             state=SessionState.ACTIVE,
         )
 
@@ -619,12 +621,12 @@ class TestListAndQuery:
         for i in range(5):
             s = await session_service.create_session(
                 case_id=sample_case.case_id,
-                organization_id=sample_case.organization_id,
+                enterprise_id=sample_case.enterprise_id,
                 user_id=sample_case.user_id,
             )
             await session_service.complete_session(
                 s.session_id,
-                sample_case.organization_id,
+                sample_case.enterprise_id,
                 f"Finding {i}",
                 case_id=s.case_id,
             )
@@ -632,14 +634,14 @@ class TestListAndQuery:
         # Create final active session
         await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
         )
 
         # Get first page
         page1 = await session_service.list_sessions(
             sample_case.case_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             limit=3,
             offset=0,
         )
@@ -647,7 +649,7 @@ class TestListAndQuery:
         # Get second page
         page2 = await session_service.list_sessions(
             sample_case.case_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             limit=3,
             offset=3,
         )
@@ -660,20 +662,20 @@ class TestListAndQuery:
         """Test getting active session for a case."""
         # Initially no active session
         no_active = await session_service.get_active_session(
-            sample_case.case_id, sample_case.organization_id
+            sample_case.case_id, sample_case.enterprise_id
         )
         assert no_active is None
 
         # Create session
         session = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
         )
 
         # Now should find active
         active = await session_service.get_active_session(
-            sample_case.case_id, sample_case.organization_id
+            sample_case.case_id, sample_case.enterprise_id
         )
 
         assert active is not None
@@ -682,25 +684,25 @@ class TestListAndQuery:
 
 
 # ============================================================
-# Cross-Organization Isolation Tests
+# Cross-Enterprise Isolation Tests
 # ============================================================
 
 
-class TestOrganizationIsolation:
-    """Test that organizations are properly isolated."""
+class TestEnterpriseIsolation:
+    """Test that enterprises are properly isolated (ADR-017 D1)."""
 
     @pytest.mark.asyncio
-    async def test_statistics_isolate_organizations(self, session_service, case_repo):
-        """Test that statistics are isolated by organization."""
-        # Create cases for different orgs
-        org_a = create_test_org_id()
-        org_b = create_test_org_id()
+    async def test_statistics_isolate_enterprises(self, session_service, case_repo):
+        """Test that statistics are isolated by enterprise."""
+        # Create cases in different enterprises
+        enterprise_a = create_test_enterprise_id()
+        enterprise_b = create_test_enterprise_id()
 
         case_a = Case(
             case_id=f"case_{uuid4().hex[:12]}",
             user_id=create_test_user_id(),
-            organization_id=org_a,
-            title="Org A Case",
+            enterprise_id=enterprise_a,
+            title="Enterprise A Case",
             description="",
             state=CaseState.INQUIRY,
         )
@@ -709,8 +711,8 @@ class TestOrganizationIsolation:
         case_b = Case(
             case_id=f"case_{uuid4().hex[:12]}",
             user_id=create_test_user_id(),
-            organization_id=org_b,
-            title="Org B Case",
+            enterprise_id=enterprise_b,
+            title="Enterprise B Case",
             description="",
             state=CaseState.INQUIRY,
         )
@@ -720,26 +722,30 @@ class TestOrganizationIsolation:
         for i in range(3):
             s = await session_service.create_session(
                 case_id=case_a.case_id,
-                organization_id=org_a,
+                enterprise_id=enterprise_a,
                 user_id=case_a.user_id,
             )
             await session_service.complete_session(
-                s.session_id, org_a, f"Finding {i}", case_id=s.case_id
+                s.session_id, enterprise_a, f"Finding {i}", case_id=s.case_id
             )
 
         for i in range(2):
             s = await session_service.create_session(
                 case_id=case_b.case_id,
-                organization_id=org_b,
+                enterprise_id=enterprise_b,
                 user_id=case_b.user_id,
             )
             await session_service.complete_session(
-                s.session_id, org_b, f"Finding {i}", case_id=s.case_id
+                s.session_id, enterprise_b, f"Finding {i}", case_id=s.case_id
             )
 
         # Stats should be isolated
-        stats_a = await session_service.get_session_statistics(case_a.case_id, org_a)
-        stats_b = await session_service.get_session_statistics(case_b.case_id, org_b)
+        stats_a = await session_service.get_session_statistics(
+            case_a.case_id, enterprise_a
+        )
+        stats_b = await session_service.get_session_statistics(
+            case_b.case_id, enterprise_b
+        )
 
         assert stats_a["total_sessions"] == 3
         assert stats_b["total_sessions"] == 2
@@ -758,13 +764,13 @@ class TestEdgeCases:
         """Test that create_session trims whitespace from inputs."""
         session = await session_service.create_session(
             case_id=f"  {sample_case.case_id}  ",
-            organization_id=f"  {sample_case.organization_id}  ",
+            enterprise_id=f"  {sample_case.enterprise_id}  ",
             user_id=f"  {sample_case.user_id}  ",
             session_goal="  Debug issue  ",
         )
 
         assert session.case_id == sample_case.case_id
-        assert session.organization_id == sample_case.organization_id
+        assert session.enterprise_id == sample_case.enterprise_id
         assert session.session_goal == "Debug issue"
 
     @pytest.mark.asyncio
@@ -772,14 +778,14 @@ class TestEdgeCases:
         """Test that session goal can be cleared."""
         session = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
             session_goal="Initial goal",
         )
 
         updated = await session_service.update_session(
             session.session_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             {"session_goal": ""},
             case_id=session.case_id,
         )
@@ -790,7 +796,7 @@ class TestEdgeCases:
     async def test_list_sessions_empty_case(self, session_service, sample_case):
         """Test listing sessions for case with no sessions."""
         sessions = await session_service.list_sessions(
-            sample_case.case_id, sample_case.organization_id
+            sample_case.case_id, sample_case.enterprise_id
         )
 
         assert sessions == []
@@ -809,14 +815,14 @@ class TestConcurrentOperations:
         """Test concurrent updates to same session."""
         session = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id=sample_case.user_id,
         )
 
         async def update_session(i: int) -> InvestigationSession:
             return await session_service.update_session(
                 session.session_id,
-                sample_case.organization_id,
+                sample_case.enterprise_id,
                 {"session_goal": f"Goal {i}"},
                 case_id=session.case_id,
             )

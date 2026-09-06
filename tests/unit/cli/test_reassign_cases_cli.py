@@ -7,7 +7,7 @@ damage this command can do is not a bad UPDATE, it is a *correct* UPDATE aimed
 at the wrong account or the wrong set of cases.
 
 The guard with the most teeth is the two-source cross-check: the backend records
-no Slack workspace on a case, so the caller's file and the organization sweep are
+no Slack workspace on a case, so the caller's file and the enterprise sweep are
 independent evidence about the same set, and any disagreement between them is a
 refusal that names the ids rather than a partial move.
 """
@@ -29,7 +29,7 @@ from faultmaven.cli.reassign_cases import (
 
 pytestmark = pytest.mark.unit
 
-ORG = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+ENT = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
 OLD = "225bae2f-f459-4a54-9c08-2da5c2b3a961"
 NEW = "9f1c5d20-1111-4222-8333-444455556666"
 TEAM = "team-aaaa-1111"
@@ -100,17 +100,26 @@ def wiring(monkeypatch, tmp_path):
     ids_file.write_text("\n".join(IDS) + "\n")
 
     orgs = AsyncMock()
-    orgs.get_organization.return_value = SimpleNamespace(
-        organization_id=ORG, name="Acme"
-    )
+    orgs.get_enterprise.return_value = SimpleNamespace(enterprise_id=ENT, name="Acme")
     orgs.get_member_role.return_value = "role-uuid"
 
     users = {
         "slack-agent": SimpleNamespace(
-            user_id=OLD, username="slack-agent", email="a@x.test", is_active=True
+            user_id=OLD,
+            username="slack-agent",
+            email="a@x.test",
+            is_active=True,
+            # The anchor the CLI compares against the target enterprise
+            # (ADR-017 D3): a user object without one is refused, which is
+            # what a mistyped --to-user looks like.
+            enterprise_id=ENT,
         ),
         "slack-T0B9XNZDR44": SimpleNamespace(
-            user_id=NEW, username="slack-T0B9XNZDR44", email="b@x.test", is_active=True
+            user_id=NEW,
+            username="slack-T0B9XNZDR44",
+            email="b@x.test",
+            is_active=True,
+            enterprise_id=ENT,
         ),
     }
     user_store = AsyncMock()
@@ -120,7 +129,7 @@ def wiring(monkeypatch, tmp_path):
 
     teams = AsyncMock()
     teams.list_user_teams.side_effect = lambda uid: (
-        [SimpleNamespace(team_id=TEAM, organization_id=ORG)] if uid == NEW else []
+        [SimpleNamespace(team_id=TEAM, enterprise_id=ENT)] if uid == NEW else []
     )
 
     container = SimpleNamespace(
@@ -130,7 +139,7 @@ def wiring(monkeypatch, tmp_path):
     monkeypatch.setattr("faultmaven.container.container", container)
     monkeypatch.setattr(
         "faultmaven.infrastructure.persistence."
-        "sessionless_organization_repository.SessionlessOrganizationRepository",
+        "sessionless_enterprise_repository.SessionlessEnterpriseRepository",
         lambda: orgs,
     )
     monkeypatch.setattr(
@@ -156,7 +165,7 @@ def wiring(monkeypatch, tmp_path):
 
 async def _run(wiring, **overrides):
     kwargs = dict(
-        organization_id=ORG,
+        enterprise_id=ENT,
         from_identifier="slack-agent",
         to_identifier="slack-T0B9XNZDR44",
         case_ids_file=wiring.ids_file,
@@ -179,7 +188,7 @@ async def test_a_clean_run_applies_the_move(wiring):
     assert kwargs["from_user_id"] == OLD
     assert kwargs["to_user_id"] == NEW
     assert kwargs["team_ids"] == [TEAM]
-    assert kwargs["organization_id"] == ORG
+    assert kwargs["enterprise_id"] == ENT
 
 
 @pytest.mark.asyncio
@@ -189,8 +198,8 @@ async def test_dry_run_writes_nothing(wiring):
 
 
 @pytest.mark.asyncio
-async def test_refuses_when_the_organization_is_not_visible(wiring):
-    wiring.orgs.get_organization.return_value = None
+async def test_refuses_when_the_enterprise_is_not_visible(wiring):
+    wiring.orgs.get_enterprise.return_value = None
     assert await _run(wiring) == 1
     wiring.apply.assert_not_awaited()
 
@@ -216,22 +225,25 @@ async def test_refuses_an_inactive_target(wiring):
 
 
 @pytest.mark.asyncio
-async def test_refuses_a_target_that_is_not_a_member_of_the_organization(wiring):
+async def test_refuses_a_target_anchored_to_another_enterprise(wiring):
     """``users`` is not tenant-scoped, so a mistyped --to-user resolves to a real
-    account somewhere. Membership is what ties it to THIS tenant."""
-    wiring.orgs.get_member_role.return_value = None
+    account somewhere. The ANCHOR is what ties it to THIS tenant (ADR-017 D3):
+    one column, ``users.enterprise_id``, rather than an organization membership
+    row — an organization says who pays and would admit an account from a
+    different enterprise that happens to share a payer."""
+    wiring.users["slack-T0B9XNZDR44"].enterprise_id = "another-enterprise"
     assert await _run(wiring) == 1
     wiring.apply.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_does_not_require_the_source_to_be_a_member(wiring):
-    """The global ``slack-agent`` holds no membership row in any organization —
-    the account this command exists to retire. Only the target is checked, so
-    ``get_member_role`` is asked about the target and nothing else."""
+async def test_does_not_require_the_source_to_be_anchored_here(wiring):
+    """The global ``slack-agent`` predates the anchor — the account this command
+    exists to retire. Only the TARGET's anchor is checked: refusing on the
+    source would make the command unable to do the one job it has."""
+    wiring.users["slack-agent"].enterprise_id = None
     assert await _run(wiring) == 0
-    asked = [call.args[1] for call in wiring.orgs.get_member_role.await_args_list]
-    assert asked == [NEW]
+    wiring.apply.assert_awaited()
 
 
 @pytest.mark.asyncio
@@ -293,8 +305,8 @@ def test_main_refuses_without_dry_run_or_yes(capsys):
         _main(
             [
                 "fm-reassign-cases",
-                "--organization-id",
-                ORG,
+                "--enterprise-id",
+                ENT,
                 "--from-user",
                 "slack-agent",
                 "--to-user",
@@ -314,8 +326,8 @@ def test_main_rejects_dry_run_together_with_yes():
         _main(
             [
                 "fm-reassign-cases",
-                "--organization-id",
-                ORG,
+                "--enterprise-id",
+                ENT,
                 "--from-user",
                 "slack-agent",
                 "--to-user",
@@ -334,9 +346,9 @@ def test_main_rejects_dry_run_together_with_yes():
 
 @pytest.mark.asyncio
 async def test_the_rls_scope_is_bound_before_any_session_is_opened(wiring, monkeypatch):
-    """`set_current_org_id` is what makes every later query tenant-scoped.
+    """`set_current_enterprise_id` is what makes every later query tenant-scoped.
 
-    The engine applies `app.current_org_id` per transaction from this
+    The engine applies `app.current_enterprise_id` per transaction from this
     contextvar, so a session opened before the bind runs unscoped (#935 was
     exactly that bug). A code review proved this line could be deleted with the
     whole suite green — a guard no test can see removed is one that will be.
@@ -344,7 +356,7 @@ async def test_the_rls_scope_is_bound_before_any_session_is_opened(wiring, monke
     from faultmaven.config import tenant_context
 
     bound: list[str] = []
-    monkeypatch.setattr(tenant_context, "set_current_org_id", bound.append)
+    monkeypatch.setattr(tenant_context, "set_current_enterprise_id", bound.append)
     # The sweep is the first thing to touch the database, so record when it ran.
     monkeypatch.setattr(
         reassign_cases,
@@ -354,19 +366,19 @@ async def test_the_rls_scope_is_bound_before_any_session_is_opened(wiring, monke
 
     assert await _run(wiring) == 0
     assert bound == [
-        ORG,
+        ENT,
         "SESSION",
     ], "the org scope must be bound before the first session, not after"
 
 
 @pytest.mark.asyncio
-async def test_teams_in_another_organization_are_not_shared_to(wiring):
+async def test_teams_in_another_enterprise_are_not_shared_to(wiring):
     """`list_user_teams` is RLS-scoped in production, but this command must also
     be right on a connection that is not — sharing a case to a stranger's team
     is the error that would print success."""
     wiring.teams.list_user_teams.side_effect = lambda uid: [
-        SimpleNamespace(team_id=TEAM, organization_id=ORG),
-        SimpleNamespace(team_id="team-elsewhere", organization_id="another-org"),
+        SimpleNamespace(team_id=TEAM, enterprise_id=ENT),
+        SimpleNamespace(team_id="team-elsewhere", enterprise_id="another-org"),
     ]
 
     assert await _run(wiring) == 0
@@ -377,13 +389,13 @@ async def test_teams_in_another_organization_are_not_shared_to(wiring):
 async def test_the_old_owners_teams_are_revoked_except_the_shared_one(wiring):
     wiring.teams.list_user_teams.side_effect = lambda uid: (
         [
-            SimpleNamespace(team_id=TEAM, organization_id=ORG),
-            SimpleNamespace(team_id="team-both", organization_id=ORG),
+            SimpleNamespace(team_id=TEAM, enterprise_id=ENT),
+            SimpleNamespace(team_id="team-both", enterprise_id=ENT),
         ]
         if uid == NEW
         else [
-            SimpleNamespace(team_id="team-old", organization_id=ORG),
-            SimpleNamespace(team_id="team-both", organization_id=ORG),
+            SimpleNamespace(team_id="team-old", enterprise_id=ENT),
+            SimpleNamespace(team_id="team-both", enterprise_id=ENT),
         ]
     )
 
@@ -419,7 +431,7 @@ async def test_unnamed_cases_may_be_left_behind_deliberately(wiring, monkeypatch
 @pytest.mark.asyncio
 async def test_a_named_case_that_is_not_owned_has_no_escape_hatch(wiring, monkeypatch):
     """The other direction stays a hard refusal: it is a typo, the wrong
-    organization, or an already-completed run, and no flag makes it right."""
+    enterprise, or an already-completed run, and no flag makes it right."""
     monkeypatch.setattr(
         reassign_cases, "_swept_case_ids", AsyncMock(return_value={IDS[0]})
     )

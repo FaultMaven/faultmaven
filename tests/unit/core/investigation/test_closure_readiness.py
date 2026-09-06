@@ -48,7 +48,7 @@ def _make_investigating_case() -> Case:
         title="Closure readiness test",
         state=CaseState.INVESTIGATING,
         user_id="user_test",
-        organization_id="org_test",
+        enterprise_id="org_test",
         description="Test description",
         inquiry=InquiryData(
             problem_statement_confirmed=True,

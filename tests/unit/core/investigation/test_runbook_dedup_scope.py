@@ -101,7 +101,7 @@ def _case() -> Case:
     """A real ``Case`` with enough content to build a similarity query."""
     case = Case(
         user_id=OWNER,
-        organization_id=ORG,
+        enterprise_id=ORG,
         title="Connection pool exhausted under load",
         description="DB queries timing out",
         state=CaseState.INVESTIGATING,

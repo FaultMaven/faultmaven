@@ -27,7 +27,6 @@ from uuid import uuid4
 from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.config.constants import STANDALONE_ORG_ID
 from faultmaven.modules.case.domain.models import (
     ActionAttempt,
     Case,
@@ -249,10 +248,10 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         return default
 
     def _org_lookup_case_id(self) -> str:
-        """``:case_id`` cast to VARCHAR, for the org-id derivation subquery.
+        """``:case_id`` cast to VARCHAR, for the tenancy-derivation subqueries.
 
-        Several INSERTs derive ``organization_id`` via
-        ``(SELECT organization_id FROM cases WHERE case_id = :case_id)`` while
+        Several INSERTs derive ``enterprise_id`` and ``organization_id`` via
+        ``(SELECT ... FROM cases WHERE case_id = :case_id)`` while
         ALSO binding ``:case_id`` as a column value in the same statement.
         SQLAlchemy collapses both occurrences to a single asyncpg ``$N``; with
         both bare, asyncpg cannot deduce one consistent type and raises
@@ -308,6 +307,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
             case.disposition_eligibility = derive_disposition_eligibility(case)
 
+            # Two columns, two meanings (ADR-017 D1/D2). ``enterprise_id`` is
+            # the isolation key every child row inherits from its case;
+            # ``organization_id`` is the billing attribution beside it, and is
+            # ``None`` whenever nobody pays for the account that owns the case.
+            enterprise_id = case.enterprise_id
             organization_id = case.organization_id
 
             await self._upsert_case_record(case)
@@ -315,14 +319,17 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             # uploaded_files.file_id, so files must exist before any
             # evidence row that references them gets inserted.
             await self._upsert_uploaded_files(
-                case.case_id, case.uploaded_files, organization_id
+                case.case_id, case.uploaded_files, enterprise_id, organization_id
             )
-            await self._upsert_evidence(case.case_id, case.evidence, organization_id)
+            await self._upsert_evidence(
+                case.case_id, case.evidence, enterprise_id, organization_id
+            )
             # Needs and the fulfillment junction must run AFTER evidence
             # so the junction FK to evidence.evidence_id is satisfied.
             await self._upsert_evidence_needs(
                 case.case_id,
                 case.evidence_needs,
+                enterprise_id,
                 organization_id,
                 case.current_turn,
             )
@@ -331,10 +338,10 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             # evidence (already upserted above). Nodes before edges (edges FK
             # nodes).
             await self._upsert_causal_nodes(
-                case.case_id, case.causal_nodes, organization_id
+                case.case_id, case.causal_nodes, enterprise_id, organization_id
             )
             await self._upsert_causal_edges(
-                case.case_id, case.causal_edges, organization_id
+                case.case_id, case.causal_edges, enterprise_id, organization_id
             )
             await self._reconcile_causal_graph(
                 case.case_id,
@@ -342,13 +349,17 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 {e.edge_id for e in case.causal_edges},
             )
             await self._upsert_hypotheses(
-                case.case_id, case.hypotheses, organization_id
+                case.case_id, case.hypotheses, enterprise_id, organization_id
             )
-            await self._upsert_solutions(case.case_id, case.solutions, organization_id)
-            await self._upsert_messages(case.case_id, case.messages, organization_id)
+            await self._upsert_solutions(
+                case.case_id, case.solutions, enterprise_id, organization_id
+            )
+            await self._upsert_messages(
+                case.case_id, case.messages, enterprise_id, organization_id
+            )
             if case.action_history:
                 await self._append_case_actions(
-                    case.case_id, case.action_history, organization_id
+                    case.case_id, case.action_history, enterprise_id, organization_id
                 )
 
             await self.db.commit()
@@ -971,7 +982,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     async def list(
         self,
         user_id: Optional[str] = None,
-        organization_id: Optional[str] = None,
+        enterprise_id: Optional[str] = None,
         state: Optional[CaseState] = None,
         limit: int = 50,
         offset: int = 0,
@@ -987,9 +998,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
         Args:
             user_id: Filter by user
-            organization_id: Retained for interface symmetry; does NOT scope
+            enterprise_id: Retained for interface symmetry; does NOT scope
                 reads (single-tenant standalone; multi-tenant isolation is
-                PostgreSQL RLS, ADR-010)
+                PostgreSQL RLS keyed on the enterprise, ADR-010/ADR-017)
             state: Filter by state
             limit: Maximum results
             offset: Pagination offset
@@ -1018,11 +1029,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             if scope_clause:
                 where_clauses.append(scope_clause)
 
-            # No per-query org filter: multi-tenant isolation is enforced by
-            # in-core PostgreSQL RLS (ADR-010, migration 018), not by per-query
-            # repository filters; standalone-on-postgres is single-tenant. The
-            # organization_id param is retained for interface symmetry but does
-            # not scope reads.
+            # No per-query tenant filter: multi-tenant isolation is enforced by
+            # in-core PostgreSQL RLS keyed on ``enterprise_id`` (ADR-010,
+            # ADR-017), not by per-query repository filters;
+            # standalone-on-postgres is single-tenant. The enterprise_id param is
+            # retained for interface symmetry but does not scope reads.
 
             if state:
                 where_clauses.append("state = :state")
@@ -1298,9 +1309,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     ) -> None:
         """Delete this evidence's case_entities rows, then insert fresh.
 
-        ``organization_id`` is NOT NULL on case_entities; we derive it
-        from the parent case row in the INSERT so callers don't have to
-        thread it through.
+        ``enterprise_id`` is NOT NULL on case_entities and ``organization_id``
+        beside it is nullable billing attribution; both are derived from the
+        parent case row in the INSERT so callers don't have to thread them
+        through. Deriving rather than accepting them is also what makes a child
+        row incapable of landing in a different enterprise from its case.
         """
         try:
             delete_q = text("""
@@ -1316,11 +1329,14 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
             insert_q = text(f"""
                 INSERT INTO case_entities (
-                    case_id, organization_id, entity_type, entity_value, evidence_id,
+                    case_id, enterprise_id, organization_id, entity_type, entity_value, evidence_id,
                     mention_count, in_error_context, first_seen_ts
                 ) VALUES (
                     :case_id,
-                    (SELECT organization_id FROM cases WHERE case_id = {self._org_lookup_case_id()}),
+                    (SELECT enterprise_id FROM cases
+                     WHERE case_id = {self._org_lookup_case_id()}),
+                    (SELECT organization_id FROM cases
+                     WHERE case_id = {self._org_lookup_case_id()}),
                     :entity_type, :entity_value, :evidence_id,
                     :mention_count, :in_error_context, :first_seen_ts
                 )
@@ -1434,7 +1450,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         self,
         query: str,
         user_id: Optional[str] = None,
-        organization_id: Optional[str] = None,
+        enterprise_id: Optional[str] = None,
         limit: int = 20,
         shared_case_ids: Optional[List[str]] = None,
         restrict_case_ids: Optional[List[str]] = None,
@@ -1451,9 +1467,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         Args:
             query: Search query
             user_id: Filter by user
-            organization_id: Retained for interface symmetry; does NOT scope
+            enterprise_id: Retained for interface symmetry; does NOT scope
                 reads (single-tenant standalone; multi-tenant isolation is
-                PostgreSQL RLS, ADR-010)
+                PostgreSQL RLS keyed on the enterprise, ADR-010/ADR-017)
             limit: Maximum results
             shared_case_ids: Case ids readable via a team share (ADR-013 §D4);
                 widens owner-only scope to ``owned ∪ shared-to-my-teams``.
@@ -1531,7 +1547,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         """Add message to case_messages table.
 
         Returns False (not raise) if the parent case doesn't exist —
-        organization_id is NOT NULL on case_messages and is derived
+        enterprise_id is NOT NULL on case_messages (organization_id beside it is
+        nullable billing attribution) and both are derived
         via subquery from the parent case row, so a missing case
         would otherwise surface as an IntegrityError. Pre-checking
         keeps the contract: True on success, False on missing case,
@@ -1558,11 +1575,14 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
             query = text(f"""
                 INSERT INTO case_messages (
-                    message_id, case_id, organization_id, turn_number, role, content,
+                    message_id, case_id, enterprise_id, organization_id, turn_number, role, content,
                     author_id, created_at, token_count, metadata
                 ) VALUES (
                     :message_id, :case_id,
-                    (SELECT organization_id FROM cases WHERE case_id = {self._org_lookup_case_id()}),
+                    (SELECT enterprise_id FROM cases
+                     WHERE case_id = {self._org_lookup_case_id()}),
+                    (SELECT organization_id FROM cases
+                     WHERE case_id = {self._org_lookup_case_id()}),
                     :turn_number, :role, :content,
                     :author_id, :created_at, :token_count, {self._cast('metadata')}
                 )
@@ -1783,7 +1803,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             ) from e
 
     async def add_uploaded_file(
-        self, case_id: str, uploaded_file: UploadedFile, organization_id: str
+        self,
+        case_id: str,
+        uploaded_file: UploadedFile,
+        enterprise_id: str,
+        organization_id: Optional[str],
     ) -> None:
         """Commit ONE uploaded_file row on its own, outside the aggregate save.
 
@@ -1794,12 +1818,14 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         Scoped rather than `save(case)` because the aggregate save commits the
         whole case, which mid-turn would make the half-built turn durable. That
         upsert is purely additive, so the later aggregate save re-upserts this
-        row rather than removing it. `organization_id` carries the tenant for
+        row rather than removing it. `enterprise_id` carries the tenant for
         the RLS-scoped write (the engine's per-transaction begin listener
         applies the scope, as for every other sessionless method).
         """
         try:
-            await self._upsert_uploaded_files(case_id, [uploaded_file], organization_id)
+            await self._upsert_uploaded_files(
+                case_id, [uploaded_file], enterprise_id, organization_id
+            )
             await self.db.commit()
         except Exception as e:
             await self.db.rollback()
@@ -1950,6 +1976,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         update_query = text(f"""
             UPDATE cases SET
                 user_id = :user_id,
+                enterprise_id = :enterprise_id,
                 organization_id = :organization_id,
                 title = :title,
                 description = :description,
@@ -1991,7 +2018,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             # New case — plain INSERT with version = 1.
             insert_query = text(f"""
                 INSERT INTO cases (
-                    case_id, user_id, organization_id, title, description, investigation_strategy,
+                    case_id, user_id, enterprise_id, organization_id, title, description, investigation_strategy,
                     state, source, closure_reason, current_turn, turns_without_progress,
                     created_at, updated_at, last_activity_at, resolved_at, closed_at,
                     disposition_eligibility,
@@ -2000,7 +2027,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     escalation_state, documentation, progress, metadata,
                     version
                 ) VALUES (
-                    :case_id, :user_id, :organization_id, :title, :description, :investigation_strategy,
+                    :case_id, :user_id, :enterprise_id, :organization_id, :title, :description, :investigation_strategy,
                     :state, :source, :closure_reason, :current_turn, :turns_without_progress,
                     :created_at, :updated_at, :last_activity_at, :resolved_at, :closed_at,
                     :disposition_eligibility,
@@ -2043,6 +2070,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         return {
             "case_id": case.case_id,
             "user_id": case.user_id,
+            "enterprise_id": case.enterprise_id,
             "organization_id": case.organization_id,
             "title": case.title,
             "description": case.description or "",
@@ -2136,7 +2164,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         }
 
     async def _upsert_evidence(
-        self, case_id: str, evidence_list: List[Evidence], organization_id: str
+        self,
+        case_id: str,
+        evidence_list: List[Evidence],
+        enterprise_id: str,
+        organization_id: Optional[str],
     ) -> None:
         """Upsert evidence records.
 
@@ -2157,7 +2189,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         for evidence in evidence_list:
             query = text(f"""
                 INSERT INTO evidence (
-                    evidence_id, case_id, organization_id, source_file_id,
+                    evidence_id, case_id, enterprise_id, organization_id, source_file_id,
                     category, source_type,
                     summary, extract,
                     primary_purpose, analysis, processing_mode, advances_milestones,
@@ -2166,7 +2198,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     coverage_start_ts, coverage_end_ts, coverage_source,
                     metadata, created_at, updated_at
                 ) VALUES (
-                    :evidence_id, :case_id, :organization_id, :source_file_id,
+                    :evidence_id, :case_id, :enterprise_id, :organization_id, :source_file_id,
                     :category, :source_type,
                     :summary, :extract,
                     :primary_purpose, :analysis, :processing_mode, :advances_milestones,
@@ -2204,6 +2236,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 {
                     "evidence_id": evidence.evidence_id,
                     "case_id": case_id,
+                    "enterprise_id": enterprise_id,
                     "organization_id": organization_id,
                     "source_file_id": evidence.source_file_id,
                     "category": evidence.category.value,
@@ -2235,7 +2268,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         self,
         case_id: str,
         needs_list: builtins.list[EvidenceNeed],
-        organization_id: str,
+        enterprise_id: str,
+        organization_id: Optional[str],
         current_turn: int,
     ) -> None:
         """Upsert evidence-need records + fulfillment junction rows.
@@ -2251,7 +2285,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         for need in needs_list:
             query = text(f"""
                 INSERT INTO evidence_needs (
-                    need_id, case_id, organization_id,
+                    need_id, case_id, enterprise_id, organization_id,
                     purpose, request_text, rationale,
                     priority, state,
                     motivating_hypothesis_ids,
@@ -2259,7 +2293,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     created_at_turn, created_at, updated_at,
                     obtainability, surfaced_turns, engine_inferred
                 ) VALUES (
-                    :need_id, :case_id, :organization_id,
+                    :need_id, :case_id, :enterprise_id, :organization_id,
                     :purpose, :request_text, :rationale,
                     :priority, :state,
                     {self._cast('motivating_hypothesis_ids')},
@@ -2288,6 +2322,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 {
                     "need_id": need.need_id,
                     "case_id": case_id,
+                    "enterprise_id": enterprise_id,
                     "organization_id": organization_id,
                     "purpose": need.purpose.value,
                     "request_text": need.request_text,
@@ -2310,9 +2345,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             if need.fulfilling_evidence_ids:
                 junction_query = text("""
                     INSERT INTO evidence_need_fulfillment (
-                        need_id, evidence_id, organization_id, linked_at_turn
+                        need_id, evidence_id, enterprise_id, organization_id, linked_at_turn
                     ) VALUES (
-                        :need_id, :evidence_id, :organization_id, :linked_at_turn
+                        :need_id, :evidence_id, :enterprise_id, :organization_id, :linked_at_turn
                     )
                     ON CONFLICT (need_id, evidence_id) DO NOTHING
                 """)
@@ -2322,13 +2357,18 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                         {
                             "need_id": need.need_id,
                             "evidence_id": evidence_id,
+                            "enterprise_id": enterprise_id,
                             "organization_id": organization_id,
                             "linked_at_turn": current_turn,
                         },
                     )
 
     async def _upsert_hypotheses(
-        self, case_id: str, hypotheses_dict: Dict[str, Hypothesis], organization_id: str
+        self,
+        case_id: str,
+        hypotheses_dict: Dict[str, Hypothesis],
+        enterprise_id: str,
+        organization_id: Optional[str],
     ) -> None:
         """Upsert hypotheses records.
 
@@ -2344,7 +2384,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         for hypothesis_id, hypothesis in hypotheses_dict.items():
             query = text(f"""
                 INSERT INTO hypotheses (
-                    hypothesis_id, case_id, organization_id, statement, state,
+                    hypothesis_id, case_id, enterprise_id, organization_id, statement, state,
                     likelihood, initial_likelihood,
                     root_node_id, path,
                     generated_at_turn, last_updated_turn, last_progress_at_turn,
@@ -2354,7 +2394,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     tested_at, concluded_at, proposed_at, updated_at, metadata,
                     created_by, updated_by
                 ) VALUES (
-                    :hypothesis_id, :case_id, :organization_id, :statement, :state,
+                    :hypothesis_id, :case_id, :enterprise_id, :organization_id, :statement, :state,
                     :likelihood, :initial_likelihood,
                     :root_node_id, {self._cast('path')},
                     :generated_at_turn, :last_updated_turn, :last_progress_at_turn,
@@ -2386,6 +2426,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 {
                     "hypothesis_id": hypothesis_id,
                     "case_id": case_id,
+                    "enterprise_id": enterprise_id,
                     "organization_id": organization_id,
                     "statement": hypothesis.statement,
                     "state": hypothesis.state.value,
@@ -2414,14 +2455,18 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             )
 
             await self._upsert_hypothesis_evidence(
-                hypothesis_id, hypothesis.evidence_links, organization_id
+                hypothesis_id,
+                hypothesis.evidence_links,
+                enterprise_id,
+                organization_id,
             )
 
     async def _upsert_hypothesis_evidence(
         self,
         hypothesis_id: str,
         links: builtins.list[HypothesisEvidenceLink],
-        organization_id: str,
+        enterprise_id: str,
+        organization_id: Optional[str],
     ) -> None:
         """Upsert rows on the ``hypothesis_evidence`` junction table.
 
@@ -2436,11 +2481,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             return
         query = text("""
             INSERT INTO hypothesis_evidence (
-                hypothesis_id, evidence_id, organization_id,
+                hypothesis_id, evidence_id, enterprise_id, organization_id,
                 relationship_type, confidence, linked_at_turn,
                 linked_by, created_at
             ) VALUES (
-                :hypothesis_id, :evidence_id, :organization_id,
+                :hypothesis_id, :evidence_id, :enterprise_id, :organization_id,
                 :relationship_type, :confidence, :linked_at_turn,
                 :linked_by, :created_at
             )
@@ -2458,6 +2503,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 {
                     "hypothesis_id": hypothesis_id,
                     "evidence_id": link.evidence_id,
+                    "enterprise_id": enterprise_id,
                     "organization_id": organization_id,
                     "relationship_type": relationship,
                     "confidence": link.stance_confidence,
@@ -2472,21 +2518,25 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             )
 
     async def _upsert_causal_nodes(
-        self, case_id: str, nodes_dict: Dict[str, CausalNode], organization_id: str
+        self,
+        case_id: str,
+        nodes_dict: Dict[str, CausalNode],
+        enterprise_id: str,
+        organization_id: Optional[str],
     ) -> None:
         """Upsert causal-graph nodes; node-scoped evidence follows into the
         causal_node_evidence junction. Additive + idempotent on node_id."""
         for node_id, node in nodes_dict.items():
             query = text(f"""
                 INSERT INTO causal_nodes (
-                    node_id, case_id, organization_id, statement,
+                    node_id, case_id, enterprise_id, organization_id, statement,
                     node_type, node_state, validation_method, belief,
                     signature_consistent, actionable, category, state_epoch,
                     generated_at_turn, last_updated_turn, last_progress_at_turn,
                     iterations_without_progress, refutation_reason, rationale,
                     metadata, proposed_at, updated_at
                 ) VALUES (
-                    :node_id, :case_id, :organization_id, :statement,
+                    :node_id, :case_id, :enterprise_id, :organization_id, :statement,
                     :node_type, :node_state, :validation_method, :belief,
                     :signature_consistent, :actionable, :category, :state_epoch,
                     :generated_at_turn, :last_updated_turn, :last_progress_at_turn,
@@ -2516,6 +2566,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 {
                     "node_id": node_id,
                     "case_id": case_id,
+                    "enterprise_id": enterprise_id,
                     "organization_id": organization_id,
                     "statement": node.statement,
                     "node_type": node.node_type.value,
@@ -2538,14 +2589,15 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 },
             )
             await self._upsert_node_evidence(
-                node_id, node.evidence_links, organization_id
+                node_id, node.evidence_links, enterprise_id, organization_id
             )
 
     async def _upsert_node_evidence(
         self,
         node_id: str,
         links: List[NodeEvidenceLink],
-        organization_id: str,
+        enterprise_id: str,
+        organization_id: Optional[str],
     ) -> None:
         """Upsert rows on the causal_node_evidence junction. Composite PK
         (node_id, evidence_id) makes it idempotent; stance is stored verbatim
@@ -2554,11 +2606,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             return
         query = text("""
             INSERT INTO causal_node_evidence (
-                node_id, evidence_id, organization_id, stance,
+                node_id, evidence_id, enterprise_id, organization_id, stance,
                 stance_confidence, reasoning, linked_at_turn,
                 created_at
             ) VALUES (
-                :node_id, :evidence_id, :organization_id, :stance,
+                :node_id, :evidence_id, :enterprise_id, :organization_id, :stance,
                 :stance_confidence, :reasoning, :linked_at_turn,
                 :created_at
             )
@@ -2574,6 +2626,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 {
                     "node_id": node_id,
                     "evidence_id": link.evidence_id,
+                    "enterprise_id": enterprise_id,
                     "organization_id": organization_id,
                     "stance": link.stance.value,
                     "stance_confidence": link.stance_confidence,
@@ -2617,18 +2670,22 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         )
 
     async def _upsert_causal_edges(
-        self, case_id: str, edges: List[CausalEdge], organization_id: str
+        self,
+        case_id: str,
+        edges: List[CausalEdge],
+        enterprise_id: str,
+        organization_id: Optional[str],
     ) -> None:
         """Upsert causal-graph edges. Additive + idempotent on edge_id."""
         if not edges:
             return
         query = text("""
             INSERT INTO causal_edges (
-                edge_id, case_id, organization_id,
+                edge_id, case_id, enterprise_id, organization_id,
                 cause_node_id, effect_node_id, and_group, reasoning,
                 created_at_turn, created_at
             ) VALUES (
-                :edge_id, :case_id, :organization_id,
+                :edge_id, :case_id, :enterprise_id, :organization_id,
                 :cause_node_id, :effect_node_id, :and_group, :reasoning,
                 :created_at_turn, :created_at
             )
@@ -2642,6 +2699,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 {
                     "edge_id": edge.edge_id,
                     "case_id": case_id,
+                    "enterprise_id": enterprise_id,
                     "organization_id": organization_id,
                     "cause_node_id": edge.cause_node_id,
                     "effect_node_id": edge.effect_node_id,
@@ -2653,7 +2711,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             )
 
     async def _upsert_solutions(
-        self, case_id: str, solutions_list: List[Solution], organization_id: str
+        self,
+        case_id: str,
+        solutions_list: List[Solution],
+        enterprise_id: str,
+        organization_id: Optional[str],
     ) -> None:
         """Upsert solutions records (normalized table).
 
@@ -2673,7 +2735,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
             query = text(f"""
                 INSERT INTO solutions (
-                    solution_id, case_id, organization_id, solution_type, title,
+                    solution_id, case_id, enterprise_id, organization_id, solution_type, title,
                     node_id, quadrant,
                     immediate_action, longterm_fix, implementation_steps, commands, risks,
                     description, state,
@@ -2682,7 +2744,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     verification_result, verified_at,
                     proposed_at, applied_at, updated_at, metadata
                 ) VALUES (
-                    :solution_id, :case_id, :organization_id, :solution_type, :title,
+                    :solution_id, :case_id, :enterprise_id, :organization_id, :solution_type, :title,
                     :node_id, :quadrant,
                     :immediate_action, :longterm_fix, {self._cast('implementation_steps')},
                     {self._cast('commands')}, {self._cast('risks')},
@@ -2721,6 +2783,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 {
                     "solution_id": solution.solution_id,
                     "case_id": case_id,
+                    "enterprise_id": enterprise_id,
                     "organization_id": organization_id,
                     "solution_type": solution.solution_type.value,
                     "title": solution.title,
@@ -2765,7 +2828,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         return "proposed"
 
     async def _upsert_uploaded_files(
-        self, case_id: str, files_list: List[UploadedFile], organization_id: str
+        self,
+        case_id: str,
+        files_list: List[UploadedFile],
+        enterprise_id: str,
+        organization_id: Optional[str],
     ) -> None:
         """Upsert uploaded_files records.
 
@@ -2782,7 +2849,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         for file in files_list:
             query = text(f"""
                 INSERT INTO uploaded_files (
-                    file_id, case_id, organization_id, uploaded_by,
+                    file_id, case_id, enterprise_id, organization_id, uploaded_by,
                     filename, size_bytes, content_type, content_hash,
                     storage_ref, upload_source,
                     uploaded_at_turn, uploaded_at,
@@ -2790,7 +2857,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     summary, structural_index, data_type,
                     coverage_start_ts, coverage_end_ts, coverage_source
                 ) VALUES (
-                    :file_id, :case_id, :organization_id, :uploaded_by,
+                    :file_id, :case_id, :enterprise_id, :organization_id, :uploaded_by,
                     :filename, :size_bytes, :content_type, :content_hash,
                     :storage_ref, :upload_source,
                     :uploaded_at_turn, :uploaded_at,
@@ -2824,6 +2891,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 {
                     "file_id": file.file_id,
                     "case_id": case_id,
+                    "enterprise_id": enterprise_id,
                     "organization_id": organization_id,
                     "uploaded_by": file.uploaded_by,
                     "filename": file.filename,
@@ -2845,7 +2913,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             )
 
     async def _upsert_messages(
-        self, case_id: str, messages_list: List[Dict[str, Any]], organization_id: str
+        self,
+        case_id: str,
+        messages_list: List[Dict[str, Any]],
+        enterprise_id: str,
+        organization_id: Optional[str],
     ) -> None:
         """Upsert case messages (PostgreSQL-optimized).
 
@@ -2869,9 +2941,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
             query = text(f"""
                 INSERT INTO case_messages (
-                    message_id, case_id, organization_id, turn_number, role, content, author_id, created_at, token_count, metadata
+                    message_id, case_id, enterprise_id, organization_id, turn_number, role, content, author_id, created_at, token_count, metadata
                 ) VALUES (
-                    :message_id, :case_id, :organization_id, :turn_number, :role, :content, :author_id, :created_at, :token_count, {self._cast('metadata')}
+                    :message_id, :case_id, :enterprise_id, :organization_id, :turn_number, :role, :content, :author_id, :created_at, :token_count, {self._cast('metadata')}
                 )
                 ON CONFLICT (message_id) DO UPDATE SET
                     turn_number = EXCLUDED.turn_number,
@@ -2894,6 +2966,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 {
                     "message_id": msg.get("message_id"),
                     "case_id": case_id,
+                    "enterprise_id": enterprise_id,
                     "organization_id": organization_id,
                     "turn_number": msg.get("turn_number", idx),
                     "role": msg.get("role", "user"),
@@ -2908,7 +2981,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             )
 
     async def _append_case_actions(
-        self, case_id: str, transitions: List[CaseAction], organization_id: str
+        self,
+        case_id: str,
+        transitions: List[CaseAction],
+        enterprise_id: str,
+        organization_id: Optional[str],
     ) -> None:
         """Append only newly-added case actions (append-only audit trail).
 
@@ -2934,10 +3011,10 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         for transition in new_transitions:
             query = text(f"""
                 INSERT INTO case_actions (
-                    case_id, organization_id, from_state, to_state, reason,
+                    case_id, enterprise_id, organization_id, from_state, to_state, reason,
                     triggered_by, transitioned_at, metadata
                 ) VALUES (
-                    :case_id, :organization_id, :from_state, :to_state, :reason,
+                    :case_id, :enterprise_id, :organization_id, :from_state, :to_state, :reason,
                     :triggered_by, :transitioned_at, {self._cast('metadata')}
                 )
             """)
@@ -2946,6 +3023,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 query,
                 {
                     "case_id": case_id,
+                    "enterprise_id": enterprise_id,
                     "organization_id": organization_id,
                     "from_state": (
                         transition.from_state.value if transition.from_state else None
@@ -3096,6 +3174,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         case_data: Dict[str, Any] = {
             "case_id": row.case_id,
             "user_id": row.user_id,
+            "enterprise_id": row.enterprise_id,
             "organization_id": row.organization_id,
             "source": getattr(row, "source", "copilot"),
             "title": row.title,
@@ -3207,19 +3286,23 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             else "{}"
         )
 
-        # ``organization_id`` is NOT NULL FK CASCADE on reports; derive
-        # it from the parent case via subquery so callers don't have to
-        # thread it through. ``report_type`` CHECK allows only
+        # ``enterprise_id`` is NOT NULL FK CASCADE on reports, and
+        # ``organization_id`` beside it is nullable billing attribution; both are
+        # derived from the parent case via subquery so callers don't have to
+        # thread them through. ``report_type`` CHECK allows only
         # ('resolution_summary', 'closure_summary').
         insert_query = text(f"""
             INSERT INTO reports (
-                report_id, case_id, organization_id, report_type, version, is_current,
+                report_id, case_id, enterprise_id, organization_id, report_type, version, is_current,
                 linked_to_closure, title, content, format,
                 generation_status, generation_time_ms, metadata,
                 generated_at, updated_at, generated_by
             ) VALUES (
                 :report_id, :case_id,
-                (SELECT organization_id FROM cases WHERE case_id = {self._org_lookup_case_id()}),
+                (SELECT enterprise_id FROM cases
+                 WHERE case_id = {self._org_lookup_case_id()}),
+                (SELECT organization_id FROM cases
+                 WHERE case_id = {self._org_lookup_case_id()}),
                 :report_type, :version, :is_current,
                 :linked_to_closure, :title, :content, :format,
                 :generation_status, :generation_time_ms, {self._cast('metadata')},
@@ -3555,11 +3638,14 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         try:
             query = text(f"""
                 INSERT INTO case_checkpoints (
-                    checkpoint_id, case_id, organization_id, turn_number, case_snapshot,
+                    checkpoint_id, case_id, enterprise_id, organization_id, turn_number, case_snapshot,
                     snapshot_hash, trigger, created_at, metadata
                 ) VALUES (
                     :checkpoint_id, :case_id,
-                    (SELECT COALESCE(organization_id, '{STANDALONE_ORG_ID}') FROM cases WHERE case_id = {self._org_lookup_case_id()}),
+                    (SELECT enterprise_id FROM cases
+                     WHERE case_id = {self._org_lookup_case_id()}),
+                    (SELECT organization_id FROM cases
+                     WHERE case_id = {self._org_lookup_case_id()}),
                     :turn_number, {self._cast('case_snapshot')},
                     :snapshot_hash, :trigger, {self._cast('created_at', 'TIMESTAMPTZ')}, {self._cast('metadata')}
                 )

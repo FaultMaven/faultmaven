@@ -26,11 +26,20 @@ from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     capture_state_read_at,
 )
 
-# ADR-012 account kinds. 'slack' is the service account that owns a workspace's
-# cases; 'individual' is a human.
-SERVICE_ACCOUNT_KIND = "slack"
+# There are exactly two kinds of account (ADR-017 D6): a human, and an agent
+# acting for an integration. A team is a group of accounts, never an account,
+# and the vocabulary that called this one a team is retired from every
+# identifier and every document — it is the naming that produced the conflation
+# ADR-017 untangles.
+SERVICE_ACCOUNT_KIND = "service"
 INDIVIDUAL_ACCOUNT_KIND = "individual"
 VALID_ACCOUNT_KINDS = frozenset({INDIVIDUAL_ACCOUNT_KIND, SERVICE_ACCOUNT_KIND})
+
+#: Which integration a service account serves. A separate attribute from the
+#: kind, so a second integration is a new value here rather than a third account
+#: kind — which is what "slack" as an account_kind would have forced.
+SLACK_SERVICE_CHANNEL = "slack"
+VALID_SERVICE_CHANNELS = frozenset({SLACK_SERVICE_CHANNEL})
 
 
 class ServiceAccountProvisioningError(Exception):
@@ -49,7 +58,7 @@ class ProvisionedCredential:
         expires_at: When this specific token expires if it is never used.
         account_created: True if the account did not exist and was created.
         account_kind_corrected: True if the account existed with the wrong
-            account_kind and was corrected.
+            ``account_kind`` or ``service_channel`` and was corrected.
     """
 
     user: DevUser
@@ -65,7 +74,8 @@ async def provision_service_account_credential(
     user_store: Any,
     token_generator: Any,
     account_kind: str = SERVICE_ACCOUNT_KIND,
-    organization_id: Optional[str] = None,
+    service_channel: Optional[str] = SLACK_SERVICE_CHANNEL,
+    enterprise_id: Optional[str] = None,
 ) -> ProvisionedCredential:
     """Ensure a service account exists and mint it an initial refresh token.
 
@@ -79,9 +89,10 @@ async def provision_service_account_credential(
     mint would make recovery destructive if an operator provisions while the
     agent is still running happily.
 
-    Under a multi-tenant deployment ``organization_id`` is **required**: the
+    Under a multi-tenant deployment ``enterprise_id`` is **required**: the
     credential's whole tenancy travels in its own claim chain (the ``users``
-    table has no organization column), so a credential minted without one is
+    table has no organization column), so a credential minted without an
+    enterprise is
     dead on arrival.
 
     Args:
@@ -92,8 +103,11 @@ async def provision_service_account_credential(
         token_generator: The deployment's JWT generator, whose
             ``generate_refresh_token`` must be the same one the request path
             validates with — otherwise the credential will not verify.
-        account_kind: ADR-012 account kind to enforce on the account.
-        organization_id: FaultMaven organization the credential acts within.
+        account_kind: ADR-017 D6 account kind to enforce ('individual' or
+            'service').
+        service_channel: Which integration a 'service' account serves
+            ('slack'); forced to ``None`` for an individual.
+        enterprise_id: FaultMaven enterprise the credential acts within.
             Required under ``TENANT_PROVIDER=multi``, refused under
             single-tenant (which has exactly one tenant), and never the
             Standalone sentinel.
@@ -103,28 +117,38 @@ async def provision_service_account_credential(
 
     Raises:
         ServiceAccountProvisioningError: If the account is unusable (inactive),
-            the requested organization is not one this deployment can mint for,
+            the requested enterprise is not one this deployment can mint for,
             or the credential cannot be minted.
     """
     if not username or not username.strip():
         raise ServiceAccountProvisioningError("username is required")
     username = username.strip()
 
-    # A blank or whitespace-only flag value is *no* organization, not an empty
+    # A blank or whitespace-only flag value is *no* enterprise, not an empty
     # one — otherwise `-o ''` would slip past the multi-tenant requirement below
     # and mint the org-less credential it exists to prevent. Validated before the
     # user store is touched, so a refusal creates nothing.
-    organization_id = (organization_id or "").strip() or None
-    _validate_organization(organization_id)
+    enterprise_id = (enterprise_id or "").strip() or None
+    _validate_enterprise(enterprise_id)
 
-    # The column has no CHECK constraint and case derivation matches 'slack'
-    # exactly, so an unvalidated typo ('Slack') would be persisted, reported as
-    # a successful correction, and then silently stamp every case the account
-    # opens with the wrong source.
+    # Case derivation matches the channel exactly, so an unvalidated typo
+    # ('Slack') would be persisted, reported as a successful correction, and
+    # then silently stamp every case the account opens with the wrong source.
+    # The kind now carries a CHECK constraint as well; the channel does not, so
+    # this is the only gate it has.
     if account_kind not in VALID_ACCOUNT_KINDS:
         raise ServiceAccountProvisioningError(
             f"Unknown account_kind {account_kind!r}; "
             f"expected one of {sorted(VALID_ACCOUNT_KINDS)}"
+        )
+    if account_kind == INDIVIDUAL_ACCOUNT_KIND:
+        # A human serves no integration. Refusing rather than silently dropping
+        # the value keeps "which channel is this?" answerable from the row.
+        service_channel = None
+    elif service_channel not in VALID_SERVICE_CHANNELS:
+        raise ServiceAccountProvisioningError(
+            f"Unknown service_channel {service_channel!r}; "
+            f"expected one of {sorted(VALID_SERVICE_CHANNELS)}"
         )
 
     if token_generator is None:
@@ -146,12 +170,20 @@ async def provision_service_account_credential(
             username=username,
             display_name=f"{username} (service account)",
             account_kind=account_kind,
+            service_channel=service_channel,
         )
         account_created = True
-    elif getattr(user, "account_kind", None) != account_kind:
-        # An account provisioned before ADR-012, or one demoted by a code path
-        # that round-tripped it through a model without account_kind.
+    elif (
+        getattr(user, "account_kind", None) != account_kind
+        or getattr(user, "service_channel", None) != service_channel
+    ):
+        # An account provisioned before ADR-017, or one demoted by a code path
+        # that round-tripped it through a model without these fields. Both are
+        # corrected together: the channel alone decides the derived case
+        # source, so an account carrying the right kind and a lost channel
+        # would stamp every case it opens as a copilot case.
         user.account_kind = account_kind
+        user.service_channel = service_channel
         user = await user_store.update_user(user)
         account_kind_corrected = True
 
@@ -164,13 +196,13 @@ async def provision_service_account_credential(
             "be rejected on first use. Reactivate the account first."
         )
 
-    if organization_id is not None:
+    if enterprise_id is not None:
         # Stamp the tenant on the user object the generator reads. Required
         # rather than optional: the repository model has no organization column
         # and ``DevUser.__post_init__`` stamps the Standalone sentinel on every
         # user the store returns, which under multi-tenant resolves to the empty
         # claim. Mirrors `/auth/refresh` step 2b (#869, #873).
-        setattr(user, "organization_id", organization_id)
+        setattr(user, "enterprise_id", enterprise_id)
 
     refresh_token = await token_generator.generate_refresh_token(
         user, state_read_at=state_read_at
@@ -189,56 +221,56 @@ async def provision_service_account_credential(
     )
 
 
-def _validate_organization(organization_id: Optional[str]) -> None:
-    """Refuse an organization this deployment cannot mint a live credential for.
+def _validate_enterprise(enterprise_id: Optional[str]) -> None:
+    """Refuse a tenant this deployment cannot mint a live credential for.
 
     Refusing here — at mint — is half of the #850 invariant, whose other half is
-    ``bind_request_org_context`` refusing the same shapes at bind time. An
+    ``bind_request_enterprise_context`` refusing the same shapes at bind time. An
     operator finding out at provisioning time is the whole point: the failure is
     otherwise invisible until the agent's first API call is rejected.
 
     Args:
-        organization_id: Normalized organization id (``None`` when omitted).
+        enterprise_id: Normalized enterprise id (``None`` when omitted).
 
     Raises:
         ServiceAccountProvisioningError: If the id is the Standalone sentinel, if
-            a multi-tenant deployment was given no organization, or if a
+            a multi-tenant deployment was given no enterprise, or if a
             single-tenant deployment was given one.
     """
     # Deferred: tenancy config pulls in settings, which must not be imported at
-    # auth-module import time (same discipline as ``resolve_organization_claim``).
+    # auth-module import time (same discipline as ``resolve_enterprise_claim``).
     from faultmaven.providers.tenancy.factory import (
         BUILTIN_MULTI,
         requested_tenant_provider,
     )
     from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
-    if organization_id == SingleTenantProvider.DEFAULT_ORG_ID:
+    if enterprise_id == SingleTenantProvider.DEFAULT_ENTERPRISE_ID:
         raise ServiceAccountProvisioningError(
-            f"organization_id {organization_id!r} is the Standalone sentinel org, "
+            f"enterprise_id {enterprise_id!r} is the Standalone sentinel enterprise, "
             "which identifies the single-tenant deployment itself and is not a "
-            "tenant. Pass the tenant's own organization id, or omit the flag on a "
+            "tenant. Pass the tenant's own enterprise id, or omit the flag on a "
             "single-tenant deployment."
         )
 
     is_multi_tenant = requested_tenant_provider() == BUILTIN_MULTI
 
-    if is_multi_tenant and organization_id is None:
+    if is_multi_tenant and enterprise_id is None:
         raise ServiceAccountProvisioningError(
             "This deployment is multi-tenant (TENANT_PROVIDER=multi), so a "
-            "service-account credential must name the organization it acts "
-            "within: the users table has no organization column, so an org-less "
-            "credential resolves to an empty organization claim and every request "
-            "it makes is refused at bind_request_org_context. Re-run with "
-            "--organization-id <org-id> (the id fm-provision-sso-org reported for "
+            "service-account credential must name the enterprise it acts "
+            "within: an unanchored credential resolves to an empty enterprise "
+            "claim and every request it makes is refused at "
+            "bind_request_enterprise_context. Re-run with "
+            "--enterprise-id <enterprise-id> (the id fm-provision-sso-org reported for "
             "that tenant, or the one in your operator records)."
         )
 
-    if not is_multi_tenant and organization_id is not None:
+    if not is_multi_tenant and enterprise_id is not None:
         raise ServiceAccountProvisioningError(
             "This deployment is single-tenant, which has exactly one tenant, so "
-            f"organization_id {organization_id!r} cannot be honoured. Omit the "
-            "--organization-id flag."
+            f"enterprise_id {enterprise_id!r} cannot be honoured. Omit the "
+            "--enterprise-id flag."
         )
 
 

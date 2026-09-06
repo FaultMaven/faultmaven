@@ -1,19 +1,28 @@
-"""The organization claim survives the OAuth-PKCE token chain (#872).
+"""Both tenancy claims survive the OAuth-PKCE token chain (#872, ADR-017).
 
 The copilot authenticates through ``GET|POST /auth/oauth/authorize`` (an
 authenticated dashboard request) and then redeems the code at
 ``POST /auth/oauth/token`` (**unauthenticated** — it carries a code and a PKCE
-verifier, no bearer token). The ``users`` row the exchange loads has no
-organization: tenancy lives in the token chain, not the user table. So unless the
-authorize leg captures the tenant and the exchange re-attaches it, every copilot
-session under ``TENANT_PROVIDER=multi`` mints an empty ``organization_id`` and is
-refused at ``bind_request_org_context`` on its first API call.
+verifier, no bearer token). ADR-017 splits what used to be one claim in two, and
+the two travel by DIFFERENT routes, which is the whole subject of this module:
 
-These tests assert at the **surface that renders the claim** — the decoded JWT —
-rather than on the user object handed to the generator. Attaching the org to the
-user is the mechanism; the claim in the token is the guarantee, and only the
-decoded token proves ``resolve_organization_claim`` did not drop it on the way
-out.
+**Isolation** (``enterprise_id``) is minted at redemption from
+``users.enterprise_id``. The column is NOT NULL and it is on the row the exchange
+already loads, so nothing has to carry it across the hop — and nothing may,
+because a value carried in a hand-off artifact is a value an attacker who obtains
+the artifact chooses. ``bind_request_enterprise_context`` refuses a token without
+this claim outright (no fallback to the user row), so a mint that drops it
+strands the session on its first API call.
+
+**Billing** (``organization_id``) still has to travel with the code. The ``users``
+row carries no organization — membership lives in ``organization_members`` — so
+the authorize leg, which runs under a session that knows who pays, is the only
+place the value exists. Absence is a legitimate answer under ADR-017 D2: an
+account in no organization mints no claim at all, and that is not a failure.
+
+These tests assert at the **surface that renders the claims** — the decoded JWT —
+rather than on the user object handed to the generator. Attaching the billing org
+to the user is the mechanism; the claims in the token are the guarantee.
 
 The chain is exercised leg by leg, and then end to end: authorize → exchange →
 refresh → refresh again, because a claim that survives the first mint but not
@@ -26,6 +35,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import jwt
 import pytest
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.settings import AuthSettings
 from faultmaven.config.tenant_context import usable_tenant_id
 from faultmaven.models.exceptions import InvalidGrantError
@@ -43,7 +53,6 @@ from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import
     RedisTokenRevocationStore,
 )
 from faultmaven.providers.tenancy.factory import BUILTIN_MULTI, BUILTIN_SINGLE
-from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
 #: The configured pair, as production wires it (JWT_ISSUER/JWT_AUDIENCE
 #: defaults). Deliberately not the literals the HS256 paths once hardcoded:
@@ -52,8 +61,11 @@ ISSUER = "faultmaven"
 AUDIENCE = "faultmaven-api"
 
 SECRET = "test-secret-key-for-hs256-signing-only"
-TENANT = "org_acme_7f3c"
-OTHER_TENANT = "org_globex_9b1d"
+#: The BILLING organization the authorize leg captures.
+BILLING_ORG = "org_acme_7f3c"
+OTHER_ORG = "org_globex_9b1d"
+#: The ISOLATION enterprise, which lives on the user row rather than the code.
+ENTERPRISE = "ent_acme_11a2"
 REDIRECT = "chrome-extension://abc123/callback.html"
 
 _MULTI = patch(
@@ -103,21 +115,49 @@ def token_generator():
 
 @pytest.fixture
 def user_repository():
-    """A user store that returns an org-less user — as the real one does.
+    """A user store that returns an ANCHORED but organization-less user.
 
-    The ``users`` table has no organization column, which is precisely why the
-    claim has to travel with the code. A fixture that pre-stamped the tenant
-    would make the fix untestable: the test would pass without it.
+    Both halves are deliberate, and they are the two routes under test:
+
+    * ``enterprise_id`` IS on the row, because ``users.enterprise_id`` is NOT
+      NULL (ADR-017 D3) and is where the isolation claim is minted from.
+    * there is no ``organization_id``, as the real row has none — which is
+      precisely why the billing claim has to travel with the code. A fixture
+      that pre-stamped it would make the #872 fix untestable: the test would
+      pass without it.
     """
     repo = AsyncMock()
+    user = Mock(
+        spec=["user_id", "username", "email", "roles", "is_active", "enterprise_id"]
+    )
+    user.user_id = "user_123"
+    user.username = "testuser"
+    user.email = "testuser@acme.example"
+    user.roles = ["user"]
+    user.is_active = True
+    user.enterprise_id = ENTERPRISE
+    repo.get = AsyncMock(return_value=user)
+    return repo
+
+
+@pytest.fixture
+def unanchored_user_repository(user_repository):
+    """The same store, for an account carrying no enterprise at all.
+
+    ``users.enterprise_id`` is NOT NULL, so this shape does not survive a write
+    — but the mint path must still fail closed on it rather than invent an
+    anchor, because the alternative (defaulting to the Standalone sentinel under
+    multi) pools every unanchored account into the deployment's global-KB
+    tenant.
+    """
     user = Mock(spec=["user_id", "username", "email", "roles", "is_active"])
     user.user_id = "user_123"
     user.username = "testuser"
     user.email = "testuser@acme.example"
     user.roles = ["user"]
     user.is_active = True
-    repo.get = AsyncMock(return_value=user)
-    return repo
+    user_repository.get = AsyncMock(return_value=user)
+    return user_repository
 
 
 @pytest.fixture
@@ -173,61 +213,61 @@ def pkce_pair():
 @pytest.mark.unit
 @pytest.mark.security
 @pytest.mark.asyncio
-async def test_org_claim_survives_authorize_exchange_and_repeated_rotation(
+async def test_both_claims_survive_authorize_exchange_and_repeated_rotation(
     oauth_service, pkce_pair
 ):
-    """Every token the chain mints carries the authorizing session's tenant.
+    """Every token the chain mints carries the isolation AND the billing claim.
 
-    Rotation is exercised twice, not once: the first refresh reads the claim from
-    the token the exchange minted, the second reads it from a token the *refresh*
-    minted. A fix that attaches the org at exchange but drops it when re-minting
-    would pass a single-rotation test and still strand the extension on its
-    second hour.
+    Rotation is exercised twice, not once: the first refresh reads the claims
+    from the token the exchange minted, the second reads them from a token the
+    *refresh* minted. A fix that attaches them at exchange but drops one when
+    re-minting would pass a single-rotation test and still strand the extension
+    on its second hour.
+
+    The two claims are asserted together on every leg because they fail
+    independently — the enterprise is re-derived from the row each time, the
+    organization is re-attached from the presented token each time, and neither
+    mechanism protects the other.
     """
     verifier, challenge = pkce_pair
 
     with _MULTI:
         code = await oauth_service.create_authorization_code(
-            "user_123", _authorization_request(challenge), organization_id=TENANT
+            "user_123", _authorization_request(challenge), organization_id=BILLING_ORG
         )
         tokens = await oauth_service.exchange_code_for_token(
             code=code, code_verifier=verifier, redirect_uri=REDIRECT
         )
 
-        assert _claims(tokens.access_token)["organization_id"] == TENANT
-        assert _claims(tokens.refresh_token)["organization_id"] == TENANT
+        for token in (tokens.access_token, tokens.refresh_token):
+            assert _claims(token)["enterprise_id"] == ENTERPRISE
+            assert _claims(token)["organization_id"] == BILLING_ORG
 
         for _ in range(2):
             tokens = await oauth_service.refresh_access_token(
                 refresh_token=tokens.refresh_token, client_id="faultmaven-copilot"
             )
-            assert _claims(tokens.access_token)["organization_id"] == TENANT
-            assert _claims(tokens.refresh_token)["organization_id"] == TENANT
+            for token in (tokens.access_token, tokens.refresh_token):
+                assert _claims(token)["enterprise_id"] == ENTERPRISE
+                assert _claims(token)["organization_id"] == BILLING_ORG
 
 
 @pytest.mark.unit
 @pytest.mark.security
 @pytest.mark.asyncio
-async def test_exchange_without_a_captured_org_fails_closed_under_multi(
-    oauth_service, pkce_pair
-):
-    """A code carrying no tenant mints a claim no tenanted request can use.
+async def test_a_code_carrying_no_organization_still_isolates(oauth_service, pkce_pair):
+    """No billing claim, and the isolation claim is untouched by its absence.
 
-    The negative control, and it asserts BOTH halves on purpose.
+    Under ADR-017 D2 "this account is in no organization" is an ordinary steady
+    state, so the correct rendering is the ABSENCE of the claim — not an empty
+    string, and emphatically not a sentinel some later reader could mistake for
+    a tenant. The token is fully usable: it isolates on the enterprise, which
+    never travelled with the code in the first place.
 
-    ``resolve_organization_claim`` (which emits the claim) and ``usable_tenant_id``
-    (which decides whether a claim is a tenant) are two independent copies of the
-    same sentinel-rejection rule. So an assertion routed only through
-    ``usable_tenant_id`` cannot detect ``resolve_organization_claim`` breaking:
-    mutating it to emit the Standalone sentinel under multi leaves such an
-    assertion green, because the predicate collapses the sentinel to ``None``
-    too. An earlier version of this test made exactly that mistake, on the
-    reasoning that the shared predicate was the stronger assertion — it is the
-    weaker one for this failure, and adversarial review demonstrated it.
-
-    So: the literal pins what is actually emitted, and the predicate pins the
-    downstream consequence. Neither is redundant, because each is the only check
-    on its own copy of the rule.
+    Both halves are asserted because they fail independently. A mint that emitted
+    ``organization_id: ""`` would pass a test that only checked the enterprise,
+    and a mint that derived isolation from the captured organization would pass
+    a test that only checked the absence.
     """
     verifier, challenge = pkce_pair
 
@@ -240,11 +280,58 @@ async def test_exchange_without_a_captured_org_fails_closed_under_multi(
         )
 
         for token in (tokens.access_token, tokens.refresh_token):
-            claim = _claims(token)["organization_id"]
+            claims = _claims(token)
+            assert "organization_id" not in claims
+            assert claims["enterprise_id"] == ENTERPRISE
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_an_unanchored_account_mints_an_unusable_isolation_claim_under_multi(
+    unanchored_user_repository, token_generator, pkce_pair
+):
+    """The fail-closed control, and it asserts BOTH halves on purpose.
+
+    ``resolve_enterprise_claim`` (which emits the claim) and ``usable_tenant_id``
+    (which decides whether a claim is a tenant) are two independent copies of the
+    same sentinel-rejection rule. So an assertion routed only through
+    ``usable_tenant_id`` cannot detect ``resolve_enterprise_claim`` breaking:
+    mutating it to emit the Standalone sentinel under multi leaves such an
+    assertion green, because the predicate collapses the sentinel to ``None``
+    too. An earlier version of this test made exactly that mistake, on the
+    reasoning that the shared predicate was the stronger assertion — it is the
+    weaker one for this failure, and adversarial review demonstrated it.
+
+    So: the literal pins what is actually emitted, and the predicate pins the
+    downstream consequence. Neither is redundant, because each is the only check
+    on its own copy of the rule.
+    """
+    verifier, challenge = pkce_pair
+    service = OAuthServiceImpl(
+        code_repository=InMemoryOAuthCodeRepository(),
+        user_repository=unanchored_user_repository,
+        token_generator=token_generator,
+        settings=AuthSettings(
+            oauth_allowed_clients=["faultmaven-copilot"],
+            oauth_redirect_uri_patterns=[
+                r"^chrome-extension://[a-z0-9]+/callback\.html$"
+            ],
+        ),
+    )
+
+    with _MULTI:
+        code = await service.create_authorization_code(
+            "user_123", _authorization_request(challenge), organization_id=BILLING_ORG
+        )
+        tokens = await service.exchange_code_for_token(
+            code=code, code_verifier=verifier, redirect_uri=REDIRECT
+        )
+
+        for token in (tokens.access_token, tokens.refresh_token):
+            claim = _claims(token)["enterprise_id"]
             # What was emitted — catches a mint-side default to the sentinel.
-            # `== ""` already excludes the sentinel, which is non-empty. An
-            # extra `!= sentinel` line here looked like a second guard but could
-            # never fail once this one passed.
+            # ``== ""`` already excludes the sentinel, which is non-empty.
             assert claim == ""
             # What it means downstream — catches the predicate going permissive.
             assert usable_tenant_id(claim) is None
@@ -252,30 +339,40 @@ async def test_exchange_without_a_captured_org_fails_closed_under_multi(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_single_tenant_exchange_still_claims_the_standalone_org(
-    oauth_service, pkce_pair
+async def test_single_tenant_exchange_claims_the_standalone_enterprise(
+    unanchored_user_repository, token_generator, pkce_pair
 ):
-    """Standalone is unaffected: no captured org, sentinel claim, as before.
+    """Standalone: an unanchored account IS the deployment's one enterprise.
 
-    The authorize leg on a Standalone deployment passes the sentinel through, and
-    a deployment upgraded mid-flight can redeem a code that predates the column
-    and carries nothing. Both must keep working.
+    The same shape that fails closed under multi is the correct answer here, and
+    the billing claim stays absent — the Standalone deployment has no
+    organization row at all (ADR-017 D8), so there is nothing for the authorize
+    leg to capture and nothing to mint.
     """
     verifier, challenge = pkce_pair
+    service = OAuthServiceImpl(
+        code_repository=InMemoryOAuthCodeRepository(),
+        user_repository=unanchored_user_repository,
+        token_generator=token_generator,
+        settings=AuthSettings(
+            oauth_allowed_clients=["faultmaven-copilot"],
+            oauth_redirect_uri_patterns=[
+                r"^chrome-extension://[a-z0-9]+/callback\.html$"
+            ],
+        ),
+    )
 
-    for captured in (None, SingleTenantProvider.DEFAULT_ORG_ID):
-        with _SINGLE:
-            code = await oauth_service.create_authorization_code(
-                "user_123",
-                _authorization_request(challenge),
-                organization_id=captured,
-            )
-            tokens = await oauth_service.exchange_code_for_token(
-                code=code, code_verifier=verifier, redirect_uri=REDIRECT
-            )
+    with _SINGLE:
+        code = await service.create_authorization_code(
+            "user_123", _authorization_request(challenge), organization_id=None
+        )
+        tokens = await service.exchange_code_for_token(
+            code=code, code_verifier=verifier, redirect_uri=REDIRECT
+        )
 
-        claims = _claims(tokens.access_token)
-        assert claims["organization_id"] == SingleTenantProvider.DEFAULT_ORG_ID
+    claims = _claims(tokens.access_token)
+    assert claims["enterprise_id"] == STANDALONE_ENTERPRISE_ID
+    assert "organization_id" not in claims
 
 
 @pytest.mark.unit
@@ -307,7 +404,9 @@ async def test_a_deactivated_account_cannot_redeem_a_code(
 
     with _MULTI:
         code = await oauth_service.create_authorization_code(
-            "user_123", _authorization_request(challenge), organization_id=TENANT
+            "user_123",
+            _authorization_request(challenge),
+            organization_id=BILLING_ORG,
         )
 
         # The account is deactivated while the code is still live, exactly as
@@ -333,29 +432,38 @@ async def test_a_deactivated_account_cannot_redeem_a_code(
 @pytest.mark.unit
 @pytest.mark.security
 @pytest.mark.asyncio
-async def test_exchange_ignores_any_org_on_the_stored_user(
+async def test_exchange_ignores_any_organization_on_the_stored_user(
     oauth_service, user_repository, pkce_pair
 ):
-    """The code's tenant wins over whatever the user store hands back.
+    """The code's billing organization wins over whatever the store hands back.
 
-    ``DevUser.__post_init__`` stamps the Standalone sentinel on every user the
-    store loads, so the object arriving at mint time routinely carries an org
-    that is not this session's tenant. The authorization code — issued under a
-    verified, RLS-bound session — is the authority, and a mutation that reversed
-    this precedence would silently pool tenants.
+    The user object arriving at mint time can carry a stale ``organization_id``
+    — the repository may return its own model, and nothing keeps that column in
+    step with ``organization_members``. The authorization code, issued under a
+    verified session that read the live membership, is the authority.
+
+    Note the scope of the claim being made: this is BILLING precedence. It does
+    not pool tenants either way under ADR-017, because isolation is the
+    enterprise and the enterprise is never read from the code — which the
+    assertion below pins alongside it, so a mutation that started deriving
+    isolation from the captured value has somewhere to go red.
     """
     verifier, challenge = pkce_pair
-    user_repository.get.return_value.organization_id = OTHER_TENANT
+    user_repository.get.return_value.organization_id = OTHER_ORG
 
     with _MULTI:
         code = await oauth_service.create_authorization_code(
-            "user_123", _authorization_request(challenge), organization_id=TENANT
+            "user_123",
+            _authorization_request(challenge),
+            organization_id=BILLING_ORG,
         )
         tokens = await oauth_service.exchange_code_for_token(
             code=code, code_verifier=verifier, redirect_uri=REDIRECT
         )
 
-    assert _claims(tokens.access_token)["organization_id"] == TENANT
+    claims = _claims(tokens.access_token)
+    assert claims["organization_id"] == BILLING_ORG
+    assert claims["enterprise_id"] == ENTERPRISE
 
 
 # =============================================================================
@@ -365,7 +473,7 @@ async def test_exchange_ignores_any_org_on_the_stored_user(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_in_memory_repository_keeps_the_org_across_mark_used():
+async def test_in_memory_repository_keeps_the_organization_across_mark_used():
     """``claim_code`` must not rebuild the DTO into a lossy subset."""
     repo = InMemoryOAuthCodeRepository()
     await repo.save_code(
@@ -375,7 +483,7 @@ async def test_in_memory_repository_keeps_the_org_across_mark_used():
             redirect_uri=REDIRECT,
             code_challenge="challenge",
             expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
-            organization_id=TENANT,
+            organization_id=BILLING_ORG,
         )
     )
 
@@ -383,12 +491,12 @@ async def test_in_memory_repository_keeps_the_org_across_mark_used():
 
     stored = await repo.get_code("code_1")
     assert stored.used is True
-    assert stored.organization_id == TENANT
+    assert stored.organization_id == BILLING_ORG
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_redis_repository_round_trips_the_org():
+async def test_redis_repository_round_trips_the_organization():
     """The cloud repository — the one multi-tenant actually runs on."""
     fakeredis = pytest.importorskip("fakeredis")
     repo = RedisOAuthCodeRepository(fakeredis.aioredis.FakeRedis(decode_responses=True))
@@ -400,17 +508,17 @@ async def test_redis_repository_round_trips_the_org():
             redirect_uri=REDIRECT,
             code_challenge="challenge",
             expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
-            organization_id=TENANT,
+            organization_id=BILLING_ORG,
         )
     )
 
-    assert (await repo.get_code("code_2")).organization_id == TENANT
+    assert (await repo.get_code("code_2")).organization_id == BILLING_ORG
 
     # …and across the used-marking rewrite, which re-serializes the payload.
     assert await repo.claim_code("code_2") is True
     stored = await repo.get_code("code_2")
     assert stored.used is True
-    assert stored.organization_id == TENANT
+    assert stored.organization_id == BILLING_ORG
 
 
 @pytest.mark.unit
@@ -419,8 +527,8 @@ async def test_redis_repository_reads_a_payload_written_before_the_column():
     """A rolling deploy must not 500 on a code the user legitimately holds.
 
     Mid-rollout this store holds payloads written by the previous version, which
-    have no ``organization_id`` key at all. Those must decode to "no tenant
-    captured" — which then fails closed at mint — rather than raising.
+    have no ``organization_id`` key at all. Those must decode to "no
+    organization captured" — which mints no billing claim — rather than raising.
     """
     import json
 
@@ -484,7 +592,7 @@ async def test_redis_repository_tolerates_a_field_the_dto_no_longer_declares():
                     datetime.now(timezone.utc) + timedelta(minutes=10)
                 ).isoformat(),
                 "used": False,
-                "organization_id": TENANT,
+                "organization_id": BILLING_ORG,
                 "a_field_a_later_version_removed": "zzz",
             }
         ),
@@ -492,7 +600,7 @@ async def test_redis_repository_tolerates_a_field_the_dto_no_longer_declares():
 
     stored = await repo.get_code("retired")
     assert stored is not None
-    assert stored.organization_id == TENANT
+    assert stored.organization_id == BILLING_ORG
 
 
 # =============================================================================
@@ -503,19 +611,19 @@ async def test_redis_repository_tolerates_a_field_the_dto_no_longer_declares():
 @pytest.mark.unit
 @pytest.mark.security
 @pytest.mark.asyncio
-async def test_the_org_attaches_to_the_real_user_types_not_just_a_mock(pkce_pair):
+async def test_the_claims_attach_to_the_real_user_types_not_just_a_mock(pkce_pair):
     """The exchange's ``setattr`` must work on what the store really returns.
 
     The suite above uses a ``Mock`` for the user, which cannot establish this:
     the divergence that matters is that a real ``DevUser`` arrives already
-    carrying the Standalone sentinel (stamped by ``__post_init__``) where the
-    mock carries nothing, so only the real type exercises the exchange
-    OVERWRITING a competing value rather than filling a blank.
+    carrying the Standalone ENTERPRISE (stamped by ``__post_init__``) where the
+    mock carries whatever the fixture set, so only the real type exercises the
+    mint reading an anchor it did not choose.
 
     Note what this does *not* prove: ``DevUser`` is a plain mutable dataclass, so
     the ``setattr`` itself is trivially satisfied and a frozen-dataclass or
     ``validate_assignment`` hazard is not exercised here — no such type is on
-    this path. The sentinel-overwrite property is the load-bearing half.
+    this path.
 
     So this runs the real exchange over a real ``DevUser``. That is the concrete
     type, traced rather than assumed: the container passes ``container.user_store``
@@ -532,28 +640,31 @@ async def test_the_org_attaches_to_the_real_user_types_not_just_a_mock(pkce_pair
 
     Each leg builds its own user, because the legs are not independent otherwise:
     the single-tenant assertion would pass off the multi leg's leftover value.
-    Under multi the captured tenant reaches the claim; under single the Standalone
-    sentinel survives the ``or None`` wipe because ``resolve_organization_claim``
-    restores it — the "no-op there" the source comment claims, checked against the
-    type that actually stamps that sentinel.
+    Under multi the captured organization reaches the billing claim and the
+    account's own enterprise reaches the isolation claim; under single the
+    account carries the Standalone enterprise and no organization at all, so the
+    billing claim is absent — which is the "no organization row exists there"
+    D8 rule, checked against the type that actually stamps the sentinel.
     """
     from faultmaven.modules.auth.domain.models.auth import DevUser
 
     verifier, challenge = pkce_pair
     fakeredis = pytest.importorskip("fakeredis")
 
-    def _fresh_service(generator):
-        """A service over a FRESH real DevUser, so no leg inherits another's org."""
+    def _fresh_service(generator, enterprise_id):
+        """A service over a FRESH real DevUser, so no leg inherits another's."""
         real_user = DevUser(
             user_id="user_123",
             username="testuser",
             email="testuser@acme.example",
             display_name="Test User",
             created_at=datetime.now(timezone.utc),
+            enterprise_id=enterprise_id,
         )
-        # The premise this test exists for: a real DevUser arrives already
-        # carrying the sentinel, so the exchange overwrites rather than fills.
-        assert real_user.organization_id == SingleTenantProvider.DEFAULT_ORG_ID
+        # The premise this test exists for: a real DevUser arrives carrying an
+        # anchor of its own and NO organization, so the mint reads isolation
+        # off the row and billing off the code — never one from the other.
+        assert real_user.organization_id is None
         users = AsyncMock()
         users.get = AsyncMock(return_value=real_user)
         return OAuthServiceImpl(
@@ -618,33 +729,36 @@ async def test_the_org_attaches_to_the_real_user_types_not_just_a_mock(pkce_pair
         generator, decode_with = build()
         algorithm = decode_with["algorithms"][0]
 
-        def claim_of(token):
+        def claims_of(token):
             return jwt.decode(
                 token,
                 audience=AUDIENCE,
                 issuer=ISSUER,
                 **decode_with,
-            )["organization_id"]
+            )
 
         with _MULTI:
-            service = _fresh_service(generator)
+            service = _fresh_service(generator, ENTERPRISE)
             code = await service.create_authorization_code(
-                "user_123", _authorization_request(challenge), organization_id=TENANT
+                "user_123",
+                _authorization_request(challenge),
+                organization_id=BILLING_ORG,
             )
             tokens = await service.exchange_code_for_token(
                 code=code, code_verifier=verifier, redirect_uri=REDIRECT
             )
-        assert claim_of(tokens.access_token) == TENANT, algorithm
-        assert claim_of(tokens.refresh_token) == TENANT, algorithm
+        for token in (tokens.access_token, tokens.refresh_token):
+            assert claims_of(token)["organization_id"] == BILLING_ORG, algorithm
+            assert claims_of(token)["enterprise_id"] == ENTERPRISE, algorithm
 
         with _SINGLE:
-            service = _fresh_service(generator)
+            service = _fresh_service(generator, None)
             code = await service.create_authorization_code(
                 "user_123", _authorization_request(challenge), organization_id=None
             )
             tokens = await service.exchange_code_for_token(
                 code=code, code_verifier=verifier, redirect_uri=REDIRECT
             )
-        assert (
-            claim_of(tokens.access_token) == SingleTenantProvider.DEFAULT_ORG_ID
-        ), algorithm
+        claims = claims_of(tokens.access_token)
+        assert claims["enterprise_id"] == STANDALONE_ENTERPRISE_ID, algorithm
+        assert "organization_id" not in claims, algorithm

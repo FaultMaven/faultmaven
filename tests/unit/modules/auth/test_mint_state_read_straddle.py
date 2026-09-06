@@ -706,6 +706,7 @@ async def test_provisioning_capture_covers_the_account_read():
     credential that is already dead — never one that survives the revoke."""
     from faultmaven.modules.auth.domain.services.service_account_provisioning import (
         SERVICE_ACCOUNT_KIND,
+        SLACK_SERVICE_CHANNEL,
         provision_service_account_credential,
     )
 
@@ -718,7 +719,12 @@ async def test_provisioning_capture_covers_the_account_read():
         email="svc@local.faultmaven",
         roles=["user"],
         organization_id=None,
+        # Already correct on BOTH fields, so provisioning writes nothing and
+        # this case stays about the read straddle rather than about the
+        # correction path (which would need an ``update_user`` this store has
+        # no reason to have).
         account_kind=SERVICE_ACCOUNT_KIND,
+        service_channel=SLACK_SERVICE_CHANNEL,
         display_name="svc",
     )
 

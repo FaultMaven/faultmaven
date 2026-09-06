@@ -22,6 +22,11 @@ class User:
 
     Attributes:
         user_id: Unique identifier (UUID)
+        enterprise_id: The enterprise this account is anchored to — its one
+            isolation membership (ADR-017 D3), and the source of the token's
+            ``enterprise_id`` claim. ``None`` only on a construction path that
+            has not resolved one yet; a token minted from such an account is
+            refused at the front door rather than defaulted.
         email: Unique email address
         hashed_password: bcrypt hash of password
         full_name: User's full display name
@@ -37,6 +42,7 @@ class User:
     email: str
     hashed_password: str
     full_name: str
+    enterprise_id: Optional[str] = None
     is_active: bool = True
     is_verified: bool = False
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -87,6 +93,7 @@ class User:
 
         return {
             "user_id": self.user_id,
+            "enterprise_id": self.enterprise_id,
             "email": self.email,
             "full_name": self.full_name,
             "is_active": self.is_active,
@@ -113,6 +120,7 @@ class User:
 
         return cls(
             user_id=data["user_id"],
+            enterprise_id=data.get("enterprise_id"),
             email=data["email"],
             hashed_password=data.get("hashed_password", ""),
             full_name=data["full_name"],

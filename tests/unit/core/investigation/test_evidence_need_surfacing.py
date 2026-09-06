@@ -35,7 +35,7 @@ def _case() -> Case:
     case = Case(
         case_id=generate_case_id(),
         user_id="u",
-        organization_id="o",
+        enterprise_id="o",
         title="t",
         description="d",
         state=CaseState.INVESTIGATING,

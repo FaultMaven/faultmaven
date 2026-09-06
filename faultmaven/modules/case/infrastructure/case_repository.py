@@ -145,7 +145,7 @@ class CaseRepository(ABC):
     async def list(
         self,
         user_id: Optional[str] = None,
-        organization_id: Optional[str] = None,
+        enterprise_id: Optional[str] = None,
         state: Optional[CaseState] = None,
         limit: int = 50,
         offset: int = 0,
@@ -159,9 +159,9 @@ class CaseRepository(ABC):
 
         Args:
             user_id: Filter by user
-            organization_id: Retained for interface symmetry; does NOT scope
+            enterprise_id: Retained for interface symmetry; does NOT scope
                 reads (single-tenant standalone; multi-tenant isolation is
-                PostgreSQL RLS, ADR-010)
+                PostgreSQL RLS keyed on the enterprise, ADR-010/ADR-017)
             state: Filter by state
             limit: Maximum results
             offset: Pagination offset
@@ -382,7 +382,7 @@ class CaseRepository(ABC):
         self,
         query: str,
         user_id: Optional[str] = None,
-        organization_id: Optional[str] = None,
+        enterprise_id: Optional[str] = None,
         limit: int = 20,
         shared_case_ids: Optional[List[str]] = None,
     ) -> tuple[List[Case], int]:
@@ -392,9 +392,9 @@ class CaseRepository(ABC):
         Args:
             query: Search query
             user_id: Filter by user
-            organization_id: Retained for interface symmetry; does NOT scope
+            enterprise_id: Retained for interface symmetry; does NOT scope
                 reads (single-tenant standalone; multi-tenant isolation is
-                PostgreSQL RLS, ADR-010)
+                PostgreSQL RLS keyed on the enterprise, ADR-010/ADR-017)
             limit: Maximum results
             shared_case_ids: Case ids the requester can read via a team share
                 (ADR-013 §D4). Widens the owner-only scope to
@@ -570,7 +570,11 @@ class CaseRepository(ABC):
 
     @abstractmethod
     async def add_uploaded_file(
-        self, case_id: str, uploaded_file: UploadedFile, organization_id: str
+        self,
+        case_id: str,
+        uploaded_file: UploadedFile,
+        enterprise_id: str,
+        organization_id: Optional[str] = None,
     ) -> None:
         """
         Commit ONE uploaded_file row on its own, outside the aggregate save.
@@ -598,7 +602,9 @@ class CaseRepository(ABC):
         Args:
             case_id: Case the file belongs to.
             uploaded_file: The row to commit.
-            organization_id: Tenant that owns the row (RLS scope).
+            enterprise_id: Tenant that owns the row (the RLS key).
+            organization_id: Billing attribution, or ``None`` when nobody pays
+                for the account that owns the case.
 
         Raises:
             RepositoryException: If the write fails.
@@ -918,7 +924,7 @@ class InMemoryCaseRepository(CaseRepository):
     async def list(
         self,
         user_id: Optional[str] = None,
-        organization_id: Optional[str] = None,
+        enterprise_id: Optional[str] = None,
         state: Optional[CaseState] = None,
         limit: int = 50,
         offset: int = 0,
@@ -945,9 +951,9 @@ class InMemoryCaseRepository(CaseRepository):
             restrict = set(restrict_case_ids)
             filtered = [c for c in filtered if c.case_id in restrict]
 
-        # No org filter: standalone is single-tenant; multi-tenant isolation
-        # is PostgreSQL RLS (ADR-010). organization_id param retained for
-        # interface symmetry.
+        # No tenant filter: standalone is single-tenant; multi-tenant isolation
+        # is PostgreSQL RLS keyed on the enterprise (ADR-010/ADR-017). The
+        # enterprise_id param is retained for interface symmetry.
 
         if state:
             filtered = [c for c in filtered if c.state == state]
@@ -1128,7 +1134,7 @@ class InMemoryCaseRepository(CaseRepository):
         self,
         query: str,
         user_id: Optional[str] = None,
-        organization_id: Optional[str] = None,
+        enterprise_id: Optional[str] = None,
         limit: int = 20,
         shared_case_ids: Optional[List[str]] = None,
         restrict_case_ids: Optional[List[str]] = None,
@@ -1157,9 +1163,9 @@ class InMemoryCaseRepository(CaseRepository):
                 if restrict is not None and case.case_id not in restrict:
                     continue
 
-                # No org filter: single-tenant standalone; multi-tenant
-                # isolation is PostgreSQL RLS (ADR-010). organization_id param
-                # retained for symmetry.
+                # No tenant filter: single-tenant standalone; multi-tenant
+                # isolation is PostgreSQL RLS keyed on the enterprise
+                # (ADR-010/ADR-017). enterprise_id param retained for symmetry.
 
                 filtered.append(case)
 
@@ -1273,7 +1279,11 @@ class InMemoryCaseRepository(CaseRepository):
         return len(case.uploaded_files) < before
 
     async def add_uploaded_file(
-        self, case_id: str, uploaded_file: UploadedFile, organization_id: str
+        self,
+        case_id: str,
+        uploaded_file: UploadedFile,
+        enterprise_id: str,
+        organization_id: Optional[str] = None,
     ) -> None:
         """Commit one uploaded_file row in memory (idempotent by file_id)."""
         case = self._cases.get(case_id)

@@ -1,16 +1,23 @@
-"""Multi-tenant SSO login lands a user in their mapped organization (#869).
+"""Multi-tenant SSO login lands a user in their mapped enterprise (#869, ADR-017).
 
 Under ``TENANT_PROVIDER=multi`` the SSO callback has to decide *which tenant*
-the login belongs to before it touches anything tenant-scoped. These tests pin
-that decision and its failure modes:
+the login belongs to before it touches anything tenant-scoped. ADR-017 D9 moved
+that tenant one tier up — an IdP organization now maps to an **enterprise** —
+and these tests pin the decision and its failure modes:
 
 * the IdP's organization is required and must be mapped — an unknown IdP org is
   a fail-closed login (``sso_org_unmapped``), never a just-in-time tenant;
-* the mapped organization is bound as the request's tenant *before* the user
+* the mapped enterprise is bound as the request's tenant *before* the user
   lookup, so every read and write below runs inside its RLS scope;
-* membership is additive and idempotent, and a membership write that fails
-  takes the login down with it rather than leaving an org-less session;
-* the resolved organization rides the completion code into the minted tokens;
+* the account's **anchor** is what a login establishes, and only that:
+  ``users.enterprise_id``, one column, no roster table. An account belonging to
+  a different enterprise fails the login closed rather than being moved;
+* **no organization membership is written at all.** An organization is a
+  billing target created by payment (ADR-017 D5), so a sign-in cannot know of
+  one and must not invent one — and the service is constructed with no
+  organization repository, so a path that tried could not reach one;
+* the enterprise claim reaches both minted tokens, which is what
+  ``bind_request_enterprise_context`` scopes the session by;
 * single-tenant runs none of it — the mapping repository is never consulted.
 
 The tenancy switch is driven through the real ``TenantProvider`` enum and the
@@ -29,13 +36,13 @@ from urllib.parse import parse_qs, urlsplit
 import fakeredis.aioredis as fakeredis
 import pytest
 
-from faultmaven.config.constants import STANDALONE_ORG_ID
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.settings import TenantProvider
-from faultmaven.config.tenant_context import get_current_org_id, set_current_org_id
-from faultmaven.exceptions import ConflictError
-from faultmaven.models.interfaces_user import Organization
-from faultmaven.models.rbac import Role
-from faultmaven.models.rbac_seed import SYSTEM_ROLE_IDS
+from faultmaven.config.tenant_context import (
+    get_current_enterprise_id,
+    set_current_enterprise_id,
+)
+from faultmaven.models.interfaces_user import Enterprise
 from faultmaven.modules.auth.contracts import (
     ISSOIdentityProvider,
     ISSOOrgMappingRepository,
@@ -60,7 +67,6 @@ AUDIENCE = "faultmaven-api"
 DASHBOARD_URL = "https://app.faultmaven.test"
 
 IDP_ORG = "org_01HWORKOS"
-FM_ORG = "22222222-2222-2222-2222-222222222222"
 FM_ENTERPRISE = "33333333-3333-3333-3333-333333333333"
 OTHER_ENTERPRISE = "44444444-4444-4444-4444-444444444444"
 
@@ -89,9 +95,9 @@ IDENTITY_NO_ORG = SSOIdentity(
 
 @pytest.fixture(autouse=True)
 def restore_tenant_context():
-    """Keep a bound organization from leaking into the next test."""
+    """Keep a bound enterprise from leaking into the next test."""
     yield
-    set_current_org_id(STANDALONE_ORG_ID)
+    set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
 
 
 @pytest.fixture
@@ -111,20 +117,16 @@ def store():
     return SSOEphemeralStore(fakeredis.FakeRedis(decode_responses=True))
 
 
-def make_organization(
+def make_enterprise(
     *,
-    organization_id: str = FM_ORG,
     enterprise_id: str = FM_ENTERPRISE,
-    is_active: bool = True,
     deleted_at=None,
-) -> Organization:
+) -> Enterprise:
     now = datetime(2026, 1, 1, tzinfo=UTC)
-    return Organization(
-        organization_id=organization_id,
+    return Enterprise(
         enterprise_id=enterprise_id,
         name="Acme Corp",
         slug="acme",
-        is_active=is_active,
         created_at=now,
         updated_at=now,
         deleted_at=deleted_at,
@@ -144,6 +146,8 @@ def make_user(user_id="u-1", **overrides):
         email_verified_at=datetime(2026, 1, 1, tzinfo=UTC),
         last_login_at=None,
         deleted_at=None,
+        sso_provider="workos",
+        sso_provider_id="user_wos_123",
         roles=["user"],
     )
     for key, value in overrides.items():
@@ -168,12 +172,12 @@ class FakeProvider(ISSOIdentityProvider):
     def provision_personal_organization(
         self, *, provider_user_id: str, external_id: str, name: str
     ) -> str:
-        """Not exercised here — personal tenants have their own module (#1045).
+        """Not exercised here — personal enterprises have their own module.
 
         Present because the port is abstract: a provider that cannot mint a
         personal organization must fail at construction, not on a user's first
         sign-up. A fake that stubbed it into silence would defeat that, so this
-        raises instead.
+        raises instead — and a mapped login that reached it would fail loudly.
         """
         raise NotImplementedError("not part of this module's scope")
 
@@ -183,56 +187,43 @@ class FakeMappingRepository(ISSOOrgMappingRepository):
 
     def __init__(self, mappings: dict[tuple[str, str], str] | None = None):
         self.mappings = (
-            mappings if mappings is not None else {("workos", IDP_ORG): FM_ORG}
+            mappings if mappings is not None else {("workos", IDP_ORG): FM_ENTERPRISE}
         )
         self.calls: list[tuple[str, str]] = []
 
-    async def get_organization_id(self, provider: str, provider_org_id: str):
+    async def get_enterprise_id(self, provider: str, provider_org_id: str):
         self.calls.append((provider, provider_org_id))
         return self.mappings.get((provider, provider_org_id))
 
 
-#: Distinguishes "caller wants the default organization" from "caller wants the
+#: Distinguishes "caller wants the default enterprise" from "caller wants the
 #: row to be missing" — ``None`` means the latter.
-_DEFAULT_ORG = object()
+_DEFAULT_ENTERPRISE = object()
 
 
-class FakeOrgRepository:
-    """Minimal IOrganizationRepository surface used by the login path."""
+class FakeEnterpriseRepository:
+    """The enterprise port the login reads, and the only tenant port it has."""
 
-    def __init__(
-        self,
-        organization=_DEFAULT_ORG,
-        *,
-        members: dict[tuple[str, str], str] | None = None,
-        add_member_error: Exception | None = None,
-    ):
-        self._organization: Organization | None = (
-            make_organization() if organization is _DEFAULT_ORG else organization
+    def __init__(self, enterprise=_DEFAULT_ENTERPRISE):
+        self._enterprise: Enterprise | None = (
+            make_enterprise() if enterprise is _DEFAULT_ENTERPRISE else enterprise
         )
-        self.members = dict(members or {})
-        self.add_member_error = add_member_error
-        self.added: list[tuple[str, str, str]] = []
-        self.org_lookups_bound_to: list[str] = []
+        self.lookups_bound_to: list[str] = []
+        self.domain_calls: list[str] = []
 
-    async def get_organization(self, organization_id: str):
+    async def get_enterprise(self, enterprise_id: str):
         # Records the tenant bound at the moment of the (RLS-scoped) read.
-        self.org_lookups_bound_to.append(get_current_org_id())
-        if self._organization is None:
+        self.lookups_bound_to.append(get_current_enterprise_id())
+        if self._enterprise is None:
             return None
-        if self._organization.organization_id != organization_id:
+        if self._enterprise.enterprise_id != enterprise_id:
             return None
-        return self._organization
+        return self._enterprise
 
-    async def get_member_role(self, organization_id: str, user_id: str):
-        return self.members.get((organization_id, user_id))
-
-    async def add_member(self, organization_id: str, user_id: str, role_id: str):
-        self.added.append((organization_id, user_id, role_id))
-        if self.add_member_error is not None:
-            raise self.add_member_error
-        self.members[(organization_id, user_id)] = role_id
-        return True
+    async def get_or_create_for_domain(self, *, domain: str, name: str, slug: str):
+        """The sign-up arm's port. A mapped login must never reach it."""
+        self.domain_calls.append(domain)
+        raise AssertionError("the mapped branch must not derive an enterprise")
 
 
 class FakeUserRepository:
@@ -254,7 +245,7 @@ class FakeUserRepository:
         return list(seen.values())
 
     async def get_by_sso(self, provider, provider_id):
-        self.subject_lookups_bound_to.append(get_current_org_id())
+        self.subject_lookups_bound_to.append(get_current_enterprise_id())
         return self.users_by_subject.get((provider, provider_id))
 
     async def get(self, user_id):
@@ -302,8 +293,8 @@ def build_service(
     provider=None,
     users=None,
     mappings=None,
-    orgs=None,
-    wire_org_repositories=True,
+    enterprises=None,
+    wire_tenant_repositories=True,
 ):
     return SSOLoginService(
         identity_provider=provider or FakeProvider(),
@@ -315,12 +306,12 @@ def build_service(
         access_token_expires_in=3600,
         org_mapping_repository=(
             (mappings if mappings is not None else FakeMappingRepository())
-            if wire_org_repositories
+            if wire_tenant_repositories
             else None
         ),
-        organization_repository=(
-            (orgs if orgs is not None else FakeOrgRepository())
-            if wire_org_repositories
+        enterprise_repository=(
+            (enterprises if enterprises is not None else FakeEnterpriseRepository())
+            if wire_tenant_repositories
             else None
         ),
     )
@@ -353,6 +344,8 @@ async def run_callback(service):
 async def test_missing_idp_org_fails_closed_before_any_user_lookup(
     store, as_tenant_provider
 ):
+    """With the sign-up switch off — its default — an org-less identity is
+    refused before anything tenant-scoped is touched."""
     as_tenant_provider(TenantProvider.MULTI)
     users = FakeUserRepository()
     mappings = FakeMappingRepository()
@@ -390,25 +383,24 @@ async def test_unmapped_idp_org_fails_closed_with_the_same_slug(
 @pytest.mark.unit
 @pytest.mark.security
 @pytest.mark.parametrize(
-    "organization",
+    "enterprise",
     [
         pytest.param(None, id="row-missing"),
-        pytest.param(make_organization(is_active=False), id="deactivated"),
         pytest.param(
-            make_organization(deleted_at=datetime(2026, 6, 1, tzinfo=UTC)),
+            make_enterprise(deleted_at=datetime(2026, 6, 1, tzinfo=UTC)),
             id="soft-deleted",
         ),
     ],
 )
-async def test_mapped_but_unavailable_org_is_a_generic_failure(
-    store, as_tenant_provider, organization
+async def test_mapped_but_unavailable_enterprise_is_a_generic_failure(
+    store, as_tenant_provider, enterprise
 ):
-    """A mapping pointing at a missing/disabled tenant is an operator problem —
+    """A mapping pointing at a missing/retired tenant is an operator problem —
     the browser gets the generic slug, not a probe into tenant state."""
     as_tenant_provider(TenantProvider.MULTI)
     users = FakeUserRepository()
     service = build_service(
-        store, users=users, orgs=FakeOrgRepository(organization=organization)
+        store, users=users, enterprises=FakeEnterpriseRepository(enterprise=enterprise)
     )
 
     params = redirect_params(await run_callback(service))
@@ -418,42 +410,46 @@ async def test_mapped_but_unavailable_org_is_a_generic_failure(
 
 
 @pytest.mark.unit
-def test_the_deactivated_org_gate_is_live_from_the_database_row_up():
-    """Close the loop on the test above: the guard reads ``is_active`` off the
+def test_the_retired_enterprise_gate_is_live_from_the_database_row_up():
+    """Close the loop on the test above: the guard reads ``deleted_at`` off the
     domain object, so the repository's mapper has to carry it. A mapper that
     dropped the column would leave that guard permanently true — a gate that
     can never fire."""
-    from faultmaven.infrastructure.persistence.models import OrganizationModel
-    from faultmaven.infrastructure.persistence.organization_repository import (
+    from faultmaven.infrastructure.persistence.enterprise_repository import (
         _model_to_domain,
     )
+    from faultmaven.infrastructure.persistence.models import EnterpriseModel
 
     now = datetime(2026, 1, 1, tzinfo=UTC)
-    row = OrganizationModel(
-        organization_id=FM_ORG,
+    row = EnterpriseModel(
         enterprise_id=FM_ENTERPRISE,
         name="Acme Corp",
         slug="acme",
-        is_active=False,
+        # Server defaults are not applied to an in-memory row, and the mapper
+        # coerces these into a typed domain object — so they are spelled here
+        # rather than left to the database.
+        plan_tier="free",
+        max_members=5,
         created_at=now,
         updated_at=now,
+        deleted_at=None,
     )
 
-    assert _model_to_domain(row).is_active is False
-    row.is_active = True
-    assert _model_to_domain(row).is_active is True
+    assert _model_to_domain(row).deleted_at is None
+    row.deleted_at = now
+    assert _model_to_domain(row).deleted_at == now
 
 
 @pytest.mark.unit
 @pytest.mark.security
-async def test_unwired_org_repositories_fail_closed_under_multi(
+async def test_unwired_tenant_repositories_fail_closed_under_multi(
     store, as_tenant_provider
 ):
-    """A composition that forgot to wire the mapping repositories must refuse,
-    not fall through to an org-less login."""
+    """A composition that forgot to wire the tenant repositories must refuse,
+    not fall through to an unscoped login."""
     as_tenant_provider(TenantProvider.MULTI)
     users = FakeUserRepository()
-    service = build_service(store, users=users, wire_org_repositories=False)
+    service = build_service(store, users=users, wire_tenant_repositories=False)
 
     params = redirect_params(await run_callback(service))
 
@@ -461,112 +457,127 @@ async def test_unwired_org_repositories_fail_closed_under_multi(
     assert users.subject_lookups_bound_to == []
 
 
+@pytest.mark.unit
+@pytest.mark.security
+async def test_a_mapping_pointing_at_the_standalone_sentinel_is_refused(
+    store, as_tenant_provider
+):
+    """fm#850 on the operator-provisioned path.
+
+    Under multi-tenant the Standalone id identifies the deployment, not a
+    tenant, and a mapping row an operator typed wrong must not pool a customer
+    into it.
+    """
+    as_tenant_provider(TenantProvider.MULTI)
+    users = FakeUserRepository()
+    enterprises = FakeEnterpriseRepository(
+        enterprise=make_enterprise(enterprise_id=STANDALONE_ENTERPRISE_ID)
+    )
+    service = build_service(
+        store,
+        users=users,
+        mappings=FakeMappingRepository(
+            mappings={("workos", IDP_ORG): STANDALONE_ENTERPRISE_ID}
+        ),
+        enterprises=enterprises,
+    )
+
+    params = redirect_params(await run_callback(service))
+
+    assert params == {"error": ERROR_FAILED}
+    # Refused before the sentinel was ever bound as this request's tenant.
+    assert enterprises.lookups_bound_to == []
+    assert users.subject_lookups_bound_to == []
+
+
 # =============================================================================
-# The happy path — bound tenant, membership, claim on the completion code
+# The happy path — bound tenant, anchored account, nothing else
 # =============================================================================
 
 
 @pytest.mark.unit
-async def test_mapped_org_is_bound_before_the_user_lookup_and_rides_the_code(
+async def test_mapped_enterprise_is_bound_before_the_user_lookup(
     store, as_tenant_provider
 ):
     as_tenant_provider(TenantProvider.MULTI)
     users = FakeUserRepository(
         users_by_subject={("workos", "user_wos_123"): make_user()}
     )
-    orgs = FakeOrgRepository(members={(FM_ORG, "u-1"): SYSTEM_ROLE_IDS[Role.MEMBER]})
-    service = build_service(store, users=users, orgs=orgs)
+    enterprises = FakeEnterpriseRepository()
+    service = build_service(store, users=users, enterprises=enterprises)
 
     params = redirect_params(await run_callback(service))
 
     assert "error" not in params
-    # The organization row was read inside its own tenant scope...
-    assert orgs.org_lookups_bound_to == [FM_ORG]
+    # The enterprise row was read inside its own tenant scope...
+    assert enterprises.lookups_bound_to == [FM_ENTERPRISE]
     # ...and so was the user lookup that follows it.
-    assert users.subject_lookups_bound_to == [FM_ORG]
-    # The completion code carries the tenant into the exchange.
+    assert users.subject_lookups_bound_to == [FM_ENTERPRISE]
+
+
+@pytest.mark.unit
+async def test_the_completion_code_carries_no_tenant_claim(store, as_tenant_provider):
+    """The enterprise claim is minted from ``users.enterprise_id`` at exchange
+    time (ADR-017 D9), so nothing tenant-shaped rides the completion code.
+
+    An organization would be the wrong thing to put there twice over: it is
+    billing attribution, and a reader that found the tenant in it would be
+    reading exactly the conflation this campaign undid.
+    """
+    as_tenant_provider(TenantProvider.MULTI)
+    users = FakeUserRepository(
+        users_by_subject={("workos", "user_wos_123"): make_user()}
+    )
+    service = build_service(store, users=users)
+
+    params = redirect_params(await run_callback(service))
+
     payload = await store.consume_login(params["code"])
     assert payload.pop("state_read_at") > 0  # epoch seconds (#831)
-    assert payload == {"user_id": "u-1", "organization_id": FM_ORG}
+    assert payload == {"user_id": "u-1"}
 
 
 @pytest.mark.unit
-async def test_existing_member_is_not_re_added(store, as_tenant_provider):
-    """Membership is idempotent: an existing member's role is left alone."""
-    as_tenant_provider(TenantProvider.MULTI)
-    users = FakeUserRepository(
-        users_by_subject={("workos", "user_wos_123"): make_user()}
-    )
-    orgs = FakeOrgRepository(members={(FM_ORG, "u-1"): SYSTEM_ROLE_IDS[Role.ADMIN]})
-    service = build_service(store, users=users, orgs=orgs)
-
-    params = redirect_params(await run_callback(service))
-
-    assert "code" in params
-    assert orgs.added == []
-    # The admin was not silently demoted to member.
-    assert orgs.members[(FM_ORG, "u-1")] == SYSTEM_ROLE_IDS[Role.ADMIN]
-
-
-@pytest.mark.unit
-async def test_returning_non_member_is_added_with_the_member_role(
+async def test_a_returning_account_already_anchored_here_is_left_alone(
     store, as_tenant_provider
 ):
+    """The anchor is idempotent: an account already in this enterprise is not
+    re-written on every sign-in."""
     as_tenant_provider(TenantProvider.MULTI)
-    users = FakeUserRepository(
-        users_by_subject={("workos", "user_wos_123"): make_user()}
-    )
-    orgs = FakeOrgRepository()
-    service = build_service(store, users=users, orgs=orgs)
+    user = make_user()
+    users = FakeUserRepository(users_by_subject={("workos", "user_wos_123"): user})
+    service = build_service(store, users=users)
 
     params = redirect_params(await run_callback(service))
 
     assert "code" in params
-    assert orgs.added == [(FM_ORG, "u-1", SYSTEM_ROLE_IDS[Role.MEMBER])]
-
-
-@pytest.mark.unit
-async def test_membership_insert_race_is_treated_as_already_a_member(
-    store, as_tenant_provider
-):
-    """A concurrent login that won the insert produced the outcome we wanted."""
-    as_tenant_provider(TenantProvider.MULTI)
-    users = FakeUserRepository(
-        users_by_subject={("workos", "user_wos_123"): make_user()}
-    )
-
-    class RacingOrgRepository(FakeOrgRepository):
-        async def add_member(self, organization_id, user_id, role_id):
-            self.added.append((organization_id, user_id, role_id))
-            # The winner's row landed between our read and our write.
-            self.members[(organization_id, user_id)] = role_id
-            raise ConflictError("membership already exists")
-
-    orgs = RacingOrgRepository()
-    service = build_service(store, users=users, orgs=orgs)
-
-    params = redirect_params(await run_callback(service))
-
-    assert "code" in params
-    assert orgs.added == [(FM_ORG, "u-1", SYSTEM_ROLE_IDS[Role.MEMBER])]
+    assert user.enterprise_id == FM_ENTERPRISE
+    # ``update`` still runs for the profile sync, but the anchor mover wrote
+    # nothing of its own — the value is unchanged.
+    assert all(u.enterprise_id == FM_ENTERPRISE for u in users.updated)
 
 
 @pytest.mark.unit
 @pytest.mark.security
-async def test_membership_write_failure_fails_the_login_closed(
+async def test_no_organization_membership_is_written_by_a_login(
     store, as_tenant_provider
 ):
+    """ADR-017 D5: an organization is created by payment, never by a sign-in.
+
+    Structural rather than asserted after the fact — the service takes no
+    organization repository at all, so a re-introduced membership write would
+    have nothing to write through and would fail at construction.
+    """
+    import inspect
+
     as_tenant_provider(TenantProvider.MULTI)
-    users = FakeUserRepository(
-        users_by_subject={("workos", "user_wos_123"): make_user()}
-    )
-    orgs = FakeOrgRepository(add_member_error=RuntimeError("database gone"))
-    service = build_service(store, users=users, orgs=orgs)
+    users = FakeUserRepository()
+    service = build_service(store, users=users)
 
-    params = redirect_params(await run_callback(service))
-
-    assert params == {"error": ERROR_FAILED}
-    assert "code" not in params
+    assert "code" in redirect_params(await run_callback(service))
+    assert not hasattr(service, "_organizations")
+    parameters = inspect.signature(SSOLoginService.__init__).parameters
+    assert "organization_repository" not in parameters
 
 
 @pytest.mark.unit
@@ -575,18 +586,47 @@ async def test_enterprise_mismatch_fails_the_login_closed(store, as_tenant_provi
     """Moving an account between enterprises is an operator action, never an
     implicit consequence of an IdP claim."""
     as_tenant_provider(TenantProvider.MULTI)
-    users = FakeUserRepository(
-        users_by_subject={
-            ("workos", "user_wos_123"): make_user(enterprise_id=OTHER_ENTERPRISE)
-        }
-    )
-    orgs = FakeOrgRepository()
-    service = build_service(store, users=users, orgs=orgs)
+    user = make_user(enterprise_id=OTHER_ENTERPRISE)
+    users = FakeUserRepository(users_by_subject={("workos", "user_wos_123"): user})
+    service = build_service(store, users=users)
 
     params = redirect_params(await run_callback(service))
 
     assert params == {"error": ERROR_FAILED}
-    assert orgs.added == []
+    assert user.enterprise_id == OTHER_ENTERPRISE
+    assert users.updated == []
+
+
+@pytest.mark.unit
+@pytest.mark.security
+async def test_an_anchor_write_failure_fails_the_login_closed(
+    store, as_tenant_provider
+):
+    """An in-memory anchor the rest of the callback would act on is not an
+    anchor: every later step would address a tenant the database does not
+    agree the account is in.
+
+    Driven through an account whose anchor has to be **set** — the JIT path
+    creates its account with the anchor already on it, so the mover
+    short-circuits there and this direction has no other way in.
+    """
+    as_tenant_provider(TenantProvider.MULTI)
+    user = make_user(enterprise_id=None)
+    users = FakeUserRepository(users_by_subject={("workos", "user_wos_123"): user})
+
+    async def failing_update(_user):
+        raise RuntimeError("database gone")
+
+    users.update = failing_update  # type: ignore[method-assign]
+    service = build_service(store, users=users)
+
+    params = redirect_params(await run_callback(service))
+
+    assert params == {"error": ERROR_FAILED}
+    assert "code" not in params
+    # The in-memory value was rolled back, so nothing downstream can act on a
+    # tenant the database does not hold.
+    assert user.enterprise_id is None
 
 
 # =============================================================================
@@ -595,42 +635,22 @@ async def test_enterprise_mismatch_fails_the_login_closed(store, as_tenant_provi
 
 
 @pytest.mark.unit
-async def test_jit_user_is_anchored_to_the_mapped_orgs_enterprise(
-    store, as_tenant_provider
-):
+async def test_jit_user_is_anchored_to_the_mapped_enterprise(store, as_tenant_provider):
     as_tenant_provider(TenantProvider.MULTI)
     users = FakeUserRepository()
-    orgs = FakeOrgRepository()
-    service = build_service(store, users=users, orgs=orgs)
+    service = build_service(store, users=users)
 
     params = redirect_params(await run_callback(service))
 
     assert "code" in params
     created = users.created[0]
-    # Not the standalone default the repository would otherwise fall back to.
+    # Not the standalone default the repository would otherwise fall back to,
+    # which under multi would pool every JIT account into the sentinel tenant.
     assert created.enterprise_id == FM_ENTERPRISE
-    assert orgs.added == [(FM_ORG, created.user_id, SYSTEM_ROLE_IDS[Role.MEMBER])]
+    assert created.roles == ["user"]
     payload = await store.consume_login(params["code"])
     assert payload.pop("state_read_at") > 0  # epoch seconds (#831)
-    assert payload == {"user_id": created.user_id, "organization_id": FM_ORG}
-
-
-@pytest.mark.unit
-@pytest.mark.security
-async def test_jit_membership_failure_does_not_leave_an_orgless_login(
-    store, as_tenant_provider
-):
-    """The account exists after this, but the login fails — the next attempt
-    heals it, because the membership ensure is idempotent."""
-    as_tenant_provider(TenantProvider.MULTI)
-    users = FakeUserRepository()
-    orgs = FakeOrgRepository(add_member_error=RuntimeError("database gone"))
-    service = build_service(store, users=users, orgs=orgs)
-
-    params = redirect_params(await run_callback(service))
-
-    assert params == {"error": ERROR_FAILED}
-    assert len(users.created) == 1
+    assert payload == {"user_id": created.user_id}
 
 
 # =============================================================================
@@ -645,17 +665,16 @@ async def test_single_tenant_never_consults_the_mapping(store, as_tenant_provide
         users_by_subject={("workos", "user_wos_123"): make_user()}
     )
     mappings = FakeMappingRepository()
-    orgs = FakeOrgRepository()
-    service = build_service(store, users=users, mappings=mappings, orgs=orgs)
+    enterprises = FakeEnterpriseRepository()
+    service = build_service(
+        store, users=users, mappings=mappings, enterprises=enterprises
+    )
 
     params = redirect_params(await run_callback(service))
 
     assert "error" not in params
     assert mappings.calls == []
-    assert orgs.org_lookups_bound_to == []
-    assert orgs.added == []
-    # No organization on the completion payload: single-tenant tokens get the
-    # Standalone sentinel from resolve_organization_claim instead.
+    assert enterprises.lookups_bound_to == []
     payload = await store.consume_login(params["code"])
     assert payload.pop("state_read_at") > 0  # epoch seconds (#831)
     assert payload == {"user_id": "u-1"}
@@ -731,11 +750,18 @@ def _rs256_generator():
 
 @pytest.mark.unit
 @pytest.mark.security
-async def test_exchange_mints_access_and_refresh_tokens_carrying_the_org(
+async def test_exchange_mints_tokens_carrying_the_enterprise_and_no_organization(
     store, as_tenant_provider
 ):
-    """End of the chain: the org resolved at callback time is in both tokens,
-    so ``bind_request_org_context`` scopes the session to the right tenant."""
+    """End of the chain: the enterprise the callback anchored the account to is
+    the isolation claim in both tokens, which is what
+    ``bind_request_enterprise_context`` scopes the session by.
+
+    The organization claim is **absent**, and that is the assertion that matters
+    beside it: nobody pays for this account (ADR-017 D5), and a reader that
+    found a tenant in the organization claim would be reading the conflation
+    this campaign undid.
+    """
     import jwt as pyjwt
 
     as_tenant_provider(TenantProvider.MULTI)
@@ -752,6 +778,8 @@ async def test_exchange_mints_access_and_refresh_tokens_carrying_the_org(
         email="alex@example.com",
         display_name="Alex Example",
         enterprise_id=FM_ENTERPRISE,
+        sso_provider="workos",
+        sso_provider_id="user_wos_123",
         created_at=now,
         updated_at=now,
         roles=["user"],
@@ -772,9 +800,7 @@ async def test_exchange_mints_access_and_refresh_tokens_carrying_the_org(
         dashboard_url=DASHBOARD_URL,
         access_token_expires_in=3600,
         org_mapping_repository=FakeMappingRepository(),
-        organization_repository=FakeOrgRepository(
-            members={(FM_ORG, "u-1"): SYSTEM_ROLE_IDS[Role.MEMBER]}
-        ),
+        enterprise_repository=FakeEnterpriseRepository(),
     )
 
     code = redirect_params(await run_callback(service))["code"]
@@ -789,4 +815,5 @@ async def test_exchange_mints_access_and_refresh_tokens_carrying_the_org(
             audience=AUDIENCE,
             issuer=ISSUER,
         )
-        assert claims["organization_id"] == FM_ORG
+        assert claims["enterprise_id"] == FM_ENTERPRISE
+        assert "organization_id" not in claims

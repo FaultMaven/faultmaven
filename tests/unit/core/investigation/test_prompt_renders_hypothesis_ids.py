@@ -48,7 +48,7 @@ def _case_with_hypotheses(
     now = datetime.now(UTC)
     case = Case(
         user_id="u",
-        organization_id="o",
+        enterprise_id="o",
         title="t",
         description="VM fails to start because libvirt cannot write its PID file",
         state=CaseState.INVESTIGATING,

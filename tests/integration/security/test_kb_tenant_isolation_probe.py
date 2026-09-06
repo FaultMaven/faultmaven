@@ -2,7 +2,7 @@
 
 The KB is the one substantial store with **no RLS backstop**. Case data lives in
 PostgreSQL, where migration 018's row-level-security policies scope every read
-to ``app.current_org_id`` even if the application layer forgets — that is the
+to ``app.current_enterprise_id`` even if the application layer forgets — that is the
 belt under the braces, and ``tests/integration/test_rls_tenant_isolation.py``
 exercises it adversarially. KB *chunks* live in ChromaDB, which has no policy
 engine, no session variable, and no notion of a tenant. Whatever isolation the
@@ -23,7 +23,7 @@ caller's own identifiers and nothing else::
              {"owner_id": <caller>},                    # the caller's own items
              {"parent_document_id": {"$in": <ids>}}]}   # shared to caller's teams
 
-Note what is absent: ``organization_id``. It is a declared ``VectorMetadata``
+Note what is absent: ``enterprise_id``. It is a declared ``VectorMetadata``
 field that **no read path filters on** and no writer stamps, so ChromaDB carries
 no tenant dimension at all. Cross-tenant isolation is therefore *derived* from
 three separate properties, and the probe attacks each one:
@@ -66,7 +66,7 @@ Mutation (reverted after each run)                              Caught by
 conditions, dropping the clause it was handed
 ``KBToolAdapter`` reads ``user_id``/``shared_kb_ids`` off       ``test_a_prompt_injected_question_...``
 the tool params when present
-``list_resource_ids`` drops its ``organization_id``             ``test_the_share_lookups_sql_...``
+``list_resource_ids`` drops its ``enterprise_id``             ``test_the_share_lookups_sql_...``
 predicate
 ``resolve_shared_kb_ids`` skips ``usable_tenant_id``            ``test_the_share_arm_fails_closed_...`` (both
                                                                 params) + ``test_the_standalone_sentinel_...``
@@ -150,7 +150,7 @@ import chromadb
 import pytest
 from chromadb.config import Settings as ChromaSettings
 
-from faultmaven.config.constants import STANDALONE_ORG_ID
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.exceptions import AuthorizationError
 from faultmaven.infrastructure.knowledge import knowledge_vector_store as kvs_module
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
@@ -178,8 +178,8 @@ pytestmark = [pytest.mark.integration, pytest.mark.security]
 # --- The two tenants -------------------------------------------------------
 # Orgs are named for the narrative and for the share-resolution arm, which is
 # the ONLY place an org id reaches a KB read. Nothing in ChromaDB carries them.
-ORG_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"  # the caller's own tenant
-ORG_B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"  # the tenant being attacked
+ENTERPRISE_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"  # the caller's own tenant
+ENTERPRISE_B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"  # the tenant being attacked
 
 USER_A = "11111111-1111-1111-1111-111111111111"
 USER_B = "22222222-2222-2222-2222-222222222222"
@@ -299,7 +299,7 @@ CHUNK_SYSTEM = f"{DOC_SYSTEM_OWNED}_chunk_0"
 #: What user A is entitled to: their own personal item plus the platform tier.
 ENTITLED_TO_A = {CHUNK_A_PERSONAL, CHUNK_PLATFORM}
 #: What must never reach user A.
-ORG_B_CHUNKS = {CHUNK_B_PERSONAL, CHUNK_B_TEAM}
+ENTERPRISE_B_CHUNKS = {CHUNK_B_PERSONAL, CHUNK_B_TEAM}
 
 
 @pytest.fixture()
@@ -358,7 +358,7 @@ async def _ids(
 async def test_org_bs_runbooks_are_absent_from_org_as_vector_search(store):
     got = await _ids(store, build_kb_scope_filter(USER_A, []))
 
-    assert got & ORG_B_CHUNKS == set(), f"org B content reached org A: {got}"
+    assert got & ENTERPRISE_B_CHUNKS == set(), f"org B content reached org A: {got}"
     assert got == ENTITLED_TO_A
 
 
@@ -366,7 +366,7 @@ async def test_org_bs_runbooks_are_absent_from_org_as_vector_search(store):
 async def test_org_bs_runbooks_are_absent_from_org_as_hybrid_search(store):
     got = await _ids(store, build_kb_scope_filter(USER_A, []), hybrid=True)
 
-    assert got & ORG_B_CHUNKS == set(), f"org B content reached org A: {got}"
+    assert got & ENTERPRISE_B_CHUNKS == set(), f"org B content reached org A: {got}"
     assert got == ENTITLED_TO_A
 
 
@@ -400,7 +400,7 @@ async def test_the_identifier_arm_of_hybrid_search_carries_the_same_filter(store
     assert all(
         p == scope_filter for p in probes
     ), f"a keyword probe queried with a different filter: {probes}"
-    assert got & ORG_B_CHUNKS == set(), f"org B content reached org A: {got}"
+    assert got & ENTERPRISE_B_CHUNKS == set(), f"org B content reached org A: {got}"
     assert got == ENTITLED_TO_A
 
 
@@ -421,7 +421,7 @@ async def test_hard_context_filter_cannot_displace_the_scope_arm(store):
         filter_mode="hard",
     )
 
-    assert got & ORG_B_CHUNKS == set(), f"org B content reached org A: {got}"
+    assert got & ENTERPRISE_B_CHUNKS == set(), f"org B content reached org A: {got}"
     # The platform chunk carries the same domain/service, so the hard filter
     # narrows nothing here — A keeps everything A is entitled to.
     assert got == ENTITLED_TO_A
@@ -467,7 +467,7 @@ def _tool_context(**overrides) -> ToolContext:
     base = {
         "session_id": "sess-1",
         "case_id": "case-1",
-        "organization_id": ORG_A,
+        "enterprise_id": ENTERPRISE_A,
         "user_id": USER_A,
         "shared_kb_ids": [],
     }
@@ -576,7 +576,7 @@ async def test_the_share_resolver_is_where_the_tenant_predicate_lives():
             calls.append(kwargs)
             return [DOC_B_TEAM]
 
-    resolved = await resolve_shared_kb_ids(_SpyRepo(), ["team-a"], ORG_A)
+    resolved = await resolve_shared_kb_ids(_SpyRepo(), ["team-a"], ENTERPRISE_A)
 
     assert resolved == [DOC_B_TEAM]
     assert calls == [
@@ -584,7 +584,7 @@ async def test_the_share_resolver_is_where_the_tenant_predicate_lives():
             "resource_type": "knowledge_item",
             "scope_type": "team",
             "scope_ids": ["team-a"],
-            "organization_id": ORG_A,
+            "enterprise_id": ENTERPRISE_A,
         }
     ], f"the caller's org was not threaded into the share lookup: {calls}"
 
@@ -595,7 +595,7 @@ async def test_the_share_lookups_sql_carries_the_tenant_predicate():
 
     The test above proves the caller's org reaches the repository. This proves
     the repository puts it in the statement: the rendered SQL must constrain
-    ``organization_id`` as well as the team scope. Without that clause a share
+    ``enterprise_id`` as well as the team scope. Without that clause a share
     row stamped by another tenant is an allowlist entry, and the vector layer —
     as ``test_a_foreign_item_id_in_the_shared_arm_is_read_verbatim`` shows —
     will serve the chunk it names.
@@ -624,13 +624,13 @@ async def test_the_share_lookups_sql_carries_the_tenant_predicate():
         resource_type="knowledge_item",
         scope_type="team",
         scope_ids=["team-a"],
-        organization_id=ORG_A,
+        enterprise_id=ENTERPRISE_A,
     )
 
     assert rendered, "the repository issued no statement"
     sql = rendered[0].lower()
     assert (
-        "organization_id" in sql
+        "enterprise_id" in sql
     ), f"the share lookup does not constrain the tenant:\n{rendered[0]}"
     assert "scope_id" in sql and "resource_type" in sql
 
@@ -676,7 +676,7 @@ async def test_the_standalone_sentinel_is_not_a_tenant_under_multi():
         return_value=BUILTIN_MULTI,
     ):
         under_multi = await resolve_shared_kb_ids(
-            _SpyRepo(), ["team-a"], STANDALONE_ORG_ID
+            _SpyRepo(), ["team-a"], STANDALONE_ENTERPRISE_ID
         )
     assert under_multi == []
     assert not queried, "the Standalone sentinel was used as a tenant predicate"
@@ -688,10 +688,10 @@ async def test_the_standalone_sentinel_is_not_a_tenant_under_multi():
         return_value=BUILTIN_SINGLE,
     ):
         under_single = await resolve_shared_kb_ids(
-            _SpyRepo(), ["team-a"], STANDALONE_ORG_ID
+            _SpyRepo(), ["team-a"], STANDALONE_ENTERPRISE_ID
         )
     assert under_single == [DOC_B_TEAM]
-    assert queried and queried[0]["organization_id"] == STANDALONE_ORG_ID
+    assert queried and queried[0]["enterprise_id"] == STANDALONE_ENTERPRISE_ID
 
 
 @pytest.mark.asyncio

@@ -4,7 +4,7 @@ Organization affiliation lives in ``organization_members``; the ``users`` table
 has no organization column. The field exists purely so mint-time tenancy can
 ride the token chain — the SSO exchange attaches the organization resolved at
 callback time, ``/auth/refresh`` re-attaches the validated refresh claim, and
-``resolve_organization_claim`` reads it when building the token claim.
+``resolve_enterprise_claim`` reads it when building the token claim.
 
 If it ever started persisting, a user's organization would become a stale copy
 of a membership row that RLS, not the user row, is the source of truth for.

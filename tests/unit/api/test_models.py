@@ -182,7 +182,7 @@ class TestCaseResponse:
         now = datetime.now(timezone.utc)
         response = CaseResponse(
             case_id="case_123",
-            organization_id="org_456",
+            enterprise_id="ent_456",
             reporter_user_id="user_789",
             title="Test Case",
             description="Description",
@@ -203,7 +203,7 @@ class TestCaseResponse:
         """Test creating response from domain model."""
         mock_case = MagicMock()
         mock_case.case_id = "case_123"
-        mock_case.organization_id = "org_456"
+        mock_case.enterprise_id = "ent_456"
         mock_case.user_id = "user_789"
         mock_case.title = "Test Case"
         mock_case.description = "Description"
@@ -227,7 +227,7 @@ class TestCaseResponse:
         """Test default severity when not provided."""
         mock_case = MagicMock()
         mock_case.case_id = "case_123"
-        mock_case.organization_id = "org_456"
+        mock_case.enterprise_id = "ent_456"
         mock_case.user_id = "user_789"
         mock_case.title = "Test Case"
         mock_case.description = "Description"
@@ -254,7 +254,7 @@ class TestCaseListResponse:
         now = datetime.now(timezone.utc)
         item = CaseResponse(
             case_id="case_123",
-            organization_id="org_456",
+            enterprise_id="ent_456",
             reporter_user_id="user_789",
             title="Test Case",
             description="Description",
@@ -349,7 +349,7 @@ class TestSessionResponse:
             session_id="session_123",
             case_id="case_456",
             user_id="user_789",
-            organization_id="org_abc",
+            enterprise_id="ent_abc",
             state=SessionState.ACTIVE,
             started_at=now,
             ended_at=None,
@@ -374,7 +374,7 @@ class TestSessionResponse:
         mock_session.session_id = "session_123"
         mock_session.case_id = "case_456"
         mock_session.user_id = "user_789"
-        mock_session.organization_id = "org_abc"
+        mock_session.enterprise_id = "ent_abc"
         mock_session.state = SessionState.PAUSED
         mock_session.started_at = now
         mock_session.ended_at = None
@@ -490,7 +490,7 @@ class TestEdgeCases:
         now = datetime.now(timezone.utc)
         response = CaseResponse(
             case_id="case_123",
-            organization_id="org_456",
+            enterprise_id="ent_456",
             reporter_user_id="user_789",
             title="Closed Case",
             description="Description",
@@ -512,7 +512,7 @@ class TestEdgeCases:
             session_id="session_123",
             case_id="case_456",
             user_id="user_789",
-            organization_id="org_abc",
+            enterprise_id="ent_abc",
             state=SessionState.COMPLETED,
             started_at=now,
             ended_at=now,

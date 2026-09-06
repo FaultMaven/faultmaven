@@ -6,8 +6,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from faultmaven.config.constants import STANDALONE_ORG_ID
-from faultmaven.config.tenant_context import get_current_org_id, set_current_org_id
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.config.tenant_context import (
+    get_current_enterprise_id,
+    set_current_enterprise_id,
+)
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.models.api_models import CaseListFilter, CaseMessage, CaseSearchRequest
 from faultmaven.modules.case.domain.models import Case, CaseState, MessageType
@@ -18,11 +21,11 @@ from faultmaven.modules.case.domain.services.case_service import CaseService
 def _reset_tenant_context():
     """Reset the request-bound org contextvar after each test.
 
-    ``create_case`` now stamps the case with ``get_current_org_id()`` (P2c), so
+    ``create_case`` now stamps the case with ``get_current_enterprise_id()`` (P2c), so
     a test that sets a tenant org must not leak it into the next test.
     """
     yield
-    set_current_org_id(STANDALONE_ORG_ID)
+    set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
 
 
 def _make_case(
@@ -36,7 +39,8 @@ def _make_case(
     case = Case(
         title=kwargs.get("title", "Test Case"),
         user_id=user_id,
-        organization_id=kwargs.get("organization_id", "org_default"),
+        enterprise_id=kwargs.get("enterprise_id", "ent_default"),
+        organization_id=kwargs.get("organization_id"),
         description=kwargs.get("description", "test description"),
     )
     # Use object.__setattr__ to bypass Pydantic cross-field validators
@@ -155,25 +159,45 @@ class TestCreateCase:
         assert default.source == "copilot"
 
     @pytest.mark.asyncio
-    async def test_stamps_org_from_request_context(self, service, mock_repo):
-        # P2c: the case is stamped with the request-bound org (tenant_scope
+    async def test_stamps_the_enterprise_from_the_request_binding(
+        self, service, mock_repo
+    ):
+        # P2c: the case is stamped with the request-bound ENTERPRISE (tenant_scope
         # middleware -> config.tenant_context). In multi-tenant mode this is the
-        # caller's verified JWT org; the write stamp must match it, not fall back
-        # to the Standalone/default org.
+        # caller's verified claim; the write stamp must match it, not fall back
+        # to the Standalone sentinel.
         mock_repo.list.return_value = ([], 0)
-        tenant_org = "11111111-1111-1111-1111-111111111111"
-        set_current_org_id(tenant_org)
+        tenant = "11111111-1111-1111-1111-111111111111"
+        set_current_enterprise_id(tenant)
         case = await service.create_case(title="Scoped", owner_id="user_123")
-        assert case.organization_id == tenant_org
+        assert case.enterprise_id == tenant
 
     @pytest.mark.asyncio
-    async def test_defaults_org_to_standalone(self, service, mock_repo):
-        # Single-tenant / unset context -> the Standalone org (contextvar default),
-        # so standalone deployments stay scoped without any per-request wiring.
+    async def test_an_account_in_no_organization_is_billed_to_nobody(
+        self, service, mock_repo
+    ):
+        """``None``, not a sentinel — the two stamps come from two bindings.
+
+        This is the whole of ADR-017 D1/D2 at the write site: a single stamp
+        filling both columns from one binding would pass a weaker assertion and
+        be exactly the conflation the campaign undid.
+        """
         mock_repo.list.return_value = ([], 0)
-        assert get_current_org_id() == STANDALONE_ORG_ID  # sanity: default binding
+        set_current_enterprise_id("11111111-1111-1111-1111-111111111111")
+        case = await service.create_case(title="Scoped", owner_id="user_123")
+        assert case.organization_id is None
+
+    @pytest.mark.asyncio
+    async def test_defaults_the_enterprise_to_standalone(self, service, mock_repo):
+        # Single-tenant / unset context -> the Standalone enterprise (the
+        # contextvar default), so standalone deployments stay scoped without any
+        # per-request wiring.
+        mock_repo.list.return_value = ([], 0)
+        assert (
+            get_current_enterprise_id() == STANDALONE_ENTERPRISE_ID
+        )  # sanity: default binding
         case = await service.create_case(title="Default", owner_id="user_123")
-        assert case.organization_id == STANDALONE_ORG_ID
+        assert case.enterprise_id == STANDALONE_ENTERPRISE_ID
 
     @pytest.mark.asyncio
     async def test_adds_initial_message(self, service, mock_repo):
@@ -813,7 +837,7 @@ class TestCaseReadAllowlist:
             resource_type="case",
             scope_type="team",
             scope_ids=["team_1", "team_2"],
-            organization_id=STANDALONE_ORG_ID,
+            enterprise_id=STANDALONE_ENTERPRISE_ID,
         )
 
     @pytest.mark.asyncio
@@ -924,6 +948,7 @@ class TestCaseShareCreation:
             resource_id=case.case_id,
             scope_type="team",
             scope_id="team_ws",
+            enterprise_id=case.enterprise_id,
             organization_id=case.organization_id,
             created_by="slack_svc",
         )
@@ -1009,7 +1034,11 @@ class TestCaseShareCreation:
     async def test_share_case_with_team_no_op_without_repo(self, service):
         """The write helper is inert when no share repository is wired."""
         await service._share_case_with_team(
-            case_id="c1", team_id="t1", organization_id="org", created_by="u"
+            case_id="c1",
+            team_id="t1",
+            enterprise_id="ent",
+            organization_id=None,
+            created_by="u",
         )  # must not raise
 
     @pytest.mark.asyncio
@@ -1056,7 +1085,7 @@ class TestCaseTeamShareEndpoints:
 
     @pytest.mark.asyncio
     async def test_share_success_writes_share_row(self, mock_repo, mock_session_store):
-        case = _make_case(user_id="owner", organization_id="org_1")
+        case = _make_case(user_id="owner", enterprise_id="ent_1")
         mock_repo.get = AsyncMock(return_value=case)
         svc, team_service, share_repo = _team_share_service(
             mock_repo, mock_session_store, teams=["team_a"]
@@ -1067,7 +1096,8 @@ class TestCaseTeamShareEndpoints:
             resource_id=case.case_id,
             scope_type="team",
             scope_id="team_a",
-            organization_id="org_1",
+            enterprise_id="ent_1",
+            organization_id=None,
             created_by="owner",
         )
 

@@ -56,7 +56,7 @@ def _make_inquiry_case(**overrides) -> Case:
     defaults = dict(
         case_id=_make_case_id(),
         user_id="test-user",
-        organization_id="test-org",
+        enterprise_id="test-org",
         title="DNS resolution failing",
         description="",
     )
@@ -75,7 +75,7 @@ def _make_investigating_case(**overrides) -> Case:
             in {
                 "case_id",
                 "user_id",
-                "organization_id",
+                "enterprise_id",
                 "title",
                 "description",
             }
@@ -88,7 +88,7 @@ def _make_investigating_case(**overrides) -> Case:
 
     # Apply remaining overrides
     for k, v in overrides.items():
-        if k not in {"case_id", "user_id", "organization_id", "title", "description"}:
+        if k not in {"case_id", "user_id", "enterprise_id", "title", "description"}:
             setattr(case, k, v)
 
     return case

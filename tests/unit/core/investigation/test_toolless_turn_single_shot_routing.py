@@ -29,7 +29,7 @@ from faultmaven.modules.case.domain.models import (
 
 def _case() -> Case:
     return Case(
-        user_id="u", organization_id="o", title="t", description="VM will not start"
+        user_id="u", enterprise_id="o", title="t", description="VM will not start"
     )
 
 
@@ -179,7 +179,7 @@ def _investigating_case() -> Case:
         title="VM will not start",
         state=CaseState.INQUIRY,
         user_id="user_test",
-        organization_id="org_test",
+        enterprise_id="org_test",
         description="libvirt cannot write its PID file",
         problem_verification=ProblemVerification(
             symptom_statement="VM fails to start", severity="high"

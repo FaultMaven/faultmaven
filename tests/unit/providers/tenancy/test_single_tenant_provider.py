@@ -1,428 +1,179 @@
-"""Unit tests for SingleTenantProvider (TASK-023).
+"""Unit tests for SingleTenantProvider (ADR-017 D8).
 
-Test Coverage: 12-15 tests
+Standalone is one seeded ENTERPRISE and one seeded team. It has **no
+organization**, and the absence is the design: an organization is a billing
+target created by payment (D5), and nobody is billed for a self-hosted install.
+So there is no ``ensure_default_organization_exists`` here to test — its absence
+is asserted, because a provider that quietly re-grew one would put a row under
+every standalone deployment that the rest of the campaign assumes is not there.
 """
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, Mock
-from uuid import UUID
+from unittest.mock import AsyncMock
 
 import pytest
 
+from faultmaven.config.constants import (
+    STANDALONE_ENTERPRISE_ID,
+    STANDALONE_TEAM_ID,
+    STANDALONE_TEAM_NAME,
+)
 from faultmaven.exceptions import NotFoundError
-from faultmaven.models.interfaces_user import Organization, OrgPlanTier, Team
+from faultmaven.models.interfaces_user import Enterprise, EnterprisePlanTier, Team
 from faultmaven.modules.auth.domain.models.user import User
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
 
+def _enterprise() -> Enterprise:
+    now = datetime.now(timezone.utc)
+    return Enterprise(
+        enterprise_id=STANDALONE_ENTERPRISE_ID,
+        slug="default",
+        name="Default Enterprise",
+        plan_tier=EnterprisePlanTier.PRO,
+        max_members=100,
+        max_cases=None,
+        settings={},
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _team() -> Team:
+    now = datetime.now(timezone.utc)
+    return Team(
+        team_id=STANDALONE_TEAM_ID,
+        enterprise_id=STANDALONE_ENTERPRISE_ID,
+        name=STANDALONE_TEAM_NAME,
+        created_at=now,
+        updated_at=now,
+    )
+
+
 @pytest.fixture
-def mock_organization_repository():
-    """Mock organization repository."""
+def enterprises():
     return AsyncMock()
 
 
 @pytest.fixture
-def single_tenant_provider(mock_organization_repository):
-    """SingleTenantProvider instance with mocked repository."""
-    return SingleTenantProvider(organization_repository=mock_organization_repository)
+def teams():
+    return AsyncMock()
 
 
 @pytest.fixture
-def default_organization():
-    """Default organization fixture."""
-    return Organization(
-        organization_id=SingleTenantProvider.DEFAULT_ORG_ID,
-        slug=SingleTenantProvider.DEFAULT_ORG_SLUG,
-        name=SingleTenantProvider.DEFAULT_ORG_NAME,
-        description="Default organization for local deployment",
-        plan_tier=OrgPlanTier.PRO,
-        max_members=100,
-        max_cases=None,
-        settings={},
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
+def provider(enterprises, teams):
+    return SingleTenantProvider(
+        enterprise_repository=enterprises, team_repository=teams
     )
 
 
-@pytest.fixture
-def mock_user():
-    """Mock authenticated user."""
+def _user() -> User:
     return User(
-        user_id="user_123",
-        email="test@example.com",
-        hashed_password="hashed",
-        full_name="Test User",
-    )
-
-
-# ============================================================================
-# Test: get_current_organization() returns default organization
-# ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_get_current_organization_returns_default_org(
-    single_tenant_provider,
-    mock_organization_repository,
-    default_organization,
-    mock_user,
-):
-    """Test get_current_organization returns default organization."""
-    mock_organization_repository.get_organization.return_value = default_organization
-
-    result = await single_tenant_provider.get_current_organization(
-        current_user=mock_user
-    )
-
-    assert result == default_organization
-    assert result.organization_id == SingleTenantProvider.DEFAULT_ORG_ID
-    mock_organization_repository.get_organization.assert_called_once_with(
-        SingleTenantProvider.DEFAULT_ORG_ID
-    )
-
-
-# ============================================================================
-# Test: get_current_organization() ignores organization_id parameter
-# ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_get_current_organization_ignores_organization_id_parameter(
-    single_tenant_provider,
-    mock_organization_repository,
-    default_organization,
-    mock_user,
-):
-    """Test get_current_organization ignores provided organization_id."""
-    mock_organization_repository.get_organization.return_value = default_organization
-
-    # Provide a different organization_id - should be ignored
-    result = await single_tenant_provider.get_current_organization(
-        current_user=mock_user, organization_id="other_org_id"
-    )
-
-    assert result.organization_id == SingleTenantProvider.DEFAULT_ORG_ID
-    # Should still call with DEFAULT_ORG_ID, not the provided organization_id
-    mock_organization_repository.get_organization.assert_called_once_with(
-        SingleTenantProvider.DEFAULT_ORG_ID
-    )
-
-
-# ============================================================================
-# Test: get_default_organization() returns cached organization
-# ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_get_default_organization_returns_cached_org(
-    single_tenant_provider, mock_organization_repository, default_organization
-):
-    """Test get_default_organization uses cache on subsequent calls."""
-    mock_organization_repository.get_organization.return_value = default_organization
-
-    # First call loads from repository
-    result1 = await single_tenant_provider.get_default_organization()
-
-    # Second call should use cache
-    result2 = await single_tenant_provider.get_default_organization()
-
-    assert result1 == default_organization
-    assert result2 == default_organization
-    # Repository should only be called once (cache hit on second call)
-    assert mock_organization_repository.get_organization.call_count == 1
-
-
-# ============================================================================
-# Test: get_default_organization() loads from DB if not cached
-# ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_get_default_organization_loads_from_db_if_not_cached(
-    single_tenant_provider, mock_organization_repository, default_organization
-):
-    """Test get_default_organization loads from database when cache is empty."""
-    mock_organization_repository.get_organization.return_value = default_organization
-
-    # Cache should be empty initially
-    assert single_tenant_provider._default_org is None
-
-    result = await single_tenant_provider.get_default_organization()
-
-    assert result == default_organization
-    mock_organization_repository.get_organization.assert_called_once_with(
-        SingleTenantProvider.DEFAULT_ORG_ID
-    )
-    # Cache should now be populated
-    assert single_tenant_provider._default_org == default_organization
-
-
-# ============================================================================
-# Test: get_default_organization() raises if not found
-# ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_get_default_organization_raises_if_not_found(
-    single_tenant_provider, mock_organization_repository
-):
-    """Test get_default_organization raises NotFoundError if org doesn't exist."""
-    mock_organization_repository.get_organization.return_value = None
-
-    with pytest.raises(NotFoundError) as exc_info:
-        await single_tenant_provider.get_default_organization()
-
-    assert exc_info.value.resource_type == "Organization"
-    assert exc_info.value.resource_id == SingleTenantProvider.DEFAULT_ORG_ID
-
-
-# ============================================================================
-# Test: ensure_default_organization_exists() creates if missing
-# ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_ensure_default_organization_creates_if_missing(
-    single_tenant_provider, mock_organization_repository
-):
-    """Test ensure_default_organization_exists creates org if it doesn't exist."""
-    # Repository returns None (org doesn't exist)
-    mock_organization_repository.get_organization.return_value = None
-
-    # Mock create_organization to return a new org
-    created_org = Organization(
-        organization_id=SingleTenantProvider.DEFAULT_ORG_ID,
-        slug=SingleTenantProvider.DEFAULT_ORG_SLUG,
-        name=SingleTenantProvider.DEFAULT_ORG_NAME,
-        description="Default organization for local/community deployment",
-        plan_tier=OrgPlanTier.PRO,
-        max_members=100,
-        max_cases=None,
-        settings={},
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
-    )
-    mock_organization_repository.create_organization.return_value = created_org
-
-    result = await single_tenant_provider.ensure_default_organization_exists()
-
-    assert result.organization_id == SingleTenantProvider.DEFAULT_ORG_ID
-    assert result.plan_tier == OrgPlanTier.PRO
-    assert result.max_members == 100
-    assert result.max_cases is None
-    mock_organization_repository.create_organization.assert_called_once()
-
-
-# ============================================================================
-# Test: ensure_default_organization_exists() returns existing if present
-# ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_ensure_default_organization_returns_existing_if_present(
-    single_tenant_provider, mock_organization_repository, default_organization
-):
-    """Test ensure_default_organization_exists returns existing org without creating."""
-    mock_organization_repository.get_organization.return_value = default_organization
-
-    result = await single_tenant_provider.ensure_default_organization_exists()
-
-    assert result == default_organization
-    # Should not call create since org exists
-    mock_organization_repository.create_organization.assert_not_called()
-
-
-# ============================================================================
-# Test: ensure_default_organization_exists() is idempotent
-# ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_ensure_default_organization_is_idempotent(
-    single_tenant_provider, mock_organization_repository, default_organization
-):
-    """Test ensure_default_organization_exists can be called multiple times safely."""
-    mock_organization_repository.get_organization.return_value = default_organization
-
-    # Call multiple times
-    result1 = await single_tenant_provider.ensure_default_organization_exists()
-    result2 = await single_tenant_provider.ensure_default_organization_exists()
-
-    assert result1 == default_organization
-    assert result2 == default_organization
-    # Should not create on subsequent calls
-    mock_organization_repository.create_organization.assert_not_called()
-
-
-# ============================================================================
-# Test: is_multi_tenant() returns False
-# ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_is_multi_tenant_returns_false(single_tenant_provider):
-    """Test is_multi_tenant returns False for single-tenant mode."""
-    result = await single_tenant_provider.is_multi_tenant()
-    assert result is False
-
-
-# ============================================================================
-# Test: default organization has PRO plan tier
-# ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_default_org_has_pro_plan_tier(
-    single_tenant_provider, mock_organization_repository
-):
-    """Test default organization is created with PRO tier for local mode."""
-    mock_organization_repository.get_organization.return_value = None
-
-    created_org = Organization(
-        organization_id=SingleTenantProvider.DEFAULT_ORG_ID,
-        slug=SingleTenantProvider.DEFAULT_ORG_SLUG,
-        name=SingleTenantProvider.DEFAULT_ORG_NAME,
-        description="Default organization for local/community deployment",
-        plan_tier=OrgPlanTier.PRO,
-        max_members=100,
-        max_cases=None,
-        settings={},
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
-    )
-    mock_organization_repository.create_organization.return_value = created_org
-
-    result = await single_tenant_provider.ensure_default_organization_exists()
-
-    assert result.plan_tier == OrgPlanTier.PRO
-
-
-# ============================================================================
-# Test: default organization has correct ID and slug
-# ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_default_org_has_correct_id_and_slug(single_tenant_provider):
-    """Test default organization constants have expected values."""
-    assert SingleTenantProvider.DEFAULT_ORG_ID == "00000000-0000-0000-0000-000000000001"
-    assert SingleTenantProvider.DEFAULT_ORG_SLUG == "default"
-    assert SingleTenantProvider.DEFAULT_ORG_NAME == "Default Organization"
-
-    # Verify ID is a valid UUID
-    try:
-        UUID(SingleTenantProvider.DEFAULT_ORG_ID)
-    except ValueError:
-        pytest.fail("DEFAULT_ORG_ID is not a valid UUID")
-
-
-# ============================================================================
-# Test: cache is populated after ensure_default_organization_exists()
-# ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_cache_populated_after_ensure_default_organization_exists(
-    single_tenant_provider, mock_organization_repository, default_organization
-):
-    """Test cache is updated after ensure_default_organization_exists."""
-    mock_organization_repository.get_organization.return_value = default_organization
-
-    # Cache empty initially
-    assert single_tenant_provider._default_org is None
-
-    await single_tenant_provider.ensure_default_organization_exists()
-
-    # Cache should now be populated
-    assert single_tenant_provider._default_org == default_organization
-
-
-# ============================================================================
-# Test: multiple users get same default organization
-# ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_multiple_users_get_same_default_organization(
-    single_tenant_provider, mock_organization_repository, default_organization
-):
-    """Test all users receive the same default organization (single-tenant isolation)."""
-    mock_organization_repository.get_organization.return_value = default_organization
-
-    user1 = User(
         user_id="user_1",
-        email="user1@example.com",
-        hashed_password="hashed",
-        full_name="User One",
-    )
-    user2 = User(
-        user_id="user_2",
-        email="user2@example.com",
-        hashed_password="hashed",
-        full_name="User Two",
+        email="u@example.com",
+        hashed_password="h",
+        full_name="U",
     )
 
-    org1 = await single_tenant_provider.get_current_organization(current_user=user1)
-    org2 = await single_tenant_provider.get_current_organization(current_user=user2)
 
-    assert org1.organization_id == org2.organization_id
-    assert org1.organization_id == SingleTenantProvider.DEFAULT_ORG_ID
+async def test_every_request_resolves_the_one_enterprise(provider, enterprises):
+    enterprises.get_enterprise.return_value = _enterprise()
 
+    resolved = await provider.get_current_enterprise(current_user=_user())
 
-# ============================================================================
-# ensure_default_team_exists() — #734 default-team seeding
-# ============================================================================
+    assert resolved.enterprise_id == STANDALONE_ENTERPRISE_ID
 
 
-@pytest.mark.asyncio
-async def test_ensure_default_team_creates_when_absent(mock_organization_repository):
-    """Seeds the default team under the default org when it doesn't exist."""
-    team_repo = AsyncMock()
-    team_repo.get_team.return_value = None
-    team_repo.create_team.side_effect = lambda team: team
-    provider = SingleTenantProvider(
-        organization_repository=mock_organization_repository,
-        team_repository=team_repo,
+async def test_an_injected_enterprise_is_ignored(provider, enterprises):
+    """The standalone re-leak guard (ADR-010).
+
+    A forged claim must not re-scope a single-tenant deployment, so the argument
+    is not merely defaulted — it is discarded.
+    """
+    enterprises.get_enterprise.return_value = _enterprise()
+
+    resolved = await provider.get_current_enterprise(
+        current_user=_user(), enterprise_id="ent_somebody_elses"
     )
+
+    assert resolved.enterprise_id == STANDALONE_ENTERPRISE_ID
+    enterprises.get_enterprise.assert_awaited_once_with(STANDALONE_ENTERPRISE_ID)
+
+
+async def test_the_default_enterprise_is_cached(provider, enterprises):
+    enterprises.get_enterprise.return_value = _enterprise()
+
+    first = await provider.get_default_enterprise()
+    second = await provider.get_default_enterprise()
+
+    assert first is second
+    assert enterprises.get_enterprise.await_count == 1
+
+
+async def test_a_missing_default_enterprise_is_not_found(provider, enterprises):
+    """The seed did not run. Reported, not invented."""
+    enterprises.get_enterprise.return_value = None
+
+    with pytest.raises(NotFoundError):
+        await provider.get_default_enterprise()
+
+
+async def test_it_reports_itself_single_tenant(provider):
+    assert await provider.is_multi_tenant() is False
+
+
+async def test_ensure_default_enterprise_creates_when_absent(provider, enterprises):
+    enterprises.get_enterprise.return_value = None
+    enterprises.create_enterprise.side_effect = lambda e: e
+
+    created = await provider.ensure_default_enterprise_exists()
+
+    assert created.enterprise_id == STANDALONE_ENTERPRISE_ID
+    assert created.plan_tier is EnterprisePlanTier.PRO
+
+
+async def test_ensure_default_enterprise_is_idempotent(provider, enterprises):
+    enterprises.get_enterprise.return_value = _enterprise()
+
+    first = await provider.ensure_default_enterprise_exists()
+    second = await provider.ensure_default_enterprise_exists()
+
+    assert first.enterprise_id == second.enterprise_id
+    enterprises.create_enterprise.assert_not_awaited()
+
+
+async def test_the_default_team_hangs_off_the_enterprise(provider, teams):
+    """Not off an organization — there is none (ADR-017 D4/D8)."""
+    teams.get_team.return_value = None
+    teams.create_team.side_effect = lambda t: t
 
     team = await provider.ensure_default_team_exists()
 
-    assert team is not None
-    assert team.team_id == SingleTenantProvider.DEFAULT_TEAM_ID
-    assert team.organization_id == SingleTenantProvider.DEFAULT_ORG_ID
-    team_repo.create_team.assert_awaited_once()
+    assert team.enterprise_id == STANDALONE_ENTERPRISE_ID
+    assert not hasattr(team, "organization_id")
 
 
-@pytest.mark.asyncio
-async def test_ensure_default_team_idempotent_when_exists(mock_organization_repository):
-    """Existing default team is returned; no second create."""
-    existing = Team(
-        team_id=SingleTenantProvider.DEFAULT_TEAM_ID,
-        organization_id=SingleTenantProvider.DEFAULT_ORG_ID,
-        name=SingleTenantProvider.DEFAULT_TEAM_NAME,
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
-    )
-    team_repo = AsyncMock()
-    team_repo.get_team.return_value = existing
-    provider = SingleTenantProvider(
-        organization_repository=mock_organization_repository,
-        team_repository=team_repo,
-    )
+async def test_ensure_default_team_is_idempotent(provider, teams):
+    teams.get_team.return_value = _team()
 
-    team = await provider.ensure_default_team_exists()
+    await provider.ensure_default_team_exists()
 
-    assert team is existing
-    team_repo.create_team.assert_not_awaited()
+    teams.create_team.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_ensure_default_team_noop_without_repository(
-    mock_organization_repository,
-):
-    """No team_repository wired → no-op (returns None), never raises."""
-    provider = SingleTenantProvider(
-        organization_repository=mock_organization_repository,
-    )
-
+async def test_an_unwired_team_repository_seeds_nothing(enterprises):
+    provider = SingleTenantProvider(enterprise_repository=enterprises)
     assert await provider.ensure_default_team_exists() is None
+
+
+async def test_there_is_no_default_organization_to_ensure(provider):
+    """Deleted, not deprecated (the owner's rule for this campaign).
+
+    A standalone deployment writes ``organization_id = NULL`` on every row, so a
+    provider that still minted a default organization would put a row under it
+    that nothing pays for and nothing reads — and the next reader to find one
+    would reasonably conclude the deployment has a billing subject.
+    """
+    assert not hasattr(provider, "ensure_default_organization_exists")
+    assert not hasattr(provider, "get_default_organization")
+    assert not hasattr(SingleTenantProvider, "DEFAULT_ORG_ID")

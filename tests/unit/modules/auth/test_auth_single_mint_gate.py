@@ -416,7 +416,7 @@ def test_the_predicate_refuses_when_the_flag_is_absent():
 
     token_derived = AuthenticatedUser(
         user_id="user_123",
-        organization_id="org_acme",
+        enterprise_id="org_acme",
         email="testuser@acme.example",
         roles=["user"],
         permissions=[],
@@ -459,7 +459,7 @@ async def test_the_oauth_exchange_still_reports_its_own_protocol_error():
 #: The parallel mint path `AuthService` used to carry. Each took a `user_id` and
 #: an `organization_id` **string** and signed the latter verbatim, so a caller
 #: could put any value in the `organization_id` claim — bypassing
-#: `resolve_organization_claim`, the guard every real mint funnels through
+#: `resolve_enterprise_claim`, the guard every real mint funnels through
 #: (#850). Its only caller passed `organization_id or "org-default"`: a truthy,
 #: non-sentinel, fabricated tenant that both layers of the #850 fix would have
 #: waved through. Nothing routed to it, so it was removed rather than gated.
@@ -745,7 +745,7 @@ async def test_deleting_a_user_revokes_their_outstanding_tokens_first():
             username="doomed",
             request=request,
             operator=None,
-            scope=OperatorUserScope(organizations=None),
+            scope=OperatorUserScope(users=None),
         )
 
     assert result["user_id"] == "user_123"
@@ -790,7 +790,7 @@ async def test_a_failed_revocation_blocks_the_delete():
                 username="doomed",
                 request=request,
                 operator=None,
-                scope=OperatorUserScope(organizations=None),
+                scope=OperatorUserScope(users=None),
             )
 
     assert deleted == [], "the account was deleted despite revocation failing"

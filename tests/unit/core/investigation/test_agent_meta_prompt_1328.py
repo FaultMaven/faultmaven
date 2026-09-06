@@ -85,7 +85,7 @@ def _case(state: CaseState) -> Case:
         title="Nightly OOM kills",
         description="postgres is OOM-killed every night around 02:00",
         user_id="user_123",
-        organization_id="org_123",
+        enterprise_id="org_123",
         state=state,
         current_stage=InvestigationStage.DIAGNOSIS if investigating else None,
         inquiry=InquiryData(

@@ -36,7 +36,7 @@ from tests.utils import forge_access_token
 
 USER_ID = "11111111-1111-1111-1111-111111111111"
 OTHER_USER_ID = "33333333-3333-3333-3333-333333333333"
-ORG_ID = "22222222-2222-2222-2222-222222222222"
+ENTERPRISE_ID = "22222222-2222-2222-2222-222222222222"
 SECRET = "test-secret-key-0123456789abcdef"  # 32+ bytes: HS256 minimum
 KEY = "opt_msg_1787041101005_2"  # the live key from the fm#1087 trace
 
@@ -81,7 +81,7 @@ def _access_token(auth_service: AuthService, user_id: str = USER_ID) -> str:
     return forge_access_token(
         auth_service,
         user_id=user_id,
-        organization_id=ORG_ID,
+        enterprise_id=ENTERPRISE_ID,
         email="user@example.com",
         roles=["member"],
     )
@@ -397,7 +397,7 @@ async def test_retry_with_an_expired_token_cannot_duplicate(auth_service):
     expired = forge_access_token(
         auth_service,
         user_id=USER_ID,
-        organization_id=ORG_ID,
+        enterprise_id=ENTERPRISE_ID,
         email="user@example.com",
         roles=["member"],
         expires_in_minutes=-5,
@@ -459,19 +459,21 @@ async def test_a_broken_verifier_degrades_instead_of_500ing(auth_service):
 
 
 # ---------------------------------------------------------------------------
-# Tenancy: the raw-credential scope distinguished org contexts as a side effect
-# (the org claim rides inside the signed token). Keying on ``sub`` alone would
-# drop that and lean on ``resolve_organization_claim`` reading the org off the
-# user record — an invariant that lives in another module, is not enforced here,
-# and would put two different-tenant requests in one bucket if it ever stopped
-# holding. The org is carried in the scope instead.
+# Tenancy: the raw-credential scope distinguished tenants as a side effect (the
+# claim rides inside the signed token). Keying on ``sub`` alone would drop that
+# and lean on ``resolve_enterprise_claim`` reading the tenant off the user
+# record — an invariant that lives in another module, is not enforced here, and
+# would put two different-tenant requests in one bucket if it ever stopped
+# holding. The ENTERPRISE is carried in the scope instead: it is what isolates
+# (ADR-017 D1), where the organization only says who pays and is absent from
+# most tokens.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
 @pytest.mark.security
 @pytest.mark.asyncio
-async def test_one_sub_under_two_orgs_does_not_share_a_bucket(auth_service):
+async def test_one_sub_under_two_enterprises_does_not_share_a_bucket(auth_service):
     """Same principal, different verified tenant — must not replay across them.
 
     A cache hit returns before ``call_next``, so a shared bucket here would hand
@@ -479,32 +481,32 @@ async def test_one_sub_under_two_orgs_does_not_share_a_bucket(auth_service):
     running.
     """
     app, _ = _build_app(auth_service)
-    OTHER_ORG = "44444444-4444-4444-4444-444444444444"
-    in_org_a = forge_access_token(
+    OTHER_ENTERPRISE = "44444444-4444-4444-4444-444444444444"
+    in_ent_a = forge_access_token(
         auth_service,
         user_id=USER_ID,
-        organization_id=ORG_ID,
+        enterprise_id=ENTERPRISE_ID,
         email="user@example.com",
         roles=["member"],
     )
-    in_org_b = forge_access_token(
+    in_ent_b = forge_access_token(
         auth_service,
         user_id=USER_ID,
-        organization_id=OTHER_ORG,
+        enterprise_id=OTHER_ENTERPRISE,
         email="user@example.com",
         roles=["member"],
     )
-    assert _claims_of(in_org_a)["sub"] == _claims_of(in_org_b)["sub"]
+    assert _claims_of(in_ent_a)["sub"] == _claims_of(in_ent_b)["sub"]
 
     async with _client(app) as client:
         first = await client.post(
             "/api/v1/json-turn",
-            headers={"Authorization": f"Bearer {in_org_a}", "Idempotency-Key": KEY},
+            headers={"Authorization": f"Bearer {in_ent_a}", "Idempotency-Key": KEY},
             json={"query": "same body"},
         )
         cross_tenant = await client.post(
             "/api/v1/json-turn",
-            headers={"Authorization": f"Bearer {in_org_b}", "Idempotency-Key": KEY},
+            headers={"Authorization": f"Bearer {in_ent_b}", "Idempotency-Key": KEY},
             json={"query": "same body"},
         )
 

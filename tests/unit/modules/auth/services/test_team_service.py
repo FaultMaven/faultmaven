@@ -56,7 +56,7 @@ async def test_team_service_list_user_teams_delegates_to_repository():
 @pytest.mark.unit
 def test_create_team_service_none_in_single_tenant():
     """Standalone (SingleTenantProvider) leaves team_service unwired."""
-    single = SingleTenantProvider(organization_repository=Mock())
+    single = SingleTenantProvider(enterprise_repository=Mock())
     team_repo = Mock()
 
     assert create_team_service(single, team_repo) is None

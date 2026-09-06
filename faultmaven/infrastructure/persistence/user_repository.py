@@ -49,7 +49,7 @@ class User(BaseModel):
             "It exists so mint-time tenancy can ride the token chain — the SSO "
             "exchange attaches the organization resolved at callback time and "
             "`/auth/refresh` re-attaches the validated refresh claim, which is "
-            "what `resolve_organization_claim` reads when building the token's "
+            "what `resolve_billing_organization` reads when building the token's "
             "`organization_id` claim."
         ),
     )
@@ -76,7 +76,20 @@ class User(BaseModel):
     account_kind: str = Field(
         "individual",
         max_length=20,
-        description="Account kind (ADR-012): 'individual' or 'slack'",
+        description=(
+            "Account kind (ADR-017 D6): 'individual' (a human) or 'service' "
+            "(an agent acting for an integration). A team is a group of "
+            "accounts, never an account."
+        ),
+    )
+    service_channel: Optional[str] = Field(
+        None,
+        max_length=20,
+        description=(
+            "Which integration a 'service' account serves ('slack'), or None "
+            "for a human. Separate from the kind so a second integration is a "
+            "new value here rather than a third account kind."
+        ),
     )
 
     # ============================================================
@@ -171,7 +184,7 @@ class UserRepository(ABC):
         """List users with pagination, an optional active filter and an id allowlist.
 
         ``user_ids`` is the tenant predicate the operator surface resolves from
-        ``organization_members`` (``api/operator_user_scope``, #1318). It is a
+        ``users.enterprise_id`` (``api/operator_user_scope``, #1318). It is a
         query predicate rather than a post-filter on purpose: the operator
         listings otherwise load every user row in the deployment and project the
         caller's tenant out of them, which makes ``total`` a deployment-wide
@@ -182,6 +195,26 @@ class UserRepository(ABC):
         ``None`` means no restriction. An EMPTY collection means "this tenant
         has no users" and must return nothing; implementations must not read it
         as ``None``.
+        """
+        pass
+
+    @abstractmethod
+    async def list_enterprise_member_ids(self, enterprise_id: str) -> frozenset:
+        """Every account id anchored to ``enterprise_id`` (ADR-017 D3).
+
+        The isolation roster. ``users.enterprise_id`` *is* enterprise
+        membership — there is no join table for it — so this is one indexed
+        read, and it is the predicate the operator user-administration surface
+        confines itself with (``api/operator_user_scope``).
+
+        ``users`` is deliberately outside RLS (every tenant's accounts live in
+        one table and the login path must reach a row before any tenant is
+        bound), so this predicate is the whole of the confinement: it has no
+        database backstop underneath it and must never be dropped "because RLS
+        covers it".
+
+        Returns an empty set — never ``None`` — for an enterprise with no
+        accounts, so a caller cannot read "no members" as "no restriction".
         """
         pass
 
@@ -282,6 +315,16 @@ class InMemoryUserRepository(UserRepository):
         total_count = len(all_users)
         paginated = all_users[offset : offset + limit]
         return paginated, total_count
+
+    async def list_enterprise_member_ids(self, enterprise_id: str) -> frozenset:
+        """Every account id anchored to ``enterprise_id`` (in-memory)."""
+        if not enterprise_id:
+            return frozenset()
+        return frozenset(
+            user.user_id
+            for user in self._users.values()
+            if user.enterprise_id == enterprise_id
+        )
 
     async def list_users(
         self,
@@ -416,6 +459,7 @@ class PostgreSQLUserRepository(UserRepository):
             deleted_at=model.deleted_at,
             roles=roles,
             account_kind=getattr(model, "account_kind", "individual"),
+            service_channel=getattr(model, "service_channel", None),
         )
 
     def _domain_to_dict(self, user: User) -> dict:
@@ -455,6 +499,7 @@ class PostgreSQLUserRepository(UserRepository):
             "last_password_change_at": user.last_password_change_at,
             "deleted_at": user.deleted_at,
             "account_kind": getattr(user, "account_kind", "individual"),
+            "service_channel": getattr(user, "service_channel", None),
             # dev_roles: JSON-serialised role list, and the canonical source of
             # the JWT role claim in BOTH auth modes (#706). Deriving the claim
             # from organization_members → roles is left unwired rather than
@@ -595,6 +640,18 @@ class PostgreSQLUserRepository(UserRepository):
         models = result.scalars().all()
 
         return [self._model_to_domain(m) for m in models], total_count
+
+    async def list_enterprise_member_ids(self, enterprise_id: str) -> frozenset:
+        """Every account id anchored to ``enterprise_id``."""
+        from sqlalchemy import select
+
+        from faultmaven.infrastructure.persistence.models import UserModel
+
+        if not enterprise_id:
+            return frozenset()
+        stmt = select(UserModel.user_id).where(UserModel.enterprise_id == enterprise_id)
+        result = await self.db.execute(stmt)
+        return frozenset(result.scalars().all())
 
     async def create(self, user: User) -> User:
         """Create a new user with uniqueness checks."""
@@ -751,6 +808,14 @@ class SessionlessUserRepository(UserRepository):
         async with get_db_session() as session:
             return await PostgreSQLUserRepository(session).list_users(
                 limit=limit, offset=offset, is_active=is_active, user_ids=user_ids
+            )
+
+    async def list_enterprise_member_ids(self, enterprise_id: str) -> frozenset:
+        from faultmaven.infrastructure.persistence.database import get_db_session
+
+        async with get_db_session() as session:
+            return await PostgreSQLUserRepository(session).list_enterprise_member_ids(
+                enterprise_id
             )
 
     async def update(self, user: User) -> User:

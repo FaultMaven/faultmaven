@@ -1,8 +1,11 @@
 """SingleTenantProvider for standalone (self-hosted) deployments.
 
-Returns a single default enterprise + organization for all requests.
-All users belong to the same enterprise (and the same organization
-within it), simplifying local development and standalone deployments.
+Returns a single default **enterprise** for every request. All accounts belong to
+it, which is what makes standalone a one-tenant deployment (ADR-017 D8).
+
+There is deliberately no default *organization*: the organization is a billing
+target, and nobody is billed for a self-hosted deployment. ``organization_id`` on
+its rows stays NULL.
 """
 
 from datetime import datetime, timezone
@@ -12,9 +15,6 @@ from faultmaven.config.constants import (
     STANDALONE_ENTERPRISE_ID,
     STANDALONE_ENTERPRISE_NAME,
     STANDALONE_ENTERPRISE_SLUG,
-    STANDALONE_ORG_ID,
-    STANDALONE_ORG_NAME,
-    STANDALONE_ORG_SLUG,
     STANDALONE_TEAM_ID,
     STANDALONE_TEAM_NAME,
 )
@@ -23,10 +23,7 @@ from faultmaven.models.interfaces_user import (
     Enterprise,
     EnterprisePlanTier,
     IEnterpriseRepository,
-    IOrganizationRepository,
     ITeamRepository,
-    Organization,
-    OrgPlanTier,
     Team,
 )
 from faultmaven.modules.auth.domain.models.user import User
@@ -40,8 +37,8 @@ class SingleTenantProvider(TenantProvider):
     """Single-tenant provider for standalone (self-hosted) deployments.
 
     Behavior:
-    - Returns a single default organization for all requests
-    - All users belong to the same organization
+    - Returns a single default enterprise for all requests
+    - All accounts belong to that enterprise
     - Simplifies local development and standalone deployments
 
     Use Cases:
@@ -50,13 +47,10 @@ class SingleTenantProvider(TenantProvider):
     - Testing and CI/CD
 
     Design Notes:
-        The default organization is created by the startup bootstrapper
-        (see faultmaven/bootstrap/startup.py) and cached for performance.
+        The default enterprise is seeded by the migration baseline and
+        re-ensured by the startup bootstrapper (see faultmaven/bootstrap/
+        startup.py), then cached for performance.
     """
-
-    DEFAULT_ORG_ID = STANDALONE_ORG_ID
-    DEFAULT_ORG_SLUG = STANDALONE_ORG_SLUG
-    DEFAULT_ORG_NAME = STANDALONE_ORG_NAME
 
     DEFAULT_ENTERPRISE_ID = STANDALONE_ENTERPRISE_ID
     DEFAULT_ENTERPRISE_SLUG = STANDALONE_ENTERPRISE_SLUG
@@ -67,91 +61,86 @@ class SingleTenantProvider(TenantProvider):
 
     def __init__(
         self,
-        organization_repository: IOrganizationRepository,
         enterprise_repository: Optional[IEnterpriseRepository] = None,
         team_repository: Optional[ITeamRepository] = None,
     ):
         """Initialize single-tenant provider.
 
         Args:
-            organization_repository: Repository for organization persistence
-            enterprise_repository: Repository for enterprise persistence.
-                Optional during the rollout window — when absent,
-                ensure_default_enterprise_exists() is a no-op (the
-                migration's own backfill is the source of truth).
+            enterprise_repository: Repository for enterprise persistence. When
+                absent, ensure_default_enterprise_exists() is a no-op (the
+                migration baseline's own seed is the source of truth) and
+                get_default_enterprise() raises NotFoundError.
             team_repository: Repository for team persistence. Optional — when
                 absent, ensure_default_team_exists() is a no-op. Used only to
                 seed the default team row (schema/relationship completeness);
                 team collaboration stays inert in standalone.
         """
-        self.organization_repository = organization_repository
         self.enterprise_repository = enterprise_repository
         self.team_repository = team_repository
         self._default_enterprise: Optional[Enterprise] = None
-        self._default_org: Optional[Organization] = None
         self._default_team: Optional[Team] = None
 
-    async def get_current_organization(
-        self, current_user: User, organization_id: Optional[str] = None
-    ) -> Organization:
-        """Always returns the default organization (ignores organization_id).
+    async def get_current_enterprise(
+        self, current_user: User, enterprise_id: Optional[str] = None
+    ) -> Enterprise:
+        """Always returns the default enterprise (ignores ``enterprise_id``).
 
-        In single-tenant mode, all users share the same organization.
+        Ignoring the argument is the standalone re-leak guard: a forged claim
+        cannot re-scope a single-tenant deployment.
 
         Args:
             current_user: Authenticated user (not used in single-tenant)
-            organization_id: Ignored in single-tenant mode
+            enterprise_id: Ignored in single-tenant mode
 
         Returns:
-            Organization: The default organization
+            Enterprise: The default enterprise
 
         Raises:
-            NotFoundError: If default organization doesn't exist
-                (should be created by startup bootstrapper)
+            NotFoundError: If the default enterprise doesn't exist
         """
-        return await self.get_default_organization()
+        return await self.get_default_enterprise()
 
-    async def get_default_organization(self) -> Organization:
-        """Get or create the default organization.
-
-        Returns cached organization if available, otherwise loads from DB.
+    async def get_default_enterprise(self) -> Enterprise:
+        """Get the default enterprise, from cache or from the database.
 
         Returns:
-            Organization: The default organization
+            Enterprise: The default enterprise
 
         Raises:
-            NotFoundError: If default organization not found
-                (indicates startup bootstrapper hasn't run)
+            NotFoundError: If the default enterprise is not found (indicates the
+                migration baseline's seed never ran)
         """
-        if self._default_org is None:
-            self._default_org = await self.organization_repository.get_organization(
-                self.DEFAULT_ORG_ID
-            )
-            if self._default_org is None:
-                raise NotFoundError(
-                    resource_type="Organization", resource_id=self.DEFAULT_ORG_ID
+        if self._default_enterprise is None:
+            enterprise = None
+            if self.enterprise_repository is not None:
+                enterprise = await self.enterprise_repository.get_enterprise(
+                    self.DEFAULT_ENTERPRISE_ID
                 )
-        return self._default_org
+            if enterprise is None:
+                raise NotFoundError(
+                    resource_type="Enterprise", resource_id=self.DEFAULT_ENTERPRISE_ID
+                )
+            self._default_enterprise = enterprise
+        return self._default_enterprise
 
     async def is_multi_tenant(self) -> bool:
         """Single-tenant mode."""
         return False
 
     async def ensure_default_enterprise_exists(self) -> Optional[Enterprise]:
-        """Create default enterprise if it doesn't exist.
+        """Create the default enterprise if it doesn't exist.
 
-        Called by startup bootstrapper during application initialization,
-        before ensure_default_organization_exists(). The migration's
-        own backfill seeds this row idempotently, so this method is a
-        belt-and-braces guard for fresh DBs that somehow skip the
-        migration.
+        Called by the startup bootstrapper during application initialization.
+        The migration baseline seeds this row idempotently, so this is a
+        belt-and-braces guard for a database that somehow skipped it.
 
         Returns:
             Enterprise: The default enterprise, or None if no
-            enterprise_repository is wired (rollout fallback).
+            enterprise_repository is wired.
 
         Design Notes:
-            - Uses fixed UUID for predictability and testing
+            - Uses a fixed UUID for predictability and testing
             - Grants PRO tier features for local mode (no billing needed)
             - Idempotent: safe to call multiple times
         """
@@ -181,62 +170,13 @@ class SingleTenantProvider(TenantProvider):
         self._default_enterprise = created
         return created
 
-    async def ensure_default_organization_exists(self) -> Organization:
-        """Create default organization if it doesn't exist.
-
-        Called by startup bootstrapper during application initialization.
-
-        Returns:
-            Organization: The default organization (existing or newly created)
-
-        Design Notes:
-            - Uses fixed UUID for predictability and testing
-            - Grants PRO tier features for local mode (no billing needed)
-            - Idempotent: safe to call multiple times
-            - Always anchors the default org to DEFAULT_ENTERPRISE_ID
-              so the FK relationship is satisfied once the column is
-              tightened to NOT NULL.
-        """
-        existing = await self.organization_repository.get_organization(
-            self.DEFAULT_ORG_ID
-        )
-        if existing:
-            # Update cache
-            self._default_org = existing
-            return existing
-
-        # Create default organization with generous limits for local use
-        now = datetime.now(timezone.utc)
-        default_org = Organization(
-            organization_id=self.DEFAULT_ORG_ID,
-            enterprise_id=self.DEFAULT_ENTERPRISE_ID,
-            slug=self.DEFAULT_ORG_SLUG,
-            name=self.DEFAULT_ORG_NAME,
-            description="Default organization for standalone deployment",
-            plan_tier=OrgPlanTier.PRO,  # Local mode gets pro features
-            max_members=100,  # Generous limit for local teams
-            max_cases=None,  # Unlimited cases in local mode
-            settings={},
-            created_at=now,
-            updated_at=now,
-        )
-
-        created_org = await self.organization_repository.create_organization(
-            default_org
-        )
-
-        # Cache the created organization
-        self._default_org = created_org
-
-        return created_org
-
     async def ensure_default_team_exists(self) -> Optional[Team]:
         """Create the default team if it doesn't exist.
 
-        Called by the startup bootstrapper after the default organization
-        (the team's FK organization_id → organizations is NOT NULL). Seeds a
-        single default team so the Enterprise = Organization = Team collapse
-        chain (ADR-013 D1) is materialized for the standalone tenant.
+        Called by the startup bootstrapper after the default enterprise (the
+        team's FK enterprise_id → enterprises is NOT NULL). Seeds a single
+        default team so the sharing substrate has a scope inside the standalone
+        enterprise.
 
         This seeds the team ROW only — no memberships. In standalone there is
         no membership-population path (team management is the Cloud module), so
@@ -244,8 +184,7 @@ class SingleTenantProvider(TenantProvider):
         (build_kb_scope_filter's team arm) therefore returns an empty set.
 
         Returns:
-            Team: the default team, or None if no team_repository is wired
-            (rollout fallback — the row is not required for standalone to run).
+            Team: the default team, or None if no team_repository is wired.
 
         Design Notes:
             - Uses a fixed UUID for predictability and testing.
@@ -262,7 +201,7 @@ class SingleTenantProvider(TenantProvider):
         now = datetime.now(timezone.utc)
         default_team = Team(
             team_id=self.DEFAULT_TEAM_ID,
-            organization_id=self.DEFAULT_ORG_ID,
+            enterprise_id=self.DEFAULT_ENTERPRISE_ID,
             name=self.DEFAULT_TEAM_NAME,
             description="Default team for standalone deployment",
             created_at=now,

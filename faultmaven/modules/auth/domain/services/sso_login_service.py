@@ -22,24 +22,41 @@ local-part, NULL password, never admin. There is deliberately NO email-based
 linking of an SSO login to a pre-existing unlinked account — an account that
 already owns the identity's email is a hard conflict, not a link target.
 
-Under multi-tenant (Cloud) the login also has to decide *which tenant* it lands
-in (#869). The IdP's organization is resolved through the operator-provisioned
-``sso_org_mappings`` table before any user lookup, bound as the request's
-organization for the rest of the callback, and carried on the completion code so
-the minted tokens claim it. An IdP organization this deployment has no mapping
-for means no login: a company is onboarded deliberately, never by whoever signs
-in first. Single-tenant runs none of this — there is one organization and the
-behaviour is unchanged.
+Under multi-tenant (Cloud) the login also has to decide *which enterprise* it
+lands in (#869, ADR-017 D1). The IdP's organization is resolved through the
+operator-provisioned ``sso_org_mappings`` table before any user lookup and bound
+as the request's tenant for the rest of the callback. An IdP organization this
+deployment has no mapping for means no login: a company with its own IdP
+organization is onboarded deliberately, never by whoever signs in first.
+Single-tenant runs none of this — there is one enterprise and the behaviour is
+unchanged.
 
 An identity that carries **no** IdP organization at all is a different question,
-and the answer is a configuration switch (#1045, ADR-016 D5 amending ADR-015).
-Off — the default — it is refused exactly as an unmapped one is. On, its first
-sign-in provisions a **personal tenant**: an IdP organization holding that one
-member, and the FaultMaven enterprise, organization, default team and
-``sso_personal_orgs`` row that make it a real, distinct tenant. Returning
-individuals resolve it through that subject-keyed, untenanted lookup, because at
-callback time no tenant is bound and membership is therefore unreadable. Nothing
-about the unmapped-organization branch changes in either switch state.
+and the answer is a configuration switch (#1045, ADR-016 D5 amending ADR-015,
+re-aimed by ADR-017 D3). Off — the default — it is refused exactly as an
+unmapped one is. On, the sign-up derives **exactly one fact**: the domain of the
+IdP-verified email.
+
+* A **personal domain** (``PERSONAL_EMAIL_DOMAINS``) yields a **private
+  enterprise for that account**: an IdP organization holding that one member,
+  the FaultMaven enterprise, and the ``sso_personal_enterprises`` row binding
+  the subject to it. Returning individuals resolve it through that
+  subject-keyed, untenanted lookup, because at callback time no tenant is bound
+  and membership is therefore unreadable. The account is an island by
+  construction — there is nobody else in its enterprise to invite.
+* **Every other domain** yields **the enterprise for that domain**, created by
+  the first sign-up from it and joined by every later one. No subject row and no
+  IdP organization: the domain is re-derived from the verified email on every
+  login, so the resolution needs no record of its own, and being first confers
+  nothing (D3 — the enterprise has no administrator until a domain claim is
+  verified, D7).
+
+**Neither arm creates an organization or a team.** An organization is a billing
+target created by payment (D5) and a team is formed by consent (D4); a sign-in
+knows neither, so it invents neither. What it establishes is the account's one
+isolation membership, ``users.enterprise_id``, and nothing else.
+
+Nothing about the unmapped-organization branch changes in either switch state.
 """
 
 from __future__ import annotations
@@ -56,27 +73,28 @@ from urllib.parse import urlencode
 import structlog
 from pydantic import EmailStr, TypeAdapter, ValidationError
 
-from faultmaven.config.constants import STANDALONE_ORG_ID
-from faultmaven.config.tenant_context import set_current_org_id
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.config.tenant_context import set_current_enterprise_id
 from faultmaven.exceptions import ConflictError
 from faultmaven.infrastructure.persistence.account_anchor import (
     AnchorKind,
     move_account_anchor,
     read_anchor,
 )
-from faultmaven.infrastructure.persistence.organization_liveness import (
-    organization_is_usable,
+from faultmaven.infrastructure.persistence.enterprise_liveness import (
+    enterprise_is_usable,
 )
 from faultmaven.infrastructure.persistence.user_repository import (
     User as RepositoryUser,
 )
 from faultmaven.models.interfaces_user import AuditCategory, AuditEventType
-from faultmaven.models.rbac import Role
-from faultmaven.models.rbac_seed import SYSTEM_ROLE_IDS
 from faultmaven.modules.auth.contracts import ISSOIdentityProvider, SSOIdentity
 from faultmaven.modules.auth.domain.personal_tenant import (
-    PERSONAL_ORG_NAME,
-    personal_org_slug,
+    PERSONAL_ENTERPRISE_NAME,
+    domain_enterprise_slug,
+    email_domain,
+    is_personal_domain,
+    personal_enterprise_slug,
     personal_tenant_key,
 )
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
@@ -148,7 +166,7 @@ def _is_multi_tenant() -> bool:
 
     Deferred import: the tenancy factory pulls in settings, which must not be
     imported at auth-module import time (same reason as
-    ``jwt_token_generator.resolve_organization_claim``).
+    ``jwt_token_generator.resolve_enterprise_claim``).
     """
     from faultmaven.providers.tenancy.factory import (
         BUILTIN_MULTI,
@@ -182,6 +200,18 @@ def _personal_tenant_hourly_ceiling() -> int:
     from faultmaven.config.settings import get_settings
 
     return int(get_settings().auth.sso_jit_personal_tenant_max_per_hour)
+
+
+def _personal_email_domains() -> list[str]:
+    """The consumer-mail domains that yield a private enterprise (ADR-017 D3).
+
+    Read at the point of use, like every other setting on this path, so the list
+    a deployment configured is the one the decision uses rather than whatever
+    was in the environment when this module first loaded.
+    """
+    from faultmaven.config.settings import get_settings
+
+    return list(get_settings().auth.personal_email_domains)
 
 
 def _is_usable_email(email: str) -> bool:
@@ -281,8 +311,8 @@ class SSOLoginService:
         access_token_expires_in: int,
         audit_log: Any | None = None,
         org_mapping_repository: Any | None = None,
-        organization_repository: Any | None = None,
-        personal_org_repository: Any | None = None,
+        enterprise_repository: Any | None = None,
+        personal_enterprise_repository: Any | None = None,
     ) -> None:
         self._provider = identity_provider
         self._store = ephemeral_store
@@ -294,15 +324,16 @@ class SSOLoginService:
         # IAuditRepository (or None): records the JIT account-creation trail
         # (ADR-015 PR 7). Optional so unit setups without a DB still work.
         self._audit = audit_log
-        # Multi-tenant org resolution (#869). Optional because single-tenant
-        # never consults them; under multi their absence fails the login closed
-        # rather than silently skipping the tenant decision.
+        # Multi-tenant enterprise resolution (#869, re-aimed by ADR-017 D9).
+        # Optional because single-tenant never consults them; under multi their
+        # absence fails the login closed rather than silently skipping the
+        # tenant decision.
         self._org_mappings = org_mapping_repository
-        self._orgs = organization_repository
+        self._enterprises = enterprise_repository
         # Subject-keyed personal-tenant lookup (#1045). Consulted only on the
         # no-IdP-organization branch and only with the switch on; its absence
         # fails that branch closed rather than silently skipping the decision.
-        self._personal_orgs = personal_org_repository
+        self._personal_enterprises = personal_enterprise_repository
 
     # -- leg 1: browser -> IdP ---------------------------------------------- #
 
@@ -423,9 +454,9 @@ class SSOLoginService:
         # Multi-tenant: decide the tenant BEFORE touching the user store, so
         # every read and write below already runs inside that organization's
         # RLS scope. Single-tenant skips this entirely (#869).
-        organization = None
+        enterprise = None
         if _is_multi_tenant():
-            organization, org_error = await self._resolve_login_organization(identity)
+            enterprise, org_error = await self._resolve_login_enterprise(identity)
             if org_error is not None:
                 return self._dashboard_redirect(error=org_error, return_to=return_to)
 
@@ -439,7 +470,7 @@ class SSOLoginService:
             # login instead (ADR-015 D4).
             user = await self._jit_provision(
                 identity,
-                organization=organization,
+                enterprise=enterprise,
                 client_ip=client_ip,
                 user_agent=user_agent,
             )
@@ -452,8 +483,8 @@ class SSOLoginService:
             return self._dashboard_redirect(
                 error=ERROR_USER_INACTIVE, return_to=return_to
             )
-        if organization is not None and not await self._ensure_org_affiliation(
-            user, organization
+        if enterprise is not None and not await self._ensure_enterprise_anchor(
+            user, enterprise
         ):
             # Membership could not be established (or the account belongs to a
             # different enterprise): fail closed rather than let an org-less
@@ -471,11 +502,15 @@ class SSOLoginService:
             # exchange-side parse has no aware/naive failure class (#831).
             "state_read_at": state_read_at.timestamp(),
         }
-        if organization is not None:
-            # Mint-time tenancy rides the completion code: the user row has no
-            # organization column, so this is how ``exchange`` knows which org
-            # to claim in the tokens it mints.
-            login_payload["organization_id"] = organization.organization_id
+        if enterprise is not None:
+            # Mint-time tenancy rides the completion code. The ENTERPRISE claim
+            # is minted from ``users.enterprise_id`` at exchange time (ADR-017
+            # D9), which the anchor step above has just written — so what rides
+            # here is only the billing organization, and a sign-up creates none
+            # (D5). Left absent deliberately rather than filled with the
+            # enterprise: a reader that found the tenant in the organization
+            # claim would be reading exactly the conflation this campaign undid.
+            pass
         if identity.provider_session_id:
             # The IdP session id is known only here, on the callback leg, but is
             # needed by the leg that answers the client. It rides the completion
@@ -491,18 +526,18 @@ class SSOLoginService:
 
     # -- multi-tenant organization resolution (#869) ------------------------- #
 
-    async def _resolve_login_organization(
+    async def _resolve_login_enterprise(
         self, identity: SSOIdentity
     ) -> tuple[Any | None, str | None]:
-        """Resolve, verify and bind the organization this login belongs to.
+        """Resolve, verify and bind the enterprise this login belongs to.
 
-        Returns ``(organization, None)`` on success, or ``(None, error_slug)``.
-        On success the organization is bound as the current tenant for the rest
+        Returns ``(enterprise, None)`` on success, or ``(None, error_slug)``.
+        On success the enterprise is bound as the current tenant for the rest
         of the callback, which is what makes the RLS-scoped reads and writes
         that follow (user lookup, membership, audit) address the right tenant.
 
-        Two branches decide *which* organization, and they then share one tail
-        (:meth:`_bind_and_verify_organization`) so a personal tenant is subject
+        Two branches decide *which* enterprise, and they then share one tail
+        (:meth:`_bind_and_verify_enterprise`) so a personal tenant is subject
         to exactly the checks a mapped one is — the sentinel refusal included,
         which the mapped branch previously lacked.
 
@@ -514,10 +549,10 @@ class SSOLoginService:
         if not provider_org_id:
             # The ONLY branch #1045 changes. An identity whose IdP organization
             # exists but is unmapped is handled below and is untouched: a
-            # company is onboarded deliberately, never by whoever signs in
-            # first.
+            # company with its own IdP organization is onboarded deliberately,
+            # never by whoever signs in first.
             if _jit_personal_tenant_enabled():
-                return await self._resolve_personal_organization(identity)
+                return await self._resolve_signup_enterprise(identity)
             logger.warning(
                 "sso_org_resolution_failed",
                 reason="no_idp_org",
@@ -525,7 +560,7 @@ class SSOLoginService:
             )
             return None, ERROR_ORG_UNMAPPED
 
-        if self._org_mappings is None or self._orgs is None:
+        if self._org_mappings is None or self._enterprises is None:
             # Misconfiguration, not a user error: refuse rather than fall
             # through to an org-less login the mint/bind guards would reject
             # later with no explanation.
@@ -536,10 +571,10 @@ class SSOLoginService:
             )
             return None, ERROR_FAILED
 
-        organization_id = await self._org_mappings.get_organization_id(
+        enterprise_id = await self._org_mappings.get_enterprise_id(
             identity.provider, provider_org_id
         )
-        if not organization_id:
+        if not enterprise_id:
             logger.warning(
                 "sso_org_resolution_failed",
                 reason="org_unmapped",
@@ -548,14 +583,14 @@ class SSOLoginService:
             )
             return None, ERROR_ORG_UNMAPPED
 
-        return await self._bind_and_verify_organization(
-            organization_id, identity=identity, reason_prefix="org"
+        return await self._bind_and_verify_enterprise(
+            enterprise_id, identity=identity, reason_prefix="org"
         )
 
-    async def _bind_and_verify_organization(
-        self, organization_id: str, *, identity: SSOIdentity, reason_prefix: str
+    async def _bind_and_verify_enterprise(
+        self, enterprise_id: str, *, identity: SSOIdentity, reason_prefix: str
     ) -> tuple[Any | None, str | None]:
-        """Bind ``organization_id`` as the tenant and verify it is usable.
+        """Bind ``enterprise_id`` as the tenant and verify it is usable.
 
         The one tail both resolution branches end in, so neither can acquire a
         check the other lacks. It does three things, in this order:
@@ -566,17 +601,18 @@ class SSOLoginService:
            mapping row pointing at the sentinel would previously have bound it.
            The guard runs *before* the bind, so the sentinel is never the
            request's scope even momentarily.
-        2. **Bind**, before reading the organization row: ``organizations`` is
-           RLS-tenanted (migration 018), so the read only succeeds inside its
-           own tenant scope. This rebind lands mid-flow and works only because
-           each repository call opens its own session, and so its own
-           transaction — the engine's ``begin`` listener samples the contextvar
-           at BEGIN and never again (#935).
-        3. **Verify** the organization exists, is not soft-deleted and is
-           active. A tenant that is missing or disabled is an operator problem,
-           not something to tell the browser about.
+        2. **Bind**, before everything the rest of the callback reads and
+           writes: every tenant-scoped table keys on
+           ``app.current_enterprise_id``, so those statements only address the
+           right rows inside this scope. The rebind lands mid-flow and works
+           only because each repository call opens its own session, and so its
+           own transaction — the engine's ``begin`` listener samples the
+           contextvar at BEGIN and never again (#935).
+        3. **Verify** the enterprise exists, is not soft-deleted and is active.
+           A tenant that is missing or disabled is an operator problem, not
+           something to tell the browser about.
         """
-        if organization_id == STANDALONE_ORG_ID:
+        if enterprise_id == STANDALONE_ENTERPRISE_ID:
             logger.error(
                 "sso_org_resolution_failed",
                 reason=f"{reason_prefix}_is_sentinel",
@@ -584,55 +620,126 @@ class SSOLoginService:
             )
             return None, ERROR_FAILED
 
-        set_current_org_id(organization_id)
+        set_current_enterprise_id(enterprise_id)
 
-        organization = await self._orgs.get_organization(organization_id)
-        if not organization_is_usable(organization):
+        enterprise = await self._enterprises.get_enterprise(enterprise_id)
+        if not enterprise_is_usable(enterprise):
             logger.warning(
                 "sso_org_resolution_failed",
                 reason=f"{reason_prefix}_unavailable",
                 provider=identity.provider,
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
             )
             return None, ERROR_FAILED
 
-        return organization, None
+        return enterprise, None
 
-    # -- personal tenants (#1045, ADR-016 D5) -------------------------------- #
+    # -- sign-up: the enterprise a domain names (#1045, ADR-017 D3) ---------- #
 
-    async def _resolve_personal_organization(
+    async def _resolve_signup_enterprise(
         self, identity: SSOIdentity
     ) -> tuple[Any | None, str | None]:
-        """Resolve — provisioning on first sign-in — this individual's tenant.
+        """Derive this identity's enterprise from its verified email domain.
 
         Reached only from the no-IdP-organization branch, and only with
-        ``SSO_JIT_PERSONAL_TENANT_ENABLED`` on. Ends in the same
-        :meth:`_bind_and_verify_organization` tail as the mapped branch.
-
-        **The lookup is keyed on the subject, not on membership.** Organization
-        resolution runs before the user lookup precisely so the RLS scope is
-        right for everything after it, and ``organization_members`` is itself
-        RLS-tenanted — at this moment no tenant is bound, so membership is
-        unreadable. The subject is the one identifier every login carries, which
-        is why ``sso_personal_orgs`` is keyed on it and untenanted, for the same
-        reason ``sso_org_mappings`` is.
+        ``SSO_JIT_PERSONAL_TENANT_ENABLED`` on. The one fact sign-up derives is
+        the domain (ADR-017 D3), and it splits two ways — a private enterprise
+        per account for a consumer-mail domain, the shared enterprise for the
+        domain otherwise. Both arms end in the same
+        :meth:`_bind_and_verify_enterprise` tail as the mapped branch, so none of
+        the three can acquire a check the others lack.
 
         **A refused login writes nothing.** Every refusal this callback can
-        still make is evaluated by :meth:`_personal_preflight_refusal` *before*
-        any provisioning write, on either side. Before #1045 an offboarded user,
-        an email-conflict subject or an employee arriving unscoped were each
-        refused with zero writes; provisioning ahead of those checks would have
-        left each of them a permanent stray tenant plus an IdP organization, and
-        then ``sso_failed`` forever.
+        still make is evaluated by :meth:`_signup_preflight_refusal` *before* any
+        write, on either side. Before #1045 an offboarded user or an
+        email-conflict subject was refused with zero writes; provisioning ahead
+        of those checks would have left each of them a permanent stray tenant
+        plus an IdP organization, and then ``sso_failed`` forever.
         """
-        if self._orgs is None or self._personal_orgs is None:
+        if self._enterprises is None or self._personal_enterprises is None:
             logger.error(
                 "sso_org_resolution_failed",
-                reason="personal_org_repository_unwired",
+                reason="signup_repository_unwired",
                 provider=identity.provider,
             )
             return None, ERROR_FAILED
 
+        if not _is_usable_email(identity.email):
+            # The domain is derived from the email, so an unusable one decides
+            # nothing and must not be guessed around.
+            logger.warning(
+                "sso_signup_refused",
+                reason="signup_unusable_email",
+                provider=identity.provider,
+            )
+            return None, ERROR_FAILED
+
+        domain = email_domain(identity.email)
+        if is_personal_domain(domain, _personal_email_domains()):
+            return await self._resolve_personal_enterprise(identity)
+        return await self._resolve_domain_enterprise(identity, domain)
+
+    async def _resolve_domain_enterprise(
+        self, identity: SSOIdentity, domain: str
+    ) -> tuple[Any | None, str | None]:
+        """Resolve — creating it on the domain's first sign-up — the domain's tenant.
+
+        **Keyed on the domain, not on a stored binding.** The domain is
+        re-derived from the IdP-verified email on every login, so this
+        resolution needs no row of its own: there is nothing to fall out of step
+        with, and nothing whose unreadability could send a colleague into the
+        wrong enterprise. That is also why this arm writes no
+        ``sso_personal_enterprises`` row — that table binds ONE subject to ONE
+        enterprise (``UNIQUE (enterprise_id)``), which is exactly wrong for a
+        tenant many accounts share.
+
+        No IdP organization is created either. This deployment has no mapping
+        for the domain and does not invent one: a company that brings its own
+        IdP organization is onboarded deliberately through ``sso_org_mappings``,
+        and a mapping minted here on behalf of whoever signed in first would be
+        that decision made by an accident of ordering.
+        """
+        refusal = await self._signup_preflight_refusal(identity)
+        if refusal is not None:
+            return None, refusal
+
+        try:
+            enterprise = await self._enterprises.get_or_create_for_domain(
+                domain=domain,
+                name=domain,
+                slug=domain_enterprise_slug(domain),
+            )
+        except Exception:
+            logger.exception(
+                "sso_domain_enterprise_failed",
+                provider=identity.provider,
+                domain=domain,
+            )
+            return None, ERROR_FAILED
+
+        logger.info(
+            "sso_domain_enterprise_resolved",
+            provider=identity.provider,
+            domain=domain,
+            enterprise_id=enterprise.enterprise_id,
+        )
+        return await self._bind_and_verify_enterprise(
+            enterprise.enterprise_id, identity=identity, reason_prefix="domain"
+        )
+
+    async def _resolve_personal_enterprise(
+        self, identity: SSOIdentity
+    ) -> tuple[Any | None, str | None]:
+        """Resolve — provisioning on first sign-in — this individual's enterprise.
+
+        **The lookup is keyed on the subject, not on membership.** Enterprise
+        resolution runs before the user lookup precisely so the RLS scope is
+        right for everything after it, and every membership table is itself
+        RLS-tenanted — at this moment no tenant is bound, so membership is
+        unreadable. The subject is the one identifier every login carries, which
+        is why ``sso_personal_enterprises`` is keyed on it and untenanted, for
+        the same reason ``sso_org_mappings`` is.
+        """
         subject = identity.provider_user_id
         if not subject:
             logger.warning(
@@ -643,17 +750,19 @@ class SSOLoginService:
             return None, ERROR_FAILED
 
         try:
-            record = await self._personal_orgs.get(identity.provider, subject)
+            record = await self._personal_enterprises.get(identity.provider, subject)
             if record is None:
-                refusal = await self._personal_preflight_refusal(identity)
+                refusal = await self._signup_preflight_refusal(identity)
+                if refusal is None:
+                    refusal = await self._personal_anchor_refusal(identity)
                 if refusal is not None:
                     return None, refusal
-                organization_id = await self._provision_personal_tenant(identity)
+                enterprise_id = await self._provision_personal_tenant(identity)
             else:
-                organization_id = record.organization_id
+                enterprise_id = record.enterprise_id
                 if not record.membership_confirmed:
-                    # A previous attempt committed the tenant and stopped before
-                    # the IdP membership. Finish it now: the ensure is
+                    # A previous attempt committed the enterprise and stopped
+                    # before the IdP membership. Finish it now: the ensure is
                     # idempotent, and this is the only path that can.
                     await self._finish_personal_membership(identity, record)
         except SSOProvisioningError:
@@ -663,25 +772,32 @@ class SSOLoginService:
             logger.exception("sso_personal_tenant_failed", provider=identity.provider)
             return None, ERROR_FAILED
 
-        return await self._bind_and_verify_organization(
-            organization_id, identity=identity, reason_prefix="personal_org"
+        return await self._bind_and_verify_enterprise(
+            enterprise_id, identity=identity, reason_prefix="personal"
         )
 
-    async def _personal_preflight_refusal(self, identity: SSOIdentity) -> str | None:
-        """Every refusal this login can still make, evaluated before any write.
+    async def _signup_preflight_refusal(self, identity: SSOIdentity) -> str | None:
+        """The refusals both sign-up arms make, evaluated before any write.
 
         Returns an error slug to refuse with, or None to proceed. Runs with **no
-        tenant bound**, which is what makes it possible at all: ``users`` carries
-        no ``organization_id`` and is not enrolled in migration 018's policy, so
-        the subject and email lookups below are readable here. (A check that
-        needed a tenanted table could not be pulled forward, and would have to
-        stay a post-provisioning refusal with the stray-tenant consequence.)
+        tenant bound**, which is what makes it possible at all: ``users`` is not
+        RLS-enrolled, so the subject and email lookups below are readable here.
+        (A check that needed a tenanted table could not be pulled forward, and
+        would have to stay a post-provisioning refusal with the stray-tenant
+        consequence.)
 
         The checks mirror, in order, exactly what the rest of the callback would
         refuse for later: an existing account that is deactivated or deleted;
-        an account anchored to an enterprise this login cannot enter; and, for a
-        subject with no account, the two things ``_jit_provision`` refuses — an
-        unusable email and an email a different account already owns.
+        and, for a subject with no account, the two things ``_jit_provision``
+        refuses — an unusable email and an email a different account already
+        owns.
+
+        The **anchor** rule is deliberately not here: it governs whether a new
+        personal tenant may be *provisioned*, which is a question only the
+        personal arm asks. The domain arm creates nothing that belongs to the
+        account, so an account anchored elsewhere is refused where every other
+        login's mismatch is — by ``_ensure_enterprise_anchor``, on the rule
+        ``account_anchor`` owns.
         """
         user = await self._users.get_by_sso(
             identity.provider, identity.provider_user_id
@@ -692,39 +808,17 @@ class SSOLoginService:
                 user, "is_active", True
             ):
                 logger.info(
-                    "sso_personal_refused",
-                    reason="personal_user_inactive",
+                    "sso_signup_refused",
+                    reason="signup_user_inactive",
                     user_id=user.user_id,
                 )
                 return ERROR_USER_INACTIVE
-            anchor = await read_anchor(getattr(user, "enterprise_id", None))
-            if not anchor.releases_provisioning:
-                # An account that is anchored to something arriving with no IdP
-                # organization. Provisioning would either trip the enterprise
-                # guard later (a stray tenant plus a refused login) or, worse,
-                # anchor an employee to a personal enterprise and lock them out
-                # of their company. ADR-016 D5: refuse, and never provision.
-                #
-                # Exactly one state releases it — no anchor at all — which is
-                # what a ``--next-login fresh-tenant`` retirement leaves.
-                # ``users.enterprise_id`` is nullable since migration 052 for
-                # this reason: the verdict is a column, not a parsed marker, so
-                # an unreadable or unexpected value cannot answer "released".
-                logger.warning(
-                    "sso_personal_refused",
-                    reason=_ANCHOR_REFUSAL_REASONS.get(
-                        anchor.kind, "personal_account_already_anchored"
-                    ),
-                    provider=identity.provider,
-                    user_id=user.user_id,
-                )
-                return ERROR_ORG_UNMAPPED
             return None
 
         if not _is_usable_email(identity.email):
             logger.warning(
-                "sso_personal_refused",
-                reason="personal_unusable_email",
+                "sso_signup_refused",
+                reason="signup_unusable_email",
                 provider=identity.provider,
             )
             return ERROR_FAILED
@@ -733,17 +827,51 @@ class SSOLoginService:
             # subject-match-or-create, never email-link — the login fails, and
             # now it fails before a tenant exists for it to strand.
             logger.warning(
-                "sso_personal_refused",
-                reason="personal_email_conflict",
+                "sso_signup_refused",
+                reason="signup_email_conflict",
                 provider=identity.provider,
             )
             return ERROR_FAILED
         return None
 
-    async def _provision_personal_tenant(self, identity: SSOIdentity) -> str:
-        """Create this subject's IdP organization and FaultMaven tenant.
+    async def _personal_anchor_refusal(self, identity: SSOIdentity) -> str | None:
+        """May this account be given a NEW personal enterprise? Asked before any write.
 
-        Returns the FaultMaven organization id. Raises on any failure, which the
+        An account that is already anchored to something and arrives with no IdP
+        organization must not be handed a personal tenant: provisioning would
+        either trip the enterprise guard later (a stray tenant plus a refused
+        login) or, worse, anchor an employee to a personal enterprise and lock
+        them out of their company.
+
+        Two states release it (``account_anchor.releases_provisioning``): no
+        anchor at all, and a personal tenant an operator retired with
+        ``--next-login fresh-tenant``. Both are typed columns, so an unreadable
+        or unexpected value cannot answer "released" — and since
+        ``users.enterprise_id`` became NOT NULL (ADR-017 D3), the release is a
+        recorded operator decision rather than the absence it used to be.
+        """
+        user = await self._users.get_by_sso(
+            identity.provider, identity.provider_user_id
+        )
+        if user is None:
+            return None
+        anchor = await read_anchor(getattr(user, "enterprise_id", None))
+        if anchor.releases_provisioning:
+            return None
+        logger.warning(
+            "sso_personal_refused",
+            reason=_ANCHOR_REFUSAL_REASONS.get(
+                anchor.kind, "personal_account_already_anchored"
+            ),
+            provider=identity.provider,
+            user_id=user.user_id,
+        )
+        return ERROR_ORG_UNMAPPED
+
+    async def _provision_personal_tenant(self, identity: SSOIdentity) -> str:
+        """Create this subject's IdP organization and FaultMaven enterprise.
+
+        Returns the FaultMaven enterprise id. Raises on any failure, which the
         caller turns into a refused login — never a partial tenant.
 
         **The order is IdP organization → database commit → IdP membership**,
@@ -771,7 +899,7 @@ class SSOLoginService:
         await self._refuse_over_provisioning_ceiling(identity)
 
         key = personal_tenant_key(identity.provider, identity.provider_user_id)
-        slug = personal_org_slug(key)
+        slug = personal_enterprise_slug(key)
 
         # 1. The IdP organization. The provider port is sync, like the code
         #    exchange, so keep the network round-trips off the event loop. The
@@ -781,19 +909,18 @@ class SSOLoginService:
             lambda: self._provider.provision_personal_organization(
                 provider_user_id=identity.provider_user_id,
                 external_id=slug,
-                name=PERSONAL_ORG_NAME,
+                name=PERSONAL_ENTERPRISE_NAME,
             )
         )
 
-        # 2. The FaultMaven tenant, in one transaction. The repository generates
-        #    and binds the organization id itself — the binding is an
-        #    implementation detail of writing rows under the RLS-scoped role, not
-        #    something a caller should have to know or could forget.
-        organization_id = await self._personal_orgs.provision(
+        # 2. The FaultMaven enterprise, the mapping and the subject binding, in
+        #    one transaction. Three rows, not five: a sign-up creates no
+        #    organization and no team (ADR-017 D5/D4).
+        enterprise_id = await self._personal_enterprises.provision(
             provider=identity.provider,
             provider_user_id=identity.provider_user_id,
             provider_org_id=provider_org_id,
-            name=PERSONAL_ORG_NAME,
+            name=PERSONAL_ENTERPRISE_NAME,
             slug=slug,
         )
 
@@ -802,23 +929,31 @@ class SSOLoginService:
         logger.info(
             "sso_personal_tenant_resolved",
             provider=identity.provider,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
         )
-        return organization_id
+        return enterprise_id
 
     async def _refuse_over_provisioning_ceiling(self, identity: SSOIdentity) -> None:
         """Refuse a NEW tenant once the hourly ceiling is reached.
 
-        The switch alone gates nothing about volume: every subject the IdP
-        vouches for would mint an IdP organization and five rows, so a scripted
-        sign-up loop exhausts the provider's organization quota. This bounds
-        **provisioning only** — an existing tenant resolves from its subject row
-        without ever reaching here, so tripping the ceiling cannot lock out the
-        people already using the product.
+        The switch alone gates nothing about volume: every consumer-mail subject
+        the IdP vouches for would mint an IdP organization and its own
+        enterprise, so a scripted sign-up loop exhausts the provider's
+        organization quota. This bounds **provisioning only** — an existing
+        tenant resolves from its subject row without ever reaching here, so
+        tripping the ceiling cannot lock out the people already using the
+        product.
+
+        The domain arm is deliberately not bounded by it and needs no ceiling of
+        its own: it mints one row per *domain*, ever, and reaching a new domain
+        means controlling one and having the IdP verify an address at it — which
+        is the bar this ceiling exists because consumer mail does not clear.
         """
         ceiling = _personal_tenant_hourly_ceiling()
         since = datetime.now(UTC) - timedelta(hours=1)
-        minted = await self._personal_orgs.count_created_since(identity.provider, since)
+        minted = await self._personal_enterprises.count_created_since(
+            identity.provider, since
+        )
         if minted >= ceiling:
             logger.error(
                 "sso_personal_refused",
@@ -832,11 +967,11 @@ class SSOLoginService:
     async def _finish_personal_membership(
         self, identity: SSOIdentity, record: Any
     ) -> None:
-        """Complete the IdP half for a tenant whose commit outran it."""
+        """Complete the IdP half for an enterprise whose commit outran it."""
         logger.info(
             "sso_personal_membership_resuming",
             provider=identity.provider,
-            organization_id=record.organization_id,
+            enterprise_id=record.enterprise_id,
         )
         await self._confirm_personal_membership(identity)
 
@@ -853,16 +988,16 @@ class SSOLoginService:
         await asyncio.to_thread(
             lambda: self._provider.provision_personal_organization(
                 provider_user_id=identity.provider_user_id,
-                external_id=personal_org_slug(key),
-                name=PERSONAL_ORG_NAME,
+                external_id=personal_enterprise_slug(key),
+                name=PERSONAL_ENTERPRISE_NAME,
             )
         )
-        await self._personal_orgs.confirm_membership(
+        await self._personal_enterprises.confirm_membership(
             identity.provider, identity.provider_user_id
         )
 
-    async def _anchor_account_to(self, user: Any, organization: Any) -> bool:
-        """Set or move ``user``'s anchor onto the organization this login resolved.
+    async def _anchor_account_to(self, user: Any, enterprise: Any) -> bool:
+        """Set or move ``user``'s anchor onto the enterprise this login resolved.
 
         The login's **only** anchor write, and it delegates the rule to
         ``infrastructure.persistence.account_anchor`` — one mover, shared with
@@ -872,14 +1007,15 @@ class SSOLoginService:
         What this method contributes is the one fact the rule cannot read for
         itself: whether the destination is **this subject's own personal
         tenant**, and whether the account's current live anchor is. Both are
-        established from the untenanted ``sso_personal_orgs`` row keyed on *this*
-        subject — never from an enterprise's name or slug — so no
-        operator-provisioned company organization can satisfy either.
+        established from the untenanted ``sso_personal_enterprises`` row keyed on
+        *this* subject — never from an enterprise's name or slug — so no
+        operator-provisioned company enterprise, and no domain enterprise the
+        account merely shares, can satisfy either.
 
         The directions that follow from the rule:
 
-        * no anchor → anywhere: a *set*, which is how a freshly provisioned
-          personal tenant and a first mapped login both land;
+        * no anchor → anywhere: a *set*, which is how a first mapped login and a
+          first sign-up into a domain enterprise both land;
         * a retired personal anchor → a company: the move a retired subject
           makes when a company invites them (ADR-016 D8 R6);
         * this subject's own **live** personal anchor → a company: the switch
@@ -896,15 +1032,19 @@ class SSOLoginService:
         subject = getattr(user, "sso_provider_id", None)
         destination_is_personal = False
         own_live_personal = False
-        if self._personal_orgs is not None and provider and subject:
+        if self._personal_enterprises is not None and provider and subject:
             try:
-                destination_is_personal = await self._personal_orgs.find_by_enterprise(
-                    provider, subject, organization.enterprise_id
+                destination_is_personal = (
+                    await self._personal_enterprises.find_by_enterprise(
+                        provider, subject, enterprise.enterprise_id
+                    )
                 )
                 current = getattr(user, "enterprise_id", None)
                 if current:
-                    own_live_personal = await self._personal_orgs.find_by_enterprise(
-                        provider, subject, current
+                    own_live_personal = (
+                        await self._personal_enterprises.find_by_enterprise(
+                            provider, subject, current
+                        )
                     )
             except Exception:
                 logger.exception(
@@ -915,7 +1055,7 @@ class SSOLoginService:
         moved = await move_account_anchor(
             self._users,
             user,
-            to_enterprise_id=organization.enterprise_id,
+            to_enterprise_id=enterprise.enterprise_id,
             destination_is_personal=destination_is_personal,
             own_live_personal=own_live_personal,
         )
@@ -928,63 +1068,46 @@ class SSOLoginService:
             # anchored to a personal enterprise whose subject row no longer
             # names it, and no login could repair that. The personal tenant
             # itself is not migrated — the cases stay where they are.
-            await self._personal_orgs.retire(provider, subject)
+            await self._personal_enterprises.retire(provider, subject)
             logger.info(
                 "sso_personal_tenant_reanchored",
                 user_id=user.user_id,
-                organization_id=organization.organization_id,
+                enterprise_id=enterprise.enterprise_id,
             )
         return True
 
-    async def _ensure_org_affiliation(self, user: Any, organization: Any) -> bool:
-        """Make ``user`` a member of ``organization``; False means fail closed.
+    async def _ensure_enterprise_anchor(self, user: Any, enterprise: Any) -> bool:
+        """Anchor ``user`` to ``enterprise``; False means fail closed.
 
-        The IdP is authoritative for organization affiliation *at login time*,
-        so this is additive and idempotent: an existing membership is left
-        exactly as it is (role included), and memberships in other
-        organizations are never enumerated or removed — under RLS they are
-        invisible from here by design.
+        Under ADR-017 D3 this is the ONLY membership a login establishes. The
+        account's isolation membership is ``users.enterprise_id`` — one column,
+        no roster table — and it is what every later read is scoped by.
+
+        No ``organization_members`` row is written any more, and its absence is
+        the design rather than an omission: an organization is a billing target
+        created by payment (D5), so a sign-in cannot know of one and must not
+        invent one. An account signs in, lands in its enterprise, and is in no
+        organization until somebody pays for it.
 
         Runs for JIT-provisioned and returning users alike, so the two cannot
-        drift, and so a login that lost the JIT create race still ends up a
-        member.
+        drift.
         """
-        organization_id = organization.organization_id
         user_enterprise = getattr(user, "enterprise_id", None)
-        if user_enterprise != organization.enterprise_id:
-            # The account belongs to a different enterprise. Moving an account
-            # between enterprises is a deliberate operator action, never an
-            # implicit consequence of an IdP claim — with exactly one exception,
-            # below.
-            if not await self._anchor_account_to(user, organization):
-                logger.warning(
-                    "sso_login_rejected",
-                    reason="enterprise_mismatch",
-                    user_id=user.user_id,
-                )
-                return False
-
-        try:
-            if await self._orgs.get_member_role(organization_id, user.user_id):
-                return True
-            try:
-                await self._orgs.add_member(
-                    organization_id, user.user_id, SYSTEM_ROLE_IDS[Role.MEMBER]
-                )
-            except ConflictError:
-                # A concurrent login won the membership insert — that is the
-                # same outcome we wanted, so confirm and continue.
-                return bool(
-                    await self._orgs.get_member_role(organization_id, user.user_id)
-                )
+        if user_enterprise == enterprise.enterprise_id:
             return True
-        except Exception:
-            logger.exception(
-                "sso_membership_write_failed",
+
+        # The account belongs to a different enterprise. Moving an account
+        # between enterprises is a deliberate operator action, never an implicit
+        # consequence of an IdP claim — with exactly one exception, inside
+        # ``_anchor_account_to``.
+        if not await self._anchor_account_to(user, enterprise):
+            logger.warning(
+                "sso_login_rejected",
+                reason="enterprise_mismatch",
                 user_id=user.user_id,
-                organization_id=organization_id,
             )
             return False
+        return True
 
     # -- leg 3: dashboard -> session ---------------------------------------- #
 
@@ -1037,12 +1160,13 @@ class SSOLoginService:
             logger.warning("sso_exchange_user_unavailable", user_id=payload["user_id"])
             return None
 
-        # Mint-time tenancy (#869): attach the organization the callback
-        # resolved. The user row carries no organization, so without this the
-        # tokens would claim none and every request would fail closed at
-        # ``bind_request_org_context``. Single-tenant payloads carry no org and
-        # this is a no-op — ``resolve_organization_claim`` supplies the
-        # Standalone sentinel there.
+        # Mint-time tenancy. The ISOLATION claim needs nothing attached here:
+        # ``resolve_enterprise_claim`` mints it from ``users.enterprise_id``,
+        # which the callback's anchor step wrote (ADR-017 D9). The BILLING claim
+        # is attached from the completion code when the callback resolved one —
+        # a sign-up resolves none (D5), so this is normally absent and the token
+        # carries no organization at all, which is the correct statement about
+        # an account nobody is paying for.
         organization_id = payload.get("organization_id")
         if organization_id:
             user.organization_id = organization_id
@@ -1152,7 +1276,7 @@ class SSOLoginService:
         self,
         identity: SSOIdentity,
         *,
-        organization: Any | None = None,
+        enterprise: Any | None = None,
         client_ip: str | None = None,
         user_agent: str | None = None,
     ) -> Any | None:
@@ -1163,12 +1287,11 @@ class SSOLoginService:
         email — linking is deliberately out of scope). Failures are logged
         with the provider only, never the subject or email.
 
-        ``organization`` is the tenant this login resolved to under
-        multi-tenant (None in single-tenant). The new account is anchored to
-        that organization's enterprise instead of the standalone default the
-        repository would otherwise fall back to. Organization *membership* is
-        written afterwards by ``_ensure_org_affiliation``, which covers the
-        returning-user path with the same code.
+        ``enterprise`` is the tenant this login resolved to under multi-tenant
+        (None in single-tenant). The new account is anchored to it — one column,
+        ``users.enterprise_id`` (ADR-017 D3) — instead of the standalone default
+        the repository would otherwise fall back to, which under multi would
+        pool every JIT account into the deployment's sentinel tenant.
         """
         if not _is_usable_email(identity.email):
             logger.warning(
@@ -1191,7 +1314,7 @@ class SSOLoginService:
                 user_id=str(uuid.uuid4()),
                 username=username,
                 enterprise_id=(
-                    organization.enterprise_id if organization is not None else None
+                    enterprise.enterprise_id if enterprise is not None else None
                 ),
                 email=identity.email,
                 display_name=display_name,

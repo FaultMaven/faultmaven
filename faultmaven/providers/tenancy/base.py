@@ -2,23 +2,28 @@
 
 Defines the interface for tenant context resolution to enable deployment-neutral
 services that work in both single-tenant and multi-tenant environments.
+
+Under ADR-017 the tenant is the **enterprise**: it is what isolates, and it is
+the only thing a visibility question may resolve within. The organization is a
+billing target and is deliberately absent from this interface — a service that
+needs to know who pays reads the actor's organization, not the request's tenant.
 """
 
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from faultmaven.models.interfaces_user import Organization
+from faultmaven.models.interfaces_user import Enterprise
 from faultmaven.modules.auth.domain.models.user import User
 
 
 class TenantProvider(ABC):
     """Abstract base class for tenant context resolution.
 
-    Enables deployment-neutral services by abstracting organization context.
+    Enables deployment-neutral services by abstracting enterprise context.
 
     Implementations (both in-core, config-selected by ``TENANT_PROVIDER``, ADR-010):
-    - SingleTenantProvider: Returns the default organization (Standalone)
-    - MultiTenantProvider: Resolves and validates the organization from request
+    - SingleTenantProvider: Returns the default enterprise (Standalone)
+    - MultiTenantProvider: Resolves and validates the enterprise from request
       context (Cloud / multi-tenant)
 
     Design Pattern:
@@ -28,37 +33,35 @@ class TenantProvider(ABC):
     """
 
     @abstractmethod
-    async def get_current_organization(
-        self, current_user: User, organization_id: Optional[str] = None
-    ) -> Organization:
-        """Resolve the current organization context.
+    async def get_current_enterprise(
+        self, current_user: User, enterprise_id: Optional[str] = None
+    ) -> Enterprise:
+        """Resolve the current enterprise context.
 
         Args:
             current_user: Authenticated user from JWT
-            organization_id: Optional explicit organization ID (for multi-tenant)
+            enterprise_id: Optional explicit enterprise ID (for multi-tenant)
 
         Returns:
-            Organization: The organization context for this request
+            Enterprise: The enterprise context for this request
 
         Raises:
-            NotFoundError: If organization doesn't exist
-            AuthorizationError: If user not a member of organization
+            NotFoundError: If the enterprise doesn't exist
+            AuthorizationError: If the user is not anchored to the enterprise
             ValidationException: If required parameters missing (multi-tenant)
         """
-        pass
 
     @abstractmethod
-    async def get_default_organization(self) -> Organization:
-        """Get the default organization (used for local/single-tenant mode).
+    async def get_default_enterprise(self) -> Enterprise:
+        """Get the default enterprise (used for local/single-tenant mode).
 
         Returns:
-            Organization: The default organization
+            Enterprise: The default enterprise
 
         Raises:
-            NotFoundError: If default organization doesn't exist
+            NotFoundError: If the default enterprise doesn't exist
             NotImplementedError: If not supported (multi-tenant mode)
         """
-        pass
 
     @abstractmethod
     async def is_multi_tenant(self) -> bool:
@@ -67,4 +70,3 @@ class TenantProvider(ABC):
         Returns:
             bool: True if multi-tenant, False if single-tenant
         """
-        pass

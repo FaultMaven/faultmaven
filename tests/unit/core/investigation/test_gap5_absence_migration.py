@@ -126,7 +126,7 @@ def _ev(category: EvidenceCategory, idx: int = 1) -> Evidence:
 def _case(*evidence: Evidence) -> Case:
     return Case(
         user_id="u1",
-        organization_id="o1",
+        enterprise_id="o1",
         title="t",
         description="Pods are crashing",
         evidence=list(evidence),

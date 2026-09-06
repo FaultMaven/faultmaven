@@ -69,7 +69,7 @@ def _row(file_id: str = FILE_ID, turn: int = TURN) -> UploadedFile:
 def _case(rows) -> Case:
     case = Case(
         case_id="case_aabb11223344",
-        organization_id="org_123",
+        enterprise_id="org_123",
         title="t",
         description="d",
         state=CaseState.INQUIRY,

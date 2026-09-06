@@ -34,7 +34,7 @@ from faultmaven.models.interfaces_operator_grant import (
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 
 CASE_ID = "case_a1b2c3d4e5f6"
-GRANT_ORG = "org-tenant-under-investigation"
+GRANT_ENTERPRISE = "ent-tenant-under-investigation"
 GOOD_REASON = "customer reports the investigation is stuck; ticket SUP-4821"
 BASE = "/api/v1/admin/grants"
 
@@ -42,7 +42,7 @@ BASE = "/api/v1/admin/grants"
 def _operator() -> AuthenticatedUser:
     return AuthenticatedUser(
         user_id="op-1",
-        organization_id="org-operator-own",
+        enterprise_id="org-operator-own",
         email="operator@example.com",
         roles=["user", "admin", "platform_admin"],
         permissions=[],
@@ -55,7 +55,7 @@ def _grant(**overrides) -> OperatorAccessGrant:
         grant_id="grant-1",
         operator_user_id="op-1",
         target_case_id=CASE_ID,
-        target_organization_id=GRANT_ORG,
+        target_enterprise_id=GRANT_ENTERPRISE,
         reason=GOOD_REASON,
         created_at=now,
         expires_at=now + timedelta(minutes=60),
@@ -164,7 +164,7 @@ class TestAJustificationIsRequired:
             BASE,
             json={
                 "case_id": CASE_ID,
-                "organization_id": GRANT_ORG,
+                "enterprise_id": GRANT_ENTERPRISE,
                 "reason": reason,
             },
         )
@@ -177,7 +177,7 @@ class TestAJustificationIsRequired:
             BASE,
             json={
                 "case_id": CASE_ID,
-                "organization_id": GRANT_ORG,
+                "enterprise_id": GRANT_ENTERPRISE,
                 "reason": f"  {GOOD_REASON}  ",
             },
         )
@@ -198,7 +198,7 @@ class TestTheWindowIsBounded:
             BASE,
             json={
                 "case_id": CASE_ID,
-                "organization_id": GRANT_ORG,
+                "enterprise_id": GRANT_ENTERPRISE,
                 "reason": GOOD_REASON,
                 "ttl_minutes": MAX_GRANT_TTL_MINUTES + 1,
             },
@@ -213,7 +213,7 @@ class TestTheWindowIsBounded:
                 BASE,
                 json={
                     "case_id": CASE_ID,
-                    "organization_id": GRANT_ORG,
+                    "enterprise_id": GRANT_ENTERPRISE,
                     "reason": GOOD_REASON,
                     "ttl_minutes": ttl,
                 },
@@ -225,7 +225,7 @@ class TestTheWindowIsBounded:
             BASE,
             json={
                 "case_id": CASE_ID,
-                "organization_id": GRANT_ORG,
+                "enterprise_id": GRANT_ENTERPRISE,
                 "reason": GOOD_REASON,
                 "ttl_minutes": 30,
             },
@@ -274,7 +274,7 @@ class TestGrantCreationTouchesNoTenantData:
             BASE,
             json={
                 "case_id": CASE_ID,
-                "organization_id": GRANT_ORG,
+                "enterprise_id": GRANT_ENTERPRISE,
                 "reason": GOOD_REASON,
             },
         )

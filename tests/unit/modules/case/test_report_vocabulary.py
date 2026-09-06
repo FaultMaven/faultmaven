@@ -61,9 +61,13 @@ _VERSIONS = _REPO_ROOT / "alembic" / "versions"
 #: migration that rewrites one of these constraints makes this list wrong and
 #: fails the test, which is the point — the pin must be re-aimed at whatever now
 #: owns the constraint rather than silently keep checking a superseded file.
+#: Globbed rather than spelled: the baseline's filename carries its revision
+#: hash, so a rename would read here as a MISSING constraint rather than as the
+#: rename it is — the same trap Stage 1 fixed in the last-admin guard.
+_BASELINE = sorted(_VERSIONS.glob("*_001_enterprise_baseline.py"))
 _OWNING_MIGRATIONS = {
-    "reports_type_check": ["20260507_0121_c4689af8aa3f_001_clean_baseline.py"],
-    "reports_format_check": ["20260507_0121_c4689af8aa3f_001_clean_baseline.py"],
+    "reports_type_check": [p.name for p in _BASELINE],
+    "reports_format_check": [p.name for p in _BASELINE],
 }
 
 
@@ -287,6 +291,7 @@ def _reports_engine():
 def _row(**over):
     base = dict(
         report_id="r1",
+        enterprise_id="ent-1",
         organization_id="org-1",
         case_id="case_0123456789ab",
         report_type="resolution_summary",

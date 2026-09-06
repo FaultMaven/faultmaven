@@ -1,10 +1,27 @@
-"""Set, raise or clear one organization's daily investigation-turn cap.
+"""Read, raise or clear one billing subject's daily investigation-turn cap.
 
-The operator half of the per-tenant turn cap (ADR-016 D5.3). The cap's
-*default* is a setting and moves only with a redeploy; a single tenant's cap is
-a row, and this command writes it — so raising a customer off the default, or
-taking a cap off entirely, takes effect on that tenant's **next turn** with no
-restart and no redeploy.
+The operator half of the per-tenant turn cap (ADR-016 D5.3, ADR-017 D5). The
+cap's *default* is a setting and moves only with a redeploy; a single tenant's
+cap is a row, and this command writes it — so raising a customer off the
+default, or taking a cap off entirely, takes effect on that tenant's **next
+turn** with no restart and no redeploy.
+
+What this command addresses
+---------------------------
+A **billing subject** (ADR-017 D5), which is one of exactly two things: the
+**organization** that pays for an account, or the **account itself** when
+nobody does. Both are addressable here because both are metered, and an
+operator asked "why was this person refused?" needs to be able to ask about the
+person. Only one of them is writable: the override lives on
+``organizations.daily_turn_cap``, and an account in no organization has no row
+to carry one. Asking to write an account's cap is therefore refused, in the one
+place that can say what to do instead, rather than accepted and silently
+dropped.
+
+Before ADR-017 "personal" was an organization of its own, so ``--organization-id``
+addressed every subject there was. It no longer does: a personal account has no
+organization, and pointing this command at one would report on a tenant that
+does not exist.
 
 Why the operator CLI and not the platform-admin API
 ----------------------------------------------------
@@ -19,40 +36,44 @@ precedent the repo already has is a command, and this follows it.
 
 Usage (``fm-set-turn-cap``, installed with the package)
 --------------------------------------------------------
-    fm-set-turn-cap --organization-id <org-id> --show
-    fm-set-turn-cap --organization-id <org-id> --cap 200 --yes
-    fm-set-turn-cap --organization-id <org-id> --unlimited --yes
-    fm-set-turn-cap --organization-id <org-id> --clear --yes
+    fm-set-turn-cap --enterprise-id <ent-id> --organization-id <org-id> --show
+    fm-set-turn-cap --enterprise-id <ent-id> --account-id <user-id> --show
+    fm-set-turn-cap --enterprise-id <ent-id> --organization-id <org-id> --cap 200 --yes
+    fm-set-turn-cap --enterprise-id <ent-id> --organization-id <org-id> --unlimited --yes
+    fm-set-turn-cap --enterprise-id <ent-id> --organization-id <org-id> --clear --yes
 
 In a Kubernetes deployment, run it in the API pod::
 
     kubectl exec -it deploy/faultmaven-api -- \\
-        fm-set-turn-cap --organization-id <org-id> --cap 200 --yes
+        fm-set-turn-cap --enterprise-id <ent-id> --organization-id <org-id> \\
+        --cap 200 --yes
 
 The three write modes are the three states the column can hold, and they are
 separate flags rather than a magic number an operator has to remember:
 
 ``--cap N``      cap this tenant at N turns per UTC day, whatever kind it is.
 ``--unlimited``  no cap for this tenant, whatever kind it is (stores ``0``).
-``--clear``      remove the override. A personal tenant falls back to
-                 ``TENANT_DAILY_TURN_CAP``; a company tenant becomes uncapped.
+``--clear``      remove the override. An account in no organization falls back
+                 to ``TENANT_DAILY_TURN_CAP``; a company organization becomes
+                 uncapped.
 
 ``--clear`` and ``--unlimited`` are **not** the same action and the difference
-bites on a personal tenant: clearing returns it to the deployment default,
-un-limiting takes the cap off. On a company tenant they happen to have the same
-effect today, which is exactly why they must not share a spelling — a later
-change to the company default would silently reinterpret every ``--clear`` an
-operator meant as "uncapped".
+bites on an organization that was put on an explicit cap: clearing returns it to
+the deployment policy, un-limiting takes the cap off. On a company organization
+they happen to have the same effect today, which is exactly why they must not
+share a spelling — a later change to the company default would silently
+reinterpret every ``--clear`` an operator meant as "uncapped".
 
-The organization is addressed by **id**, not slug, for the same reason
+The subject is addressed by **id**, not slug, for the same reason
 ``fm-remove-org-member`` is: the id lets the command bind the tenant context and
-run under the pod's own RLS-scoped application role (migration 018), where a
-slug lookup would need to read ``organizations`` across tenants.
+run under the pod's own RLS-scoped application role, where a slug lookup would
+need to read ``organizations`` across tenants.
 
 Exit codes
 ----------
 | 0 | success, a dry run, or ``--show`` |
-| 1 | refused: no such organization, or the write matched no row |
+| 1 | refused: no such organization, an account write, or a write that matched
+      no row |
 | 2 | argparse usage error (a bad flag), reserved by argparse — nothing written |
 """
 
@@ -67,8 +88,8 @@ from faultmaven.cli._confirmation import require_confirmation
 #: argparse's ``description``. A literal, not derived from ``__doc__``: ``python
 #: -OO`` strips docstrings, and that expression would raise before argparse ran.
 _SUMMARY = (
-    "Set, raise or clear one organization's daily investigation-turn cap. "
-    "Takes effect on that tenant's next turn; no restart."
+    "Read, raise or clear one billing subject's daily investigation-turn cap. "
+    "Takes effect on that subject's next turn; no restart."
 )
 
 
@@ -83,7 +104,7 @@ _SOURCE_WORDS = {
     "override": "override {limit} → {limit} turns/day",
     "default_personal": (
         "no override → {limit} turns/day "
-        "(the deployment default, because this is a personal tenant)"
+        "(the deployment default, because nobody pays for this account)"
     ),
     "company_uncapped": "no override → uncapped (a company organization)",
     "indeterminate": (
@@ -92,7 +113,7 @@ _SOURCE_WORDS = {
     ),
     "cleared": (
         "no override → the deployment policy "
-        "(the default cap for a personal tenant, uncapped for a company)"
+        "(the default cap for an unpaid account, uncapped for a company)"
     ),
 }
 
@@ -105,18 +126,23 @@ def _describe(policy) -> str:
 
 async def set_turn_cap(
     *,
-    organization_id: str,
+    organization_id: str | None = None,
+    account_id: str | None = None,
     new_value: object,
     show_only: bool,
     dry_run: bool,
+    enterprise_id: str,
     resolver=None,
     organizations=None,
     ledger=None,
 ) -> int:
-    """Read, and optionally write, one organization's cap. Returns the exit code.
+    """Read, and optionally write, one billing subject's cap. Returns the exit code.
 
-    ``new_value`` is the value to store: an ``int`` (0 for unlimited) or ``None``
-    to clear the override. It is ignored when ``show_only``.
+    Exactly one of ``organization_id`` / ``account_id`` names the subject
+    (ADR-017 D5). ``new_value`` is the value to store: an ``int`` (0 for
+    unlimited) or ``None`` to clear the override. It is ignored when
+    ``show_only``, and it is **refused** for an account subject, which has no
+    row to carry an override.
 
     Everything is reached through the same ports the enforcement uses — the
     ``CapPolicyResolver``, the organization repository and the ledger — rather
@@ -127,31 +153,44 @@ async def set_turn_cap(
     goes around it; and the write goes through ``update_organization``, so the
     domain object is what carries the value.
     """
-    from faultmaven.config.tenant_context import set_current_org_id
+    from faultmaven.config.tenant_context import set_current_enterprise_id
     from faultmaven.infrastructure.persistence.sessionless_organization_repository import (  # noqa: E501
         SessionlessOrganizationRepository,
     )
     from faultmaven.infrastructure.protection.tenant_turn_cap import (
+        SUBJECT_ACCOUNT,
+        SUBJECT_ORGANIZATION,
+        BillingSubject,
         CapPolicyResolver,
         SqlTurnLedger,
         utc_day,
     )
-    from faultmaven.modules.auth.infrastructure.repositories.sso_personal_org_repository import (  # noqa: E501
-        SessionlessSSOPersonalOrgRepository,
-    )
+
+    if bool(organization_id) == bool(account_id):
+        raise ValueError(
+            "name exactly one billing subject: an organization or an account"
+        )
 
     print("=" * 80)
     print("Tenant Daily Turn Cap")
     print("=" * 80)
 
-    # RLS (migration 018) scopes `organizations` and the usage ledger by
-    # `app.current_org_id`. Bind it before any read so everything below runs
-    # under the pod's own application role, exactly as the request path does.
-    set_current_org_id(organization_id)
+    # RLS scopes `organizations` and the usage ledger by
+    # ``app.current_enterprise_id`` (ADR-017 D1). Bind the ENTERPRISE before any
+    # read so everything below runs under the pod's own application role,
+    # exactly as the request path does — a subject id alone resolves nothing,
+    # which is why the enterprise is a required argument rather than something
+    # this could derive.
+    set_current_enterprise_id(enterprise_id)
+
+    subject = (
+        BillingSubject(SUBJECT_ORGANIZATION, organization_id)
+        if organization_id
+        else BillingSubject(SUBJECT_ACCOUNT, account_id)
+    )
 
     organizations = organizations or SessionlessOrganizationRepository()
     resolver = resolver or CapPolicyResolver(
-        SessionlessSSOPersonalOrgRepository(),
         organizations,
         # An operator asking about a tenant is asking about the multi-tenant
         # policy even on a box where the API happens to run single-tenant, so
@@ -162,24 +201,46 @@ async def set_turn_cap(
     ledger = ledger or SqlTurnLedger()
     today = utc_day()
 
-    organization = await organizations.get_organization(organization_id)
-    if organization is None:
-        print(
-            f"\n❌ No organization '{organization_id}' is visible.\n"
-            "   Check the id (it is an id, not a slug); a deleted "
-            "organization does not resolve."
-        )
-        return 1
+    organization = None
+    if not subject.is_account:
+        organization = await organizations.get_organization(organization_id)
+        if organization is None:
+            print(
+                f"\n❌ No organization '{organization_id}' is visible.\n"
+                "   Check the id (it is an id, not a slug); a deleted "
+                "organization does not resolve."
+            )
+            return 1
 
-    policy = await resolver.resolve(organization_id)
-    used_today = await ledger.usage(organization_id, today)
+    policy = await resolver.resolve(subject)
+    used_today = await ledger.usage(subject, today)
 
-    print(f"\nOrganization: {organization.name} ({organization_id})")
+    if organization is not None:
+        print(f"\nOrganization: {organization.name} ({organization_id})")
+    else:
+        # No row is read for an account, and none exists to read: "nobody pays
+        # for this account" is the whole of what makes it its own subject
+        # (ADR-017 D5), so the id is all there is to name.
+        print(f"\nAccount:      {account_id} (in no organization)")
     print(f"Current cap:  {_describe(policy)}")
     print(f"Used today:   {used_today} turns (UTC day {today.isoformat()})")
 
     if show_only:
         return 0
+
+    if subject.is_account:
+        # Refused here rather than at argparse, so the operator sees the
+        # subject's CURRENT cap and usage above — which is usually the question
+        # behind the attempted write — together with the only action that can
+        # change it.
+        print(
+            "\n❌ An account has no cap of its own to write: the override lives "
+            "on `organizations.daily_turn_cap`, and this account is in no "
+            "organization.\n"
+            "   Add the account to an organization and set the cap there, or "
+            "move the deployment default (TENANT_DAILY_TURN_CAP)."
+        )
+        return 1
 
     print(f"New cap:      {_describe(_policy_for(new_value, policy))}")
 
@@ -235,17 +296,36 @@ def main() -> None:
         prog="fm-set-turn-cap",
         description=_SUMMARY,
         epilog=(
-            "--clear returns the tenant to the deployment policy (a personal "
-            "tenant to TENANT_DAILY_TURN_CAP, a company organization to "
-            "uncapped); --unlimited takes the cap off outright. They are not "
-            "the same action."
+            "The subject is an organization or an account (ADR-017 D5); only an "
+            "organization is writable. --clear returns it to the deployment "
+            "policy (an unpaid account to TENANT_DAILY_TURN_CAP, a company "
+            "organization to uncapped); --unlimited takes the cap off outright. "
+            "They are not the same action."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "--organization-id",
+        "--enterprise-id",
         required=True,
+        help=(
+            "Enterprise the subject belongs to — the tenant every read and "
+            "write below is RLS-scoped by (an id, not a slug)"
+        ),
+    )
+    # Exactly one billing subject (ADR-017 D5). Mutually exclusive AND required,
+    # so "which subject?" is never answered by a default — an operator who omits
+    # it is told, rather than silently shown the wrong one.
+    who = parser.add_mutually_exclusive_group(required=True)
+    who.add_argument(
+        "--organization-id",
         help="Organization id to read or change (an id, not a slug)",
+    )
+    who.add_argument(
+        "--account-id",
+        help=(
+            "Account (user) id to read — the billing subject for an account in "
+            "no organization. Read-only: an account carries no override"
+        ),
     )
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument(
@@ -269,7 +349,7 @@ def main() -> None:
         action="store_true",
         help=(
             "Remove the override so the deployment policy applies again "
-            "(personal → the default cap, company → uncapped)"
+            "(an unpaid account → the default cap, an organization → uncapped)"
         ),
     )
     parser.add_argument(
@@ -304,7 +384,9 @@ def main() -> None:
     sys.exit(
         asyncio.run(
             set_turn_cap(
+                enterprise_id=args.enterprise_id,
                 organization_id=args.organization_id,
+                account_id=args.account_id,
                 new_value=new_value,
                 show_only=args.show,
                 dry_run=args.dry_run,

@@ -61,7 +61,7 @@ def _ready_suggestion(
 ) -> "KnowledgeSuggestion":
     return KnowledgeSuggestion(
         suggestion_id=SUGGESTION_ID,
-        organization_id=ORG,
+        enterprise_id=ORG,
         case_id="case_aabb11223344",
         suggested_title="Redis pool exhaustion",
         suggested_content=content,
@@ -103,7 +103,7 @@ async def _approve(svc):
     return await svc.approve_suggestion(
         suggestion_id=SUGGESTION_ID,
         reviewed_by="user_admin",
-        organization_id=ORG,
+        enterprise_id=ORG,
     )
 
 

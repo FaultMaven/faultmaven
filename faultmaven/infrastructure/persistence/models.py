@@ -2,11 +2,13 @@
 
 Schema is organized into four domains:
 
-- **User domain** — `enterprises`, `users`, `organizations`, `teams` and their
-  membership/audit/auth tables, plus `organization_turn_usage` (the per-UTC-day
-  investigation-turn ledger the tenant cap reserves against). Three-tier
-  tenancy: enterprises (corporate umbrella) → organizations (customer tenants,
-  hard isolation boundary) → teams (routing buckets).
+- **User domain** — `enterprises`, `users`, `organizations`, `teams`,
+  `team_invitations` and their membership/audit/auth tables, plus `turn_usage`
+  (the per-UTC-day investigation-turn ledger the cap reserves against, keyed on
+  a billing subject). Three tiers, three questions (ADR-017): the **enterprise**
+  isolates (`enterprise_id` is the RLS key), the **organization** bills (a cost
+  centre, no role in visibility), the **team** shares (formed by consent, inside
+  one enterprise, may span organizations).
 - **Case domain** — `cases` and its children: evidence, hypotheses, solutions,
   messages, files, actions, tags, checkpoints, entities, sessions, agent
   executions, tool calls, hypothesis-evidence junction, reports.
@@ -20,8 +22,12 @@ Conventions:
 - Primary keys: VARCHAR(36) UUIDs, named `<entity>_id`.
 - Audit columns: `created_at`, `updated_at` (server-default `now()`).
 - `*_by` audit columns are real FKs to `users.user_id` with `ON DELETE SET NULL`.
-- `organization_id` is denormalized onto every case-domain child table for fast
-  RLS without JOINs; `ON DELETE CASCADE` so organization deletion clears child rows.
+- `enterprise_id` is denormalized onto every tenant-scoped table for fast RLS
+  without JOINs; `ON DELETE CASCADE` so enterprise deletion clears its rows.
+- `organization_id` beside it is nullable **billing attribution** stamped from
+  the actor's organization at write time; `ON DELETE SET NULL`, because losing a
+  cost centre must not destroy the data it paid for. It is never read for
+  visibility.
 - `case_id` ON DELETE policy splits by table role:
   * Lifecycle-side (evidence, hypotheses, messages, etc.): `CASCADE` — die with the case.
   * Permanence-side (knowledge_suggestions, conversion_jobs): `SET NULL` — survive case deletion.
@@ -210,8 +216,12 @@ JsonBlob = Text().with_variant(JSONB, "postgresql")
 
 
 class EnterpriseModel(Base):
-    """Top-tier tenant: corporate umbrella. Holds SSO/SAML config, billing, and
-    enterprise-wide knowledge scope. Enterprises contain organizations."""
+    """The isolation boundary (ADR-017 D1): may these two accounts ever see each
+    other's data? Nothing crosses an enterprise line — no share, no team, no
+    query. Every tenant-scoped table carries `enterprise_id` and every RLS policy
+    keys on it. An enterprise groups accounts, organizations and teams; it is
+    derived from the verified email domain at sign-up (D3) and grants nothing on
+    its own."""
 
     __tablename__ = "enterprises"
 
@@ -233,15 +243,12 @@ class EnterpriseModel(Base):
         onupdate=func.now(),
     )
     deleted_at = Column(DateTime(timezone=True), nullable=True)
-    #: The operator's ``--next-login`` choice when this enterprise was retired as
-    #: somebody's personal tenant (#1045 D8), or NULL when it was not.
-    #:
-    #: It is a **typed column and not a settings blob** because the login reads
-    #: it: a non-NULL value beside a non-NULL ``deleted_at`` is what tells an
-    #: org-less sign-in "this subject's own tenant was retired" apart from "the
-    #: company that owned this account is gone". A JSON marker made that a parse,
-    #: and a parse fails open.
-    personal_tenant_retirement = Column(String(16), nullable=True)
+    #: The verified email domain this enterprise is the tenant for, case-folded
+    #: (ADR-017 D3). NULL for a personal enterprise: a consumer-mail account gets
+    #: an enterprise of its own and no domain claims it, which is what makes
+    #: "a personal account can never share" true by construction rather than by
+    #: rule. Unique among LIVE rows, for the reason ``slug`` is.
+    domain = Column(String(255), nullable=True)
 
     __table_args__ = (
         # Unique among LIVE rows only. A retired tenant keeps its slug, and the
@@ -256,37 +263,44 @@ class EnterpriseModel(Base):
             postgresql_where=text("deleted_at IS NULL"),
         ),
         Index("ix_enterprises_slug", "slug"),
+        # Same liveness rule as the slug, and for a sharper reason: a retired
+        # enterprise keeps its domain, and the next sign-up from that domain must
+        # be able to create the live one. Unique among live rows is what makes
+        # "the domain has exactly one enterprise" true without a rename.
+        Index(
+            "ix_enterprises_domain_live",
+            "domain",
+            unique=True,
+            sqlite_where=text("deleted_at IS NULL"),
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
         CheckConstraint("LENGTH(TRIM(name)) > 0", name="enterprises_name_not_empty"),
         CheckConstraint(
             "plan_tier IN ('free', 'starter', 'pro', 'business')",
             name="enterprises_plan_tier_check",
         ),
-        CheckConstraint(
-            "personal_tenant_retirement IS NULL OR personal_tenant_retirement IN "
-            "('refuse', 'fresh_tenant')",
-            name="enterprises_personal_tenant_retirement_check",
-        ),
     )
 
 
 class UserModel(Base):
-    """User account. Belongs to one enterprise; can be a member of multiple
-    organizations within that enterprise via `organization_members`."""
+    """User account. Anchored to exactly one enterprise (the isolation boundary)
+    and, at most, one organization (the billing roster) via
+    `organization_members`."""
 
     __tablename__ = "users"
 
     user_id = Column(String(36), primary_key=True)
-    # Every user belongs to exactly one enterprise. In single-tenant mode
-    # this is the default enterprise seeded by SingleTenantProvider /
-    # migration 006; in multi-tenant mode, the OAuth flow populates it.
-    # Nullable since migration 052: an account anchored to nothing is a real
-    # state, and the one a ``--next-login fresh-tenant`` retirement leaves. It is
-    # what makes the org-less login's verdict a column read rather than a marker
-    # parse — NULL means "may provision a fresh personal tenant".
+    # Every account is anchored to exactly one enterprise (ADR-017 D3) — the
+    # isolation membership, and the source of the token's ``enterprise_id``
+    # claim. In standalone it is the seeded default enterprise; under multi the
+    # sign-up derives it from the verified email domain. NOT NULL: an unanchored
+    # account is an account no policy can place, and the retirement path that
+    # once needed that state now re-anchors instead (ADR-017, "no data
+    # migration").
     enterprise_id = Column(
         String(36),
         ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
-        nullable=True,
+        nullable=False,
         index=True,
     )
     username = Column(String(100), nullable=False, unique=True)
@@ -327,9 +341,14 @@ class UserModel(Base):
     # reading `dev_roles` against a renamed schema. Reason about cloud role
     # state FROM THIS COLUMN; the prefix is wrong, not the data (fm#1050).
     dev_roles = Column(Text, nullable=True)
-    # Account kind (ADR-012): 'individual' (Copilot + dashboard login) or 'slack'
-    # (a service account, one per workspace). Drives the derived case `source`.
+    # Account kind (ADR-017 D6): exactly two kinds exist — 'individual' (a
+    # human) and 'service' (an agent acting for an integration). A team is a
+    # group of accounts, never an account. Drives the derived case `source`.
     account_kind = Column(String(20), nullable=False, server_default="individual")
+    # Which integration a service account serves ('slack'). Separate from
+    # ``account_kind`` so a second integration is a new value here rather than a
+    # third account kind. NULL for an individual.
+    service_channel = Column(String(20), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("sso_provider", "sso_provider_id", name="users_sso_unique"),
@@ -338,6 +357,10 @@ class UserModel(Base):
         Index("ix_users_is_active", "is_active"),
         CheckConstraint(
             "LENGTH(TRIM(display_name)) > 0", name="users_display_name_not_empty"
+        ),
+        CheckConstraint(
+            "account_kind IN ('individual', 'service')",
+            name="users_account_kind_check",
         ),
         # NOTE: a "(hashed_password IS NOT NULL) OR (sso_provider IS NOT NULL)"
         # CHECK was previously declared here. It blocked the intentional
@@ -349,9 +372,11 @@ class UserModel(Base):
 
 
 class OrganizationModel(Base):
-    """Organization: hard data-isolation boundary (the customer tenant). Cases
-    never cross organization lines; PostgreSQL RLS enforces this. An
-    organization is owned by an enterprise and contains teams."""
+    """The billing target (ADR-017 D1/D5): who pays for these accounts. It
+    carries the plan, the metering and the turn allowance, and has **no role in
+    visibility** — two accounts in one organization with no common team see
+    nothing of each other's. An organization lives inside one enterprise; it
+    does not contain teams."""
 
     __tablename__ = "organizations"
 
@@ -415,7 +440,10 @@ class OrganizationModel(Base):
 
 
 class OrganizationMemberModel(Base):
-    """User ↔ organization membership. Composite PK; one role per (user, org)."""
+    """The billing roster (ADR-017 D5): which accounts a subscription covers, and
+    each member's organization-management role. Composite PK; one role per
+    (user, org). It is **not** the isolation membership — that is
+    ``users.enterprise_id`` — and an account may be in no organization at all."""
 
     __tablename__ = "organization_members"
 
@@ -426,6 +454,12 @@ class OrganizationMemberModel(Base):
         String(36),
         ForeignKey("organizations.organization_id", ondelete="CASCADE"),
         primary_key=True,
+    )
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     role_id = Column(
         String(36),
@@ -456,64 +490,85 @@ class OrganizationMemberModel(Base):
     )
 
 
-class OrganizationTurnUsageModel(Base):
-    """Investigation turns accepted for one organization on one UTC day.
+class TurnUsageModel(Base):
+    """Investigation turns accepted for one billing subject on one UTC day.
 
-    The ledger behind the per-tenant turn cap (ADR-016 D5.3). ``usage_date`` is
-    a **UTC calendar day**, not a rolling window, because that is what the
+    The ledger behind the per-tenant turn cap (ADR-016 D5.3, re-keyed by
+    ADR-017 D5). The subject is the account's **organization** when it has one
+    and the **account itself** when it does not, because the allowance is a
+    billing fact and an account in no organization still has one. ``usage_date``
+    is a **UTC calendar day**, not a rolling window, because that is what the
     refusal message promises the user ("resets at 00:00 UTC") and a sliding
     window could not honour it.
 
-    Three columns, and no more. The composite primary key is what lets the
-    reservation be a single ``INSERT … ON CONFLICT … DO UPDATE SET turn_count =
-    turn_count + 1 WHERE turn_count < :cap RETURNING turn_count``: an empty
-    RETURNING *is* the refusal, so the check and the increment cannot interleave
-    and a refused turn increments nothing. There are deliberately no
-    ``created_at``/``updated_at`` columns — every write after the first arrives
-    through ``ON CONFLICT DO UPDATE``, which does not fire SQLAlchemy's
-    ``onupdate``, so a timestamp here would freeze at the day's first turn while
-    looking like it tracked the last one.
+    The composite primary key over the three subject/date columns is what lets
+    the reservation be a single ``INSERT … ON CONFLICT … DO UPDATE SET
+    turn_count = turn_count + 1 WHERE turn_count < :cap RETURNING turn_count``:
+    an empty RETURNING *is* the refusal, so the check and the increment cannot
+    interleave and a refused turn increments nothing. ``enterprise_id`` is the
+    isolation key and deliberately NOT part of that key — a subject belongs to
+    one enterprise, so adding it would only make the conflict target wider than
+    the fact it arbitrates.
 
-    Rows are written for **every** tenant a cap decision reaches, capped or not.
-    A company tenant is never refused, but its counts are what the owner tunes
-    the default against — a ledger that only recorded refusable tenants could
-    not answer "what does a normal tenant actually use". A single-tenant
-    deployment writes nothing at all: it is answered from the deployment mode
-    before any port is touched.
+    There are deliberately no ``created_at``/``updated_at`` columns — every write
+    after the first arrives through ``ON CONFLICT DO UPDATE``, which does not
+    fire SQLAlchemy's ``onupdate``, so a timestamp here would freeze at the day's
+    first turn while looking like it tracked the last one.
 
-    Tenanted (migration 018's pattern, enrolled by migration 053): a tenant can
-    neither read nor write another tenant's row.
+    Rows are written for **every** subject a cap decision reaches, capped or not.
+    An uncapped subject is never refused, but its counts are what the owner tunes
+    the default against. A single-tenant deployment writes nothing at all: it is
+    answered from the deployment mode before any port is touched.
+
+    Tenanted: a tenant can neither read nor write another enterprise's ledger row.
+
+    ``billing_subject_id`` carries no foreign key: it is polymorphic (an
+    ``organizations.organization_id`` or a ``users.user_id``), so there is no
+    single target table. ``billing_subject_kind`` says which, and the CHECK pins
+    the vocabulary to two values so a third, unmetered kind cannot appear.
     """
 
-    __tablename__ = "organization_turn_usage"
+    __tablename__ = "turn_usage"
 
-    organization_id = Column(
+    enterprise_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        primary_key=True,
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
+    billing_subject_kind = Column(String(20), primary_key=True)
+    billing_subject_id = Column(String(36), primary_key=True)
     usage_date = Column(Date, primary_key=True)
     turn_count = Column(Integer, nullable=False, server_default=text("0"), default=0)
 
     __table_args__ = (
-        CheckConstraint("turn_count >= 0", name="organization_turn_usage_non_negative"),
+        CheckConstraint(
+            "billing_subject_kind IN ('organization', 'account')",
+            name="turn_usage_subject_kind_check",
+        ),
+        CheckConstraint("turn_count >= 0", name="turn_usage_non_negative"),
     )
 
 
 class SSOOrgMappingModel(Base):
-    """IdP organization → FaultMaven organization (#869, migration 038).
+    """IdP organization → FaultMaven **enterprise** (#869, ADR-017 D9).
+
+    An SSO customer already has an IdP organization; this row says which
+    enterprise its members land in on sign-in. They land in no FaultMaven
+    organization until a subscription assigns them one — the mapping decides
+    isolation, not billing.
 
     Deliberately **NOT** RLS-tenanted, unlike ``organizations`` and
-    ``organization_members`` (migration 018). The SSO callback that reads this
-    row is unauthenticated: no tenant is bound yet, so anything under the
+    ``organization_members``. The SSO callback that reads this row is
+    unauthenticated: no tenant is bound yet, so anything under the
     tenant-isolation policy is unreadable at mapping-resolution time — binding
     the tenant is the very thing this lookup decides. A row holds only an
-    identifier equivalence (the IdP's org id ↔ a FaultMaven org id) and no
+    identifier equivalence (the IdP's org id ↔ a FaultMaven enterprise id) and no
     tenant data, so leaving it outside RLS discloses nothing.
 
     ``(provider, provider_org_id)`` is the primary key: one IdP organization
-    resolves to at most one FaultMaven organization. The reverse uniqueness
-    (``provider``, ``organization_id``) keeps it 1:1 per provider, so "which IdP
+    resolves to at most one enterprise. The reverse uniqueness
+    (``provider``, ``enterprise_id``) keeps it 1:1 per provider, so "which IdP
     org owns this tenant" has a single answer.
     """
 
@@ -521,9 +576,9 @@ class SSOOrgMappingModel(Base):
 
     provider = Column(String(50), primary_key=True)
     provider_org_id = Column(String(255), primary_key=True)
-    organization_id = Column(
+    enterprise_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
         nullable=False,
     )
     created_at = Column(
@@ -538,13 +593,13 @@ class SSOOrgMappingModel(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "provider", "organization_id", name="uq_sso_org_mappings_organization"
+            "provider", "enterprise_id", name="uq_sso_org_mappings_enterprise"
         ),
     )
 
 
-class SSOPersonalOrgModel(Base):
-    """IdP **subject** → the personal FaultMaven organization it owns (#1045).
+class SSOPersonalEnterpriseModel(Base):
+    """IdP **subject** → the personal enterprise it owns (ADR-017 D9).
 
     The sibling of :class:`SSOOrgMappingModel`, and outside RLS for exactly the
     same reason: it is read on the unauthenticated SSO callback, before any
@@ -553,30 +608,29 @@ class SSOPersonalOrgModel(Base):
     It exists because ``sso_org_mappings`` cannot answer this question. That
     table is keyed on the IdP's *organization* id, and AuthKit only reports one
     when the sign-in was organization-scoped — a returning individual's login
-    may carry none at all. Membership cannot answer it either:
-    ``organization_members`` is RLS-tenanted (migration 018) and no tenant is
-    bound yet. So a returning individual needs a lookup keyed on the one
-    identifier every login carries, the subject.
+    may carry none at all. So a returning individual needs a lookup keyed on the
+    one identifier every login carries, the subject.
 
-    ``(provider, provider_user_id)`` is the primary key: a subject owns at most
-    one personal organization, which is what makes first-login provisioning
-    idempotent and what arbitrates a race between two concurrent first logins —
-    the loser's INSERT violates this key and rolls its whole transaction back.
-    ``(provider, organization_id)`` is unique in the other direction: a personal
-    organization belongs to exactly one subject, so it can never become a shared
-    tenant by a second row pointing at it.
+    ``subject`` is the primary key: a subject owns at most one personal
+    enterprise, which is what makes first-login provisioning idempotent and what
+    arbitrates a race between two concurrent first logins — the loser's INSERT
+    violates this key and rolls its whole transaction back. ``enterprise_id`` is
+    unique in the other direction: a personal enterprise belongs to exactly one
+    subject, so it can never become a shared tenant by a second row pointing at
+    it.
 
-    A row holds two identifiers and no tenant data. The subject is the IdP's own
+    A row holds identifiers and no tenant data. The subject is the IdP's own
     opaque handle, never an email.
     """
 
-    __tablename__ = "sso_personal_orgs"
+    __tablename__ = "sso_personal_enterprises"
 
-    provider = Column(String(50), primary_key=True)
-    provider_user_id = Column(String(255), primary_key=True)
-    organization_id = Column(
+    #: The IdP's opaque subject handle (``user_01H…``).
+    subject = Column(String(255), primary_key=True)
+    provider = Column(String(50), nullable=False)
+    enterprise_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
         nullable=False,
     )
     #: The IdP organization minted to hold this one member. Recorded so a retry
@@ -584,13 +638,6 @@ class SSOPersonalOrgModel(Base):
     #: and so "which WorkOS org is this tenant" has an answer that does not
     #: depend on re-deriving it from the subject.
     provider_org_id = Column(String(255), nullable=False)
-    #: Denormalised from the organization, because the one branch that needs it
-    #: cannot read the organization. A *mapped* (company) login is bound to the
-    #: company tenant, so the personal organization row is invisible under RLS —
-    #: and this is what lets that login tell "the account is anchored to a
-    #: personal enterprise I may re-anchor" from "the account belongs to a
-    #: different company" (ADR-016 D5 as amended).
-    enterprise_id = Column(String(36), nullable=False)
     #: Whether the IdP-side membership was established. The membership is
     #: written AFTER this row commits (an IdP membership is what makes AuthKit
     #: echo the organization, and an echoed organization with no committed
@@ -600,6 +647,16 @@ class SSOPersonalOrgModel(Base):
     membership_confirmed = Column(
         Boolean, nullable=False, server_default=text("false"), default=False
     )
+    #: When this personal tenant was retired, or NULL while it is live. Typed
+    #: columns rather than a settings blob, and here rather than on
+    #: ``enterprises``, because the sign-in that must tell "this subject's own
+    #: tenant was retired" from "the company that owned this account is gone"
+    #: reads the subject, not the enterprise. A parse of a JSON marker fails
+    #: open; a column read does not.
+    retired_at = Column(DateTime(timezone=True), nullable=True)
+    #: The operator's ``--next-login`` choice at retirement, constrained to the
+    #: two values the code implements.
+    retirement_state = Column(String(16), nullable=True)
     created_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -612,21 +669,30 @@ class SSOPersonalOrgModel(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "provider", "organization_id", name="uq_sso_personal_orgs_organization"
+            "enterprise_id", name="uq_sso_personal_enterprises_enterprise"
+        ),
+        CheckConstraint(
+            "retirement_state IS NULL OR retirement_state IN "
+            "('refuse', 'fresh_tenant')",
+            name="sso_personal_enterprises_retirement_state_check",
         ),
     )
 
 
 class TeamModel(Base):
-    """Sub-group within an organization for case routing & collaboration."""
+    """The sharing unit (ADR-017 D1/D4): who has agreed to share. A team is
+    formed by consent, lives inside exactly one enterprise, and may span
+    organizations — two cost centres of one company share an incident through
+    one team. It is parented by its enterprise, never by an organization."""
 
     __tablename__ = "teams"
 
     team_id = Column(String(36), primary_key=True)
-    organization_id = Column(
+    enterprise_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
     )
     name = Column(String(200), nullable=False)
     description = Column(Text, nullable=True)
@@ -642,16 +708,76 @@ class TeamModel(Base):
     deleted_at = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
-        UniqueConstraint(
-            "organization_id", "name", name="teams_organization_name_unique"
-        ),
-        Index("ix_teams_organization_id", "organization_id"),
+        UniqueConstraint("enterprise_id", "name", name="teams_enterprise_name_unique"),
         CheckConstraint("LENGTH(TRIM(name)) > 0", name="teams_name_not_empty"),
     )
 
 
+class TeamInvitationModel(Base):
+    """An offer to join a team, and the consent record that answers it (D4).
+
+    A team admin invites an address; the invitee accepts. A pending invitation
+    grants nothing — it is what keeps a stranger from pulling a colleague into a
+    team's view without a word. The address need not have an account yet: the
+    invitation resolves when that address signs up **and lands in the same
+    enterprise**, which is why ``invited_user_id`` is nullable and ``email`` is
+    not.
+
+    Tenant data, and RLS-enrolled as such: who was invited into which team is
+    exactly the sort of row the wall exists to keep on one side of it. The
+    enterprise is denormalised here rather than reached through ``teams`` so the
+    policy needs no hop, matching every other scoped table.
+    """
+
+    __tablename__ = "team_invitations"
+
+    invitation_id = Column(String(36), primary_key=True)
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    team_id = Column(
+        String(36),
+        ForeignKey("teams.team_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    #: The invited address, always. Case-folded by the writer.
+    email = Column(String(255), nullable=False)
+    #: The account the address resolved to, once it has one.
+    invited_user_id = Column(
+        String(36), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True
+    )
+    invited_by = Column(
+        String(36), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True
+    )
+    status = Column(String(20), nullable=False, server_default="pending", index=True)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    accepted_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'accepted', 'revoked', 'expired')",
+            name="team_invitations_status_check",
+        ),
+        CheckConstraint(
+            "LENGTH(TRIM(email)) > 0", name="team_invitations_email_not_empty"
+        ),
+        Index("ix_team_invitations_email", "email"),
+    )
+
+
 class TeamMemberModel(Base):
-    """User ↔ team membership. Composite PK."""
+    """User ↔ team membership. Composite PK.
+
+    The one tenant-scoped table with no ``enterprise_id`` of its own: a pure
+    ``(user_id, team_id)`` join, whose policy reaches the key by a single hop
+    through ``teams.enterprise_id``."""
 
     __tablename__ = "team_members"
 
@@ -739,6 +865,12 @@ class UserAuditLogModel(Base):
     user_id = Column(
         String(36), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True
     )
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     organization_id = Column(
         String(36),
         ForeignKey("organizations.organization_id", ondelete="SET NULL"),
@@ -767,10 +899,10 @@ class OperatorAccessAuditModel(Base):
     """Append-only record of platform-operator access to tenant data (ADR-012 D8/D9).
 
     Distinct from ``user_audit_log``, which is RLS-tenanted: its policy keys on
-    ``organization_id``, so it structurally cannot hold a *cross-tenant* event —
-    a list spanning every tenant has no single organization to stamp. This table
+    ``enterprise_id``, so it structurally cannot hold a *cross-tenant* event —
+    a list spanning every tenant has no single enterprise to stamp. This table
     is deliberately NOT tenant-scoped for that reason, and carries a nullable
-    ``target_organization_id`` (NULL = the access spanned all tenants).
+    ``target_enterprise_id`` (NULL = the access spanned all tenants).
 
     Append-only is enforced by database triggers (migration 035), not by
     convention: an operator must not be able to edit or erase the record of
@@ -799,9 +931,9 @@ class OperatorAccessAuditModel(Base):
     # rather than a detail-blob key.
     action = Column(String(32), nullable=False)
 
-    # NULL target_organization_id = access spanned all tenants (a cross-tenant
+    # NULL target_enterprise_id = access spanned all tenants (a cross-tenant
     # list). NULL target_case_id = the access was not scoped to one case.
-    target_organization_id = Column(String(36), nullable=True)
+    target_enterprise_id = Column(String(36), nullable=True)
     target_case_id = Column(String(36), nullable=True)
 
     # Break-glass fields (#815). Nullable until that path exists.
@@ -820,10 +952,17 @@ class OperatorAccessAuditModel(Base):
     )
 
     __table_args__ = (
+        # Constrain the governed distinction (metadata vs content) at the schema
+        # layer, so a typo cannot silently create a fourth, unaudited category.
+        # ``role_granted``/``role_revoked`` were admitted by migration 042.
+        CheckConstraint(
+            "action IN ('list', 'content_open', 'role_granted', 'role_revoked')",
+            name="operator_access_audit_action_valid",
+        ),
         Index("ix_operator_access_audit_operator", "operator_user_id", "created_at"),
         Index(
-            "ix_operator_access_audit_target_org",
-            "target_organization_id",
+            "ix_operator_access_audit_target_enterprise",
+            "target_enterprise_id",
             "created_at",
         ),
         Index("ix_operator_access_audit_case", "target_case_id", "created_at"),
@@ -840,10 +979,10 @@ class OperatorAccessGrantModel(Base):
     ``docs/architecture/security/break-glass-content-access.md``.
 
     Not append-only — revocation and approval are real UPDATEs — but the columns
-    that constitute the justification (operator, case, org, reason, created_at,
-    expires_at) are pinned by database triggers, and DELETE is rejected
-    (migration 036). Extending access means creating a *new* grant with a fresh
-    reason, never widening an existing window.
+    that constitute the justification (operator, case, enterprise, reason,
+    created_at, expires_at) are pinned by database triggers, and DELETE is
+    rejected. Extending access means creating a *new* grant with a fresh reason,
+    never widening an existing window.
 
     ``operator_user_id`` is deliberately not a foreign key, for the same reason
     as ``OperatorAccessAuditModel``: the row is evidence and must outlive the
@@ -858,12 +997,13 @@ class OperatorAccessGrantModel(Base):
     operator_user_id = Column(String(36), nullable=False)
     operator_username = Column(String(255), nullable=True)
 
-    # One case, never a whole tenant (D9). The organization is stored alongside
+    # One case, never a whole tenant (D9). The enterprise is stored alongside
     # because it is what the request rebinds its RLS scope to under
     # TENANT_PROVIDER=multi — the case row itself is unreadable until after that
-    # rebind, so the org cannot be derived from it.
+    # rebind, so the enterprise cannot be derived from it. NOT NULL: a grant with
+    # no enterprise is a grant over everything.
     target_case_id = Column(String(36), nullable=False)
-    target_organization_id = Column(String(36), nullable=False)
+    target_enterprise_id = Column(String(36), nullable=False)
 
     reason = Column(Text, nullable=False)
 
@@ -897,8 +1037,8 @@ class OperatorAccessGrantModel(Base):
             "expires_at",
         ),
         Index(
-            "ix_operator_access_grants_target_org",
-            "target_organization_id",
+            "ix_operator_access_grants_target_enterprise",
+            "target_enterprise_id",
             "created_at",
         ),
     )
@@ -943,10 +1083,16 @@ class CaseModel(Base):
     __tablename__ = "cases"
 
     case_id = Column(String(36), primary_key=True)
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     organization_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     user_id = Column(
@@ -959,7 +1105,8 @@ class CaseModel(Base):
     title = Column(String(200), nullable=False)
     description = Column(Text, nullable=False, server_default="")
     state = Column(String(50), nullable=False, server_default="inquiry", index=True)
-    # Case origin (ADR-012), derived from the creator's account_kind at creation:
+    # Case origin, derived from the creating account's service_channel
+    # (ADR-017 D6) at creation:
     # 'copilot' (individual), 'slack' (Slack service account), or 'api'.
     source = Column(String(20), nullable=False, server_default="copilot", index=True)
 
@@ -1070,10 +1217,16 @@ class UploadedFileModel(Base):
     __tablename__ = "uploaded_files"
 
     file_id = Column(String(36), primary_key=True)
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     organization_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     case_id = Column(
@@ -1156,10 +1309,16 @@ class EvidenceModel(Base):
     __tablename__ = "evidence"
 
     evidence_id = Column(String(36), primary_key=True)
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     organization_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     case_id = Column(
@@ -1297,10 +1456,16 @@ class EvidenceNeedModel(Base):
     __tablename__ = "evidence_needs"
 
     need_id = Column(String(36), primary_key=True)
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     organization_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     case_id = Column(
@@ -1382,6 +1547,10 @@ class EvidenceNeedModel(Base):
             "state IN ('pending', 'partially_met', 'fulfilled', 'superseded')",
             name="evidence_needs_state_check",
         ),
+        CheckConstraint(
+            "obtainability IN ('unknown', 'obtainable', 'unobtainable')",
+            name="evidence_needs_obtainability_check",
+        ),
         # superseded_reason required iff state='superseded'. Two-way:
         # SUPERSEDED requires a reason, non-SUPERSEDED forbids it.
         CheckConstraint(
@@ -1429,10 +1598,16 @@ class EvidenceNeedFulfillmentModel(Base):
         ForeignKey("evidence.evidence_id", ondelete="CASCADE"),
         primary_key=True,
     )
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     organization_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     linked_at_turn = Column(Integer, nullable=False)
@@ -1463,10 +1638,16 @@ class CaseEntityModel(Base):
         ForeignKey("cases.case_id", ondelete="CASCADE"),
         primary_key=True,
     )
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     organization_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     entity_type = Column(String(20), primary_key=True)
@@ -1493,10 +1674,16 @@ class HypothesisModel(Base):
     __tablename__ = "hypotheses"
 
     hypothesis_id = Column(String(36), primary_key=True)
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     organization_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     case_id = Column(
@@ -1593,10 +1780,16 @@ class HypothesisEvidenceModel(Base):
         ForeignKey("evidence.evidence_id", ondelete="CASCADE"),
         primary_key=True,
     )
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     organization_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     relationship_type = Column(
@@ -1633,10 +1826,16 @@ class SolutionModel(Base):
     __tablename__ = "solutions"
 
     solution_id = Column(String(36), primary_key=True)
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     organization_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     case_id = Column(
@@ -1743,10 +1942,16 @@ class CausalNodeModel(Base):
     __tablename__ = "causal_nodes"
 
     node_id = Column(String(36), primary_key=True)
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     organization_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     case_id = Column(
@@ -1846,10 +2051,16 @@ class CausalEdgeModel(Base):
     __tablename__ = "causal_edges"
 
     edge_id = Column(String(36), primary_key=True)
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     organization_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     case_id = Column(
@@ -1900,10 +2111,16 @@ class CausalNodeEvidenceModel(Base):
         ForeignKey("evidence.evidence_id", ondelete="CASCADE"),
         primary_key=True,
     )
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     organization_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     stance = Column(String(20), nullable=False)  # supports | refutes | neutral
@@ -1934,10 +2151,16 @@ class CaseMessageModel(Base):
     __tablename__ = "case_messages"
 
     message_id = Column(String(36), primary_key=True)
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     organization_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     case_id = Column(
@@ -1989,10 +2212,16 @@ class CaseActionModel(Base):
     __tablename__ = "case_actions"
 
     transition_id = Column(Integer, primary_key=True, autoincrement=True)
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     organization_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     case_id = Column(
@@ -2025,10 +2254,16 @@ class CaseTagModel(Base):
     __tablename__ = "case_tags"
 
     tag_id = Column(Integer, primary_key=True, autoincrement=True)
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     organization_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     case_id = Column(
@@ -2059,10 +2294,16 @@ class CaseCheckpointModel(Base):
     __tablename__ = "case_checkpoints"
 
     checkpoint_id = Column(String(36), primary_key=True)
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     organization_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     case_id = Column(
@@ -2098,10 +2339,16 @@ class InvestigationSessionModel(Base):
     __tablename__ = "investigation_sessions"
 
     session_id = Column(String(36), primary_key=True)
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     organization_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     case_id = Column(
@@ -2169,10 +2416,16 @@ class ReportModel(Base):
     __tablename__ = "reports"
 
     report_id = Column(String(36), primary_key=True)
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     organization_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     case_id = Column(
@@ -2236,16 +2489,26 @@ class KnowledgeItemModel(Base):
     readable by every tenant).
 
     Ownership invariant (#770, enforced by knowledge_items_global_org_check):
-    global rows are the org-free platform tier (organization_id IS NULL);
-    personal/team rows are always org-stamped. A tenant-org-owned global row
-    is unrepresentable."""
+    a global row is the platform tier and is billed to no organization
+    (organization_id IS NULL), so a tenant-org-owned global row is
+    unrepresentable. The converse no longer holds and is not asserted: under
+    ADR-017 D3/D5 an account may be in **no** organization, so a personal or
+    team row legitimately carries a NULL organization too. What every row does
+    carry is ``enterprise_id`` — the platform tier's is the standalone
+    enterprise, which is what the global-write policy arm compares against."""
 
     __tablename__ = "knowledge_items"
 
     item_id = Column(String(36), primary_key=True)
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     organization_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
+        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
@@ -2313,8 +2576,7 @@ class KnowledgeItemModel(Base):
             name="knowledge_items_scope_check",
         ),
         CheckConstraint(
-            "(scope = 'global' AND organization_id IS NULL) "
-            "OR (scope <> 'global' AND organization_id IS NOT NULL)",
+            "scope <> 'global' OR organization_id IS NULL",
             name="knowledge_items_global_org_check",
         ),
         CheckConstraint(
@@ -2348,10 +2610,16 @@ class KnowledgeSuggestionModel(Base):
     __tablename__ = "knowledge_suggestions"
 
     suggestion_id = Column(String(36), primary_key=True)
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     organization_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     case_id = Column(
@@ -2465,10 +2733,16 @@ class ConversionJobModel(Base):
     __tablename__ = "conversion_jobs"
 
     id = Column(String(36), primary_key=True)
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     organization_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     user_id = Column(
@@ -2559,10 +2833,16 @@ class ConversionDraftModel(Base):
     __tablename__ = "conversion_drafts"
 
     id = Column(String(36), primary_key=True)
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     organization_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     conversion_id = Column(
@@ -2614,11 +2894,15 @@ class ConversionDraftModel(Base):
             name="conversion_drafts_severity_check",
         ),
         Index("ix_conversion_drafts_tags", "tags", postgresql_using="gin"),
-        # At most one LIVE draft per (tenant, runbook_id) — migration 046.
-        # ``organization_id`` leads the key for confidentiality as well as
+        # At most one LIVE draft per (tenant, runbook_id).
+        # ``enterprise_id`` leads the key for confidentiality as well as
         # correctness: a unique index is enforced BELOW row-level security, so
         # a key omitting the tenant would reject an insert because of a row the
-        # caller cannot see — a cross-tenant existence oracle over titles.
+        # caller cannot see — a cross-tenant existence oracle over titles. It is
+        # the enterprise and not the organization because the organization is
+        # nullable billing attribution (ADR-017 D2) and NULLs are distinct under
+        # a unique index, so an org-led key would stop constraining anything the
+        # moment an account had no organization.
         # ``runbook_id`` is minted deterministically from (service, title), so
         # two drafts can legitimately arrive at the same value; before this
         # index nothing rejected them and they were indistinguishable to
@@ -2628,8 +2912,8 @@ class ConversionDraftModel(Base):
         # own source forever. Both dialect clauses are identical; they are
         # spelled twice because SQLAlchemy takes the predicate per dialect.
         Index(
-            "uq_conversion_drafts_org_runbook_id",
-            "organization_id",
+            "uq_conversion_drafts_enterprise_runbook_id",
+            "enterprise_id",
             "runbook_id",
             unique=True,
             sqlite_where=text("status <> 'discarded'"),
@@ -2665,8 +2949,10 @@ class ResourceShareModel(Base):
     deliberately fail-safe — a dangling ``resource_id`` matches nothing in the
     allowlist join (invisible, never leaked) and a dangling ``scope_id`` cannot
     enter any allowlist because ``team_members`` rows cascade away with the team.
-    ``organization_id`` keeps a real FK: it is the RLS tenant key and the
-    cross-org-share guard's backstop.
+    ``enterprise_id`` keeps a real FK: it is the RLS tenant key and the
+    cross-enterprise-share guard's backstop. A team may span organizations
+    (ADR-017 D4), so the share's tenant term is the enterprise; the
+    ``organization_id`` beside it is billing attribution only.
     """
 
     __tablename__ = "resource_shares"
@@ -2676,10 +2962,16 @@ class ResourceShareModel(Base):
     resource_id = Column(String(36), nullable=False)
     scope_type = Column(String(20), nullable=False)
     scope_id = Column(String(36), nullable=False)
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     organization_id = Column(
         String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     created_by = Column(

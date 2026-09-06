@@ -79,7 +79,12 @@ class KnowledgeItem:
 
     Attributes:
         item_id: Unique identifier for the knowledge item
-        organization_id: Organization that owns this knowledge item
+        enterprise_id: Enterprise this item is isolated to (ADR-017 D1) — the
+            RLS key. Global (platform-tier) rows carry the standalone
+            enterprise, which is what the global-write policy arm compares
+            against.
+        organization_id: Organization the item is billed to (ADR-017 D2), or
+            ``None``. Never a visibility input.
         title: Title of the knowledge item
         content: Full text content of the knowledge item
         item_type: Type of knowledge (troubleshooting_guide, faq, etc.)
@@ -102,12 +107,13 @@ class KnowledgeItem:
     """
 
     item_id: str
-    organization_id: Optional[str]
+    enterprise_id: str
     title: str
     content: str
     item_type: KnowledgeItemType
     scope: KnowledgeScope = KnowledgeScope.GLOBAL
     owner_id: Optional[str] = None
+    organization_id: Optional[str] = None
 
     # Categorization
     category: Optional[str] = None
@@ -171,21 +177,19 @@ class KnowledgeItem:
                 "Coerce strings at the boundary (repository / request parser) "
                 "before constructing KnowledgeItem."
             )
+        if not self.enterprise_id:
+            raise ValueError("enterprise_id is required")
         if self.scope == KnowledgeScope.PERSONAL and not self.owner_id:
             raise ValueError("owner_id is required for personal scope")
-        # Ownership invariant (#770, mirrors knowledge_items_global_org_check):
-        # GLOBAL rows are the org-free platform corpus (organization_id IS NULL,
-        # readable by every tenant); personal/team rows are always org-owned.
-        if self.scope == KnowledgeScope.GLOBAL:
-            if self.organization_id is not None:
-                raise ValueError(
-                    "global scope is the platform tier and must not carry an "
-                    "organization_id (got "
-                    f"{self.organization_id!r})"
-                )
-        elif not self.organization_id:
+        # Billing invariant (#770, mirrors knowledge_items_global_org_check):
+        # a GLOBAL row is the platform corpus and is billed to nobody. Its
+        # converse — "a personal/team row always has an enterprise" — is NOT
+        # asserted, and stopped being true under ADR-017 D5: an account may be
+        # in no organization at all, and its runbooks are still its own.
+        if self.scope == KnowledgeScope.GLOBAL and self.organization_id is not None:
             raise ValueError(
-                f"organization_id is required for {self.scope.value} scope"
+                "global scope is the platform tier and must not carry an "
+                f"organization_id (got {self.organization_id!r})"
             )
         # TEAM scope: team visibility lives in the share table (resource_shares),
         # not on the item — the KB write path creates the share row(s) and keeps

@@ -152,7 +152,7 @@ def sample_case() -> Case:
     return Case(
         case_id="case_test123",
         user_id="test-user-001",
-        organization_id="test-org-001",
+        enterprise_id="test-org-001",
         title="Test Case - API Slowness",
         description="API experiencing high latency",
         state=CaseState.RESOLVED,

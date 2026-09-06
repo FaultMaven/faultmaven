@@ -51,7 +51,7 @@ class SessionlessOperatorGrantRepository(IOperatorGrantRepository):
         self,
         operator_user_id: Optional[str] = None,
         target_case_id: Optional[str] = None,
-        target_organization_id: Optional[str] = None,
+        target_enterprise_id: Optional[str] = None,
         live_only: bool = False,
         limit: int = 100,
         offset: int = 0,
@@ -61,7 +61,7 @@ class SessionlessOperatorGrantRepository(IOperatorGrantRepository):
             return await OperatorGrantRepository(session).list_grants(
                 operator_user_id=operator_user_id,
                 target_case_id=target_case_id,
-                target_organization_id=target_organization_id,
+                target_enterprise_id=target_enterprise_id,
                 live_only=live_only,
                 limit=limit,
                 offset=offset,

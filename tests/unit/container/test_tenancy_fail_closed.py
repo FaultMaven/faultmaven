@@ -6,7 +6,9 @@ infrastructure hiccup. ``DIContainer.initialize()`` must re-raise it on EVERY
 path — jobs/CLI included — never swallow it into a half-initialized container
 that would run against tenanted data unchecked. And the service wiring must not
 silently skip the factory (and with it the fail-closed checks) when the
-organization repository is unavailable under ``multi``.
+ENTERPRISE repository is unavailable under ``multi`` — the enterprise is what
+the provider resolves through (ADR-017 D1), so its absence is the one that
+leaves a multi-tenant deployment with no tenant provider at all.
 """
 
 from unittest.mock import MagicMock, patch
@@ -54,8 +56,8 @@ def _awaitable_none():
 
 @pytest.mark.unit
 @pytest.mark.security
-def test_missing_org_repository_is_fatal_under_multi():
-    """Under ``multi``, a missing organization repository must not silently skip
+def test_missing_enterprise_repository_is_fatal_under_multi():
+    """Under ``multi``, a missing enterprise repository must not silently skip
     the tenancy factory (and its multi-requires-cloud check)."""
     with patch(
         "faultmaven.providers.tenancy.factory.get_settings",
@@ -63,12 +65,12 @@ def test_missing_org_repository_is_fatal_under_multi():
     ):
         with pytest.raises(TenancyConfigurationError):
             create_tenant_provider(
-                organization_repository=None, settings=_settings("multi")
+                settings=_settings("multi"), enterprise_repository=None
             )
 
 
 @pytest.mark.unit
-def test_missing_org_repository_still_skips_under_single():
+def test_missing_enterprise_repository_still_skips_under_single():
     """Single-tenant keeps the pre-existing graceful skip."""
     with patch(
         "faultmaven.providers.tenancy.factory.get_settings",
@@ -76,7 +78,7 @@ def test_missing_org_repository_still_skips_under_single():
     ):
         assert (
             create_tenant_provider(
-                organization_repository=None, settings=_settings("single")
+                settings=_settings("single"), enterprise_repository=None
             )
             is None
         )

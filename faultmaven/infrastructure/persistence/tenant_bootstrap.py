@@ -1,12 +1,24 @@
-"""The one writer that brings a tenant into existence (ADR-013, #869, #1045).
+"""The writers that bring a tenant into existence (ADR-013, ADR-017, #869, #1045).
 
-A tenant is four rows in a fixed order — enterprise, organization, default team,
-and the ``sso_org_mappings`` row that binds an IdP organization to it — and
-until now two call sites wrote them: ``fm-provision-sso-org`` for the operator
-path and the personal-tenant repository for the login path. The CLI's own
-docstring already conceded they write the same rows. Two copies of an ordering
-constraint is one copy too many, so this module is the single writer and both
-call sites pass their differences in as arguments.
+Two call sites create tenants and they no longer create the same rows, so this
+module holds the per-row writers both share plus the one composite the operator
+path needs:
+
+* **the operator path** (``fm-provision-sso-org``) onboards a paying customer:
+  enterprise, organization, default team, and the ``sso_org_mappings`` row that
+  binds an IdP organization to it. :func:`bootstrap_tenant` writes those four,
+  in that order.
+* **the sign-up path** (the SSO login) creates an **enterprise and nothing
+  else** (ADR-017 D3/D5/D4). An organization is a billing target created by
+  payment and a team is formed by consent, so a sign-in — which knows neither —
+  must not invent them. It composes :func:`get_or_create_enterprise` (or
+  :func:`get_or_create_enterprise_for_domain`) with :func:`ensure_mapping`
+  itself.
+
+They share the per-row writers rather than a single composite, because the rows
+they write genuinely differ now; what has to stay shared is each row's own rule
+(what an existing row means, which lookups are live-only), and that is what
+these functions are.
 
 **What the two callers genuinely differ on, and why it is a parameter here
 rather than a fork of the code:**
@@ -19,18 +31,24 @@ rather than a fork of the code:**
   holds an untenanted subject row that tells it whether the conflict is its own
   concurrent attempt (adopt) or somebody else's key (refuse loudly). So the
   caller interprets; it does not get a knob that changes what is written.
-* *How the organization is identified.* The operator resolves it by
+* *How the tenant is identified.* The operator resolves the organization by
   ``(enterprise_id, slug)`` — an id-blind lookup, which is exactly why that path
-  needs an RLS-exempt role. The login path supplies the id it generated and
-  bound. Both arrive here as an already-decided ``organization_id``.
+  needs an RLS-exempt role. The sign-up path resolves the enterprise by the
+  domain it derived, or generates a private one, and writes no organization at
+  all.
 
-**RLS.** Every write below except the enterprise targets an RLS-tenanted table
-(migration 018), whose policy is created with no ``FOR`` clause — so ``USING``
-doubles as ``WITH CHECK`` and an INSERT carrying a different ``organization_id``
-than the session's ``app.current_org_id`` is *rejected*. This module does not
-bind anything: the session it is handed already belongs to a transaction, and
-the engine's ``begin`` listener sampled the contextvar when that transaction
-opened. Binding is the caller's job, before it opens the session.
+**RLS.** ``organizations`` and ``teams`` are RLS-tenanted, and their policies are
+created with no ``FOR`` clause — so ``USING`` doubles as ``WITH CHECK`` and an
+INSERT carrying a different ``enterprise_id`` than the session's
+``app.current_enterprise_id`` is *rejected*. ``enterprises`` and
+``sso_org_mappings`` are not enrolled: the enterprise IS the tenant, and the
+mapping is read on the unauthenticated callback before one is bound. This module
+does not bind anything: the session it is handed already belongs to a
+transaction, and the engine's ``begin`` listener sampled the contextvar when
+that transaction opened. Binding is the caller's job, before it opens the
+session — and the sign-up path, which now touches only unenrolled tables, has
+nothing left to bind.
+
 """
 
 from __future__ import annotations
@@ -54,7 +72,7 @@ PROVIDER = "workos"
 
 
 class RemapRefused(Exception):
-    """The IdP org is already mapped to a different FaultMaven organization."""
+    """The IdP org is already mapped to a different FaultMaven enterprise."""
 
     def __init__(self, provider_org_id: str, mapped_to: str, requested: str) -> None:
         super().__init__(provider_org_id)
@@ -64,13 +82,11 @@ class RemapRefused(Exception):
 
 
 class OrgAlreadyClaimed(Exception):
-    """The FaultMaven organization is already claimed by another IdP org."""
+    """The FaultMaven enterprise is already claimed by another IdP org."""
 
-    def __init__(
-        self, organization_id: str, claimed_by: str, requested_by: str
-    ) -> None:
-        super().__init__(organization_id)
-        self.organization_id = organization_id
+    def __init__(self, enterprise_id: str, claimed_by: str, requested_by: str) -> None:
+        super().__init__(enterprise_id)
+        self.enterprise_id = enterprise_id
         self.claimed_by = claimed_by
         self.requested_by = requested_by
 
@@ -93,22 +109,31 @@ async def get_or_create_enterprise(
 ) -> tuple[EnterpriseModel, bool]:
     """Return (enterprise, created). Looks up by id, then by slug.
 
-    The slug arm is not only an operator convenience. ``organizations`` has no
-    ``ON DELETE CASCADE`` to ``enterprises``, so hard-deleting a personal
-    organization leaves its enterprise behind; a login that re-derived the same
-    slug and always INSERTed would then collide forever on
-    ``enterprises.slug``'s unique index and be refused as somebody else's
-    tenant (#1045 review, item 4a). Adopting the orphan is safe precisely
-    because the slug is derived from the subject: nobody else can produce it.
+    The slug arm is not only an operator convenience. A personal enterprise can
+    outlive the binding that named it — ``repository.retire()`` drops the
+    binding on the #1320 personal→company switch and leaves the enterprise and
+    its mapping standing — so a later login for that subject re-derives the same
+    slug. A writer that always INSERTed would collide forever on
+    ``enterprises.slug``'s unique index and be refused as somebody else's tenant
+    (#1045 review, item 4a). Adopting is safe precisely because the slug is
+    derived from the subject: nobody else can produce it.
+
+    Callers must use the returned row's id rather than the one they proposed;
+    on the adopt arm they differ, and binding the proposed one names no row.
     """
     if enterprise_id:
         found = await session.get(EnterpriseModel, enterprise_id)
-        if found is None:
-            raise LookupError(f"No enterprise with enterprise_id={enterprise_id}")
-        return found, False
+        if found is not None:
+            return found, False
+        # NOT a LookupError any more. Under ADR-017 the login path generates the
+        # ENTERPRISE id and binds it before opening the transaction (RLS refuses
+        # a write for an unbound tenant), so it arrives here naming a row that
+        # does not exist yet and that this call is what creates. Refusing would
+        # make first sign-in impossible. The operator path passes an id only for
+        # an enterprise it has already resolved, so it never reaches this arm.
 
-    # LIVE rows only. Since migration 052 the slug uniqueness rules are partial
-    # on ``deleted_at IS NULL`` — a retired tenant keeps its slug — so a writer
+    # LIVE rows only. The slug uniqueness rules are partial on
+    # ``deleted_at IS NULL`` — a retired tenant keeps its slug — so a writer
     # that adopted a soft-deleted row would hand a "fresh" tenant straight back
     # to the retired one it is supposed to replace. The lookup has to be scoped
     # exactly the way the constraint is, or the two disagree about what "already
@@ -126,9 +151,59 @@ async def get_or_create_enterprise(
 
     now = datetime.now(UTC)
     enterprise = EnterpriseModel(
+        enterprise_id=enterprise_id or str(uuid.uuid4()),
+        name=name,
+        slug=slug,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(enterprise)
+    await session.flush()
+    return enterprise, True
+
+
+async def get_or_create_enterprise_for_domain(
+    session, *, domain: str, name: str, slug: str
+) -> tuple[EnterpriseModel, bool]:
+    """Return (enterprise, created) for an email domain (ADR-017 D3).
+
+    The lookup key is ``enterprises.domain``, **not** the slug: the domain is
+    the fact sign-up derived, and keying on it is what makes "the domain has
+    exactly one enterprise" true. The slug is a derived identifier that happens
+    to be a function of the same domain; looking up by it would work today and
+    silently stop working the day the derivation changed.
+
+    LIVE rows only, matching the partial uniqueness index exactly. A retired
+    enterprise keeps its domain, so a writer that adopted a soft-deleted row
+    would hand the next sign-up from that domain straight back into the tenant
+    an operator took out of service — and the index would not stop it, because
+    the index does not see retired rows either. The lookup has to be scoped the
+    way the constraint is or the two disagree about what "already exists" means.
+
+    Creating is **not** owning: the first account from a domain gains nothing by
+    being first (D3). It does not administer the enterprise, and the enterprise
+    has no administrator at all until a domain claim is verified (D7).
+    """
+    if not domain:
+        raise ValueError("a domain enterprise needs a domain")
+    folded = domain.casefold()
+    existing = (
+        await session.execute(
+            select(EnterpriseModel).where(
+                EnterpriseModel.domain == folded,
+                EnterpriseModel.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing, False
+
+    now = datetime.now(UTC)
+    enterprise = EnterpriseModel(
         enterprise_id=str(uuid.uuid4()),
         name=name,
         slug=slug,
+        domain=folded,
         created_at=now,
         updated_at=now,
     )
@@ -182,13 +257,13 @@ async def get_or_create_organization(
 
 
 async def get_or_create_default_team(
-    session, *, organization_id: str
+    session, *, enterprise_id: str
 ) -> tuple[TeamModel, bool]:
-    """Return (team, created). One default team per organization (ADR-013)."""
+    """Return (team, created). One default team per ENTERPRISE (ADR-017 D4)."""
     existing = (
         await session.execute(
             select(TeamModel).where(
-                TeamModel.organization_id == organization_id,
+                TeamModel.enterprise_id == enterprise_id,
                 TeamModel.name == STANDALONE_TEAM_NAME,
             )
         )
@@ -199,9 +274,9 @@ async def get_or_create_default_team(
     now = datetime.now(UTC)
     team = TeamModel(
         team_id=str(uuid.uuid4()),
-        organization_id=organization_id,
+        enterprise_id=enterprise_id,
         name=STANDALONE_TEAM_NAME,
-        description="Default team for this organization",
+        description="Default team for this enterprise",
         created_at=now,
         updated_at=now,
     )
@@ -215,21 +290,19 @@ async def find_mapping(session, *, provider_org_id: str):
     return await session.get(SSOOrgMappingModel, (PROVIDER, provider_org_id))
 
 
-async def ensure_mapping(
-    session, *, provider_org_id: str, organization_id: str
-) -> bool:
+async def ensure_mapping(session, *, provider_org_id: str, enterprise_id: str) -> bool:
     """Create the mapping row if absent. Returns True when created.
 
     Both directions of the 1:1 relation are ways to bind the wrong customers
     together, so both are refused — for **every** caller, with no policy knob:
 
     * ``RemapRefused`` — this IdP org already points at a *different*
-      organization. Repointing changes which tenant existing users land in.
-    * ``OrgAlreadyClaimed`` — this organization is already claimed by a
-      *different* IdP org. This is what the ``UNIQUE (provider,
-      organization_id)`` constraint would otherwise raise, and it is the alarm
-      that fires when a slug collision has silently resolved a new customer onto
-      someone else's tenant.
+      enterprise. Repointing changes which tenant existing users land in.
+    * ``OrgAlreadyClaimed`` — this enterprise is already claimed by a
+      *different* IdP org. This is what the ``UNIQUE (provider, enterprise_id)``
+      constraint would otherwise raise, and it is the alarm that fires when a
+      slug collision has silently resolved a new customer onto someone else's
+      tenant.
 
     An earlier version of this let the login path pass ``refuse_conflicts=False``
     so it could adopt a racer's tenant. That was wrong in a way worth recording:
@@ -246,31 +319,27 @@ async def ensure_mapping(
     """
     existing = await find_mapping(session, provider_org_id=provider_org_id)
     if existing is not None:
-        if existing.organization_id != organization_id:
-            raise RemapRefused(
-                provider_org_id, existing.organization_id, organization_id
-            )
+        if existing.enterprise_id != enterprise_id:
+            raise RemapRefused(provider_org_id, existing.enterprise_id, enterprise_id)
         return False
 
     claimed = (
         await session.execute(
             select(SSOOrgMappingModel).where(
                 SSOOrgMappingModel.provider == PROVIDER,
-                SSOOrgMappingModel.organization_id == organization_id,
+                SSOOrgMappingModel.enterprise_id == enterprise_id,
             )
         )
     ).scalar_one_or_none()
     if claimed is not None:
-        raise OrgAlreadyClaimed(
-            organization_id, claimed.provider_org_id, provider_org_id
-        )
+        raise OrgAlreadyClaimed(enterprise_id, claimed.provider_org_id, provider_org_id)
 
     now = datetime.now(UTC)
     session.add(
         SSOOrgMappingModel(
             provider=PROVIDER,
             provider_org_id=provider_org_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             created_at=now,
             updated_at=now,
         )
@@ -305,12 +374,12 @@ async def bootstrap_tenant(
         organization_id=organization_id,
     )
     team, team_created = await get_or_create_default_team(
-        session, organization_id=organization.organization_id
+        session, enterprise_id=enterprise.enterprise_id
     )
     mapping_created = await ensure_mapping(
         session,
         provider_org_id=provider_org_id,
-        organization_id=organization.organization_id,
+        enterprise_id=enterprise.enterprise_id,
     )
     return BootstrappedTenant(
         enterprise=enterprise,

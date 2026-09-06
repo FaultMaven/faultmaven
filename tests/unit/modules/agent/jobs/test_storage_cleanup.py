@@ -95,7 +95,7 @@ def _write_file_with_sidecar(
         json.dumps(
             {
                 "case_id": "case_test",
-                "organization_id": "org_test",
+                "enterprise_id": "org_test",
                 "uploaded_at": uploaded_at.isoformat(),
                 "linked": linked,
                 "schema_version": 1,
@@ -116,7 +116,7 @@ class TestFileStorageServiceSidecar:
         result = await storage_service.store_file(
             file_data=b"hello world",
             original_filename="app.log",
-            organization_id="org_alpha",
+            enterprise_id="org_alpha",
             case_id="case_alpha",
             mime_type="text/plain",
         )
@@ -129,7 +129,7 @@ class TestFileStorageServiceSidecar:
 
         payload = json.loads(sidecar_path.read_text())
         assert payload["case_id"] == "case_alpha"
-        assert payload["organization_id"] == "org_alpha"
+        assert payload["enterprise_id"] == "org_alpha"
         assert payload["linked"] is False
         assert payload["schema_version"] == 1
         assert "uploaded_at" in payload
@@ -139,7 +139,7 @@ class TestFileStorageServiceSidecar:
         result = await storage_service.store_file(
             file_data=b"hello",
             original_filename="log.txt",
-            organization_id="org",
+            enterprise_id="org",
             case_id="case",
             mime_type="text/plain",
         )
@@ -157,7 +157,7 @@ class TestFileStorageServiceSidecar:
         result = await storage_service.store_file(
             file_data=b"data",
             original_filename="a.txt",
-            organization_id="o",
+            enterprise_id="o",
             case_id="c",
             mime_type="text/plain",
         )
@@ -179,7 +179,7 @@ class TestFileStorageServiceSidecar:
         result = await storage_service.store_file(
             file_data=b"bye",
             original_filename="gone.txt",
-            organization_id="o",
+            enterprise_id="o",
             case_id="c",
             mime_type="text/plain",
         )
@@ -203,7 +203,7 @@ class TestFileStorageServiceSidecar:
         result = await storage_service.store_file(
             file_data=b"x",
             original_filename="listed.txt",
-            organization_id="o",
+            enterprise_id="o",
             case_id="c",
             mime_type="text/plain",
         )

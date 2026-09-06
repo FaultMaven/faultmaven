@@ -18,7 +18,7 @@ Usage (``fm-provision-service-account``, installed with the package):
     # Interim single global Slack service account
     fm-provision-service-account --username slack-agent
 
-    # Multi-tenant (TENANT_PROVIDER=multi): the organization is REQUIRED — the
+    # Multi-tenant (TENANT_PROVIDER=multi): the enterprise is REQUIRED — the
     # credential's tenancy travels in its own claim chain, so an org-less one is
     # refused on every request it makes.
     fm-provision-service-account -u slack-agent \
@@ -40,7 +40,9 @@ from faultmaven.config.settings import AuthMode, get_settings
 from faultmaven.container import container
 from faultmaven.modules.auth.domain.services.service_account_provisioning import (
     SERVICE_ACCOUNT_KIND,
+    SLACK_SERVICE_CHANNEL,
     VALID_ACCOUNT_KINDS,
+    VALID_SERVICE_CHANNELS,
     ServiceAccountProvisioningError,
     provision_service_account_credential,
 )
@@ -49,8 +51,9 @@ from faultmaven.modules.auth.domain.services.service_account_provisioning import
 async def provision(
     username: str,
     account_kind: str,
+    service_channel: str | None,
     token_only: bool,
-    organization_id: str | None = None,
+    enterprise_id: str | None = None,
 ) -> bool:
     """Provision the account and print its credential."""
 
@@ -98,7 +101,8 @@ async def provision(
             user_store=user_store,
             token_generator=token_generator,
             account_kind=account_kind,
-            organization_id=organization_id,
+            service_channel=service_channel,
+            enterprise_id=enterprise_id,
         )
     except ServiceAccountProvisioningError as e:
         status(f"❌ {e}")
@@ -113,7 +117,10 @@ async def provision(
     else:
         status(f"\n✅ Found existing account '{user.username}'")
     if credential.account_kind_corrected:
-        status(f"   Corrected account_kind → '{account_kind}'")
+        status(
+            f"   Corrected account_kind → '{account_kind}', "
+            f"service_channel → {service_channel!r}"
+        )
 
     if token_only:
         emit_token(credential.refresh_token)
@@ -126,11 +133,12 @@ async def provision(
     status(f"  User ID:      {user.user_id}")
     status(f"  Username:     {user.username}")
     status(f"  Account kind: {user.account_kind}")
+    status(f"  Serves:       {getattr(user, 'service_channel', None) or '—'}")
     status(f"  Roles:        {user.roles}")
-    if organization_id:
-        # Only under multi-tenant is an organization stamped; showing it makes
+    if enterprise_id:
+        # Only under multi-tenant is an enterprise named; showing it makes
         # the credential's tenant visible to the operator minting it.
-        status(f"  Organization: {getattr(user, 'organization_id', organization_id)}")
+        status(f"  Enterprise:   {getattr(user, 'enterprise_id', enterprise_id)}")
     status("")
     status("=" * 80)
     status("REFRESH TOKEN — shown once, not recoverable. Store it as a secret.")
@@ -166,14 +174,25 @@ def main():
         "-k",
         default=SERVICE_ACCOUNT_KIND,
         choices=sorted(VALID_ACCOUNT_KINDS),
-        help=f"ADR-012 account kind to enforce (default: {SERVICE_ACCOUNT_KIND})",
+        help=f"ADR-017 D6 account kind to enforce (default: {SERVICE_ACCOUNT_KIND})",
     )
     parser.add_argument(
-        "--organization-id",
+        "--service-channel",
+        "-c",
+        default=SLACK_SERVICE_CHANNEL,
+        choices=sorted(VALID_SERVICE_CHANNELS),
+        help=(
+            "Which integration this service account serves (default: "
+            f"{SLACK_SERVICE_CHANNEL}). Ignored for --account-kind individual, "
+            "which serves none"
+        ),
+    )
+    parser.add_argument(
+        "--enterprise-id",
         "-o",
         default=None,
         help=(
-            "FaultMaven organization the credential acts within. Required under "
+            "FaultMaven enterprise the credential acts within. Required under "
             "TENANT_PROVIDER=multi; omit on a single-tenant deployment"
         ),
     )
@@ -188,8 +207,9 @@ def main():
         provision(
             args.username,
             args.account_kind,
+            args.service_channel,
             args.token_only,
-            args.organization_id,
+            args.enterprise_id,
         )
     )
     sys.exit(0 if success else 1)

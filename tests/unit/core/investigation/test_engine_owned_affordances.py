@@ -71,7 +71,7 @@ def _inquiry_case(
         )
     case = Case(
         user_id="u1",
-        organization_id="o1",
+        enterprise_id="o1",
         title="Test",
         description=proposed_statement or "",
         inquiry=inquiry,
@@ -98,7 +98,7 @@ def _investigating_case(*, symptom_verified: bool = False) -> Case:
     )
     case = Case(
         user_id="u1",
-        organization_id="o1",
+        enterprise_id="o1",
         title="Test",
         state=CaseState.INVESTIGATING,
         description="Production API is returning 500s",
@@ -225,7 +225,7 @@ def _insufficient_evidence_case() -> Case:
 
     case = Case(
         user_id="u1",
-        organization_id="o1",
+        enterprise_id="o1",
         title="Test",
         description="intermittent latency",
         state=CaseState.INVESTIGATING,

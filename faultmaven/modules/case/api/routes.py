@@ -46,7 +46,7 @@ from faultmaven.api.exception_handlers import (
 from faultmaven.api.v1.auth_dependencies import (
     get_current_user_id,
     get_current_user_optional,
-    require_actor_organization,
+    require_actor_enterprise,
     require_authentication,
 )
 from faultmaven.api.v1.dependencies import (
@@ -916,32 +916,38 @@ async def delete_case(
         )
 
 
-async def _di_get_creator_account_kind(
+async def _di_get_creator_service_channel(
     raw_request: Request,
     current_user: UserDTO = Depends(require_authentication),
-) -> str:
-    """Resolve the creating user's ``account_kind`` (ADR-012) for source stamping.
+) -> Optional[str]:
+    """Resolve the creating account's ``service_channel`` for source stamping.
 
-    Best-effort: falls back to ``'individual'`` if the user service is
-    unavailable or the lookup fails, so case creation never depends on it.
+    The **channel**, not the kind (ADR-017 D6): there are exactly two kinds of
+    account — a human and a service — and which integration a service account
+    serves is a separate attribute, so a second integration is a new value here
+    rather than a third account kind. Reading the kind would answer 'service'
+    for every integration and could no longer say which one.
+
+    Best-effort: falls back to ``None`` if the user service is unavailable or
+    the lookup fails, so case creation never depends on it.
     """
     user_service = getattr(raw_request.app.state, "user_service", None)
     if user_service is None:
-        return "individual"
+        return None
     try:
         user = await user_service.get_user(current_user.user_id)
-        return getattr(user, "account_kind", "individual") if user else "individual"
+        return getattr(user, "service_channel", None) if user else None
     except Exception as e:
         # Don't fail case creation on this — but do NOT swallow silently: a
         # Slack case mislabeled 'copilot' (source is immutable) is otherwise
         # undetectable.
         logger.warning(
-            "Could not resolve account_kind for user %s; case source will "
+            "Could not resolve service_channel for user %s; case source will "
             "default to 'copilot': %s",
             getattr(current_user, "user_id", "?"),
             e,
         )
-        return "individual"
+        return None
 
 
 @router.post("", response_model=CaseSummary, status_code=status.HTTP_201_CREATED)
@@ -952,7 +958,7 @@ async def create_case(
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     session_service: ISessionService = Depends(_di_get_session_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
-    creator_account_kind: str = Depends(_di_get_creator_account_kind),
+    creator_service_channel: Optional[str] = Depends(_di_get_creator_service_channel),
 ) -> CaseSummary:
     """
     Create a new troubleshooting case (v2.0 milestone-based)
@@ -989,10 +995,11 @@ async def create_case(
                     headers={"x-correlation-id": correlation_id},
                 )
 
-        # Create case using new model. Origin (ADR-012) is derived from the
-        # creator's account kind: a Slack service account → 'slack', otherwise
-        # 'copilot'. Server-derived, not client-provided (not spoofable).
-        source = "slack" if creator_account_kind == "slack" else "copilot"
+        # Create case using new model. Origin is derived from the creating
+        # account's SERVICE CHANNEL (ADR-017 D6): a service account serving
+        # Slack → 'slack', otherwise 'copilot'. Server-derived, not
+        # client-provided (not spoofable).
+        source = "slack" if creator_service_channel == "slack" else "copilot"
         case_entity = await case_service.create_case(
             title=request.title,  # Pass None to trigger auto-generation in service
             description=request.description,
@@ -2125,11 +2132,11 @@ async def _auto_title_case_if_default(
       read against.
 
     The tenant needs no explicit re-binding here *because* of that placement: the
-    global ``bind_request_org_context`` dependency has already bound this
-    request's org in this task. Moving this off the request would silently break
-    that — ``get_current_org_id`` is total, answering the Standalone org for an
-    unbound context rather than failing, so a detached task would not raise, it
-    would quietly address the wrong tenant.
+    global ``bind_request_enterprise_context`` dependency has already bound this
+    request's enterprise in this task. Moving this off the request would silently
+    break that — ``get_current_enterprise_id`` is total, answering the Standalone
+    enterprise for an unbound context rather than failing, so a detached task
+    would not raise, it would quietly address the wrong tenant.
 
     Cost is bounded by construction: it returns immediately unless the title is
     still the placeholder, so a case is named at most once, and a case too thin to
@@ -4440,31 +4447,31 @@ async def extract_knowledge_from_case(
         # were wrong with that, and the store change turns the second from
         # cosmetic into fatal:
         #
-        # 1. The suggestion has to be stamped with the SAME organization the
-        #    review routes scope by, or the reviewer never sees it. Every
-        #    suggestion route — list, get, update, approve, reject, remediate —
-        #    resolves its predicate with ``require_actor_organization``, so
-        #    that is the value the write side owes them. The case's own org is
-        #    the same value on the success path (the case was just fetched
-        #    through the caller's own scoped read), which is exactly why
-        #    reading it off the case was never the SOURCE of the answer.
-        # 2. ``"default"`` is not an organization id. It was a silent
-        #    placeholder while the store was a dict keyed by nothing;
-        #    ``knowledge_suggestions.organization_id`` is a NOT NULL FK to
-        #    ``organizations`` with ``PRAGMA foreign_keys=ON``, so the same
-        #    fallback now fails the INSERT outright — and under PostgreSQL RLS
-        #    it would fail the policy's WITH CHECK as well, because the value
-        #    would not match the session's ``app.current_org_id``.
+        # 1. The suggestion has to be stamped with the SAME tenant the review
+        #    routes scope by, or the reviewer never sees it. Every suggestion
+        #    route — list, get, update, approve, reject, remediate — resolves
+        #    its predicate with ``require_actor_enterprise``, so that is the
+        #    value the write side owes them. The case's own enterprise is the
+        #    same value on the success path (the case was just fetched through
+        #    the caller's own scoped read), which is exactly why reading it off
+        #    the case was never the SOURCE of the answer.
+        # 2. ``"default"`` is not a tenant id. It was a silent placeholder while
+        #    the store was a dict keyed by nothing;
+        #    ``knowledge_suggestions.enterprise_id`` is a NOT NULL FK to
+        #    ``enterprises`` with ``PRAGMA foreign_keys=ON``, so the same
+        #    fallback fails the INSERT outright — and under PostgreSQL RLS it
+        #    would fail the policy's WITH CHECK as well, because the value would
+        #    not match the session's ``app.current_enterprise_id``.
         #
-        # ``require_actor_organization`` refuses with 403 rather than handing
-        # back a value to degrade with, which is the right answer: a request
-        # that owns no tenant has nowhere to put the extraction.
-        organization_id = require_actor_organization(current_user)
+        # ``require_actor_enterprise`` refuses with 403 rather than handing back
+        # a value to degrade with, which is the right answer: a request that
+        # owns no tenant has nowhere to put the extraction.
+        enterprise_id = require_actor_enterprise(current_user)
 
         # Extract knowledge
         suggestion = await suggestion_service.extract_knowledge_from_case(
             case_id=case_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             extracted_by=current_user.user_id,
             include_messages=include_messages,
             include_evidence=include_evidence,

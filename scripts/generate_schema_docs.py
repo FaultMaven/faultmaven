@@ -31,18 +31,25 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Domain assignments. Edit this when tables are added or move.
 TABLE_DOMAIN = {
-    # User domain
+    # User domain — enterprises isolate, organizations bill, teams share
+    # (ADR-017 D1).
     "enterprises": "user",
     "users": "user",
     "organizations": "user",
     "organization_members": "user",
     "teams": "user",
     "team_members": "user",
+    "team_invitations": "user",
     "roles": "user",
     "permissions": "user",
     "role_permissions": "user",
     "user_audit_log": "user",
     "oauth_authorization_codes": "user",
+    "operator_access_audit": "user",
+    "operator_access_grants": "user",
+    "sso_org_mappings": "user",
+    "sso_personal_enterprises": "user",
+    "turn_usage": "user",
     # Case domain
     "cases": "case",
     "case_messages": "case",
@@ -50,7 +57,12 @@ TABLE_DOMAIN = {
     "case_tags": "case",
     "case_checkpoints": "case",
     "case_entities": "case",
+    "causal_nodes": "case",
+    "causal_edges": "case",
+    "causal_node_evidence": "case",
     "evidence": "case",
+    "evidence_needs": "case",
+    "evidence_need_fulfillment": "case",
     "hypotheses": "case",
     "hypothesis_evidence": "case",
     "solutions": "case",
@@ -59,13 +71,13 @@ TABLE_DOMAIN = {
     "reports": "case",
     # Knowledge domain
     "knowledge_items": "knowledge",
-    "knowledge_item_tags": "knowledge",
-    "knowledge_tags": "knowledge",
     "knowledge_suggestions": "knowledge",
     "conversion_jobs": "knowledge",
     "conversion_drafts": "knowledge",
+    # Sharing domain
+    "resource_shares": "knowledge",
     # Config domain
-    "llm_config_overrides": "config",
+    "config_overrides": "config",
 }
 
 
@@ -86,7 +98,11 @@ def _format_column(col) -> str:
     type_str = str(col.type)
     nullable = "" if col.nullable else " NOT NULL"
     default = _format_default(col)
-    pk = " PRIMARY KEY" if col.primary_key and len(col.table.primary_key.columns) == 1 else ""
+    pk = (
+        " PRIMARY KEY"
+        if col.primary_key and len(col.table.primary_key.columns) == 1
+        else ""
+    )
     return f"  {col.name} {type_str}{nullable}{default}{pk}"
 
 
@@ -95,9 +111,7 @@ def _format_fk(fk) -> str:
     target = f"{fk.column.table.name}({fk.column.name})"
     on_delete = f" ON DELETE {fk.ondelete}" if fk.ondelete else ""
     on_update = f" ON UPDATE {fk.onupdate}" if fk.onupdate else ""
-    return (
-        f"  FOREIGN KEY ({fk.parent.name}) REFERENCES {target}{on_delete}{on_update}"
-    )
+    return f"  FOREIGN KEY ({fk.parent.name}) REFERENCES {target}{on_delete}{on_update}"
 
 
 def _format_table_ddl(table) -> str:
@@ -107,7 +121,9 @@ def _format_table_ddl(table) -> str:
     # Columns
     col_lines = [_format_column(c) for c in table.columns]
     lines.extend(c + "," for c in col_lines[:-1])
-    lines.append(col_lines[-1] + ("," if (table.constraints or table.foreign_keys) else ""))
+    lines.append(
+        col_lines[-1] + ("," if (table.constraints or table.foreign_keys) else "")
+    )
 
     # Composite primary key (if more than one PK column)
     pk_cols = [c.name for c in table.primary_key.columns]
@@ -115,14 +131,19 @@ def _format_table_ddl(table) -> str:
         lines.append(f"  PRIMARY KEY ({', '.join(pk_cols)}),")
 
     # Foreign keys
-    fk_lines = [_format_fk(fk) for fk in sorted(table.foreign_keys, key=lambda f: f.parent.name)]
+    fk_lines = [
+        _format_fk(fk) for fk in sorted(table.foreign_keys, key=lambda f: f.parent.name)
+    ]
     lines.extend(line + "," for line in fk_lines)
 
     # Unique constraints (excluding PK)
-    from sqlalchemy import UniqueConstraint, CheckConstraint
+    from sqlalchemy import CheckConstraint, UniqueConstraint
 
     for constraint in table.constraints:
-        if isinstance(constraint, UniqueConstraint) and constraint.columns is not table.primary_key.columns:
+        if (
+            isinstance(constraint, UniqueConstraint)
+            and constraint.columns is not table.primary_key.columns
+        ):
             cols = ", ".join(c.name for c in constraint.columns)
             name = f" CONSTRAINT {constraint.name}" if constraint.name else ""
             lines.append(f" {name} UNIQUE ({cols}),")
@@ -163,9 +184,13 @@ def _format_column_inventory(table) -> str:
             except AttributeError:
                 default = f"`{col.server_default}`"
         pk = "✓" if col.primary_key else ""
-        fks = sorted({f"{fk.column.table.name}.{fk.column.name}" for fk in col.foreign_keys})
+        fks = sorted(
+            {f"{fk.column.table.name}.{fk.column.name}" for fk in col.foreign_keys}
+        )
         fk = ", ".join(f"`{t}`" for t in fks) if fks else ""
-        lines.append(f"| `{col.name}` | {type_str} | {nullable} | {default} | {pk} | {fk} |")
+        lines.append(
+            f"| `{col.name}` | {type_str} | {nullable} | {default} | {pk} | {fk} |"
+        )
     return "\n".join(lines)
 
 
@@ -206,11 +231,7 @@ def generate(domain: str | None = None, table_name: str | None = None) -> str:
         valid_domains = sorted(set(TABLE_DOMAIN.values()))
         raise SystemExit(f"No tables match. Valid domains: {valid_domains}")
 
-    title = (
-        f"# Schema — {domain} domain"
-        if domain
-        else "# Schema — all domains"
-    )
+    title = f"# Schema — {domain} domain" if domain else "# Schema — all domains"
     body = "\n\n---\n\n".join(_render_table(t) for t in tables_to_render)
     return (
         f"{title}\n\n"
@@ -222,7 +243,9 @@ def generate(domain: str | None = None, table_name: str | None = None) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate canonical schema docs from SQLAlchemy models.")
+    parser = argparse.ArgumentParser(
+        description="Generate canonical schema docs from SQLAlchemy models."
+    )
     parser.add_argument(
         "--domain",
         choices=["user", "case", "knowledge", "config"],

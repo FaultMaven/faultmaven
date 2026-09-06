@@ -44,7 +44,13 @@ from faultmaven.modules.knowledge.domain.services.conversion_service import (
 
 pytestmark = pytest.mark.integration
 
-ORG = "00000000-0000-0000-0000-000000000001"
+#: The ISOLATION key every seeded row carries (ADR-017 D1). Named ``ORG``
+#: while the organization was the isolation boundary.
+ENTERPRISE_ID = "00000000-0000-0000-0000-000000000001"
+
+#: A billing organization in that enterprise (ADR-017 D2) — a parent row only;
+#: nothing here reads it and no visibility decision may.
+BILLING_ORG_ID = "00000000-0000-0000-0000-0000000000b1"
 
 RUNBOOK = """---
 id: placeholder
@@ -97,13 +103,13 @@ async def session_factory(engine):
     async with factory() as session:
         session.add(
             EnterpriseModel(
-                enterprise_id=ORG, name="Default Enterprise", slug="default"
+                enterprise_id=ENTERPRISE_ID, name="Default Enterprise", slug="default"
             )
         )
         session.add(
             OrganizationModel(
-                organization_id=ORG,
-                enterprise_id=ORG,
+                organization_id=BILLING_ORG_ID,
+                enterprise_id=ENTERPRISE_ID,
                 name="Default Org",
                 slug="default-org",
             )
@@ -178,7 +184,7 @@ async def _convert(service, tmp_path, titles):
             original_filename="doc.md",
             scope="global",
             user_id="user_x",
-            organization_id=ORG,
+            enterprise_id=ENTERPRISE_ID,
         )
 
 
@@ -196,7 +202,7 @@ class TestACancelledJobCanBeRead:
             session.add(
                 UploadedFileModel(
                     file_id="file_c",
-                    organization_id=ORG,
+                    enterprise_id=ENTERPRISE_ID,
                     uploaded_by="user_x",
                     filename="d.md",
                     size_bytes=1,
@@ -210,7 +216,7 @@ class TestACancelledJobCanBeRead:
                 ConversionJobModel(
                     id="conv_cancelled",
                     user_id="user_x",
-                    organization_id=ORG,
+                    enterprise_id=ENTERPRISE_ID,
                     scope="global",
                     status="cancelled",
                     source_file_id="file_c",

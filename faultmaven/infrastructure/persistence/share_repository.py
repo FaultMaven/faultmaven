@@ -34,6 +34,7 @@ def _model_to_domain(m: ResourceShareModel) -> ResourceShare:
         resource_id=m.resource_id,
         scope_type=m.scope_type,
         scope_id=m.scope_id,
+        enterprise_id=m.enterprise_id,
         organization_id=m.organization_id,
         created_by=m.created_by,
         created_at=m.created_at,
@@ -65,16 +66,22 @@ class PostgreSQLShareRepository(IShareRepository):
         resource_id: str,
         scope_type: str,
         scope_id: str,
-        organization_id: str,
+        enterprise_id: str,
+        organization_id: Optional[str] = None,
         created_by: Optional[str] = None,
     ) -> ResourceShare:
-        """Share a resource to a scope (idempotent upsert)."""
+        """Share a resource to a scope (idempotent upsert).
+
+        ``enterprise_id`` is the isolation key the read allowlist matches on;
+        ``organization_id`` is billing attribution and matches nothing.
+        """
         stmt = dialect_insert(self.db, ResourceShareModel).values(
             share_id=str(uuid.uuid4()),
             resource_type=resource_type,
             resource_id=resource_id,
             scope_type=scope_type,
             scope_id=scope_id,
+            enterprise_id=enterprise_id,
             organization_id=organization_id,
             created_by=created_by,
         )
@@ -149,14 +156,18 @@ class PostgreSQLShareRepository(IShareRepository):
         resource_type: str,
         scope_type: str,
         scope_ids: List[str],
-        organization_id: str,
+        enterprise_id: str,
     ) -> List[str]:
         """Resource ids of ``resource_type`` shared to ANY of ``scope_ids``.
 
-        Tenant-scoped: only shares stamped with ``organization_id`` are
-        allowlist entries. Fail-closed on a falsy org — no query, no ids.
+        Tenant-scoped: only shares stamped with ``enterprise_id`` are allowlist
+        entries. Fail-closed on a falsy tenant — no query, no ids.
+
+        The match is the ENTERPRISE, not the organization (ADR-017 D4): that is
+        what lets one team span two cost centres while still refusing anything
+        from outside the wall.
         """
-        if not scope_ids or not organization_id:
+        if not scope_ids or not enterprise_id:
             return []
         stmt = (
             select(ResourceShareModel.resource_id)
@@ -165,10 +176,11 @@ class PostgreSQLShareRepository(IShareRepository):
                 ResourceShareModel.scope_type == scope_type,
                 ResourceShareModel.scope_id.in_(scope_ids),
                 # The share row must belong to the requesting tenant. Without
-                # it, a row stamped with a foreign org would grant vector- and
-                # list-allowlist visibility across tenants — the same predicate
-                # #871 added to the inventory clause's share sub-select.
-                ResourceShareModel.organization_id == organization_id,
+                # it, a row stamped with a foreign enterprise would grant
+                # vector- and list-allowlist visibility across tenants — the
+                # same predicate #871 added to the inventory clause's share
+                # sub-select.
+                ResourceShareModel.enterprise_id == enterprise_id,
             )
             .distinct()
         )

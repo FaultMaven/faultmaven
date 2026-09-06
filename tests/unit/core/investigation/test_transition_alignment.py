@@ -44,7 +44,7 @@ def _make_inquiry_case():
         title="Alignment test",
         state=CaseState.INQUIRY,
         user_id="user_test",
-        organization_id="org_test",
+        enterprise_id="org_test",
         description="Alignment test description",
         problem_verification=ProblemVerification(
             symptom_statement="Alignment test symptom",

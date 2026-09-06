@@ -5,18 +5,19 @@ for the SSO just-in-time provisioning audit trail (ADR-015 PR 7); any future
 security-relevant event (logins, role grants, shares) writes through the same
 interface.
 
-Tenancy posture: ``user_audit_log`` is RLS-tenanted (migration 018 keys its
-policy on ``organization_id``). When the caller does not supply an
-organization, the row is stamped with the current tenant-context org — the
-same value the engine applies to the transaction as ``app.current_org_id`` —
-so the INSERT satisfies the policy's WITH CHECK under the limited
-``faultmaven_app`` role instead of writing a NULL that RLS rejects.
+Tenancy posture: ``user_audit_log`` is RLS-tenanted on ``enterprise_id``
+(ADR-017 D1). When the caller does not supply one, the row is stamped with the
+current tenant-context enterprise — the same value the engine applies to the
+transaction as ``app.current_enterprise_id`` — so the INSERT satisfies the
+policy's WITH CHECK under the limited ``faultmaven_app`` role instead of writing
+a NULL the column forbids. ``organization_id`` beside it is nullable billing
+attribution and is stamped from the request's billing organization, or left NULL.
 
 ⚠️ ``TENANT_PROVIDER=multi`` precondition: an unauthenticated caller (e.g. the
-SSO callback) leaves the tenant context at the standalone default, whose org
-row does not exist under multi — the FK then fails and a fail-open caller
-loses the entry. Correct org stamping on the SSO path is part of the deferred
-WorkOS-org→FM-org mapping (ADR-015 D3); resolve it before flipping multi.
+SSO callback) leaves the tenant context at the standalone default, whose
+enterprise row exists but is the sentinel rather than a tenant — the audit row
+lands there. That is the deliberate fail-open direction for a pre-auth event:
+losing the record is worse than storing it under the sentinel.
 """
 
 import json
@@ -27,7 +28,10 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.config.tenant_context import get_current_org_id
+from faultmaven.config.tenant_context import (
+    get_current_billing_organization_id,
+    get_current_enterprise_id,
+)
 from faultmaven.infrastructure.persistence.models import UserAuditLogModel
 from faultmaven.models.interfaces_user import (
     AuditCategory,
@@ -66,6 +70,7 @@ def _model_to_domain(model: UserAuditLogModel) -> UserAuditLog:
         ip_address=model.ip_address,
         user_agent=model.user_agent,
         session_id=model.session_id,
+        enterprise_id=model.enterprise_id,
         organization_id=model.organization_id,
         event_at=model.created_at,
         success=model.success,
@@ -89,13 +94,15 @@ class PostgreSQLAuditRepository(IAuditRepository):
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
         session_id: Optional[str] = None,
+        enterprise_id: Optional[str] = None,
         organization_id: Optional[str] = None,
         success: bool = True,
     ) -> bool:
-        """Persist one audit event. See module docstring for the org stamping."""
+        """Persist one audit event. See the module docstring for the stamping."""
         model = UserAuditLogModel(
             user_id=user_id,
-            organization_id=organization_id or get_current_org_id(),
+            enterprise_id=enterprise_id or get_current_enterprise_id(),
+            organization_id=(organization_id or get_current_billing_organization_id()),
             event_type=(
                 event_type.value
                 if isinstance(event_type, AuditEventType)
@@ -133,13 +140,13 @@ class PostgreSQLAuditRepository(IAuditRepository):
         result = await self.db.execute(stmt)
         return [_model_to_domain(m) for m in result.scalars().all()]
 
-    async def get_organization_audit_log(
-        self, organization_id: str, limit: int = 100, offset: int = 0
+    async def get_enterprise_audit_log(
+        self, enterprise_id: str, limit: int = 100, offset: int = 0
     ) -> List[UserAuditLog]:
-        """Get audit log entries for an organization, newest first."""
+        """Get audit log entries for an enterprise, newest first."""
         stmt = (
             select(UserAuditLogModel)
-            .where(UserAuditLogModel.organization_id == organization_id)
+            .where(UserAuditLogModel.enterprise_id == enterprise_id)
             .order_by(UserAuditLogModel.created_at.desc())
             .limit(limit)
             .offset(offset)

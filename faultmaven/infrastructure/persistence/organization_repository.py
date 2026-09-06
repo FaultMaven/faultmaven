@@ -223,11 +223,29 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
     async def add_member(
         self, organization_id: str, user_id: str, role_id: str
     ) -> bool:
-        """Add user to organization with role (upsert)."""
+        """Add user to organization with role (upsert).
+
+        ``enterprise_id`` is derived from the organization rather than accepted
+        from the caller: ``organization_members`` is RLS-tenanted on it, and the
+        roster row must land in the same enterprise as the organization it is a
+        roster for. Deriving it here is also what makes the row impossible to
+        stamp with a foreign tenant — there is no argument to get wrong.
+        """
         now = datetime.now(timezone.utc)
+        organization = await self.db.get(OrganizationModel, organization_id)
+        if organization is None:
+            # No organization, no roster row. Refusing beats writing one with a
+            # guessed enterprise, which RLS would reject anyway — with an
+            # IntegrityError several frames from the cause.
+            logger.warning(
+                "Refusing to add a member to unknown organization %s",
+                organization_id,
+            )
+            return False
         stmt = dialect_insert(self.db, OrganizationMemberModel).values(
             user_id=user_id,
             organization_id=organization_id,
+            enterprise_id=organization.enterprise_id,
             role_id=role_id,
             joined_at=now,
             updated_at=now,

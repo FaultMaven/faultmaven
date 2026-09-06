@@ -218,7 +218,7 @@ class TestAdminEndpointActuallyRevokes:
             _admin_request(auth_service),
             operator=user,
             user_store=_FakeUserStore(USER_ID),
-            scope=OperatorUserScope(organizations=None),
+            scope=OperatorUserScope(users=None),
         )
 
         # The token no longer authenticates on any path.
@@ -244,7 +244,7 @@ class TestAdminEndpointActuallyRevokes:
             USER_ID,
             _admin_request(auth_service),
             operator=_user(),
-            scope=OperatorUserScope(organizations=None),
+            scope=OperatorUserScope(users=None),
             user_store=_FakeUserStore(USER_ID),
         )
 
@@ -274,7 +274,7 @@ class TestAdminEndpointActuallyRevokes:
                 "revoked-user",  # the username, not the user_id
                 _admin_request(auth_service),
                 operator=_user(),
-                scope=OperatorUserScope(organizations=None),
+                scope=OperatorUserScope(users=None),
                 user_store=_FakeUserStore(USER_ID),
             )
 
@@ -313,7 +313,7 @@ class TestAdminEndpointActuallyRevokes:
                 USER_ID,
                 _admin_request(auth_service),
                 operator=_user(),
-                scope=OperatorUserScope(organizations=None),
+                scope=OperatorUserScope(users=None),
                 user_store=_BrokenUserStore(),
             )
 
@@ -339,7 +339,7 @@ class TestAdminEndpointActuallyRevokes:
                 USER_ID,
                 _admin_request(auth_service),
                 operator=_user(),
-                scope=OperatorUserScope(organizations=None),
+                scope=OperatorUserScope(users=None),
                 user_store=_FakeUserStore(USER_ID),
             )
         assert exc_info.value.status_code == 500
@@ -991,7 +991,7 @@ class TestServiceFailurePosture:
         await service.assign_role(
             user_id=user.user_id,
             role="admin",
-            organization_id="org-769",
+            enterprise_id="ent-769",
             admin_user_id="some-admin",
         )
         assert order == ["save", "revoke"], "assign_role must persist first"
@@ -1000,7 +1000,7 @@ class TestServiceFailurePosture:
         await service.remove_role(
             user_id=user.user_id,
             role="admin",
-            organization_id="org-769",
+            enterprise_id="ent-769",
             admin_user_id="some-admin",
         )
         assert order == ["save", "revoke"], "remove_role must persist first"

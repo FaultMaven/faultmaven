@@ -30,7 +30,6 @@ from faultmaven.infrastructure.persistence.models import (
     ConversionDraftModel,
     ConversionJobModel,
     EnterpriseModel,
-    OrganizationModel,
     UploadedFileModel,
 )
 from faultmaven.modules.knowledge.domain.models.conversion import (
@@ -57,7 +56,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
 from faultmaven.modules.knowledge.domain.services.conversion_service import (
     ANALYSIS_SYSTEM_PROMPT,
     CONVERSION_SYSTEM_PROMPT,
-    DEFAULT_ORGANIZATION_ID,
+    DEFAULT_ENTERPRISE_ID,
     RUNBOOK_MAX_TOKENS_CEILING,
     ConversionRejectedError,
     ConversionService,
@@ -360,6 +359,7 @@ class TestConvertDocumentPipeline:
                     original_filename="test_document.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
         # Assert
@@ -401,6 +401,7 @@ class TestConvertDocumentPipeline:
                     original_filename="test_document.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
         # 1 analysis call + 1 conversion call
@@ -514,6 +515,7 @@ class TestMultiRunbookSplitting:
                     original_filename="test_document.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
         assert result.status == ConversionStatus.COMPLETED
@@ -554,6 +556,7 @@ class TestContentTriageRejection:
                     original_filename="architecture_overview.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
 
@@ -584,6 +587,7 @@ class TestTokenLimitRejection:
                     original_filename="huge_document.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
     @pytest.mark.asyncio
@@ -658,6 +662,7 @@ class TestPIIRedaction:
                     original_filename="test.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
         # The text sent to analysis LLM must contain the redaction placeholder
@@ -808,6 +813,7 @@ class TestPartialFailure:
                     original_filename="test_document.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
         assert result.status == ConversionStatus.PARTIAL
@@ -849,6 +855,7 @@ class TestPartialFailure:
                     original_filename="test_document.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
         assert result.status == ConversionStatus.FAILED
@@ -918,6 +925,7 @@ class TestDeduplication:
                     original_filename="test_document.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
         # Only 1 draft because duplicates removed
@@ -979,6 +987,7 @@ class TestDeduplication:
                     original_filename="test_document.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
         # Sorted symptom_class tuples match, so deduplicated to 1
@@ -1025,6 +1034,7 @@ class TestConversionRejectedError:
                     original_filename="architecture_overview.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
     @pytest.mark.asyncio
@@ -1054,6 +1064,7 @@ class TestConversionRejectedError:
                     original_filename="some_doc.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
     @pytest.mark.asyncio
@@ -1080,6 +1091,7 @@ class TestConversionRejectedError:
                     original_filename="binary.bin",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
 
@@ -1123,6 +1135,7 @@ class TestPersistenceSkipped:
                     original_filename="test.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
         # Should complete without DB errors
@@ -1164,6 +1177,7 @@ class TestSourceFileRetention:
                     original_filename="test_document.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
         # Source metadata should be captured (files not retained on disk per architecture)
@@ -1358,7 +1372,7 @@ class TestConvertFromCaseDedup:
 
         call_count = 0
 
-        async def slow_impl(req, user_id, organization_id=None, team_id=None):
+        async def slow_impl(req, user_id, enterprise_id=None, team_id=None):
             nonlocal call_count
             call_count += 1
             # Yield long enough for the second call to enter and find the
@@ -1368,8 +1382,8 @@ class TestConvertFromCaseDedup:
 
         with patch.object(service, "_convert_from_case_impl", side_effect=slow_impl):
             results = await asyncio.gather(
-                service.convert_from_case(request, user_id="u1"),
-                service.convert_from_case(request, user_id="u1"),
+                service.convert_from_case(request, user_id="u1", enterprise_id=None),
+                service.convert_from_case(request, user_id="u1", enterprise_id=None),
             )
 
         assert call_count == 1, "Impl should run once when two callers race"
@@ -1384,14 +1398,18 @@ class TestConvertFromCaseDedup:
 
         call_count = 0
 
-        async def fast_impl(req, user_id, organization_id=None, team_id=None):
+        async def fast_impl(req, user_id, enterprise_id=None, team_id=None):
             nonlocal call_count
             call_count += 1
             return _make_fake_response(conversion_id=f"conv_seq_{call_count}")
 
         with patch.object(service, "_convert_from_case_impl", side_effect=fast_impl):
-            first = await service.convert_from_case(request, user_id="u1")
-            second = await service.convert_from_case(request, user_id="u1")
+            first = await service.convert_from_case(
+                request, user_id="u1", enterprise_id=None
+            )
+            second = await service.convert_from_case(
+                request, user_id="u1", enterprise_id=None
+            )
 
         assert call_count == 2, "Sequential calls should each run impl"
         assert first.conversion_id == "conv_seq_1"
@@ -1403,11 +1421,11 @@ class TestConvertFromCaseDedup:
         `_inflight_runbook` so it does not leak."""
         request = self._make_request("case-cleanup-1")
 
-        async def fast_impl(req, user_id, organization_id=None, team_id=None):
+        async def fast_impl(req, user_id, enterprise_id=None, team_id=None):
             return _make_fake_response()
 
         with patch.object(service, "_convert_from_case_impl", side_effect=fast_impl):
-            await service.convert_from_case(request, user_id="u1")
+            await service.convert_from_case(request, user_id="u1", enterprise_id=None)
 
         assert request.case_id not in service._inflight_runbook
 
@@ -1417,12 +1435,14 @@ class TestConvertFromCaseDedup:
         retry can proceed."""
         request = self._make_request("case-exc-1")
 
-        async def failing_impl(req, user_id, organization_id=None, team_id=None):
+        async def failing_impl(req, user_id, enterprise_id=None, team_id=None):
             raise RuntimeError("boom")
 
         with patch.object(service, "_convert_from_case_impl", side_effect=failing_impl):
             with pytest.raises(RuntimeError, match="boom"):
-                await service.convert_from_case(request, user_id="u1")
+                await service.convert_from_case(
+                    request, user_id="u1", enterprise_id=None
+                )
 
         assert request.case_id not in service._inflight_runbook
 
@@ -1435,7 +1455,7 @@ class TestConvertFromCaseDedup:
 
         call_count = 0
 
-        async def slow_impl(req, user_id, organization_id=None, team_id=None):
+        async def slow_impl(req, user_id, enterprise_id=None, team_id=None):
             nonlocal call_count
             call_count += 1
             await asyncio.sleep(0.05)
@@ -1443,8 +1463,8 @@ class TestConvertFromCaseDedup:
 
         with patch.object(service, "_convert_from_case_impl", side_effect=slow_impl):
             results = await asyncio.gather(
-                service.convert_from_case(req_a, user_id="u1"),
-                service.convert_from_case(req_b, user_id="u1"),
+                service.convert_from_case(req_a, user_id="u1", enterprise_id=None),
+                service.convert_from_case(req_b, user_id="u1", enterprise_id=None),
             )
 
         assert call_count == 2, "Different cases must each run impl"
@@ -1562,7 +1582,7 @@ class TestCaseConversionGuards:
     async def test_missing_root_cause_rejected(self, service):
         with pytest.raises(ConversionRejectedError) as ei:
             await service._convert_from_case_impl(
-                self._request(root_cause=None), user_id="u1"
+                self._request(root_cause=None), user_id="u1", enterprise_id=None
             )
         assert ei.value.error_code == ConversionErrorCode.MISSING_ROOT_CAUSE
 
@@ -1570,7 +1590,7 @@ class TestCaseConversionGuards:
     async def test_blank_root_cause_rejected(self, service):
         with pytest.raises(ConversionRejectedError) as ei:
             await service._convert_from_case_impl(
-                self._request(root_cause="   "), user_id="u1"
+                self._request(root_cause="   "), user_id="u1", enterprise_id=None
             )
         assert ei.value.error_code == ConversionErrorCode.MISSING_ROOT_CAUSE
 
@@ -1580,7 +1600,9 @@ class TestCaseConversionGuards:
             return_value=self._existing(DraftStatus.DRAFT)
         )
         with pytest.raises(ConversionRejectedError) as ei:
-            await service._convert_from_case_impl(self._request(), user_id="u1")
+            await service._convert_from_case_impl(
+                self._request(), user_id="u1", enterprise_id=None
+            )
         assert ei.value.error_code == ConversionErrorCode.CASE_RUNBOOK_EXISTS
 
     @pytest.mark.asyncio
@@ -1589,7 +1611,9 @@ class TestCaseConversionGuards:
             return_value=self._existing(DraftStatus.VERIFIED)
         )
         with pytest.raises(ConversionRejectedError) as ei:
-            await service._convert_from_case_impl(self._request(), user_id="u1")
+            await service._convert_from_case_impl(
+                self._request(), user_id="u1", enterprise_id=None
+            )
         assert ei.value.error_code == ConversionErrorCode.CASE_RUNBOOK_EXISTS
 
     @pytest.mark.asyncio
@@ -1603,7 +1627,9 @@ class TestCaseConversionGuards:
             side_effect=RuntimeError("reached generation")
         )
         with pytest.raises(RuntimeError, match="reached generation"):
-            await service._convert_from_case_impl(self._request(), user_id="u1")
+            await service._convert_from_case_impl(
+                self._request(), user_id="u1", enterprise_id=None
+            )
 
     @pytest.mark.asyncio
     async def test_no_prior_conversion_allows_generation(self, service):
@@ -1613,7 +1639,9 @@ class TestCaseConversionGuards:
             side_effect=RuntimeError("reached generation")
         )
         with pytest.raises(RuntimeError, match="reached generation"):
-            await service._convert_from_case_impl(self._request(), user_id="u1")
+            await service._convert_from_case_impl(
+                self._request(), user_id="u1", enterprise_id=None
+            )
 
 
 # =============================================================================
@@ -1687,27 +1715,20 @@ async def live_case_engine():
 
 @pytest.fixture
 async def live_case_session_factory(live_case_engine):
-    """Session factory pre-seeded with the default enterprise + organization so
-    the NOT NULL org FKs on the conversion chain bind. One factory, shared by
-    every ConversionService in a test — the single database two replicas race
-    over."""
+    """Session factory pre-seeded with the default enterprise so the NOT NULL
+    ``enterprise_id`` FKs on the conversion chain bind. No organization row: it
+    is billing attribution and nullable (ADR-017 D2), so seeding one would only
+    hide a writer that stamps the wrong column. One factory, shared by every
+    ConversionService in a test — the single database two replicas race over."""
     factory = async_sessionmaker(
         live_case_engine, class_=AsyncSession, expire_on_commit=False
     )
     async with factory() as session:
         session.add(
             EnterpriseModel(
-                enterprise_id=DEFAULT_ORGANIZATION_ID,
+                enterprise_id=DEFAULT_ENTERPRISE_ID,
                 name="Default Enterprise",
                 slug="default",
-            )
-        )
-        session.add(
-            OrganizationModel(
-                organization_id=DEFAULT_ORGANIZATION_ID,
-                enterprise_id=DEFAULT_ORGANIZATION_ID,
-                name="Default Org",
-                slug="default-org",
             )
         )
         await session.commit()
@@ -1749,7 +1770,7 @@ async def _insert_case_job(
         session.add(
             UploadedFileModel(
                 file_id=file_id,
-                organization_id=DEFAULT_ORGANIZATION_ID,
+                enterprise_id=DEFAULT_ENTERPRISE_ID,
                 case_id=None,
                 uploaded_by="u1",
                 filename="src",
@@ -1764,7 +1785,7 @@ async def _insert_case_job(
             ConversionJobModel(
                 id=conversion_id,
                 user_id="u1",
-                organization_id=DEFAULT_ORGANIZATION_ID,
+                enterprise_id=DEFAULT_ENTERPRISE_ID,
                 scope="personal",
                 status=status.value,
                 source_file_id=file_id,
@@ -1794,7 +1815,7 @@ async def _insert_case_job(
             session.add(
                 ConversionDraftModel(
                     id=d.draft_id,
-                    organization_id=DEFAULT_ORGANIZATION_ID,
+                    enterprise_id=DEFAULT_ENTERPRISE_ID,
                     conversion_id=conversion_id,
                     runbook_id=d.runbook_id,
                     title=d.title,
@@ -1853,7 +1874,7 @@ class TestPersistJobLiveCaseKey:
         await svc._persist_job(
             conversion_id="conv-case-live",
             user_id="u1",
-            organization_id=DEFAULT_ORGANIZATION_ID,
+            enterprise_id=DEFAULT_ENTERPRISE_ID,
             scope="personal",
             team_id=None,
             status=ConversionStatus.COMPLETED,
@@ -1875,7 +1896,7 @@ class TestPersistJobLiveCaseKey:
         await svc._persist_job(
             conversion_id="conv-doc",
             user_id="u1",
-            organization_id=DEFAULT_ORGANIZATION_ID,
+            enterprise_id=DEFAULT_ENTERPRISE_ID,
             scope="personal",
             team_id=None,
             status=ConversionStatus.COMPLETED,
@@ -1897,7 +1918,7 @@ class TestPersistJobLiveCaseKey:
         await svc._persist_job(
             conversion_id="conv-failed",
             user_id="u1",
-            organization_id=DEFAULT_ORGANIZATION_ID,
+            enterprise_id=DEFAULT_ENTERPRISE_ID,
             scope="personal",
             team_id=None,
             status=ConversionStatus.FAILED,
@@ -2019,8 +2040,12 @@ class TestCrossReplicaLiveCaseRace:
         winner = _stubbed_service()
         loser = _stubbed_service()
 
-        resp_winner = await winner.convert_from_case(request, user_id="u1")
-        resp_loser = await loser.convert_from_case(request, user_id="u1")
+        resp_winner = await winner.convert_from_case(
+            request, user_id="u1", enterprise_id=None
+        )
+        resp_loser = await loser.convert_from_case(
+            request, user_id="u1", enterprise_id=None
+        )
 
         # The loser does NOT raise; it returns the winner's conversion.
         assert resp_loser.conversion_id == resp_winner.conversion_id
@@ -2050,7 +2075,7 @@ class TestRegenerationAfterDiscard:
             return svc
 
         svc = _stubbed_service()
-        first = await svc.convert_from_case(request, user_id="u1")
+        first = await svc.convert_from_case(request, user_id="u1", enterprise_id=None)
         job = await _job_row(live_case_session_factory, first.conversion_id)
         assert job.live_case_id == "case-regen"
 
@@ -2060,7 +2085,7 @@ class TestRegenerationAfterDiscard:
         assert await _count_live_case_keys(live_case_session_factory) == 0
 
         # Second conversion succeeds (no unique violation) and now holds the key.
-        second = await svc.convert_from_case(request, user_id="u1")
+        second = await svc.convert_from_case(request, user_id="u1", enterprise_id=None)
         assert second.conversion_id != first.conversion_id
         assert second.status == ConversionStatus.COMPLETED
         new_job = await _job_row(live_case_session_factory, second.conversion_id)
@@ -2332,6 +2357,7 @@ class TestSymptomClassProducePath:
                 filename="case-derived",
                 conversion_id="conv_test",
                 user_id="user-123",
+                enterprise_id=None,
             )
 
         # The prompt sent to the model must not smuggle an off-vocab placeholder.
@@ -2378,7 +2404,9 @@ class TestSymptomClassProducePath:
             )
         )
         with patch.object(service, "_convert_single_failure_mode", capture):
-            await service._convert_from_case_impl(request, user_id="user-1")
+            await service._convert_from_case_impl(
+                request, user_id="user-1", enterprise_id=None
+            )
 
         built = capture.await_args.kwargs["failure_mode"]
         assert built.symptom_class == []
@@ -2410,7 +2438,9 @@ class TestSymptomClassProducePath:
             )
         )
         with patch.object(service, "_convert_single_failure_mode", capture):
-            await service._convert_from_case_impl(request, user_id="user-1")
+            await service._convert_from_case_impl(
+                request, user_id="user-1", enterprise_id=None
+            )
 
         assert capture.await_args.kwargs["failure_mode"].symptom_class == ["timeout"]
 
@@ -2484,6 +2514,7 @@ class TestTruncatedRunbookIsNeverPersisted:
                     original_filename="test_document.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
         assert result.drafts == []
@@ -2530,6 +2561,7 @@ class TestTruncatedRunbookIsNeverPersisted:
                     original_filename="test_document.md",
                     scope="global",
                     user_id="user-123",
+                    enterprise_id=None,
                 )
 
         assert result.status == ConversionStatus.COMPLETED
@@ -2568,6 +2600,7 @@ class TestTruncatedRunbookIsNeverPersisted:
                         original_filename="test_document.md",
                         scope="global",
                         user_id="user-123",
+                        enterprise_id=None,
                     )
 
         assert "truncated" in str(exc.value).lower()
@@ -2584,8 +2617,8 @@ class TestPersistJobOrgStamp:
 
     Under PostgreSQL the RLS policy from migration 018 is ``FOR ALL`` with the
     USING expression doubling as the WITH CHECK, so a row whose
-    ``organization_id`` differs from ``app.current_org_id`` is *refused*, not
-    merely hidden. ``app.current_org_id`` comes from the tenant contextvar (the
+    ``enterprise_id`` differs from ``app.current_enterprise_id`` is *refused*, not
+    merely hidden. ``app.current_enterprise_id`` comes from the tenant contextvar (the
     engine's ``begin`` listener), so a writer that resolves a missing org to a
     hardcoded single-tenant sentinel writes a row its own transaction may not
     write — the #1143 failure. These tests assert the stamped value, which makes
@@ -2593,29 +2626,23 @@ class TestPersistJobOrgStamp:
     """
 
     @staticmethod
-    async def _seed_org(session_factory, org_id: str) -> None:
+    async def _seed_enterprise(session_factory, enterprise_id: str) -> None:
         async with session_factory() as session:
             session.add(
                 EnterpriseModel(
-                    enterprise_id=org_id, name="Guest Enterprise", slug=f"e-{org_id}"
-                )
-            )
-            session.add(
-                OrganizationModel(
-                    organization_id=org_id,
-                    enterprise_id=org_id,
-                    name="Guest Org",
-                    slug=f"o-{org_id}",
+                    enterprise_id=enterprise_id,
+                    name="Guest Enterprise",
+                    slug=f"e-{enterprise_id}",
                 )
             )
             await session.commit()
 
     @staticmethod
-    async def _run_persist(service, conversion_id: str, organization_id, tmp_path):
+    async def _run_persist(service, conversion_id: str, enterprise_id, tmp_path):
         await service._persist_job(
             conversion_id=conversion_id,
             user_id="u1",
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             scope="personal",
             team_id=None,
             status=ConversionStatus.COMPLETED,
@@ -2656,8 +2683,8 @@ class TestPersistJobOrgStamp:
                 .scalars()
                 .all()
             )
-            return {job.organization_id, upload.organization_id} | {
-                d.organization_id for d in drafts
+            return {job.enterprise_id, upload.enterprise_id} | {
+                d.enterprise_id for d in drafts
             }
 
     @pytest.mark.asyncio
@@ -2666,21 +2693,21 @@ class TestPersistJobOrgStamp:
     ):
         """A caller that supplies no org gets the tenant the session is bound to.
 
-        The regression: it used to get ``DEFAULT_ORGANIZATION_ID`` — correct in
+        The regression: it used to get ``DEFAULT_ENTERPRISE_ID`` — correct in
         a single-tenant deployment by coincidence, and the sentinel org (which
         no tenant may write) everywhere else.
         """
-        from faultmaven.config.tenant_context import _current_org_id
+        from faultmaven.config.tenant_context import _current_enterprise_id
 
         guest_org = "org_guest_7f2a"
-        await self._seed_org(live_case_session_factory, guest_org)
+        await self._seed_enterprise(live_case_session_factory, guest_org)
         service = _make_live_case_service(live_case_session_factory)
 
-        token = _current_org_id.set(guest_org)
+        token = _current_enterprise_id.set(guest_org)
         try:
             await self._run_persist(service, "conv_org_ctx", None, tmp_path)
         finally:
-            _current_org_id.reset(token)
+            _current_enterprise_id.reset(token)
 
         assert await self._stamped_orgs(live_case_session_factory, "conv_org_ctx") == {
             guest_org
@@ -2694,19 +2721,19 @@ class TestPersistJobOrgStamp:
         self, live_case_session_factory, tmp_path
     ):
         """An explicit org is the more specific answer and is used verbatim."""
-        from faultmaven.config.tenant_context import _current_org_id
+        from faultmaven.config.tenant_context import _current_enterprise_id
 
         explicit_org = "org_explicit_11b3"
-        await self._seed_org(live_case_session_factory, explicit_org)
+        await self._seed_enterprise(live_case_session_factory, explicit_org)
         service = _make_live_case_service(live_case_session_factory)
 
-        token = _current_org_id.set("org_ambient_beef")
+        token = _current_enterprise_id.set("org_ambient_beef")
         try:
             await self._run_persist(
                 service, "conv_org_explicit", explicit_org, tmp_path
             )
         finally:
-            _current_org_id.reset(token)
+            _current_enterprise_id.reset(token)
 
         assert await self._stamped_orgs(
             live_case_session_factory, "conv_org_explicit"
@@ -2727,7 +2754,7 @@ class TestPersistJobOrgStamp:
 
         assert await self._stamped_orgs(
             live_case_session_factory, "conv_org_standalone"
-        ) == {DEFAULT_ORGANIZATION_ID}
+        ) == {DEFAULT_ENTERPRISE_ID}
 
     def test_conversion_source_upload_stays_case_less(self):
         """The synthetic ``uploaded_files`` row must NOT carry ``case_id``.

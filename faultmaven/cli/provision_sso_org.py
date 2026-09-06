@@ -73,8 +73,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-import uuid
-from datetime import datetime, timezone
 
 from faultmaven.config.constants import STANDALONE_TEAM_NAME
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
@@ -129,14 +127,12 @@ async def _get_or_create_organization(
     )
 
 
-async def _ensure_mapping(
-    session, *, provider_org_id: str, organization_id: str
-) -> bool:
+async def _ensure_mapping(session, *, provider_org_id: str, enterprise_id: str) -> bool:
     """Operator shape: a conflict is a refusal a human resolves, never adopted."""
     return await _shared_ensure_mapping(
         session,
         provider_org_id=provider_org_id,
-        organization_id=organization_id,
+        enterprise_id=enterprise_id,
     )
 
 
@@ -181,7 +177,7 @@ async def provision(
             )
 
             team, team_created = await _get_or_create_default_team(
-                session, organization_id=organization.organization_id
+                session, enterprise_id=enterprise.enterprise_id
             )
 
             # Is this run about to bind the IdP org to a tenant it is not
@@ -190,56 +186,34 @@ async def provision(
             # re-run (mapping already points here) stays quiet.
             prior = await _find_mapping(session, provider_org_id=workos_org_id)
             binding_is_new = (
-                prior is None or prior.organization_id != organization.organization_id
+                prior is None or prior.enterprise_id != enterprise.enterprise_id
             )
 
-            if binding_is_new and not org_created:
-                # A brand-new IdP binding onto an organization this run did not
-                # create. Legitimate (a second IdP org for an existing customer),
-                # but it is also exactly what a slug collision looks like — say
-                # so loudly, and say it before the mapping is written.
+            if binding_is_new and not enterprise_created and not enterprise_id:
+                # A brand-new IdP binding onto an ENTERPRISE this run did not
+                # create and the operator did not name — it was matched by
+                # ``--slug``. That is exactly what a slug collision looks like,
+                # and under ADR-017 D1 the enterprise is the isolation boundary,
+                # so the consequence is the sharp one: the new customer's users
+                # land inside somebody else's wall and become eligible for its
+                # teams. Say so loudly, and before the mapping is written.
                 #
-                # The organization is the isolation boundary — RLS keys on
-                # organization_id — so reusing the *enterprise* alone is not the
-                # hazard: a new organization under an existing enterprise is the
-                # documented --enterprise-id recipe, and warning about it would
-                # tell the operator that a tenant they just created is somebody
-                # else's. Gating on org_created alone also makes the enterprise
-                # line below unconditional: an organization this run did not
-                # create implies the enterprise holding it already existed.
+                # The gate moved here from ``not org_created`` with ADR-017. The
+                # organization no longer isolates — it bills — so reusing one is
+                # not by itself the hazard, and reusing an enterprise is, whether
+                # or not a new organization was created under it. Naming the
+                # enterprise with ``--enterprise-id`` is the operator stating
+                # that intent, which is the documented second-organization
+                # recipe and stays quiet.
+                #
+                # Truthiness rather than ``is None`` on ``enterprise_id``, to
+                # match the test ``_get_or_create_enterprise`` itself applies
+                # when it picks the slug path: an empty ``--enterprise-id`` (an
+                # unset shell variable in the documented kubectl recipe) IS the
+                # matched-by-slug case, and must not be read as the operator
+                # naming a parent.
                 print("")
                 print("⚠️  REUSING AN EXISTING TENANT — confirm this is the right one.")
-                print(
-                    f"    enterprise   {enterprise.enterprise_id} "
-                    f"({enterprise.name} / {enterprise.slug}) already existed"
-                )
-                print(
-                    f"    organization {organization.organization_id} "
-                    f"({organization.name} / {organization.slug}) already existed"
-                )
-                print(
-                    f"    {PROVIDER}:{workos_org_id} is being bound to it, so its "
-                    "users will land in\n    that tenant and see its cases. If this "
-                    "is a different customer, stop and\n    re-provision under a "
-                    "distinct --slug."
-                )
-            elif org_created and not enterprise_id and not enterprise_created:
-                # The organization is new, so there is no tenant to confuse — but
-                # its PARENT was matched by --slug rather than named with
-                # --enterprise-id, which is how a new customer silently ends up
-                # owned by an existing one. Not an isolation breach (cases belong
-                # to the organization), and so deliberately quieter than the
-                # alarm above; it is expensive because it is hard to undo — an
-                # account under the wrong enterprise fails login closed with
-                # reason=enterprise_mismatch and needs a manual migration.
-                #
-                # Truthiness rather than `is None`, to match the test
-                # _get_or_create_enterprise itself applies when it picks the slug
-                # path: an empty --enterprise-id (an unset shell variable in the
-                # documented kubectl recipe) IS the matched-by-slug case, and
-                # must not be read as the operator naming a parent.
-                print("")
-                print("⚠️  NEW ORGANIZATION UNDER AN EXISTING ENTERPRISE.")
                 print(
                     f"    enterprise   {enterprise.enterprise_id} "
                     f"({enterprise.name} / {enterprise.slug}) already existed and "
@@ -247,17 +221,20 @@ async def provision(
                     "--enterprise-id."
                 )
                 print(
-                    "    If this customer does not belong to that enterprise, stop "
-                    "and re-run\n    with a distinct --slug (or an explicit "
-                    "--enterprise-id). Moving an account\n    between enterprises "
-                    "later is a manual migration, not a login fix — see\n    "
-                    "docs/operations/sso-org-provisioning.md."
+                    f"    organization {organization.organization_id} "
+                    f"({organization.name} / {organization.slug})"
+                )
+                print(
+                    f"    {PROVIDER}:{workos_org_id} is being bound to that "
+                    "enterprise, so its users\n    will land inside it and can be "
+                    "invited to its teams. If this is a different\n    customer, "
+                    "stop and re-provision under a distinct --slug."
                 )
 
             mapping_created = await _ensure_mapping(
                 session,
                 provider_org_id=workos_org_id,
-                organization_id=organization.organization_id,
+                enterprise_id=enterprise.enterprise_id,
             )
     except LookupError as exc:
         print(f"❌ {exc}")
@@ -265,7 +242,7 @@ async def provision(
     except RemapRefused as exc:
         print(
             f"\n❌ {PROVIDER} organization '{exc.provider_org_id}' is already "
-            "mapped to a different FaultMaven organization."
+            "mapped to a different FaultMaven enterprise."
         )
         print(f"   currently mapped to: {exc.mapped_to}")
         print(f"   requested:           {exc.requested}")
@@ -277,7 +254,7 @@ async def provision(
         return False
     except OrgAlreadyClaimed as exc:
         print(
-            f"\n❌ FaultMaven organization {exc.organization_id} is already "
+            f"\n❌ FaultMaven enterprise {exc.enterprise_id} is already "
             f"claimed by a different {PROVIDER} organization."
         )
         print(f"   claimed by: {exc.claimed_by}")

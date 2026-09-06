@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from faultmaven.config.tenant_context import get_current_org_id
+from faultmaven.config.tenant_context import get_current_billing_organization_id
 from faultmaven.core.investigation.case_telemetry import (
     TELEMETRY_HANDOFF_KEY,
     TurnPath,
@@ -63,6 +63,7 @@ from faultmaven.infrastructure.observability.evidence_metrics import (
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.protection.tenant_turn_cap import (
     TenantTurnCapError,
+    billing_subject_for,
 )
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import (
@@ -1357,7 +1358,13 @@ class InvestigationService:
             # the out-of-band lane below changes only what the turn DOES with
             # the charge: no engine, no case mutation, no place in the
             # investigation's history.
-            await self.turn_cap.reserve(get_current_org_id())
+            # Charged to the BILLING subject, not the tenant (ADR-017 D5): the
+            # organization when one pays for this account, the account itself
+            # when none does. Metering the enterprise instead would make two
+            # departments of one company share an allowance neither agreed to.
+            await self.turn_cap.reserve(
+                billing_subject_for(get_current_billing_organization_id(), user_id)
+            )
 
             next_turn = case.current_turn + 1
 
@@ -2400,7 +2407,7 @@ class InvestigationService:
             storage_result = await self.file_storage_service.store_file(
                 file_data=attachment.content,
                 original_filename=attachment.filename,
-                organization_id=getattr(case, "organization_id", "default"),
+                enterprise_id=case.enterprise_id,
                 case_id=case.case_id,
                 mime_type=attachment.content_type,
             )
@@ -2577,7 +2584,8 @@ class InvestigationService:
                 await add_uploaded_file(
                     case.case_id,
                     uploaded_file,
-                    getattr(case, "organization_id", "default"),
+                    case.enterprise_id,
+                    case.organization_id,
                 )
             except Exception as e:
                 # Degrade to the previous behaviour (the row rides the

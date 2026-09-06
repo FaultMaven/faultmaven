@@ -19,7 +19,7 @@ def context():
     return ToolContext(
         session_id="sess_1",
         case_id="case_123",
-        organization_id="org_1",
+        enterprise_id="org_1",
         user_id="user_1",
         metadata={"stage": "DIAGNOSIS"},
     )
@@ -30,7 +30,7 @@ def context_no_stage():
     return ToolContext(
         session_id="sess_1",
         case_id="case_123",
-        organization_id="org_1",
+        enterprise_id="org_1",
         user_id="user_1",
     )
 
@@ -222,7 +222,7 @@ class TestStageEnrichment:
         ctx = ToolContext(
             session_id="s",
             case_id="c",
-            organization_id="o",
+            enterprise_id="o",
             user_id="u",
             metadata={"stage": "MITIGATION"},
         )
@@ -233,7 +233,7 @@ class TestStageEnrichment:
         ctx = ToolContext(
             session_id="s",
             case_id="c",
-            organization_id="o",
+            enterprise_id="o",
             user_id="u",
             metadata={"stage": "TREATMENT"},
         )
@@ -253,7 +253,7 @@ class TestStageEnrichment:
         ctx = ToolContext(
             session_id="s",
             case_id="c",
-            organization_id="o",
+            enterprise_id="o",
             user_id="u",
             metadata={"stage": "DIAGNOSIS"},
         )

@@ -9,8 +9,10 @@ cleanup:
 
 1. ``ConversionJobModel(source_filename=...)`` — column dropped in favor of
    ``source_file_id`` FK to ``uploaded_files``.
-2. ``conversion_drafts.organization_id`` NOT NULL — was previously not set
-   by the synthetic-job path.
+2. ``conversion_drafts.enterprise_id`` NOT NULL — was previously not set
+   by the synthetic-job path. ADR-017 D1 moved the NOT NULL tenancy column
+   here from ``organization_id``, which is now nullable billing attribution
+   the scan does not write at all.
 3. ``ConversionDraftModel.tags`` is a TagsArray TypeDecorator expecting
    ``list[str]`` — passing a comma-joined string raises TypeError on bind.
 
@@ -26,6 +28,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.infrastructure.persistence.models import (
     Base,
     ConversionDraftModel,
@@ -60,23 +63,34 @@ async def session_factory(engine):
     return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
+#: An enterprise seeded explicitly, deliberately NOT the Standalone sentinel
+#: (``...0002``) the ambient context falls back to. That difference is what
+#: lets the explicit-enterprise test below distinguish "the caller's value
+#: propagated" from "the fallback happened to agree".
+SEEDED_ENTERPRISE_ID = "00000000-0000-0000-0000-000000000001"
+
+#: A billing organization inside it (ADR-017 D2). Present as a parent row only:
+#: the scan writes no ``organization_id`` at all, which is asserted below.
+BILLING_ORG_ID = "00000000-0000-0000-0000-0000000000b1"
+
+
 @pytest.fixture(scope="function")
 async def seeded_session_factory(session_factory):
-    """Pre-seed the default enterprise + organization rows so FK INSERTs from
-    the conversion flow succeed (uploaded_files.organization_id, etc., are
-    NOT NULL FKs that can't bind to nothing)."""
+    """Pre-seed the enterprise + a billing organization so FK INSERTs from
+    the conversion flow succeed (``uploaded_files.enterprise_id`` and its
+    siblings are NOT NULL FKs that can't bind to nothing)."""
     async with session_factory() as session:
         session.add(
             EnterpriseModel(
-                enterprise_id="00000000-0000-0000-0000-000000000001",
+                enterprise_id=SEEDED_ENTERPRISE_ID,
                 name="Default Enterprise",
                 slug="default",
             )
         )
         session.add(
             OrganizationModel(
-                organization_id="00000000-0000-0000-0000-000000000001",
-                enterprise_id="00000000-0000-0000-0000-000000000001",
+                organization_id=BILLING_ORG_ID,
+                enterprise_id=SEEDED_ENTERPRISE_ID,
                 name="Default Org",
                 slug="default-org",
             )
@@ -194,10 +208,10 @@ class TestScanForRunbooks:
     ):
         """Each discovered .md produces one row in uploaded_files +
         conversion_jobs + conversion_drafts, with FK linkage intact and
-        organization_id populated on all three (the post-redesign NOT NULL
-        invariant)."""
+        enterprise_id populated on all three (the NOT NULL tenancy
+        invariant, ADR-017 D1)."""
         result = await conversion_service.scan_for_runbooks(
-            user_id=None, organization_id=None, is_platform_admin=True
+            user_id=None, enterprise_id=None, is_platform_admin=True
         )
 
         assert result["discovered"] == 2
@@ -216,10 +230,21 @@ class TestScanForRunbooks:
             assert len(jobs) == 2
             assert len(drafts) == 2
 
-            # Every row populates organization_id (NOT NULL invariant).
-            assert all(u.organization_id for u in uploads)
-            assert all(j.organization_id for j in jobs)
-            assert all(d.organization_id for d in drafts)
+            # Every row populates the ISOLATION key, which is the NOT NULL
+            # one (ADR-017 D1). This is the invariant the old assertion on
+            # ``organization_id`` pinned before the key moved: nothing in the
+            # chain may be written without a tenant.
+            assert all(u.enterprise_id for u in uploads)
+            assert all(j.enterprise_id for j in jobs)
+            assert all(d.enterprise_id for d in drafts)
+
+            # And BILLING is genuinely absent, not merely unasserted: the scan
+            # is a platform-side walk with no paying subject, and
+            # ``organization_id`` is nullable attribution no read path may
+            # consult (ADR-017 D2).
+            assert all(u.organization_id is None for u in uploads)
+            assert all(j.organization_id is None for j in jobs)
+            assert all(d.organization_id is None for d in drafts)
 
             # source_file_id FK linkage: every job points at a real upload row.
             upload_ids = {u.file_id for u in uploads}
@@ -238,7 +263,7 @@ class TestScanForRunbooks:
         a comma-joined string raises TypeError because TagsArray validates
         the bind shape. This test catches the third leak from the cleanup."""
         await conversion_service.scan_for_runbooks(
-            user_id=None, organization_id=None, is_platform_admin=True
+            user_id=None, enterprise_id=None, is_platform_admin=True
         )
 
         async with seeded_session_factory() as session:
@@ -271,10 +296,10 @@ class TestScanForRunbooks:
         """Re-running scan over the same directory should skip already-tracked
         runbooks (drafts deduplicated by file_path) and not error."""
         first = await conversion_service.scan_for_runbooks(
-            user_id=None, organization_id=None, is_platform_admin=True
+            user_id=None, enterprise_id=None, is_platform_admin=True
         )
         second = await conversion_service.scan_for_runbooks(
-            user_id=None, organization_id=None, is_platform_admin=True
+            user_id=None, enterprise_id=None, is_platform_admin=True
         )
 
         assert first["discovered"] == 2
@@ -289,15 +314,25 @@ class TestScanForRunbooks:
             assert len(uploads) == 2
 
     @pytest.mark.asyncio
-    async def test_scan_with_explicit_organization_id(
+    async def test_scan_with_explicit_enterprise_id(
         self, conversion_service, seeded_session_factory
     ):
-        """When the caller passes organization_id explicitly, it propagates
-        to all three persisted rows (not the default fallback)."""
-        explicit_org = "00000000-0000-0000-0000-000000000001"
+        """When the caller passes enterprise_id explicitly, it propagates to
+        all three persisted rows (not the ambient fallback).
+
+        The tenancy parameter this test was written for is now the ENTERPRISE
+        (ADR-017 D1): it is the value ``writable_enterprise_id`` resolves and
+        the one RLS keys on. ``organization_id`` no longer travels this path at
+        all, so asserting on it would assert nothing.
+
+        ``explicit_enterprise`` differs from the Standalone sentinel the
+        contextvar defaults to, so a fallback shows up as a mismatch instead of
+        passing by coincidence."""
+        explicit_enterprise = SEEDED_ENTERPRISE_ID
+        assert explicit_enterprise != STANDALONE_ENTERPRISE_ID
 
         await conversion_service.scan_for_runbooks(
-            user_id=None, organization_id=explicit_org, is_platform_admin=True
+            user_id=None, enterprise_id=explicit_enterprise, is_platform_admin=True
         )
 
         async with seeded_session_factory() as session:
@@ -309,9 +344,9 @@ class TestScanForRunbooks:
                 (await session.execute(select(ConversionDraftModel))).scalars().all()
             )
 
-            assert all(u.organization_id == explicit_org for u in uploads)
-            assert all(j.organization_id == explicit_org for j in jobs)
-            assert all(d.organization_id == explicit_org for d in drafts)
+            assert all(u.enterprise_id == explicit_enterprise for u in uploads)
+            assert all(j.enterprise_id == explicit_enterprise for j in jobs)
+            assert all(d.enterprise_id == explicit_enterprise for d in drafts)
 
 
 class TestScanSkipsBootstrapIngestedRunbooks:
@@ -332,8 +367,13 @@ class TestScanSkipsBootstrapIngestedRunbooks:
             session.add(
                 KnowledgeItemModel(
                     item_id=item_id_from_runbook_id(runbook_id),
-                    # Global rows are the org-free platform tier (#770,
-                    # knowledge_items_global_org_check).
+                    # A global row is the ORGANIZATION-free platform tier
+                    # (#770, ``knowledge_items_global_org_check``) — that rule
+                    # is about billing. The ENTERPRISE is NOT NULL for every
+                    # tier, and the platform tier's is the standalone one,
+                    # which is what the global-write policy arm compares
+                    # against (ADR-017 D1/D8).
+                    enterprise_id=STANDALONE_ENTERPRISE_ID,
                     organization_id=None,
                     scope="global",
                     title=runbook_id,
@@ -351,7 +391,7 @@ class TestScanSkipsBootstrapIngestedRunbooks:
         await self._publish_kb_item(seeded_session_factory, "redis-oom")
 
         result = await conversion_service.scan_for_runbooks(
-            user_id=None, organization_id=None, is_platform_admin=True
+            user_id=None, enterprise_id=None, is_platform_admin=True
         )
 
         # Only the un-published runbook becomes a draft.
@@ -372,7 +412,7 @@ class TestScanSkipsBootstrapIngestedRunbooks:
     ):
         # First scan (nothing published yet) creates both drafts.
         first = await conversion_service.scan_for_runbooks(
-            user_id=None, organization_id=None, is_platform_admin=True
+            user_id=None, enterprise_id=None, is_platform_admin=True
         )
         assert first["discovered"] == 2
 
@@ -383,7 +423,7 @@ class TestScanSkipsBootstrapIngestedRunbooks:
         # Second scan must DISCARD the now-redundant redis-oom draft and
         # leave the genuinely-pending pg-slow-queries draft alone.
         await conversion_service.scan_for_runbooks(
-            user_id=None, organization_id=None, is_platform_admin=True
+            user_id=None, enterprise_id=None, is_platform_admin=True
         )
 
         async with seeded_session_factory() as session:
@@ -418,7 +458,7 @@ class TestScanGlobalAuthoringGate:
             global_authoring, "requested_tenant_provider", lambda: BUILTIN_SINGLE
         ):
             result = await conversion_service.scan_for_runbooks(
-                user_id="member", organization_id=None, is_platform_admin=False
+                user_id="member", enterprise_id=None, is_platform_admin=False
             )
 
         # Both fixture runbooks are global-inferred → skipped, no drafts minted.
@@ -443,7 +483,7 @@ class TestScanGlobalAuthoringGate:
             global_authoring, "requested_tenant_provider", lambda: BUILTIN_MULTI
         ):
             result = await conversion_service.scan_for_runbooks(
-                user_id="org-admin", organization_id=None, is_platform_admin=True
+                user_id="org-admin", enterprise_id=None, is_platform_admin=True
             )
 
         # Under multi no tenant session authors global — org admins included.

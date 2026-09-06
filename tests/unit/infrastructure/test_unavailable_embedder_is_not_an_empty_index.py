@@ -253,7 +253,7 @@ def _context() -> ToolContext:
         case_id="case-1",
         user_id="user-1",
         session_id="session-1",
-        organization_id="org-1",
+        enterprise_id="org-1",
     )
 
 

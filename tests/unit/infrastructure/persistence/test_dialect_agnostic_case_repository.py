@@ -54,7 +54,7 @@ def _make_test_case() -> Case:
     return Case(
         case_id=f"case_{str(uuid4()).replace('-', '')[:12]}",
         user_id=str(uuid4()),
-        organization_id=str(uuid4()),
+        enterprise_id=str(uuid4()),
         title="Test Case",
         state=CaseState.INQUIRY,
         created_at=datetime.now(timezone.utc),

@@ -60,6 +60,8 @@ from faultmaven.providers.tenancy.permissions import (
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
 ORG = "org-1"
+from tests.utils import DEFAULT_TEST_ENTERPRISE_ID  # noqa: E402
+
 OTHER_ORG = "org-2"
 USER = "user-1"
 OUTSIDER = "user-2"
@@ -126,6 +128,9 @@ async def _join(session, user_id: str, role: Role, organization_id: str = ORG) -
         OrganizationMemberModel(
             user_id=user_id,
             organization_id=organization_id,
+            # The roster row is RLS-tenanted on the enterprise (ADR-017 D1), so
+            # it carries the one its organization belongs to.
+            enterprise_id=DEFAULT_TEST_ENTERPRISE_ID,
             role_id=SYSTEM_ROLE_IDS[role],
         )
     )
@@ -204,7 +209,10 @@ async def test_unseeded_role_id_resolves_to_nothing(multi, seeded):
     await seeded.commit()
     seeded.add(
         OrganizationMemberModel(
-            user_id=USER, organization_id=ORG, role_id="custom-role"
+            user_id=USER,
+            organization_id=ORG,
+            enterprise_id=DEFAULT_TEST_ENTERPRISE_ID,
+            role_id="custom-role",
         )
     )
     await seeded.commit()
@@ -317,8 +325,8 @@ async def test_standalone_ignores_the_ids():
 @pytest.mark.security
 async def test_factory_follows_the_tenant_provider(org_repo):
     """The mode is read off the built provider, so there is one decision."""
-    single = SingleTenantProvider(organization_repository=org_repo)
-    multi_provider = MultiTenantProvider(organization_repository=org_repo)
+    single = SingleTenantProvider(enterprise_repository=org_repo)
+    multi_provider = MultiTenantProvider(enterprise_repository=org_repo)
 
     assert isinstance(
         await create_permission_resolver(single, org_repo),

@@ -52,7 +52,7 @@ def _needs_info_case() -> Case:
         title="Close-escape regression",
         state=CaseState.INQUIRY,
         user_id="user_test",
-        organization_id="org_test",
+        enterprise_id="org_test",
         description="ES fielddata latency",
         problem_verification=ProblemVerification(
             symptom_statement="p99 latency on events-*",

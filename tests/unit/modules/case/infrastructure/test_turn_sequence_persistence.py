@@ -64,7 +64,7 @@ def _case(turns: list[int], current_turn: int) -> Case:
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="u",
-        organization_id="org",
+        enterprise_id="org",
         title="t",
         description="d",
         state=CaseState.INQUIRY,

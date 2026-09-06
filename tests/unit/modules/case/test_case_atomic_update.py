@@ -26,7 +26,7 @@ def _make_investigating_case() -> Case:
         title="Test Case",
         state=CaseState.INVESTIGATING,
         user_id="user_test",
-        organization_id="org_test",
+        enterprise_id="org_test",
         description="Investigating something concrete",
         progress=InvestigationProgress(),
         problem_verification=ProblemVerification(

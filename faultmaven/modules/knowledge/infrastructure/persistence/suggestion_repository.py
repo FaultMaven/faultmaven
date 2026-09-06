@@ -27,8 +27,8 @@ tenant contextvar once per transaction, so one short transaction per call is
 the shape that binds the right tenant.
 
 Tenancy. ``knowledge_suggestions`` is one of the tables migration 018 put under
-RLS, so PostgreSQL scopes it by ``app.current_org_id``. The queries here ALSO
-carry an explicit ``organization_id`` predicate wherever the caller supplies
+RLS, so PostgreSQL scopes it by ``app.current_enterprise_id``. The queries here ALSO
+carry an explicit ``enterprise_id`` predicate wherever the caller supplies
 one — defence in depth, and the only isolation that exists on SQLite, which has
 no RLS at all. Do not remove them.
 
@@ -156,30 +156,30 @@ class SuggestionRepository(ABC):
         """Load one suggestion by id — UNSCOPED (the trusted internal load)."""
 
     @abstractmethod
-    async def get_for_organization(
-        self, suggestion_id: str, organization_id: str
+    async def get_for_enterprise(
+        self, suggestion_id: str, enterprise_id: str
     ) -> Optional[KnowledgeSuggestion]:
-        """Load one suggestion by id, scoped to ``organization_id``."""
+        """Load one suggestion by id, scoped to ``enterprise_id``."""
 
     @abstractmethod
-    async def list_for_organization(
+    async def list_for_enterprise(
         self,
-        organization_id: str,
+        enterprise_id: str,
         *,
         status: Optional[str] = None,
         limit: int = 20,
         offset: int = 0,
     ) -> Tuple[List[KnowledgeSuggestion], int]:
-        """One page of an organization's suggestions, newest first, and a total."""
+        """One page of an enterprise's suggestions, newest first, and a total."""
 
     @abstractmethod
-    async def count_for_organization(
+    async def count_for_enterprise(
         self,
-        organization_id: str,
+        enterprise_id: str,
         *,
         statuses: Optional[Sequence[SuggestionStatus]] = None,
     ) -> int:
-        """Count an organization's suggestions, optionally in given statuses."""
+        """Count an enterprise's suggestions, optionally in given statuses."""
 
 
 class DatabaseSuggestionRepository(SuggestionRepository):
@@ -206,7 +206,7 @@ class DatabaseSuggestionRepository(SuggestionRepository):
     def _to_domain(row: KnowledgeSuggestionModel) -> KnowledgeSuggestion:
         return KnowledgeSuggestion(
             suggestion_id=row.suggestion_id,
-            organization_id=row.organization_id,
+            enterprise_id=row.enterprise_id,
             case_id=row.case_id or DELETED_CASE_MARKER,
             status=SuggestionStatus(row.status),
             suggested_title=row.suggested_title or "",
@@ -286,7 +286,7 @@ class DatabaseSuggestionRepository(SuggestionRepository):
         if not case_id or case_id == DELETED_CASE_MARKER:
             case_id = None
         return {
-            "organization_id": suggestion.organization_id,
+            "enterprise_id": suggestion.enterprise_id,
             "case_id": case_id,
             "knowledge_item_id": suggestion.knowledge_item_id,
             "status": suggestion.status.value,
@@ -412,31 +412,31 @@ class DatabaseSuggestionRepository(SuggestionRepository):
             row = await session.get(KnowledgeSuggestionModel, suggestion_id)
             return self._to_domain(row) if row is not None else None
 
-    async def get_for_organization(
-        self, suggestion_id: str, organization_id: str
+    async def get_for_enterprise(
+        self, suggestion_id: str, enterprise_id: str
     ) -> Optional[KnowledgeSuggestion]:
-        if not suggestion_id or not organization_id:
+        if not suggestion_id or not enterprise_id:
             return None
         async with self._session_factory() as session:
             stmt = select(KnowledgeSuggestionModel).where(
                 KnowledgeSuggestionModel.suggestion_id == suggestion_id,
-                KnowledgeSuggestionModel.organization_id == organization_id,
+                KnowledgeSuggestionModel.enterprise_id == enterprise_id,
             )
             row = (await session.execute(stmt)).scalar_one_or_none()
             return self._to_domain(row) if row is not None else None
 
-    async def list_for_organization(
+    async def list_for_enterprise(
         self,
-        organization_id: str,
+        enterprise_id: str,
         *,
         status: Optional[str] = None,
         limit: int = 20,
         offset: int = 0,
     ) -> Tuple[List[KnowledgeSuggestion], int]:
-        if not organization_id:
+        if not enterprise_id:
             return [], 0
         async with self._session_factory() as session:
-            predicates = [KnowledgeSuggestionModel.organization_id == organization_id]
+            predicates = [KnowledgeSuggestionModel.enterprise_id == enterprise_id]
             if status:
                 predicates.append(KnowledgeSuggestionModel.status == status)
 
@@ -458,16 +458,16 @@ class DatabaseSuggestionRepository(SuggestionRepository):
             rows = (await session.execute(stmt)).scalars().all()
             return [self._to_domain(row) for row in rows], int(total)
 
-    async def count_for_organization(
+    async def count_for_enterprise(
         self,
-        organization_id: str,
+        enterprise_id: str,
         *,
         statuses: Optional[Sequence[SuggestionStatus]] = None,
     ) -> int:
-        if not organization_id:
+        if not enterprise_id:
             return 0
         async with self._session_factory() as session:
-            predicates = [KnowledgeSuggestionModel.organization_id == organization_id]
+            predicates = [KnowledgeSuggestionModel.enterprise_id == enterprise_id]
             if statuses:
                 predicates.append(
                     KnowledgeSuggestionModel.status.in_([s.value for s in statuses])
@@ -543,29 +543,27 @@ class InMemorySuggestionRepository(SuggestionRepository):
         stored = self._items.get(suggestion_id)
         return deepcopy(stored) if stored is not None else None
 
-    async def get_for_organization(
-        self, suggestion_id: str, organization_id: str
+    async def get_for_enterprise(
+        self, suggestion_id: str, enterprise_id: str
     ) -> Optional[KnowledgeSuggestion]:
-        if not suggestion_id or not organization_id:
+        if not suggestion_id or not enterprise_id:
             return None
         stored = self._items.get(suggestion_id)
-        if stored is None or stored.organization_id != organization_id:
+        if stored is None or stored.enterprise_id != enterprise_id:
             return None
         return deepcopy(stored)
 
-    async def list_for_organization(
+    async def list_for_enterprise(
         self,
-        organization_id: str,
+        enterprise_id: str,
         *,
         status: Optional[str] = None,
         limit: int = 20,
         offset: int = 0,
     ) -> Tuple[List[KnowledgeSuggestion], int]:
-        if not organization_id:
+        if not enterprise_id:
             return [], 0
-        matches = [
-            s for s in self._items.values() if s.organization_id == organization_id
-        ]
+        matches = [s for s in self._items.values() if s.enterprise_id == enterprise_id]
         if status:
             matches = [s for s in matches if s.status.value == status]
         matches.sort(key=lambda s: s.created_at, reverse=True)
@@ -573,18 +571,18 @@ class InMemorySuggestionRepository(SuggestionRepository):
         page = matches[offset : offset + limit]
         return [deepcopy(s) for s in page], total
 
-    async def count_for_organization(
+    async def count_for_enterprise(
         self,
-        organization_id: str,
+        enterprise_id: str,
         *,
         statuses: Optional[Sequence[SuggestionStatus]] = None,
     ) -> int:
-        if not organization_id:
+        if not enterprise_id:
             return 0
         wanted = set(statuses) if statuses else None
         return sum(
             1
             for s in self._items.values()
-            if s.organization_id == organization_id
+            if s.enterprise_id == enterprise_id
             and (wanted is None or s.status in wanted)
         )

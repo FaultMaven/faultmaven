@@ -36,7 +36,7 @@ class InvestigationSession:
         session_id: Unique identifier for the session
         case_id: Case this session belongs to
         user_id: User who owns this session
-        organization_id: Organization that owns this session
+        enterprise_id: Enterprise this session is isolated to (ADR-017 D1)
         state: Current session status (active, paused, completed, abandoned)
         started_at: When the session started
         ended_at: When the session ended (for completed/abandoned sessions)
@@ -55,7 +55,10 @@ class InvestigationSession:
     session_id: str
     case_id: str
     user_id: str
-    organization_id: str
+    enterprise_id: str
+    #: Billing attribution (ADR-017 D2), or ``None`` when nobody pays for the
+    #: account whose session this is. Never a visibility input.
+    organization_id: Optional[str] = None
     state: SessionState = SessionState.ACTIVE
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     ended_at: Optional[datetime] = None
@@ -80,8 +83,8 @@ class InvestigationSession:
             raise ValueError("case_id is required")
         if not self.user_id:
             raise ValueError("user_id is required")
-        if not self.organization_id:
-            raise ValueError("organization_id is required")
+        if not self.enterprise_id:
+            raise ValueError("enterprise_id is required")
         if self.total_token_usage < 0:
             raise ValueError("total_token_usage cannot be negative")
         if self.total_agent_executions < 0:

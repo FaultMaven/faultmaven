@@ -38,7 +38,7 @@ def mock_user():
     """Create a mock authenticated user."""
     return AuthenticatedUser(
         user_id="test-user-123",
-        organization_id="org-456",
+        enterprise_id="org-456",
         email="test@example.com",
         roles=["admin"],
         permissions=["cases:read", "cases:write"],

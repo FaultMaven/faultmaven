@@ -30,6 +30,35 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
+# 3.0.0 — MAJOR. The tenant a client reads off a row is the **enterprise**, not
+# the organization (ADR-017). Ten schemas move, and seven of them REMOVE a
+# required field, which is why this is a major bump rather than the minor one a
+# rename might suggest:
+#
+#   * `TeamResponse`, `AdminUserListItem`, `UserDetailResponse`,
+#     `InvestigationSessionResponse` — `organization_id` → `enterprise_id`;
+#   * `BreakGlassGrant`, `OperatorAccessAuditEntry` —
+#     `target_organization_id` → `target_enterprise_id`;
+#   * `BreakGlassGrantRequest` — the REQUEST field `organization_id` becomes
+#     `enterprise_id`, so a client that keeps sending the old name is rejected;
+#   * `CaseSummary`, `CaseDetail`, `AdminCaseMetadata` — `enterprise_id` is
+#     added as required and `organization_id` becomes optional. A case now
+#     carries both: the enterprise is what the read was scoped by, and the
+#     organization is billing attribution that is absent whenever nobody pays
+#     for the account (which, until organization assignment ships, is every
+#     account).
+#
+# No path is added or removed and no status code changes; what changed is what
+# a row says about whose data it is. There is deliberately no transitional
+# period in which both fields are served: a tolerated old field is what keeps a
+# frontend reading it, and the whole point of moving the key is that the
+# organization stops answering "who may see this?". The clients adopt by pin
+# bump (faultmaven-dashboard, faultmaven-copilot, faultmaven-slack-agent,
+# faultmaven-cloud), which is also the cutover for the wipe-and-reprovision this
+# ships with — every session is re-established anyway, because the access and
+# refresh tokens now carry an `enterprise_id` claim and a token without one is
+# refused.
+#
 # 2.8.0 — MINOR. `POST /cases/{case_id}/turns` accepts an EMPTY turn — no
 # `query`, no `files`, no `pasted_content` — and answers it with a state-aware
 # orientation (where the investigation stands, what was last asked for, what
@@ -181,4 +210,4 @@ asked to accept, and it belongs to a person.
 # cannot tell two contracts apart is not doing its job. The first act of the
 # version is therefore to give the contract on main an identity distinct from
 # the 1.0.0 the clients are written against.
-API_CONTRACT_VERSION = "2.8.0"
+API_CONTRACT_VERSION = "3.0.0"

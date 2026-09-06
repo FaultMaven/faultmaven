@@ -49,7 +49,7 @@ def create_sample_case(
     case = Case(
         case_id=case_id,
         user_id=user_id,
-        organization_id="org_test123",
+        enterprise_id="org_test123",
         title="Test Case",
         description="Test case description",
         state=state,

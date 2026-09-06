@@ -49,7 +49,7 @@ def _case(current_turn: int = 5, turns_without_progress: int = 0) -> Case:
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="u",
-        organization_id="o",
+        enterprise_id="o",
         title="t",
         description="d",
         state=CaseState.INVESTIGATING,

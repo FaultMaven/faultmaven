@@ -6,9 +6,11 @@ populate the share-to-team picker; ``GET /teams`` serves both. Team *management*
 endpoint is read-only.
 
 Cloud-only: ``team_service`` is unwired in standalone (single implicit team), so
-the endpoint returns an empty list there. Membership resolution is RLS-org-scoped
-(``TeamService.list_user_teams`` joins ``team_members`` through the RLS-tenanted
-``teams`` table), so a caller only ever sees teams in their own organization.
+the endpoint returns an empty list there. Membership resolution is scoped by the
+enterprise RLS binding (``TeamService.list_user_teams`` joins ``team_members``
+through the RLS-tenanted ``teams`` table), so a caller only ever sees teams in
+their own enterprise — which is also the only place a team may have members
+(ADR-017 D4).
 """
 
 import logging
@@ -31,7 +33,11 @@ class TeamResponse(BaseModel):
     team_id: str
     name: str
     description: Optional[str] = None
-    organization_id: str
+    #: The enterprise the team belongs to. A team is parented by the enterprise
+    #: and may span organizations (ADR-017 D4), so there is no organization
+    #: field here — not even an optional one, because a tolerated old field is
+    #: what keeps a frontend reading it.
+    enterprise_id: str
 
 
 @router.get("", response_model=List[TeamResponse], summary="List My Teams")
@@ -55,7 +61,7 @@ async def list_my_teams(
             team_id=t.team_id,
             name=t.name,
             description=t.description,
-            organization_id=t.organization_id,
+            enterprise_id=t.enterprise_id,
         )
         for t in teams
     ]

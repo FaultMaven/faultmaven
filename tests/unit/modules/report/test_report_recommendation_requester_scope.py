@@ -76,7 +76,7 @@ def _available_embedder():
 def _case() -> Case:
     return Case(
         user_id="case-owner-9",  # deliberately NOT the requester
-        organization_id=ORG,
+        enterprise_id=ORG,
         title="Connection pool exhausted under load",
         description="DB queries timing out",
         state=CaseState.INVESTIGATING,

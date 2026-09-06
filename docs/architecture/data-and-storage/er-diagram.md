@@ -1,55 +1,56 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-09-04 06:52 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-09-06 11:10 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
 ## Summary
 
-**40 tables** in the schema.
+**41 tables** in the schema.
 
 | Table | Columns | Primary Key | Foreign Keys |
 |-------|---------|-------------|--------------|
-| `case_actions` | 9 | `transition_id` | cases, organizations |
-| `case_checkpoints` | 9 | `checkpoint_id` | cases, organizations |
-| `case_entities` | 8 | `case_id, entity_type, entity_value, evidence_id` | cases, evidence, organizations |
-| `case_messages` | 10 | `message_id` | cases, organizations |
-| `case_tags` | 5 | `tag_id` | cases, organizations |
-| `cases` | 26 | `case_id` | organizations, users |
-| `causal_edges` | 9 | `edge_id` | cases, causal_nodes, organizations |
-| `causal_node_evidence` | 8 | `node_id, evidence_id` | causal_nodes, evidence, organizations |
-| `causal_nodes` | 21 | `node_id` | cases, organizations |
+| `case_actions` | 10 | `transition_id` | cases, enterprises, organizations |
+| `case_checkpoints` | 10 | `checkpoint_id` | cases, enterprises, organizations |
+| `case_entities` | 9 | `case_id, entity_type, entity_value, evidence_id` | cases, enterprises, evidence, organizations |
+| `case_messages` | 11 | `message_id` | cases, enterprises, organizations |
+| `case_tags` | 6 | `tag_id` | cases, enterprises, organizations |
+| `cases` | 27 | `case_id` | enterprises, organizations, users |
+| `causal_edges` | 10 | `edge_id` | cases, causal_nodes, enterprises, organizations |
+| `causal_node_evidence` | 9 | `node_id, evidence_id` | causal_nodes, enterprises, evidence, organizations |
+| `causal_nodes` | 22 | `node_id` | cases, enterprises, organizations |
 | `config_overrides` | 6 | `key` | users |
-| `conversion_drafts` | 22 | `id` | conversion_jobs, knowledge_items, organizations, users |
-| `conversion_jobs` | 14 | `id` | cases, organizations, uploaded_files, users |
+| `conversion_drafts` | 23 | `id` | conversion_jobs, enterprises, knowledge_items, organizations, users |
+| `conversion_jobs` | 15 | `id` | cases, enterprises, organizations, uploaded_files, users |
 | `enterprises` | 12 | `enterprise_id` | — |
-| `evidence` | 24 | `evidence_id` | cases, organizations, uploaded_files |
-| `evidence_need_fulfillment` | 5 | `need_id, evidence_id` | evidence, evidence_needs, organizations |
-| `evidence_needs` | 16 | `need_id` | cases, organizations |
-| `hypotheses` | 25 | `hypothesis_id` | cases, causal_nodes, organizations, users |
-| `hypothesis_evidence` | 8 | `hypothesis_id, evidence_id` | evidence, hypotheses, organizations, users |
-| `investigation_sessions` | 17 | `session_id` | cases, organizations, users |
-| `knowledge_items` | 28 | `item_id` | organizations, users |
-| `knowledge_suggestions` | 30 | `suggestion_id` | cases, knowledge_items, organizations, users |
+| `evidence` | 25 | `evidence_id` | cases, enterprises, organizations, uploaded_files |
+| `evidence_need_fulfillment` | 6 | `need_id, evidence_id` | enterprises, evidence, evidence_needs, organizations |
+| `evidence_needs` | 17 | `need_id` | cases, enterprises, organizations |
+| `hypotheses` | 26 | `hypothesis_id` | cases, causal_nodes, enterprises, organizations, users |
+| `hypothesis_evidence` | 9 | `hypothesis_id, evidence_id` | enterprises, evidence, hypotheses, organizations, users |
+| `investigation_sessions` | 18 | `session_id` | cases, enterprises, organizations, users |
+| `knowledge_items` | 29 | `item_id` | enterprises, organizations, users |
+| `knowledge_suggestions` | 31 | `suggestion_id` | cases, enterprises, knowledge_items, organizations, users |
 | `oauth_authorization_codes` | 8 | `code` | users |
 | `operator_access_audit` | 12 | `audit_id` | — |
 | `operator_access_grants` | 14 | `grant_id` | — |
-| `organization_members` | 9 | `user_id, organization_id` | organizations, roles, users |
-| `organization_turn_usage` | 3 | `organization_id, usage_date` | organizations |
+| `organization_members` | 10 | `user_id, organization_id` | enterprises, organizations, roles, users |
 | `organizations` | 12 | `organization_id` | enterprises, users |
 | `permissions` | 4 | `permission_id` | — |
-| `reports` | 16 | `report_id` | cases, organizations, users |
-| `resource_shares` | 8 | `share_id` | organizations, users |
+| `reports` | 17 | `report_id` | cases, enterprises, organizations, users |
+| `resource_shares` | 9 | `share_id` | enterprises, organizations, users |
 | `role_permissions` | 2 | `role_id, permission_id` | permissions, roles |
 | `roles` | 7 | `role_id` | — |
-| `solutions` | 28 | `solution_id` | cases, causal_nodes, evidence, hypotheses, organizations |
-| `sso_org_mappings` | 5 | `provider, provider_org_id` | organizations |
-| `sso_personal_orgs` | 8 | `provider, provider_user_id` | organizations |
+| `solutions` | 29 | `solution_id` | cases, causal_nodes, enterprises, evidence, hypotheses, organizations |
+| `sso_org_mappings` | 5 | `provider, provider_org_id` | enterprises |
+| `sso_personal_enterprises` | 9 | `subject` | enterprises |
+| `team_invitations` | 10 | `invitation_id` | enterprises, teams, users |
 | `team_members` | 4 | `user_id, team_id` | teams, users |
-| `teams` | 7 | `team_id` | organizations |
-| `uploaded_files` | 19 | `file_id` | cases, organizations, users |
-| `user_audit_log` | 13 | `audit_id` | organizations, users |
-| `users` | 21 | `user_id` | enterprises |
+| `teams` | 7 | `team_id` | enterprises |
+| `turn_usage` | 5 | `billing_subject_kind, billing_subject_id, usage_date` | enterprises |
+| `uploaded_files` | 20 | `file_id` | cases, enterprises, organizations, users |
+| `user_audit_log` | 14 | `audit_id` | enterprises, organizations, users |
+| `users` | 22 | `user_id` | enterprises |
 
 ## ER Diagram
 
@@ -57,6 +58,7 @@
 erDiagram
     case_actions {
         INTEGER transition_id PK
+        VARCHAR enterprise_id FK
         VARCHAR organization_id FK
         VARCHAR case_id FK
         VARCHAR from_state
@@ -68,6 +70,7 @@ erDiagram
     }
     case_checkpoints {
         VARCHAR checkpoint_id PK
+        VARCHAR enterprise_id FK
         VARCHAR organization_id FK
         VARCHAR case_id FK
         INTEGER turn_number
@@ -79,6 +82,7 @@ erDiagram
     }
     case_entities {
         VARCHAR case_id PK
+        VARCHAR enterprise_id FK
         VARCHAR organization_id FK
         VARCHAR entity_type PK
         VARCHAR entity_value PK
@@ -89,6 +93,7 @@ erDiagram
     }
     case_messages {
         VARCHAR message_id PK
+        VARCHAR enterprise_id FK
         VARCHAR organization_id FK
         VARCHAR case_id FK
         INTEGER turn_number
@@ -101,6 +106,7 @@ erDiagram
     }
     case_tags {
         INTEGER tag_id PK
+        VARCHAR enterprise_id FK
         VARCHAR organization_id FK
         VARCHAR case_id FK
         VARCHAR tag
@@ -108,6 +114,7 @@ erDiagram
     }
     cases {
         VARCHAR case_id PK
+        VARCHAR enterprise_id FK
         VARCHAR organization_id FK
         VARCHAR user_id FK
         VARCHAR title
@@ -136,6 +143,7 @@ erDiagram
     }
     causal_edges {
         VARCHAR edge_id PK
+        VARCHAR enterprise_id FK
         VARCHAR organization_id FK
         VARCHAR case_id FK
         VARCHAR cause_node_id FK
@@ -148,6 +156,7 @@ erDiagram
     causal_node_evidence {
         VARCHAR node_id PK
         VARCHAR evidence_id PK
+        VARCHAR enterprise_id FK
         VARCHAR organization_id FK
         VARCHAR stance
         NUMERIC stance_confidence
@@ -157,6 +166,7 @@ erDiagram
     }
     causal_nodes {
         VARCHAR node_id PK
+        VARCHAR enterprise_id FK
         VARCHAR organization_id FK
         VARCHAR case_id FK
         TEXT statement
@@ -188,6 +198,7 @@ erDiagram
     }
     conversion_drafts {
         VARCHAR id PK
+        VARCHAR enterprise_id FK
         VARCHAR organization_id FK
         VARCHAR conversion_id FK
         VARCHAR knowledge_item_id FK
@@ -212,6 +223,7 @@ erDiagram
     }
     conversion_jobs {
         VARCHAR id PK
+        VARCHAR enterprise_id FK
         VARCHAR organization_id FK
         VARCHAR user_id FK
         VARCHAR case_id FK
@@ -238,10 +250,11 @@ erDiagram
         DATETIME created_at
         DATETIME updated_at
         DATETIME deleted_at
-        VARCHAR personal_tenant_retirement
+        VARCHAR domain
     }
     evidence {
         VARCHAR evidence_id PK
+        VARCHAR enterprise_id FK
         VARCHAR organization_id FK
         VARCHAR case_id FK
         VARCHAR source_file_id FK
@@ -269,12 +282,14 @@ erDiagram
     evidence_need_fulfillment {
         VARCHAR need_id PK
         VARCHAR evidence_id PK
+        VARCHAR enterprise_id FK
         VARCHAR organization_id FK
         INTEGER linked_at_turn
         DATETIME created_at
     }
     evidence_needs {
         VARCHAR need_id PK
+        VARCHAR enterprise_id FK
         VARCHAR organization_id FK
         VARCHAR case_id FK
         VARCHAR purpose
@@ -293,6 +308,7 @@ erDiagram
     }
     hypotheses {
         VARCHAR hypothesis_id PK
+        VARCHAR enterprise_id FK
         VARCHAR organization_id FK
         VARCHAR case_id FK
         VARCHAR root_node_id FK
@@ -321,6 +337,7 @@ erDiagram
     hypothesis_evidence {
         VARCHAR hypothesis_id PK
         VARCHAR evidence_id PK
+        VARCHAR enterprise_id FK
         VARCHAR organization_id FK
         VARCHAR relationship_type
         NUMERIC confidence
@@ -330,6 +347,7 @@ erDiagram
     }
     investigation_sessions {
         VARCHAR session_id PK
+        VARCHAR enterprise_id FK
         VARCHAR organization_id FK
         VARCHAR case_id FK
         VARCHAR user_id FK
@@ -349,6 +367,7 @@ erDiagram
     }
     knowledge_items {
         VARCHAR item_id PK
+        VARCHAR enterprise_id FK
         VARCHAR organization_id FK
         VARCHAR scope
         VARCHAR owner_id FK
@@ -379,6 +398,7 @@ erDiagram
     }
     knowledge_suggestions {
         VARCHAR suggestion_id PK
+        VARCHAR enterprise_id FK
         VARCHAR organization_id FK
         VARCHAR case_id FK
         VARCHAR knowledge_item_id FK
@@ -424,7 +444,7 @@ erDiagram
         VARCHAR operator_user_id
         VARCHAR operator_username
         VARCHAR action
-        VARCHAR target_organization_id
+        VARCHAR target_enterprise_id
         VARCHAR target_case_id
         TEXT reason
         VARCHAR grant_id
@@ -438,7 +458,7 @@ erDiagram
         VARCHAR operator_user_id
         VARCHAR operator_username
         VARCHAR target_case_id
-        VARCHAR target_organization_id
+        VARCHAR target_enterprise_id
         TEXT reason
         DATETIME created_at
         DATETIME expires_at
@@ -452,6 +472,7 @@ erDiagram
     organization_members {
         VARCHAR user_id PK
         VARCHAR organization_id PK
+        VARCHAR enterprise_id FK
         VARCHAR role_id FK
         VARCHAR invited_by FK
         DATETIME invited_at
@@ -459,11 +480,6 @@ erDiagram
         DATETIME joined_at
         DATETIME last_active_at
         DATETIME updated_at
-    }
-    organization_turn_usage {
-        VARCHAR organization_id PK
-        DATE usage_date PK
-        INTEGER turn_count
     }
     organizations {
         VARCHAR organization_id PK
@@ -487,6 +503,7 @@ erDiagram
     }
     reports {
         VARCHAR report_id PK
+        VARCHAR enterprise_id FK
         VARCHAR organization_id FK
         VARCHAR case_id FK
         VARCHAR generated_by FK
@@ -509,6 +526,7 @@ erDiagram
         VARCHAR resource_id
         VARCHAR scope_type
         VARCHAR scope_id
+        VARCHAR enterprise_id FK
         VARCHAR organization_id FK
         VARCHAR created_by FK
         DATETIME created_at
@@ -528,6 +546,7 @@ erDiagram
     }
     solutions {
         VARCHAR solution_id PK
+        VARCHAR enterprise_id FK
         VARCHAR organization_id FK
         VARCHAR case_id FK
         VARCHAR hypothesis_id FK
@@ -559,19 +578,32 @@ erDiagram
     sso_org_mappings {
         VARCHAR provider PK
         VARCHAR provider_org_id PK
-        VARCHAR organization_id FK
+        VARCHAR enterprise_id FK
         DATETIME created_at
         DATETIME updated_at
     }
-    sso_personal_orgs {
-        VARCHAR provider PK
-        VARCHAR provider_user_id PK
-        VARCHAR organization_id FK
+    sso_personal_enterprises {
+        VARCHAR subject PK
+        VARCHAR provider
+        VARCHAR enterprise_id FK
         VARCHAR provider_org_id
-        VARCHAR enterprise_id
         BOOLEAN membership_confirmed
+        DATETIME retired_at
+        VARCHAR retirement_state
         DATETIME created_at
         DATETIME updated_at
+    }
+    team_invitations {
+        VARCHAR invitation_id PK
+        VARCHAR enterprise_id FK
+        VARCHAR team_id FK
+        VARCHAR email
+        VARCHAR invited_user_id FK
+        VARCHAR invited_by FK
+        VARCHAR status
+        DATETIME created_at
+        DATETIME expires_at
+        DATETIME accepted_at
     }
     team_members {
         VARCHAR user_id PK
@@ -581,15 +613,23 @@ erDiagram
     }
     teams {
         VARCHAR team_id PK
-        VARCHAR organization_id FK
+        VARCHAR enterprise_id FK
         VARCHAR name
         TEXT description
         DATETIME created_at
         DATETIME updated_at
         DATETIME deleted_at
     }
+    turn_usage {
+        VARCHAR enterprise_id FK
+        VARCHAR billing_subject_kind PK
+        VARCHAR billing_subject_id PK
+        DATE usage_date PK
+        INTEGER turn_count
+    }
     uploaded_files {
         VARCHAR file_id PK
+        VARCHAR enterprise_id FK
         VARCHAR organization_id FK
         VARCHAR case_id FK
         VARCHAR uploaded_by FK
@@ -612,6 +652,7 @@ erDiagram
     user_audit_log {
         INTEGER audit_id PK
         VARCHAR user_id FK
+        VARCHAR enterprise_id FK
         VARCHAR organization_id FK
         VARCHAR event_type
         VARCHAR event_category
@@ -646,6 +687,7 @@ erDiagram
         DATETIME deleted_at
         TEXT dev_roles
         VARCHAR account_kind
+        VARCHAR service_channel
     }
     cases ||--o{ case_actions : ""
     cases ||--o{ case_checkpoints : ""
@@ -668,7 +710,37 @@ erDiagram
     causal_nodes ||--o{ hypotheses : ""
     causal_nodes ||--o{ solutions : ""
     conversion_jobs ||--o{ conversion_drafts : ""
+    enterprises ||--o{ case_actions : ""
+    enterprises ||--o{ case_checkpoints : ""
+    enterprises ||--o{ case_entities : ""
+    enterprises ||--o{ case_messages : ""
+    enterprises ||--o{ case_tags : ""
+    enterprises ||--o{ cases : ""
+    enterprises ||--o{ causal_edges : ""
+    enterprises ||--o{ causal_node_evidence : ""
+    enterprises ||--o{ causal_nodes : ""
+    enterprises ||--o{ conversion_drafts : ""
+    enterprises ||--o{ conversion_jobs : ""
+    enterprises ||--o{ evidence : ""
+    enterprises ||--o{ evidence_need_fulfillment : ""
+    enterprises ||--o{ evidence_needs : ""
+    enterprises ||--o{ hypotheses : ""
+    enterprises ||--o{ hypothesis_evidence : ""
+    enterprises ||--o{ investigation_sessions : ""
+    enterprises ||--o{ knowledge_items : ""
+    enterprises ||--o{ knowledge_suggestions : ""
+    enterprises ||--o{ organization_members : ""
     enterprises ||--o{ organizations : ""
+    enterprises ||--o{ reports : ""
+    enterprises ||--o{ resource_shares : ""
+    enterprises ||--o{ solutions : ""
+    enterprises ||--o{ sso_org_mappings : ""
+    enterprises ||--o{ sso_personal_enterprises : ""
+    enterprises ||--o{ team_invitations : ""
+    enterprises ||--o{ teams : ""
+    enterprises ||--o{ turn_usage : ""
+    enterprises ||--o{ uploaded_files : ""
+    enterprises ||--o{ user_audit_log : ""
     enterprises ||--o{ users : ""
     evidence ||--o{ case_entities : ""
     evidence ||--o{ causal_node_evidence : ""
@@ -700,18 +772,15 @@ erDiagram
     organizations ||--o{ knowledge_items : ""
     organizations ||--o{ knowledge_suggestions : ""
     organizations ||--o{ organization_members : ""
-    organizations ||--o{ organization_turn_usage : ""
     organizations ||--o{ reports : ""
     organizations ||--o{ resource_shares : ""
     organizations ||--o{ solutions : ""
-    organizations ||--o{ sso_org_mappings : ""
-    organizations ||--o{ sso_personal_orgs : ""
-    organizations ||--o{ teams : ""
     organizations ||--o{ uploaded_files : ""
     organizations ||--o{ user_audit_log : ""
     permissions ||--o{ role_permissions : ""
     roles ||--o{ organization_members : ""
     roles ||--o{ role_permissions : ""
+    teams ||--o{ team_invitations : ""
     teams ||--o{ team_members : ""
     uploaded_files ||--o{ conversion_jobs : ""
     uploaded_files ||--o{ evidence : ""
@@ -729,6 +798,7 @@ erDiagram
     users ||--o{ organizations : ""
     users ||--o{ reports : ""
     users ||--o{ resource_shares : ""
+    users ||--o{ team_invitations : ""
     users ||--o{ team_members : ""
     users ||--o{ uploaded_files : ""
     users ||--o{ user_audit_log : ""

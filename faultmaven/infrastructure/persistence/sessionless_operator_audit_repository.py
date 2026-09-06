@@ -32,7 +32,7 @@ class SessionlessOperatorAuditRepository(IOperatorAuditRepository):
         operator_user_id: Optional[str],
         action: OperatorAction,
         operator_username: Optional[str] = None,
-        target_organization_id: Optional[str] = None,
+        target_enterprise_id: Optional[str] = None,
         target_case_id: Optional[str] = None,
         reason: Optional[str] = None,
         grant_id: Optional[str] = None,
@@ -47,7 +47,7 @@ class SessionlessOperatorAuditRepository(IOperatorAuditRepository):
                 operator_user_id=operator_user_id,
                 action=action,
                 operator_username=operator_username,
-                target_organization_id=target_organization_id,
+                target_enterprise_id=target_enterprise_id,
                 target_case_id=target_case_id,
                 reason=reason,
                 grant_id=grant_id,
@@ -59,7 +59,7 @@ class SessionlessOperatorAuditRepository(IOperatorAuditRepository):
     async def list_access(
         self,
         operator_user_id: Optional[str] = None,
-        target_organization_id: Optional[str] = None,
+        target_enterprise_id: Optional[str] = None,
         target_case_id: Optional[str] = None,
         action: Optional[OperatorAction] = None,
         grant_id: Optional[str] = None,
@@ -71,7 +71,7 @@ class SessionlessOperatorAuditRepository(IOperatorAuditRepository):
             repo = OperatorAuditRepository(session)
             return await repo.list_access(
                 operator_user_id=operator_user_id,
-                target_organization_id=target_organization_id,
+                target_enterprise_id=target_enterprise_id,
                 target_case_id=target_case_id,
                 action=action,
                 grant_id=grant_id,

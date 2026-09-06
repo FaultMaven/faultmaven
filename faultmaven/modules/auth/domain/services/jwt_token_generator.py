@@ -32,16 +32,19 @@ def _max_revocation_entry_ttl() -> int:
     with it and an entry still outlives the token it revokes.
 
     Imported inside the call, not at module scope: this module is deliberately
-    free of settings imports at import time (see ``resolve_organization_claim``).
+    free of settings imports at import time (see ``resolve_enterprise_claim``).
     """
     from faultmaven.config.settings import MAX_TOKEN_LIFETIME_DAYS
 
     return MAX_TOKEN_LIFETIME_DAYS * 86400
 
 
-#: Emitted for an org-less user under multi-tenant. Falsy, so
-#: ``bind_request_org_context`` refuses the request instead of binding a tenant.
-_NO_ORG_CLAIM = ""
+#: Emitted for a user whose enterprise cannot be resolved under multi-tenant.
+#: Falsy, so ``bind_request_enterprise_context`` refuses the request instead of
+#: binding a tenant. There is no second chance downstream: ADR-017 forbids
+#: deriving the enterprise from ``users.enterprise_id`` at bind time, so a token
+#: minted with this value is a dead token by construction — which is the point.
+_NO_ENTERPRISE_CLAIM = ""
 
 #: Lifetime of a password-reset token. Declared here because this module is the
 #: only thing that signs one; ``user_service`` imports it for the Redis TTL of
@@ -298,52 +301,93 @@ def _refuse_if_deactivated(user, token_kind: str) -> None:
     raise InactiveAccountError("This account is deactivated")
 
 
-def resolve_organization_claim(user: User) -> str:
-    """Resolve a user's ``organization_id`` claim without inventing a tenant.
+def resolve_enterprise_claim(user: User) -> str:
+    """Resolve a user's ``enterprise_id`` claim — the token's ISOLATION input.
 
-    Single-tenant: an org-less user *is* the Standalone deployment's sole tenant,
-    so the sentinel org is the correct claim.
+    Minted from ``users.enterprise_id``, which is NOT NULL and is the account's
+    one anchor (ADR-017 D3). This is the only isolation input the request path
+    has: ``bind_request_enterprise_context`` reads the claim and has no fallback
+    to the user row, so a token minted without it is refused on every call.
+
+    Single-tenant: an unanchored account *is* the Standalone deployment's sole
+    tenant, so the sentinel enterprise is the correct claim.
 
     Multi-tenant: the Standalone sentinel is **not a tenant** — it identifies the
-    single-tenant deployment, and migration 033 keys the global-KB write policy
-    on it. So under multi it is rejected wherever it appears, whether the user
-    arrived with no organization at all or carrying a sentinel some upstream
-    default invented (``DevUser.__post_init__`` stamps it on every user the
-    ``DatabaseUserStore`` loads, since the repository model has no org field).
-    Either way the claim is left empty, so the request fails closed at
-    ``bind_request_org_context`` rather than silently pooling tenants.
+    single-tenant deployment, and the global-KB write policy keys on it. So under
+    multi it is rejected wherever it appears, whether the account arrived with no
+    enterprise at all or carrying a sentinel some upstream default invented
+    (``DevUser.__post_init__`` stamps it on every user the ``DatabaseUserStore``
+    loads). Either way the claim is left empty and the request fails closed
+    rather than silently pooling tenants.
 
     Args:
         user: User the token is being minted for.
 
     Returns:
-        The organization id to put in the claim, or ``""`` when the deployment is
-        multi-tenant and the user carries no organization of its own.
+        The enterprise id to put in the claim, or ``""`` when the deployment is
+        multi-tenant and the account carries no enterprise of its own.
     """
     # Deferred: tenancy config pulls in settings, which must not be imported at
     # auth-module import time.
+    from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
     from faultmaven.providers.tenancy.factory import (
         BUILTIN_MULTI,
         requested_tenant_provider,
     )
-    from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
-    organization_id = getattr(user, "organization_id", None)
+    enterprise_id = getattr(user, "enterprise_id", None)
 
     if requested_tenant_provider() != BUILTIN_MULTI:
-        # Single-tenant: the sentinel is the right answer for an org-less user.
-        return organization_id or SingleTenantProvider.DEFAULT_ORG_ID
+        # Single-tenant: the sentinel is the right answer for an unanchored
+        # account.
+        return enterprise_id or STANDALONE_ENTERPRISE_ID
 
-    if not organization_id or organization_id == SingleTenantProvider.DEFAULT_ORG_ID:
+    if not enterprise_id or enterprise_id == STANDALONE_ENTERPRISE_ID:
         logger.warning(
-            "Minting a token with no organization claim: user %s carries no "
-            "organization under multi-tenant (%s); the request will be refused.",
+            "Minting a token with no enterprise claim: user %s carries no "
+            "enterprise under multi-tenant (%s); the request will be refused.",
             getattr(user, "user_id", "<unknown>"),
-            "sentinel org" if organization_id else "no org",
+            "sentinel enterprise" if enterprise_id else "no enterprise",
         )
-        return _NO_ORG_CLAIM
+        return _NO_ENTERPRISE_CLAIM
 
-    return organization_id
+    return enterprise_id
+
+
+def resolve_billing_organization(user: User) -> Optional[str]:
+    """Resolve the ``organization_id`` claim — BILLING context, nothing more.
+
+    Under ADR-017 D2 the organization answers "who pays for this account?" and
+    decides nothing about visibility. So this invents nothing and defaults to
+    nothing: an account in no organization gets ``None``, the claim is omitted,
+    and every consumer reads "no organization" rather than a sentinel it might
+    later mistake for a tenant.
+
+    The Standalone deployment has **no organization row** (D8), so there is no
+    single-tenant special case to make here — the answer there is ``None`` too.
+
+    Args:
+        user: User the token is being minted for.
+
+    Returns:
+        The billing organization id, or ``None`` when the account is in none.
+    """
+    return getattr(user, "organization_id", None) or None
+
+
+def _tenancy_claims(user: User) -> Dict[str, str]:
+    """The two tenancy claims, together, so no mint path can emit one alone.
+
+    ``enterprise_id`` is always present (the binder refuses a token without it,
+    and a mint that silently dropped it would be indistinguishable from a
+    deactivated deployment). ``organization_id`` is present only when there is
+    an organization: absence *is* the "no organization" answer.
+    """
+    claims: Dict[str, str] = {"enterprise_id": resolve_enterprise_claim(user)}
+    organization_id = resolve_billing_organization(user)
+    if organization_id:
+        claims["organization_id"] = organization_id
+    return claims
 
 
 class IJWTTokenGenerator(ABC):
@@ -539,7 +583,8 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
     - Public key for validation (any service can validate without the private key)
 
     Token Structure (identical to HS256):
-    - Access Token: {sub, username, email, roles, scopes, organization_id,
+    - Access Token: {sub, username, email, roles, scopes, enterprise_id,
+      organization_id,
                      exp, iat, iss, aud, jti, type: "access", auth_mode: "oauth"}
     - Refresh Token: {sub, exp, iat, iss, aud, jti, type: "refresh"}
     """
@@ -593,7 +638,9 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         - email: user's email
         - roles: user roles list
         - scopes: OAuth scopes
-        - organization_id: organization the user belongs to
+        - enterprise_id: the enterprise the account is anchored to (isolation)
+        - organization_id: the organization that pays for the account (billing;
+          omitted when the account is in none)
         - exp: expiration timestamp
         - iat: issued at timestamp
         - iss: the configured issuer (``JWT_ISSUER``)
@@ -619,13 +666,11 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
 
         jti = str(uuid.uuid4())
 
-        organization_id = resolve_organization_claim(user)
-
         payload = {
             "sub": user.user_id,
             "username": user.username,
             "email": user.email if hasattr(user, "email") else "",
-            "organization_id": organization_id,
+            **_tenancy_claims(user),
             "roles": user.roles if hasattr(user, "roles") else ["user"],
             "scopes": [
                 "openid",
@@ -672,13 +717,15 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         - iat: issued at timestamp
         - jti: JWT ID (for revocation tracking)
         - type: "refresh" (token type discriminator)
-        - organization_id: organization the refreshed session belongs to
+        - enterprise_id: the enterprise the refreshed session is isolated to
+        - organization_id: the organization that pays for it (omitted when none)
 
-        The organization claim rides the refresh token because rotation is the
-        only thing that carries tenancy across an access token's lifetime: the
-        user store's model has no organization column, so `/auth/refresh` would
-        otherwise re-mint an org-less pair and the session would fail closed on
-        its first refresh (#869).
+        Both tenancy claims ride the refresh token because rotation is the only
+        thing that carries them across an access token's lifetime: the user
+        store's model has no organization column, so `/auth/refresh` would
+        otherwise re-mint an org-less pair and lose the billing context (#869).
+        The enterprise rides it for a stronger reason — it is the isolation
+        input, and a refreshed pair without it is a dead credential.
 
         Args:
             user: User to generate token for
@@ -705,7 +752,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             "aud": self.audience,
             "jti": jti,
             "type": "refresh",
-            "organization_id": resolve_organization_claim(user),
+            **_tenancy_claims(user),
         }
 
         token = jwt.encode(
@@ -1188,6 +1235,9 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         - email: user's email
         - roles: user roles list
         - scopes: OAuth scopes (for compatibility)
+        - enterprise_id: the enterprise the account is anchored to (isolation)
+        - organization_id: the organization that pays for the account (billing;
+          omitted when the account is in none)
         - exp: expiration timestamp
         - iat: issued at timestamp
         - iss: the configured issuer (``JWT_ISSUER``)
@@ -1214,13 +1264,13 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         jti = str(uuid.uuid4())
 
         # Build payload matching iam-design.md spec
-        organization_id = resolve_organization_claim(user)
-
         payload = {
             "sub": user.user_id,  # Subject (user ID)
             "username": user.username,
             "email": user.email if hasattr(user, "email") else "",
-            "organization_id": organization_id,  # Organization ID (required for all modes)
+            # enterprise_id = isolation (always present); organization_id =
+            # billing (present only when an organization pays for this account).
+            **_tenancy_claims(user),
             "roles": user.roles if hasattr(user, "roles") else ["user"],
             "scopes": [
                 "openid",
@@ -1270,7 +1320,8 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         - aud: the configured audience (``JWT_AUDIENCE``)
         - jti: JWT ID (for revocation tracking)
         - type: "refresh" (token type discriminator)
-        - organization_id: organization the refreshed session belongs to
+        - enterprise_id: the enterprise the refreshed session is isolated to
+        - organization_id: the organization that pays for it (omitted when none)
 
         Carried here for payload-shape parity with RS256 (#869): both
         algorithms mint the same refresh claims, so `/auth/refresh` has one
@@ -1301,7 +1352,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             "aud": self.audience,  # Audience
             "jti": jti,  # JWT ID (unique identifier)
             "type": "refresh",  # Token type
-            "organization_id": resolve_organization_claim(user),
+            **_tenancy_claims(user),
         }
 
         token = jwt.encode(

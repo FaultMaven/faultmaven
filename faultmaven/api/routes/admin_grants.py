@@ -79,7 +79,7 @@ async def create_grant(
             "grant_id": grant.grant_id,
             "operator_user_id": current_user.user_id,
             "target_case_id": grant.target_case_id,
-            "target_organization_id": grant.target_organization_id,
+            "target_enterprise_id": grant.target_enterprise_id,
             "expires_at": grant.expires_at.isoformat(),
         },
     )
@@ -94,8 +94,8 @@ async def list_grants(
         None, description="Filter by the operator holding the grant"
     ),
     case_id: Optional[str] = Query(None, description="Filter by the case granted"),
-    organization_id: Optional[str] = Query(
-        None, description="Filter by the organization whose case was granted"
+    enterprise_id: Optional[str] = Query(
+        None, description="Filter by the enterprise whose case was granted"
     ),
     live_only: bool = Query(
         False, description="Only grants that authorise a read right now"
@@ -115,7 +115,7 @@ async def list_grants(
     grants, total = await grant_repo.list_grants(
         operator_user_id=operator_user_id,
         target_case_id=case_id,
-        target_organization_id=organization_id,
+        target_enterprise_id=enterprise_id,
         live_only=live_only,
         limit=limit,
         offset=offset,

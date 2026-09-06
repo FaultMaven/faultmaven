@@ -78,7 +78,7 @@ def sample_context():
     return ToolContext(
         session_id="session_test",
         case_id="case_test",
-        organization_id="org_test",
+        enterprise_id="org_test",
         user_id="user_test",
         case_repository=AsyncMock(),
     )
@@ -103,13 +103,13 @@ class TestToolContext:
         context = ToolContext(
             session_id="session_123",
             case_id="case_456",
-            organization_id="org_789",
+            enterprise_id="ent_789",
             user_id="user_abc",
         )
 
         assert context.session_id == "session_123"
         assert context.case_id == "case_456"
-        assert context.organization_id == "org_789"
+        assert context.enterprise_id == "ent_789"
         assert context.user_id == "user_abc"
         assert context.case_repository is None
         assert context.execution_id is None
@@ -121,7 +121,7 @@ class TestToolContext:
         context = ToolContext(
             session_id="session_123",
             case_id="case_456",
-            organization_id="org_789",
+            enterprise_id="ent_789",
             user_id="user_abc",
             case_repository=case_repository,
             execution_id="exec_111",

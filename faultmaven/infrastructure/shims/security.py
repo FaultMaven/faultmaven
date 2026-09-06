@@ -72,7 +72,25 @@ class PIIRedactor:
                 self._anonymizer = AnonymizerEngine()
                 self.active = True
                 logger.info("PII redaction active (Presidio)")
-            except Exception as e:
+            except (Exception, SystemExit) as e:
+                # ``SystemExit`` is deliberate and is not over-catching. This
+                # guard's whole job is that a redactor which cannot start
+                # degrades to inactive instead of taking the process with it —
+                # and the most likely failure does not raise ``Exception`` at
+                # all: Presidio's spaCy engine reaches ``spacy.cli.download``
+                # for a missing model, which shells out to an installer and
+                # ends in ``sys.exit(returncode)``. ``SystemExit`` derives from
+                # ``BaseException``, so ``except Exception`` let it straight
+                # through and the guard silently did not apply.
+                #
+                # No FaultMaven image installs a spaCy model (see the Dockerfile
+                # note), while ``presidio-analyzer`` ships in the cloud
+                # requirements — so this is the ordinary path for any deployment
+                # that turns ``ENABLE_PII_REDACTION`` on, not an exotic one.
+                #
+                # ``BaseException`` would be over-catching: ``KeyboardInterrupt``
+                # and ``asyncio.CancelledError`` are somebody else's to handle,
+                # and swallowing them here would make a shutdown hang.
                 logger.warning(f"Failed to initialize Presidio: {e}")
                 self._initialization_error = str(e)
                 self._analyzer = None

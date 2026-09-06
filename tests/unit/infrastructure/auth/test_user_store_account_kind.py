@@ -1,10 +1,17 @@
-"""``account_kind`` survives a round-trip through the user store (ADR-012).
+"""Account identity survives a round-trip through the user store (ADR-017 D6).
 
 ``DatabaseUserStore`` converts repository ``User`` → ``DevUser`` on read and
 back on update, and ``UserRepository.update`` writes every column. A ``DevUser``
-that does not carry ``account_kind`` therefore silently rewrites it to the
-'individual' default on ANY update — demoting the Slack service account, which
-in turn flips the derived ``cases.source`` for every case it later creates.
+that does not carry ``account_kind`` and ``service_channel`` therefore silently
+rewrites them to their defaults on ANY update — demoting the Slack service
+account to a human, which in turn flips the derived ``cases.source`` for every
+case it later creates.
+
+Both fields, because they answer different questions and only the second one
+decides the source: there are exactly two account kinds — 'individual' and
+'service' — and which integration a service account serves is a separate
+attribute, so an account that kept its kind and lost its channel would stamp
+every Slack case as a copilot case.
 
 The D10 credential is issued against that very account, so these tests pin the
 round-trip in both directions.
@@ -23,7 +30,9 @@ from faultmaven.infrastructure.persistence.user_repository import User
 pytestmark = pytest.mark.asyncio
 
 
-def _repo_user(account_kind: str = "slack", **overrides) -> User:
+def _repo_user(
+    account_kind: str = "service", service_channel: str | None = "slack", **overrides
+) -> User:
     now = datetime.now(timezone.utc)
     fields = dict(
         user_id="user-123",
@@ -35,6 +44,7 @@ def _repo_user(account_kind: str = "slack", **overrides) -> User:
         is_active=True,
         roles=["user"],
         account_kind=account_kind,
+        service_channel=service_channel,
     )
     fields.update(overrides)
     return User(**fields)
@@ -51,45 +61,60 @@ def _store(existing: User | None = None) -> tuple[DatabaseUserStore, AsyncMock]:
 
 
 class TestAccountKindRoundTrip:
-    async def test_read_surfaces_account_kind(self):
-        store, _ = _store(_repo_user("slack"))
+    async def test_read_surfaces_the_kind_and_the_channel(self):
+        store, _ = _store(_repo_user())
 
         user = await store.get_user_by_username("slack-agent")
 
-        assert user.account_kind == "slack"
+        assert user.account_kind == "service"
+        assert user.service_channel == "slack"
 
-    async def test_update_preserves_account_kind(self):
+    async def test_update_preserves_the_kind_and_the_channel(self):
         """The regression: updating a service account must not demote it.
 
         Any update — a role change from the fm-promote-platform-admin command, a
-        display-name edit — used to write account_kind='individual' back.
+        display-name edit — used to write account_kind='individual' back. The
+        channel is asserted beside it because it is the field the case source
+        actually reads.
         """
-        store, repo = _store(_repo_user("slack"))
+        store, repo = _store(_repo_user())
         user = await store.get_user_by_username("slack-agent")
 
         user.roles = ["user", "admin"]
         await store.update_user(user)
 
         written = repo.update.call_args.args[0]
-        assert written.account_kind == "slack"
+        assert written.account_kind == "service"
+        assert written.service_channel == "slack"
 
-    async def test_create_can_set_account_kind(self):
+    async def test_create_can_set_the_kind_and_the_channel(self):
         """Service accounts are created as such, never briefly as individuals."""
         store, repo = _store()
 
-        created = await store.create_user(username="slack-agent", account_kind="slack")
+        created = await store.create_user(
+            username="slack-agent", account_kind="service", service_channel="slack"
+        )
 
-        assert created.account_kind == "slack"
-        assert repo.save.call_args.args[0].account_kind == "slack"
+        assert (created.account_kind, created.service_channel) == ("service", "slack")
+        saved = repo.save.call_args.args[0]
+        assert (saved.account_kind, saved.service_channel) == ("service", "slack")
 
-    async def test_create_defaults_to_individual(self):
-        """Humans stay the default; only an explicit caller opts into 'slack'."""
+    async def test_create_defaults_to_an_individual_serving_no_channel(self):
+        """Humans stay the default; only an explicit caller opts into 'service'.
+
+        And a human serves no integration, so the channel stays NULL — the
+        column is what "which integration is this?" is answered from, and a
+        human answering 'slack' would stamp their cases as Slack cases.
+        """
         store, repo = _store()
 
         created = await store.create_user(username="alice")
 
         assert created.account_kind == "individual"
-        assert repo.save.call_args.args[0].account_kind == "individual"
+        assert created.service_channel is None
+        saved = repo.save.call_args.args[0]
+        assert saved.account_kind == "individual"
+        assert saved.service_channel is None
 
 
 class TestUpdatePreservesTheStoredRecord:

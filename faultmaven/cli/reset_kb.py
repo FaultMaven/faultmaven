@@ -507,7 +507,7 @@ async def reset_kb(
         result = await bootstrap_kb(
             knowledge_service=knowledge_service,
             db_session_factory=get_db_session,
-            organization_id=SingleTenantProvider.DEFAULT_ORG_ID,
+            enterprise_id=SingleTenantProvider.DEFAULT_ENTERPRISE_ID,
         )
         print(f"Bootstrap result: {result!r}")
         if result.failed:

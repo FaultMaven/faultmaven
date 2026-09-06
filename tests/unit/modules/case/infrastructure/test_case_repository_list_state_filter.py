@@ -82,7 +82,7 @@ def test_list_declares_include_empty_param(provider):
 
 
 def _make_case(title, user_id="u1", current_turn=1):
-    case = Case(title=title, user_id=user_id, organization_id="org1", description="")
+    case = Case(title=title, user_id=user_id, enterprise_id="org1", description="")
     # Bypass Pydantic cross-field validators to set current_turn directly.
     object.__setattr__(case, "current_turn", current_turn)
     return case
@@ -159,7 +159,7 @@ async def test_inmemory_list_filters_by_state_keyword():
             Case(
                 title=f"Case {i}",
                 user_id="u1",
-                organization_id="org1",
+                enterprise_id="org1",
                 description="",
             )
         )

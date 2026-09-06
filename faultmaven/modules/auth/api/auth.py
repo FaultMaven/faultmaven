@@ -757,39 +757,41 @@ async def refresh_tokens(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        # 2b. Re-attach the validated refresh token's organization claim before
-        #     minting (#869). The user store's model has no organization column
-        #     — under multi-tenant it is the token chain that carries tenancy,
-        #     so without this the first refresh after an SSO login would mint an
-        #     org-less pair and every subsequent request would fail closed at
-        #     bind_request_org_context. Written with setattr because the store
-        #     may return either the repository model or a DevUser dataclass
-        #     (whose __post_init__ stamps the Standalone sentinel); under
-        #     single-tenant resolve_organization_claim restores the sentinel
-        #     anyway, so this is a no-op there.
+        # 2b. Re-attach the validated refresh token's BILLING organization
+        #     claim before minting (#869). The user store's model has no
+        #     organization column, so it is the token chain that carries who
+        #     pays; without this the first refresh after an SSO login would mint
+        #     a pair with no billing context. Written with setattr because the
+        #     store may return either the repository model or a DevUser
+        #     dataclass.
+        #
+        #     The ISOLATION claim is deliberately NOT re-attached from the
+        #     token: ``resolve_enterprise_claim`` mints it from
+        #     ``users.enterprise_id`` (ADR-017 D9), which the store now carries
+        #     across. That is what makes a moved anchor — an account retired out
+        #     of its personal enterprise into its company's — take effect on the
+        #     next rotation instead of being pinned by a token that predates it.
         setattr(user, "organization_id", claims.get("organization_id") or None)
 
-        # 2c. The tenant the chain carries must still be usable (#1045 D8 R5).
-        #     Membership and account liveness are both checked above, and
-        #     neither notices a tenant that was retired: the organization row is
-        #     soft-deleted, the claim is re-attached from the presented token,
-        #     and nothing on this path had ever read the row. A live refresh
-        #     chain therefore kept minting for a retired personal tenant
-        #     indefinitely. Retirement also bumps the user's revocation
-        #     watermark, which stops the chain at step 1 — this is the second
-        #     leg, for a chain minted after the watermark or for a tenant
-        #     retired by any other means.
-        from faultmaven.infrastructure.persistence.organization_liveness import (
-            organization_id_is_usable,
+        # 2c. The tenant the chain lives inside must still be usable (#1045 D8
+        #     R5). Account liveness is checked above and does not notice a tenant
+        #     that was retired: the enterprise row is soft-deleted and nothing
+        #     else on this path reads it, so a live refresh chain would keep
+        #     minting for a retired tenant indefinitely. Retirement also bumps
+        #     the user's revocation watermark, which stops the chain at step 1 —
+        #     this is the second leg, for a chain minted after the watermark or
+        #     for a tenant retired by any other means.
+        from faultmaven.infrastructure.persistence.enterprise_liveness import (
+            enterprise_id_is_usable,
         )
 
-        if not await organization_id_is_usable(getattr(user, "organization_id", None)):
+        if not await enterprise_id_is_usable(getattr(user, "enterprise_id", None)):
             raise HTTPException(
                 status_code=401,
                 detail={
-                    "error": "organization_unavailable",
+                    "error": "enterprise_unavailable",
                     "message": (
-                        "The organization this session belongs to is no longer "
+                        "The enterprise this session belongs to is no longer "
                         "available. Please log in again."
                     ),
                 },

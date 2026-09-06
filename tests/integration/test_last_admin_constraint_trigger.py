@@ -216,9 +216,10 @@ async def org(engine, trigger_installed):
             await conn.execute(
                 text(
                     "INSERT INTO organization_members "
-                    "(user_id, organization_id, role_id) VALUES (:u, :o, :r)"
+                    "(user_id, organization_id, enterprise_id, role_id) "
+                    "VALUES (:u, :o, :e, :r)"
                 ),
-                {"u": user_id, "o": org_id, "r": role_id},
+                {"u": user_id, "o": org_id, "e": ENTERPRISE_ID, "r": role_id},
             )
 
     yield org_id, admin_a, admin_b, viewer
@@ -566,9 +567,16 @@ async def test_guard_holds_for_the_limited_application_role(engine, org):
             async with limited.begin() as conn:
                 # RLS scopes this role's writes; the chokepoint binds the GUC
                 # per transaction, so the test binds it the same way.
+                #
+                # The value is the ENTERPRISE, not the organization. The policy
+                # on ``organization_members`` keys on ``enterprise_id``
+                # (ADR-017 D1), so binding an organization id scopes the session
+                # to a tenant that does not exist — the UPDATE then matches zero
+                # rows, the trigger never fires, and this test passes its own
+                # ``pytest.raises`` by failing to reach the guard at all.
                 await conn.execute(
-                    text("SELECT set_config('app.current_org_id', :o, true)"),
-                    {"o": org_id},
+                    text("SELECT set_config('app.current_enterprise_id', :e, true)"),
+                    {"e": ENTERPRISE_ID},
                 )
                 await conn.execute(
                     _DEMOTE, {"role": VIEWER_ROLE_ID, "org": org_id, "user": admin_a}

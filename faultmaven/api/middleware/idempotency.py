@@ -406,9 +406,9 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         signature, expiry, issuer, audience, required claims, ``type ==
         "access"`` and the revocation list. A ``sub`` that survives that is not
         forgeable without already holding a live credential for that principal.
-        The scope is that ``sub`` *and* the verified ``organization_id``
-        alongside it — see ``_verified_principal`` for why the org is carried
-        rather than assumed.
+        The scope is that ``sub`` *and* the verified ``enterprise_id``
+        alongside it — see ``_verified_principal`` for why the enterprise is
+        carried rather than assumed.
 
         One caveat on the revocation half, so it is not read as stronger than it
         is: ``AuthService._is_revoked`` is **fail-open by design** — if the
@@ -468,19 +468,27 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
     ) -> Optional[str]:
         """The verified principal as scope material, or ``None``.
 
-        The material is the ``sub`` **and** the ``organization_id`` the token
+        The material is the ``sub`` **and** the ``enterprise_id`` the token
         was minted under, both read from the same verified claim set.
 
-        Carrying the org is not defence in depth for its own sake; it replaces a
-        cross-module invariant with structure. Hashing the raw ``Authorization``
-        header distinguished org contexts as a side effect, because the org
-        claim is inside the signed token. Keying on ``sub`` alone would drop
+        The ENTERPRISE is the term here, not the organization, because this
+        partitions cached response BODIES and the enterprise is what isolates
+        (ADR-017 D1). The organization answers who pays and is absent from most
+        tokens, so keying on it would put every organization-less account in one
+        bucket and would partition on a value that grants nothing.
+
+        Carrying the enterprise is not defence in depth for its own sake; it
+        replaces a cross-module invariant with structure. Hashing the raw
+        ``Authorization`` header distinguished tenants as a side effect, because
+        the claim is inside the signed token. Keying on ``sub`` alone would drop
         that, and the safety of dropping it would rest on
-        ``resolve_organization_claim`` reading the org off the user record — so
-        that two tokens for one ``sub`` always agree on it. That holds today,
-        but it holds in ``jwt_token_generator``, not here: an org rebind, or any
-        future path where the org rides the credential rather than a membership
-        row, would put two different-tenant requests in one bucket. A cache hit
+        ``resolve_enterprise_claim`` reading the tenant off the user record — so
+        that two tokens for one ``sub`` always agree on it. That holds today
+        (``users.enterprise_id`` is NOT NULL and is the account's one anchor),
+        but it holds in ``jwt_token_generator``, not here: a break-glass rebind,
+        a retirement that moves an account, or any future path where the tenant
+        rides the credential rather than the row, would put two different-tenant
+        requests in one bucket. A cache hit
         returns before ``call_next``, so the second would be served the first's
         body — the failure class the original docstring was written to prevent,
         reached from the other side. Multi-tenancy is on the beta path, so this
@@ -530,14 +538,14 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
             if not isinstance(subject, str) or not subject:
                 return None
 
-            organization = claims.get("organization_id")
-            if not isinstance(organization, str):
-                organization = ""
+            enterprise = claims.get("enterprise_id")
+            if not isinstance(enterprise, str):
+                enterprise = ""
 
-            # A separator no id can contain, so ``(sub, org)`` pairs cannot be
-            # re-partitioned into the same string by a value that happens to
-            # span the boundary.
-            return f"{subject}\x1f{organization}"
+            # A separator no id can contain, so ``(sub, enterprise)`` pairs
+            # cannot be re-partitioned into the same string by a value that
+            # happens to span the boundary.
+            return f"{subject}\x1f{enterprise}"
         except Exception as e:
             logger.debug(f"Idempotency scope falling back to raw credential: {e}")
             return None

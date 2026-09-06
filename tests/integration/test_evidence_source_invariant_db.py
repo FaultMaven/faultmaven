@@ -1,12 +1,17 @@
 """DB-level enforcement test for the ``evidence_source_invariant`` CHECK.
 
-Migration 010 added a CHECK constraint on the ``evidence`` table:
+The schema baseline declares a CHECK constraint on the ``evidence`` table:
 
     source_file_id IS NOT NULL OR source_type = 'user_description'
 
 This test exercises the constraint by attempting raw SQL INSERTs that
 violate it and asserting the database rejects them. Catches drift if
 the constraint is accidentally dropped or weakened.
+
+The rows it builds carry ``enterprise_id`` because that is the NOT NULL
+isolation key on every tenanted table (ADR-017 D1); the nullable
+``organization_id`` beside it is billing attribution, and is stamped here only
+so the INSERT exercises the same column set a real write does.
 """
 
 from __future__ import annotations
@@ -70,10 +75,10 @@ async def _seed_minimum(session: AsyncSession) -> tuple[str, str, str]:
     )
     await session.execute(
         text(
-            "INSERT INTO cases (case_id, organization_id, title) "
-            "VALUES (:cid, :oid, 'Test')"
+            "INSERT INTO cases (case_id, enterprise_id, organization_id, title) "
+            "VALUES (:cid, :eid, :oid, 'Test')"
         ),
-        {"cid": cid, "oid": oid},
+        {"cid": cid, "eid": eid, "oid": oid},
     )
     await session.commit()
     return eid, oid, cid
@@ -87,7 +92,7 @@ async def test_check_constraint_blocks_logs_without_source_file():
     try:
         session = await _setup_fresh_db(db_path)
         try:
-            _, oid, cid = await _seed_minimum(session)
+            ent_id, oid, cid = await _seed_minimum(session)
 
             from sqlalchemy import text
 
@@ -95,14 +100,15 @@ async def test_check_constraint_blocks_logs_without_source_file():
                 await session.execute(
                     text(
                         "INSERT INTO evidence "
-                        "(evidence_id, organization_id, case_id, "
+                        "(evidence_id, enterprise_id, organization_id, case_id, "
                         " category, source_type, source_file_id, "
                         " summary, metadata) "
-                        "VALUES (:eid, :oid, :cid, 'symptom_evidence', "
+                        "VALUES (:evid, :ent, :oid, :cid, 'symptom_evidence', "
                         " 'logs', NULL, 'bad row', '{}')"
                     ),
                     {
-                        "eid": f"ev_{uuid.uuid4().hex[:12]}",
+                        "evid": f"ev_{uuid.uuid4().hex[:12]}",
+                        "ent": ent_id,
                         "oid": oid,
                         "cid": cid,
                     },
@@ -123,28 +129,28 @@ async def test_check_constraint_allows_user_description_without_source_file():
     try:
         session = await _setup_fresh_db(db_path)
         try:
-            _, oid, cid = await _seed_minimum(session)
+            ent_id, oid, cid = await _seed_minimum(session)
 
             from sqlalchemy import text
 
-            eid = f"ev_{uuid.uuid4().hex[:12]}"
+            evid = f"ev_{uuid.uuid4().hex[:12]}"
             await session.execute(
                 text(
                     "INSERT INTO evidence "
-                    "(evidence_id, organization_id, case_id, "
+                    "(evidence_id, enterprise_id, organization_id, case_id, "
                     " category, source_type, source_file_id, "
                     " summary, metadata) "
-                    "VALUES (:eid, :oid, :cid, 'symptom_evidence', "
+                    "VALUES (:evid, :ent, :oid, :cid, 'symptom_evidence', "
                     " 'user_description', NULL, 'user pasted error', '{}')"
                 ),
-                {"eid": eid, "oid": oid, "cid": cid},
+                {"evid": evid, "ent": ent_id, "oid": oid, "cid": cid},
             )
             await session.commit()
 
             row = (
                 await session.execute(
                     text("SELECT source_type FROM evidence WHERE evidence_id = :id"),
-                    {"id": eid},
+                    {"id": evid},
                 )
             ).first()
             assert row is not None

@@ -314,7 +314,7 @@ def warm_repository_paths():
                     Case(
                         case_id=generate_case_id(),
                         user_id="warmup-user",
-                        organization_id="warmup-org",
+                        enterprise_id="warmup-org",
                         title="Warm-up",
                         description="Discarded write that absorbs one-time init.",
                         state=CaseState.INQUIRY,

@@ -259,21 +259,66 @@ async def seed_organizations(
     await session.commit()
 
 
-def install_org_autoseed(sync_session) -> None:
-    """Auto-create OrganizationModel rows for any new tenanted ORM object.
+async def seed_teams(
+    session,
+    team_ids: Iterable[str],
+    enterprise_id: Optional[str] = None,
+) -> None:
+    """Insert team rows so share- and membership-bound tests can reference them.
 
-    Phase 9 added FK on tenanted tables. This hook seeds the parent org row
-    inside the same flush so FK constraints succeed without churning each test
-    to call seed_organizations() manually. Uses Core INSERT (not session.add)
-    so the rows materialize in the current transaction before child INSERTs;
-    objects added via session.add() inside before_flush defer to the next
-    flush, which is too late to satisfy the FK.
+    A team is parented by its ENTERPRISE (ADR-017 D4): it carries no
+    ``organization_id``, and it may span organizations. ``team_members`` reaches
+    its tenant key by one hop through ``teams.enterprise_id``, so a membership
+    row is only visible once its team exists in the bound enterprise — which is
+    why seeding the team is the thing a membership test cannot skip.
+
+    ``teams`` is unique on ``(enterprise_id, name)``; the name is derived from
+    the team id, which is the table's PRIMARY KEY, so two names in one batch can
+    only collide if two ids did. Idempotent per id.
+    """
+    from faultmaven.infrastructure.persistence.models import TeamModel
+
+    enterprise_id = enterprise_id or DEFAULT_TEST_ENTERPRISE_ID
+    await seed_default_enterprise(session)
+
+    for team_id in team_ids:
+        existing = await session.get(TeamModel, team_id)
+        if existing is not None:
+            continue
+        session.add(
+            TeamModel(
+                team_id=team_id,
+                enterprise_id=enterprise_id,
+                name=f"Test Team {team_id}",
+            )
+        )
+    await session.commit()
+
+
+def install_org_autoseed(sync_session) -> None:
+    """Auto-create the parent ENTERPRISE and organization rows a flush needs.
+
+    Every tenanted table carries ``enterprise_id NOT NULL`` with an FK
+    (ADR-017), and most carry a nullable ``organization_id`` FK beside it. This
+    hook seeds whichever parents a pending object references, inside the same
+    flush, so FK constraints succeed without churning each test to call
+    ``seed_enterprises`` / ``seed_organizations`` by hand. Uses Core INSERT (not
+    ``session.add``) so the rows materialize in the current transaction before
+    the child INSERTs; objects added via ``session.add()`` inside
+    ``before_flush`` defer to the next flush, which is too late to satisfy the
+    FK.
+
+    **The enterprise arm is seeded from the referenced ids, not only from the
+    default.** Before ADR-017 the only enterprise a test could reference was the
+    default one, so ensuring that single row was enough; now every tenanted
+    object names an enterprise of its own choosing, and seeding only the default
+    would fail the FK for every test that picks its own — which is most of them.
 
     NOTE: This hook only fires for ORM-mediated writes (via session flush).
     Tests that exercise raw-SQL repositories like ``SQLiteCaseRepository``
-    bypass the ORM flush path; those tests should call
-    ``seed_organizations(session, [...])`` explicitly before the first save,
-    or wrap the case repository with the ``seed_orgs_for_repo`` helper.
+    bypass the ORM flush path; those tests should call ``seed_enterprises`` /
+    ``seed_organizations`` explicitly before the first save, or wrap the case
+    repository with the ``seed_orgs_for_repo`` helper.
 
     Call once per AsyncSession with `session.sync_session` as the argument.
     """
@@ -285,14 +330,49 @@ def install_org_autoseed(sync_session) -> None:
     )
 
     @event.listens_for(sync_session, "before_flush")
-    def _seed_referenced_orgs(session, flush_context, instances):
+    def _seed_referenced_tenancy(session, flush_context, instances):
+        enterprise_ids: set[str] = set()
         org_ids: set[str] = set()
         for obj in session.new:
-            if isinstance(obj, OrganizationModel):
-                continue
-            oid = getattr(obj, "organization_id", None)
-            if oid:
-                org_ids.add(oid)
+            if not isinstance(obj, EnterpriseModel):
+                eid = getattr(obj, "enterprise_id", None)
+                if eid:
+                    enterprise_ids.add(eid)
+            if not isinstance(obj, OrganizationModel):
+                oid = getattr(obj, "organization_id", None)
+                if oid:
+                    org_ids.add(oid)
+
+        # An organization needs an enterprise to hang off, so the default is
+        # required whenever one is being seeded.
+        if org_ids:
+            enterprise_ids.add(DEFAULT_TEST_ENTERPRISE_ID)
+
+        if enterprise_ids:
+            existing_enterprises = {
+                row[0]
+                for row in session.execute(
+                    select(EnterpriseModel.enterprise_id).where(
+                        EnterpriseModel.enterprise_id.in_(enterprise_ids)
+                    )
+                ).all()
+            }
+            missing_enterprises = enterprise_ids - existing_enterprises
+            if missing_enterprises:
+                session.execute(
+                    insert(EnterpriseModel),
+                    [
+                        {
+                            "enterprise_id": eid,
+                            "name": f"Test Enterprise {eid}",
+                            # The slug is unique among live rows, so it has to
+                            # be derived from the id rather than shared.
+                            "slug": eid,
+                        }
+                        for eid in sorted(missing_enterprises)
+                    ],
+                )
+
         if not org_ids:
             return
         existing = {
@@ -305,20 +385,6 @@ def install_org_autoseed(sync_session) -> None:
         }
         missing = org_ids - existing
         if missing:
-            # Ensure the default enterprise exists so the orgs.enterprise_id
-            # FK target is satisfied.
-            default_ent = session.get(EnterpriseModel, DEFAULT_TEST_ENTERPRISE_ID)
-            if default_ent is None:
-                session.execute(
-                    insert(EnterpriseModel),
-                    [
-                        {
-                            "enterprise_id": DEFAULT_TEST_ENTERPRISE_ID,
-                            "name": "Default Test Enterprise",
-                            "slug": "default-test",
-                        }
-                    ],
-                )
             session.execute(
                 insert(OrganizationModel),
                 [
@@ -328,7 +394,7 @@ def install_org_autoseed(sync_session) -> None:
                         "name": f"Test Org {oid}",
                         "slug": oid,
                     }
-                    for oid in missing
+                    for oid in sorted(missing)
                 ],
             )
 
@@ -375,6 +441,7 @@ def generate_investigation_session_id() -> str:
 
 def make_org_knowledge_item(
     item_id: Optional[str] = None,
+    enterprise_id: Optional[str] = None,
     organization_id: Optional[str] = None,
     title: str = "Sample Knowledge Item",
     content: str = "This is sample content for the knowledge item.",
@@ -389,19 +456,24 @@ def make_org_knowledge_item(
     created_at: Optional[datetime] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> "KnowledgeItem":
-    """Build a valid org-owned KnowledgeItem for repository-level tests.
+    """Build a valid tenant-owned KnowledgeItem for repository-level tests.
 
-    This is the single definition of an org-owned sample item. The repository
+    This is the single definition of a tenant-owned sample item. The repository
     unit tests, the integration suite and the benchmarks all construct through
     here, so a change to the model's tenancy invariants is made in one place
     rather than in three copies that can drift apart.
 
-    Scope is TEAM, an org-owned tier:
+    ``enterprise_id`` is the ISOLATION key and is always set (ADR-017 D1);
+    ``organization_id`` is BILLING attribution and defaults to absent, which is
+    the ordinary state.
 
-    * GLOBAL is the org-free platform tier (#770) and must NOT carry an
+    Scope is TEAM, a tenant-owned tier:
+
+    * GLOBAL is the organization-free platform tier (#770) and must NOT carry an
       ``organization_id`` (mirrors the ``knowledge_items_global_org_check``
       constraint). It is also the dataclass default, so an item built without
-      an explicit scope but *with* an org id fails construction outright.
+      an explicit scope but *with* an organization id fails construction
+      outright.
     * PERSONAL would require an ``owner_id`` backed by a real ``users`` row
       under the FK-on fixtures.
 
@@ -431,7 +503,8 @@ def make_org_knowledge_item(
 
     return KnowledgeItem(
         item_id=item_id or generate_item_id(),
-        organization_id=organization_id or generate_org_id(),
+        enterprise_id=enterprise_id or generate_org_id(),
+        organization_id=organization_id,
         scope=KnowledgeScope.TEAM,
         title=title,
         content=content,
@@ -576,7 +649,7 @@ async def asgi_request(app, method: str, path: str, **kwargs):
 # ``AuthService`` mints nothing. It used to carry a second, independent signing
 # surface — ``generate_access_token`` / ``generate_refresh_token`` /
 # ``generate_token_pair`` — that took a subject id and an ``organization_id``
-# string and signed them verbatim, bypassing ``resolve_organization_claim``
+# string and signed them verbatim, bypassing ``resolve_enterprise_claim``
 # (#850). It reached no route and was removed in #853; ``IJWTTokenGenerator`` is
 # the one mint path.
 #
@@ -636,7 +709,8 @@ def forge_access_token(
     auth_service,
     *,
     user_id: str,
-    organization_id: str,
+    enterprise_id: str,
+    organization_id: Optional[str] = None,
     email: str,
     roles: List[str],
     username: Optional[str] = None,
@@ -656,9 +730,18 @@ def forge_access_token(
     service verifies with. ``username`` defaults to ``user_id``; the live mint
     takes ``user.username``, so pass it explicitly when a test reads that claim.
 
-    Unlike the live mint, the organization claim is whatever the caller passes:
+    Unlike the live mint, the tenancy claims are whatever the caller passes:
     forging exists to control claims, including ones
-    ``resolve_organization_claim`` would never produce.
+    ``resolve_enterprise_claim`` would never produce.
+
+    The two claims follow the live mint's SHAPE, though, because a forger whose
+    shape drifts stops testing the thing it stands in for (``ADR-017``, and
+    ``test_token_forger_shape_parity``): ``enterprise_id`` — the isolation claim
+    the binder refuses a token without — is required, and ``organization_id`` —
+    billing attribution — is OMITTED when it is falsy, because absence is how
+    "this account is in no organization" is spelled. Pass ``organization_id=""``
+    and you still get no claim; to forge a token carrying an *empty* claim, use
+    ``sign_claims_for`` directly and say so.
     """
     from datetime import timedelta
 
@@ -668,13 +751,16 @@ def forge_access_token(
         auth_mode = "oauth" if auth_service._algorithm == "RS256" else "local"
 
     now = datetime.now(timezone.utc)
+    tenancy = {"enterprise_id": enterprise_id}
+    if organization_id:
+        tenancy["organization_id"] = organization_id
     return sign_claims_for(
         auth_service,
         {
             "sub": user_id,
             "username": user_id if username is None else username,
             "email": email,
-            "organization_id": organization_id,
+            **tenancy,
             "roles": roles,
             "scopes": (
                 list(LIVE_ACCESS_TOKEN_SCOPES) if scopes is None else list(scopes)
@@ -694,21 +780,30 @@ def forge_refresh_token(
     auth_service,
     *,
     user_id: str,
-    organization_id: str,
+    enterprise_id: str,
+    organization_id: Optional[str] = None,
     expires_in_days: Optional[int] = None,
 ) -> str:
-    """Forge a refresh token ``auth_service.verify_token`` accepts."""
+    """Forge a refresh token ``auth_service.verify_token`` accepts.
+
+    Same tenancy shape as :func:`forge_access_token`, for the same reason: both
+    live generators put BOTH claims in the refresh payload as well, so a rotation
+    forged without them tests a chain production never mints.
+    """
     from datetime import timedelta
 
     if expires_in_days is None:
         expires_in_days = auth_service._settings.auth.jwt_refresh_token_expire_days
 
     now = datetime.now(timezone.utc)
+    tenancy = {"enterprise_id": enterprise_id}
+    if organization_id:
+        tenancy["organization_id"] = organization_id
     return sign_claims_for(
         auth_service,
         {
             "sub": user_id,
-            "organization_id": organization_id,
+            **tenancy,
             "iss": auth_service._settings.security.jwt_issuer,
             "aud": auth_service._settings.security.jwt_audience,
             "iat": int(now.timestamp()),

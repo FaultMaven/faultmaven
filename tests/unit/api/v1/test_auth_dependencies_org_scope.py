@@ -1,17 +1,21 @@
-"""Unit tests for organization scoping of the JWT-derived ``DevUser`` (ADR-010).
+"""Tenancy on the JWT-derived ``DevUser`` (ADR-010 P2b, re-keyed by ADR-017).
 
 ``get_current_user_optional`` (``api/v1/auth_dependencies``) builds a ``DevUser``
-from a validated JWT. It must source ``organization_id`` from the request-scoped
-tenant contextvar (``config.tenant_context``) — the same value PostgreSQL RLS
-enforces for the request — and NOT from the raw ``organization_id`` JWT claim.
+from a validated JWT. It carries the two tenancy facts, and it must source them
+from two DIFFERENT places, because they are two different kinds of thing:
 
-Sourcing the raw claim would (a) silently mask a missing claim to the Standalone
-org via ``DevUser.__post_init__`` and (b) let a forged claim diverge from the
-RLS-scoped org. The global ``bind_request_org_context`` dependency (P2b) has
-already resolved the contextvar before this dependency runs: Standalone under
-single-tenant (re-leak guard), the verified claim under multi-tenant (failing
-closed on a missing org). These tests pin that this dependency reflects the
-resolved contextvar rather than re-deriving org from the token.
+* ``enterprise_id`` — ISOLATION — comes from the request-scoped tenant
+  contextvar (``config.tenant_context``), the same value PostgreSQL RLS is
+  enforcing for this request. NOT from the raw claim: sourcing the claim would
+  let a forged one diverge from the enforced tenant, and would silently mask a
+  missing one to Standalone through ``DevUser.__post_init__``.
+* ``organization_id`` — BILLING — comes from the raw claim, or is ``None``. It
+  decides nothing about visibility, and an account in no organization must
+  present ``None`` rather than a sentinel a later reader could mistake for a
+  tenant.
+
+The global ``bind_request_enterprise_context`` dependency (P2b) has already
+resolved the contextvar before this dependency runs.
 """
 
 from unittest.mock import AsyncMock, MagicMock
@@ -19,19 +23,20 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from faultmaven.api.v1.auth_dependencies import get_current_user_optional
-from faultmaven.config.constants import STANDALONE_ORG_ID
-from faultmaven.config.tenant_context import set_current_org_id
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.config.tenant_context import set_current_enterprise_id
 
-OTHER_ORG = "22222222-2222-2222-2222-222222222222"
-FORGED_ORG = "99999999-9999-9999-9999-999999999999"
+OTHER_ENTERPRISE = "22222222-2222-2222-2222-222222222222"
+FORGED_ENTERPRISE = "99999999-9999-9999-9999-999999999999"
+BILLING_ORG = "33333333-3333-3333-3333-333333333333"
 
 
 @pytest.fixture(autouse=True)
-def _reset_org_context():
+def _reset_tenant_context():
     """Keep contextvar state from leaking across tests."""
-    set_current_org_id(STANDALONE_ORG_ID)
+    set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
     yield
-    set_current_org_id(STANDALONE_ORG_ID)
+    set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
 
 
 async def _resolve_user(claims: dict):
@@ -39,7 +44,7 @@ async def _resolve_user(claims: dict):
 
     Verification + revocation are AuthService's job (pinned by
     test_auth_dependencies_revocation.py); these tests stub the verified
-    claims to isolate the org-sourcing behavior.
+    claims to isolate the tenancy-sourcing behaviour.
     """
     auth_service = MagicMock()
     auth_service.verify_token_with_revocation_check = AsyncMock(return_value=claims)
@@ -49,46 +54,87 @@ async def _resolve_user(claims: dict):
 
 
 @pytest.mark.unit
+@pytest.mark.security
 @pytest.mark.asyncio
-async def test_org_sourced_from_contextvar_not_raw_claim():
-    """Multi-tenant: the org comes from the request-bound contextvar (what tenant_scope
-    verified), not the raw claim — so a forged claim can never re-scope the user."""
-    set_current_org_id(OTHER_ORG)  # tenant_scope bound the verified org
+async def test_the_enterprise_comes_from_the_binding_not_the_raw_claim():
+    """A forged claim can never re-scope the user object.
+
+    The binding is what RLS is enforcing; anything else on this object would be
+    a second, disagreeing answer to the same question.
+    """
+    set_current_enterprise_id(OTHER_ENTERPRISE)  # the binder bound the verified one
 
     user = await _resolve_user(
-        {"sub": "user-1", "organization_id": FORGED_ORG, "auth_mode": "oauth"}
+        {"sub": "user-1", "enterprise_id": FORGED_ENTERPRISE, "auth_mode": "oauth"}
     )
 
     assert user is not None
-    assert user.organization_id == OTHER_ORG  # contextvar wins, forged claim ignored
+    assert user.enterprise_id == OTHER_ENTERPRISE
 
 
 @pytest.mark.unit
+@pytest.mark.security
 @pytest.mark.asyncio
-async def test_missing_org_claim_does_not_mask_to_standalone():
-    """A missing ``organization_id`` claim must reflect the bound context, not the
-    ``__post_init__`` Standalone mask — the exact silent-masking trap this closes."""
-    set_current_org_id(OTHER_ORG)
+async def test_a_missing_enterprise_claim_reflects_the_binding_not_the_sentinel():
+    """The silent-masking trap: ``DevUser.__post_init__`` stamps Standalone."""
+    set_current_enterprise_id(OTHER_ENTERPRISE)
 
     user = await _resolve_user({"sub": "user-1", "auth_mode": "oauth"})
 
     assert user is not None
-    assert user.organization_id == OTHER_ORG  # NOT masked to STANDALONE_ORG_ID
+    assert user.enterprise_id == OTHER_ENTERPRISE
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_single_tenant_default_context_yields_standalone():
-    """Single-tenant: tenant_scope leaves/forces the contextvar at the Standalone org,
-    so the DevUser is scoped to Standalone regardless of any injected claim.
-
-    Non-regression guard: this passes on both the old (omit org -> ``__post_init__``
-    mask) and new (contextvar) code; it pins that single-tenant behavior is unchanged,
-    not the fix itself (tests 1-2 discriminate the fix)."""
-    # Contextvar at its Standalone default (autouse fixture), as under single-tenant.
+async def test_single_tenant_default_binding_yields_standalone():
+    """Single-tenant: the binder forces the Standalone enterprise, so the
+    DevUser is scoped to it regardless of any injected claim."""
     user = await _resolve_user(
-        {"sub": "user-1", "organization_id": FORGED_ORG, "auth_mode": "local"}
+        {"sub": "user-1", "enterprise_id": FORGED_ENTERPRISE, "auth_mode": "local"}
     )
 
     assert user is not None
-    assert user.organization_id == STANDALONE_ORG_ID
+    assert user.enterprise_id == STANDALONE_ENTERPRISE_ID
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_billing_organization_is_the_raw_claim():
+    """Billing is attribution, so the claim is the right source for it.
+
+    And it is NOT the binding: a user object whose organization mirrored the
+    enterprise would re-conflate exactly what ADR-017 separated.
+    """
+    set_current_enterprise_id(OTHER_ENTERPRISE)
+
+    user = await _resolve_user(
+        {
+            "sub": "user-1",
+            "organization_id": BILLING_ORG,
+            "auth_mode": "oauth",
+        }
+    )
+
+    assert user is not None
+    assert user.organization_id == BILLING_ORG
+    assert user.enterprise_id == OTHER_ENTERPRISE
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.asyncio
+@pytest.mark.parametrize("claims", [{}, {"organization_id": ""}])
+async def test_an_account_in_no_organization_presents_none(claims):
+    """``None``, never a sentinel.
+
+    An account nobody pays for is the ordinary case (ADR-017 D5), and a sentinel
+    here is what a later reader would mistake for a tenant — the conflation this
+    campaign exists to undo.
+    """
+    set_current_enterprise_id(OTHER_ENTERPRISE)
+
+    user = await _resolve_user({"sub": "user-1", "auth_mode": "oauth", **claims})
+
+    assert user is not None
+    assert user.organization_id is None

@@ -86,7 +86,7 @@ def _make_resolved_case(case_id: str = "case_aabb11223344") -> Case:
     case = Case(
         case_id=case_id,
         user_id="u1",
-        organization_id="o1",
+        enterprise_id="o1",
         title="Pool timeout resolved",
         description="DB queries timing out",
         state=CaseState.INVESTIGATING,
@@ -999,7 +999,7 @@ class TestDedupSkipObservability:
 
         case = Case(
             user_id="u1",
-            organization_id="o1",
+            enterprise_id="o1",
             title="Pool timeout",
             description="DB queries timing out",
             state=CaseState.INVESTIGATING,
@@ -1105,7 +1105,7 @@ class TestRunbookConversionCarriesOrg:
 
         case = _make_resolved_case()
         _make_runbook_ready(case)
-        object.__setattr__(case, "organization_id", "org_guest_7f2a")
+        object.__setattr__(case, "enterprise_id", "ent_guest_7f2a")
 
         conversion_service = MagicMock()
         conversion_service.convert_from_case = AsyncMock(
@@ -1134,10 +1134,11 @@ class TestRunbookConversionCarriesOrg:
 
         conversion_service.convert_from_case.assert_awaited_once()
         kwargs = conversion_service.convert_from_case.await_args.kwargs
-        assert kwargs["organization_id"] == "org_guest_7f2a", (
-            "#1143: the background conversion must carry the case's org — "
-            "without it the service stamps the single-tenant sentinel and "
-            "PostgreSQL RLS refuses every write."
+        assert kwargs["enterprise_id"] == "ent_guest_7f2a", (
+            "#1143: the background conversion must carry the case's ENTERPRISE "
+            "— without it the service stamps the single-tenant sentinel and "
+            "PostgreSQL RLS, which keys on app.current_enterprise_id, refuses "
+            "every write."
         )
         # Guard the whole call, not just the happy field: a future refactor that
         # reintroduces a positional call would silently drop the org again.
@@ -1145,16 +1146,18 @@ class TestRunbookConversionCarriesOrg:
 
         await asyncio.sleep(0)
 
-    def test_org_is_a_required_parameter(self):
-        """``organization_id`` has no default — omitting it must not be silent.
+    def test_the_enterprise_is_a_required_parameter(self):
+        """``enterprise_id`` has no default — omitting it must not be silent.
 
-        A defaulted parameter is how the org was lost in the first place: the
+        A defaulted parameter is how the tenant was lost in the first place: the
         service's ``organization_id: str = None`` let the only caller omit it
-        and turned a tenancy bug into a signature nobody had to notice.
+        and turned a tenancy bug into a signature nobody had to notice. The
+        column the tenant lives in moved to the enterprise (ADR-017 D1); the
+        trap did not.
         """
         sig = inspect.signature(MilestoneEngine._run_runbook_conversion)
-        param = sig.parameters["organization_id"]
+        param = sig.parameters["enterprise_id"]
         assert param.default is inspect.Parameter.empty, (
-            "#1143: _run_runbook_conversion.organization_id must stay required; "
+            "#1143: _run_runbook_conversion.enterprise_id must stay required; "
             "a default reopens the silent-omission path."
         )

@@ -40,7 +40,7 @@ def _ctx():
     return ToolContext(
         session_id="sess_1",
         case_id="case_xyz",
-        organization_id="org_1",
+        enterprise_id="org_1",
         user_id="user_abc",
     )
 

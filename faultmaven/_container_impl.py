@@ -918,8 +918,16 @@ class DIContainer(BaseDIContainer):
 
                 return case
 
-            async def get_case(self, case_id, user_id=None):
-                return self.cases.get(case_id)
+            async def get_case(self, case_id, user_id=None, *, owner_only=False):
+                case = self.cases.get(case_id)
+                # ``owner_only`` is the ownership gate the real service applies
+                # (the share allowlist is deliberately not consulted). The
+                # stand-in must honour it rather than merely accept it: a
+                # degraded path that widened a caller's reach would be worse
+                # than one that 500s.
+                if owner_only and case is not None and case.user_id != user_id:
+                    return None
+                return case
 
             def _active_session_cases(self, session_id):
                 """Non-terminal, non-empty cases for a session.

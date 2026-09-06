@@ -62,7 +62,7 @@ def _knowledge_service_double():
 def _ready_suggestion() -> KnowledgeSuggestion:
     return KnowledgeSuggestion(
         suggestion_id=SUGGESTION_ID,
-        organization_id=ORG,
+        enterprise_id=ORG,
         case_id="case_aabb11223344",
         suggested_title="Redis pool exhaustion",
         suggested_content="## Problem\nPool exhausted.\n",
@@ -99,7 +99,7 @@ class TestApprovalActuallyCreatesSomething:
         result = await service.approve_suggestion(
             suggestion_id=SUGGESTION_ID,
             reviewed_by="user_admin",
-            organization_id=ORG,
+            enterprise_id=ORG,
         )
 
         assert result is not None, (
@@ -113,7 +113,7 @@ class TestApprovalActuallyCreatesSomething:
         await service.approve_suggestion(
             suggestion_id=SUGGESTION_ID,
             reviewed_by="user_admin",
-            organization_id=ORG,
+            enterprise_id=ORG,
         )
 
         service._knowledge_service.upload_document.assert_awaited_once()
@@ -125,7 +125,7 @@ class TestApprovalActuallyCreatesSomething:
         await service.approve_suggestion(
             suggestion_id=SUGGESTION_ID,
             reviewed_by="user_admin",
-            organization_id=ORG,
+            enterprise_id=ORG,
         )
 
         kwargs = service._knowledge_service.upload_document.await_args.kwargs
@@ -153,7 +153,7 @@ class TestApprovalActuallyCreatesSomething:
         await service.approve_suggestion(
             suggestion_id=SUGGESTION_ID,
             reviewed_by="user_admin",
-            organization_id=ORG,
+            enterprise_id=ORG,
         )
 
         stored = service._repository.peek(SUGGESTION_ID)
@@ -172,7 +172,7 @@ class TestLineageSurvives:
         await service.approve_suggestion(
             suggestion_id=SUGGESTION_ID,
             reviewed_by="user_admin",
-            organization_id=ORG,
+            enterprise_id=ORG,
         )
 
         kwargs = service._knowledge_service.upload_document.await_args.kwargs
@@ -182,7 +182,7 @@ class TestLineageSurvives:
         await service.approve_suggestion(
             suggestion_id=SUGGESTION_ID,
             reviewed_by="user_admin",
-            organization_id=ORG,
+            enterprise_id=ORG,
         )
 
         kwargs = service._knowledge_service.upload_document.await_args.kwargs
@@ -192,7 +192,7 @@ class TestLineageSurvives:
         await service.approve_suggestion(
             suggestion_id=SUGGESTION_ID,
             reviewed_by="user_admin",
-            organization_id=ORG,
+            enterprise_id=ORG,
         )
 
         kwargs = service._knowledge_service.upload_document.await_args.kwargs
@@ -203,7 +203,7 @@ class TestLineageSurvives:
         await service.approve_suggestion(
             suggestion_id=SUGGESTION_ID,
             reviewed_by="user_admin",
-            organization_id=ORG,
+            enterprise_id=ORG,
         )
 
         kwargs = service._knowledge_service.upload_document.await_args.kwargs
@@ -213,7 +213,7 @@ class TestLineageSurvives:
         await service.approve_suggestion(
             suggestion_id=SUGGESTION_ID,
             reviewed_by="user_admin",
-            organization_id=ORG,
+            enterprise_id=ORG,
         )
 
         kwargs = service._knowledge_service.upload_document.await_args.kwargs
@@ -243,7 +243,7 @@ class TestProgrammingErrorsAreNotSwallowed:
         await svc.approve_suggestion(
             suggestion_id=SUGGESTION_ID,
             reviewed_by="user_admin",
-            organization_id=ORG,
+            enterprise_id=ORG,
         )
 
         kwargs = svc._knowledge_service.upload_document.await_args.kwargs
@@ -266,7 +266,7 @@ class TestProgrammingErrorsAreNotSwallowed:
             await service.approve_suggestion(
                 suggestion_id=SUGGESTION_ID,
                 reviewed_by="user_admin",
-                organization_id=ORG,
+                enterprise_id=ORG,
             )
 
     async def test_a_not_ready_suggestion_still_returns_none(self, service):
@@ -278,7 +278,7 @@ class TestProgrammingErrorsAreNotSwallowed:
         result = await service.approve_suggestion(
             suggestion_id=SUGGESTION_ID,
             reviewed_by="user_admin",
-            organization_id=ORG,
+            enterprise_id=ORG,
         )
 
         assert result is None
@@ -295,7 +295,7 @@ class TestAttributionIsPersisted:
         await service.approve_suggestion(
             suggestion_id=SUGGESTION_ID,
             reviewed_by="user_admin",
-            organization_id=ORG,
+            enterprise_id=ORG,
         )
 
         kwargs = service._knowledge_service.upload_document.await_args.kwargs
@@ -337,14 +337,14 @@ class TestReApprovalIsRefused:
         await service.approve_suggestion(
             suggestion_id=SUGGESTION_ID,
             reviewed_by="user_admin",
-            organization_id=ORG,
+            enterprise_id=ORG,
         )
 
         with pytest.raises(ConflictError):
             await service.approve_suggestion(
                 suggestion_id=SUGGESTION_ID,
                 reviewed_by="user_admin",
-                organization_id=ORG,
+                enterprise_id=ORG,
             )
 
     async def test_the_second_attempt_publishes_nothing(self, service):
@@ -354,13 +354,13 @@ class TestReApprovalIsRefused:
         await service.approve_suggestion(
             suggestion_id=SUGGESTION_ID,
             reviewed_by="user_admin",
-            organization_id=ORG,
+            enterprise_id=ORG,
         )
         with pytest.raises(ConflictError):
             await service.approve_suggestion(
                 suggestion_id=SUGGESTION_ID,
                 reviewed_by="user_admin",
-                organization_id=ORG,
+                enterprise_id=ORG,
             )
 
         assert service._knowledge_service.upload_document.await_count == 1
@@ -371,13 +371,13 @@ class TestReApprovalIsRefused:
         first = await service.approve_suggestion(
             suggestion_id=SUGGESTION_ID,
             reviewed_by="user_admin",
-            organization_id=ORG,
+            enterprise_id=ORG,
         )
         with pytest.raises(ConflictError):
             await service.approve_suggestion(
                 suggestion_id=SUGGESTION_ID,
                 reviewed_by="user_admin",
-                organization_id=ORG,
+                enterprise_id=ORG,
             )
 
         stored = service._repository.peek(SUGGESTION_ID)
@@ -392,7 +392,7 @@ class TestApprovalNeverClaimsAnIdItDoesNotHave:
             await service.approve_suggestion(
                 suggestion_id=SUGGESTION_ID,
                 reviewed_by="user_admin",
-                organization_id=ORG,
+                enterprise_id=ORG,
             )
 
     async def test_the_suggestion_is_not_marked_approved_without_an_id(self, service):
@@ -406,7 +406,7 @@ class TestApprovalNeverClaimsAnIdItDoesNotHave:
             await service.approve_suggestion(
                 suggestion_id=SUGGESTION_ID,
                 reviewed_by="user_admin",
-                organization_id=ORG,
+                enterprise_id=ORG,
             )
 
         stored = service._repository.peek(SUGGESTION_ID)

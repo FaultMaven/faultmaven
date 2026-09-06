@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 2.8.0
+**Version:** 3.0.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -76,7 +76,7 @@ in cloud would remove the governance record precisely where it matters most.
 **Parameters:**
 
 - `operator_user_id` (query, optional) — Filter by the operator who performed the access
-- `target_organization_id` (query, optional) — Filter by the organization accessed
+- `target_enterprise_id` (query, optional) — Filter by the enterprise accessed
 - `target_case_id` (query, optional) — Filter by case accessed
 - `action` (query, optional) — Filter by access kind (list | content_open)
 - `grant_id` (query, optional) — Filter to accesses taken under one break-glass grant
@@ -266,7 +266,7 @@ that lets the audit trail be read in Cloud.
 
 - `operator_user_id` (query, optional) — Filter by the operator holding the grant
 - `case_id` (query, optional) — Filter by the case granted
-- `organization_id` (query, optional) — Filter by the organization whose case was granted
+- `enterprise_id` (query, optional) — Filter by the enterprise whose case was granted
 - `live_only` (query, optional) — Only grants that authorise a read right now
 - `limit` (query, optional) — Items per page
 - `offset` (query, optional) — Number of items to skip
@@ -477,7 +477,7 @@ Returns:
 Raises:
     401 Unauthorized: No valid JWT token
     403 Forbidden: Caller is not a platform admin, or carries no
-        organization to be confined to
+        enterprise to be confined to
     422 Unprocessable Entity: Invalid query parameters
 
 **Tags:** `Admin - User Management`
@@ -521,7 +521,7 @@ Returns:
 Raises:
     401 Unauthorized: No valid JWT token
     403 Forbidden: Caller is not a platform admin, or carries no
-        organization to be confined to
+        enterprise to be confined to
     404 Not Found: User does not exist, or is not in the operator's
         organization — one answer for both, deliberately
 
@@ -562,7 +562,7 @@ Returns:
 Raises:
     401 Unauthorized: No valid JWT token
     403 Forbidden: Caller is not a platform admin, or carries no
-        organization to be confined to
+        enterprise to be confined to
     404 Not Found: User does not exist, or is not in the operator's
         organization — one answer for both, deliberately
     409 Conflict: User already active
@@ -2346,7 +2346,7 @@ Raises:
 Get session by ID.
 
 Retrieves a specific investigation session by its ID.
-The session must belong to a case owned by the organization.
+The session must belong to a case owned by the enterprise.
 
 Authentication:
     - JWT Bearer token: Authorization: Bearer <token>
@@ -3522,7 +3522,7 @@ route as "Any authenticated user".
 
 **List Suggestions**
 
-List the caller's organization's knowledge suggestions.
+List the caller's enterprise's knowledge suggestions.
 
 Returns suggestions extracted from cases that are pending review.
 Includes lineage information for each suggestion (source case, extractor, timestamp).
@@ -3567,7 +3567,7 @@ Returns full suggestion details including content, PII scan status,
 and lineage information.
 
 Resolved through the tenant-scoped lookup: an id belonging to another
-organization answers 404, identically to an absent id, so the response is
+enterprise answers 404, identically to an absent id, so the response is
 never an existence oracle.
 
 Args:
@@ -3600,7 +3600,7 @@ Update a suggestion's content.
 Allows editing the suggested title, content, or type before approval.
 Content changes trigger a new PII scan.
 
-Tenant-scoped: an id outside the caller's organization answers 404 and
+Tenant-scoped: an id outside the caller's enterprise answers 404 and
 nothing is written.
 
 Args:
@@ -4717,9 +4717,10 @@ with "this case has no title".
 - `closure_reason` (object, required)
 - `created_at` (string, required)
 - `current_turn` (integer, required)
+- `enterprise_id` (string, required)
 - `is_terminal` (boolean, required)
 - `last_activity_at` (string, required)
-- `organization_id` (string, required)
+- `organization_id` (object, optional)
 - `resolved_at` (object, required)
 - `source` (string, optional)
 - `stage` (object, required)
@@ -4753,11 +4754,11 @@ User list item for admin endpoints (with full info).
 
 - `created_at` (string, required)
 - `email` (string, required)
+- `enterprise_id` (string, required)
 - `full_name` (string, required)
 - `is_active` (boolean, required)
 - `is_verified` (boolean, required)
 - `last_login_at` (object, optional)
-- `organization_id` (string, required)
 - `roles` (array, required)
 - `updated_at` (string, required)
 - `user_id` (string, required)
@@ -5001,7 +5002,7 @@ reimplements that predicate can disagree with the gate that enforces it.
 - `revoked_at` (object, optional)
 - `revoked_by` (object, optional)
 - `target_case_id` (string, required)
-- `target_organization_id` (string, required)
+- `target_enterprise_id` (string, required)
 
 ---
 
@@ -5033,7 +5034,7 @@ endpoint never has to become an existence oracle for other tenants' cases.
 **Properties:**
 
 - `case_id` (string, required) — The single case this grant covers
-- `organization_id` (string, required) — Organization owning the case; the RLS scope the read rebinds to
+- `enterprise_id` (string, required) — Enterprise owning the case; the RLS scope the read rebinds to
 - `reason` (string, required) — Why this content must be read. Recorded on every access taken.
 - `ttl_minutes` (integer, optional) — How long the grant stays live. Cannot be extended later.
 
@@ -5068,13 +5069,14 @@ Detailed case information for single case view.
 - `current_stage` (object, required)
 - `current_turn` (integer, required)
 - `description` (string, required)
+- `enterprise_id` (string, required)
 - `escalated` (boolean, required)
 - `evidence_count` (integer, required)
 - `hypothesis_count` (integer, required)
 - `is_terminal` (boolean, required)
 - `last_activity_at` (string, required)
 - `milestones_completed` (array, required)
-- `organization_id` (string, required)
+- `organization_id` (object, optional)
 - `pending_milestones` (array, required)
 - `resolved_at` (object, required)
 - `shared_team_ids` (array, optional)
@@ -5207,9 +5209,10 @@ Minimal case information for list views.
 - `created_at` (string, required)
 - `current_turn` (integer, required)
 - `description` (string, required)
+- `enterprise_id` (string, required)
 - `is_terminal` (boolean, required)
 - `last_activity_at` (string, required)
-- `organization_id` (string, required)
+- `organization_id` (object, optional)
 - `resolved_at` (object, required)
 - `shared_team_ids` (array, optional)
 - `source` (string, optional)
@@ -5550,9 +5553,9 @@ Response model for investigation session.
 - `case_id` (string, required)
 - `created_at` (string, required)
 - `ended_at` (object, optional)
+- `enterprise_id` (string, required)
 - `findings_summary` (object, optional)
 - `last_activity_at` (string, required)
-- `organization_id` (string, required)
 - `session_goal` (object, optional)
 - `session_id` (string, required)
 - `started_at` (string, required)
@@ -5825,7 +5828,7 @@ grant.
 - `operator_username` (object, optional)
 - `reason` (object, optional)
 - `target_case_id` (object, optional)
-- `target_organization_id` (object, optional)
+- `target_enterprise_id` (object, optional)
 
 ---
 
@@ -5904,8 +5907,8 @@ out of ``kubectl logs`` long before anyone asks.
 **Properties:**
 
 - `sso_jit_personal_tenant_enabled` (boolean, required) — SSO_JIT_PERSONAL_TENANT_ENABLED — whether an SSO identity with no IdP organization may provision a personal tenant on its first sign-in, i.e. whether self-service sign-up is open. Multi-tenant (Cloud) deployments only: a single-tenant deployment has one organization and never reaches the branch this gates.
-- `sso_jit_personal_tenant_max_per_hour` (integer, required) — SSO_JIT_PERSONAL_TENANT_MAX_PER_HOUR — the ceiling on NEW personal tenants provisioned per rolling hour, deployment-wide. It bounds provisioning only; tenants that already exist sign in regardless.
-- `tenant_daily_turn_cap` (integer, required) — TENANT_DAILY_TURN_CAP — investigation turns a PERSONAL tenant may take per UTC day before further turns are refused with 429. The deployment DEFAULT only: a company organization is uncapped, a single-tenant deployment is never capped, and a per-organization override set with fm-set-turn-cap beats this value.
+- `sso_jit_personal_tenant_max_per_hour` (integer, required) — SSO_JIT_PERSONAL_TENANT_MAX_PER_HOUR — the ceiling on NEW personal enterprises provisioned per rolling hour, deployment-wide. It bounds provisioning only; tenants that already exist sign in regardless.
+- `tenant_daily_turn_cap` (integer, required) — TENANT_DAILY_TURN_CAP — investigation turns an account in NO organization may take per UTC day before further turns are refused with 429. The deployment DEFAULT only: an organization is uncapped, a single-tenant deployment is never capped, and a per-organization override set with fm-set-turn-cap beats this value.
 
 ---
 
@@ -6342,8 +6345,8 @@ A team the caller belongs to.
 **Properties:**
 
 - `description` (object, optional)
+- `enterprise_id` (string, required)
 - `name` (string, required)
-- `organization_id` (string, required)
 - `team_id` (string, required)
 
 ---
@@ -6497,12 +6500,12 @@ Detailed user information (admin only).
 
 - `created_at` (string, required)
 - `email` (string, required)
+- `enterprise_id` (string, required)
 - `full_name` (string, required)
 - `is_active` (boolean, required)
 - `is_verified` (boolean, required)
 - `last_login_at` (object, optional)
 - `metadata` (object, optional)
-- `organization_id` (string, required)
 - `permissions` (array, required)
 - `roles` (array, required)
 - `updated_at` (string, required)

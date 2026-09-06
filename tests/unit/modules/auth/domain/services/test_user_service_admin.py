@@ -207,7 +207,7 @@ class TestListUsers:
         mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
-            organization_id="org-123",
+            enterprise_id="ent-123",
         )
 
         assert len(users) == 4
@@ -220,7 +220,7 @@ class TestListUsers:
         mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
-            organization_id="org-123",
+            enterprise_id="ent-123",
             limit=2,
             offset=0,
         )
@@ -234,7 +234,7 @@ class TestListUsers:
         mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
-            organization_id="org-123",
+            enterprise_id="ent-123",
             limit=2,
             offset=2,
         )
@@ -250,7 +250,7 @@ class TestListUsers:
         mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
-            organization_id="org-123",
+            enterprise_id="ent-123",
             is_active=True,
         )
 
@@ -266,7 +266,7 @@ class TestListUsers:
         mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
-            organization_id="org-123",
+            enterprise_id="ent-123",
             is_active=False,
         )
 
@@ -282,7 +282,7 @@ class TestListUsers:
         mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
-            organization_id="org-123",
+            enterprise_id="ent-123",
             role="admin",
         )
 
@@ -298,7 +298,7 @@ class TestListUsers:
         mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
-            organization_id="org-123",
+            enterprise_id="ent-123",
             role="member",
         )
 
@@ -314,7 +314,7 @@ class TestListUsers:
         mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
-            organization_id="org-123",
+            enterprise_id="ent-123",
             role="viewer",
         )
 
@@ -330,7 +330,7 @@ class TestListUsers:
         mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
-            organization_id="org-123",
+            enterprise_id="ent-123",
             search="ADMIN",  # Case-insensitive
         )
 
@@ -345,7 +345,7 @@ class TestListUsers:
         mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
-            organization_id="org-123",
+            enterprise_id="ent-123",
             search="MEMBER",  # Case-insensitive
         )
 
@@ -360,7 +360,7 @@ class TestListUsers:
         mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
-            organization_id="org-123",
+            enterprise_id="ent-123",
             search="@example",  # Partial match in email
         )
 
@@ -372,7 +372,7 @@ class TestListUsers:
         mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
-            organization_id="org-123",
+            enterprise_id="ent-123",
             is_active=True,
             role="member",
             search="member",
@@ -414,7 +414,7 @@ class TestListUsers:
         )
         mock_user_repo.list_users.return_value = (sorted_users, 2)
 
-        users, total = await user_service.list_users(organization_id="org-123")
+        users, total = await user_service.list_users(enterprise_id="ent-123")
 
         assert users[0].user_id == "new"  # Newest first
         assert users[1].user_id == "old"
@@ -425,7 +425,7 @@ class TestListUsers:
         """Returns (users, total_count) tuple."""
         mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
-        result = await user_service.list_users(organization_id="org-123")
+        result = await user_service.list_users(enterprise_id="ent-123")
 
         assert isinstance(result, tuple)
         assert len(result) == 2
@@ -440,7 +440,7 @@ class TestListUsers:
         mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
-            organization_id="org-123",
+            enterprise_id="ent-123",
             search="nonexistent",
         )
 
@@ -455,7 +455,7 @@ class TestListUsers:
         mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
-            organization_id="org-123",
+            enterprise_id="ent-123",
             limit=1000,  # Should be capped at 100
         )
 
@@ -557,7 +557,7 @@ class TestActivateUser:
 
         result = await user_service.activate_user_admin(
             user_id="user-4",
-            organization_id="org-123",
+            enterprise_id="ent-123",
             admin_user_id="user-1",
         )
 
@@ -574,7 +574,7 @@ class TestActivateUser:
         with pytest.raises(NotFoundError):
             await user_service.activate_user_admin(
                 user_id="nonexistent",
-                organization_id="org-123",
+                enterprise_id="ent-123",
                 admin_user_id="user-1",
             )
 
@@ -588,7 +588,7 @@ class TestActivateUser:
         with pytest.raises(ConflictError) as exc_info:
             await user_service.activate_user_admin(
                 user_id="user-1",
-                organization_id="org-123",
+                enterprise_id="ent-123",
                 admin_user_id="user-2",
             )
 
@@ -622,7 +622,7 @@ class TestDeactivateUser:
 
         result = await user_service.deactivate_user_admin(
             user_id="user-2",
-            organization_id="org-123",
+            enterprise_id="ent-123",
             admin_user_id="user-1",  # Different from target user
         )
 
@@ -648,7 +648,7 @@ class TestDeactivateUser:
 
         await user_service.deactivate_user_admin(
             user_id="user-2",
-            organization_id="org-123",
+            enterprise_id="ent-123",
             admin_user_id="user-1",
         )
 
@@ -664,7 +664,7 @@ class TestDeactivateUser:
         with pytest.raises(NotFoundError):
             await user_service.deactivate_user_admin(
                 user_id="nonexistent",
-                organization_id="org-123",
+                enterprise_id="ent-123",
                 admin_user_id="admin-1",
             )
 
@@ -678,7 +678,7 @@ class TestDeactivateUser:
         with pytest.raises(AuthorizationError) as exc_info:
             await user_service.deactivate_user_admin(
                 user_id="user-1",
-                organization_id="org-123",
+                enterprise_id="ent-123",
                 admin_user_id="user-1",  # Same as target!
             )
 
@@ -694,7 +694,7 @@ class TestDeactivateUser:
         with pytest.raises(ConflictError) as exc_info:
             await user_service.deactivate_user_admin(
                 user_id="user-4",
-                organization_id="org-123",
+                enterprise_id="ent-123",
                 admin_user_id="user-1",
             )
 
@@ -729,7 +729,7 @@ class TestAssignRole:
         result = await user_service.assign_role(
             user_id="user-2",
             role="admin",
-            organization_id="org-123",
+            enterprise_id="ent-123",
             admin_user_id="user-1",
         )
 
@@ -755,7 +755,7 @@ class TestAssignRole:
         result = await user_service.assign_role(
             user_id="user-3",
             role="member",
-            organization_id="org-123",
+            enterprise_id="ent-123",
             admin_user_id="user-1",
         )
 
@@ -781,7 +781,7 @@ class TestAssignRole:
         result = await user_service.assign_role(
             user_id="user-1",
             role="viewer",
-            organization_id="org-123",
+            enterprise_id="ent-123",
             admin_user_id="user-2",  # Different admin
         )
 
@@ -811,7 +811,7 @@ class TestAssignRole:
         result = await user_service.assign_role(
             user_id="user-2",
             role="admin",
-            organization_id="org-123",
+            enterprise_id="ent-123",
             admin_user_id="user-1",
         )
 
@@ -839,7 +839,7 @@ class TestAssignRole:
         await user_service.assign_role(
             user_id="user-2",
             role="admin",
-            organization_id="org-123",
+            enterprise_id="ent-123",
             admin_user_id="user-1",
         )
 
@@ -856,7 +856,7 @@ class TestAssignRole:
             await user_service.assign_role(
                 user_id="nonexistent",
                 role="admin",
-                organization_id="org-123",
+                enterprise_id="ent-123",
                 admin_user_id="user-1",
             )
 
@@ -871,7 +871,7 @@ class TestAssignRole:
             await user_service.assign_role(
                 user_id="user-1",
                 role="viewer",
-                organization_id="org-123",
+                enterprise_id="ent-123",
                 admin_user_id="user-1",  # Same as target!
             )
 
@@ -888,7 +888,7 @@ class TestAssignRole:
             await user_service.assign_role(
                 user_id="user-2",
                 role="superadmin",  # Invalid role
-                organization_id="org-123",
+                enterprise_id="ent-123",
                 admin_user_id="user-1",
             )
 
@@ -905,7 +905,7 @@ class TestAssignRole:
             await user_service.assign_role(
                 user_id="user-1",
                 role="admin",  # Already has admin role
-                organization_id="org-123",
+                enterprise_id="ent-123",
                 admin_user_id="user-2",
             )
 
@@ -940,7 +940,7 @@ class TestRemoveRole:
         result = await user_service.remove_role(
             user_id="user-1",
             role="admin",
-            organization_id="org-123",
+            enterprise_id="ent-123",
             admin_user_id="user-2",  # Different admin
         )
 
@@ -966,7 +966,7 @@ class TestRemoveRole:
         result = await user_service.remove_role(
             user_id="user-2",
             role="member",
-            organization_id="org-123",
+            enterprise_id="ent-123",
             admin_user_id="user-1",
         )
 
@@ -992,7 +992,7 @@ class TestRemoveRole:
         await user_service.remove_role(
             user_id="user-1",
             role="admin",
-            organization_id="org-123",
+            enterprise_id="ent-123",
             admin_user_id="user-2",
         )
 
@@ -1009,7 +1009,7 @@ class TestRemoveRole:
             await user_service.remove_role(
                 user_id="nonexistent",
                 role="admin",
-                organization_id="org-123",
+                enterprise_id="ent-123",
                 admin_user_id="user-1",
             )
 
@@ -1024,7 +1024,7 @@ class TestRemoveRole:
             await user_service.remove_role(
                 user_id="user-3",
                 role="admin",  # Viewer doesn't have admin role
-                organization_id="org-123",
+                enterprise_id="ent-123",
                 admin_user_id="user-1",
             )
 
@@ -1039,7 +1039,7 @@ class TestRemoveRole:
             await user_service.remove_role(
                 user_id="user-1",
                 role="admin",
-                organization_id="org-123",
+                enterprise_id="ent-123",
                 admin_user_id="user-1",  # Same as target!
             )
 
@@ -1056,7 +1056,7 @@ class TestRemoveRole:
             await user_service.remove_role(
                 user_id="user-3",
                 role="viewer",  # Cannot remove viewer role
-                organization_id="org-123",
+                enterprise_id="ent-123",
                 admin_user_id="user-1",
             )
 
@@ -1073,7 +1073,7 @@ class TestRemoveRole:
             await user_service.remove_role(
                 user_id="user-2",
                 role="superadmin",  # Invalid role
-                organization_id="org-123",
+                enterprise_id="ent-123",
                 admin_user_id="user-1",
             )
 
@@ -1096,7 +1096,7 @@ class TestListOrganizationUsers:
         mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
-            organization_id="org-123",
+            enterprise_id="ent-123",
             is_active=True,
         )
 
@@ -1109,7 +1109,7 @@ class TestListOrganizationUsers:
         mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
-            organization_id="org-123",
+            enterprise_id="ent-123",
             limit=2,
             offset=0,
         )
@@ -1144,7 +1144,7 @@ class TestEdgeCases:
         mock_user_repo.list_users.return_value = ([user_with_member_role], 1)
 
         users, total = await user_service.list_users(
-            organization_id="org-123",
+            enterprise_id="ent-123",
             role="member",  # Should match since service defaults empty roles to ['member']
         )
 
@@ -1171,7 +1171,7 @@ class TestRoleChangeAuditTrail:
         await user_service.assign_role(
             user_id="user-2",
             role="admin",
-            organization_id="org-123",
+            enterprise_id="ent-123",
             admin_user_id="user-1",
         )
 
@@ -1181,10 +1181,11 @@ class TestRoleChangeAuditTrail:
         assert kwargs["user_id"] == "user-2"
         assert kwargs["details"]["changed_by"] == "user-1"
         assert kwargs["details"]["role"] == "admin"
-        # The row must be stamped with the caller's org: user_audit_log is
-        # RLS-tenanted and migration 018 declares only USING, which PostgreSQL
-        # applies to INSERT as well — an unstamped row is rejected outright.
-        assert kwargs["organization_id"] == "org-123"
+        # The row must be stamped with the caller's ENTERPRISE: user_audit_log
+        # is RLS-tenanted on app.current_enterprise_id and the policy declares
+        # only USING, which PostgreSQL applies to INSERT as well — an unstamped
+        # row is rejected outright.
+        assert kwargs["enterprise_id"] == "ent-123"
 
     @pytest.mark.asyncio
     async def test_removing_a_role_is_recorded_as_a_removal(
@@ -1198,7 +1199,7 @@ class TestRoleChangeAuditTrail:
         await user_service.remove_role(
             user_id="user-2",
             role="admin",
-            organization_id="org-123",
+            enterprise_id="ent-123",
             admin_user_id="user-1",
         )
 
@@ -1221,7 +1222,7 @@ class TestRoleChangeAuditTrail:
         result = await user_service.assign_role(
             user_id="user-2",
             role="admin",
-            organization_id="org-123",
+            enterprise_id="ent-123",
             admin_user_id="user-1",
         )
 
@@ -1245,7 +1246,7 @@ class TestRoleChangeAuditTrail:
         result = await service.assign_role(
             user_id="user-2",
             role="admin",
-            organization_id="org-123",
+            enterprise_id="ent-123",
             admin_user_id="user-1",
         )
 

@@ -6,22 +6,21 @@ PostgreSQLOrganizationRepository: the core ships the repository *substrate*
 team *management* (create/invite from a UI) is the hosted admin composed
 module, which drives these same methods (ADR-010 D4 / ADR-013).
 
-Isolation posture (team_members RLS): ``team_members`` has no
-``organization_id`` column, so it is not in migration 018's
-``_TENANTED_TABLES``; migration 030 gives it its own subquery policy —
-``USING (team_id IN (SELECT team_id FROM teams WHERE organization_id =
-current_setting('app.current_org_id', true)))`` — so membership rows are
-org-scoped through their team and fail closed under the limited
-``faultmaven_app`` role. (Rejected alternative: add ``organization_id`` to
-``team_members`` + a direct policy — duplicates the org already reachable via
-``teams.organization_id`` and invites drift.) See ADR-013 + migration 030.
+Isolation posture (team_members RLS): ``team_members`` has no ``enterprise_id``
+column of its own, so it is keyed by one hop — its policy reads
+``USING (team_id IN (SELECT team_id FROM teams WHERE teams.enterprise_id =
+current_setting('app.current_enterprise_id', true)))`` — and membership rows are
+enterprise-scoped through their team, failing closed under the limited
+``faultmaven_app`` role. (Rejected alternative: add ``enterprise_id`` to
+``team_members`` + a direct policy — duplicates the key already reachable via
+``teams.enterprise_id`` and invites drift.) See ADR-013 + ADR-017 D4.
 """
 
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.infrastructure.persistence.db_compat import dialect_insert
@@ -38,7 +37,7 @@ def _model_to_domain(model: TeamModel) -> Team:
     """Convert ORM model to domain object."""
     return Team(
         team_id=model.team_id,
-        organization_id=model.organization_id,
+        enterprise_id=model.enterprise_id,
         name=model.name,
         description=model.description,
         created_at=model.created_at,
@@ -57,7 +56,7 @@ class PostgreSQLTeamRepository(ITeamRepository):
         """Create a new team."""
         model = TeamModel(
             team_id=team.team_id,
-            organization_id=team.organization_id,
+            enterprise_id=team.enterprise_id,
             name=team.name,
             description=team.description,
             created_at=team.created_at,
@@ -112,12 +111,12 @@ class PostgreSQLTeamRepository(ITeamRepository):
         await self.db.commit()
         return result.rowcount > 0
 
-    async def list_organization_teams(self, organization_id: str) -> List[Team]:
-        """List all teams in an organization."""
+    async def list_enterprise_teams(self, enterprise_id: str) -> List[Team]:
+        """List all teams in an enterprise."""
         stmt = (
             select(TeamModel)
             .where(
-                TeamModel.organization_id == organization_id,
+                TeamModel.enterprise_id == enterprise_id,
                 TeamModel.deleted_at.is_(None),
             )
             .order_by(TeamModel.created_at.desc())
@@ -131,8 +130,8 @@ class PostgreSQLTeamRepository(ITeamRepository):
 
         Object-returning sibling of ``list_all_user_team_ids``: same JOIN of
         ``team_members`` through the RLS-tenanted ``teams`` table (excluding
-        soft-deleted teams), so cross-organization membership fails closed under
-        the ``faultmaven_app`` role — no explicit org filter is needed.
+        soft-deleted teams), so cross-enterprise membership fails closed under
+        the ``faultmaven_app`` role — no explicit tenant filter is needed.
         """
         stmt = (
             select(TeamModel)
@@ -150,7 +149,50 @@ class PostgreSQLTeamRepository(ITeamRepository):
     async def add_member(
         self, team_id: str, user_id: str, team_role: Optional[str] = None
     ) -> bool:
-        """Add user to team (upsert)."""
+        """Add user to team (upsert), refusing a member from another enterprise.
+
+        A team lives in one enterprise and nothing crosses an enterprise line
+        (ADR-017 D2/D4), so an account anchored elsewhere is not a candidate
+        member. The database enforces half of this: the ``team_members`` policy
+        hops through ``teams.enterprise_id``, so a membership row for a team in
+        another enterprise is refused outright under the limited role. It cannot
+        enforce the other half — the policy says nothing about the *user's*
+        anchor — so the comparison is made here, once, where every caller
+        (present and future) inherits it rather than remembering it.
+
+        Fails closed on an unresolvable pair: an id that names no team or no
+        account is refused rather than admitted, because "I could not read the
+        anchors" is not evidence that they match.
+        """
+        anchors = (
+            await self.db.execute(
+                text(
+                    "SELECT (SELECT enterprise_id FROM teams WHERE team_id = :t "
+                    "AND deleted_at IS NULL), "
+                    "(SELECT enterprise_id FROM users WHERE user_id = :u)"
+                ),
+                {"t": team_id, "u": user_id},
+            )
+        ).first()
+        team_enterprise, user_enterprise = anchors if anchors else (None, None)
+        if not team_enterprise or not user_enterprise:
+            logger.warning(
+                "Refusing team membership: team %s or user %s does not resolve",
+                team_id,
+                user_id,
+            )
+            return False
+        if team_enterprise != user_enterprise:
+            logger.warning(
+                "Refusing team membership: user %s is anchored to enterprise %s, "
+                "team %s is in %s",
+                user_id,
+                user_enterprise,
+                team_id,
+                team_enterprise,
+            )
+            return False
+
         now = datetime.now(timezone.utc)
         stmt = dialect_insert(self.db, TeamMemberModel).values(
             user_id=user_id,
@@ -211,22 +253,22 @@ class PostgreSQLTeamRepository(ITeamRepository):
 
         JOINs ``team_members`` through ``teams`` so that (a) soft-deleted teams
         are excluded and (b) under the limited ``faultmaven_app`` role the
-        teams-table RLS policy fails a cross-organization membership row closed.
+        teams-table RLS policy fails a cross-enterprise membership row closed.
 
-        ``team_members`` is itself RLS-tenanted as of migration 030 (a policy
-        keyed by subquery through ``teams``), so under the limited role the
-        membership boundary is covered twice over.
+        ``team_members`` is itself RLS-tenanted by the one-hop policy through
+        ``teams``, so under the limited role the membership boundary is covered
+        twice over.
 
         **Both arms are row-level security, so both vanish together.** This
-        query carries no organization predicate of its own: on a connection that
+        query carries no enterprise predicate of its own: on a connection that
         bypasses RLS (the table owner, a superuser, or any ``BYPASSRLS`` role)
         neither policy applies and it degrades to "every non-deleted team this
-        user has a membership row for", across organizations. The soft-delete
+        user has a membership row for", across enterprises. The soft-delete
         filter is the only part that holds unconditionally. Callers MUST
         therefore run under ``faultmaven_app``; do not reuse this from an
-        owner-role path (``/health``, the operator break-glass paths of
-        migrations 035/036) without adding an explicit organization predicate.
-        See the class docstring + ADR-013.
+        owner-role path (``/health``, the operator break-glass paths) without
+        adding an explicit enterprise predicate. See the class docstring +
+        ADR-013/ADR-017.
         """
         stmt = (
             select(TeamMemberModel.team_id)

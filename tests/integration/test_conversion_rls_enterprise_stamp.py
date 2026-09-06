@@ -1,18 +1,23 @@
-"""Case→runbook conversion writes under PostgreSQL RLS (#1143).
+"""Case→runbook conversion writes under PostgreSQL RLS (#1143, ADR-017).
 
 The chat-triggered case→runbook flow persists three RLS-tenanted rows — the
 synthetic ``uploaded_files`` conversion source, the ``conversion_jobs`` row, and
-its ``conversion_drafts``. The policy from migration 018 is ``FOR ALL`` with the
-USING expression doubling as the WITH CHECK, so a row stamped with an
-``organization_id`` other than the session's ``app.current_org_id`` is
+its ``conversion_drafts``. The policy is written with no ``FOR`` clause, so the
+USING expression doubles as the WITH CHECK and a row stamped with an
+``enterprise_id`` other than the session's ``app.current_enterprise_id`` is
 **refused**, not merely hidden.
 
-The bug: with no org supplied, the service stamped a hardcoded single-tenant
-sentinel. Under ``TENANT_PROVIDER=multi`` that is nobody's tenant, so every
-tenant's conversion died on
+The bug: with no enterprise supplied, the service stamped a hardcoded
+single-tenant sentinel. Under ``TENANT_PROVIDER=multi`` that is nobody's tenant,
+so every tenant's conversion died on
 ``InsufficientPrivilegeError: new row violates row-level security policy for
 table "uploaded_files"`` and the user was told "Runbook generation failed, so no
 draft was created."
+
+ADR-017 moved the key from the organization to the **enterprise**, and the trap
+moved with it unchanged: the sentinel is now ``STANDALONE_ENTERPRISE_ID`` and it
+is still nobody's tenant under ``multi``. The second test below stamps it
+deliberately and requires the refusal, so the fixture is shown to bite.
 
 Why this file has to exist at all: SQLite has no RLS, so no standalone test can
 fail on it — which is exactly why every rehearsal of this flow passed. The unit
@@ -31,7 +36,7 @@ Run locally:
     docker run -d -e POSTGRES_PASSWORD=pw -p 5432:5432 postgres:16
     export DATABASE_URL=postgresql+asyncpg://postgres:pw@localhost:5432/postgres
     .venv/bin/alembic upgrade head
-    .venv/bin/pytest tests/integration/test_conversion_rls_org_stamp.py -v
+    .venv/bin/pytest tests/integration/test_conversion_rls_enterprise_stamp.py -v
 """
 
 from __future__ import annotations
@@ -46,7 +51,10 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from faultmaven.config.tenant_context import _current_org_id, get_current_org_id
+from faultmaven.config.tenant_context import (
+    _current_enterprise_id,
+    get_current_enterprise_id,
+)
 from faultmaven.infrastructure.persistence.models import (
     ConversionDraftModel,
     ConversionJobModel,
@@ -63,10 +71,10 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     ValidationResult,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service import (
-    DEFAULT_ORGANIZATION_ID,
+    DEFAULT_ENTERPRISE_ID,
     ConversionService,
 )
-from tests.utils import seed_organizations
+from tests.utils import seed_enterprises
 
 pytestmark = [
     pytest.mark.integration,
@@ -100,16 +108,21 @@ async def superuser_engine():
 
 
 @pytest.fixture
-async def tenant_org(superuser_engine):
-    """One tenant organization, seeded as superuser (which bypasses RLS)."""
-    org_id = f"org_guest_{uuid4().hex[:8]}"
+async def tenant_enterprise(superuser_engine):
+    """One tenant enterprise, seeded as superuser (which bypasses RLS).
+
+    An enterprise and nothing else: under ADR-017 D5 a tenant may own no
+    organization at all, and the conversion write must not depend on one.
+    """
+    enterprise_id = str(uuid4())
     maker = async_sessionmaker(superuser_engine, expire_on_commit=False)
     async with maker() as session:
-        await seed_organizations(session, [org_id])
-    yield org_id
+        await seed_enterprises(session, [enterprise_id])
+    yield enterprise_id
     async with superuser_engine.begin() as conn:
         await conn.execute(
-            text("DELETE FROM organizations WHERE organization_id = :o"), {"o": org_id}
+            text("DELETE FROM enterprises WHERE enterprise_id = :e"),
+            {"e": enterprise_id},
         )
 
 
@@ -118,7 +131,7 @@ async def written_conversions(superuser_engine):
     """Collects conversion ids to delete, and deletes them in teardown.
 
     Teardown rather than the test body on purpose: the rows are FK parents of
-    nothing but FK *children* of ``organizations``, which the ``tenant_org``
+    nothing but FK *children* of ``enterprises``, which the ``tenant_enterprise``
     fixture drops. An assertion failure mid-test would otherwise leak them, and
     that DELETE would then raise ForeignKeyViolation — stacking a teardown error
     on top of the real failure and leaving the database dirty for the next run.
@@ -150,7 +163,7 @@ async def tenant_session_factory(superuser_engine):
 
     The ``begin`` listener is the same one ``infrastructure/persistence/database``
     installs: it samples the tenant contextvar once per transaction and binds it
-    to ``app.current_org_id``. Reproducing it here is what makes the test a test
+    to ``app.current_enterprise_id``. Reproducing it here is what makes the test a test
     of the real posture rather than of a hand-set GUC.
     """
     async with superuser_engine.begin() as conn:
@@ -176,8 +189,10 @@ async def tenant_session_factory(superuser_engine):
     @event.listens_for(engine.sync_engine, "begin")
     def _scope_tenant_per_transaction(conn):
         conn.execute(
-            text("SELECT set_config('app.current_org_id', :org_id, true)"),
-            {"org_id": get_current_org_id()},
+            text(
+                "SELECT set_config('app.current_enterprise_id', :enterprise_id, true)"
+            ),
+            {"enterprise_id": get_current_enterprise_id()},
         )
 
     yield async_sessionmaker(engine, expire_on_commit=False)
@@ -199,14 +214,14 @@ def _service(session_factory) -> ConversionService:
     )
 
 
-async def _persist(service, conversion_id: str, organization_id, tmp_path) -> None:
+async def _persist(service, conversion_id: str, enterprise_id, tmp_path) -> None:
     """Run the real ``_persist_job`` with the case-conversion argument shape."""
     draft_path = tmp_path / f"{conversion_id}.md"
     draft_path.write_text("# runbook", encoding="utf-8")
     await service._persist_job(
         conversion_id=conversion_id,
         user_id=None,  # users are not seeded here; the FK is ON DELETE SET NULL
-        organization_id=organization_id,
+        enterprise_id=enterprise_id,
         scope="personal",
         team_id=None,
         status=ConversionStatus.COMPLETED,
@@ -253,24 +268,28 @@ async def _persist(service, conversion_id: str, organization_id, tmp_path) -> No
 
 @pytest.mark.asyncio
 async def test_conversion_persists_under_tenant_rls(
-    tenant_session_factory, tenant_org, superuser_engine, written_conversions, tmp_path
+    tenant_session_factory,
+    tenant_enterprise,
+    superuser_engine,
+    written_conversions,
+    tmp_path,
 ):
     """The write the user's click performs succeeds for a real tenant.
 
-    No explicit org is passed — reproducing the chat path before #1143 gave it
-    one — so this also proves the fallback resolves to the bound tenant rather
-    than to the sentinel.
+    No explicit enterprise is passed — reproducing the chat path before #1143
+    gave it one — so this also proves the fallback resolves to the bound tenant
+    rather than to the sentinel.
     """
     conversion_id = f"conv_{uuid4().hex[:12]}"
     # Registered BEFORE the write, so a partial write is cleaned up too.
     written_conversions.append(conversion_id)
     service = _service(tenant_session_factory)
 
-    token = _current_org_id.set(tenant_org)
+    token = _current_enterprise_id.set(tenant_enterprise)
     try:
         await _persist(service, conversion_id, None, tmp_path)
     finally:
-        _current_org_id.reset(token)
+        _current_enterprise_id.reset(token)
 
     # Read back as superuser so the assertion measures what was WRITTEN rather
     # than what the writing tenant is allowed to see.
@@ -290,9 +309,9 @@ async def test_conversion_persists_under_tenant_rls(
             .scalars()
             .all()
         )
-        assert {job.organization_id, upload.organization_id} | {
-            d.organization_id for d in drafts
-        } == {tenant_org}
+        assert {job.enterprise_id, upload.enterprise_id} | {
+            d.enterprise_id for d in drafts
+        } == {tenant_enterprise}
         assert upload.upload_source == "conversion_source"
         # The conversion source is deliberately case-less: its case_id FK is
         # ON DELETE CASCADE while conversion_jobs.source_file_id is RESTRICT,
@@ -303,8 +322,8 @@ async def test_conversion_persists_under_tenant_rls(
 
 @pytest.mark.asyncio
 @pytest.mark.security
-async def test_sentinel_org_stamp_is_refused_under_tenant_rls(
-    tenant_session_factory, tenant_org, tmp_path
+async def test_sentinel_enterprise_stamp_is_refused_under_tenant_rls(
+    tenant_session_factory, tenant_enterprise, tmp_path
 ):
     """The pre-fix stamp still fails — the posture is real, not decorative.
 
@@ -315,13 +334,13 @@ async def test_sentinel_org_stamp_is_refused_under_tenant_rls(
     """
     service = _service(tenant_session_factory)
 
-    token = _current_org_id.set(tenant_org)
+    token = _current_enterprise_id.set(tenant_enterprise)
     try:
         with pytest.raises(DBAPIError) as exc:
             await _persist(
-                service, f"conv_{uuid4().hex[:12]}", DEFAULT_ORGANIZATION_ID, tmp_path
+                service, f"conv_{uuid4().hex[:12]}", DEFAULT_ENTERPRISE_ID, tmp_path
             )
     finally:
-        _current_org_id.reset(token)
+        _current_enterprise_id.reset(token)
 
     assert "row-level security" in str(exc.value).lower()

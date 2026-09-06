@@ -16,7 +16,7 @@ def _tp(n: int, outcome: TurnOutcome = TurnOutcome.CONVERSATION) -> TurnProgress
 
 
 def _case(nums: list[int], current_turn: int | None = None) -> Case:
-    case = Case(organization_id="org1", title="t")
+    case = Case(enterprise_id="org1", title="t")
     case.turn_history = [_tp(n) for n in nums]
     case.current_turn = (
         current_turn if current_turn is not None else (nums[-1] if nums else 0)
@@ -154,7 +154,7 @@ def test_is_skipped_property():
 
 # -- the validator must not raise on a gap (non-fatal) ------------------------
 def test_validator_does_not_raise_on_gap():
-    case = Case(organization_id="o", title="t")
+    case = Case(enterprise_id="o", title="t")
     case.turn_history = [_tp(1), _tp(3)]
     # model_validate runs the (now non-fatal) turn_history validator.
     Case.model_validate(case.model_dump(mode="python"))  # must not raise

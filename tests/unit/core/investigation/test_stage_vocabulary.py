@@ -77,7 +77,7 @@ def _make_case(
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="user_test",
-        organization_id="org_test",
+        enterprise_id="org_test",
         title="Test case",
         description="Checkout latency spike",
         state=state,

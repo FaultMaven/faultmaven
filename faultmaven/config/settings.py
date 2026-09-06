@@ -1580,13 +1580,15 @@ class AuthSettings(BaseSettings):
         ),
     )
 
-    # Self-service personal tenants (ADR-016 D5, #1045). Default OFF: with the
-    # switch off, an SSO identity that carries NO IdP organization is refused
-    # exactly as it is today (``sso_org_unmapped``), and nothing about the
-    # unmapped-organization branch changes in either state. Turning it on lets
-    # the FIRST sign-in of an org-less identity provision a personal tenant
-    # just-in-time — a real, distinct organization row, never the Standalone
-    # sentinel, whose single member holds the ``member`` role.
+    # Self-service sign-up (ADR-016 D5, ADR-017 D3, #1045). Default OFF: with
+    # the switch off, an SSO identity that carries NO IdP organization is
+    # refused exactly as it is today (``sso_org_unmapped``), and nothing about
+    # the unmapped-organization branch changes in either state. Turning it on
+    # lets the FIRST sign-in of an org-less identity land in an enterprise
+    # derived from its verified email domain — a private one per account for a
+    # personal domain, the shared one for the domain otherwise. Never the
+    # Standalone sentinel, and never an organization or a team: those are a
+    # billing fact and a consent fact, and a sign-in knows neither (D5/D4).
     #
     # Read through ``get_settings()`` at the point of use rather than captured
     # at composition time, so the value cannot become the kind of documented
@@ -1595,15 +1597,100 @@ class AuthSettings(BaseSettings):
     # effect on the next process — a restart or a redeploy, like every other
     # setting here.
     #
-    # Multi-tenant (Cloud) only: single-tenant has one organization and never
+    # Multi-tenant (Cloud) only: single-tenant has one enterprise and never
     # reaches the branch this gates.
     sso_jit_personal_tenant_enabled: bool = Field(
         default=False,
         validation_alias="SSO_JIT_PERSONAL_TENANT_ENABLED",
         description=(
-            "Allow an SSO identity with no IdP organization to provision a "
-            "personal tenant on first sign-in (Cloud/multi-tenant only). "
-            "Default false: an org-less identity is refused."
+            "Allow an SSO identity with no IdP organization to land in a "
+            "domain-derived enterprise on first sign-in (Cloud/multi-tenant "
+            "only). Default false: an org-less identity is refused."
+        ),
+    )
+
+    #: The consumer mail domains that yield a PRIVATE enterprise per account
+    #: (ADR-017 D3), case-folded and compared exactly.
+    #:
+    #: The one fact sign-up derives is the email domain, and this list is what
+    #: splits it two ways: a domain on this list means "this address says
+    #: nothing about who this person works with", so the account gets an
+    #: enterprise of its own and is an island by construction — there is nobody
+    #: else in its enterprise to invite. Every other domain means "this address
+    #: names an organisation", so the account joins that domain's enterprise
+    #: and becomes *eligible* to be invited to one of its teams. Joining grants
+    #: nothing on its own: a colleague's cases stay invisible until that
+    #: colleague consents to a team (D2/D4).
+    #:
+    #: **A product cost, not a security control.** Being wrong in the permissive
+    #: direction — a consumer domain missing from this list — is the failure
+    #: that matters: every address at it would share one enterprise, and its
+    #: members could invite each other to teams. That is why the shipped list
+    #: is broad, why the comparison is exact rather than a suffix match (a
+    #: suffix rule would fold ``notgmail.com`` into ``gmail.com``), and why the
+    #: opposite error is benign — a small business on a consumer domain becomes
+    #: islands until D7's verified domain claim, which is post-beta.
+    #:
+    #: Overridable per deployment because the consumer-mail population moves and
+    #: a redeploy is the wrong cadence for it; the shipped default is the
+    #: maintained baseline, not a suggestion.
+    personal_email_domains: List[str] = Field(
+        default=[
+            "gmail.com",
+            "googlemail.com",
+            "yahoo.com",
+            "yahoo.co.uk",
+            "yahoo.co.jp",
+            "yahoo.fr",
+            "yahoo.de",
+            "yahoo.es",
+            "yahoo.it",
+            "yahoo.ca",
+            "yahoo.com.au",
+            "yahoo.com.br",
+            "yahoo.co.in",
+            "ymail.com",
+            "rocketmail.com",
+            "outlook.com",
+            "hotmail.com",
+            "hotmail.co.uk",
+            "hotmail.fr",
+            "hotmail.de",
+            "hotmail.it",
+            "live.com",
+            "live.co.uk",
+            "msn.com",
+            "icloud.com",
+            "me.com",
+            "mac.com",
+            "aol.com",
+            "proton.me",
+            "protonmail.com",
+            "pm.me",
+            "gmx.com",
+            "gmx.de",
+            "gmx.net",
+            "yandex.com",
+            "yandex.ru",
+            "mail.com",
+            "mail.ru",
+            "zoho.com",
+            "fastmail.com",
+            "hey.com",
+            "tutanota.com",
+            "tuta.com",
+            "qq.com",
+            "163.com",
+            "126.com",
+            "naver.com",
+            "daum.net",
+            "hanmail.net",
+        ],
+        validation_alias="PERSONAL_EMAIL_DOMAINS",
+        description=(
+            "Email domains that yield a private enterprise per account "
+            "(ADR-017 D3). Case-folded exact match; every other domain joins "
+            "its domain's shared enterprise. JSON list."
         ),
     )
     # The ceiling on NEW personal tenants, per rolling hour, across the whole
@@ -2655,22 +2742,26 @@ class AgentSettings(BaseSettings):
     )
 
     # The per-tenant investigation-turn cap (ADR-016 D5.3, owner decision
-    # 2026-09-03). A COUNT of turns per organization per UTC day, not a token
+    # 2026-09-03). A COUNT of turns per BILLING SUBJECT per UTC day, not a token
     # budget: the owner tunes this number against measured usage, and a count is
     # the only unit a refusal message can state honestly to the person it
     # refuses.
     #
-    # This is the DEFAULT, and it applies to **personal** tenants only. A
-    # company organization with no override is uncapped — the cap exists to
-    # bound what self-service sign-up can spend, not to meter customers. Both
-    # kinds can be overridden per organization
-    # (``organizations.daily_turn_cap``, written by ``fm-set-turn-cap``), and
-    # that override is read from the database on every turn, so raising or
-    # clearing one tenant's cap takes effect on its next turn with no restart.
-    # This setting does not: like every other field here it is read through the
-    # ``get_settings()`` process singleton, so changing it takes a redeploy.
+    # The subject is the organization when the account has one, and the account
+    # itself when it has none (ADR-017 D5) — which is the whole of what
+    # "personal" means now: an account nobody pays for.
     #
-    # ``ge=1``: a default of 0 would mean "personal tenants may never take a
+    # This is the DEFAULT, and it applies to **account** subjects only. An
+    # organization with no override is uncapped — the cap exists to bound what
+    # self-service sign-up can spend, not to meter customers. An organization
+    # can be overridden (``organizations.daily_turn_cap``, written by
+    # ``fm-set-turn-cap``), and that override is read from the database on every
+    # turn, so raising or clearing one tenant's cap takes effect on its next
+    # turn with no restart. This setting does not: like every other field here
+    # it is read through the ``get_settings()`` process singleton, so changing
+    # it takes a redeploy.
+    #
+    # ``ge=1``: a default of 0 would mean "an unpaid account may never take a
     # turn", which is a shutdown switch wearing a quota's name. The way to
     # un-cap a tenant is the per-organization override, where "uncapped" has an
     # explicit spelling.
@@ -2680,8 +2771,8 @@ class AgentSettings(BaseSettings):
         le=1000000,
         validation_alias="TENANT_DAILY_TURN_CAP",
         description=(
-            "Investigation turns a PERSONAL tenant may take per UTC day before "
-            "further turns are refused. Company organizations are uncapped "
+            "Investigation turns an account in NO organization may take per UTC "
+            "day before further turns are refused. Organizations are uncapped "
             "unless given a per-organization override."
         ),
     )

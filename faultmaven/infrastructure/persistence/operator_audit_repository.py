@@ -5,8 +5,8 @@ Implements ``IOperatorAuditRepository`` for the ``operator_access_audit`` table
 
 **Not tenant-scoped, deliberately.** ``user_audit_log`` is RLS-tenanted, so it
 cannot express an access that spans every tenant. This table therefore carries a
-nullable ``target_organization_id`` and no tenant policy, and does not stamp the
-row from ``get_current_org_id()`` the way ``PostgreSQLAuditRepository`` does.
+nullable ``target_enterprise_id`` and no tenant policy, and does not stamp the
+row from ``get_current_enterprise_id()`` the way ``PostgreSQLAuditRepository`` does.
 
 **Write failures propagate.** ``record_access`` does not swallow exceptions.
 The caller is expected to record the access *before* serving the data and to
@@ -95,7 +95,7 @@ def _model_to_domain(model: OperatorAccessAuditModel) -> OperatorAccessAudit:
         operator_username=model.operator_username,
         action=OperatorAction(model.action),
         created_at=_as_utc(model.created_at),
-        target_organization_id=model.target_organization_id,
+        target_enterprise_id=model.target_enterprise_id,
         target_case_id=model.target_case_id,
         reason=model.reason,
         grant_id=model.grant_id,
@@ -116,7 +116,7 @@ class OperatorAuditRepository(IOperatorAuditRepository):
         operator_user_id: Optional[str],
         action: OperatorAction,
         operator_username: Optional[str] = None,
-        target_organization_id: Optional[str] = None,
+        target_enterprise_id: Optional[str] = None,
         target_case_id: Optional[str] = None,
         reason: Optional[str] = None,
         grant_id: Optional[str] = None,
@@ -135,8 +135,8 @@ class OperatorAuditRepository(IOperatorAuditRepository):
             action=OperatorAction(action).value,
             # These three name *what was accessed* and can originate in a
             # request path, so they are rejected rather than truncated.
-            target_organization_id=_require_within(
-                target_organization_id, _MAX_ID_LENGTH, "target_organization_id"
+            target_enterprise_id=_require_within(
+                target_enterprise_id, _MAX_ID_LENGTH, "target_enterprise_id"
             ),
             target_case_id=_require_within(
                 target_case_id, _MAX_ID_LENGTH, "target_case_id"
@@ -154,7 +154,7 @@ class OperatorAuditRepository(IOperatorAuditRepository):
     async def list_access(
         self,
         operator_user_id: Optional[str] = None,
-        target_organization_id: Optional[str] = None,
+        target_enterprise_id: Optional[str] = None,
         target_case_id: Optional[str] = None,
         action: Optional[OperatorAction] = None,
         grant_id: Optional[str] = None,
@@ -167,10 +167,9 @@ class OperatorAuditRepository(IOperatorAuditRepository):
             filters.append(
                 OperatorAccessAuditModel.operator_user_id == operator_user_id
             )
-        if target_organization_id:
+        if target_enterprise_id:
             filters.append(
-                OperatorAccessAuditModel.target_organization_id
-                == target_organization_id
+                OperatorAccessAuditModel.target_enterprise_id == target_enterprise_id
             )
         if target_case_id:
             filters.append(OperatorAccessAuditModel.target_case_id == target_case_id)

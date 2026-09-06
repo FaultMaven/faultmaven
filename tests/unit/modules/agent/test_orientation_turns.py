@@ -17,6 +17,8 @@ import pytest
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import TurnPayload
 from faultmaven.infrastructure.protection.tenant_turn_cap import (
+    SUBJECT_ACCOUNT,
+    BillingSubject,
     CapPolicyResolver,
     InMemoryTurnLedger,
     TurnCapService,
@@ -31,6 +33,8 @@ from faultmaven.modules.case.domain.models import CaseState, TurnOutcome, TurnPr
 pytestmark = pytest.mark.unit
 
 ORG = "org-personal"
+#: The enterprise the request binds to (isolation).
+ENTERPRISE = "ent-personal"
 
 
 class _Orgs:
@@ -38,19 +42,14 @@ class _Orgs:
         return SimpleNamespace(organization_id=organization_id, daily_turn_cap=None)
 
 
-class _People:
-    async def is_personal_organization(self, organization_id):
-        return True
-
-
 @pytest.fixture(autouse=True)
 def bound_tenant():
-    from faultmaven.config.constants import STANDALONE_ORG_ID
-    from faultmaven.config.tenant_context import set_current_org_id
+    from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+    from faultmaven.config.tenant_context import set_current_enterprise_id
 
-    set_current_org_id(ORG)
+    set_current_enterprise_id(ENTERPRISE)
     yield
-    set_current_org_id(STANDALONE_ORG_ID)
+    set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
 
 
 @pytest.fixture
@@ -89,10 +88,11 @@ def ledger():
 
 @pytest.fixture
 def service(engine, recording_case_repository, ledger):
+    # ADR-017 D5: the resolver reads only the organization lookup — the cap's
+    # subject is the organization when one pays and the account otherwise, so
+    # there is no personal-organization predicate left to consult.
     cap = TurnCapService(
-        CapPolicyResolver(
-            _People(), _Orgs(), default_limit=lambda: 30, multi_tenant=lambda: True
-        ),
+        CapPolicyResolver(_Orgs(), default_limit=lambda: 30, multi_tenant=lambda: True),
         ledger,
     )
     return InvestigationService(
@@ -223,7 +223,14 @@ class TestEmptyMessage:
         assert resp.agent_response.startswith(
             "We're investigating “Nightly OOM kills of postgres”"
         )
-        assert await ledger.usage(ORG, utc_day()) == 1
+        # Charged to the ACCOUNT: these turns bind no billing organization,
+        # and "no organization pays for this account" is an ordinary state.
+        assert (
+            await ledger.usage(
+                BillingSubject(SUBJECT_ACCOUNT, investigating.user_id), utc_day()
+            )
+            == 1
+        )
         engine.process_turn.assert_not_called()
         assert saved.current_turn == 2
         assert saved.turn_history[-1].turn_number == 2

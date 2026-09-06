@@ -18,7 +18,7 @@ Authentication:
 Authorization: two predicates, both required.
 - ``require_case_access`` (router-level) gates on the case named in the path: the
   caller must own it or have it shared to one of their teams. Sharing an
-  organization with the owner is not enough.
+  enterprise with the owner is not enough.
 - The service binds the session to that same case before mutating it, so a session
   id belonging to another case cannot be reached by naming a case you do own.
 
@@ -54,13 +54,13 @@ async def require_case_access(
 ) -> None:
     """Gate every session route on the caller's access to the parent case (#1044).
 
-    The session service authorizes on ``case.organization_id`` alone, while the rest
+    The session service authorizes on ``case.enterprise_id`` alone, while the rest
     of the case surface is owner ∪ shared-to-my-teams. That asymmetry let anyone in
-    an organization read another member's ``session_goal``, ``findings_summary`` and
+    an enterprise read another member's ``session_goal``, ``findings_summary`` and
     token usage, and pause/resume/complete their sessions. Since every route here is
     nested under ``/cases/{case_id}``, the canonical single-case gate applies whole:
     resolve the case as the caller, deny when it does not resolve. The service's
-    organization check stays where it is — this is an additional predicate, not a
+    enterprise check stays where it is — this is an additional predicate, not a
     replacement.
 
     Declared as a router-level dependency so a route added later cannot omit it.
@@ -132,7 +132,7 @@ async def create_session(
     """
     session = await session_service.create_session(
         case_id=case_id,
-        organization_id=current_user.organization_id,
+        enterprise_id=current_user.enterprise_id,
         user_id=current_user.user_id,
         session_goal=request.session_goal,
         token_budget_limit=request.token_budget_limit,
@@ -172,7 +172,7 @@ async def get_active_session(
     """
     session = await session_service.get_active_session(
         case_id=case_id,
-        organization_id=current_user.organization_id,
+        enterprise_id=current_user.enterprise_id,
     )
 
     if not session:
@@ -193,7 +193,7 @@ async def get_session(
     """Get session by ID.
 
     Retrieves a specific investigation session by its ID.
-    The session must belong to a case owned by the organization.
+    The session must belong to a case owned by the enterprise.
 
     Authentication:
         - JWT Bearer token: Authorization: Bearer <token>
@@ -211,9 +211,7 @@ async def get_session(
         401: Authentication required
         404: Session not found or case not found
     """
-    session = await session_service.get_session(
-        session_id, current_user.organization_id
-    )
+    session = await session_service.get_session(session_id, current_user.enterprise_id)
 
     if not session:
         raise NotFoundError("Session", session_id)
@@ -265,7 +263,7 @@ async def list_sessions(
     """
     sessions = await session_service.list_sessions(
         case_id=case_id,
-        organization_id=current_user.organization_id,
+        enterprise_id=current_user.enterprise_id,
         state=status_filter,
         limit=limit,
         offset=offset,
@@ -319,7 +317,7 @@ async def update_session(
     if not updates:
         # If no updates provided, just return current session
         session = await session_service.get_session(
-            session_id, current_user.organization_id
+            session_id, current_user.enterprise_id
         )
         if not session:
             raise NotFoundError("Session", session_id)
@@ -329,7 +327,7 @@ async def update_session(
 
     session = await session_service.update_session(
         session_id=session_id,
-        organization_id=current_user.organization_id,
+        enterprise_id=current_user.enterprise_id,
         updates=updates,
         case_id=case_id,
     )
@@ -370,7 +368,7 @@ async def pause_session(
     """
     session = await session_service.pause_session(
         session_id=session_id,
-        organization_id=current_user.organization_id,
+        enterprise_id=current_user.enterprise_id,
         case_id=case_id,
     )
 
@@ -410,7 +408,7 @@ async def resume_session(
     """
     session = await session_service.resume_session(
         session_id=session_id,
-        organization_id=current_user.organization_id,
+        enterprise_id=current_user.enterprise_id,
         case_id=case_id,
     )
 
@@ -456,7 +454,7 @@ async def complete_session(
     """
     session = await session_service.complete_session(
         session_id=session_id,
-        organization_id=current_user.organization_id,
+        enterprise_id=current_user.enterprise_id,
         findings_summary=findings_summary,
         case_id=case_id,
     )
