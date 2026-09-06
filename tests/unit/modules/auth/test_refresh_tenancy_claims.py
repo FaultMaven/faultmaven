@@ -5,7 +5,7 @@ carries the organization across that gap is the refresh token, because the user
 store's model has **no** organization column — a refresh reloads the user, and a
 reloaded user is org-less. Before this, the first refresh after a mapped SSO
 login minted an org-less pair and every subsequent request failed closed at
-``bind_request_org_context`` (the #850 trap).
+``bind_request_enterprise_context`` (the #850 trap).
 
 The guarantee under test: **a refresh token carries the organization claim, and
 every refresh path puts it back on the user before minting the next pair** — for
@@ -24,7 +24,7 @@ from unittest.mock import MagicMock, patch
 import jwt
 import pytest
 
-from faultmaven.config.constants import STANDALONE_ORG_ID
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.settings import AuthMode, AuthSettings, TenantProvider
 from faultmaven.modules.auth.api import auth as auth_routes
 from faultmaven.modules.auth.domain.models.api_auth import TokenRefreshRequest
@@ -32,7 +32,7 @@ from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     HS256JWTTokenGenerator,
     RS256JWTTokenGenerator,
-    resolve_organization_claim,
+    resolve_enterprise_claim,
 )
 from faultmaven.modules.auth.domain.services.oauth_service import OAuthServiceImpl
 from faultmaven.providers.tenancy import factory as tenancy_factory
@@ -46,7 +46,7 @@ AUDIENCE = "faultmaven-api"
 
 pytestmark = pytest.mark.asyncio
 
-REAL_ORG = "22222222-2222-2222-2222-222222222222"
+REAL_ENTERPRISE = "22222222-2222-2222-2222-222222222222"
 
 
 # =============================================================================
@@ -130,13 +130,25 @@ def as_tenant_provider(monkeypatch):
     return _apply
 
 
-def _user(*, organization_id):
-    user = MagicMock()
+def _user(*, enterprise_id):
+    user = MagicMock(
+        spec=[
+            "user_id",
+            "username",
+            "email",
+            "roles",
+            "is_active",
+            "enterprise_id",
+            "organization_id",
+        ]
+    )
+    user.is_active = True
+    user.enterprise_id = enterprise_id
+    user.organization_id = None
     user.user_id = "user-1"
     user.username = "sso-user"
     user.email = "sso-user@example.com"
     user.roles = ["user"]
-    user.organization_id = organization_id
     return user
 
 
@@ -155,10 +167,10 @@ async def test_refresh_token_carries_the_organization_claim(
     generator, verify_args = build_generator()
 
     token = await generator.generate_refresh_token(
-        _user(organization_id=REAL_ORG), state_read_at=datetime.now(timezone.utc)
+        _user(enterprise_id=REAL_ENTERPRISE), state_read_at=datetime.now(timezone.utc)
     )
 
-    assert _decode(token, verify_args)["organization_id"] == REAL_ORG
+    assert _decode(token, verify_args)["enterprise_id"] == REAL_ENTERPRISE
 
 
 @pytest.mark.unit
@@ -172,10 +184,10 @@ async def test_refresh_token_of_an_orgless_user_carries_the_empty_claim(
     generator, verify_args = build_generator()
 
     token = await generator.generate_refresh_token(
-        _user(organization_id=None), state_read_at=datetime.now(timezone.utc)
+        _user(enterprise_id=None), state_read_at=datetime.now(timezone.utc)
     )
 
-    assert _decode(token, verify_args)["organization_id"] == ""
+    assert _decode(token, verify_args)["enterprise_id"] == ""
 
 
 @pytest.mark.unit
@@ -187,10 +199,10 @@ async def test_single_tenant_refresh_token_claims_the_standalone_org(
     generator, verify_args = build_generator()
 
     token = await generator.generate_refresh_token(
-        _user(organization_id=None), state_read_at=datetime.now(timezone.utc)
+        _user(enterprise_id=None), state_read_at=datetime.now(timezone.utc)
     )
 
-    assert _decode(token, verify_args)["organization_id"] == STANDALONE_ORG_ID
+    assert _decode(token, verify_args)["enterprise_id"] == STANDALONE_ENTERPRISE_ID
 
 
 @pytest.mark.unit
@@ -204,12 +216,12 @@ async def test_validate_refresh_token_returns_the_organization_claim(
     generator, _ = build_generator()
 
     token = await generator.generate_refresh_token(
-        _user(organization_id=REAL_ORG), state_read_at=datetime.now(timezone.utc)
+        _user(enterprise_id=REAL_ENTERPRISE), state_read_at=datetime.now(timezone.utc)
     )
     claims = await generator.validate_refresh_token(token)
 
     assert claims is not None
-    assert claims["organization_id"] == REAL_ORG
+    assert claims["enterprise_id"] == REAL_ENTERPRISE
 
 
 # =============================================================================
@@ -231,13 +243,14 @@ class _FakeUserStore:
         return None
 
 
-def _dev_user():
+def _dev_user(enterprise_id=None):
     return DevUser(
         user_id="user-1",
         username="sso-user",
         email="sso-user@example.com",
         display_name="SSO User",
         created_at=datetime.now(timezone.utc),
+        enterprise_id=enterprise_id,
     )
 
 
@@ -266,21 +279,26 @@ def _route_patches(generator):
 
 @pytest.mark.unit
 @pytest.mark.security
-async def test_refresh_preserves_the_organization_across_rotation(as_tenant_provider):
-    """The whole point: a mapped SSO session keeps its tenant after refreshing,
-    even though the reloaded user carries no organization of its own."""
+async def test_refresh_mints_the_tenant_from_the_account_row(as_tenant_provider):
+    """The rotated pair carries the enterprise the ACCOUNT is anchored to.
+
+    Not the one the presented token claims — that is the ADR-017 change, and it
+    is the sharper property: a session whose anchor was moved (a retirement, a
+    personal→company switch) follows the move at its next rotation instead of
+    being pinned by a token that predates it.
+    """
     as_tenant_provider(TenantProvider.MULTI)
     revocation_store = InMemoryRevocationStore()
     generator, verify_args = _hs256_generator(revocation_store)
 
-    # A refresh token minted for a mapped SSO login.
+    # A refresh token minted while the account was anchored SOMEWHERE ELSE.
     old_refresh = await generator.generate_refresh_token(
-        _user(organization_id=REAL_ORG), state_read_at=datetime.now(timezone.utc)
+        _user(enterprise_id="ent-the-account-has-since-left"),
+        state_read_at=datetime.now(timezone.utc),
     )
 
-    # The user store hands back an org-less DevUser (sentinel-stamped).
-    dev_user = _dev_user()
-    assert dev_user.organization_id == STANDALONE_ORG_ID
+    # The account row is the authority, and it says REAL_ENTERPRISE.
+    dev_user = _dev_user(REAL_ENTERPRISE)
     request = _fake_request(_FakeUserStore(dev_user), revocation_store)
     response = SimpleNamespace(headers={})
 
@@ -290,8 +308,10 @@ async def test_refresh_preserves_the_organization_across_rotation(as_tenant_prov
             TokenRefreshRequest(refresh_token=old_refresh), request, response
         )
 
-    assert _decode(result.access_token, verify_args)["organization_id"] == REAL_ORG
-    assert _decode(result.refresh_token, verify_args)["organization_id"] == REAL_ORG
+    assert _decode(result.access_token, verify_args)["enterprise_id"] == REAL_ENTERPRISE
+    assert (
+        _decode(result.refresh_token, verify_args)["enterprise_id"] == REAL_ENTERPRISE
+    )
 
 
 @pytest.mark.unit
@@ -299,7 +319,7 @@ async def test_refresh_preserves_the_organization_across_rotation(as_tenant_prov
 async def test_refresh_of_a_pre_mapping_token_still_fails_closed(as_tenant_provider):
     """A refresh token minted before org mapping existed carries no claim. It
     must NOT be healed into the Standalone sentinel — the empty claim is what
-    makes ``bind_request_org_context`` refuse."""
+    makes ``bind_request_enterprise_context`` refuse."""
     as_tenant_provider(TenantProvider.MULTI)
     revocation_store = InMemoryRevocationStore()
     generator, verify_args = _hs256_generator(revocation_store)
@@ -318,7 +338,7 @@ async def test_refresh_of_a_pre_mapping_token_still_fails_closed(as_tenant_provi
         verify_args["key"],
         algorithm="HS256",
     )
-    assert "organization_id" not in jwt.decode(
+    assert "enterprise_id" not in jwt.decode(
         legacy_payload_token,
         verify_args["key"],
         algorithms=["HS256"],
@@ -337,10 +357,10 @@ async def test_refresh_of_a_pre_mapping_token_still_fails_closed(as_tenant_provi
         )
 
     # Empty claim, not the sentinel — the request will be refused at bind time.
-    assert _decode(result.access_token, verify_args)["organization_id"] == ""
-    assert _decode(result.refresh_token, verify_args)["organization_id"] == ""
+    assert _decode(result.access_token, verify_args)["enterprise_id"] == ""
+    assert _decode(result.refresh_token, verify_args)["enterprise_id"] == ""
     # And the helper agrees about what the user now carries.
-    assert resolve_organization_claim(dev_user) == ""
+    assert resolve_enterprise_claim(dev_user) == ""
 
 
 @pytest.mark.unit
@@ -363,12 +383,12 @@ async def test_single_tenant_refresh_is_unaffected(as_tenant_provider):
         )
 
     assert (
-        _decode(result.access_token, verify_args)["organization_id"]
-        == STANDALONE_ORG_ID
+        _decode(result.access_token, verify_args)["enterprise_id"]
+        == STANDALONE_ENTERPRISE_ID
     )
     assert (
-        _decode(result.refresh_token, verify_args)["organization_id"]
-        == STANDALONE_ORG_ID
+        _decode(result.refresh_token, verify_args)["enterprise_id"]
+        == STANDALONE_ENTERPRISE_ID
     )
 
 
@@ -414,29 +434,31 @@ def _oauth_service(user, generator) -> OAuthServiceImpl:
 @pytest.mark.unit
 @pytest.mark.security
 @pytest.mark.parametrize("build_generator", GENERATORS)
-async def test_oauth_refresh_grant_preserves_the_organization_on_both_tokens(
+async def test_oauth_refresh_grant_mints_the_tenant_from_the_account_row(
     build_generator, as_tenant_provider
 ):
-    """Without this, the service credential minted with a tenant would come back
-    org-less from its first rotation and then be refused on every request."""
+    """Without this, the service credential would come back tenant-less from its
+    first rotation and then be refused on every request. The authority is the
+    ACCOUNT ROW, not the presented token — same rule as ``/auth/refresh``."""
     as_tenant_provider(TenantProvider.MULTI)
     revocation_store = InMemoryRevocationStore()
     generator, verify_args = build_generator(revocation_store)
 
     presented = await generator.generate_refresh_token(
-        _user(organization_id=REAL_ORG), state_read_at=datetime.now(timezone.utc)
+        _user(enterprise_id="ent-the-account-has-since-left"),
+        state_read_at=datetime.now(timezone.utc),
     )
 
-    dev_user = _dev_user()
-    assert dev_user.organization_id == STANDALONE_ORG_ID  # what the store hands back
-    service = _oauth_service(dev_user, generator)
+    service = _oauth_service(_dev_user(REAL_ENTERPRISE), generator)
 
     tokens = await service.refresh_access_token(
         refresh_token=presented, client_id="faultmaven-copilot"
     )
 
-    assert _decode(tokens.access_token, verify_args)["organization_id"] == REAL_ORG
-    assert _decode(tokens.refresh_token, verify_args)["organization_id"] == REAL_ORG
+    assert _decode(tokens.access_token, verify_args)["enterprise_id"] == REAL_ENTERPRISE
+    assert (
+        _decode(tokens.refresh_token, verify_args)["enterprise_id"] == REAL_ENTERPRISE
+    )
 
 
 @pytest.mark.unit
@@ -448,16 +470,22 @@ async def test_oauth_refresh_grant_survives_repeated_rotation(as_tenant_provider
     generator, verify_args = _hs256_generator(revocation_store)
 
     token = await generator.generate_refresh_token(
-        _user(organization_id=REAL_ORG), state_read_at=datetime.now(timezone.utc)
+        _user(enterprise_id=REAL_ENTERPRISE), state_read_at=datetime.now(timezone.utc)
     )
-    service = _oauth_service(_dev_user(), generator)
+    service = _oauth_service(_dev_user(REAL_ENTERPRISE), generator)
 
     for _ in range(3):
         tokens = await service.refresh_access_token(
             refresh_token=token, client_id="faultmaven-copilot"
         )
-        assert _decode(tokens.access_token, verify_args)["organization_id"] == REAL_ORG
-        assert _decode(tokens.refresh_token, verify_args)["organization_id"] == REAL_ORG
+        assert (
+            _decode(tokens.access_token, verify_args)["enterprise_id"]
+            == REAL_ENTERPRISE
+        )
+        assert (
+            _decode(tokens.refresh_token, verify_args)["enterprise_id"]
+            == REAL_ENTERPRISE
+        )
         token = tokens.refresh_token
 
 
@@ -474,17 +502,17 @@ async def test_oauth_refresh_grant_of_an_orgless_token_still_fails_closed(
     generator, verify_args = _hs256_generator(revocation_store)
 
     presented = await generator.generate_refresh_token(
-        _user(organization_id=None), state_read_at=datetime.now(timezone.utc)
+        _user(enterprise_id=None), state_read_at=datetime.now(timezone.utc)
     )
-    assert _decode(presented, verify_args)["organization_id"] == ""
+    assert _decode(presented, verify_args)["enterprise_id"] == ""
 
     service = _oauth_service(_dev_user(), generator)
     tokens = await service.refresh_access_token(
         refresh_token=presented, client_id="faultmaven-copilot"
     )
 
-    assert _decode(tokens.access_token, verify_args)["organization_id"] == ""
-    assert _decode(tokens.refresh_token, verify_args)["organization_id"] == ""
+    assert _decode(tokens.access_token, verify_args)["enterprise_id"] == ""
+    assert _decode(tokens.refresh_token, verify_args)["enterprise_id"] == ""
 
 
 @pytest.mark.unit
@@ -504,10 +532,10 @@ async def test_single_tenant_oauth_refresh_grant_is_unaffected(as_tenant_provide
     )
 
     assert (
-        _decode(tokens.access_token, verify_args)["organization_id"]
-        == STANDALONE_ORG_ID
+        _decode(tokens.access_token, verify_args)["enterprise_id"]
+        == STANDALONE_ENTERPRISE_ID
     )
     assert (
-        _decode(tokens.refresh_token, verify_args)["organization_id"]
-        == STANDALONE_ORG_ID
+        _decode(tokens.refresh_token, verify_args)["enterprise_id"]
+        == STANDALONE_ENTERPRISE_ID
     )

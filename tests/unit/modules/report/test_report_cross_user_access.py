@@ -43,7 +43,7 @@ def _victims_case() -> Case:
     return Case(
         case_id=CASE_ID,
         user_id=VICTIM,
-        organization_id=SHARED_ORG,
+        enterprise_id=SHARED_ORG,
         title="Checkout latency spike",
     )
 

@@ -47,7 +47,6 @@ from enum import Enum
 from typing import Any, Optional
 
 import structlog
-
 from sqlalchemy import select
 
 from faultmaven.infrastructure.persistence.database import get_db_session

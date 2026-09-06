@@ -6,7 +6,7 @@ store into ``knowledge_suggestions`` turned the second from cosmetic into fatal:
 
 1. **The write side has to agree with the read side.** Every suggestion review
    route — list, get, update, approve, reject, remediate — resolves its tenant
-   predicate with ``require_actor_organization``. A suggestion stamped with
+   predicate with ``require_actor_enterprise``. A suggestion stamped with
    anything else is invisible to the reviewer, which is the same
    extract-then-404 shape #1214 fixed, arrived at from the other end.
 2. **``"default"`` is not an organization id.** It was inert while the store was
@@ -14,7 +14,7 @@ store into ``knowledge_suggestions`` turned the second from cosmetic into fatal:
    NULL foreign key to ``organizations`` and ``database.py`` sets
    ``PRAGMA foreign_keys=ON``, so the fallback now fails the INSERT — and under
    PostgreSQL RLS it would fail the policy's WITH CHECK too, because the value
-   does not match the session's ``app.current_org_id``.
+   does not match the session's ``app.current_enterprise_id``.
    ``tests/integration/modules/knowledge/test_suggestion_durability_1227.py``
    measures that against a real database; this file pins what the route sends.
 
@@ -40,7 +40,7 @@ from faultmaven.api.v1.dependencies import (
     get_case_service,
     get_suggestion_service,
 )
-from faultmaven.config.constants import STANDALONE_ORG_ID
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.modules.auth.contracts import DevUser
 from faultmaven.modules.case.api.routes import router as case_router
 from faultmaven.modules.knowledge.domain.models.suggestion import (
@@ -100,7 +100,7 @@ def _suggestion_service_double():
     async def _extract(*, organization_id, case_id, extracted_by, **_kwargs):
         return KnowledgeSuggestion(
             suggestion_id="sug_recorded001",
-            organization_id=organization_id,
+            enterprise_id=organization_id,
             case_id=case_id,
             suggested_title="Connection pool exhaustion",
             suggested_content="## Problem\n...",
@@ -171,12 +171,12 @@ class TestTheActorsTenantIsWhatGetsStamped:
         """The common case: one organization, and it is a real row that the
         foreign key accepts."""
         service = _suggestion_service_double()
-        client = _client(_user(STANDALONE_ORG_ID), suggestion_service=service)
+        client = _client(_user(STANDALONE_ENTERPRISE_ID), suggestion_service=service)
 
         resp = client.post(f"/cases/{CASE_ID}/extract-knowledge", json={})
 
         assert resp.status_code == 201, resp.text
-        assert _stamped_org(service) == STANDALONE_ORG_ID
+        assert _stamped_org(service) == STANDALONE_ENTERPRISE_ID
 
 
 class TestAnOrglessActorIsRefused:
@@ -205,7 +205,7 @@ class TestAnOrglessActorIsRefused:
         assert resp.json()["detail"] == UNSCOPED_REQUEST_MSG
 
     def test_a_user_object_carrying_no_org_attribute_at_all_is_refused(self):
-        """``require_actor_organization`` reads the attribute defensively, so
+        """``require_actor_enterprise`` reads the attribute defensively, so
         the refusal must hold for a principal shape that simply has no tenant
         field — not only for one whose field is empty."""
         service = _suggestion_service_double()
@@ -238,7 +238,7 @@ class TestTheSentinelIsNotATenantUnderMulti:
         from faultmaven.providers.tenancy.factory import BUILTIN_MULTI
 
         service = _suggestion_service_double()
-        client = _client(_user(STANDALONE_ORG_ID), suggestion_service=service)
+        client = _client(_user(STANDALONE_ENTERPRISE_ID), suggestion_service=service)
 
         with patch(
             "faultmaven.providers.tenancy.factory.requested_tenant_provider",

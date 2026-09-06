@@ -51,7 +51,7 @@ def _make_investigating_case() -> Case:
         title="Terminal confirmation integrity",
         state=CaseState.INQUIRY,
         user_id="user_test",
-        organization_id="org_test",
+        enterprise_id="org_test",
         description="Terminal confirmation integrity test",
         problem_verification=ProblemVerification(
             symptom_statement="Test symptom",

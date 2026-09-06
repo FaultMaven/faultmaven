@@ -104,7 +104,7 @@ async def pg(tmp_path_factory):
         session.add(
             CaseModel(
                 case_id=ids["case"],
-                organization_id=ids["organization"],
+                enterprise_id=ids["organization"],
                 title="JSONB probe",
             )
         )
@@ -133,7 +133,7 @@ async def pg(tmp_path_factory):
 def _suggestion(ids, suggestion_id, **kwargs):
     return KnowledgeSuggestion(
         suggestion_id=suggestion_id,
-        organization_id=ids["organization"],
+        enterprise_id=ids["organization"],
         case_id=ids["case"],
         suggested_title="JSONB probe",
         suggested_content="## Problem\n...",

@@ -163,7 +163,7 @@ async def sample_case(case_repository: SQLiteCaseRepository) -> Case:
     case = Case(
         case_id=generate_case_id(),
         user_id="integration-test-user",
-        organization_id="integration-test-org",
+        enterprise_id="integration-test-org",
         title="Investigation Session Integration Test Case",
         description="Testing investigation session management",
         state=CaseState.INVESTIGATING,
@@ -303,7 +303,7 @@ async def test_cascade_delete_case_to_sessions(
     case = Case(
         case_id=generate_case_id(),
         user_id="cascade-test-user",
-        organization_id="cascade-test-org",
+        enterprise_id="cascade-test-org",
         title="CASCADE Delete Test Case",
         description="Testing CASCADE delete",
         state=CaseState.INVESTIGATING,
@@ -428,7 +428,7 @@ async def test_list_sessions_by_user_pagination(
         case = Case(
             case_id=generate_case_id(),
             user_id=user_id,
-            organization_id="test-org",
+            enterprise_id="test-org",
             title=f"Pagination Test Case {i}",
             description="Testing pagination",
             state=CaseState.INVESTIGATING,

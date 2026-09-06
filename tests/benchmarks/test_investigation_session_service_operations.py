@@ -103,7 +103,7 @@ async def sample_case(case_repo) -> Case:
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id=create_test_user_id(),
-        organization_id=create_test_org_id(),
+        enterprise_id=create_test_org_id(),
         title="Benchmark Test Case",
         description="Case for performance benchmarks",
         state=CaseState.INQUIRY,
@@ -188,7 +188,7 @@ class TestCreateSessionBenchmarks:
             case = Case(
                 case_id=f"case_{uuid4().hex[:12]}",
                 user_id=sample_case.user_id,
-                organization_id=sample_case.organization_id,
+                enterprise_id=sample_case.organization_id,
                 title=f"Benchmark Case {i}",
                 description="",
                 state=CaseState.INQUIRY,
@@ -299,7 +299,7 @@ class TestPauseResumeSessionBenchmarks:
             case = Case(
                 case_id=f"case_{uuid4().hex[:12]}",
                 user_id=sample_case.user_id,
-                organization_id=sample_case.organization_id,
+                enterprise_id=sample_case.organization_id,
                 title=f"Pause Test Case {i}",
                 description="",
                 state=CaseState.INQUIRY,
@@ -337,7 +337,7 @@ class TestPauseResumeSessionBenchmarks:
             case = Case(
                 case_id=f"case_{uuid4().hex[:12]}",
                 user_id=sample_case.user_id,
-                organization_id=sample_case.organization_id,
+                enterprise_id=sample_case.organization_id,
                 title=f"Resume Test Case {i}",
                 description="",
                 state=CaseState.INQUIRY,
@@ -389,7 +389,7 @@ class TestCompleteSessionBenchmarks:
             case = Case(
                 case_id=f"case_{uuid4().hex[:12]}",
                 user_id=sample_case.user_id,
-                organization_id=sample_case.organization_id,
+                enterprise_id=sample_case.organization_id,
                 title=f"Complete Test Case {i}",
                 description="",
                 state=CaseState.INQUIRY,

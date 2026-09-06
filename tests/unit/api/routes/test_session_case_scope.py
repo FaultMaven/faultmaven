@@ -36,7 +36,7 @@ def _case_service_holding_victims_case() -> CaseService:
     case = Case(
         case_id=CASE_ID,
         user_id=VICTIM,
-        organization_id=SHARED_ORG,
+        enterprise_id=SHARED_ORG,
         title="Checkout latency spike",
     )
     repository = MagicMock()

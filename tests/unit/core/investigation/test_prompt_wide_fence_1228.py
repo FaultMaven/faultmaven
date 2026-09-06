@@ -171,7 +171,7 @@ def _case(
         title=title,
         description=description,
         user_id="user_123",
-        organization_id="org_123",
+        enterprise_id="org_123",
         state=state,
         current_stage=(
             InvestigationStage.DIAGNOSIS if state == CaseState.INVESTIGATING else None
@@ -204,7 +204,7 @@ def _terminal_case(title: str = "Checkout crash-looping") -> Case:
         title=title,
         description="Pods restart every 40s since the 10:40 deploy",
         user_id="user_123",
-        organization_id="org_123",
+        enterprise_id="org_123",
         state=CaseState.RESOLVED,
         inquiry=InquiryData(
             problem_statement_confirmed=True,

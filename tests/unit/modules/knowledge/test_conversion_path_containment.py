@@ -36,7 +36,7 @@ from faultmaven.modules.knowledge.domain.services.conversion_service import (
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 from faultmaven.utils.runbook_id import RunbookPathEscape
 
-ORG = SingleTenantProvider.DEFAULT_ORG_ID
+ORG = SingleTenantProvider.DEFAULT_ENTERPRISE_ID
 
 # No ``asyncio`` mark: ``asyncio_mode = auto``, and marking the module would
 # also mark the synchronous helper tests.
@@ -185,7 +185,7 @@ async def _seed_draft(factory, *, draft_id, file_path, status="draft"):
         session.add(
             UploadedFileModel(
                 file_id=file_id,
-                organization_id=ORG,
+                enterprise_id=ORG,
                 filename="src.md",
                 size_bytes=1,
                 content_type="text/markdown",
@@ -196,7 +196,7 @@ async def _seed_draft(factory, *, draft_id, file_path, status="draft"):
         session.add(
             ConversionJobModel(
                 id=f"conv_{draft_id}",
-                organization_id=ORG,
+                enterprise_id=ORG,
                 user_id="u1",
                 status="completed",
                 scope="global",
@@ -207,7 +207,7 @@ async def _seed_draft(factory, *, draft_id, file_path, status="draft"):
         session.add(
             ConversionDraftModel(
                 id=draft_id,
-                organization_id=ORG,
+                enterprise_id=ORG,
                 conversion_id=f"conv_{draft_id}",
                 runbook_id=f"rb-{draft_id}",
                 title="T",

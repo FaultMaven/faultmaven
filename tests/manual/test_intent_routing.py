@@ -43,7 +43,7 @@ async def test_intent_routing():
     mock_case = Case(
         case_id=case_id,
         user_id=user_id,
-        organization_id="org_1",
+        enterprise_id="org_1",
         title="Test Case",
         description="Test Description",
         state=CaseState.INQUIRY,

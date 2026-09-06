@@ -31,7 +31,7 @@ def _case_with_orphan_file() -> Case:
         title="Test Case",
         description="Test",
         user_id="user_123",
-        organization_id="org_123",
+        enterprise_id="org_123",
         state=CaseState.INVESTIGATING,
         inquiry=InquiryData(
             problem_statement_confirmed=True,

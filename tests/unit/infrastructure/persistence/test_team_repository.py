@@ -53,7 +53,7 @@ def make_team(team_id: str, organization_id: str = ORG_A, name: str = "") -> Tea
     now = datetime.now(timezone.utc)
     return Team(
         team_id=team_id,
-        organization_id=organization_id,
+        enterprise_id=organization_id,
         # Default the name to the id — the (organization_id, name) UNIQUE
         # constraint rejects duplicate names within one org.
         name=name or f"Team {team_id}",

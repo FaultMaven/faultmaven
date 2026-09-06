@@ -111,7 +111,7 @@ async def sample_case(case_repo) -> Case:
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id=f"user_{uuid4().hex[:8]}",
-        organization_id=f"org_{uuid4().hex[:8]}",
+        enterprise_id=f"org_{uuid4().hex[:8]}",
         title="Test Case",
         description="Test case for session testing",
         state=CaseState.INQUIRY,
@@ -699,7 +699,7 @@ class TestOrganizationIsolation:
         case_a = Case(
             case_id=f"case_{uuid4().hex[:12]}",
             user_id=create_test_user_id(),
-            organization_id=org_a,
+            enterprise_id=org_a,
             title="Org A Case",
             description="",
             state=CaseState.INQUIRY,
@@ -709,7 +709,7 @@ class TestOrganizationIsolation:
         case_b = Case(
             case_id=f"case_{uuid4().hex[:12]}",
             user_id=create_test_user_id(),
-            organization_id=org_b,
+            enterprise_id=org_b,
             title="Org B Case",
             description="",
             state=CaseState.INQUIRY,

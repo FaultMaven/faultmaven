@@ -105,7 +105,7 @@ def _make_case(
     return Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id=user_id,
-        organization_id=organization_id,
+        enterprise_id=organization_id,
         title=title,
         description=description,
         state=state,
@@ -227,7 +227,7 @@ class TestSaveAndGet:
         case = Case(
             case_id=f"case_{uuid4().hex[:12]}",
             user_id="user_alpha",
-            organization_id="org_alpha",
+            enterprise_id="org_alpha",
             title="Investigating case",
             description="Latency spike in API",
             state=CaseState.INVESTIGATING,
@@ -252,7 +252,7 @@ class TestSaveAndGet:
         case = Case(
             case_id=f"case_{uuid4().hex[:12]}",
             user_id="user_alpha",
-            organization_id="org_alpha",
+            enterprise_id="org_alpha",
             title="Closed case",
             description="Already closed",
             state=CaseState.RESOLVED,
@@ -678,7 +678,7 @@ class TestListAndSearch:
         investigating = Case(
             case_id=f"case_{uuid4().hex[:12]}",
             user_id="user_alpha",
-            organization_id="org_alpha",
+            enterprise_id="org_alpha",
             title="I",
             description="X",
             state=CaseState.INVESTIGATING,
@@ -1569,7 +1569,7 @@ def _make_investigating_case_with_action() -> Case:
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="user_alpha",
-        organization_id="org_alpha",
+        enterprise_id="org_alpha",
         title="Investigating case",
         description="Latency spike in API",
         state=CaseState.INVESTIGATING,

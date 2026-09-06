@@ -45,7 +45,7 @@ TEAM_BODY = "# Team runbook\nThe ENOSPC alert is routed to the platform team.\n"
 def _item(item_id, title, content, scope, owner_id=None, org=None):
     return KnowledgeItem(
         item_id=item_id,
-        organization_id=org,
+        enterprise_id=org,
         title=title,
         content=content,
         item_type=KnowledgeItemType.RUNBOOK,

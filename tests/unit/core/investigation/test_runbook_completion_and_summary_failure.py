@@ -86,7 +86,7 @@ def _make_resolved_case(case_id: str = "case_aabb11223344") -> Case:
     case = Case(
         case_id=case_id,
         user_id="u1",
-        organization_id="o1",
+        enterprise_id="o1",
         title="Pool timeout resolved",
         description="DB queries timing out",
         state=CaseState.INVESTIGATING,
@@ -999,7 +999,7 @@ class TestDedupSkipObservability:
 
         case = Case(
             user_id="u1",
-            organization_id="o1",
+            enterprise_id="o1",
             title="Pool timeout",
             description="DB queries timing out",
             state=CaseState.INVESTIGATING,

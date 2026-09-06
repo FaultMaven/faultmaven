@@ -72,7 +72,7 @@ def _suggestion(
 ) -> KnowledgeSuggestion:
     s = KnowledgeSuggestion(
         suggestion_id=suggestion_id,
-        organization_id=ORG,
+        enterprise_id=ORG,
         case_id="case_aabb11223344",
         status=status,
         suggested_title="Redis pool exhaustion",

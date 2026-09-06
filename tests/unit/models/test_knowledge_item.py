@@ -18,6 +18,7 @@ from tests.utils import generate_item_id, generate_org_id
 
 def create_sample_item(
     item_id: str = None,
+    enterprise_id: str = None,
     organization_id: str = None,
     title: str = "Sample Knowledge Item",
     content: str = "This is sample content for the knowledge item.",
@@ -26,14 +27,17 @@ def create_sample_item(
 ) -> KnowledgeItem:
     """Create a sample knowledge item for testing.
 
-    Global scope (the dataclass default) is the org-free platform tier
-    (#770), so an org id is only generated for org-owned scopes.
+    Every item is isolated to an enterprise (ADR-017 D1), global rows included —
+    the platform tier lives in the standalone enterprise. Billing attribution is
+    only generated for a non-global scope, and even there it is optional: an
+    account in no organization still owns its runbooks (D5).
     """
     scope = kwargs.get("scope", KnowledgeScope.GLOBAL)
-    if scope != KnowledgeScope.GLOBAL:
-        organization_id = organization_id or generate_org_id()
+    if scope != KnowledgeScope.GLOBAL and organization_id is None:
+        organization_id = generate_org_id()
     return KnowledgeItem(
         item_id=item_id or generate_item_id(),
+        enterprise_id=enterprise_id or "ent_sample",
         organization_id=organization_id,
         title=title,
         content=content,
@@ -60,7 +64,7 @@ class TestKnowledgeItemValidation:
         with pytest.raises(ValueError, match="item_id is required"):
             KnowledgeItem(
                 item_id="",
-                organization_id="org_test",
+                enterprise_id="ent_test",
                 title="Test",
                 content="Content",
                 item_type=KnowledgeItemType.FAQ,
@@ -71,29 +75,50 @@ class TestKnowledgeItemValidation:
         with pytest.raises(ValueError, match="item_id is required"):
             KnowledgeItem(
                 item_id=None,
-                organization_id="org_test",
+                enterprise_id="ent_test",
                 title="Test",
                 content="Content",
                 item_type=KnowledgeItemType.FAQ,
             )
 
-    def test_empty_organization_id_fails_for_org_owned_scope(self):
-        """Org-owned scopes (personal/team) require an organization_id."""
-        with pytest.raises(ValueError, match="organization_id is required"):
+    def test_empty_enterprise_id_fails_for_every_scope(self):
+        """Every item is isolated to an enterprise (ADR-017 D1), global included.
+
+        Which is the change from before: the old invariant demanded an
+        organization for a personal/team item and forbade one on a global item.
+        The first half stopped being true under D5 — an account may be in no
+        organization and still own its runbooks — and what remains mandatory is
+        the tenant.
+        """
+        with pytest.raises(ValueError, match="enterprise_id is required"):
             KnowledgeItem(
                 item_id="ki_test",
-                organization_id="",
+                enterprise_id="",
                 title="Test",
                 content="Content",
                 item_type=KnowledgeItemType.FAQ,
                 scope=KnowledgeScope.TEAM,
             )
 
+    def test_a_team_item_needs_no_organization(self):
+        """The converse D5 made false. Nobody has to be paying."""
+        item = KnowledgeItem(
+            item_id="ki_test",
+            enterprise_id="ent_test",
+            title="Test",
+            content="Content",
+            item_type=KnowledgeItemType.FAQ,
+            scope=KnowledgeScope.TEAM,
+            owner_id="user_1",
+        )
+        assert item.organization_id is None
+
     def test_global_scope_with_organization_id_fails(self):
-        """Global scope is the org-free platform tier (#770) — org forbidden."""
+        """A global row is the platform tier and is billed to nobody (#770)."""
         with pytest.raises(ValueError, match="platform tier"):
             KnowledgeItem(
                 item_id="ki_test",
+                enterprise_id="ent_test",
                 organization_id="org_test",
                 title="Test",
                 content="Content",
@@ -105,7 +130,7 @@ class TestKnowledgeItemValidation:
         """The platform tier stores organization_id as None."""
         item = KnowledgeItem(
             item_id="ki_test",
-            organization_id=None,
+            enterprise_id="ent_test",
             title="Test",
             content="Content",
             item_type=KnowledgeItemType.FAQ,
@@ -118,7 +143,7 @@ class TestKnowledgeItemValidation:
         with pytest.raises(ValueError, match="title is required"):
             KnowledgeItem(
                 item_id="ki_test",
-                organization_id="org_test",
+                enterprise_id="ent_test",
                 title="",
                 content="Content",
                 item_type=KnowledgeItemType.FAQ,
@@ -129,7 +154,7 @@ class TestKnowledgeItemValidation:
         with pytest.raises(ValueError, match="content is required"):
             KnowledgeItem(
                 item_id="ki_test",
-                organization_id="org_test",
+                enterprise_id="ent_test",
                 title="Test",
                 content="",
                 item_type=KnowledgeItemType.FAQ,
@@ -140,7 +165,7 @@ class TestKnowledgeItemValidation:
         with pytest.raises(ValueError, match="item_type must be a KnowledgeItemType"):
             KnowledgeItem(
                 item_id="ki_test",
-                organization_id="org_test",
+                enterprise_id="ent_test",
                 title="Test",
                 content="Content",
                 item_type="invalid_type",

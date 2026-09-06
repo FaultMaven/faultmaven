@@ -199,7 +199,7 @@ async def replay(rec: dict) -> tuple[str, bool | None, int | None]:
         title=rec["title"][:200],
         state=CaseState.INQUIRY,
         user_id=rec["user_id"],
-        organization_id=rec["organization_id"],
+        enterprise_id=rec["organization_id"],
         description=rec["description"][:2000] if rec["description"] else "",
         inquiry=InquiryData(thread_id="thread_replay"),
     )

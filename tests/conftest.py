@@ -972,7 +972,7 @@ def sample_case():
         title="Test Case for Persistence",
         description="A sample case for testing case persistence features",
         user_id="test-user-456",
-        organization_id="test-org-123",
+        enterprise_id="test-org-123",
         state=CaseState.INQUIRY,
     )
 
@@ -1142,7 +1142,7 @@ def multiple_cases():
             title=f"Test Case {i+1}",
             description=f"Description for test case {i+1}",
             user_id=f"test-user-{i+1}",
-            organization_id="test-org-123",
+            enterprise_id="test-org-123",
             state=CaseState.INQUIRY if i % 2 == 0 else CaseState.INVESTIGATING,
         )
         cases.append(case)
@@ -1218,7 +1218,7 @@ def case_with_conversation():
         title="Case with Full Conversation",
         description="Testing conversation context generation",
         user_id="test-user-456",
-        organization_id="test-org-123",
+        enterprise_id="test-org-123",
         state=CaseState.INVESTIGATING,
         messages=messages,
         message_count=len(messages),

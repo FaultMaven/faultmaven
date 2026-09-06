@@ -418,7 +418,7 @@ class TestTheGuardCoversEveryNewDraftWritePath:
             session.add(
                 UploadedFileModel(
                     file_id="file_legacy",
-                    organization_id=ORG,
+                    enterprise_id=ORG,
                     uploaded_by=None,
                     filename="legacy.md",
                     size_bytes=1,
@@ -432,7 +432,7 @@ class TestTheGuardCoversEveryNewDraftWritePath:
             session.add(
                 ConversionJobModel(
                     id="conv_legacy",
-                    organization_id=ORG,
+                    enterprise_id=ORG,
                     scope="global",
                     status="completed",
                     source_file_id="file_legacy",
@@ -442,7 +442,7 @@ class TestTheGuardCoversEveryNewDraftWritePath:
             session.add(
                 ConversionDraftModel(
                     id="draft_legacy",
-                    organization_id=ORG,
+                    enterprise_id=ORG,
                     conversion_id="conv_legacy",
                     runbook_id="",
                     title="Legacy",

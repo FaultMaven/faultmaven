@@ -42,7 +42,7 @@ def _investigating_case() -> Case:
     return Case(
         case_id=f"case_{'0' * 12}",
         user_id="user_alpha",
-        organization_id="org_alpha",
+        enterprise_id="org_alpha",
         title="Checkout 5xx",
         description="Checkout service returns 500s under load",
         state=CaseState.INVESTIGATING,

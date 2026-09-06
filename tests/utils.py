@@ -497,7 +497,7 @@ def make_org_knowledge_item(
 
     return KnowledgeItem(
         item_id=item_id or generate_item_id(),
-        organization_id=organization_id or generate_org_id(),
+        enterprise_id=organization_id or generate_org_id(),
         scope=KnowledgeScope.TEAM,
         title=title,
         content=content,

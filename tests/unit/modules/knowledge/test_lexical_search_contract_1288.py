@@ -205,7 +205,7 @@ def _item(item_id, title, content, *, category=None, tags=None):
     """
     return KnowledgeItem(
         item_id=item_id,
-        organization_id=None,
+        enterprise_id="ent-test",
         title=title,
         content=content,
         item_type=KnowledgeItemType.RUNBOOK,

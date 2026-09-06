@@ -87,7 +87,7 @@ def _graded_case(
     case = Case(
         case_id="case_aa0000000001",
         user_id="user_x",
-        organization_id="org_x",
+        enterprise_id="org_x",
         title="Checkout timeouts",
         description="p99 spikes on checkout.",
         state=CaseState.INVESTIGATING,

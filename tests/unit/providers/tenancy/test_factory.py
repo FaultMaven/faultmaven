@@ -21,7 +21,7 @@ _SETTINGS = "faultmaven.providers.tenancy.factory.get_settings"
 
 
 @pytest.fixture
-def org_repo():
+def ent_repo():
     return AsyncMock()
 
 
@@ -37,13 +37,11 @@ def _settings(tenant_provider: str, is_cloud: bool = False) -> MagicMock:
 
 
 @pytest.mark.unit
-def test_single_is_builtin_and_gets_repositories(org_repo):
+def test_single_is_builtin_and_gets_repositories(ent_repo):
     with patch(_SETTINGS, return_value=_settings("single")):
-        provider = create_tenant_provider(
-            organization_repository=org_repo, enterprise_repository="ent"
-        )
+        provider = create_tenant_provider(enterprise_repository=ent_repo)
     assert isinstance(provider, SingleTenantProvider)
-    assert provider.organization_repository is org_repo
+    assert provider.enterprise_repository is ent_repo
 
 
 # --- multi (built-in, in-core — requires cloud) -----------------------------
@@ -51,34 +49,32 @@ def test_single_is_builtin_and_gets_repositories(org_repo):
 
 @pytest.mark.unit
 @pytest.mark.security
-def test_multi_outside_cloud_fails_closed(org_repo):
+def test_multi_outside_cloud_fails_closed(ent_repo):
     """``multi`` requires DEPLOYMENT_MODE=cloud — outside it, the cloud stack
     its RLS isolation relies on isn't guaranteed, so the factory must refuse
     (covering the gate-less jobs/CLI path, not only the startup gate)."""
     with patch(_SETTINGS, return_value=_settings("multi", is_cloud=False)):
         with pytest.raises(TenancyConfigurationError) as exc:
-            create_tenant_provider(organization_repository=org_repo)
+            create_tenant_provider(enterprise_repository=ent_repo)
     assert "requires DEPLOYMENT_MODE=cloud" in str(exc.value)
 
 
 @pytest.mark.unit
-def test_multi_resolves_in_core_under_cloud(org_repo):
+def test_multi_resolves_in_core_under_cloud(ent_repo):
     """Under DEPLOYMENT_MODE=cloud, ``multi`` builds the in-core
     MultiTenantProvider (no plugin)."""
     with patch(_SETTINGS, return_value=_settings("multi", is_cloud=True)):
-        provider = create_tenant_provider(
-            organization_repository=org_repo, enterprise_repository="ent"
-        )
+        provider = create_tenant_provider(enterprise_repository=ent_repo)
     assert isinstance(provider, MultiTenantProvider)
-    assert provider.organization_repository is org_repo
+    assert provider.enterprise_repository is ent_repo
 
 
 @pytest.mark.unit
-def test_single_value_is_case_insensitive(org_repo):
+def test_single_value_is_case_insensitive(ent_repo):
     """'SINGLE' resolves to the built-in single provider."""
     with patch(_SETTINGS, return_value=_settings("SINGLE")):
         assert isinstance(
-            create_tenant_provider(organization_repository=org_repo),
+            create_tenant_provider(enterprise_repository=ent_repo),
             SingleTenantProvider,
         )
 
@@ -88,11 +84,11 @@ def test_single_value_is_case_insensitive(org_repo):
 
 @pytest.mark.unit
 @pytest.mark.security
-def test_unknown_value_fails_closed(org_repo):
+def test_unknown_value_fails_closed(ent_repo):
     """An unrecognized provider value must NOT fall back to single-tenant."""
     with patch(_SETTINGS, return_value=_settings("bogus")):
         with pytest.raises(TenancyConfigurationError) as exc:
-            create_tenant_provider(organization_repository=org_repo)
+            create_tenant_provider(enterprise_repository=ent_repo)
     assert "not a recognized provider" in str(exc.value)
 
 

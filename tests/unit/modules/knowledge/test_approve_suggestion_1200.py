@@ -62,7 +62,7 @@ def _knowledge_service_double():
 def _ready_suggestion() -> KnowledgeSuggestion:
     return KnowledgeSuggestion(
         suggestion_id=SUGGESTION_ID,
-        organization_id=ORG,
+        enterprise_id=ORG,
         case_id="case_aabb11223344",
         suggested_title="Redis pool exhaustion",
         suggested_content="## Problem\nPool exhausted.\n",

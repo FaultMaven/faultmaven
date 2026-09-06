@@ -152,7 +152,7 @@ async def db(tmp_path):
         session.add(
             CaseModel(
                 case_id=CASE_ID,
-                organization_id=ORG_ID,
+                enterprise_id=ORG_ID,
                 title="Connection pool exhaustion",
             )
         )
@@ -263,7 +263,7 @@ class TestTheSuggestionSurvivesARestart:
         await repository.save(
             KnowledgeSuggestion(
                 suggestion_id="sug_unevaluated",
-                organization_id=ORG_ID,
+                enterprise_id=ORG_ID,
                 case_id=CASE_ID,
                 suggested_title="Never checked",
                 suggested_content="## Problem\n...",
@@ -315,7 +315,7 @@ class TestAReadHandsBackADetachedCopy:
         await repository.save(
             KnowledgeSuggestion(
                 suggestion_id="sug_copy_check",
-                organization_id=ORG_ID,
+                enterprise_id=ORG_ID,
                 case_id=CASE_ID,
                 suggested_title="Original",
                 suggested_content="## Problem\n...",
@@ -332,7 +332,7 @@ class TestAReadHandsBackADetachedCopy:
         # store behind its back.
         held = KnowledgeSuggestion(
             suggestion_id="sug_copy_check_2",
-            organization_id=ORG_ID,
+            enterprise_id=ORG_ID,
             case_id=CASE_ID,
             suggested_title="Original",
             suggested_content="## Problem\n...",
@@ -353,7 +353,7 @@ class TestAReadHandsBackADetachedCopy:
         repository = InMemorySuggestionRepository()
         seeded = KnowledgeSuggestion(
             suggestion_id="sug_seeded",
-            organization_id=ORG_ID,
+            enterprise_id=ORG_ID,
             case_id=CASE_ID,
             suggested_title="Original",
             suggested_content="## Problem\n...",
@@ -531,7 +531,7 @@ async def _seed_approved(factory, suggestion_id, *, org=ORG_ID, item_id=None):
     await repository.save(
         KnowledgeSuggestion(
             suggestion_id=suggestion_id,
-            organization_id=org,
+            enterprise_id=org,
             case_id=CASE_ID,
             status=SuggestionStatus.APPROVED,
             suggested_title="Old decision",
@@ -608,7 +608,7 @@ class TestTheUnreviewedQueueIsTheCeiling:
         await repository.save(
             KnowledgeSuggestion(
                 suggestion_id="sug_beta_pending",
-                organization_id=OTHER_ORG_ID,
+                enterprise_id=OTHER_ORG_ID,
                 case_id=CASE_ID,
                 suggested_title="Beta's problem",
                 suggested_content="## Problem\n...",

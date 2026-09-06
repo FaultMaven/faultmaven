@@ -57,7 +57,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
 from faultmaven.modules.knowledge.domain.services.conversion_service import (
     ANALYSIS_SYSTEM_PROMPT,
     CONVERSION_SYSTEM_PROMPT,
-    DEFAULT_ORGANIZATION_ID,
+    DEFAULT_ENTERPRISE_ID,
     RUNBOOK_MAX_TOKENS_CEILING,
     ConversionRejectedError,
     ConversionService,
@@ -1697,15 +1697,15 @@ async def live_case_session_factory(live_case_engine):
     async with factory() as session:
         session.add(
             EnterpriseModel(
-                enterprise_id=DEFAULT_ORGANIZATION_ID,
+                enterprise_id=DEFAULT_ENTERPRISE_ID,
                 name="Default Enterprise",
                 slug="default",
             )
         )
         session.add(
             OrganizationModel(
-                organization_id=DEFAULT_ORGANIZATION_ID,
-                enterprise_id=DEFAULT_ORGANIZATION_ID,
+                organization_id=DEFAULT_ENTERPRISE_ID,
+                enterprise_id=DEFAULT_ENTERPRISE_ID,
                 name="Default Org",
                 slug="default-org",
             )
@@ -1749,7 +1749,7 @@ async def _insert_case_job(
         session.add(
             UploadedFileModel(
                 file_id=file_id,
-                organization_id=DEFAULT_ORGANIZATION_ID,
+                enterprise_id=DEFAULT_ENTERPRISE_ID,
                 case_id=None,
                 uploaded_by="u1",
                 filename="src",
@@ -1764,7 +1764,7 @@ async def _insert_case_job(
             ConversionJobModel(
                 id=conversion_id,
                 user_id="u1",
-                organization_id=DEFAULT_ORGANIZATION_ID,
+                enterprise_id=DEFAULT_ENTERPRISE_ID,
                 scope="personal",
                 status=status.value,
                 source_file_id=file_id,
@@ -1794,7 +1794,7 @@ async def _insert_case_job(
             session.add(
                 ConversionDraftModel(
                     id=d.draft_id,
-                    organization_id=DEFAULT_ORGANIZATION_ID,
+                    enterprise_id=DEFAULT_ENTERPRISE_ID,
                     conversion_id=conversion_id,
                     runbook_id=d.runbook_id,
                     title=d.title,
@@ -1853,7 +1853,7 @@ class TestPersistJobLiveCaseKey:
         await svc._persist_job(
             conversion_id="conv-case-live",
             user_id="u1",
-            organization_id=DEFAULT_ORGANIZATION_ID,
+            organization_id=DEFAULT_ENTERPRISE_ID,
             scope="personal",
             team_id=None,
             status=ConversionStatus.COMPLETED,
@@ -1875,7 +1875,7 @@ class TestPersistJobLiveCaseKey:
         await svc._persist_job(
             conversion_id="conv-doc",
             user_id="u1",
-            organization_id=DEFAULT_ORGANIZATION_ID,
+            organization_id=DEFAULT_ENTERPRISE_ID,
             scope="personal",
             team_id=None,
             status=ConversionStatus.COMPLETED,
@@ -1897,7 +1897,7 @@ class TestPersistJobLiveCaseKey:
         await svc._persist_job(
             conversion_id="conv-failed",
             user_id="u1",
-            organization_id=DEFAULT_ORGANIZATION_ID,
+            organization_id=DEFAULT_ENTERPRISE_ID,
             scope="personal",
             team_id=None,
             status=ConversionStatus.FAILED,
@@ -2584,8 +2584,8 @@ class TestPersistJobOrgStamp:
 
     Under PostgreSQL the RLS policy from migration 018 is ``FOR ALL`` with the
     USING expression doubling as the WITH CHECK, so a row whose
-    ``organization_id`` differs from ``app.current_org_id`` is *refused*, not
-    merely hidden. ``app.current_org_id`` comes from the tenant contextvar (the
+    ``organization_id`` differs from ``app.current_enterprise_id`` is *refused*, not
+    merely hidden. ``app.current_enterprise_id`` comes from the tenant contextvar (the
     engine's ``begin`` listener), so a writer that resolves a missing org to a
     hardcoded single-tenant sentinel writes a row its own transaction may not
     write — the #1143 failure. These tests assert the stamped value, which makes
@@ -2666,21 +2666,21 @@ class TestPersistJobOrgStamp:
     ):
         """A caller that supplies no org gets the tenant the session is bound to.
 
-        The regression: it used to get ``DEFAULT_ORGANIZATION_ID`` — correct in
+        The regression: it used to get ``DEFAULT_ENTERPRISE_ID`` — correct in
         a single-tenant deployment by coincidence, and the sentinel org (which
         no tenant may write) everywhere else.
         """
-        from faultmaven.config.tenant_context import _current_org_id
+        from faultmaven.config.tenant_context import _current_enterprise_id
 
         guest_org = "org_guest_7f2a"
         await self._seed_org(live_case_session_factory, guest_org)
         service = _make_live_case_service(live_case_session_factory)
 
-        token = _current_org_id.set(guest_org)
+        token = _current_enterprise_id.set(guest_org)
         try:
             await self._run_persist(service, "conv_org_ctx", None, tmp_path)
         finally:
-            _current_org_id.reset(token)
+            _current_enterprise_id.reset(token)
 
         assert await self._stamped_orgs(live_case_session_factory, "conv_org_ctx") == {
             guest_org
@@ -2694,19 +2694,19 @@ class TestPersistJobOrgStamp:
         self, live_case_session_factory, tmp_path
     ):
         """An explicit org is the more specific answer and is used verbatim."""
-        from faultmaven.config.tenant_context import _current_org_id
+        from faultmaven.config.tenant_context import _current_enterprise_id
 
         explicit_org = "org_explicit_11b3"
         await self._seed_org(live_case_session_factory, explicit_org)
         service = _make_live_case_service(live_case_session_factory)
 
-        token = _current_org_id.set("org_ambient_beef")
+        token = _current_enterprise_id.set("org_ambient_beef")
         try:
             await self._run_persist(
                 service, "conv_org_explicit", explicit_org, tmp_path
             )
         finally:
-            _current_org_id.reset(token)
+            _current_enterprise_id.reset(token)
 
         assert await self._stamped_orgs(
             live_case_session_factory, "conv_org_explicit"
@@ -2727,7 +2727,7 @@ class TestPersistJobOrgStamp:
 
         assert await self._stamped_orgs(
             live_case_session_factory, "conv_org_standalone"
-        ) == {DEFAULT_ORGANIZATION_ID}
+        ) == {DEFAULT_ENTERPRISE_ID}
 
     def test_conversion_source_upload_stays_case_less(self):
         """The synthetic ``uploaded_files`` row must NOT carry ``case_id``.

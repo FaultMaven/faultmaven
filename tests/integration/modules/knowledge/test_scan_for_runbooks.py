@@ -334,7 +334,7 @@ class TestScanSkipsBootstrapIngestedRunbooks:
                     item_id=item_id_from_runbook_id(runbook_id),
                     # Global rows are the org-free platform tier (#770,
                     # knowledge_items_global_org_check).
-                    organization_id=None,
+                    enterprise_id=None,
                     scope="global",
                     title=runbook_id,
                     content="published by bootstrap",

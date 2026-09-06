@@ -68,7 +68,7 @@ def sample_case():
     return Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="user_123",
-        organization_id="org_456",
+        enterprise_id="org_456",
         title="Test Case",
         description="Test case description",
         state=CaseState.INQUIRY,
@@ -90,7 +90,7 @@ class TestCreateCase:
         mock_case_repo.save.return_value = Case(
             case_id="case_abc123def456",
             user_id="user_1",
-            organization_id="org_1",
+            enterprise_id="org_1",
             title="New Case",
             description="Description",
             state=CaseState.INQUIRY,

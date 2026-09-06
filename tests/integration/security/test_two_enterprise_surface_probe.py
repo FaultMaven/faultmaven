@@ -975,14 +975,14 @@ def _wire_services(app, chroma) -> None:
     )
     from faultmaven.infrastructure.observability.tracing import OpikTracer
     from faultmaven.infrastructure.persistence.database import get_db_session
+    from faultmaven.infrastructure.persistence.sessionless_enterprise_repository import (  # noqa: E501
+        SessionlessEnterpriseRepository,
+    )
     from faultmaven.infrastructure.persistence.sessionless_operator_audit_repository import (  # noqa: E501
         SessionlessOperatorAuditRepository,
     )
     from faultmaven.infrastructure.persistence.sessionless_operator_grant_repository import (  # noqa: E501
         SessionlessOperatorGrantRepository,
-    )
-    from faultmaven.infrastructure.persistence.sessionless_enterprise_repository import (  # noqa: E501
-        SessionlessEnterpriseRepository,
     )
     from faultmaven.infrastructure.persistence.sessionless_organization_repository import (  # noqa: E501
         SessionlessOrganizationRepository,

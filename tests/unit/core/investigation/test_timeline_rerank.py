@@ -103,7 +103,7 @@ def _case(evidence_list: list[Evidence]) -> Case:
         title="Test",
         description="Test",
         user_id="user_1",
-        organization_id="org_1",
+        enterprise_id="org_1",
         state=CaseState.INVESTIGATING,
         inquiry=InquiryData(
             problem_statement_confirmed=True,

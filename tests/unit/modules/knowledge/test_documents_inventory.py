@@ -55,7 +55,7 @@ def _mk_item(
         item_id=item_id,
         # Global rows are the org-free platform tier (#770); only org-owned
         # scopes (personal/team) carry an organization_id.
-        organization_id=None if scope == KnowledgeScope.GLOBAL else org,
+        enterprise_id=None if scope == KnowledgeScope.GLOBAL else org,
         title=title,
         content="# body\nsteps",
         item_type=item_type,

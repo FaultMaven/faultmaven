@@ -206,7 +206,7 @@ def _restatement_held_case(
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="u",
-        organization_id="o",
+        enterprise_id="o",
         title="t",
         description="d",
         state=CaseState.INVESTIGATING,

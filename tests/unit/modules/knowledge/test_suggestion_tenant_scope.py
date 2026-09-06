@@ -54,7 +54,7 @@ def _suggestion(suggestion_id: str, organization_id: str) -> KnowledgeSuggestion
     (unscanned PII, wrong status) firing first."""
     return KnowledgeSuggestion(
         suggestion_id=suggestion_id,
-        organization_id=organization_id,
+        enterprise_id=organization_id,
         case_id="case-1",
         status=SuggestionStatus.PENDING_REVIEW,
         suggested_title="Connection pool exhaustion",

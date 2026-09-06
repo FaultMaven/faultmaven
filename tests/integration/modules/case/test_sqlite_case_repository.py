@@ -101,7 +101,7 @@ class TestSQLiteCaseRepository:
         test_case = Case(
             case_id=case_id,
             user_id="test_user_123",
-            organization_id="test_org_123",
+            enterprise_id="test_org_123",
             title="Test Case for SQLite Compatibility",
             state=CaseState.INQUIRY,
             inquiry=InquiryData(),
@@ -150,7 +150,7 @@ class TestSQLiteCaseRepository:
         test_case = Case(
             case_id=case_id,
             user_id="test_user_456",
-            organization_id="test_org_456",
+            enterprise_id="test_org_456",
             title="Retrieval Test Case",
             state=CaseState.INQUIRY,
             inquiry=InquiryData(),
@@ -200,7 +200,7 @@ class TestSQLiteCaseRepository:
             case = Case(
                 case_id=f"case_{uuid4().hex[:12]}",
                 user_id="search_user",
-                organization_id="search_org",
+                enterprise_id="search_org",
                 title=title,
                 state=CaseState.INQUIRY,
                 inquiry=InquiryData(),
@@ -242,7 +242,7 @@ class TestSQLiteCaseRepository:
             case = Case(
                 case_id=f"case_{uuid4().hex[:12]}",
                 user_id=user_id,
-                organization_id=organization_id,
+                enterprise_id=organization_id,
                 title=f"List Test Case {i}",
                 state=CaseState.INQUIRY,
                 inquiry=InquiryData(),
@@ -287,7 +287,7 @@ class TestSQLiteCaseRepository:
             case = Case(
                 case_id=f"case_{uuid4().hex[:12]}",
                 user_id=user_id,
-                organization_id=organization_id,
+                enterprise_id=organization_id,
                 title=f"Paginate Case {i}",
                 state=CaseState.INQUIRY,
                 inquiry=InquiryData(),
@@ -350,7 +350,7 @@ class TestSQLiteCaseRepository:
         case = Case(
             case_id=case_id,
             user_id="msg_user",
-            organization_id="msg_org",
+            enterprise_id="msg_org",
             title="Message Test Case",
             state=CaseState.INQUIRY,
             inquiry=InquiryData(),
@@ -399,7 +399,7 @@ class TestSQLiteCaseRepository:
         case = Case(
             case_id=case_id,
             user_id="analytics_user",
-            organization_id="analytics_org",
+            enterprise_id="analytics_org",
             title="Analytics Test Case",
             state=CaseState.INQUIRY,
             inquiry=InquiryData(),
@@ -437,7 +437,7 @@ class TestSQLiteCaseRepository:
         case = Case(
             case_id=case_id,
             user_id="delete_user",
-            organization_id="delete_org",
+            enterprise_id="delete_org",
             title="Delete Test Case",
             state=CaseState.INQUIRY,
             inquiry=InquiryData(),
@@ -549,7 +549,7 @@ class TestSQLiteCaseRepository:
         test_case = Case(
             case_id=case_id,
             user_id="test_user_evidence_links",
-            organization_id="test_org_evidence_links",
+            enterprise_id="test_org_evidence_links",
             title="Test Case for Evidence Links Serialization",
             description="Testing hypothesis evidence links serialization with datetime fields",
             state=CaseState.INQUIRY,
@@ -674,7 +674,7 @@ class TestUploadedFilePreprocessingRoundtrip:
         case = Case(
             case_id=case_id,
             user_id="user_001",
-            organization_id="00000000-0000-0000-0000-000000000001",
+            enterprise_id="00000000-0000-0000-0000-000000000001",
             title="Preprocessing roundtrip case",
             state=CaseState.INQUIRY,
             inquiry=InquiryData(),
@@ -748,7 +748,7 @@ class TestUploadedFilePreprocessingRoundtrip:
         case = Case(
             case_id=case_id,
             user_id="user_001",
-            organization_id="00000000-0000-0000-0000-000000000001",
+            enterprise_id="00000000-0000-0000-0000-000000000001",
             title="COALESCE upsert test",
             state=CaseState.INQUIRY,
             inquiry=InquiryData(),
@@ -836,7 +836,7 @@ class TestScopedAddUploadedFile:
         return Case(
             case_id=case_id,
             user_id="user_001",
-            organization_id="00000000-0000-0000-0000-000000000001",
+            enterprise_id="00000000-0000-0000-0000-000000000001",
             title="Scoped upload commit",
             state=CaseState.INQUIRY,
             inquiry=InquiryData(),

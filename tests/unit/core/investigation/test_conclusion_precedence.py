@@ -131,7 +131,7 @@ def _case(nodes=(), edges=(), evidence=(), hyps=()) -> Case:
     case = Case(
         case_id="case_000000000001",
         user_id="u",
-        organization_id="o",
+        enterprise_id="o",
         title="t",
         description="d",
         state=CaseState.INVESTIGATING,

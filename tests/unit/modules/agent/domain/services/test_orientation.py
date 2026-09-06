@@ -87,7 +87,7 @@ def _inquiry(proposed=None, confirmed=False):
         title="Nightly OOM kills of postgres",
         description="d",
         user_id="u",
-        organization_id="o",
+        enterprise_id="o",
         state=CaseState.INQUIRY,
         inquiry=InquiryData(
             proposed_problem_statement=proposed, problem_statement_confirmed=confirmed
@@ -101,7 +101,7 @@ def _investigating(needs=(), messages=()):
         title="Nightly OOM kills of postgres",
         description="d",
         user_id="u",
-        organization_id="o",
+        enterprise_id="o",
         state=CaseState.INVESTIGATING,
         inquiry=InquiryData(
             proposed_problem_statement="Nightly OOM kills",

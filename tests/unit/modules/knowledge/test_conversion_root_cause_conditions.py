@@ -29,7 +29,7 @@ def _case(conditions: list[str]) -> Case:
     case = Case(
         case_id="case_aa0000000003",
         user_id="u",
-        organization_id="o",
+        enterprise_id="o",
         title="Checkout OOM kills",
         description="checkout-api crash-loops after v2.14.0.",
         state=CaseState.INVESTIGATING,

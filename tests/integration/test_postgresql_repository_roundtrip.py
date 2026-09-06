@@ -111,7 +111,7 @@ def _make_case(org_id: str, user_id: str) -> Case:
     return Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id=user_id,
-        organization_id=org_id,
+        enterprise_id=org_id,
         title="PG round-trip case",
         description="Exercises JSONB + timestamptz casts on real PostgreSQL",
         state=CaseState.INVESTIGATING,
@@ -750,7 +750,7 @@ async def test_list_pagination_and_include_empty_soundness_pg(pg_repo):
         case = Case(
             case_id=f"case_{uuid4().hex[:12]}",
             user_id=user_id,
-            organization_id=org_id,
+            enterprise_id=org_id,
             title=f"PG paginate {i}",
             state=CaseState.INQUIRY,
             inquiry=InquiryData(),

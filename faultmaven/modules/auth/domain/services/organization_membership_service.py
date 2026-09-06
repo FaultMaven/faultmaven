@@ -220,7 +220,7 @@ class OrganizationMembershipService:
 
     def _require_bound_to(
         self,
-        organization_id: str,
+        enterprise_id: str,
         *,
         write: str,
         misscoped: type[MembershipWriteMisscoped],

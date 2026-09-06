@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.config.constants import STANDALONE_ORG_ID
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.infrastructure.persistence.audit_repository import (
     PostgreSQLAuditRepository,
 )
@@ -92,7 +92,7 @@ async def test_log_event_round_trips_all_fields(repo):
 @pytest.mark.unit
 async def test_log_event_stamps_tenant_org_when_none_given(repo):
     """A missing organization defaults to the tenant-context org — the same
-    value the engine binds as ``app.current_org_id``, so the INSERT satisfies
+    value the engine binds as ``app.current_enterprise_id``, so the INSERT satisfies
     the RLS policy's WITH CHECK instead of writing a NULL that RLS rejects."""
     await repo.log_event(
         user_id="u-1",
@@ -100,7 +100,7 @@ async def test_log_event_stamps_tenant_org_when_none_given(repo):
         event_category=AuditCategory.AUTHENTICATION,
     )
     entries = await repo.get_user_audit_log("u-1")
-    assert entries[0].organization_id == STANDALONE_ORG_ID
+    assert entries[0].organization_id == STANDALONE_ENTERPRISE_ID
 
 
 @pytest.mark.unit
@@ -188,7 +188,7 @@ async def test_corrupt_details_blob_does_not_break_reads(repo, session):
     session.add(
         UserAuditLogModel(
             user_id="u-1",
-            organization_id="org-a",
+            enterprise_id="org-a",
             event_type=AuditEventType.LOGIN.value,
             event_category=AuditCategory.AUTHENTICATION.value,
             details="{not json",

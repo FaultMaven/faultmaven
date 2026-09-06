@@ -87,7 +87,7 @@ def _case() -> Case:
     return Case(
         case_id=CASE_ID,
         user_id="tenant-user-9",
-        organization_id=GRANT_ORG,
+        enterprise_id=GRANT_ORG,
         title="payments API 5xx spike",
         description="a description a cloud operator must not see without a grant",
         # INQUIRY, not INVESTIGATING: the latter's cross-field validator demands

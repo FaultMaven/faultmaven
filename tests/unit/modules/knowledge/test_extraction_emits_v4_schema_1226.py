@@ -466,7 +466,7 @@ class TestTheReviewerSeesWhyItWouldBeRefused:
         svc = _service()
         fresh = KnowledgeSuggestion(
             suggestion_id="sug_unevaluated",
-            organization_id=ORG,
+            enterprise_id=ORG,
             case_id=CASE_ID,
             pii_scan_status=PIIScanStatus.CLEAN,
         )

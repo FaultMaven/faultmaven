@@ -52,7 +52,7 @@ def _mk_item(
     return KnowledgeItem(
         item_id=item_id,
         # Global rows are the org-free platform tier (#770).
-        organization_id=None if scope == KnowledgeScope.GLOBAL else org,
+        enterprise_id=None if scope == KnowledgeScope.GLOBAL else org,
         title="Runbook",
         content="# body\nline two\nline three",
         item_type=KnowledgeItemType.RUNBOOK,

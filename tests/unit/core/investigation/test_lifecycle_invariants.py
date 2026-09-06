@@ -52,7 +52,7 @@ def _make_investigating_case() -> Case:
         title="Invariant test",
         state=CaseState.INQUIRY,
         user_id="user_test",
-        organization_id="org_test",
+        enterprise_id="org_test",
         description="Invariant test description",
         problem_verification=ProblemVerification(
             symptom_statement="Test symptom",
@@ -304,7 +304,7 @@ class TestINV04_NoDirectInquiryToResolved:
             title="INV-04 inquiry case",
             state=CaseState.INQUIRY,
             user_id="user_test",
-            organization_id="org_test",
+            enterprise_id="org_test",
             description="Stuck in inquiry",
             problem_verification=ProblemVerification(
                 symptom_statement="Test symptom",
@@ -794,7 +794,7 @@ class TestINV14_DropdownUsesStandardHandshake:
             title="INV-14 inquiry",
             state=CaseState.INQUIRY,
             user_id="user_test",
-            organization_id="org_test",
+            enterprise_id="org_test",
             description="Inquiry case",
             problem_verification=ProblemVerification(
                 symptom_statement="Test",
@@ -1978,7 +1978,7 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
             title="INV-22 inquiry test",
             state=CaseState.INQUIRY,
             user_id="user_test",
-            organization_id="org_test",
+            enterprise_id="org_test",
             description="Test inquiry description",
             inquiry=InquiryData(thread_id="thread_test"),
         )

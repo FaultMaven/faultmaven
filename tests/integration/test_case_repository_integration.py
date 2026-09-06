@@ -169,7 +169,7 @@ def sample_case_with_evidence() -> Case:
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="integration-test-user",
-        organization_id="integration-test-org",
+        enterprise_id="integration-test-org",
         title="Case with Evidence",
         description="Testing evidence linking",
         state=CaseState.INVESTIGATING,
@@ -224,7 +224,7 @@ def sample_case_with_hypotheses() -> Case:
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="integration-test-user",
-        organization_id="integration-test-org",
+        enterprise_id="integration-test-org",
         title="Case with Hypotheses",
         description="Testing hypothesis tracking",
         state=CaseState.INVESTIGATING,
@@ -264,7 +264,7 @@ async def test_full_case_lifecycle(db_repository: SQLiteCaseRepository):
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="lifecycle-test-user",
-        organization_id="lifecycle-test-org",
+        enterprise_id="lifecycle-test-org",
         title="Full Lifecycle Test",
         description="Testing complete case lifecycle",
     )
@@ -338,7 +338,7 @@ async def test_add_evidence_to_existing_case(db_repository: SQLiteCaseRepository
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="evidence-test-user",
-        organization_id="evidence-test-org",
+        enterprise_id="evidence-test-org",
         title="Evidence Addition Test",
     )
     file_id = f"file_{uuid4().hex[:12]}"
@@ -411,7 +411,7 @@ async def test_hypothesis_validation_flow(db_repository: SQLiteCaseRepository):
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="hypothesis-test-user",
-        organization_id="hypothesis-test-org",
+        enterprise_id="hypothesis-test-org",
         title="Hypothesis Validation Test",
         description="Testing hypothesis validation flow",
         state=CaseState.INVESTIGATING,
@@ -475,7 +475,7 @@ async def test_concurrent_case_creation(test_engine):
             case = Case(
                 case_id=f"case_{uuid4().hex[:12]}",
                 user_id="concurrent-test-user",
-                organization_id="concurrent-test-org",
+                enterprise_id="concurrent-test-org",
                 title=f"Concurrent Case {index}",
             )
             return await repo.save(case)
@@ -515,7 +515,7 @@ async def test_concurrent_message_addition(test_engine):
         case = Case(
             case_id=case_id,
             user_id="concurrent-msg-user",
-            organization_id="concurrent-msg-org",
+            enterprise_id="concurrent-msg-org",
             title="Concurrent Messages Test",
         )
         await repo.save(case)
@@ -589,7 +589,7 @@ async def test_complex_case_persistence(db_repository: SQLiteCaseRepository):
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="complex-test-user",
-        organization_id="complex-test-org",
+        enterprise_id="complex-test-org",
         title="Complex Case Test",
         description="Testing all fields",
         state=CaseState.INVESTIGATING,
@@ -647,7 +647,7 @@ async def test_action_history_round_trip(db_repository: SQLiteCaseRepository):
     case = Case(
         case_id=case_id,
         user_id="lifecycle-test-user",
-        organization_id="lifecycle-test-org",
+        enterprise_id="lifecycle-test-org",
         title="Action Trail Test",
         description="Round-trip case_actions including triggered_by",
         state=CaseState.INVESTIGATING,
@@ -716,7 +716,7 @@ async def test_solution_full_audit_round_trip(
     case = Case(
         case_id=case_id,
         user_id="complex-test-user",
-        organization_id="complex-test-org",
+        enterprise_id="complex-test-org",
         title="Solution Audit Round-trip",
         description="Pin the full audit trail across lifecycle stages",
         state=CaseState.INVESTIGATING,
@@ -827,7 +827,7 @@ async def test_evidence_full_audit_round_trip(
     case = Case(
         case_id=case_id,
         user_id="evidence-test-user",
-        organization_id="evidence-test-org",
+        enterprise_id="evidence-test-org",
         title="Evidence Audit Round-trip",
         description="Pin the 5 evidence fields added by migration 009",
         state=CaseState.INVESTIGATING,
@@ -928,7 +928,7 @@ async def test_superseded_offer_stamps_round_trip(db_repository: SQLiteCaseRepos
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="lifecycle-test-user",
-        organization_id="lifecycle-test-org",
+        enterprise_id="lifecycle-test-org",
         title="Offer liveness round trip",
         description="withdrawn fix persistence",
     )

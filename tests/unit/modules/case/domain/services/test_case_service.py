@@ -6,8 +6,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from faultmaven.config.constants import STANDALONE_ORG_ID
-from faultmaven.config.tenant_context import get_current_org_id, set_current_org_id
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.config.tenant_context import (
+    get_current_enterprise_id,
+    set_current_enterprise_id,
+)
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.models.api_models import CaseListFilter, CaseMessage, CaseSearchRequest
 from faultmaven.modules.case.domain.models import Case, CaseState, MessageType
@@ -18,11 +21,11 @@ from faultmaven.modules.case.domain.services.case_service import CaseService
 def _reset_tenant_context():
     """Reset the request-bound org contextvar after each test.
 
-    ``create_case`` now stamps the case with ``get_current_org_id()`` (P2c), so
+    ``create_case`` now stamps the case with ``get_current_enterprise_id()`` (P2c), so
     a test that sets a tenant org must not leak it into the next test.
     """
     yield
-    set_current_org_id(STANDALONE_ORG_ID)
+    set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
 
 
 def _make_case(
@@ -36,7 +39,7 @@ def _make_case(
     case = Case(
         title=kwargs.get("title", "Test Case"),
         user_id=user_id,
-        organization_id=kwargs.get("organization_id", "org_default"),
+        enterprise_id=kwargs.get("organization_id", "org_default"),
         description=kwargs.get("description", "test description"),
     )
     # Use object.__setattr__ to bypass Pydantic cross-field validators
@@ -162,7 +165,7 @@ class TestCreateCase:
         # to the Standalone/default org.
         mock_repo.list.return_value = ([], 0)
         tenant_org = "11111111-1111-1111-1111-111111111111"
-        set_current_org_id(tenant_org)
+        set_current_enterprise_id(tenant_org)
         case = await service.create_case(title="Scoped", owner_id="user_123")
         assert case.organization_id == tenant_org
 
@@ -171,9 +174,11 @@ class TestCreateCase:
         # Single-tenant / unset context -> the Standalone org (contextvar default),
         # so standalone deployments stay scoped without any per-request wiring.
         mock_repo.list.return_value = ([], 0)
-        assert get_current_org_id() == STANDALONE_ORG_ID  # sanity: default binding
+        assert (
+            get_current_enterprise_id() == STANDALONE_ENTERPRISE_ID
+        )  # sanity: default binding
         case = await service.create_case(title="Default", owner_id="user_123")
-        assert case.organization_id == STANDALONE_ORG_ID
+        assert case.organization_id == STANDALONE_ENTERPRISE_ID
 
     @pytest.mark.asyncio
     async def test_adds_initial_message(self, service, mock_repo):
@@ -813,7 +818,7 @@ class TestCaseReadAllowlist:
             resource_type="case",
             scope_type="team",
             scope_ids=["team_1", "team_2"],
-            organization_id=STANDALONE_ORG_ID,
+            organization_id=STANDALONE_ENTERPRISE_ID,
         )
 
     @pytest.mark.asyncio

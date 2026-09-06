@@ -80,7 +80,7 @@ async def benchmark_case(case_repository: SQLiteCaseRepository) -> Case:
     case = Case(
         case_id=generate_case_id(),
         user_id="benchmark-user-001",
-        organization_id="benchmark-org-001",
+        enterprise_id="benchmark-org-001",
         title="Benchmark Session Case",
         description="Case for benchmarking investigation session operations",
         state=CaseState.INQUIRY,
@@ -181,7 +181,7 @@ class TestSessionCreationPerformance:
                 case = Case(
                     case_id=generate_case_id(),
                     user_id="benchmark-user-001",
-                    organization_id="benchmark-org-001",
+                    enterprise_id="benchmark-org-001",
                     title=f"Batch Benchmark Case {i}",
                     description="For batch session creation benchmark",
                     state=CaseState.INQUIRY,
@@ -358,7 +358,7 @@ class TestSessionRetrievalPerformance:
             case = Case(
                 case_id=generate_case_id(),
                 user_id=user_id,
-                organization_id="benchmark-org-001",
+                enterprise_id="benchmark-org-001",
                 title=f"User Benchmark Case {i}",
                 description="For user list benchmark",
                 state=CaseState.INQUIRY,

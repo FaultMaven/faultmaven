@@ -144,7 +144,7 @@ def _make_case_with_evidence(evidence_list: list) -> Case:
         title="Test Case",
         description="Test description",
         user_id="user_123",
-        organization_id="org_123",
+        enterprise_id="org_123",
         state=CaseState.INVESTIGATING,
         inquiry=InquiryData(
             problem_statement_confirmed=True,
@@ -213,7 +213,7 @@ def _make_inquiry_case_with_uploaded_files(
         title="INQUIRY Test Case",
         description="Test description",
         user_id="user_123",
-        organization_id="org_123",
+        enterprise_id="org_123",
         state=CaseState.INQUIRY,
         inquiry=InquiryData(),
         evidence=[],

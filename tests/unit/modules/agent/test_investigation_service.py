@@ -80,7 +80,7 @@ class TestEvidenceBearingRerouteToEngine:
         return Case(
             case_id=f"case_{uuid4().hex[:12]}",
             user_id=user_id,
-            organization_id="org_test123",
+            enterprise_id="org_test123",
             title="Test Case",
             description="Pods are crashing",
             state=CaseState.INVESTIGATING,

@@ -196,7 +196,7 @@ class TestACancelledJobCanBeRead:
             session.add(
                 UploadedFileModel(
                     file_id="file_c",
-                    organization_id=ORG,
+                    enterprise_id=ORG,
                     uploaded_by="user_x",
                     filename="d.md",
                     size_bytes=1,
@@ -210,7 +210,7 @@ class TestACancelledJobCanBeRead:
                 ConversionJobModel(
                     id="conv_cancelled",
                     user_id="user_x",
-                    organization_id=ORG,
+                    enterprise_id=ORG,
                     scope="global",
                     status="cancelled",
                     source_file_id="file_c",

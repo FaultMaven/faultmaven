@@ -22,7 +22,7 @@ def _make_team(team_id: str, name: str, org: str = "org_1") -> Team:
     now = datetime.now(timezone.utc)
     return Team(
         team_id=team_id,
-        organization_id=org,
+        enterprise_id=org,
         name=name,
         description=None,
         created_at=now,

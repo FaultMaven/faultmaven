@@ -74,7 +74,7 @@ def sample_case():
     return Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="user_123",
-        organization_id="org_456",
+        enterprise_id="org_456",
         title="Test Case",
         description="Test case description",
         state=CaseState.INQUIRY,

@@ -118,7 +118,7 @@ class TestUploadedFileSchemaConsistency:
             title="Test Case",
             description="Schema-consistency test case",
             user_id="user_123",
-            organization_id="org_123",
+            enterprise_id="org_123",
             state=CaseState.INQUIRY,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
@@ -245,7 +245,7 @@ class TestRepositoryArchitecture:
             case_id="case_001234567890",  # Must be exactly 17 chars
             title="User 1 Case",
             user_id="user_001",  # Required field, not owner_id
-            organization_id="org_001",  # Required field
+            enterprise_id="org_001",  # Required field
             state=CaseState.INQUIRY,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
@@ -256,7 +256,7 @@ class TestRepositoryArchitecture:
             case_id="case_002234567890",  # Must be exactly 17 chars
             title="User 2 Case",
             user_id="user_002",  # Required field, not owner_id
-            organization_id="org_002",  # Required field
+            enterprise_id="org_002",  # Required field
             state=CaseState.INQUIRY,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
@@ -327,7 +327,7 @@ class TestDatabaseSchemaIntegration:
             title="Integration Test",
             description="Roundtrip integration test",
             user_id="user_integration_001",
-            organization_id="org_integration_001",
+            enterprise_id="org_integration_001",
             state=CaseState.INQUIRY,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
@@ -373,7 +373,7 @@ class TestDatabaseSchemaIntegration:
             title="NULL Fields Test",
             description="Null-fields integration test",
             user_id="user_integration_002",
-            organization_id="org_integration_002",
+            enterprise_id="org_integration_002",
             state=CaseState.INQUIRY,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),

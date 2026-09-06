@@ -59,7 +59,7 @@ def _make_investigating_case() -> Case:
         title="INV-40 apply-path test",
         state=CaseState.INQUIRY,
         user_id="user_test",
-        organization_id="org_test",
+        enterprise_id="org_test",
         description="INV-40 apply-path test description",
         inquiry=InquiryData(
             proposed_problem_statement="INV-40 apply-path test",

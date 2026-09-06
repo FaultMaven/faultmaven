@@ -142,7 +142,7 @@ ignore_imports =
     faultmaven.modules.auth.infrastructure.repositories.sso_org_mapping_repository -> faultmaven.modules.auth.contracts
     # SSO personal-tenant adapter implements the ISSOPersonalOrgRepository port
     # defined in contracts (same DIP pattern as above). #1045.
-    faultmaven.modules.auth.infrastructure.repositories.sso_personal_org_repository -> faultmaven.modules.auth.contracts
+    faultmaven.modules.auth.infrastructure.repositories.sso_personal_enterprise_repository -> faultmaven.modules.auth.contracts
 
 # ============================================================================
 # CONTRACT 7: Agent Module Layer Boundaries

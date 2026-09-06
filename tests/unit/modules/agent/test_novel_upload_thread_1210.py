@@ -388,7 +388,7 @@ class TestWhenDedupCouldNotRun:
         engine = MilestoneEngine.__new__(MilestoneEngine)
         case = Case(
             case_id="case_aabb11223344",
-            organization_id="org_123",
+            enterprise_id="org_123",
             title="t",
             description="d",
             state=CaseState.INQUIRY,

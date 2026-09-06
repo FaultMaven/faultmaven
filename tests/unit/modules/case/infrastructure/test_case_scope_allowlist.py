@@ -122,7 +122,7 @@ def _make_case(*, user_id: str, title: str = "Broker connection refused") -> Cas
     return Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id=user_id,
-        organization_id="org_alpha",
+        enterprise_id="org_alpha",
         title=title,
         description="",
         state=CaseState.INQUIRY,
