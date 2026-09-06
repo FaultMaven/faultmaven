@@ -252,9 +252,11 @@ class AuthenticatedUser:
 
     Attributes:
         user_id: User UUID (from 'sub' claim)
-        enterprise_id: Enterprise UUID (from the 'enterprise_id' claim) — the
-            isolation boundary (ADR-017 D1). Every tenant-scoped resolution
-            keys on this.
+        enterprise_id: Enterprise UUID — the isolation boundary (ADR-017 D1).
+            Every tenant-scoped resolution keys on this, and it is filled from
+            the REQUEST BINDING rather than from the raw claim: see
+            :meth:`from_jwt_claims`. The claim is what the front door verifies
+            and refuses on; downstream there is one answer.
         organization_id: Organization UUID (from the 'organization_id' claim),
             or ``""`` when the account is in none. BILLING only (ADR-017 D2):
             it must never be read as a visibility predicate.
@@ -345,15 +347,43 @@ class AuthenticatedUser:
     def from_jwt_claims(cls, claims: dict) -> "AuthenticatedUser":
         """Create AuthenticatedUser from JWT claims.
 
+        **The isolation key comes from the request BINDING, not from this claim
+        set** (ADR-017 D1/D9). The claim is what the front door reads and refuses
+        on (``api/middleware/tenant_scope.bind_request_enterprise_context``, a
+        global dependency that is solved before any route dependency); after that
+        the binding is the one answer, and it is what the engine's ``begin``
+        listener writes into ``app.current_enterprise_id`` for every RLS policy
+        to check. Reading the raw claim here made a SECOND answer, and the two
+        principals then disagreed: ``DevUser`` reads the binding, this read the
+        claim, and the routes that stamp and authorise on
+        ``current_user.enterprise_id`` — the session surface, the admin user
+        surface — used whichever they happened to hold.
+
+        They diverge in one shipped configuration and it is not hypothetical:
+        under ``TENANT_PROVIDER=single`` the front door FORCES the Standalone
+        enterprise, so a service account provisioned with ``--enterprise-id X``
+        carries X in its token, writes its cases under Standalone, and was
+        authorised against X — 403 on every session route while every other route
+        worked.
+
+        Only the isolation key moves. ``organization_id`` is billing attribution
+        and stays a claim, because it is a property of the ACCOUNT rather than a
+        binding of the request.
+
         Args:
             claims: Decoded JWT claims dictionary
 
         Returns:
             AuthenticatedUser instance
         """
+        # Imported here rather than at module scope: ``config`` is the neutral
+        # leaf, but the domain model is imported during settings construction in
+        # some entrypoints and a module-level import would make that a cycle.
+        from faultmaven.config.tenant_context import get_current_enterprise_id
+
         return cls(
             user_id=claims.get("sub", ""),
-            enterprise_id=claims.get("enterprise_id", ""),
+            enterprise_id=get_current_enterprise_id(),
             organization_id=claims.get("organization_id", ""),
             email=claims.get("email", ""),
             roles=claims.get("roles", []),
