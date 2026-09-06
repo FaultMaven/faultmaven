@@ -229,15 +229,9 @@ def _build_turn_cap_service():
         SqlTurnLedger,
         TurnCapService,
     )
-    from faultmaven.modules.auth.infrastructure.repositories.sso_personal_org_repository import (  # noqa: E501
-        SessionlessSSOPersonalOrgRepository,
-    )
 
     return TurnCapService(
-        CapPolicyResolver(
-            SessionlessSSOPersonalOrgRepository(),
-            SessionlessOrganizationRepository(),
-        ),
+        CapPolicyResolver(SessionlessOrganizationRepository()),
         SqlTurnLedger(),
     )
 
@@ -731,17 +725,17 @@ def create_user_service(
 
 
 def create_tenant_provider(
-    organization_repository: Any | None,
     settings: FaultMavenSettings,
     enterprise_repository: Any | None = None,
     team_repository: Any | None = None,
 ) -> Any | None:
     """Create tenant provider for deployment neutrality.
 
-    enterprise_repository is optional; when present (single-tenant mode), the
-    SingleTenantProvider uses it for default-enterprise bootstrap. Absence is
-    safe — migration 006 also seeds the default enterprise idempotently, so
-    bootstrap simply skips the runtime check.
+    The enterprise repository is what the provider resolves through (ADR-017:
+    the enterprise is the tenant), so ``multi`` refuses to build without one.
+    In single-tenant mode absence is safe — the migration baseline seeds the
+    default enterprise idempotently, so bootstrap simply skips the runtime
+    check.
 
     team_repository is optional; when present (single-tenant mode), the
     SingleTenantProvider uses it to seed the default team row. Absence is safe —
@@ -754,20 +748,19 @@ def create_tenant_provider(
     )
     from faultmaven.providers.tenancy.factory import create_tenant_provider as factory
 
-    if not organization_repository:
+    if not enterprise_repository:
         if requested_tenant_provider() == BUILTIN_MULTI:
             # Skipping here would bypass the factory's fail-closed checks and
             # leave a multi-tenant deployment without its tenant provider.
             raise TenancyConfigurationError(
-                "TENANT_PROVIDER='multi' requires an organization repository; "
+                "TENANT_PROVIDER='multi' requires an enterprise repository; "
                 "refusing to continue without one."
             )
-        logger.debug("TenantProvider skipped (no organization repository)")
+        logger.debug("TenantProvider skipped (no enterprise repository)")
         return None
 
     try:
         provider = factory(
-            organization_repository=organization_repository,
             enterprise_repository=enterprise_repository,
             team_repository=team_repository,
         )
@@ -1268,7 +1261,6 @@ def register_services(container: BaseDIContainer) -> None:
     # Tenant Provider (create after the Organization + Enterprise + Team
     # repositories, before CaseService)
     tenant_provider = create_tenant_provider(
-        organization_repository,
         settings,
         enterprise_repository=enterprise_repository,
         team_repository=team_repository,
@@ -1292,9 +1284,9 @@ def register_services(container: BaseDIContainer) -> None:
     if share_repository:
         container._register_service("share_repository", share_repository)
 
-    # Case Service. Org resolution is request-scoped (tenant_scope middleware ->
-    # config.tenant_context contextvar), so no TenantProvider injection is needed
-    # here; the service reads the bound org at write time.
+    # Case Service. Tenant resolution is request-scoped (tenant_scope middleware
+    # -> config.tenant_context contextvar), so no TenantProvider injection is
+    # needed here; the service reads the bound enterprise at write time.
     case_service = create_case_service(
         case_repository,
         session_store,

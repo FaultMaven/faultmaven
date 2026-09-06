@@ -58,8 +58,9 @@ async def bootstrap_application(container: Any) -> None:
     # ============================================================
     # Step 2: Ensure Default Tenant (Single-Tenant Mode)
     # ============================================================
-    # Order: enterprise -> organization. Organization FK enterprise_id
-    # is NOT NULL, so the enterprise row must exist first.
+    # The enterprise is the tenant (ADR-017 D8). No organization is created:
+    # an organization is a billing target and nobody is billed for a
+    # self-hosted deployment, so ``organization_id`` on its rows stays NULL.
     tenant_provider = getattr(container, "tenant_provider", None)
     if tenant_provider is None:
         logger.warning(
@@ -82,19 +83,8 @@ async def bootstrap_application(container: Any) -> None:
                 logger.error(f"Failed to create default enterprise: {e}")
                 raise
 
-            logger.info("Single-tenant mode: Ensuring default organization exists")
-            try:
-                default_org = await tenant_provider.ensure_default_organization_exists()
-                logger.info(
-                    f"Default organization ready: {default_org.name} "
-                    f"(ID: {default_org.organization_id}, Tier: {default_org.plan_tier.value})"
-                )
-            except Exception as e:
-                logger.error(f"Failed to create default organization: {e}")
-                raise
-
-            # Order: organization -> team. The team FK organization_id is NOT
-            # NULL, so the default org must exist first.
+            # Order: enterprise -> team. The team FK enterprise_id is NOT NULL,
+            # so the default enterprise must exist first.
             logger.info("Single-tenant mode: Ensuring default team exists")
             try:
                 default_team = await tenant_provider.ensure_default_team_exists()
@@ -113,11 +103,11 @@ async def bootstrap_application(container: Any) -> None:
     # Step 3: Ensure Default Admin User (Single-Tenant Mode)
     # ============================================================
     # Must run after tenant bootstrap so the enterprise_id FK is valid. The
-    # default admin is the Standalone passwordless account scoped to the
-    # default organization — under multi-tenant there is no default org and
-    # identities come from the IdP, so creating it must not even be attempted
-    # (it would plant a passwordless admin in any Standalone org row that
-    # exists in the database, e.g. after a data migration).
+    # default admin is the Standalone passwordless account inside the default
+    # enterprise — under multi-tenant identities come from the IdP, so creating
+    # it must not even be attempted (it would plant a passwordless admin in the
+    # Standalone enterprise, which multi-tenant deployments still carry as the
+    # sentinel).
     if tenant_provider is not None and not isinstance(
         tenant_provider, SingleTenantProvider
     ):
