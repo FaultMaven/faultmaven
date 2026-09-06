@@ -46,7 +46,7 @@ from faultmaven.api.exception_handlers import (
 from faultmaven.api.v1.auth_dependencies import (
     get_current_user_id,
     get_current_user_optional,
-    require_actor_organization,
+    require_actor_enterprise,
     require_authentication,
 )
 from faultmaven.api.v1.dependencies import (
@@ -2125,11 +2125,11 @@ async def _auto_title_case_if_default(
       read against.
 
     The tenant needs no explicit re-binding here *because* of that placement: the
-    global ``bind_request_org_context`` dependency has already bound this
-    request's org in this task. Moving this off the request would silently break
-    that — ``get_current_org_id`` is total, answering the Standalone org for an
-    unbound context rather than failing, so a detached task would not raise, it
-    would quietly address the wrong tenant.
+    global ``bind_request_enterprise_context`` dependency has already bound this
+    request's enterprise in this task. Moving this off the request would silently
+    break that — ``get_current_enterprise_id`` is total, answering the Standalone
+    enterprise for an unbound context rather than failing, so a detached task
+    would not raise, it would quietly address the wrong tenant.
 
     Cost is bounded by construction: it returns immediately unless the title is
     still the placeholder, so a case is named at most once, and a case too thin to
@@ -4440,31 +4440,31 @@ async def extract_knowledge_from_case(
         # were wrong with that, and the store change turns the second from
         # cosmetic into fatal:
         #
-        # 1. The suggestion has to be stamped with the SAME organization the
-        #    review routes scope by, or the reviewer never sees it. Every
-        #    suggestion route — list, get, update, approve, reject, remediate —
-        #    resolves its predicate with ``require_actor_organization``, so
-        #    that is the value the write side owes them. The case's own org is
-        #    the same value on the success path (the case was just fetched
-        #    through the caller's own scoped read), which is exactly why
-        #    reading it off the case was never the SOURCE of the answer.
-        # 2. ``"default"`` is not an organization id. It was a silent
-        #    placeholder while the store was a dict keyed by nothing;
-        #    ``knowledge_suggestions.organization_id`` is a NOT NULL FK to
-        #    ``organizations`` with ``PRAGMA foreign_keys=ON``, so the same
-        #    fallback now fails the INSERT outright — and under PostgreSQL RLS
-        #    it would fail the policy's WITH CHECK as well, because the value
-        #    would not match the session's ``app.current_org_id``.
+        # 1. The suggestion has to be stamped with the SAME tenant the review
+        #    routes scope by, or the reviewer never sees it. Every suggestion
+        #    route — list, get, update, approve, reject, remediate — resolves
+        #    its predicate with ``require_actor_enterprise``, so that is the
+        #    value the write side owes them. The case's own enterprise is the
+        #    same value on the success path (the case was just fetched through
+        #    the caller's own scoped read), which is exactly why reading it off
+        #    the case was never the SOURCE of the answer.
+        # 2. ``"default"`` is not a tenant id. It was a silent placeholder while
+        #    the store was a dict keyed by nothing;
+        #    ``knowledge_suggestions.enterprise_id`` is a NOT NULL FK to
+        #    ``enterprises`` with ``PRAGMA foreign_keys=ON``, so the same
+        #    fallback fails the INSERT outright — and under PostgreSQL RLS it
+        #    would fail the policy's WITH CHECK as well, because the value would
+        #    not match the session's ``app.current_enterprise_id``.
         #
-        # ``require_actor_organization`` refuses with 403 rather than handing
-        # back a value to degrade with, which is the right answer: a request
-        # that owns no tenant has nowhere to put the extraction.
-        organization_id = require_actor_organization(current_user)
+        # ``require_actor_enterprise`` refuses with 403 rather than handing back
+        # a value to degrade with, which is the right answer: a request that
+        # owns no tenant has nowhere to put the extraction.
+        enterprise_id = require_actor_enterprise(current_user)
 
         # Extract knowledge
         suggestion = await suggestion_service.extract_knowledge_from_case(
             case_id=case_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             extracted_by=current_user.user_id,
             include_messages=include_messages,
             include_evidence=include_evidence,

@@ -14,10 +14,10 @@ Features:
 
 Tenancy posture: unlike the case repositories (whose reads ignore the org
 param and rely on PostgreSQL RLS alone, ADR-010), knowledge queries
-deliberately keep their per-query ``organization_id`` predicates on the
+deliberately keep their per-query ``enterprise_id`` predicates on the
 org-owned tiers (personal | team, ADR-011/ADR-013) — defense-in-depth on top
 of RLS. Do NOT remove them by analogy with the case module. Global-tier rows
-are the org-free platform corpus (#770): they carry NO organization_id
+are the org-free platform corpus (#770): they carry NO enterprise_id
 (``knowledge_items_global_org_check``) and are readable by every tenant on
 both paths — SQL via the org-free ``scope='global'`` visibility arm here plus
 the RLS read exemption (``knowledge_items_tenant_read``, migration 033), and
@@ -26,7 +26,7 @@ allowlist``, owner ids globally unique, share ids resolved from RLS-scoped
 SQL). Writes to the global tier are platform operations: RLS write policies
 confine them to single-tenant sentinel sessions or the audited BYPASSRLS
 maintenance path (``jobs/run.py kb_seed``), never tenant sessions. Methods
-below that take only an ``organization_id`` (counts / org listings /
+below that take only an ``enterprise_id`` (counts / org listings /
 text+tag search) are org-scoped queries that exclude the org-free platform
 tier; note they currently have NO production callers (the service uses only
 get/create/update/delete/list_for_inventory) — wire the global arm in
@@ -148,9 +148,9 @@ class KnowledgeItemRepository(ABC):
     # =========================================================================
 
     @abstractmethod
-    async def list_by_organization_id(
+    async def list_by_enterprise_id(
         self,
-        organization_id: str,
+        enterprise_id: str,
         item_type: Optional[KnowledgeItemType] = None,
         category: Optional[str] = None,
         is_published: bool = True,
@@ -160,7 +160,7 @@ class KnowledgeItemRepository(ABC):
         """List knowledge items with filtering and pagination.
 
         Args:
-            organization_id: Organization identifier
+            enterprise_id: Enterprise identifier
             item_type: Optional filter by item type
             category: Optional filter by category
             is_published: Filter by publication status (default True)
@@ -175,7 +175,7 @@ class KnowledgeItemRepository(ABC):
     @abstractmethod
     async def list_for_inventory(
         self,
-        organization_id: str,
+        enterprise_id: str,
         user_id: Optional[str] = None,
         team_ids: Optional[List[str]] = None,
         item_type: Optional[KnowledgeItemType] = None,
@@ -201,7 +201,7 @@ class KnowledgeItemRepository(ABC):
     async def get_visible_by_id(
         self,
         item_id: str,
-        organization_id: str,
+        enterprise_id: str,
         user_id: Optional[str] = None,
         team_ids: Optional[List[str]] = None,
     ) -> Optional[KnowledgeItem]:
@@ -226,7 +226,7 @@ class KnowledgeItemRepository(ABC):
     # title+content, and it had no caller: the two that look like callers pass
     # ``query_text``/``scope_filter``/``top_k``/``min_similarity`` to
     # ``RunbookKnowledgeBase.search_by_text``, a signature this one cannot
-    # accept. It was also stale against the schema — the ``organization_id``
+    # accept. It was also stale against the schema — the ``enterprise_id``
     # predicate carried no global arm, and global rows hold no org (#770), so
     # adopting it would have made every platform-tier runbook invisible, and it
     # saw none of the ``resource_shares`` team visibility ``list_for_inventory``
@@ -236,7 +236,7 @@ class KnowledgeItemRepository(ABC):
     @abstractmethod
     async def search_by_tags(
         self,
-        organization_id: str,
+        enterprise_id: str,
         tags: List[str],
         match_all: bool = False,
         limit: int = 50,
@@ -244,7 +244,7 @@ class KnowledgeItemRepository(ABC):
         """Search knowledge items by tags.
 
         Args:
-            organization_id: Organization identifier
+            enterprise_id: Enterprise identifier
             tags: List of tags to search for
             match_all: If True, item must have all tags. If False, any tag matches.
             limit: Maximum results to return
@@ -257,13 +257,13 @@ class KnowledgeItemRepository(ABC):
     @abstractmethod
     async def get_items_without_embeddings(
         self,
-        organization_id: str,
+        enterprise_id: str,
         limit: int = 100,
     ) -> List[KnowledgeItem]:
         """Get items that need embedding generation.
 
         Args:
-            organization_id: Organization identifier
+            enterprise_id: Enterprise identifier
             limit: Maximum results to return
 
         Returns:
@@ -272,15 +272,15 @@ class KnowledgeItemRepository(ABC):
         pass
 
     @abstractmethod
-    async def count_by_organization_id(
+    async def count_by_enterprise_id(
         self,
-        organization_id: str,
+        enterprise_id: str,
         item_type: Optional[KnowledgeItemType] = None,
     ) -> int:
-        """Count knowledge items for an organization.
+        """Count knowledge items for an enterprise.
 
         Args:
-            organization_id: Organization identifier
+            enterprise_id: Enterprise identifier
             item_type: Optional filter by item type
 
         Returns:
@@ -291,7 +291,7 @@ class KnowledgeItemRepository(ABC):
     @abstractmethod
     async def get_most_helpful(
         self,
-        organization_id: str,
+        enterprise_id: str,
         limit: int = 10,
     ) -> List[KnowledgeItem]:
         """Get most helpful items sorted by helpfulness score.
@@ -299,7 +299,7 @@ class KnowledgeItemRepository(ABC):
         Only includes items with at least some feedback (minimum threshold).
 
         Args:
-            organization_id: Organization identifier
+            enterprise_id: Enterprise identifier
             limit: Maximum results to return
 
         Returns:
@@ -335,7 +335,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             # directly. embedding_vector is a plain Text column → JSON-encode.
             item_model = KnowledgeItemModel(
                 item_id=item.item_id,
-                organization_id=item.organization_id,
+                enterprise_id=item.enterprise_id,
                 scope=item.scope.value,
                 owner_id=item.owner_id,
                 title=item.title,
@@ -503,9 +503,9 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
     # Query Operations
     # =========================================================================
 
-    async def list_by_organization_id(
+    async def list_by_enterprise_id(
         self,
-        organization_id: str,
+        enterprise_id: str,
         item_type: Optional[KnowledgeItemType] = None,
         category: Optional[str] = None,
         is_published: bool = True,
@@ -516,7 +516,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         try:
             # Build query conditions
             conditions = [
-                KnowledgeItemModel.organization_id == organization_id,
+                KnowledgeItemModel.enterprise_id == enterprise_id,
                 KnowledgeItemModel.is_published == is_published,
             ]
             if item_type:
@@ -540,16 +540,14 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             return [self._to_domain(model) for model in item_models]
 
         except Exception as e:
-            logger.error(
-                f"Failed to list items for organization {organization_id}: {e}"
-            )
+            logger.error(f"Failed to list items for enterprise {enterprise_id}: {e}")
             raise KnowledgeItemRepositoryException(
-                f"Failed to list items for organization {organization_id}: {e}"
+                f"Failed to list items for enterprise {enterprise_id}: {e}"
             ) from e
 
     @staticmethod
     def _inventory_visibility_clause(
-        organization_id: str,
+        enterprise_id: str,
         user_id: Optional[str],
         team_ids: Optional[List[str]],
     ):
@@ -560,13 +558,13 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         and the vector path's id resolver
         (``IShareRepository.list_resource_ids``, reached via
         ``resolve_shared_kb_ids``) apply the same
-        ``resource_shares.organization_id == organization_id`` predicate, so a
+        ``resource_shares.enterprise_id == enterprise_id`` predicate, so a
         share row stamped with a foreign org grants visibility on neither
         surface. The visibility rule is
         ``global`` (the org-free platform tier, visible to every tenant — #770)
         ∪ own-org items the requester ``owns`` (an author always sees their own)
         ∪ own-org items ``shared to any of the requester's teams`` via
-        ``resource_shares``. The ``organization_id`` predicate guards only the
+        ``resource_shares``. The ``enterprise_id`` predicate guards only the
         org-owned arms (defense-in-depth on top of RLS for personal/team); the
         global arm is deliberately org-free — global rows carry no org
         (``knowledge_items_global_org_check``). The owner/team branches are
@@ -586,7 +584,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 # grants. Without it a row stamped with a foreign org id would
                 # grant visibility — the one arm of this clause that could
                 # reach across tenants on its own.
-                ResourceShareModel.organization_id == organization_id,
+                ResourceShareModel.enterprise_id == enterprise_id,
             )
             org_owned.append(KnowledgeItemModel.item_id.in_(shared_ids))
 
@@ -594,7 +592,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         if org_owned:
             visibility.append(
                 and_(
-                    KnowledgeItemModel.organization_id == organization_id,
+                    KnowledgeItemModel.enterprise_id == enterprise_id,
                     or_(*org_owned),
                 )
             )
@@ -602,7 +600,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
 
     async def list_for_inventory(
         self,
-        organization_id: str,
+        enterprise_id: str,
         user_id: Optional[str] = None,
         team_ids: Optional[List[str]] = None,
         item_type: Optional[KnowledgeItemType] = None,
@@ -611,7 +609,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         try:
             conditions = [
                 KnowledgeItemModel.is_published == True,  # noqa: E712
-                self._inventory_visibility_clause(organization_id, user_id, team_ids),
+                self._inventory_visibility_clause(enterprise_id, user_id, team_ids),
             ]
             if item_type:
                 conditions.append(KnowledgeItemModel.item_type == item_type.value)
@@ -627,16 +625,16 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
 
         except Exception as e:
             logger.error(
-                f"Failed to list inventory for organization {organization_id}: {e}"
+                f"Failed to list inventory for enterprise {enterprise_id}: {e}"
             )
             raise KnowledgeItemRepositoryException(
-                f"Failed to list inventory for organization {organization_id}: {e}"
+                f"Failed to list inventory for enterprise {enterprise_id}: {e}"
             ) from e
 
     async def get_visible_by_id(
         self,
         item_id: str,
-        organization_id: str,
+        enterprise_id: str,
         user_id: Optional[str] = None,
         team_ids: Optional[List[str]] = None,
     ) -> Optional[KnowledgeItem]:
@@ -662,9 +660,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             stmt = select(KnowledgeItemModel).where(
                 and_(
                     KnowledgeItemModel.item_id == item_id,
-                    self._inventory_visibility_clause(
-                        organization_id, user_id, team_ids
-                    ),
+                    self._inventory_visibility_clause(enterprise_id, user_id, team_ids),
                     or_(*published_or_mine),
                 )
             )
@@ -684,7 +680,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
 
     async def search_by_tags(
         self,
-        organization_id: str,
+        enterprise_id: str,
         tags: List[str],
         match_all: bool = False,
         limit: int = 50,
@@ -698,12 +694,12 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             if not tags:
                 return []
 
-            # Fetch published items for organization
+            # Fetch published items for the enterprise
             stmt = (
                 select(KnowledgeItemModel)
                 .where(
                     and_(
-                        KnowledgeItemModel.organization_id == organization_id,
+                        KnowledgeItemModel.enterprise_id == enterprise_id,
                         KnowledgeItemModel.is_published == True,
                     )
                 )
@@ -731,15 +727,15 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
 
         except Exception as e:
             logger.error(
-                f"Failed to search by tags for organization {organization_id}: {e}"
+                f"Failed to search by tags for enterprise {enterprise_id}: {e}"
             )
             raise KnowledgeItemRepositoryException(
-                f"Failed to search by tags for organization {organization_id}: {e}"
+                f"Failed to search by tags for enterprise {enterprise_id}: {e}"
             ) from e
 
     async def get_items_without_embeddings(
         self,
-        organization_id: str,
+        enterprise_id: str,
         limit: int = 100,
     ) -> List[KnowledgeItem]:
         """Get items that need embedding generation."""
@@ -748,7 +744,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 select(KnowledgeItemModel)
                 .where(
                     and_(
-                        KnowledgeItemModel.organization_id == organization_id,
+                        KnowledgeItemModel.enterprise_id == enterprise_id,
                         KnowledgeItemModel.is_published == True,
                         or_(
                             KnowledgeItemModel.embedding_vector == None,
@@ -768,20 +764,20 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
 
         except Exception as e:
             logger.error(
-                f"Failed to get items without embeddings for organization {organization_id}: {e}"
+                f"Failed to get items without embeddings for enterprise {enterprise_id}: {e}"
             )
             raise KnowledgeItemRepositoryException(
                 f"Failed to get items without embeddings: {e}"
             ) from e
 
-    async def count_by_organization_id(
+    async def count_by_enterprise_id(
         self,
-        organization_id: str,
+        enterprise_id: str,
         item_type: Optional[KnowledgeItemType] = None,
     ) -> int:
-        """Count knowledge items for an organization."""
+        """Count knowledge items for an enterprise."""
         try:
-            conditions = [KnowledgeItemModel.organization_id == organization_id]
+            conditions = [KnowledgeItemModel.enterprise_id == enterprise_id]
             if item_type:
                 conditions.append(KnowledgeItemModel.item_type == item_type.value)
 
@@ -794,16 +790,14 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             return result.scalar() or 0
 
         except Exception as e:
-            logger.error(
-                f"Failed to count items for organization {organization_id}: {e}"
-            )
+            logger.error(f"Failed to count items for enterprise {enterprise_id}: {e}")
             raise KnowledgeItemRepositoryException(
-                f"Failed to count items for organization {organization_id}: {e}"
+                f"Failed to count items for enterprise {enterprise_id}: {e}"
             ) from e
 
     async def get_most_helpful(
         self,
-        organization_id: str,
+        enterprise_id: str,
         limit: int = 10,
     ) -> List[KnowledgeItem]:
         """Get most helpful items sorted by helpfulness score.
@@ -814,7 +808,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             # Fetch all published items with enough feedback
             stmt = select(KnowledgeItemModel).where(
                 and_(
-                    KnowledgeItemModel.organization_id == organization_id,
+                    KnowledgeItemModel.enterprise_id == enterprise_id,
                     KnowledgeItemModel.is_published == True,
                     (
                         KnowledgeItemModel.helpful_count
@@ -835,7 +829,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
 
         except Exception as e:
             logger.error(
-                f"Failed to get most helpful items for organization {organization_id}: {e}"
+                f"Failed to get most helpful items for enterprise {enterprise_id}: {e}"
             )
             raise KnowledgeItemRepositoryException(
                 f"Failed to get most helpful items: {e}"
@@ -857,7 +851,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
 
         return KnowledgeItem(
             item_id=model.item_id,
-            organization_id=model.organization_id,
+            enterprise_id=model.enterprise_id,
             # Coerce the DB-side string into the typed enum at the boundary.
             # KnowledgeItem.scope is now strongly typed; raw strings would
             # raise from __post_init__.
@@ -970,9 +964,9 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
     # Query Operations
     # =========================================================================
 
-    async def list_by_organization_id(
+    async def list_by_enterprise_id(
         self,
-        organization_id: str,
+        enterprise_id: str,
         item_type: Optional[KnowledgeItemType] = None,
         category: Optional[str] = None,
         is_published: bool = True,
@@ -983,7 +977,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         items = [
             i
             for i in self._items.values()
-            if i.organization_id == organization_id and i.is_published == is_published
+            if i.enterprise_id == enterprise_id and i.is_published == is_published
         ]
 
         if item_type:
@@ -1001,7 +995,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         return [deepcopy(i) for i in paginated]
 
     @staticmethod
-    def _inventory_visible(item, organization_id, user_id) -> bool:
+    def _inventory_visible(item, enterprise_id, user_id) -> bool:
         scope = item.scope.value if hasattr(item.scope, "value") else str(item.scope)
         if scope == "global":
             # Org-free platform tier (#770) — visible regardless of caller org.
@@ -1010,14 +1004,14 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         # the share table (resource_shares), which this in-memory fallback does
         # not model — team-shared items authored by others are not surfaced here.
         return (
-            item.organization_id == organization_id
+            item.enterprise_id == enterprise_id
             and bool(user_id)
             and item.owner_id == user_id
         )
 
     async def list_for_inventory(
         self,
-        organization_id: str,
+        enterprise_id: str,
         user_id: Optional[str] = None,
         team_ids: Optional[List[str]] = None,
         item_type: Optional[KnowledgeItemType] = None,
@@ -1033,7 +1027,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
             for i in self._items.values()
             if i.is_published
             and (item_type is None or i.item_type == item_type)
-            and self._inventory_visible(i, organization_id, user_id)
+            and self._inventory_visible(i, enterprise_id, user_id)
         ]
         items.sort(key=lambda x: x.created_at, reverse=True)
         return [deepcopy(i) for i in items]
@@ -1041,7 +1035,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
     async def get_visible_by_id(
         self,
         item_id: str,
-        organization_id: str,
+        enterprise_id: str,
         user_id: Optional[str] = None,
         team_ids: Optional[List[str]] = None,
     ) -> Optional[KnowledgeItem]:
@@ -1056,7 +1050,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         own — unpublish is the delete semantics for built-in global runbooks.
         """
         item = self._items.get(item_id)
-        if item is None or not self._inventory_visible(item, organization_id, user_id):
+        if item is None or not self._inventory_visible(item, enterprise_id, user_id):
             return None
         if not item.is_published and not (user_id and item.owner_id == user_id):
             return None
@@ -1064,7 +1058,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
 
     async def search_by_tags(
         self,
-        organization_id: str,
+        enterprise_id: str,
         tags: List[str],
         match_all: bool = False,
         limit: int = 50,
@@ -1075,7 +1069,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
 
         matching_items = []
         for item in self._items.values():
-            if item.organization_id != organization_id or not item.is_published:
+            if item.enterprise_id != enterprise_id or not item.is_published:
                 continue
 
             if match_all:
@@ -1092,7 +1086,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
 
     async def get_items_without_embeddings(
         self,
-        organization_id: str,
+        enterprise_id: str,
         limit: int = 100,
     ) -> List[KnowledgeItem]:
         """Get items that need embedding generation."""
@@ -1100,7 +1094,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
             i
             for i in self._items.values()
             if (
-                i.organization_id == organization_id
+                i.enterprise_id == enterprise_id
                 and i.is_published
                 and not i.has_embedding()
             )
@@ -1111,15 +1105,13 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
 
         return [deepcopy(i) for i in items[:limit]]
 
-    async def count_by_organization_id(
+    async def count_by_enterprise_id(
         self,
-        organization_id: str,
+        enterprise_id: str,
         item_type: Optional[KnowledgeItemType] = None,
     ) -> int:
-        """Count knowledge items for an organization."""
-        items = [
-            i for i in self._items.values() if i.organization_id == organization_id
-        ]
+        """Count knowledge items for an enterprise."""
+        items = [i for i in self._items.values() if i.enterprise_id == enterprise_id]
 
         if item_type:
             items = [i for i in items if i.item_type == item_type]
@@ -1128,7 +1120,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
 
     async def get_most_helpful(
         self,
-        organization_id: str,
+        enterprise_id: str,
         limit: int = 10,
     ) -> List[KnowledgeItem]:
         """Get most helpful items sorted by helpfulness score."""
@@ -1136,7 +1128,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
             i
             for i in self._items.values()
             if (
-                i.organization_id == organization_id
+                i.enterprise_id == enterprise_id
                 and i.is_published
                 and i.get_total_feedback() >= self.MIN_FEEDBACK_THRESHOLD
             )
@@ -1155,8 +1147,8 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         """Clear all data (for testing)."""
         self._items.clear()
 
-    def delete_items_for_organization(self, organization_id: str) -> int:
-        """Delete all items for an organization.
+    def delete_items_for_enterprise(self, enterprise_id: str) -> int:
+        """Delete all items for an enterprise.
 
         Returns:
             Number of items deleted
@@ -1164,7 +1156,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         to_delete = [
             item_id
             for item_id, item in self._items.items()
-            if item.organization_id == organization_id
+            if item.enterprise_id == enterprise_id
         ]
 
         for item_id in to_delete:

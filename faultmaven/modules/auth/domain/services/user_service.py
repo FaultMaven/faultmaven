@@ -203,7 +203,7 @@ class UserService(BaseService):
         self,
         *,
         user_id: str,
-        organization_id: str,
+        enterprise_id: str,
         admin_user_id: str,
         event_type: Any,
         role: str,
@@ -213,9 +213,9 @@ class UserService(BaseService):
 
         Org-scoped role changes belong here rather than in
         ``operator_access_audit``: they are tenant-bounded, and
-        ``organization_id`` is the caller's own org, which the tenant middleware
-        has already bound for this request — so the row satisfies the RLS
-        policy's implicit WITH CHECK (migration 018 declares only ``USING``,
+        ``enterprise_id`` is the caller's own enterprise, which the tenant
+        middleware has already bound for this request — so the row satisfies the
+        RLS policy's implicit WITH CHECK (the policy declares only ``USING``,
         which PostgreSQL then applies to INSERT as well). Deployment-scoped
         ``platform_admin`` grants cannot use this table for exactly that reason
         and are recorded by the operator-role CLIs instead.
@@ -243,7 +243,7 @@ class UserService(BaseService):
                 event_category=AuditCategory.AUTHORIZATION,
                 resource_type="user",
                 resource_id=user_id,
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
                 details={
                     "role": role,
                     "changed_by": admin_user_id,
@@ -777,7 +777,7 @@ class UserService(BaseService):
     async def deactivate_user_admin(
         self,
         user_id: str,
-        organization_id: str,
+        enterprise_id: str,
         admin_user_id: str,
     ) -> RepositoryUser:
         """Deactivate user account (admin-only, soft delete)."""
@@ -813,7 +813,7 @@ class UserService(BaseService):
     async def activate_user_admin(
         self,
         user_id: str,
-        organization_id: str,
+        enterprise_id: str,
         admin_user_id: str,
     ) -> RepositoryUser:
         """Reactivate user account (admin-only)."""
@@ -853,7 +853,7 @@ class UserService(BaseService):
 
     async def list_users(
         self,
-        organization_id: Optional[str] = None,
+        enterprise_id: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
         is_active: Optional[bool] = None,
@@ -864,7 +864,7 @@ class UserService(BaseService):
         """List users with pagination and optional filtering.
 
         Args:
-            organization_id: Organization context for scoping (not yet enforced in in-memory repo)
+            enterprise_id: Enterprise context for scoping (not yet enforced in in-memory repo)
             limit: Maximum results
             offset: Pagination offset
             is_active: Filter by active status
@@ -872,7 +872,7 @@ class UserService(BaseService):
             search: Search by email or name (case-insensitive) - TASK-019
             restrict_to_user_ids: The only users the caller may see, or ``None``
                 for no restriction. This is the tenant predicate the operator
-                surface resolves from ``organization_members``
+                surface resolves from ``users.enterprise_id``
                 (``api/operator_user_scope``, #1318). It goes down to the
                 repository as a QUERY predicate rather than being applied to the
                 page this method fetches: the 1000-row window below is
@@ -881,7 +881,7 @@ class UserService(BaseService):
                 ``total`` a deployment-wide count and couples this listing to
                 rows the caller may not see — one that fails hydration takes it
                 down for everyone. An empty collection returns nothing rather
-                than everything. ``organization_id`` above remains a context
+                than everything. ``enterprise_id`` above remains a context
                 label the repository does not filter on; passing it does not
                 confine anything, which is why the confined caller passes this.
 
@@ -953,7 +953,7 @@ class UserService(BaseService):
         - metadata.login_count (if tracked)
         - metadata.failed_login_attempts (if tracked)
 
-        No ``organization_id``. This service reads ``users``, which carries no
+        No tenant argument. This service reads ``users``, which carries no
         organization column — affiliation lives in ``organization_members`` —
         so it cannot answer that question, and used to return the literal
         ``"org-default"`` instead. The caller that HAS resolved a tenant stamps
@@ -1000,7 +1000,7 @@ class UserService(BaseService):
         self,
         user_id: str,
         role: str,
-        organization_id: str,
+        enterprise_id: str,
         admin_user_id: str,
     ) -> RepositoryUser:
         """Assign an organization-scoped role to a user (TASK-019).
@@ -1015,7 +1015,7 @@ class UserService(BaseService):
         Args:
             user_id: Target user ID
             role: Org-scoped role to assign (admin, member, viewer)
-            organization_id: Organization context for authorization (required)
+            enterprise_id: Enterprise context for authorization (required)
             admin_user_id: Admin performing the action (cannot be same as user_id)
 
         Returns:
@@ -1075,7 +1075,7 @@ class UserService(BaseService):
 
         await self._audit_role_change(
             user_id=user_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             admin_user_id=admin_user_id,
             event_type=AuditEventType.ROLE_ASSIGNED,
             role=role,
@@ -1087,7 +1087,7 @@ class UserService(BaseService):
         self,
         user_id: str,
         role: str,
-        organization_id: str,
+        enterprise_id: str,
         admin_user_id: str,
     ) -> RepositoryUser:
         """Remove an organization-scoped role from a user (TASK-019).
@@ -1102,7 +1102,7 @@ class UserService(BaseService):
         Args:
             user_id: Target user ID
             role: Org-scoped role to remove (admin, member)
-            organization_id: Organization context for authorization (required)
+            enterprise_id: Enterprise context for authorization (required)
             admin_user_id: Admin performing the action (cannot be same as user_id)
 
         Returns:
@@ -1162,7 +1162,7 @@ class UserService(BaseService):
 
         await self._audit_role_change(
             user_id=user_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             admin_user_id=admin_user_id,
             event_type=AuditEventType.ROLE_REMOVED,
             role=role,

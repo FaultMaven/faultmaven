@@ -248,7 +248,7 @@ class SessionlessCaseRepository(CaseRepository):
     async def list(
         self,
         user_id: str | None = None,
-        organization_id: str | None = None,
+        enterprise_id: str | None = None,
         state: CaseState | None = None,
         limit: int = 50,
         offset: int = 0,
@@ -259,7 +259,7 @@ class SessionlessCaseRepository(CaseRepository):
     ) -> tuple[list[Case], int]:
         """List cases (filtered by user_id/state).
 
-        organization_id is forwarded but does NOT scope reads — multi-tenant
+        enterprise_id is forwarded but does NOT scope reads — multi-tenant
         isolation is PostgreSQL RLS (ADR-010); see the underlying repositories.
         ``shared_case_ids`` widens owner-only scope to ``owned ∪ shared`` (§D4);
         ``restrict_case_ids`` narrows to one team's shares (filter-by-team).
@@ -268,7 +268,7 @@ class SessionlessCaseRepository(CaseRepository):
             repo = get_repository_for_session(session)
             return await repo.list(
                 user_id,
-                organization_id,
+                enterprise_id,
                 state,
                 limit,
                 offset,
@@ -282,14 +282,14 @@ class SessionlessCaseRepository(CaseRepository):
         self,
         query: str,
         user_id: str | None = None,
-        organization_id: str | None = None,
+        enterprise_id: str | None = None,
         limit: int = 20,
         shared_case_ids: builtins.list[str] | None = None,
         restrict_case_ids: builtins.list[str] | None = None,
     ) -> tuple[builtins.list[Case], int]:
         """Search cases by text query (scoped by user_id).
 
-        organization_id is forwarded but does NOT scope reads — multi-tenant
+        enterprise_id is forwarded but does NOT scope reads — multi-tenant
         isolation is PostgreSQL RLS (ADR-010); see the underlying repositories.
         ``shared_case_ids`` widens owner-only scope to ``owned ∪ shared`` (§D4);
         ``restrict_case_ids`` narrows to one team's shares (filter-by-team).
@@ -299,7 +299,7 @@ class SessionlessCaseRepository(CaseRepository):
             return await repo.search(
                 query,
                 user_id,
-                organization_id,
+                enterprise_id,
                 limit,
                 shared_case_ids=shared_case_ids,
                 restrict_case_ids=restrict_case_ids,
@@ -362,12 +362,18 @@ class SessionlessCaseRepository(CaseRepository):
             return await repo.delete_uploaded_file(case_id, file_id)
 
     async def add_uploaded_file(
-        self, case_id: str, uploaded_file: "UploadedFile", organization_id: str
+        self,
+        case_id: str,
+        uploaded_file: "UploadedFile",
+        enterprise_id: str,
+        organization_id: Optional[str] = None,
     ) -> None:
         """Scoped commit of one uploaded_file row, outside the aggregate save."""
         async with get_db_session() as session:
             repo = get_repository_for_session(session)
-            return await repo.add_uploaded_file(case_id, uploaded_file, organization_id)
+            return await repo.add_uploaded_file(
+                case_id, uploaded_file, enterprise_id, organization_id
+            )
 
     async def get_analytics(self, case_id: str) -> dict[str, Any]:
         """Compute analytics for a case."""

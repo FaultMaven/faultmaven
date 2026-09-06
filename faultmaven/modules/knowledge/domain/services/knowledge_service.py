@@ -160,37 +160,37 @@ def build_kb_scope_filter(
 async def resolve_shared_kb_ids(
     share_repository: Optional[Any],
     team_ids: Optional[List[str]],
-    organization_id: Optional[str],
+    enterprise_id: Optional[str],
 ) -> List[str]:
     """Resolve the ``knowledge_item`` ids shared to any of ``team_ids``.
 
     The team arm of the visible-id allowlist (ADR-011 D3). Returns ``[]`` when
     there is no share repository (e.g. an in-memory fallback), the principal
-    belongs to no teams, or no organization is in hand — retrieval then
+    belongs to no teams, or no enterprise is in hand — retrieval then
     collapses to ``personal ∪ global``, which is the fail-closed outcome: the
     two remaining arms are keyed on the caller's own ids.
 
-    ``organization_id`` is the tenant the share row must itself be stamped
+    ``enterprise_id`` is the tenant the share row must itself be stamped
     with, matching the inventory clause's share sub-select. It is resolved
     through ``usable_tenant_id`` rather than used raw, because both callers hand
     over a value that can be the Standalone sentinel under
-    ``TENANT_PROVIDER=multi`` — ``MilestoneEngine`` passes ``case.organization_id``,
+    ``TENANT_PROVIDER=multi`` — ``MilestoneEngine`` passes ``case.enterprise_id``,
     which ``CaseService.create_case`` stamps from the *total*
-    ``get_current_org_id``, and ``KnowledgeService.search_documents`` passes the
+    ``get_current_enterprise_id``, and ``KnowledgeService.search_documents`` passes the
     requester's claim. Under multi the sentinel is not a tenant, so it must
     collapse the arm here rather than become the SQL predicate; under ``single``
     it is the deployment's one legitimate tenant and passes unchanged. This is
-    the same decision ``require_actor_organization`` refuses on and the case
+    the same decision ``require_actor_enterprise`` refuses on and the case
     read-allowlist arms degrade on — one predicate, three call sites.
     """
-    tenant_id = usable_tenant_id(organization_id)
+    tenant_id = usable_tenant_id(enterprise_id)
     if not share_repository or not team_ids or not tenant_id:
         return []
     return await share_repository.list_resource_ids(
         resource_type="knowledge_item",
         scope_type="team",
         scope_ids=list(team_ids),
-        organization_id=tenant_id,
+        enterprise_id=tenant_id,
     )
 
 
@@ -1279,18 +1279,19 @@ class KnowledgeService:
         resource_type: str,
         resource_id: str,
         team_id: str,
-        organization_id: str,
+        enterprise_id: str,
         created_by: Optional[str] = None,
     ) -> None:
         """Record a team share for a resource (idempotent), the source of truth
         for team visibility (ADR-013 §D4).
 
         No-ops when no share repository is wired (e.g. minimal/test wiring) —
-        team publishing is then inert. Cross-org sharing is structurally
-        impossible: the share carries the resource's own ``organization_id`` and
+        team publishing is then inert. Cross-ENTERPRISE sharing is structurally
+        impossible: the share carries the resource's own ``enterprise_id`` and
         the read allowlist only ever resolves teams the requester belongs to
-        (within their RLS-isolated org), so a share to a foreign team is
-        unreachable. RLS is the backstop.
+        (within their RLS-isolated enterprise), so a share to a foreign team is
+        unreachable. RLS is the backstop. Sharing across ORGANIZATIONS inside one
+        enterprise is, by contrast, exactly what a team is for (ADR-017 D4).
         """
         if not self._share_repo:
             logger.debug(
@@ -1304,7 +1305,7 @@ class KnowledgeService:
             resource_id=resource_id,
             scope_type="team",
             scope_id=team_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             created_by=created_by,
         )
 
@@ -1313,7 +1314,7 @@ class KnowledgeService:
         document_id: str,
         title: str,
         content: str,
-        organization_id: str,
+        enterprise_id: str,
         scope: str,
         document_type: str = "runbook",
         tags: Optional[List[str]] = None,
@@ -1336,9 +1337,9 @@ class KnowledgeService:
         Args:
             document_id: Stable id used for both the relational row and the
                 ChromaDB document.
-            organization_id: Owning org for the org-owned tiers (personal/team).
+            enterprise_id: Owning org for the org-owned tiers (personal/team).
                 Ignored for global scope — global rows are the org-free
-                platform tier (#770) and are stored with organization_id NULL.
+                platform tier (#770) and are stored with enterprise_id NULL.
             scope: REQUIRED knowledge tier — ``global`` | ``team`` |
                 ``personal``. No default (#1166): ``global`` is the platform
                 corpus every tenant reads, so publishing into it must be a
@@ -1399,12 +1400,12 @@ class KnowledgeService:
         item = KnowledgeItem(
             item_id=document_id,
             # Global scope is the org-free platform tier (#770): the row carries
-            # NO organization_id (knowledge_items_global_org_check). Org-owned
+            # NO enterprise_id (knowledge_items_global_org_check). Org-owned
             # tiers (personal/team) keep the caller's org.
-            organization_id=(
+            enterprise_id=(
                 None
                 if KnowledgeScope(scope) == KnowledgeScope.GLOBAL
-                else organization_id
+                else enterprise_id
             ),
             title=title,
             content=content,
@@ -1439,15 +1440,16 @@ class KnowledgeService:
             await repo.create(item)
 
         # Team publish: record visibility in the share table (source of truth,
-        # ADR-013 §D4). The scope enum stays 'team' ⟺ ≥1 share row. Cross-org
-        # shares are impossible by construction — the share carries the item's
-        # own organization_id (a team belongs to exactly one org).
+        # ADR-013 §D4). The scope enum stays 'team' ⟺ ≥1 share row.
+        # Cross-ENTERPRISE shares are impossible by construction — the share
+        # carries the item's own enterprise_id, and a team belongs to exactly one
+        # enterprise. Cross-organization shares inside it are the point.
         if scope == KnowledgeScope.TEAM.value and team_id:
             await self._create_team_share(
                 resource_type="knowledge_item",
                 resource_id=document_id,
                 team_id=team_id,
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
                 created_by=owner_id or verified_by,
             )
 
@@ -1676,14 +1678,14 @@ class KnowledgeService:
             tags_list: Optional[List[str]] = list(tags) if tags else None
 
             # Both conversion_jobs / uploaded_files / knowledge_items require
-            # organization_id NOT NULL — fall back to the single-tenant
-            # default when no explicit org is in scope. Resolved before the
+            # enterprise_id NOT NULL — fall back to the single-tenant default
+            # when no explicit enterprise is in scope. Resolved before the
             # session block because ingest_runbook below needs it too.
             from faultmaven.providers.tenancy.single_tenant import (
                 SingleTenantProvider,
             )
 
-            org_id = SingleTenantProvider.DEFAULT_ORG_ID
+            enterprise_id = SingleTenantProvider.DEFAULT_ENTERPRISE_ID
 
             # Create SQLite record (synthetic draft, immediately verified)
             from faultmaven.infrastructure.persistence.models import (
@@ -1750,7 +1752,7 @@ class KnowledgeService:
                 source_file_id = f"file_{_uuid.uuid4().hex[:12]}"
                 upload = UploadedFileModel(
                     file_id=source_file_id,
-                    organization_id=org_id,
+                    enterprise_id=enterprise_id,
                     case_id=None,  # KB-bound, not case-bound
                     uploaded_by=owner_id,
                     filename=filename,
@@ -1766,7 +1768,7 @@ class KnowledgeService:
                 job = ConversionJobModel(
                     id=conversion_id,
                     user_id=owner_id,  # NULL if anonymous; FK SET NULL
-                    organization_id=org_id,
+                    enterprise_id=enterprise_id,
                     scope=scope,
                     status="completed",
                     source_file_id=source_file_id,
@@ -1780,7 +1782,7 @@ class KnowledgeService:
 
                 draft = ConversionDraftModel(
                     id=draft_id,
-                    organization_id=org_id,
+                    enterprise_id=enterprise_id,
                     conversion_id=conversion_id,
                     runbook_id=document_id,
                     title=title,
@@ -1809,7 +1811,7 @@ class KnowledgeService:
                 document_id=document_id,
                 title=title,
                 content=content,
-                organization_id=org_id,
+                enterprise_id=enterprise_id,
                 document_type=document_type,
                 tags=tags,
                 source_url=source_url,
@@ -1875,9 +1877,9 @@ class KnowledgeService:
                 SingleTenantProvider,
             )
 
-            organization_id = (
-                getattr(user, "organization_id", None)
-                or SingleTenantProvider.DEFAULT_ORG_ID
+            enterprise_id = (
+                getattr(user, "enterprise_id", None)
+                or SingleTenantProvider.DEFAULT_ENTERPRISE_ID
             )
             user_id = getattr(user, "user_id", None) if user else None
 
@@ -1908,7 +1910,7 @@ class KnowledgeService:
             async with self._db_session_factory() as session:
                 repo = DatabaseKnowledgeItemRepository(session)
                 items = await repo.list_for_inventory(
-                    organization_id=organization_id,
+                    enterprise_id=enterprise_id,
                     user_id=user_id,
                     team_ids=team_ids,
                     item_type=item_type,
@@ -2072,7 +2074,7 @@ class KnowledgeService:
 
         The actor-facing counterpart of :meth:`get_document`: RBAC is enforced
         in-query by ``get_visible_by_id`` (global ∪ own-org owned ∪ own-org
-        shared-to-my-teams), and ``organization_id`` is sourced exactly as
+        shared-to-my-teams), and ``enterprise_id`` is sourced exactly as
         ``list_documents`` sources it. Returns None both for an absent id and
         for one the requester cannot see, so callers cannot distinguish the
         two.
@@ -2093,9 +2095,9 @@ class KnowledgeService:
                 SingleTenantProvider,
             )
 
-            organization_id = (
-                getattr(user, "organization_id", None)
-                or SingleTenantProvider.DEFAULT_ORG_ID
+            enterprise_id = (
+                getattr(user, "enterprise_id", None)
+                or SingleTenantProvider.DEFAULT_ENTERPRISE_ID
             )
             user_id = getattr(user, "user_id", None) if user else None
 
@@ -2103,7 +2105,7 @@ class KnowledgeService:
                 repo = DatabaseKnowledgeItemRepository(session)
                 item = await repo.get_visible_by_id(
                     document_id,
-                    organization_id=organization_id,
+                    enterprise_id=enterprise_id,
                     user_id=user_id,
                     team_ids=team_ids,
                 )
@@ -2334,7 +2336,7 @@ class KnowledgeService:
             shared_ids = await resolve_shared_kb_ids(
                 self._share_repo,
                 team_ids,
-                getattr(user, "organization_id", None) if user else None,
+                getattr(user, "enterprise_id", None) if user else None,
             )
             scope_filter: Dict[str, Any] = build_kb_scope_filter(user_id, shared_ids)
 
@@ -2446,7 +2448,7 @@ class KnowledgeService:
         ever score titles; going to the repository directly gains both with
         identical tenant isolation — same function, same arguments, no extra
         query. It deliberately does NOT use
-        ``KnowledgeItemRepository.search_by_text``, whose ``organization_id``
+        ``KnowledgeItemRepository.search_by_text``, whose ``enterprise_id``
         predicate carries no global arm and would therefore drop every
         platform-tier runbook (global rows hold no org — #770).
 
@@ -2473,9 +2475,9 @@ class KnowledgeService:
         from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
         try:
-            organization_id = (
-                getattr(user, "organization_id", None)
-                or SingleTenantProvider.DEFAULT_ORG_ID
+            enterprise_id = (
+                getattr(user, "enterprise_id", None)
+                or SingleTenantProvider.DEFAULT_ENTERPRISE_ID
             )
             user_id = getattr(user, "user_id", None) if user else None
             may_read_content = _may_read_document_content(user)
@@ -2495,7 +2497,7 @@ class KnowledgeService:
             async with self._db_session_factory() as session:
                 repo = DatabaseKnowledgeItemRepository(session)
                 items = await repo.list_for_inventory(
-                    organization_id=organization_id,
+                    enterprise_id=enterprise_id,
                     user_id=user_id,
                     team_ids=team_ids,
                     item_type=item_type,

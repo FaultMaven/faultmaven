@@ -7,7 +7,7 @@ and domain repositories for investigation session management. It handles:
 - Session lifecycle management (create, pause, resume, complete, abandon)
 - Token budget tracking and validation
 - Agent execution coordination within sessions
-- Authorization checks (organization ownership via parent case)
+- Authorization checks (enterprise ownership via parent case)
 - Audit logging
 
 Architecture:
@@ -45,7 +45,7 @@ class APIInvestigationSessionService(BaseService):
     """Service for API investigation session management operations.
 
     This service provides a clean API layer for investigation session management with:
-    - Organization-level authorization via parent case
+    - Enterprise-level authorization via parent case
     - Session lifecycle management (active, paused, completed, abandoned)
     - Token budget tracking and enforcement
     - Agent execution linking and coordination
@@ -78,31 +78,31 @@ class APIInvestigationSessionService(BaseService):
     async def _verify_case_authorization(
         self,
         case_id: str,
-        organization_id: str,
+        enterprise_id: str,
     ) -> None:
-        """Verify that the organization owns the case.
+        """Verify that the enterprise owns the case.
 
         Args:
             case_id: Case ID to check
-            organization_id: Organization ID to verify
+            enterprise_id: Enterprise ID to verify
 
         Raises:
             NotFoundError: If case not found
-            AuthorizationError: If organization doesn't own case
+            AuthorizationError: If enterprise doesn't own case
         """
         case = await self.case_repo.get(case_id)
         if not case:
             raise NotFoundError("Case", case_id)
 
-        if case.organization_id != organization_id:
+        if case.enterprise_id != enterprise_id:
             raise AuthorizationError(
-                f"Case {case_id} not accessible by organization {organization_id}"
+                f"Case {case_id} not accessible by enterprise {enterprise_id}"
             )
 
     async def _get_session_with_authorization(
         self,
         session_id: str,
-        organization_id: str,
+        enterprise_id: str,
         case_id: str,
     ) -> InvestigationSession:
         """Get session and verify authorization via parent case.
@@ -117,7 +117,7 @@ class APIInvestigationSessionService(BaseService):
 
         Args:
             session_id: Session ID
-            organization_id: Organization ID for authorization
+            enterprise_id: Enterprise ID for authorization
             case_id: Case the session must belong to
 
         Returns:
@@ -125,7 +125,7 @@ class APIInvestigationSessionService(BaseService):
 
         Raises:
             NotFoundError: If the session is not found or is not in ``case_id``
-            AuthorizationError: If organization doesn't own parent case
+            AuthorizationError: If enterprise doesn't own parent case
         """
         session = await self.session_repo.get_by_id(session_id)
         if not session:
@@ -142,9 +142,9 @@ class APIInvestigationSessionService(BaseService):
         if not case:
             raise NotFoundError("Case", session.case_id)
 
-        if case.organization_id != organization_id:
+        if case.enterprise_id != enterprise_id:
             raise AuthorizationError(
-                f"Session {session_id} not accessible by organization {organization_id}"
+                f"Session {session_id} not accessible by enterprise {enterprise_id}"
             )
 
         return session
@@ -156,7 +156,7 @@ class APIInvestigationSessionService(BaseService):
     async def create_session(
         self,
         case_id: str,
-        organization_id: str,
+        enterprise_id: str,
         user_id: str,
         session_goal: Optional[str] = None,
         token_budget_limit: Optional[int] = None,
@@ -165,7 +165,7 @@ class APIInvestigationSessionService(BaseService):
         """Create a new investigation session.
 
         Workflow:
-        1. Verify case exists and belongs to organization
+        1. Verify case exists and belongs to enterprise
         2. Check for existing active session (raise ConflictError if exists)
         3. Generate session_id
         4. Create session with state=ACTIVE
@@ -173,7 +173,7 @@ class APIInvestigationSessionService(BaseService):
 
         Args:
             case_id: Case to create session for
-            organization_id: Organization for authorization
+            enterprise_id: Enterprise for authorization
             user_id: User creating the session
             session_goal: Optional goal description
             token_budget_limit: Optional token spending limit
@@ -184,14 +184,14 @@ class APIInvestigationSessionService(BaseService):
 
         Raises:
             NotFoundError: If case not found
-            AuthorizationError: If organization doesn't own case
+            AuthorizationError: If enterprise doesn't own case
             ConflictError: If active session already exists for case
             ValidationException: If inputs invalid
         """
         self.log_operation(
             "create_session",
             case_id=case_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             user_id=user_id,
         )
 
@@ -202,8 +202,8 @@ class APIInvestigationSessionService(BaseService):
         if not user_id or not user_id.strip():
             raise ValidationException("user_id: User ID is required")
 
-        if not organization_id or not organization_id.strip():
-            raise ValidationException("organization_id: Organization ID is required")
+        if not enterprise_id or not enterprise_id.strip():
+            raise ValidationException("enterprise_id: Enterprise ID is required")
 
         if token_budget_limit is not None and token_budget_limit < 0:
             raise ValidationException(
@@ -213,11 +213,11 @@ class APIInvestigationSessionService(BaseService):
         # Trim inputs after validation
         case_id = case_id.strip()
         user_id = user_id.strip()
-        organization_id = organization_id.strip()
+        enterprise_id = enterprise_id.strip()
 
         try:
             # Verify case authorization
-            await self._verify_case_authorization(case_id, organization_id)
+            await self._verify_case_authorization(case_id, enterprise_id)
 
             # Check for existing active session
             active_session = await self.session_repo.get_active_session(case_id)
@@ -235,7 +235,7 @@ class APIInvestigationSessionService(BaseService):
                 session_id=f"session_{uuid4().hex[:12]}",
                 case_id=case_id,
                 user_id=user_id,
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
                 state=SessionState.ACTIVE,
                 started_at=now,
                 last_activity_at=now,
@@ -268,15 +268,15 @@ class APIInvestigationSessionService(BaseService):
     async def get_session(
         self,
         session_id: str,
-        organization_id: str,
+        enterprise_id: str,
     ) -> Optional[InvestigationSession]:
         """Get session by ID with authorization check.
 
-        Verifies organization owns the parent case.
+        Verifies enterprise owns the parent case.
 
         Args:
             session_id: Session ID to retrieve
-            organization_id: Organization for authorization
+            enterprise_id: Enterprise for authorization
 
         Returns:
             Session if found and authorized, None otherwise
@@ -284,7 +284,7 @@ class APIInvestigationSessionService(BaseService):
         self.log_operation(
             "get_session",
             session_id=session_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
         )
 
         if not session_id or not session_id.strip():
@@ -301,12 +301,12 @@ class APIInvestigationSessionService(BaseService):
             if not case:
                 return None
 
-            if case.organization_id != organization_id:
+            if case.enterprise_id != enterprise_id:
                 self.log_operation(
                     "get_session_unauthorized",
                     session_id=session_id,
-                    organization_id=organization_id,
-                    case_org_id=case.organization_id,
+                    enterprise_id=enterprise_id,
+                    case_enterprise_id=case.enterprise_id,
                 )
                 return None
 
@@ -314,14 +314,14 @@ class APIInvestigationSessionService(BaseService):
 
         except Exception as e:
             self.log_error(
-                "get_session", e, session_id=session_id, organization_id=organization_id
+                "get_session", e, session_id=session_id, enterprise_id=enterprise_id
             )
             return None
 
     async def update_session(
         self,
         session_id: str,
-        organization_id: str,
+        enterprise_id: str,
         updates: Dict[str, Any],
         *,
         case_id: str,
@@ -335,7 +335,7 @@ class APIInvestigationSessionService(BaseService):
 
         Args:
             session_id: Session ID to update
-            organization_id: Organization for authorization
+            enterprise_id: Enterprise for authorization
             updates: Fields to update
             case_id: Case the session must belong to
 
@@ -344,13 +344,13 @@ class APIInvestigationSessionService(BaseService):
 
         Raises:
             NotFoundError: If session not found
-            AuthorizationError: If organization doesn't own case
+            AuthorizationError: If enterprise doesn't own case
             ValidationException: If updates invalid
         """
         self.log_operation(
             "update_session",
             session_id=session_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             update_fields=list(updates.keys()) if updates else [],
         )
 
@@ -363,7 +363,7 @@ class APIInvestigationSessionService(BaseService):
         try:
             # Get session with authorization
             session = await self._get_session_with_authorization(
-                session_id, organization_id, case_id
+                session_id, enterprise_id, case_id
             )
 
             # Validate and apply updates
@@ -399,7 +399,7 @@ class APIInvestigationSessionService(BaseService):
             self.log_operation(
                 "update_session_success",
                 session_id=session_id,
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
             )
 
             return saved_session
@@ -411,7 +411,7 @@ class APIInvestigationSessionService(BaseService):
                 "update_session",
                 e,
                 session_id=session_id,
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
             )
             raise ServiceError(f"Failed to update session: {e}")
 
@@ -422,7 +422,7 @@ class APIInvestigationSessionService(BaseService):
     async def pause_session(
         self,
         session_id: str,
-        organization_id: str,
+        enterprise_id: str,
         *,
         case_id: str,
     ) -> InvestigationSession:
@@ -430,7 +430,7 @@ class APIInvestigationSessionService(BaseService):
 
         Args:
             session_id: Session ID to pause
-            organization_id: Organization for authorization
+            enterprise_id: Enterprise for authorization
             case_id: Case the session must belong to
 
         Returns:
@@ -438,18 +438,18 @@ class APIInvestigationSessionService(BaseService):
 
         Raises:
             NotFoundError: If session not found
-            AuthorizationError: If organization doesn't own case
+            AuthorizationError: If enterprise doesn't own case
             ValidationException: If session not active
         """
         self.log_operation(
             "pause_session",
             session_id=session_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
         )
 
         try:
             session = await self._get_session_with_authorization(
-                session_id, organization_id, case_id
+                session_id, enterprise_id, case_id
             )
 
             # Check if session is active
@@ -480,14 +480,14 @@ class APIInvestigationSessionService(BaseService):
                 "pause_session",
                 e,
                 session_id=session_id,
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
             )
             raise ServiceError(f"Failed to pause session: {e}")
 
     async def resume_session(
         self,
         session_id: str,
-        organization_id: str,
+        enterprise_id: str,
         *,
         case_id: str,
     ) -> InvestigationSession:
@@ -495,7 +495,7 @@ class APIInvestigationSessionService(BaseService):
 
         Args:
             session_id: Session ID to resume
-            organization_id: Organization for authorization
+            enterprise_id: Enterprise for authorization
             case_id: Case the session must belong to
 
         Returns:
@@ -503,18 +503,18 @@ class APIInvestigationSessionService(BaseService):
 
         Raises:
             NotFoundError: If session not found
-            AuthorizationError: If organization doesn't own case
+            AuthorizationError: If enterprise doesn't own case
             ValidationException: If session not paused
         """
         self.log_operation(
             "resume_session",
             session_id=session_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
         )
 
         try:
             session = await self._get_session_with_authorization(
-                session_id, organization_id, case_id
+                session_id, enterprise_id, case_id
             )
 
             # Check if session is paused
@@ -545,14 +545,14 @@ class APIInvestigationSessionService(BaseService):
                 "resume_session",
                 e,
                 session_id=session_id,
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
             )
             raise ServiceError(f"Failed to resume session: {e}")
 
     async def complete_session(
         self,
         session_id: str,
-        organization_id: str,
+        enterprise_id: str,
         findings_summary: str,
         *,
         case_id: str,
@@ -569,7 +569,7 @@ class APIInvestigationSessionService(BaseService):
 
         Args:
             session_id: Session ID to complete
-            organization_id: Organization for authorization
+            enterprise_id: Enterprise for authorization
             findings_summary: Summary of investigation findings
             case_id: Case the session must belong to
 
@@ -578,13 +578,13 @@ class APIInvestigationSessionService(BaseService):
 
         Raises:
             NotFoundError: If session not found
-            AuthorizationError: If organization doesn't own case
+            AuthorizationError: If enterprise doesn't own case
             ValidationException: If session already completed/abandoned or findings empty
         """
         self.log_operation(
             "complete_session",
             session_id=session_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
         )
 
         # Validate findings
@@ -595,7 +595,7 @@ class APIInvestigationSessionService(BaseService):
 
         try:
             session = await self._get_session_with_authorization(
-                session_id, organization_id, case_id
+                session_id, enterprise_id, case_id
             )
 
             # Check if session is already in terminal state
@@ -627,14 +627,14 @@ class APIInvestigationSessionService(BaseService):
                 "complete_session",
                 e,
                 session_id=session_id,
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
             )
             raise ServiceError(f"Failed to complete session: {e}")
 
     async def abandon_session(
         self,
         session_id: str,
-        organization_id: str,
+        enterprise_id: str,
         *,
         case_id: str,
     ) -> InvestigationSession:
@@ -642,7 +642,7 @@ class APIInvestigationSessionService(BaseService):
 
         Args:
             session_id: Session ID to abandon
-            organization_id: Organization for authorization
+            enterprise_id: Enterprise for authorization
             case_id: Case the session must belong to
 
         Returns:
@@ -650,18 +650,18 @@ class APIInvestigationSessionService(BaseService):
 
         Raises:
             NotFoundError: If session not found
-            AuthorizationError: If organization doesn't own case
+            AuthorizationError: If enterprise doesn't own case
             ValidationException: If session already completed
         """
         self.log_operation(
             "abandon_session",
             session_id=session_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
         )
 
         try:
             session = await self._get_session_with_authorization(
-                session_id, organization_id, case_id
+                session_id, enterprise_id, case_id
             )
 
             # Check if session is already in terminal state
@@ -692,7 +692,7 @@ class APIInvestigationSessionService(BaseService):
                 "abandon_session",
                 e,
                 session_id=session_id,
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
             )
             raise ServiceError(f"Failed to abandon session: {e}")
 
@@ -703,30 +703,30 @@ class APIInvestigationSessionService(BaseService):
     async def get_active_session(
         self,
         case_id: str,
-        organization_id: str,
+        enterprise_id: str,
     ) -> Optional[InvestigationSession]:
         """Get the currently active session for a case.
 
         Args:
             case_id: Case ID to get active session for
-            organization_id: Organization for authorization
+            enterprise_id: Enterprise for authorization
 
         Returns:
             Active session if found, None otherwise
 
         Raises:
             NotFoundError: If case not found
-            AuthorizationError: If organization doesn't own case
+            AuthorizationError: If enterprise doesn't own case
         """
         self.log_operation(
             "get_active_session",
             case_id=case_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
         )
 
         try:
             # Verify case authorization
-            await self._verify_case_authorization(case_id, organization_id)
+            await self._verify_case_authorization(case_id, enterprise_id)
 
             # Get active session
             session = await self.session_repo.get_active_session(case_id)
@@ -740,14 +740,14 @@ class APIInvestigationSessionService(BaseService):
                 "get_active_session",
                 e,
                 case_id=case_id,
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
             )
             return None
 
     async def list_sessions(
         self,
         case_id: str,
-        organization_id: str,
+        enterprise_id: str,
         state: Optional[SessionState] = None,
         limit: int = 50,
         offset: int = 0,
@@ -756,7 +756,7 @@ class APIInvestigationSessionService(BaseService):
 
         Args:
             case_id: Case ID to list sessions for
-            organization_id: Organization for authorization
+            enterprise_id: Enterprise for authorization
             state: Optional filter by status
             limit: Max results
             offset: Pagination offset
@@ -766,12 +766,12 @@ class APIInvestigationSessionService(BaseService):
 
         Raises:
             NotFoundError: If case not found
-            AuthorizationError: If organization doesn't own case
+            AuthorizationError: If enterprise doesn't own case
         """
         self.log_operation(
             "list_sessions",
             case_id=case_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             state=state.value if state else None,
             limit=limit,
             offset=offset,
@@ -779,7 +779,7 @@ class APIInvestigationSessionService(BaseService):
 
         try:
             # Verify case authorization
-            await self._verify_case_authorization(case_id, organization_id)
+            await self._verify_case_authorization(case_id, enterprise_id)
 
             # Get sessions from repository
             sessions = await self.session_repo.list_by_case_id(case_id, state=state)
@@ -800,14 +800,14 @@ class APIInvestigationSessionService(BaseService):
             raise
         except Exception as e:
             self.log_error(
-                "list_sessions", e, case_id=case_id, organization_id=organization_id
+                "list_sessions", e, case_id=case_id, enterprise_id=enterprise_id
             )
             return []
 
     async def check_budget_exceeded(
         self,
         session_id: str,
-        organization_id: str,
+        enterprise_id: str,
         *,
         case_id: str,
     ) -> Dict[str, Any]:
@@ -815,7 +815,7 @@ class APIInvestigationSessionService(BaseService):
 
         Args:
             session_id: Session ID
-            organization_id: Organization for authorization
+            enterprise_id: Enterprise for authorization
             case_id: Case the session must belong to
 
         Returns:
@@ -827,17 +827,17 @@ class APIInvestigationSessionService(BaseService):
 
         Raises:
             NotFoundError: If session not found
-            AuthorizationError: If organization doesn't own case
+            AuthorizationError: If enterprise doesn't own case
         """
         self.log_operation(
             "check_budget_exceeded",
             session_id=session_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
         )
 
         try:
             session = await self._get_session_with_authorization(
-                session_id, organization_id, case_id
+                session_id, enterprise_id, case_id
             )
 
             is_over_budget = session.is_over_budget()
@@ -866,7 +866,7 @@ class APIInvestigationSessionService(BaseService):
                 "check_budget_exceeded",
                 e,
                 session_id=session_id,
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
             )
             raise ServiceError(f"Failed to check budget state: {e}")
 
@@ -877,7 +877,7 @@ class APIInvestigationSessionService(BaseService):
     async def get_session_statistics(
         self,
         case_id: str,
-        organization_id: str,
+        enterprise_id: str,
     ) -> Dict[str, Any]:
         """Get session statistics for a case.
 
@@ -892,12 +892,12 @@ class APIInvestigationSessionService(BaseService):
         self.log_operation(
             "get_session_statistics",
             case_id=case_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
         )
 
         try:
             # Verify case authorization
-            await self._verify_case_authorization(case_id, organization_id)
+            await self._verify_case_authorization(case_id, enterprise_id)
 
             # Get all sessions for case
             sessions = await self.session_repo.list_by_case_id(case_id)
@@ -935,7 +935,7 @@ class APIInvestigationSessionService(BaseService):
                 "total_agent_executions_all_sessions": total_agent_executions,
                 "avg_session_duration_ms": avg_session_duration_ms,
                 "case_id": case_id,
-                "organization_id": organization_id,
+                "enterprise_id": enterprise_id,
                 "computed_at": datetime.now(timezone.utc).isoformat(),
             }
 
@@ -954,7 +954,7 @@ class APIInvestigationSessionService(BaseService):
                 "get_session_statistics",
                 e,
                 case_id=case_id,
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
             )
             return {
                 "total_sessions": 0,
@@ -963,6 +963,6 @@ class APIInvestigationSessionService(BaseService):
                 "total_agent_executions_all_sessions": 0,
                 "avg_session_duration_ms": 0,
                 "case_id": case_id,
-                "organization_id": organization_id,
+                "enterprise_id": enterprise_id,
                 "error": str(e),
             }

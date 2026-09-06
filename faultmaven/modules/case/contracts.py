@@ -114,7 +114,7 @@ class ICaseRepository(Protocol):
     async def list(
         self,
         user_id: Optional[str] = None,
-        organization_id: Optional[str] = None,
+        enterprise_id: Optional[str] = None,
         state: Optional["CaseState"] = None,
         limit: int = 50,
         offset: int = 0,
@@ -150,7 +150,7 @@ class ICaseRepository(Protocol):
         self,
         query: str,
         user_id: Optional[str] = None,
-        organization_id: Optional[str] = None,
+        enterprise_id: Optional[str] = None,
         limit: int = 20,
         shared_case_ids: Optional[List[str]] = None,
         restrict_case_ids: Optional[List[str]] = None,
@@ -229,7 +229,11 @@ class ICaseRepository(Protocol):
         ...
 
     async def add_uploaded_file(
-        self, case_id: str, uploaded_file: "UploadedFile", organization_id: str
+        self,
+        case_id: str,
+        uploaded_file: "UploadedFile",
+        enterprise_id: str,
+        organization_id: Optional[str] = None,
     ) -> None:
         """Commit ONE uploaded_file row on its own, outside the aggregate save.
 
@@ -382,6 +386,7 @@ class CaseDTO:
     title: str
     state: CaseStateDTO
     user_id: str
+    enterprise_id: Optional[str] = None
     organization_id: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

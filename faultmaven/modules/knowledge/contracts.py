@@ -93,7 +93,7 @@ class IConversionService(Protocol):
         original_filename: str,
         scope: str,
         user_id: str,
-        organization_id: Optional[str] = None,
+        enterprise_id: Optional[str] = None,
         team_id: Optional[str] = None,
     ) -> Any:
         """Convert a document to one or more runbook drafts."""
@@ -116,7 +116,7 @@ class ISuggestionService(Protocol):
     async def extract_knowledge_from_case(
         self,
         case_id: str,
-        organization_id: str,
+        enterprise_id: str,
         extracted_by: str,
         include_messages: bool = True,
         include_evidence: bool = True,
@@ -132,19 +132,19 @@ class ISuggestionService(Protocol):
         ...
 
     async def get_suggestion_visible(
-        self, suggestion_id: str, *, organization_id: str
+        self, suggestion_id: str, *, enterprise_id: str
     ) -> Optional["KnowledgeSuggestion"]:
         """Get a suggestion by ID, scoped to the actor's tenant (None if out of scope)."""
         ...
 
     async def list_suggestions(
         self,
-        organization_id: str,
+        enterprise_id: str,
         status: Optional[str] = None,
         limit: int = 20,
         offset: int = 0,
     ) -> Dict[str, Any]:
-        """List one organization's suggestions (org REQUIRED, fail-closed)."""
+        """List one enterprise's suggestions (enterprise REQUIRED, fail-closed)."""
         ...
 
     async def approve_suggestion(
@@ -153,7 +153,7 @@ class ISuggestionService(Protocol):
         reviewed_by: str,
         review_notes: Optional[str] = None,
         *,
-        organization_id: str,
+        enterprise_id: str,
     ) -> Optional[Dict[str, Any]]:
         """Approve a suggestion and create a knowledge item."""
         ...
@@ -165,7 +165,7 @@ class ISuggestionService(Protocol):
         rejection_reason: str,
         review_notes: Optional[str] = None,
         *,
-        organization_id: str,
+        enterprise_id: str,
     ) -> bool:
         """Reject a suggestion."""
         ...
@@ -229,37 +229,37 @@ class ISuggestionRepository(Protocol):
         """Load one suggestion by id — UNSCOPED (the trusted internal load)."""
         ...
 
-    async def get_for_organization(
-        self, suggestion_id: str, organization_id: str
+    async def get_for_enterprise(
+        self, suggestion_id: str, enterprise_id: str
     ) -> Optional["KnowledgeSuggestion"]:
-        """Load one suggestion by id, scoped to ``organization_id``.
+        """Load one suggestion by id, scoped to ``enterprise_id``.
 
         ``None`` both for an absent id and for one owned by another tenant, so
         the two are indistinguishable to the caller.
         """
         ...
 
-    async def list_for_organization(
+    async def list_for_enterprise(
         self,
-        organization_id: str,
+        enterprise_id: str,
         *,
         status: Optional[str] = None,
         limit: int = 20,
         offset: int = 0,
     ) -> "Tuple[List[KnowledgeSuggestion], int]":
-        """Return one page of an organization's suggestions and the total count.
+        """Return one page of an enterprise's suggestions and the total count.
 
         Newest first, by ``created_at``.
         """
         ...
 
-    async def count_for_organization(
+    async def count_for_enterprise(
         self,
-        organization_id: str,
+        enterprise_id: str,
         *,
         statuses: Optional["Sequence[SuggestionStatus]"] = None,
     ) -> int:
-        """Count an organization's suggestions, optionally in given statuses."""
+        """Count an enterprise's suggestions, optionally in given statuses."""
         ...
 
     @property

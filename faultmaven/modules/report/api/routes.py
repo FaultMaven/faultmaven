@@ -17,7 +17,7 @@ Authentication:
 Authorization:
 - Every endpoint resolves the report's parent case through ``authorize_case_access``
   and 404s when it does not resolve: the caller must own the case or have it shared
-  to one of their teams. Sharing an organization with the owner is not enough.
+  to one of their teams. Sharing an enterprise with the owner is not enough.
 
 Design Reference: docs/architecture/document-generation-and-closure-design.md
 """
@@ -40,7 +40,7 @@ from faultmaven.api.v1.dependencies import (
     get_report_generation_service,
     get_tenant_provider,
 )
-from faultmaven.config.tenant_context import get_current_org_id
+from faultmaven.config.tenant_context import get_current_enterprise_id
 from faultmaven.exceptions import (
     NotFoundError,
     ServiceException,
@@ -198,55 +198,52 @@ def check_tenant_provider_available(
     return tenant_provider
 
 
-async def validate_organization_access(
+async def validate_enterprise_access(
     tenant_provider: TenantProvider,
     current_user: UserDTO,
-    case_organization_id: Optional[str] = None,
+    case_enterprise_id: Optional[str] = None,
 ) -> None:
-    """Validate user has access to the organization context.
+    """Validate the caller may act inside this case's enterprise.
 
     Args:
-        tenant_provider: TenantProvider for organization resolution
+        tenant_provider: TenantProvider for enterprise resolution
         current_user: Authenticated user
-        case_organization_id: Optional organization ID from case (for validation)
+        case_enterprise_id: Optional enterprise ID from the case (for validation)
 
     Raises:
-        HTTPException: 403 if user lacks organization access
+        HTTPException: 403 if the caller is not inside that enterprise
     """
     try:
-        # Resolve the current organization from the request-bound tenant context
-        # (tenant_scope middleware -> config.tenant_context). In single-tenant mode
-        # the provider ignores the id and returns the default org; in multi-tenant
-        # mode it validates the caller's membership in that org. Passing it is what
+        # Resolve the current enterprise from the request-bound tenant context
+        # (tenant_scope middleware -> config.tenant_context). In single-tenant
+        # mode the provider ignores the id and returns the default enterprise; in
+        # multi-tenant mode it validates the caller's anchor. Passing it is what
         # keeps this check working under multi — the provider otherwise raises
-        # "organization_id required" and every report call fails closed with 403.
-        organization = await tenant_provider.get_current_organization(
-            current_user, organization_id=get_current_org_id()
+        # "enterprise_id required" and every report call fails closed with 403.
+        enterprise = await tenant_provider.get_current_enterprise(
+            current_user, enterprise_id=get_current_enterprise_id()
         )
 
-        # If case has organization_id, verify it matches
-        if (
-            case_organization_id
-            and organization.organization_id != case_organization_id
-        ):
+        # If the case names an enterprise, verify it matches
+        if case_enterprise_id and enterprise.enterprise_id != case_enterprise_id:
             logger.warning(
-                "Organization access denied",
+                "Enterprise access denied",
                 extra={
                     "user_id": current_user.user_id,
-                    "requested_org": case_organization_id,
-                    "user_org": organization.organization_id,
+                    "requested_enterprise": case_enterprise_id,
+                    "user_enterprise": enterprise.enterprise_id,
                 },
             )
             raise HTTPException(
                 status_code=403,
-                detail="Access denied - resource belongs to different organization",
+                detail="Access denied - resource belongs to a different enterprise",
             )
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Organization validation failed: {e}")
+        logger.error(f"Enterprise validation failed: {e}")
         raise HTTPException(
-            status_code=403, detail="Unable to validate organization access"
+            status_code=403, detail="Unable to validate enterprise access"
         )
 
 
@@ -256,16 +253,25 @@ async def authorize_case_access(
     tenant_provider: Optional[TenantProvider],
     case_service: Optional[ICaseService],
     not_found_detail: str,
+    *,
+    owner_only: bool = False,
 ) -> Case:
     """Authorize the caller against the case a report hangs off.
 
     Deny, don't skip (#1044). ``CaseService.get_case`` returns ``None`` for BOTH
     "no such case" and "you may not see this case" — the owner ∪ shared-to-my-teams
     gate that transitively guards reports, exports, analytics and messages. The
-    report routes used to read that ``None`` as "nothing to compare organizations
+    report routes used to read that ``None`` as "nothing to compare tenants
     against" and fall through to a ``case_id``/``report_id``-only repository read,
-    leaving the organization as the only boundary: two users in one org could read,
+    leaving the tenant as the only boundary: two users in one tenant could read,
     edit and delete each other's reports. Both meanings must deny.
+
+    ``owner_only`` drops the shared arm for the MUTATING endpoints. A report
+    hangs off its case, so a teammate who may read the case may read its
+    reports — and must not be able to rewrite, delete or close-link them
+    (ADR-017 D4: a share is read visibility, not ownership). Inside one
+    enterprise nothing else separates the two callers, so this flag is the whole
+    of that boundary on this surface.
 
     The organization check stays second and stays conditional on ``tenant_provider``:
     it can only be absent in a single-tenant deployment wired without an organization
@@ -287,22 +293,25 @@ async def authorize_case_access(
     Args:
         case_id: Case the report belongs to (falsy is treated as unauthorized)
         current_user: Authenticated caller
-        tenant_provider: Tenant provider for the organization check, when wired
+        tenant_provider: Tenant provider for the enterprise check, when wired
         case_service: Case service carrying the access gate
         not_found_detail: 404 body — phrase it after the resource the caller named
             (the report, not the case) so the response does not confirm existence
+        owner_only: Resolve through ownership alone (the mutating endpoints)
 
     Returns:
         The authorized case
 
     Raises:
         HTTPException: 404 if the case is missing or not the caller's, 403 if it
-            belongs to another organization, 503 if the case service is unavailable
+            belongs to another enterprise, 503 if the case service is unavailable
     """
     case_service = check_case_service_available(case_service)
 
     case = (
-        await case_service.get_case(case_id, user_id=current_user.user_id)
+        await case_service.get_case(
+            case_id, user_id=current_user.user_id, owner_only=owner_only
+        )
         if case_id
         else None
     )
@@ -310,8 +319,8 @@ async def authorize_case_access(
         raise HTTPException(status_code=404, detail=not_found_detail)
 
     if tenant_provider:
-        await validate_organization_access(
-            tenant_provider, current_user, case.organization_id
+        await validate_enterprise_access(
+            tenant_provider, current_user, case.enterprise_id
         )
 
     return case
@@ -541,6 +550,9 @@ async def update_report(
             tenant_provider,
             case_service,
             f"Report {report_id} not found",
+            # A share grants READ, not the right to rewrite, delete
+            # or close-link the owner's report (ADR-017 D4).
+            owner_only=True,
         )
 
         # Update fields
@@ -645,6 +657,9 @@ async def delete_report(
             tenant_provider,
             case_service,
             f"Report {report_id} not found",
+            # A share grants READ, not the right to rewrite, delete
+            # or close-link the owner's report (ADR-017 D4).
+            owner_only=True,
         )
 
         # Check if runbook - runbooks cannot be deleted
@@ -907,6 +922,9 @@ async def link_report_to_case_closure(
             tenant_provider,
             case_service,
             f"Report {report_id} not found",
+            # A share grants READ, not the right to rewrite, delete
+            # or close-link the owner's report (ADR-017 D4).
+            owner_only=True,
         )
 
         # Check if already linked

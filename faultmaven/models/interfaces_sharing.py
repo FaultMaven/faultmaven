@@ -34,7 +34,12 @@ class ResourceShare(BaseModel):
     resource_id: str
     scope_type: str
     scope_id: str
-    organization_id: str
+    #: The tenant the row belongs to and the only thing the read allowlist
+    #: matches on (ADR-017 D4).
+    enterprise_id: str
+    #: Billing attribution. Matched by nothing; present so a share row can be
+    #: costed back to whoever paid for the resource.
+    organization_id: Optional[str] = None
     created_by: Optional[str] = None
     created_at: Optional[datetime] = None
 
@@ -50,7 +55,8 @@ class IShareRepository(ABC):
         resource_id: str,
         scope_type: str,
         scope_id: str,
-        organization_id: str,
+        enterprise_id: str,
+        organization_id: Optional[str] = None,
         created_by: Optional[str] = None,
     ) -> ResourceShare:
         """Share a resource to a scope (idempotent).
@@ -95,7 +101,7 @@ class IShareRepository(ABC):
         resource_type: str,
         scope_type: str,
         scope_ids: List[str],
-        organization_id: str,
+        enterprise_id: str,
     ) -> List[str]:
         """Resource ids of ``resource_type`` shared to ANY of ``scope_ids``.
 
@@ -103,14 +109,15 @@ class IShareRepository(ABC):
         "shared-to-my-teams" arm of a principal's visible-id set. Deduplicated;
         empty ``scope_ids`` returns ``[]`` without a query.
 
-        ``organization_id`` is REQUIRED and matched against the share row's own
-        org: a row is only an allowlist entry for the tenant it was stamped for,
-        so a share carrying a foreign org id grants nothing. This mirrors the
-        share sub-select in
+        ``enterprise_id`` is REQUIRED and matched against the share row's own
+        enterprise: a row is only an allowlist entry for the tenant it was
+        stamped for, so a share carrying a foreign enterprise id grants nothing.
+        The organization is deliberately NOT matched — that is what lets a team
+        span two cost centres (ADR-017 D4). This mirrors the share sub-select in
         ``DatabaseKnowledgeItemRepository._inventory_visibility_clause`` — the
         two are the same predicate on the same table, and the resolution path is
         the arm that can otherwise reach across tenants on its own. Fail-closed:
-        a falsy ``organization_id`` returns ``[]`` without a query.
+        a falsy ``enterprise_id`` returns ``[]`` without a query.
         """
 
     @abstractmethod

@@ -204,10 +204,15 @@ class OrganizationMember(BaseModel):
 
 
 class Team(BaseModel):
-    """Team (sub-organization group) model."""
+    """Team — the sharing unit (ADR-017 D4).
+
+    Parented by the ENTERPRISE, not by an organization: a team may span cost
+    centres, and its members must be in the same enterprise. It references no
+    organization at all.
+    """
 
     team_id: str
-    organization_id: str
+    enterprise_id: str
     name: str = Field(min_length=1)
     description: Optional[str] = None
     created_at: datetime
@@ -273,6 +278,7 @@ class UserAuditLog(BaseModel):
     ip_address: Optional[str] = None
     user_agent: Optional[str] = None
     session_id: Optional[str] = None
+    enterprise_id: Optional[str] = None
     organization_id: Optional[str] = None
     event_at: datetime
     success: bool = True
@@ -523,11 +529,11 @@ class ITeamRepository(ABC):
         pass
 
     @abstractmethod
-    async def list_organization_teams(self, organization_id: str) -> List[Team]:
-        """List all teams in an organization.
+    async def list_enterprise_teams(self, enterprise_id: str) -> List[Team]:
+        """List all teams in an enterprise.
 
         Args:
-            organization_id: Organization identifier
+            enterprise_id: Enterprise identifier
 
         Returns:
             List of teams
@@ -540,9 +546,9 @@ class ITeamRepository(ABC):
 
         The object-returning sibling of ``list_all_user_team_ids`` — same
         membership resolution (JOIN ``team_members`` through the RLS-tenanted
-        ``teams`` table, excluding soft-deleted teams), so under the caller's org
-        RLS context it returns only teams in that org. Used by the ``GET /teams``
-        read path (team picker + id→name resolution).
+        ``teams`` table, excluding soft-deleted teams), so under the caller's
+        enterprise RLS context it returns only teams in that enterprise. Used by
+        the ``GET /teams`` read path (team picker + id→name resolution).
 
         Args:
             user_id: User identifier
@@ -648,6 +654,7 @@ class IAuditRepository(ABC):
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
         session_id: Optional[str] = None,
+        enterprise_id: Optional[str] = None,
         organization_id: Optional[str] = None,
         success: bool = True,
     ) -> bool:
@@ -688,13 +695,13 @@ class IAuditRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_organization_audit_log(
-        self, organization_id: str, limit: int = 100, offset: int = 0
+    async def get_enterprise_audit_log(
+        self, enterprise_id: str, limit: int = 100, offset: int = 0
     ) -> List[UserAuditLog]:
-        """Get audit log entries for an organization.
+        """Get audit log entries for an enterprise.
 
         Args:
-            organization_id: Organization identifier
+            enterprise_id: Enterprise identifier
             limit: Maximum results to return
             offset: Pagination offset
 

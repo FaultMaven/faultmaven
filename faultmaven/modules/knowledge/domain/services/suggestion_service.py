@@ -101,7 +101,7 @@ blocks. A runbook is reusable knowledge, not an incident record. Remove:
 - absolute timestamps and dates (write relative time: "after ~2 hours")
 - user names, email addresses and account identifiers
 - hostnames, IP addresses, internal URLs, cluster and namespace names
-- customer and organization names
+- customer and enterprise names
 - ticket, incident and case identifiers
 Replace each with a generic placeholder (`<hostname>`, `<namespace>`) or with a
 description of the role it played. KEEP product names, versions, error strings
@@ -182,7 +182,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
     #: record, not queue depth — so the ceiling now applies to PENDING_REVIEW
     #: and DRAFT only, and a full queue REFUSES rather than evicting.
     #:
-    #: **It is scoped per organization.** The table is shared by every tenant;
+    #: **It is scoped per enterprise.** The table is shared by every tenant;
     #: a deployment-wide count would let one tenant's undrained inbox refuse
     #: another tenant's extraction, a cross-tenant denial of service the
     #: per-worker dict could only ever inflict within one worker.
@@ -213,7 +213,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
             sanitizer: ISanitizer for PII detection/redaction
             llm_provider: LLM provider for extraction
             max_unreviewed_suggestions: Cap on how many UNREVIEWED suggestions one
-                organization may have queued; defaults to
+                enterprise may have queued; defaults to
                 :attr:`MAX_UNREVIEWED_SUGGESTIONS`. Injectable so a test can
                 drive the refusal without minting hundreds of suggestions.
             max_extraction_attempts: Total runbook-generation attempts per
@@ -273,7 +273,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
     async def extract_knowledge_from_case(
         self,
         case_id: str,
-        organization_id: str,
+        enterprise_id: str,
         extracted_by: str,
         include_messages: bool = True,
         include_evidence: bool = True,
@@ -283,7 +283,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
 
         Args:
             case_id: Case to extract from
-            organization_id: Organization context
+            enterprise_id: Enterprise context
             extracted_by: User ID triggering extraction
             include_messages: Include case conversation
             include_evidence: Include evidence summaries
@@ -305,7 +305,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         #
         # Nothing is stored between here and the write below, so the check
         # remains a real ceiling rather than a ceiling plus one.
-        await self._refuse_if_review_queue_full(organization_id)
+        await self._refuse_if_review_queue_full(enterprise_id)
 
         # Get case details
         case_title = "Unknown Case"
@@ -396,7 +396,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         suggestion_id = f"sug_{uuid.uuid4().hex[:12]}"
         suggestion = KnowledgeSuggestion(
             suggestion_id=suggestion_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             case_id=case_id,
             status=SuggestionStatus.PENDING_REVIEW,
             suggested_title=suggested_title,
@@ -439,8 +439,8 @@ corrected runbook, starting at the opening `---`, and output nothing else.
 
         return suggestion
 
-    async def _refuse_if_review_queue_full(self, organization_id: str) -> None:
-        """Refuse a new extraction when ``organization_id``'s inbox is full.
+    async def _refuse_if_review_queue_full(self, enterprise_id: str) -> None:
+        """Refuse a new extraction when ``enterprise_id``'s inbox is full.
 
         A PENDING_REVIEW or DRAFT suggestion is the one thing in this store that
         exists nowhere else, so the ceiling is enforced by refusing to add to it
@@ -458,7 +458,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         became permanent destruction, so the bound moved to the thing that
         actually needs bounding.
 
-        Scoped to ONE organization, because the store is a table shared by every
+        Scoped to ONE enterprise, because the store is a table shared by every
         tenant. A deployment-wide count would let one tenant's undrained inbox
         refuse another tenant's extraction.
 
@@ -468,28 +468,28 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         every extract request, for as long as the queue stayed full.
 
         Args:
-            organization_id: the tenant the extraction is being stored under
+            enterprise_id: the tenant the extraction is being stored under
 
         Raises:
-            ServiceUnavailableException: this organization's review queue is
+            ServiceUnavailableException: this enterprise's review queue is
                 full. The route answers 503, which is honest — the queue is full
                 and the fix is to review it.
         """
         capacity = self._max_unreviewed_suggestions
         if capacity <= 0:
             return
-        unreviewed = await self._repository.count_for_organization(
-            organization_id, statuses=UNREVIEWED_STATUSES
+        unreviewed = await self._repository.count_for_enterprise(
+            enterprise_id, statuses=UNREVIEWED_STATUSES
         )
         if unreviewed < capacity:
             return
 
         self.logger.error(
-            "Review queue is full for organization %s (%d/%d unreviewed); "
+            "Review queue is full for enterprise %s (%d/%d unreviewed); "
             "refusing to extract more knowledge until the review inbox is "
             "drained. Nothing is evicted: an approved suggestion is the only "
             "link from its case to the runbook it produced",
-            organization_id,
+            enterprise_id,
             unreviewed,
             capacity,
         )
@@ -501,7 +501,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         # 5xx body anyway. One audience each, no duplication.
         raise ServiceUnavailableException(
             f"Suggestion review queue at capacity ({unreviewed}/{capacity}) "
-            f"for this organization"
+            f"for this enterprise"
         )
 
     async def _generate_runbook_draft(self, base_prompt: str, case_id: str) -> str:
@@ -1052,15 +1052,15 @@ level, and the tools needed.]
         return await self._repository.get(suggestion_id)
 
     async def get_suggestion_visible(
-        self, suggestion_id: str, *, organization_id: str
+        self, suggestion_id: str, *, enterprise_id: str
     ) -> Optional[KnowledgeSuggestion]:
         """Get a suggestion by ID, scoped to the actor's tenant.
 
         The actor-facing counterpart of :meth:`get_suggestion` (the split #871
         introduced for documents). Returns None both for an absent id and for
-        one belonging to another organization, so the two are indistinguishable
+        one belonging to another enterprise, so the two are indistinguishable
         to the caller and a route built on it answers 404 rather than acting as
-        an existence oracle. Fail-closed: no organization, no result — never a
+        an existence oracle. Fail-closed: no enterprise, no result — never a
         deployment-wide lookup.
 
         Rejected alternative: scoping :meth:`get_suggestion` itself — it is the
@@ -1068,32 +1068,30 @@ level, and the tools needed.]
 
         Args:
             suggestion_id: Suggestion identifier
-            organization_id: Actor's tenant; REQUIRED
+            enterprise_id: Actor's tenant; REQUIRED
 
         Returns:
-            KnowledgeSuggestion owned by ``organization_id``, or None
+            KnowledgeSuggestion owned by ``enterprise_id``, or None
         """
-        if not suggestion_id or not organization_id:
+        if not suggestion_id or not enterprise_id:
             return None
-        return await self._repository.get_for_organization(
-            suggestion_id, organization_id
-        )
+        return await self._repository.get_for_enterprise(suggestion_id, enterprise_id)
 
     async def list_suggestions(
         self,
-        organization_id: str,
+        enterprise_id: str,
         status: Optional[str] = None,
         limit: int = 20,
         offset: int = 0,
     ) -> Dict[str, Any]:
-        """List suggestions belonging to one organization.
+        """List suggestions belonging to one enterprise.
 
-        ``organization_id`` is REQUIRED and always applied: an unscoped listing
+        ``enterprise_id`` is REQUIRED and always applied: an unscoped listing
         would return every tenant's suggestions to a platform admin bound to
-        one. Fail-closed — a falsy organization lists nothing.
+        one. Fail-closed — a falsy enterprise lists nothing.
 
         Args:
-            organization_id: Actor's tenant; REQUIRED
+            enterprise_id: Actor's tenant; REQUIRED
             status: Filter by status
             limit: Max items to return
             offset: Pagination offset
@@ -1101,7 +1099,7 @@ level, and the tools needed.]
         Returns:
             Dict with suggestions list and pagination info
         """
-        if not organization_id:
+        if not enterprise_id:
             return {
                 "suggestions": [],
                 "total_count": 0,
@@ -1112,8 +1110,8 @@ level, and the tools needed.]
         # Filtering, ordering (newest first) and pagination are the store's, so
         # the database does them in SQL instead of this service loading every
         # row to slice three of them.
-        suggestions, total_count = await self._repository.list_for_organization(
-            organization_id,
+        suggestions, total_count = await self._repository.list_for_enterprise(
+            enterprise_id,
             status=status,
             limit=limit,
             offset=offset,
@@ -1132,7 +1130,7 @@ level, and the tools needed.]
         reviewed_by: str,
         review_notes: Optional[str] = None,
         *,
-        organization_id: str,
+        enterprise_id: str,
     ) -> Optional[Dict[str, Any]]:
         """Approve a suggestion and create a knowledge item.
 
@@ -1140,7 +1138,7 @@ level, and the tools needed.]
             suggestion_id: Suggestion to approve
             reviewed_by: User ID of reviewer
             review_notes: Optional notes
-            organization_id: Actor's tenant; REQUIRED — an out-of-tenant id
+            enterprise_id: Actor's tenant; REQUIRED — an out-of-tenant id
                 resolves to None, exactly like an absent one
 
         Returns:
@@ -1171,7 +1169,7 @@ level, and the tools needed.]
                 handler logs and answers 500.
         """
         suggestion = await self.get_suggestion_visible(
-            suggestion_id, organization_id=organization_id
+            suggestion_id, enterprise_id=enterprise_id
         )
         if not suggestion:
             self.logger.warning(f"Suggestion {suggestion_id} not found")
@@ -1480,7 +1478,7 @@ level, and the tools needed.]
         rejection_reason: str,
         review_notes: Optional[str] = None,
         *,
-        organization_id: str,
+        enterprise_id: str,
     ) -> bool:
         """Reject a suggestion.
 
@@ -1489,13 +1487,13 @@ level, and the tools needed.]
             reviewed_by: User ID of reviewer
             rejection_reason: Why rejected
             review_notes: Optional additional notes
-            organization_id: Actor's tenant; REQUIRED
+            enterprise_id: Actor's tenant; REQUIRED
 
         Returns:
             True if rejected, False if not found or out of tenant
         """
         suggestion = await self.get_suggestion_visible(
-            suggestion_id, organization_id=organization_id
+            suggestion_id, enterprise_id=enterprise_id
         )
         if not suggestion:
             return False
@@ -1517,7 +1515,7 @@ level, and the tools needed.]
         content: Optional[str] = None,
         suggested_type: Optional[str] = None,
         *,
-        organization_id: str,
+        enterprise_id: str,
     ) -> Optional[KnowledgeSuggestion]:
         """Update a suggestion's content.
 
@@ -1526,13 +1524,13 @@ level, and the tools needed.]
             title: New title
             content: New content
             suggested_type: New type
-            organization_id: Actor's tenant; REQUIRED
+            enterprise_id: Actor's tenant; REQUIRED
 
         Returns:
             Updated suggestion or None if not found or out of tenant
         """
         suggestion = await self.get_suggestion_visible(
-            suggestion_id, organization_id=organization_id
+            suggestion_id, enterprise_id=enterprise_id
         )
         if not suggestion:
             return None
@@ -1561,20 +1559,20 @@ level, and the tools needed.]
         suggestion_id: str,
         remediated_by: str,
         *,
-        organization_id: str,
+        enterprise_id: str,
     ) -> Optional[KnowledgeSuggestion]:
         """Mark PII as remediated after manual review.
 
         Args:
             suggestion_id: Suggestion that was remediated
             remediated_by: User ID who remediated
-            organization_id: Actor's tenant; REQUIRED
+            enterprise_id: Actor's tenant; REQUIRED
 
         Returns:
             Updated suggestion or None if not found or out of tenant
         """
         suggestion = await self.get_suggestion_visible(
-            suggestion_id, organization_id=organization_id
+            suggestion_id, enterprise_id=enterprise_id
         )
         if not suggestion:
             return None
@@ -1617,7 +1615,7 @@ level, and the tools needed.]
         if include_content:
             return {
                 "suggestion_id": suggestion.suggestion_id,
-                "organization_id": suggestion.organization_id,
+                "enterprise_id": suggestion.enterprise_id,
                 "case_id": suggestion.case_id,
                 "status": suggestion.status.value,
                 "suggested_title": suggestion.suggested_title,
