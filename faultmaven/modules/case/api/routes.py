@@ -131,7 +131,7 @@ from faultmaven.models.interfaces_case import ICaseService
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.auth.contracts import ISessionService, UserDTO
 from faultmaven.modules.case.domain.models import Case as CaseEntity
-from faultmaven.modules.case.domain.models import CaseState
+from faultmaven.modules.case.domain.models import CaseState, is_default_case_title
 from faultmaven.modules.case.domain.services.case_converter import CaseConverter
 from faultmaven.modules.case.domain.services.case_ui_adapter import (
     transform_case_for_ui,
@@ -1867,19 +1867,16 @@ def _titleable_substance(case, user_signals: str) -> str:
 # carries the 4-digit form. Matching only the current width would leave exactly
 # those rows unnameable forever — the oldest cases in any long-lived deployment,
 # and the ones whose titles a user is least likely to remember.
-_DEFAULT_CASE_TITLE_RE = re.compile(r"^Case-(?:\d{4}|\d{6})-\d+$")
-
-
-def _is_default_case_title(title: Optional[str]) -> bool:
-    """True when ``title`` is still the auto-generated ``Case-YYMMDD-N`` placeholder.
-
-    This is the whole cost bound on server-side auto-titling: a case is titled at
-    most once, because the moment it succeeds this stops answering True. It does
-    not depend on a rate limiter — the ``title_generation`` preset in
-    ``config/protection.py`` is configured but never checked (fm#985 item 12), so
-    a design that leaned on it would have no guard at all.
-    """
-    return bool(title and _DEFAULT_CASE_TITLE_RE.match(title.strip()))
+# The predicate itself lives in the case domain (``is_default_case_title``) so
+# the orientation reply can refuse to quote a placeholder as the case's subject
+# (#1343); this alias keeps the route's call sites and tests unchanged.
+#
+# This is the whole cost bound on server-side auto-titling: a case is titled at
+# most once, because the moment it succeeds this stops answering True. It does
+# not depend on a rate limiter — the ``title_generation`` preset in
+# ``config/protection.py`` is configured but never checked (fm#985 item 12), so
+# a design that leaned on it would have no guard at all.
+_is_default_case_title = is_default_case_title
 
 
 class _TitleSubstanceTooThin(ValidationException):
@@ -2818,13 +2815,10 @@ async def submit_turn(
     correlation_id = str(uuid.uuid4())
 
     try:
-        # Validate at least one input provided
-        if not query and not files and not pasted_content:
-            raise HTTPException(
-                status_code=400,
-                detail="At least one of query, files, or pasted_content must be provided",
-                headers={"x-correlation-id": correlation_id},
-            )
+        # An EMPTY turn — no query, no file, no paste — is accepted: it is a
+        # bare @mention in Slack, and the service answers it with a state-aware
+        # orientation (where the case stands, what to do next) rather than the
+        # 400 the client used to have to swallow.
 
         # Validate case_id
         if not case_id or case_id.strip() in ("", "undefined", "null"):
@@ -3603,6 +3597,7 @@ async def generate_case_reports(
     from faultmaven.modules.case.contracts import (
         ReportGenerationRequest,
         ReportType,
+        is_default_case_title,
     )
 
     case_service = check_case_service_available(case_service)

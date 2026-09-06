@@ -224,8 +224,8 @@ class TestEachServiceRoutedHandler:
 
 
 class TestTheGreetingHeuristicDoesNotSwallowData:
-    """``_detect_intent_heuristic`` rewrites CONVERSATION->GREETING from the
-    message text alone, and ``_handle_greeting`` answers from a static string
+    """``detect_orientation`` rewrites CONVERSATION->GREETING from the
+    message text alone, and ``_handle_greeting`` answers from case state
     without ever calling the engine. So "hi" plus a genuinely new log was
     persisted and dedup-classified, and the engine was told nothing arrived —
     no upload keys, no progress arm, and the two #1224 degradation warnings
@@ -268,7 +268,9 @@ class TestTheGreetingHeuristicDoesNotSwallowData:
         )
 
         assert seen == {}, "a bare greeting must not reach the engine"
-        assert "FaultMaven" in response.agent_response
+        # The reply is the state-aware orientation (the case is INVESTIGATING),
+        # not the onboarding boilerplate.
+        assert "We're investigating" in response.agent_response
 
 
 class TestTheNonEngineHandlersStillReportUploads:

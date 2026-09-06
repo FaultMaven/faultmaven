@@ -2366,7 +2366,11 @@ def _fence_conversation(body: str, fence: PromptFence) -> str:
     return fence.element("conversation_history", body)
 
 
-ASIDE_LINE = "(off-topic exchange — not part of the investigation)"
+#: One line for a turn that was answered outside the investigation: an
+#: off-topic exchange (#1329) or an orientation reply — greeting, "help", an
+#: empty message (#1343). Neither is investigation context, and quoting either
+#: invites the model to pick the tangent, or its own recap, back up.
+ASIDE_LINE = "(aside — not part of the investigation)"
 
 
 def _aside_turns(messages: list) -> set:

@@ -1843,6 +1843,18 @@ _MINTED_PREFIX_TO_KIND = {"pasted-content": "paste", "page-capture": "capture"}
 _MINTED_PREFIXES = ("pasted-content-", "page-capture-")
 
 
+#: The server-generated placeholder title, ``Case-YYMMDD-N`` (older rows:
+#: ``Case-YYYY-N``). Owned here so both the auto-titling route (which decides
+#: whether a case still needs a name) and any reader that must not quote a
+#: placeholder as if it were the case's subject (#1343 orientation) agree.
+DEFAULT_CASE_TITLE_RE = re.compile(r"^Case-(?:\d{4}|\d{6})-\d+$")
+
+
+def is_default_case_title(title: Optional[str]) -> bool:
+    """True when ``title`` is still the auto-generated placeholder."""
+    return bool(title and DEFAULT_CASE_TITLE_RE.match(title.strip()))
+
+
 def is_minted_filename(filename: Optional[str]) -> bool:
     """True when this NAME was minted by the turns route, not typed by a user.
 

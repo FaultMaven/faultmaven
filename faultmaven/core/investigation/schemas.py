@@ -163,9 +163,10 @@ class TurnPayload:
     """Universal turn payload — canonical input to the investigation pipeline.
 
     Every user turn is represented as an optional query + optional attachments.
-    At least one must be provided. If attachments are present, they are preprocessed
-    through Tier 0+1 before the LLM sees them. If no query is provided, an implicit
-    system query is injected.
+    Both may be absent: an EMPTY turn (a bare @mention in Slack) is answered with a
+    state-aware orientation (#1343). If attachments are present, they are
+    preprocessed through Tier 0+1 before the LLM sees them; if they arrive with no
+    query, an implicit system query is injected.
     """
 
     query: Optional[str] = None

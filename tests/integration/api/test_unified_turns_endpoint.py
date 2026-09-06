@@ -9,7 +9,7 @@ Tests the complete endpoint flow:
   route can produce: `files` is capped at one item (fm#694, `maxItems: 1`) and
   `pasted_content` is a separate field that does not count against the cap.
 - Intent routing (status_transition, confirmation) with attachments
-- Missing both query and attachments → 400 error
+- Missing both query and attachments → accepted as an EMPTY orientation turn (was a 400)
 - Invalid case_id → 400/404 errors
 
 Design Reference:
@@ -328,13 +328,23 @@ class TestTextPasteSourceMetadata:
 class TestEndpointValidation:
     """Test validation logic that the endpoint performs."""
 
-    def test_at_least_one_input_required(self):
-        """Endpoint should reject submissions with no query, files, or pasted_content."""
-        # The endpoint checks: if not query and not files and not pasted_content → 400
-        query = None
-        files = []
-        pasted_content = None
-        assert not query and not files and not pasted_content
+    def test_an_empty_submission_is_an_orientation_turn(self):
+        """No query, no files, no paste is accepted: the service answers it with
+        a state-aware orientation (a bare @mention in Slack). The route's former
+        400 guard is gone; the service derives the EMPTY kind from the absence."""
+        import inspect
+
+        from faultmaven.modules.agent.domain.services.orientation import (
+            OrientationKind,
+            detect_orientation,
+        )
+        from faultmaven.modules.case.api import routes
+
+        assert (
+            "At least one of query, files, or pasted_content"
+            not in inspect.getsource(routes)
+        )
+        assert detect_orientation(None) == OrientationKind.EMPTY
 
     def test_invalid_case_id_rejected(self):
         """Invalid case_id values should be rejected."""
