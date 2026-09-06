@@ -1899,8 +1899,13 @@ async def internal_server_error_handler(request: Request, exc):
     # Extract Request ID from middleware (stored in request.state by RequestIdMiddleware)
     request_id = getattr(request.state, "request_id", None)
 
+    # Path only, never the full URL. request.url renders the query string, and
+    # the SSO callback carries the IdP authorization code there -- so any
+    # unhandled exception on that route wrote a live credential to an ERROR
+    # record. The redaction filter cannot reach this one: it covers the foreign
+    # stdlib loggers that print URLs, and this is a first-party structlog event.
     logger.error(
-        f"Internal server error on {request.method} {request.url}: {exc}",
+        f"Internal server error on {request.method} {request.url.path}: {exc}",
         extra={"request_id": request_id} if request_id else {},
     )
 

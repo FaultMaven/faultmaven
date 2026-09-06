@@ -141,9 +141,17 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             message=f"Request started: {request.method} {request.url.path}{session_info}{user_info}",
             method=request.method,
             path=request.url.path,
-            query_param_names=sorted(request.query_params.keys()),
-            client_ip=context.attributes.get("client_ip", "unknown"),
-            user_agent=context.attributes.get("user_agent", "unknown"),
+            # Read from the dict we just built, not from context.attributes.
+            # start_request takes **initial_context, so the `attributes=` kwarg
+            # lands as an attribute literally named "attributes" —
+            # context.attributes is {"attributes": {...}}, and every
+            # .get("client_ip", "unknown") here fell through to its default. The
+            # request-start line has therefore been naming "unknown" as the
+            # client on every request, which is the forensics failure the
+            # client_ip work set out to fix, in a different line.
+            query_param_names=http_context["query_param_names"],
+            client_ip=http_context["client_ip"],
+            user_agent=http_context["user_agent"],
             correlation_id=context.correlation_id,
             session_id=session_id,
             user_id=user_id,

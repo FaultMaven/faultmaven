@@ -281,7 +281,16 @@ class WebSearchTool(AgentTool):
             )
 
         except Exception as e:
-            logger.error(f"Web search failed: {e}")
+            # Never interpolate the raw exception. httpx renders
+            # HTTPStatusError as "... for url '<full url>'", and the Google CSE
+            # URL carries the API key and the investigation's search text as
+            # query parameters -- so the 400 this path exists to report was
+            # writing both to an ERROR record.
+            detail = type(e).__name__
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status is not None:
+                detail = f"{detail} (HTTP {status})"
+            logger.error("Web search failed: %s", detail)
             return ToolResult(
                 success=False,
                 data=None,
