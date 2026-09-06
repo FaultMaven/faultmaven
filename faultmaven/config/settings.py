@@ -1959,36 +1959,6 @@ class EmbeddingSettings(BaseSettings):
         description="Embedding vector dimensions (1024 for bge-m3)",
     )
 
-    # Embedding API configuration
-    embedding_max_retries: int = Field(
-        default=3,
-        ge=1,
-        le=10,
-        description="Maximum retry attempts for embedding API calls",
-    )
-    embedding_retry_delay: float = Field(
-        default=1.0,
-        ge=0.1,
-        le=30.0,
-        description="Base delay between retries (exponential backoff)",
-    )
-    embedding_timeout: int = Field(
-        default=60,
-        ge=10,
-        le=300,
-        description="Timeout for embedding API calls in seconds",
-    )
-    embedding_batch_size: int = Field(
-        default=100,
-        ge=1,
-        le=2048,
-        description="Number of texts per batch for embedding generation",
-    )
-    embedding_max_text_length: int = Field(
-        default=8191,
-        description="Maximum text length for embedding (OpenAI limit)",
-    )
-
     # NOTE: no ChromaDB persist directory here. There is exactly ONE knob for
     # the KB vector tree — ``DatabaseSettings.chromadb_kb_persist_dir`` — and
     # that is the one the container, the ingester, the admin status route and
@@ -1998,14 +1968,6 @@ class EmbeddingSettings(BaseSettings):
     # that shadows a live knob and tracks nothing is a trap, not a default —
     # the next caller to reach for it gets a path that silently ignores
     # ``CHROMADB_KB_PERSIST_DIR``, which is the whole shape of that bug.
-
-    # Indexing Job
-    indexing_batch_size: int = Field(
-        default=50,
-        ge=1,
-        le=500,
-        description="Batch size for background indexing job",
-    )
 
     # ML Model Loading Strategy
     lazy_load_ml_models: bool = Field(
@@ -2627,55 +2589,6 @@ class AgentSettings(BaseSettings):
     Design Reference: docs/architecture/TASK-015-agent-orchestration-design.md
     """
 
-    # Retry configuration
-    max_retries: int = Field(
-        default=3,
-        validation_alias="AGENT_MAX_RETRIES",
-        ge=0,
-        le=10,
-        description="Maximum retry attempts for LLM calls",
-    )
-
-    retry_initial_delay: float = Field(
-        default=1.0,
-        validation_alias="AGENT_RETRY_INITIAL_DELAY",
-        ge=0.1,
-        le=30.0,
-        description="Initial delay for exponential backoff (seconds)",
-    )
-
-    # Tool execution configuration
-    tool_timeout: int = Field(
-        default=30,
-        validation_alias="AGENT_TOOL_TIMEOUT",
-        ge=5,
-        le=300,
-        description="Timeout for tool execution (seconds)",
-    )
-
-    max_parallel_tools: int = Field(
-        default=5,
-        validation_alias="AGENT_MAX_PARALLEL_TOOLS",
-        ge=1,
-        le=20,
-        description="Maximum parallel tool executions",
-    )
-
-    # LLM Request configuration
-    agent_max_tokens: int = Field(
-        default=4096,
-        ge=100,
-        le=128000,
-        description="Maximum tokens for agent responses",
-    )
-
-    agent_temperature: float = Field(
-        default=0.7,
-        ge=0.0,
-        le=2.0,
-        description="Temperature for agent responses",
-    )
-
     agent_request_timeout: int = Field(
         default=120,
         ge=30,
@@ -2718,27 +2631,6 @@ class AgentSettings(BaseSettings):
         return self.provider_timeout_overrides.get(
             provider_name, self.agent_request_timeout
         )
-
-    # Token budget defaults
-    default_session_token_budget: Optional[int] = Field(
-        default=None,
-        description="Default token budget for new sessions (None = unlimited)",
-    )
-
-    # Execution limits
-    max_tool_calls_per_execution: int = Field(
-        default=20,
-        ge=1,
-        le=100,
-        description="Maximum tool calls per single execution",
-    )
-
-    max_iterations_per_execution: int = Field(
-        default=10,
-        ge=1,
-        le=50,
-        description="Maximum LLM iterations (tool call loops) per execution",
-    )
 
     # Vectorization configuration (scenario-driven data processing)
     vectorization_min_size_bytes: int = Field(
