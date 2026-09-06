@@ -98,6 +98,11 @@ def redacting_renderer(renderer: Callable) -> Callable:
             return redact_urls_bytes(rendered)
         return rendered
 
+    # The standard unwrap convention, so anything inspecting the chain can
+    # still see WHICH renderer is installed. That LOG_FORMAT reaches the right
+    # renderer has its own gate (#1338) which asserts on the renderer's type,
+    # and wrapping must not blind it.
+    render.__wrapped__ = renderer
     return render
 
 
