@@ -50,7 +50,7 @@ faultmaven/
 │   │
 │   │ # VERTICAL MODULES (own database tables, have contracts.py + infrastructure/)
 │   ├── auth/               # Authentication, JWT, OAuth 2.0, RBAC
-│   ├── case/               # Investigation cases (owns evidence, reports, agent_executions)
+│   ├── case/               # Investigation cases (owns evidence, reports)
 │   ├── knowledge/          # Knowledge base, RAG, vector search
 │   │
 │   │ # DOMAIN SERVICES (business logic only, NO contracts.py, NO infrastructure/)
@@ -899,9 +899,9 @@ alembic downgrade -1
 
 **User domain:** `users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `user_audit_log`, `oauth_authorization_codes`
 
-**Case domain:** `cases`, `case_messages`, `case_actions`, `case_tags`, `case_checkpoints`, `case_entities`, `evidence`, `hypotheses`, `hypothesis_evidence`, `solutions`, `uploaded_files`, `investigation_sessions`, `agent_executions`, `agent_tool_calls`, `reports`, `conversion_jobs`, `conversion_drafts`
+**Case domain:** `cases`, `case_messages`, `case_actions`, `case_tags`, `case_checkpoints`, `case_entities`, `evidence`, `hypotheses`, `hypothesis_evidence`, `solutions`, `uploaded_files`, `investigation_sessions`, `reports`, `conversion_jobs`, `conversion_drafts`
 
-> `agent_executions` / `agent_tool_calls` currently have **no writer**. They were populated by `AgentOrchestrationService` behind the `POST /cases/{id}/sessions/{sid}/execute` endpoint; both were removed once the milestone engine took over turn execution. The tables, their ORM models, and the `ICaseRepository` read/write methods remain, so `get_case_with_details(include_executions=True)` returns an empty list rather than failing. Investigation activity is recorded in `case_messages` and `case_actions`. Dropping them needs a migration and is a separate decision — do not read their emptiness as a bug.
+> `agent_executions` / `agent_tool_calls` were **dropped** by migration `041_drop_agent_executions` (#1001), together with their ORM models and the `ICaseRepository` read/write methods — `get_case_with_details` no longer accepts `include_executions`, so the call raises `TypeError` rather than returning an empty list. They were written by `AgentOrchestrationService` behind `POST /cases/{id}/sessions/{sid}/execute`, removed once the milestone engine took over turn execution. The `001` baseline still creates them, so the names survive in the migration chain and in archived docs. Investigation activity is recorded in `case_messages` and `case_actions`. Do not confuse them with `investigation_sessions.total_agent_executions`, a live counter column.
 
 **Knowledge domain (case-adjacent):** `knowledge_items`, `knowledge_suggestions`
 
