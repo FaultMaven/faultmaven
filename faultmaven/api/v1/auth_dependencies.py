@@ -34,7 +34,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from faultmaven.api.middleware.auth import get_auth_service
 from faultmaven.config.tenant_context import (
     UNSCOPED_REQUEST_MSG,
-    get_current_org_id,
+    get_current_enterprise_id,
     usable_tenant_id,
 )
 from faultmaven.modules.auth.domain.models.auth import DevUser
@@ -194,26 +194,26 @@ async def get_current_user_optional(
             token, token_type="access"
         )
 
-        # Extract user information from JWT claims
+        # Extract user information from JWT claims.
         #
-        # organization_id is sourced from the request-scoped tenant contextvar, NOT
-        # the raw ``organization_id`` JWT claim. This keeps ``DevUser.organization_id``
-        # definitionally equal to the org PostgreSQL RLS is enforcing for this request
-        # (both read ``config.tenant_context``), so this object can never be a source
-        # of tenant mis-scoping. The global ``bind_request_org_context`` dependency
-        # (ADR-010 P2b) runs before this path dependency and has already resolved the
-        # contextvar: forced to the Standalone org under single-tenant (ignoring any
-        # injected claim — the re-leak guard), or the verified claim under multi-tenant
-        # (having failed the request closed if that claim was missing).
+        # ``enterprise_id`` — the ISOLATION key (ADR-017 D1) — is sourced from the
+        # request-scoped tenant contextvar, NOT the raw ``enterprise_id`` JWT
+        # claim. That keeps ``DevUser.enterprise_id`` definitionally equal to the
+        # enterprise PostgreSQL RLS is enforcing for this request (both read
+        # ``config.tenant_context``), so this object can never be a source of
+        # tenant mis-scoping. The global ``bind_request_enterprise_context``
+        # dependency (ADR-010 P2b) runs before this path dependency and has
+        # already resolved the contextvar: forced to the Standalone enterprise
+        # under single-tenant (ignoring any injected claim — the re-leak guard),
+        # or the verified claim under multi-tenant (having failed the request
+        # closed if that claim was missing).
         #
-        # Sourcing the raw claim here instead would silently mask a missing claim to
-        # the Standalone org (via ``DevUser.__post_init__``), and let a forged org
-        # diverge from the RLS-scoped org. Live readers of this field (the knowledge
-        # suggestions listing and conversion-job org-stamping, which take the
-        # ``DevUser`` from this dependency) were therefore mis-scoping to Standalone
-        # under multi-tenant; this corrects them. The agent/sessions/admin scoping
-        # paths are unaffected — they read ``AuthenticatedUser`` (api/middleware/auth)
-        # and the report path reads the contextvar directly (P2c).
+        # ``organization_id`` — BILLING attribution (ADR-017 D2) — is the raw
+        # claim, or ``None``. It is read where a row is stamped for the payer and
+        # where usage is metered, and it decides nothing about visibility, so
+        # sourcing it from the claim rather than the binding is correct here: an
+        # account in no organization must present ``None`` rather than a sentinel
+        # somebody would later mistake for a tenant.
         user = DevUser(
             user_id=claims["sub"],
             username=claims.get("username", ""),
@@ -226,7 +226,8 @@ async def get_current_user_optional(
             is_dev_user=claims.get("auth_mode") == "local",  # Local mode = dev user
             is_active=True,
             roles=claims.get("roles", ["user"]),
-            organization_id=get_current_org_id(),
+            enterprise_id=get_current_enterprise_id(),
+            organization_id=claims.get("organization_id") or None,
         )
 
         logger.debug(
@@ -484,21 +485,23 @@ async def require_platform_admin(
     return user
 
 
-def require_actor_organization(user: DevUser) -> str:
+def require_actor_enterprise(user: DevUser) -> str:
     """Return the tenant an actor's request resolves within — fail-closed.
 
     Every id-addressed and every similarity-addressed lookup carries a mandatory
     tenant predicate (``docs/architecture/security/rbac.md``, "Tenant-Scoped
-    Resolution"). This is where a route obtains that predicate, and it refuses
+    Resolution"). Under ADR-017 that tenant is the **enterprise**: the
+    organization bills and grants no visibility, so it is never what a lookup
+    resolves within. This is where a route obtains the predicate, and it refuses
     (403) rather than handing back ``None`` for a caller to degrade into an
     unscoped query. Holding a cross-tenant role does not exempt a caller: an
-    operator still acts inside the organization they are bound to.
+    operator still acts inside the enterprise they are bound to.
 
     Under ``TENANT_PROVIDER=multi`` the Standalone sentinel is not a tenant — it
     identifies the single-tenant deployment — so it is refused there too, the
-    same rule ``bind_request_org_context`` applies at the front door. Enforcing
-    it here as well keeps the guarantee independent of which dependencies a
-    given router happens to mount.
+    same rule ``bind_request_enterprise_context`` applies at the front door.
+    Enforcing it here as well keeps the guarantee independent of which
+    dependencies a given router happens to mount.
 
     The sentinel rule itself lives in ``config.tenant_context.usable_tenant_id``,
     shared with the service-layer read paths that collapse to an empty allowlist
@@ -506,16 +509,16 @@ def require_actor_organization(user: DevUser) -> str:
     of the rule would drift from it.
 
     Raises:
-        HTTPException: 403 when the actor carries no usable organization.
+        HTTPException: 403 when the actor carries no usable enterprise.
     """
-    organization_id = usable_tenant_id(getattr(user, "organization_id", None))
-    if not organization_id:
+    enterprise_id = usable_tenant_id(getattr(user, "enterprise_id", None))
+    if not enterprise_id:
         logger.warning(
-            "Refusing unscoped request: user %s carries no organization",
+            "Refusing unscoped request: user %s carries no enterprise",
             getattr(user, "user_id", None),
         )
         raise HTTPException(status_code=403, detail=UNSCOPED_REQUEST_MSG)
-    return organization_id
+    return enterprise_id
 
 
 async def require_dev_user(user: DevUser = Depends(require_authentication)) -> DevUser:

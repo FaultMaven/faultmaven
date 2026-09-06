@@ -476,7 +476,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         header distinguished org contexts as a side effect, because the org
         claim is inside the signed token. Keying on ``sub`` alone would drop
         that, and the safety of dropping it would rest on
-        ``resolve_organization_claim`` reading the org off the user record — so
+        ``resolve_enterprise_claim`` reading the tenant off the user record — so
         that two tokens for one ``sub`` always agree on it. That holds today,
         but it holds in ``jwt_token_generator``, not here: an org rebind, or any
         future path where the org rides the credential rather than a membership
