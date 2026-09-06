@@ -2005,10 +2005,16 @@ def any_chain_root_validated(case: Case) -> bool:
 class HypothesisProjection(NamedTuple):
     """What :func:`project_hypothesis_states_from_roots` settled this call.
 
-    ``changed`` keeps its original meaning (either direction moved, so a caller
-    that only needs "did anything move" is unaffected). ``newly_validated``
-    carries the RISING edge alone — the ids the turn's ``hypotheses_validated``
-    progress arm is written from (#1284).
+    ``changed`` keeps its original meaning — either direction moved.
+    ``newly_validated`` carries the RISING edge alone: the ids the turn's
+    ``hypotheses_validated`` progress arm is written from (#1284).
+
+    ‼ This is a tuple, so it is **always truthy**, including
+    ``HypothesisProjection(False, [])``. ``if project_hypothesis_states_from_roots
+    (case):`` was a valid boolean read before #1284 and is now silently always
+    True — read ``.changed`` explicitly. Both production callers unpack or
+    discard, but one of them reaches this through the untyped ``_GRAPH_HOOKS``
+    registry, where mypy sees ``Any`` and would not catch the bare form.
     """
 
     changed: bool
@@ -2030,6 +2036,16 @@ def project_hypothesis_states_from_roots(case: Case) -> HypothesisProjection:
     #1136 applied to the other artifact arms, here by construction. The revert
     direction (VALIDATED -> ACTIVE) moves ``changed`` but is deliberately absent
     from the list: losing validation is not advancement.
+
+    Scope of that guarantee: it covers a STANDING value, not a FLAPPING one.
+    VALIDATED is not sticky — the revert below fires whenever the chain root
+    loses validation — so a hypothesis that loses and regains it IS re-reported.
+    That is deliberate, and it is not the restatement leak #1136 closed: a
+    restatement is the model re-emitting an artifact the case already holds,
+    whereas re-validation means the case actually lost the root and re-earned it
+    on new evidence. The same applies to ``cause_state`` under the §7.1.2 MECE
+    hold. If oscillation is ever observed holding the stall net open live, the
+    remedy is a once-per-case latch like INV-39's ``work_gate_crossed``.
 
     Invariant: a hypothesis reads ``VALIDATED`` ⟺ its chain root node is
     ``VALIDATED``. Because ``grade_cause_assurance`` returns ``NO_ROOT`` ⟺ no

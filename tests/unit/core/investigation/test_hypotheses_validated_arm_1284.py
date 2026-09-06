@@ -4,8 +4,9 @@ The arm is one of the nine ``check_if_progress_made`` scores and a field on
 every persisted turn record, and for as long as nothing wrote it five consumers
 read a permanently-empty list: the momentum bands summed three inputs of which
 one was always 0, the loop fingerprint carried a constant component, the
-context-builder line could never render, ``TurnProgress.advancement_count``
-undercounted, and the predicate arm could never fire.
+context-builder line could never render, and the predicate arm could never
+fire. (``TurnProgress.advancement_count`` also sums it, but that property has
+no reader anywhere in the repository, so nothing was starved through it.)
 
 Measured before the fix: non-empty on 0 of 2,129 persisted turns while the
 sibling arms fired on hundreds — and 64 hypotheses had nonetheless reached
@@ -201,7 +202,6 @@ def test_losing_validation_is_not_recorded_as_progress():
 
     # Knock the root out of VALIDATED; the projection reverts the hypothesis.
     case.causal_nodes[_ROOT].node_state = NodeState.CANDIDATE
-    case.hypotheses[_HYP].state = HypothesisState.VALIDATED
 
     changed, newly = project_hypothesis_states_from_roots(case)
 
@@ -282,11 +282,16 @@ def test_the_identification_edge_is_the_rising_edge_only(prior, current, expecte
 
 
 def test_identifying_the_cause_turns_the_transparency_light_off():
-    """The promise in progress-transparency.md §Transitions, end to end.
+    """The CONSUMER half of the promise in progress-transparency.md §Transitions.
 
-    The counter reads the PER-TURN list, so this holds only because the engine
-    records ``root_cause_identified`` there on the edge. Deleting that append
-    puts this case back to five investigative turns and the light back on.
+    This pins that ``ProgressMonitor`` resets on a turn carrying the
+    identification milestone — the behaviour the counter must have for the fix
+    to mean anything. It builds that turn by hand and never calls the engine, so
+    it deliberately does NOT fail if the writer is deleted; the writer is pinned
+    by ``test_the_identification_edge_is_recorded_on_the_turn`` above, which
+    drives ``_recompute_assessment_state`` and does fail on that mutation. Both
+    halves are needed: the writer test proves the name is produced, this proves
+    the counter acts on it.
     """
     from faultmaven.core.investigation.progress_monitor import ProgressMonitor
     from faultmaven.modules.case.contracts import TurnOutcome, TurnProgress
@@ -319,3 +324,59 @@ def test_identifying_the_cause_turns_the_transparency_light_off():
 
     case.turn_history.append(_turn(7))
     assert monitor._count_investigative_turns_since_milestone(case) == 1
+
+
+# ============================================================
+# The turn's milestone list mixes two provenances
+# ============================================================
+#
+# Once the engine appends its own ``root_cause_identified``, the list is no
+# longer "what the LLM claimed this turn" — and two places treat it as exactly
+# that. Both must filter, or the append reintroduces the evidence attribution
+# #675/INV-35 deliberately removed, and becomes strippable by a review meant for
+# LLM claims.
+
+
+def test_engine_derived_milestones_are_not_llm_claims():
+    from faultmaven.core.investigation.milestone_engine import (
+        ENGINE_DERIVED_MILESTONES,
+        llm_claimable_milestones,
+    )
+
+    assert "root_cause_identified" in ENGINE_DERIVED_MILESTONES
+    assert llm_claimable_milestones(
+        ["symptom_verified", "root_cause_identified", "solution_proposed"]
+    ) == ["symptom_verified", "solution_proposed"]
+    # Order preserved, and a list of only engine derivations collapses to empty
+    # rather than to something the review would treat as a claim.
+    assert llm_claimable_milestones(["root_cause_identified"]) == []
+    assert llm_claimable_milestones([]) == []
+
+
+def test_identification_is_not_attributed_to_this_turns_evidence():
+    """#675/INV-35 removed ``root_cause_identified`` from CATEGORY_MILESTONE_MAP
+    because identification is earned by the causal chain, not by whichever
+    evidence happened to arrive on the same turn.
+
+    The evidence-attribution step extends every row added this turn with the
+    turn's milestone list, and it runs AFTER the recompute — so without the
+    filter a SYMPTOM or DOCUMENT row added on an identification turn would be
+    persisted claiming it advanced the root cause. This pins the two call sites
+    to the filtered reading; the raw list is the regression.
+    """
+    import inspect
+
+    from faultmaven.core.investigation.milestone_engine import (
+        MilestoneEngine,
+        llm_claimable_milestones,
+    )
+
+    src = inspect.getsource(MilestoneEngine._apply_investigation_updates)
+    assert "ev.advances_milestones.extend(attributable)" in src
+    assert "ev.advances_milestones.extend(metadata[" not in src
+    assert src.count("llm_claimable_milestones(") == 2
+
+    # And the helper is what makes those two sites correct.
+    assert llm_claimable_milestones(["root_cause_identified", "symptom_verified"]) == [
+        "symptom_verified"
+    ]

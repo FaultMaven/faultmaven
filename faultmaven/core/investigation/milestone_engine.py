@@ -302,6 +302,25 @@ def _matches_gate_token(msg: str, tokens: list[str]) -> bool:
     return any(re.match(rf"{re.escape(t)}\b", msg) for t in tokens)
 
 
+#: Milestone names the ENGINE derives rather than the LLM claiming them. They
+#: enter ``metadata["milestones_completed"]`` from the engine's own recompute
+#: (#1284), which makes them real per-turn progress — but NOT evidence claims.
+ENGINE_DERIVED_MILESTONES: frozenset[str] = frozenset({"root_cause_identified"})
+
+
+def llm_claimable_milestones(milestones: "list[str]") -> "list[str]":
+    """The subset of a turn's ``milestones_completed`` the LLM could have CLAIMED.
+
+    The turn's list mixes two provenances: names the LLM emitted in
+    ``MilestoneUpdates``, and names the ENGINE derived and appended itself
+    (#1284). Both are real progress, but only the first kind is a claim — so
+    anywhere the list is treated AS a claim (reviewed against cited evidence, or
+    attributed to the evidence rows that arrived this turn), the engine's own
+    derivations must be filtered out first. Order is preserved.
+    """
+    return [m for m in milestones if m not in ENGINE_DERIVED_MILESTONES]
+
+
 CATEGORY_MILESTONE_MAP = {
     EvidenceCategory.SYMPTOM_EVIDENCE: [
         "symptom_verified",  # Confirms problem exists
@@ -1829,9 +1848,20 @@ def _recompute_cause_state_from_chain(
     # cannot resurrect a just-REFUTED hypothesis. Keeps hypothesis.state, the
     # report bucket, the grade, and cause_state on ONE determination.
     # The ids returned here are the turn's ``hypotheses_validated`` arm. The
-    # projection is the sole producer of a VALIDATED hypothesis, so this is the
-    # only place the event exists; every consumer of the arm read an empty list
-    # for as long as the value was dropped on the floor (#1284).
+    # projection is the sole producer of a VALIDATED hypothesis; every consumer
+    # of the arm read an empty list for as long as the value was dropped on the
+    # floor (#1284).
+    #
+    # ‼ The projection has a SECOND caller — the terminal confirm-stamp, via
+    # ``_GRAPH_HOOKS["project_hyp_states"]`` in
+    # ``terminal_transitions.finalize_resolution_truth_surface`` — which still
+    # discards the ids and sets ``cause_state = IDENTIFIED`` without recording a
+    # milestone. A hypothesis first validated AT the confirm-stamp therefore
+    # reaches no turn's arm. Out of scope here rather than covered: that path
+    # runs during RESOLVED execution, where the turn already scores
+    # ``status_transitioned`` through ``confirmed_transition_arms`` and where
+    # progress transparency does not apply (INVESTIGATING-only). A real residue,
+    # tracked on #1284 — not a claim that this covers every path.
     return project_hypothesis_states_from_roots(case).newly_validated
 
 
@@ -1866,8 +1896,15 @@ def _recompute_assessment_state(
     rcc_authored_this_turn: bool = False,
     metadata: "dict[str, Any] | None" = None,
     provider_name: "str | None" = None,
-) -> None:
+) -> "CauseState":
     """Recompute the engine-owned assessment variables each INVESTIGATING turn.
+
+    Returns the PRE-recompute ``cause_state``. Two things react to the
+    identification edge — the milestone recorded below and the caller's
+    KB-remediation warm-up — and both need the same "before" value. Returning it
+    keeps ONE capture: a second read in the caller could drift from this one if
+    anything were ever inserted between them, and the two reactions would then
+    disagree about which turn the cause was identified on.
 
     Assessment variables are TRUTH signals the engine derives — never
     path-stripped (redesign R1). Called at the end of
@@ -2025,6 +2062,11 @@ def _recompute_assessment_state(
     p.cause_overclaim = overclaims
 
     _log_grounding_assessment(case)
+
+    # The caller's KB-remediation warm-up reacts to the same edge as the
+    # milestone above, so it reads this rather than re-snapshotting a field this
+    # function has since rewritten.
+    return prior_cause_state
 
 
 def _log_grounding_assessment(case: "Case") -> None:
@@ -10819,24 +10861,26 @@ class MilestoneEngine:
         # Milestones are applied optimistically from LLM output (step 1 above),
         # then validated here. Invalid claims are REVERTED to prevent milestones
         # advancing without supporting evidence.
-        if metadata["milestones_completed"]:
+        # Only names the LLM can CLAIM are reviewable. ``root_cause_identified``
+        # is engine-derived (INV-35) and is appended by the recompute later in
+        # this method (#1284), so today it is not present here anyway. Filtering
+        # explicitly rather than relying on that ordering: the review expects
+        # ">=2 CAUSAL_EVIDENCE rows" for that name, which plenty of genuine
+        # identification turns lack, so if the recompute were ever hoisted above
+        # this step the engine's own derivation would be silently deleted from
+        # the turn and the transparency light would go back on with nothing
+        # failing. The exclusion makes that reordering harmless instead.
+        reviewable = llm_claimable_milestones(metadata["milestones_completed"])
+        if reviewable:
             from faultmaven.core.investigation.evidence_processor import (
                 validate_milestone_claims,
             )
 
             reasoning = getattr(response_obj, "internal_reasoning", None)
-            validation_results = validate_milestone_claims(
-                case, metadata["milestones_completed"], reasoning
-            )
+            validation_results = validate_milestone_claims(case, reviewable, reasoning)
             for result in validation_results:
                 if not result.is_valid:
                     # Revert the milestone — evidence doesn't support the claim.
-                    # cause_state is engine-derived (INV-35), so no
-                    # cause-identification case is reverted here: the LLM cannot
-                    # claim it, and the engine's own recompute appends
-                    # ``root_cause_identified`` AFTER this review (#1284) —
-                    # deliberately out of reach of a step that exists to revert
-                    # LLM claims. The end-of-turn recompute owns cause_state.
                     if hasattr(case.progress, result.milestone):
                         setattr(case.progress, result.milestone, False)
                     if result.milestone in metadata["milestones_completed"]:
@@ -11203,14 +11247,13 @@ class MilestoneEngine:
         # now that this turn's hypotheses and solutions are applied (redesign R1).
         # Pass this turn's LLM-certified deductive survivors (resolved in
         # _apply_chain_emission) so proof-by-exclusion can stamp them post-derive.
-        prior_cause_state = case.progress.cause_state
         # Provider identity for the DF-6 provider-floor metric (INV-39), passed
         # explicitly (not smuggled through the shared metadata dict). Resolved via
         # the helper because self.llm_provider is the LLMRouter in the real
         # deployment (no provider_name) — the helper reads the configured chat
         # provider off it; a partially constructed engine (some fixtures omit
         # llm_provider) degrades to "unknown" rather than raising.
-        _recompute_assessment_state(
+        prior_cause_state = _recompute_assessment_state(
             case,
             exclusion_survivors=metadata.get("deductive_survivor_ids", frozenset()),
             rcc_authored_this_turn=metadata.get("rcc_authored_this_turn", False),
@@ -11238,11 +11281,19 @@ class MilestoneEngine:
         _maybe_propose_deferred_close(case, metadata)
 
         # Bug #4: Evidence-Milestone Linking (Moved here to ensure evidence exists)
-        if metadata["milestones_completed"] and metadata["evidence_added"]:
+        # LLM-claimed milestones only. This runs AFTER the assessment recompute,
+        # so the turn's list may also carry the engine's own
+        # ``root_cause_identified`` (#1284) — and the attribution is blanket, so
+        # it would stamp that onto every evidence row added this turn regardless
+        # of category, including SYMPTOM and DOCUMENT rows. That is exactly the
+        # attribution INV-35 removed from CATEGORY_MILESTONE_MAP: identification
+        # is earned by the causal chain, not by whatever arrived the same turn.
+        attributable = llm_claimable_milestones(metadata["milestones_completed"])
+        if attributable and metadata["evidence_added"]:
             for ev_id in metadata["evidence_added"]:
                 ev = next((e for e in case.evidence if e.evidence_id == ev_id), None)
                 if ev:
-                    ev.advances_milestones.extend(metadata["milestones_completed"])
+                    ev.advances_milestones.extend(attributable)
 
         # Bug #8: Robust Turn Outcome Determination
         metadata["outcome"] = self._determine_turn_outcome(
