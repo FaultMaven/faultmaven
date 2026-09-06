@@ -2,7 +2,7 @@
 FaultMaven Logging Configuration
 
 Provides enhanced logging configuration using structlog with JSON formatting,
-request context injection, deduplication, and OpenTelemetry integration.
+request context injection and OpenTelemetry integration.
 
 Configuration is read from the unified settings system (faultmaven.config.settings)
 at runtime, not at import time.
@@ -114,10 +114,10 @@ class LoggingConfig:
 
 class FaultMavenLogger:
     """
-    Enhanced logger configuration with deduplication and structured logging.
+    Enhanced logger configuration for structured logging.
 
     This class configures structlog with processors for request context injection,
-    deduplication, trace context, and JSON formatting. It ensures consistent
+    trace context, and JSON formatting. It ensures consistent
     log structure across all application components.
     """
 
@@ -147,7 +147,6 @@ class FaultMavenLogger:
         - Timestamp formatting
         - Exception information
         - Request context injection
-        - Field deduplication
         - OpenTelemetry trace context
         - JSON output formatting
         """

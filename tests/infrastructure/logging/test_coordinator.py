@@ -141,7 +141,13 @@ class TestErrorContext:
         assert error_ctx.layer_errors["api"]["type"] == "RuntimeError"
 
     def test_should_log_error_cascade_prevention(self):
-        """Test error cascade prevention logic."""
+        """Cascade prevention is the whole of the rule.
+
+        There used to be a second clause, ``or self.recovery_attempts > 0``,
+        letting a layer log again during a recovery, plus a test that set that
+        counter by hand. Nothing in the codebase ever incremented it, so the
+        test proved a branch unreachable in production; both are gone.
+        """
         error_ctx = ErrorContext()
         test_error = ValueError("Test error")
 
@@ -155,22 +161,6 @@ class TestErrorContext:
         assert not error_ctx.should_log_error("service")
         assert error_ctx.should_log_error("api")
         assert error_ctx.should_log_error("core")
-
-    def test_a_layer_that_already_logged_stays_quiet(self):
-        """Cascade prevention is the whole of the rule.
-
-        This replaces a test that set ``recovery_attempts`` by hand and
-        asserted the layer could log again. Nothing in the codebase ever
-        incremented that counter, so the test proved a branch that could not
-        be reached in production -- the reason both it and the counter are
-        gone.
-        """
-        error_ctx = ErrorContext()
-
-        error_ctx.add_layer_error("service", ValueError("Test error"))
-
-        assert not error_ctx.should_log_error("service")
-        assert error_ctx.should_log_error("api")
 
 
 class TestPerformanceTracker:
