@@ -1,12 +1,24 @@
-"""The one writer that brings a tenant into existence (ADR-013, #869, #1045).
+"""The writers that bring a tenant into existence (ADR-013, ADR-017, #869, #1045).
 
-A tenant is four rows in a fixed order — enterprise, organization, default team,
-and the ``sso_org_mappings`` row that binds an IdP organization to it — and
-until now two call sites wrote them: ``fm-provision-sso-org`` for the operator
-path and the personal-tenant repository for the login path. The CLI's own
-docstring already conceded they write the same rows. Two copies of an ordering
-constraint is one copy too many, so this module is the single writer and both
-call sites pass their differences in as arguments.
+Two call sites create tenants and they no longer create the same rows, so this
+module holds the per-row writers both share plus the one composite the operator
+path needs:
+
+* **the operator path** (``fm-provision-sso-org``) onboards a paying customer:
+  enterprise, organization, default team, and the ``sso_org_mappings`` row that
+  binds an IdP organization to it. :func:`bootstrap_tenant` writes those four,
+  in that order.
+* **the sign-up path** (the SSO login) creates an **enterprise and nothing
+  else** (ADR-017 D3/D5/D4). An organization is a billing target created by
+  payment and a team is formed by consent, so a sign-in — which knows neither —
+  must not invent them. It composes :func:`get_or_create_enterprise` (or
+  :func:`get_or_create_enterprise_for_domain`) with :func:`ensure_mapping`
+  itself.
+
+They share the per-row writers rather than a single composite, because the rows
+they write genuinely differ now; what has to stay shared is each row's own rule
+(what an existing row means, which lookups are live-only), and that is what
+these functions are.
 
 **What the two callers genuinely differ on, and why it is a parameter here
 rather than a fork of the code:**
@@ -21,22 +33,22 @@ rather than a fork of the code:**
   caller interprets; it does not get a knob that changes what is written.
 * *How the tenant is identified.* The operator resolves the organization by
   ``(enterprise_id, slug)`` — an id-blind lookup, which is exactly why that path
-  needs an RLS-exempt role. The login path supplies the ids it generated and
-  bound.
+  needs an RLS-exempt role. The sign-up path resolves the enterprise by the
+  domain it derived, or generates a private one, and writes no organization at
+  all.
 
-**RLS.** Every write below except the enterprise targets an RLS-tenanted table,
-whose policy is created with no ``FOR`` clause — so ``USING`` doubles as
-``WITH CHECK`` and an INSERT carrying a different ``enterprise_id`` than the
-session's ``app.current_enterprise_id`` is *rejected*. This module does not bind
-anything: the session it is handed already belongs to a transaction, and the
-engine's ``begin`` listener sampled the contextvar when that transaction opened.
-Binding is the caller's job, before it opens the session.
+**RLS.** ``organizations`` and ``teams`` are RLS-tenanted, and their policies are
+created with no ``FOR`` clause — so ``USING`` doubles as ``WITH CHECK`` and an
+INSERT carrying a different ``enterprise_id`` than the session's
+``app.current_enterprise_id`` is *rejected*. ``enterprises`` and
+``sso_org_mappings`` are not enrolled: the enterprise IS the tenant, and the
+mapping is read on the unauthenticated callback before one is bound. This module
+does not bind anything: the session it is handed already belongs to a
+transaction, and the engine's ``begin`` listener sampled the contextvar when
+that transaction opened. Binding is the caller's job, before it opens the
+session — and the sign-up path, which now touches only unenrolled tables, has
+nothing left to bind.
 
-**Stage 2 note (ADR-017).** The IdP-organization mapping and the default team
-now target the ENTERPRISE, which is what the schema keys them on. The
-organization row this still writes beside them is the pre-ADR-017 shape — D9
-says a sign-up creates no organization and no team — and removing it is Phase 3's
-identity work.
 """
 
 from __future__ import annotations
@@ -97,13 +109,17 @@ async def get_or_create_enterprise(
 ) -> tuple[EnterpriseModel, bool]:
     """Return (enterprise, created). Looks up by id, then by slug.
 
-    The slug arm is not only an operator convenience. ``organizations`` has no
-    ``ON DELETE CASCADE`` to ``enterprises``, so hard-deleting a personal
-    organization leaves its enterprise behind; a login that re-derived the same
-    slug and always INSERTed would then collide forever on
-    ``enterprises.slug``'s unique index and be refused as somebody else's
-    tenant (#1045 review, item 4a). Adopting the orphan is safe precisely
-    because the slug is derived from the subject: nobody else can produce it.
+    The slug arm is not only an operator convenience. A personal enterprise can
+    outlive the binding that named it — ``repository.retire()`` drops the
+    binding on the #1320 personal→company switch and leaves the enterprise and
+    its mapping standing — so a later login for that subject re-derives the same
+    slug. A writer that always INSERTed would collide forever on
+    ``enterprises.slug``'s unique index and be refused as somebody else's tenant
+    (#1045 review, item 4a). Adopting is safe precisely because the slug is
+    derived from the subject: nobody else can produce it.
+
+    Callers must use the returned row's id rather than the one they proposed;
+    on the adopt arm they differ, and binding the proposed one names no row.
     """
     if enterprise_id:
         found = await session.get(EnterpriseModel, enterprise_id)
@@ -138,6 +154,56 @@ async def get_or_create_enterprise(
         enterprise_id=enterprise_id or str(uuid.uuid4()),
         name=name,
         slug=slug,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(enterprise)
+    await session.flush()
+    return enterprise, True
+
+
+async def get_or_create_enterprise_for_domain(
+    session, *, domain: str, name: str, slug: str
+) -> tuple[EnterpriseModel, bool]:
+    """Return (enterprise, created) for an email domain (ADR-017 D3).
+
+    The lookup key is ``enterprises.domain``, **not** the slug: the domain is
+    the fact sign-up derived, and keying on it is what makes "the domain has
+    exactly one enterprise" true. The slug is a derived identifier that happens
+    to be a function of the same domain; looking up by it would work today and
+    silently stop working the day the derivation changed.
+
+    LIVE rows only, matching the partial uniqueness index exactly. A retired
+    enterprise keeps its domain, so a writer that adopted a soft-deleted row
+    would hand the next sign-up from that domain straight back into the tenant
+    an operator took out of service — and the index would not stop it, because
+    the index does not see retired rows either. The lookup has to be scoped the
+    way the constraint is or the two disagree about what "already exists" means.
+
+    Creating is **not** owning: the first account from a domain gains nothing by
+    being first (D3). It does not administer the enterprise, and the enterprise
+    has no administrator at all until a domain claim is verified (D7).
+    """
+    if not domain:
+        raise ValueError("a domain enterprise needs a domain")
+    folded = domain.casefold()
+    existing = (
+        await session.execute(
+            select(EnterpriseModel).where(
+                EnterpriseModel.domain == folded,
+                EnterpriseModel.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing, False
+
+    now = datetime.now(UTC)
+    enterprise = EnterpriseModel(
+        enterprise_id=str(uuid.uuid4()),
+        name=name,
+        slug=slug,
+        domain=folded,
         created_at=now,
         updated_at=now,
     )

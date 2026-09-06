@@ -666,10 +666,9 @@ class ISSOOrgMappingRepository(ABC):
     """IdP organization → FaultMaven ENTERPRISE lookup port (ADR-017 D9).
 
     Read on the **unauthenticated** SSO callback, before any tenant is bound,
-    which is why the backing table is deliberately not RLS-tenanted: the
-    tenanted tables (``organizations``, ``organization_members``) are unreadable
-    at that point. A mapping row carries only an identifier equivalence, never
-    tenant data.
+    which is why the backing table is deliberately not RLS-tenanted: every
+    tenant-scoped table is unreadable at that point. A mapping row carries only
+    an identifier equivalence, never tenant data.
 
     Operators create the mapping out of band
     (the ``fm-provision-sso-org`` command); there is no self-service path, so
@@ -689,14 +688,19 @@ class ISSOOrgMappingRepository(ABC):
 
 
 #: The operator's ``--next-login`` choice, as
-#: ``sso_personal_enterprises.retirement_state`` stores it. A retired subject's next
-#: org-less sign-in is refused: the account stays anchored to the retired
-#: enterprise, and that anchor is what the login reads.
+#: ``sso_personal_enterprises.retirement_state`` stores it. A retired subject's
+#: next org-less sign-in is refused.
 RETIREMENT_POLICY_REFUSE = "refuse"
 
-#: The retirement releases the account — its anchor is cleared — so the next
-#: org-less sign-in provisions a brand-new personal tenant. Expressible only
-#: because migration 052 made ``users.enterprise_id`` nullable.
+#: The retirement releases the account, so the next org-less sign-in provisions
+#: a brand-new personal enterprise for the same subject.
+#:
+#: Under ADR-017 D3 ``users.enterprise_id`` is NOT NULL, so the release is this
+#: **recorded value** rather than the cleared anchor it used to be: the account
+#: stays anchored to the enterprise the retirement fenced, and
+#: ``account_anchor.releases_provisioning`` reads the policy off the subject row
+#: to decide. A positive value is the safer spelling in any case — an absence
+#: can be produced by a half-finished retirement, and this cannot.
 RETIREMENT_POLICY_FRESH_TENANT = "fresh_tenant"
 
 
@@ -781,8 +785,8 @@ class ISSOPersonalEnterpriseRepository(ABC):
     IdP's *organization* id, which a returning individual's login need not
     carry at all; and it is 1:1 per organization, so a personal tenant's row
     there is already spent on the IdP organization that holds the member.
-    Membership cannot serve either — ``organization_members`` is RLS-tenanted
-    and invisible at callback time.
+    Membership cannot serve either — every membership table is RLS-tenanted and
+    invisible at callback time.
 
     Writes are hostile-input-facing: the caller is a login, not an operator.
     """
@@ -791,7 +795,13 @@ class ISSOPersonalEnterpriseRepository(ABC):
     async def get(
         self, provider: str, provider_user_id: str
     ) -> Optional["PersonalEnterpriseRecord"]:
-        """Return the subject's personal-tenant record, or None if it has none."""
+        """Return the subject's **live** personal-tenant record, or None.
+
+        A retired binding answers ``None``. The row is kept — it carries the
+        operator's next-login policy, which is what releases or refuses the next
+        sign-in — but answering with it here would resolve the subject straight
+        back into the tenant the retirement fenced them out of.
+        """
 
     @abstractmethod
     async def find_by_enterprise(
@@ -828,21 +838,26 @@ class ISSOPersonalEnterpriseRepository(ABC):
         """Create the tenant for one subject, atomically, and return its
         ENTERPRISE id.
 
-        Writes the tenant rows, the ``sso_org_mappings`` row binding
-        ``provider_org_id`` to the enterprise and the
-        ``sso_personal_enterprises`` row binding the subject — in one
-        transaction, the ordering ``fm-provision-sso-org`` already encodes.
+        Writes **three rows in one transaction**: the enterprise, the
+        ``sso_org_mappings`` row binding ``provider_org_id`` to it, and the
+        ``sso_personal_enterprises`` row binding the subject. No organization
+        and no team — those are a billing fact and a consent fact (ADR-017
+        D5/D4), and a sign-in knows neither.
 
         Implementations must be idempotent and race-safe: a second call for the
         same subject, whether sequential or concurrent, returns the enterprise
         the first one created and writes no second tenant. A failure part-way
         must leave nothing behind for a later login to adopt.
 
-        The enterprise id is generated and **bound as the tenant context by the
-        implementation**, not by the caller: the write runs under the RLS-scoped
-        application role, so the binding is an implementation detail of
-        persisting the row, and a caller that had to know about it could also
-        forget — or leave a nonexistent enterprise bound after a failure.
+        A subject whose previous enterprise was retired with
+        ``fresh_tenant`` has its existing row **re-pointed** rather than a
+        second one inserted: ``subject`` is the primary key, so there is exactly
+        one, and the retirement columns are cleared as part of the move because
+        the policy has by then been honoured.
+
+        No tenant context is bound: every table this writes is outside RLS —
+        ``enterprises`` is the tenant, and the two SSO tables are read on the
+        unauthenticated callback before one exists.
         """
 
     @abstractmethod
@@ -859,13 +874,18 @@ class ISSOPersonalEnterpriseRepository(ABC):
 
     @abstractmethod
     async def retire(self, provider: str, provider_user_id: str) -> bool:
-        """Drop the subject's personal binding; True if a row was removed.
+        """Drop the subject's personal binding outright; True if a row was removed.
 
         Called when a mapped (company) login re-anchors an account that was
-        anchored to a personal enterprise. The personal organization and its
-        cases are deliberately left alone — this is not a migration (#1045
-        non-goal) — but the *binding* must go, or a later unscoped login would
-        resolve the user back into a tenant they can no longer enter.
+        anchored to a personal enterprise. The personal enterprise and its cases
+        are deliberately left alone — this is not a migration (#1045 non-goal) —
+        but the *binding* must go, or a later unscoped login would resolve the
+        user back into a tenant they can no longer enter.
+
+        Deliberately a delete rather than the stamp an operator retirement
+        writes: the account no longer lives in a personal tenant at all, so
+        there is no next-login policy to record, and a stamped row would tell
+        the anchor check the opposite.
         """
 
 

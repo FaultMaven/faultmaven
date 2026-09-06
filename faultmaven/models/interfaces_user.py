@@ -134,6 +134,10 @@ class Enterprise(BaseModel):
     max_members: int = 5
     max_cases: Optional[int] = None
     billing_email: Optional[str] = None
+    #: The verified email domain this enterprise is the tenant for, case-folded
+    #: (ADR-017 D3), or ``None`` for a personal enterprise — a consumer-mail
+    #: account gets an enterprise of its own and no domain claims it.
+    domain: Optional[str] = None
     settings: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
@@ -307,6 +311,22 @@ class IEnterpriseRepository(ABC):
     @abstractmethod
     async def update_enterprise(self, enterprise: Enterprise) -> bool:
         """Update enterprise. Returns True if a row was updated."""
+
+    @abstractmethod
+    async def get_or_create_for_domain(
+        self, *, domain: str, name: str, slug: str
+    ) -> Enterprise:
+        """The enterprise for an email domain, creating it if it is the first.
+
+        The sign-up derivation of ADR-017 D3: every address at a non-consumer
+        domain lands in one enterprise, and the first account from that domain
+        is what brings it into existence. Being first confers nothing — the
+        enterprise has no administrator until a domain claim is verified (D7).
+
+        Keyed on ``enterprises.domain`` among LIVE rows, which is exactly the
+        scope of its partial unique index, so a retired enterprise neither
+        blocks the next sign-up nor is handed back to it.
+        """
 
 
 class IOrganizationRepository(ABC):

@@ -1,49 +1,35 @@
-"""Persistence adapter for personal tenants (#1045, ADR-016 D5).
+"""Persistence adapter for personal enterprises (#1045, ADR-016 D5, ADR-017 D3).
 
 Implements ``ISSOPersonalEnterpriseRepository`` over
-``sso_personal_enterprises``. Both tables this path keys on — that one and
-``sso_org_mappings`` — are deliberately outside RLS: they are read on the
-unauthenticated SSO callback, before a tenant is bound.
+``sso_personal_enterprises``. Every table this path touches —
+``sso_personal_enterprises``, ``sso_org_mappings`` and ``enterprises`` itself —
+is outside RLS: the first two are read on the unauthenticated SSO callback
+before a tenant is bound, and the third *is* the tenant.
 
-**Stage 2 note (ADR-017).** The tenant this binds is now the ENTERPRISE, which
-is what isolates and what a login must bind. What it still *writes* — an
-organization and a default team beside the enterprise — is the pre-ADR-017
-shape; D9 says sign-up creates neither. Removing them is Phase 3's identity work
-(with the domain-derived enterprise and the personal-domain list); this change
-deliberately stops short of it, and over-provisioning rows widens nothing.
+**A sign-up creates an enterprise and nothing else** (ADR-017 D3/D5/D4). No
+organization: that is a billing target created by payment, and a sign-in has no
+way to know who pays. No team: that is formed by consent, and inventing one
+would give an account a sharing group it never agreed to. Three rows are
+written here — the enterprise, the IdP-organization mapping, and the subject
+binding — and the first two come from ``tenant_bootstrap``'s per-row writers, so
+what "already exists" means cannot drift between this path and the operator's.
 
-The four tenant rows themselves are written by the shared
-``infrastructure/persistence/tenant_bootstrap`` writer, the same one
-``fm-provision-sso-org`` uses, so the ordering constraints cannot drift between
-the operator path and the login path. What this module adds is the subject row,
-the tenant binding, and the recovery semantics a login needs and an operator
-does not.
-
-Why this path does not need the operator's RLS-exempt role
-----------------------------------------------------------
+Why this path needs no RLS-exempt role and no tenant binding
+------------------------------------------------------------
 ``fm-provision-sso-org`` demands the owner DSN because it resolves an
 organization by ``(enterprise_id, slug)`` — an id-blind lookup the
-``organizations`` policy cannot satisfy. This path has no such lookup: the
-untenanted subject row answers "which enterprise?" before RLS is in the way,
-and on a first sign-in there is no tenant to find because this call is what
-creates it. It therefore *generates* the id and binds it before opening the
-transaction, so the engine's ``begin`` listener writes it into
-``app.current_enterprise_id`` and the policy (no ``FOR`` clause, so ``USING``
-doubles as ``WITH CHECK``) accepts every row.
-
-**The binding happens here, not in the caller.** A caller of :meth:`provision`
-should not have to know that persisting a row requires a contextvar to be set
-first — and a caller that knew could also forget, or leave a nonexistent
-organization bound after a failed attempt. On every exit path this module
-restores whatever scope it was called with; the login service rebinds to the
-tenant it actually resolved, afterwards and once.
+``organizations`` policy cannot satisfy. This path has no such lookup and, since
+the organization and the team went away with ADR-017, no RLS-enrolled table left
+to write. It therefore neither binds nor restores a tenant scope; the login
+service binds the enterprise it resolved, afterwards and once.
 
 Idempotency, races, and collisions that are not races
 ------------------------------------------------------
 The whole write is one transaction, so it commits entirely or not at all. Two
 concurrent first logins for the same subject cannot both succeed: they derive
 the same slug and the same IdP organization, so the loser trips one of the
-constraints and rolls back whole, leaving no tenant rows behind. It then re-reads the subject row and adopts the winner's tenant.
+constraints and rolls back whole, leaving no rows behind. It then re-reads the
+subject row and adopts the winner's enterprise.
 
 A constraint violation is **not** automatically a lost race, and conflating the
 two produced a permanent lockout with a log that named the wrong thing (#1045
@@ -53,6 +39,20 @@ that class is gone by construction: the shared writer adopts an existing
 enterprise with the same slug rather than always inserting, which is safe
 precisely because the slug is derived from the subject and nobody else can
 produce it.
+
+Retirement, and why the row is re-pointed rather than re-inserted
+-----------------------------------------------------------------
+``users.enterprise_id`` is NOT NULL (ADR-017 D3: every account is anchored to
+exactly one enterprise), so the old "clear the anchor and let the next login
+provision" mechanism has no state left to express. What replaces it is a
+positive one: a retirement stamps ``retired_at`` and ``retirement_state`` on
+this row and leaves it in place, and it is that policy — read through
+``account_anchor`` — which decides whether the subject's next org-less sign-in
+may provision again. :meth:`get` therefore reads **live rows only**, so a
+retired subject falls through to the anchor check instead of resolving back
+into the tenant it was taken out of; and :meth:`provision` **re-points the
+retired row** instead of inserting beside it, because ``subject`` is the primary
+key and there can only ever be one.
 """
 
 from __future__ import annotations
@@ -65,21 +65,17 @@ import structlog
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
-from faultmaven.config.tenant_context import (
-    get_current_enterprise_id,
-    set_current_enterprise_id,
-)
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.infrastructure.persistence.models import (
     EnterpriseModel,
-    OrganizationModel,
     SSOOrgMappingModel,
     SSOPersonalEnterpriseModel,
 )
 from faultmaven.infrastructure.persistence.tenant_bootstrap import (
     OrgAlreadyClaimed,
     RemapRefused,
-    bootstrap_tenant,
+    ensure_mapping,
+    get_or_create_enterprise,
 )
 from faultmaven.modules.auth.contracts import (
     ISSOPersonalEnterpriseRepository,
@@ -123,8 +119,14 @@ class SessionlessSSOPersonalEnterpriseRepository(ISSOPersonalEnterpriseRepositor
             # personal enterprise, whichever IdP minted it. The provider is
             # still compared, because a row minted by another provider is not
             # this provider's binding even though it names the same subject.
+            #
+            # ``retired_at`` is part of the predicate, not a caller's
+            # afterthought: a retired row is kept precisely so the anchor check
+            # can read the operator's next-login policy off it, and answering
+            # with it here would resolve the subject straight back into the
+            # tenant the retirement fenced them out of.
             row = await session.get(SSOPersonalEnterpriseModel, provider_user_id)
-            if row is None or row.provider != provider:
+            if row is None or row.provider != provider or row.retired_at is not None:
                 return None
             return PersonalEnterpriseRecord(
                 enterprise_id=row.enterprise_id,
@@ -158,7 +160,14 @@ class SessionlessSSOPersonalEnterpriseRepository(ISSOPersonalEnterpriseRepositor
             )
 
     async def retire(self, provider: str, provider_user_id: str) -> bool:
-        """Drop the binding. The enterprise and its cases are left in place."""
+        """Drop the binding. The enterprise and its cases are left in place.
+
+        Used by the personal→company switch (#1320), where the account has just
+        moved its anchor onto a company enterprise: the binding is deleted
+        outright rather than stamped, because there is no next-login policy to
+        record — the account no longer lives in a personal tenant at all, and a
+        stamped row would tell the anchor check the opposite.
+        """
         async with get_db_session() as session:
             row = await session.get(SSOPersonalEnterpriseModel, provider_user_id)
             if row is None or row.provider != provider:
@@ -176,27 +185,31 @@ class SessionlessSSOPersonalEnterpriseRepository(ISSOPersonalEnterpriseRepositor
         name: str,
         slug: str,
     ) -> str:
-        """Create the subject's tenant atomically, or adopt an existing one."""
-        enterprise_id = str(uuid.uuid4())
-        organization_id = str(uuid.uuid4())
-        restore_to = get_current_enterprise_id()
-        set_current_enterprise_id(enterprise_id)
+        """Create the subject's enterprise atomically, or adopt an existing one."""
         try:
-            await self._write(
+            # The id the WRITE actually used, not the one this call proposed.
+            # ``get_or_create_enterprise`` adopts a live row with the same
+            # derived slug rather than always inserting, and that row is what
+            # the binding then names — so returning the proposed uuid would hand
+            # the login an enterprise id that names nothing. Reachable through
+            # the #1320 switch, which drops the binding and leaves the
+            # enterprise and its mapping standing: the subject's next
+            # provisioning conflicts with nothing, adopts, and would otherwise
+            # bind an id ``get_enterprise`` cannot resolve.
+            enterprise_id = await self._write(
                 provider=provider,
                 provider_user_id=provider_user_id,
                 provider_org_id=provider_org_id,
-                enterprise_id=enterprise_id,
-                organization_id=organization_id,
+                enterprise_id=str(uuid.uuid4()),
                 name=name,
                 slug=slug,
             )
         except _CONFLICT_SIGNALS:
             # The whole transaction rolled back, so nothing of ours survives.
             # Either a concurrent login for the same subject won — in which case
-            # its tenant is the one this login wants — or something else owns a
-            # key we derived, which is a different problem with a different
-            # remedy and must not be logged as a race.
+            # its enterprise is the one this login wants — or something else
+            # owns a key we derived, which is a different problem with a
+            # different remedy and must not be logged as a race.
             adopted = await self.get(provider, provider_user_id)
             if adopted is not None:
                 logger.info(
@@ -215,8 +228,6 @@ class SessionlessSSOPersonalEnterpriseRepository(ISSOPersonalEnterpriseRepositor
                 colliding_value=collision.colliding_value,
             )
             raise collision from None
-        finally:
-            set_current_enterprise_id(restore_to)
 
         logger.info(
             "sso_personal_tenant_provisioned",
@@ -232,10 +243,10 @@ class SessionlessSSOPersonalEnterpriseRepository(ISSOPersonalEnterpriseRepositor
 
         Read outside any tenant scope, on untenanted tables plus ``enterprises``
         (which is the tenant itself and is therefore not RLS-enrolled) — so the
-        diagnosis itself cannot be hidden by RLS. The
-        ``organizations`` probe is last and deliberately best-effort: it IS
-        tenanted, so an invisible row simply does not answer, and an
-        indeterminate diagnosis is reported as such rather than guessed.
+        diagnosis itself cannot be hidden by RLS, and every key this path can
+        collide on is reachable from here. The organizations probe that used to
+        close the list is gone with the organization: a sign-up no longer writes
+        one, so it is no longer a key this attempt could have collided on.
         """
         async with get_db_session() as session:
             mapping = await session.get(SSOOrgMappingModel, (provider, provider_org_id))
@@ -257,16 +268,6 @@ class SessionlessSSOPersonalEnterpriseRepository(ISSOPersonalEnterpriseRepositor
             ).scalar_one_or_none()
             if enterprise is not None:
                 return PersonalTenantCollision("enterprises.slug", slug)
-            organization = (
-                await session.execute(
-                    select(OrganizationModel.organization_id).where(
-                        OrganizationModel.slug == slug,
-                        OrganizationModel.deleted_at.is_(None),
-                    )
-                )
-            ).scalar_one_or_none()
-            if organization is not None:
-                return PersonalTenantCollision("organizations.slug", slug)
         return PersonalTenantCollision("unknown", slug)
 
     async def _write(
@@ -276,23 +277,31 @@ class SessionlessSSOPersonalEnterpriseRepository(ISSOPersonalEnterpriseRepositor
         provider_user_id: str,
         provider_org_id: str,
         enterprise_id: str,
-        organization_id: str,
         name: str,
         slug: str,
-    ) -> None:
-        """Enterprise, organization, team, mapping, subject row — one transaction."""
+    ) -> str:
+        """Enterprise, mapping, subject row — one transaction, three rows.
+
+        Returns the enterprise id the write **used**, which is not necessarily
+        the one proposed: the slug arm adopts an existing live row.
+
+        Three, not five: ADR-017 D5/D4 say a sign-up creates no organization and
+        no team, so those rows are not written here and their absence is the
+        design rather than an omission.
+        """
         async with get_db_session() as session:
-            # The four tenant rows, in the operator path's order, from the one
-            # writer both paths share. Its conflict refusals are unconditional;
-            # what this module adds is the interpretation, above, using the
-            # untenanted subject row the writer cannot see.
-            tenant = await bootstrap_tenant(
+            # The enterprise, from the writer both provisioning paths share. Its
+            # slug arm adopts an existing row rather than always inserting,
+            # which is safe precisely because the slug is derived from the
+            # subject: nobody else can produce it, so an orphan left by an
+            # earlier failed attempt is this subject's own.
+            enterprise, _ = await get_or_create_enterprise(
+                session, enterprise_id=enterprise_id, name=name, slug=slug
+            )
+            await ensure_mapping(
                 session,
-                name=name,
-                slug=slug,
                 provider_org_id=provider_org_id,
-                enterprise_id=enterprise_id,
-                organization_id=organization_id,
+                enterprise_id=enterprise.enterprise_id,
             )
 
             # The subject binding — the row that answers "where does this
@@ -305,15 +314,38 @@ class SessionlessSSOPersonalEnterpriseRepository(ISSOPersonalEnterpriseRepositor
             # membership is what makes the IdP echo the organization and an
             # echoed organization with no committed mapping is a permanent
             # ``sso_org_unmapped``.
+            #
+            # An existing row is **re-pointed** rather than inserted beside:
+            # ``subject`` is the primary key, so a subject whose earlier tenant
+            # was retired with ``fresh-tenant`` has one row and this is it. The
+            # retirement columns are cleared as part of the move — the policy
+            # has now been honoured, and leaving it set would tell the next
+            # anchor read that the tenant this call just created is retired.
             now = datetime.now(UTC)
-            session.add(
-                SSOPersonalEnterpriseModel(
-                    subject=provider_user_id,
-                    provider=provider,
-                    provider_org_id=provider_org_id,
-                    enterprise_id=tenant.enterprise.enterprise_id,
-                    membership_confirmed=False,
-                    created_at=now,
-                    updated_at=now,
+            row = await session.get(SSOPersonalEnterpriseModel, provider_user_id)
+            if row is None:
+                session.add(
+                    SSOPersonalEnterpriseModel(
+                        subject=provider_user_id,
+                        provider=provider,
+                        provider_org_id=provider_org_id,
+                        enterprise_id=enterprise.enterprise_id,
+                        membership_confirmed=False,
+                        created_at=now,
+                        updated_at=now,
+                    )
                 )
-            )
+            else:
+                row.provider = provider
+                row.provider_org_id = provider_org_id
+                row.enterprise_id = enterprise.enterprise_id
+                row.membership_confirmed = False
+                # ``created_at`` is when THIS tenant was minted, and the
+                # provisioning ceiling counts on it — a re-pointed row that kept
+                # an old timestamp would be a fresh tenant the rate limit could
+                # not see.
+                row.created_at = now
+                row.updated_at = now
+                row.retired_at = None
+                row.retirement_state = None
+            return enterprise.enterprise_id

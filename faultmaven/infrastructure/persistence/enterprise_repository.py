@@ -46,6 +46,7 @@ def _model_to_domain(model: EnterpriseModel) -> Enterprise:
         max_members=model.max_members,
         max_cases=model.max_cases,
         billing_email=model.billing_email,
+        domain=model.domain,
         settings=_parse_settings(model.settings),
         created_at=model.created_at,
         updated_at=model.updated_at,
@@ -73,6 +74,7 @@ class PostgreSQLEnterpriseRepository(IEnterpriseRepository):
             max_members=enterprise.max_members,
             max_cases=enterprise.max_cases,
             billing_email=enterprise.billing_email,
+            domain=enterprise.domain,
             settings=_serialize_settings(enterprise.settings),
             created_at=enterprise.created_at,
             updated_at=enterprise.updated_at,
@@ -104,6 +106,25 @@ class PostgreSQLEnterpriseRepository(IEnterpriseRepository):
         model = result.scalar_one_or_none()
         return _model_to_domain(model) if model else None
 
+    async def get_or_create_for_domain(
+        self, *, domain: str, name: str, slug: str
+    ) -> Enterprise:
+        """See :meth:`IEnterpriseRepository.get_or_create_for_domain`.
+
+        Delegates the row rule to ``tenant_bootstrap`` — the module that owns
+        what "already exists" means for every tenant row — rather than carrying
+        a second copy of the live-rows-only predicate here.
+        """
+        from faultmaven.infrastructure.persistence.tenant_bootstrap import (
+            get_or_create_enterprise_for_domain,
+        )
+
+        model, _ = await get_or_create_enterprise_for_domain(
+            self.db, domain=domain, name=name, slug=slug
+        )
+        await self.db.commit()
+        return _model_to_domain(model)
+
     async def update_enterprise(self, enterprise: Enterprise) -> bool:
         enterprise.updated_at = datetime.now(timezone.utc)
         stmt = (
@@ -119,6 +140,7 @@ class PostgreSQLEnterpriseRepository(IEnterpriseRepository):
                 max_members=enterprise.max_members,
                 max_cases=enterprise.max_cases,
                 billing_email=enterprise.billing_email,
+                domain=enterprise.domain,
                 settings=_serialize_settings(enterprise.settings),
                 updated_at=enterprise.updated_at,
             )
