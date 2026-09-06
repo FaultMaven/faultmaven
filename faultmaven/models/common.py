@@ -21,12 +21,6 @@ from faultmaven.config.constants import STANDALONE_ORG_ID
 from faultmaven.utils.serialization import to_json_compatible
 
 
-
-# DELIBERATE ARCHITECTURE VIOLATION — throwaway probe for the required-check
-# rollout, NOT to be merged. Contract 3 forbids faultmaven.models importing
-# faultmaven.services. Unused, so it changes no behaviour.
-from faultmaven.services.base import BaseService  # noqa: F401
-
 class AgentStateEnum(str, Enum):
     """Enumeration of agent states for testing and status tracking"""
 
