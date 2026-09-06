@@ -278,7 +278,26 @@ def _determine_investigation_momentum(
     if len(recent_turns) < 2:
         return InvestigationMomentum.MODERATE  # Not enough data
 
-    # Count recent progress indicators
+    # Count recent progress indicators.
+    #
+    # ‼ These thresholds were calibrated while ``hypotheses_validated`` was
+    # PERMANENTLY EMPTY — it had no writer at all until #1284, measured at 0 of
+    # 2,578 persisted turns — so the band has only ever seen two of its three
+    # declared summands. It now sees three, which shifts cases upward.
+    #
+    # The shift is largest on an identification turn, where one derivation
+    # contributes to TWO summands: the chain root validating puts the hypothesis
+    # id in ``hypotheses_validated`` and, when the symptom is verified and the
+    # root uncontested, also raises ``cause_state`` and records
+    # ``root_cause_identified`` in ``milestones_completed``. They are genuinely
+    # distinct facts — a hypothesis can validate turns before the symptom is
+    # verified, and identification can arrive on a turn that validates nothing
+    # new — but on the common turn where they coincide, work that previously
+    # summed to 0 here can now reach HIGH on its own.
+    #
+    # Deliberately NOT re-tuned in #1284: picking new thresholds needs a corpus
+    # of cases scored with a working third arm, which does not exist yet
+    # (#1284 called for exactly this re-check). Read the bands as provisional.
     recent_milestones = sum(len(t.milestones_completed) for t in recent_turns)
     recent_evidence = sum(len(t.evidence_added) for t in recent_turns)
     recent_hypotheses = sum(len(t.hypotheses_validated) for t in recent_turns)
