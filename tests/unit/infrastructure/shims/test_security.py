@@ -159,6 +159,63 @@ class TestPIIRedactorStatus:
 class TestPIIRedactorErrorHandling:
     """Tests for PIIRedactor error handling (fail-open behavior)."""
 
+    def test_a_system_exit_from_the_engine_degrades_instead_of_killing_the_process(
+        self,
+    ):
+        """The guard has to hold against the failure that actually happens.
+
+        Presidio's spaCy engine reaches ``spacy.cli.download`` for a missing
+        model, which shells out to an installer and ends in
+        ``sys.exit(returncode)``. ``SystemExit`` derives from ``BaseException``,
+        so ``except Exception`` did not apply and the exit escaped a guard whose
+        entire purpose is that a redactor which cannot start degrades to
+        inactive. No FaultMaven image installs a spaCy model while
+        ``presidio-analyzer`` ships in the cloud requirements, so this is the
+        ordinary path for any deployment that enables redaction.
+
+        Paired with the ``Exception`` case above so the two cannot drift: both
+        must degrade, and neither may leave ``active`` true.
+        """
+        with patch.dict(os.environ, {"ENABLE_PII_REDACTION": "true"}):
+            with patch(
+                "faultmaven.infrastructure.shims.security.PRESIDIO_AVAILABLE", True
+            ):
+                with patch(
+                    "faultmaven.infrastructure.shims.security.AnalyzerEngine",
+                    side_effect=SystemExit(2),
+                ):
+                    from faultmaven.infrastructure.shims import security
+
+                    redactor = security.PIIRedactor()
+
+                    assert redactor.active is False
+                    assert redactor.is_active() is False
+                    assert redactor._initialization_error is not None
+                    # And it still answers, fail-open on the text rather than
+                    # raising into whatever was being redacted.
+                    assert redactor.redact("mail a@b.com") == "mail a@b.com"
+
+    def test_an_interrupt_is_not_swallowed_by_the_degradation_guard(self):
+        """The other direction: ``BaseException`` would be over-catching.
+
+        ``KeyboardInterrupt`` and ``CancelledError`` belong to whoever is
+        shutting the process down; swallowing them here would turn a Ctrl-C or a
+        cancelled task into a hang. Pinned so a later widening of the except
+        clause has to argue with a test rather than pass silently.
+        """
+        with patch.dict(os.environ, {"ENABLE_PII_REDACTION": "true"}):
+            with patch(
+                "faultmaven.infrastructure.shims.security.PRESIDIO_AVAILABLE", True
+            ):
+                with patch(
+                    "faultmaven.infrastructure.shims.security.AnalyzerEngine",
+                    side_effect=KeyboardInterrupt(),
+                ):
+                    from faultmaven.infrastructure.shims import security
+
+                    with pytest.raises(KeyboardInterrupt):
+                        security.PIIRedactor()
+
     def test_initialization_error_handling(self):
         """Test PIIRedactor handles initialization errors gracefully."""
         with patch.dict(os.environ, {"ENABLE_PII_REDACTION": "true"}):
@@ -266,15 +323,38 @@ class TestEnvironmentVariableHandling:
             ), f"ENABLE_PII_REDACTION={value} should be {expected}"
 
 
+def _presidio_is_usable() -> bool:
+    """Whether a real Presidio redactor can actually become active here.
+
+    ``PRESIDIO_AVAILABLE`` answers "is the package importable?", which is not
+    the same question and is the one these tests were asking. The package ships
+    in the cloud requirements while **no FaultMaven image installs a spaCy
+    model**, so importable-but-unusable is the ordinary state: the engine
+    reaches for a model, fails, and the redactor degrades to inactive exactly as
+    designed. Gating on the import made four tests assert ``active is True``
+    against a redactor that was correctly inactive.
+
+    Constructing one and asking is the only predicate that matches what the
+    tests below need, and it costs one construction. Where the model IS present
+    (a cloud image that adds it), they run for real rather than skipping.
+    """
+    from faultmaven.infrastructure.shims.security import PIIRedactor
+
+    with patch.dict(os.environ, {"ENABLE_PII_REDACTION": "true"}):
+        return PIIRedactor().active
+
+
 class TestIntegrationWithPresidio:
     """Tests for integration with real Presidio library if available."""
 
     def test_pii_redactor_with_presidio_enabled(self):
         """Test PIIRedactor with Presidio enabled (if available)."""
-        from faultmaven.infrastructure.shims.security import PRESIDIO_AVAILABLE
-
-        if not PRESIDIO_AVAILABLE:
-            pytest.skip("Presidio not installed - skipping integration test")
+        if not _presidio_is_usable():
+            pytest.skip(
+                "Presidio cannot initialise here (no spaCy model installed) — "
+                "the redactor correctly degrades to inactive, which is what "
+                "the unit cases above cover"
+            )
 
         with patch.dict(os.environ, {"ENABLE_PII_REDACTION": "true"}):
             from faultmaven.infrastructure.shims.security import PIIRedactor
@@ -286,10 +366,12 @@ class TestIntegrationWithPresidio:
 
     def test_redact_email_with_presidio(self):
         """Test email redaction with real Presidio (if available)."""
-        from faultmaven.infrastructure.shims.security import PRESIDIO_AVAILABLE
-
-        if not PRESIDIO_AVAILABLE:
-            pytest.skip("Presidio not installed - skipping integration test")
+        if not _presidio_is_usable():
+            pytest.skip(
+                "Presidio cannot initialise here (no spaCy model installed) — "
+                "the redactor correctly degrades to inactive, which is what "
+                "the unit cases above cover"
+            )
 
         with patch.dict(os.environ, {"ENABLE_PII_REDACTION": "true"}):
             from faultmaven.infrastructure.shims.security import PIIRedactor
@@ -305,10 +387,12 @@ class TestIntegrationWithPresidio:
 
     def test_redact_phone_with_presidio(self):
         """Test phone number redaction with real Presidio (if available)."""
-        from faultmaven.infrastructure.shims.security import PRESIDIO_AVAILABLE
-
-        if not PRESIDIO_AVAILABLE:
-            pytest.skip("Presidio not installed - skipping integration test")
+        if not _presidio_is_usable():
+            pytest.skip(
+                "Presidio cannot initialise here (no spaCy model installed) — "
+                "the redactor correctly degrades to inactive, which is what "
+                "the unit cases above cover"
+            )
 
         with patch.dict(os.environ, {"ENABLE_PII_REDACTION": "true"}):
             from faultmaven.infrastructure.shims.security import PIIRedactor
@@ -323,10 +407,12 @@ class TestIntegrationWithPresidio:
 
     def test_redact_no_pii_found(self):
         """Test redaction when no PII is present."""
-        from faultmaven.infrastructure.shims.security import PRESIDIO_AVAILABLE
-
-        if not PRESIDIO_AVAILABLE:
-            pytest.skip("Presidio not installed - skipping integration test")
+        if not _presidio_is_usable():
+            pytest.skip(
+                "Presidio cannot initialise here (no spaCy model installed) — "
+                "the redactor correctly degrades to inactive, which is what "
+                "the unit cases above cover"
+            )
 
         with patch.dict(os.environ, {"ENABLE_PII_REDACTION": "true"}):
             from faultmaven.infrastructure.shims.security import PIIRedactor
@@ -341,10 +427,12 @@ class TestIntegrationWithPresidio:
 
     def test_get_status_with_presidio(self):
         """Test status when Presidio is actually available."""
-        from faultmaven.infrastructure.shims.security import PRESIDIO_AVAILABLE
-
-        if not PRESIDIO_AVAILABLE:
-            pytest.skip("Presidio not installed - skipping integration test")
+        if not _presidio_is_usable():
+            pytest.skip(
+                "Presidio cannot initialise here (no spaCy model installed) — "
+                "the redactor correctly degrades to inactive, which is what "
+                "the unit cases above cover"
+            )
 
         with patch.dict(os.environ, {"ENABLE_PII_REDACTION": "true"}):
             from faultmaven.infrastructure.shims.security import PIIRedactor
