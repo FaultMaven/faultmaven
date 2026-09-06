@@ -38,7 +38,7 @@ def _summary(
         updated_at=now,
         last_activity_at=now,
         user_id=user_id,
-        organization_id=org_id,
+        enterprise_id=org_id,
         current_turn=1,
         stage=InvestigationStage.DIAGNOSIS,
         turns_without_progress=0,
@@ -67,7 +67,7 @@ def _cloud_settings(tenant_provider: str = "single"):
 def admin_user():
     return AuthenticatedUser(
         user_id="admin_1",
-        organization_id="org_1",
+        enterprise_id="org_1",
         email="admin@example.com",
         roles=["admin", "platform_admin"],
         permissions=["admin:all"],
@@ -78,7 +78,7 @@ def admin_user():
 def member_user():
     return AuthenticatedUser(
         user_id="member_1",
-        organization_id="org_1",
+        enterprise_id="org_1",
         email="member@example.com",
         roles=["member"],
         permissions=["cases:read"],
@@ -181,7 +181,7 @@ async def test_admin_list_all_cases_records_the_access(
     assert kwargs["action"] is OperatorAction.LIST
     assert kwargs["operator_user_id"] == admin_user.user_id
     # A cross-tenant list spans every tenant, so it is stamped with no org.
-    assert kwargs["target_organization_id"] is None
+    assert kwargs["target_enterprise_id"] is None
 
 
 async def test_admin_list_all_cases_forbidden_for_non_admin(

@@ -127,7 +127,7 @@ def context():
     return ToolContext(
         session_id="sess_1",
         case_id="case_123",
-        organization_id="org_1",
+        enterprise_id="org_1",
         user_id="user_1",
         in_memory_case=case,
     )
@@ -294,7 +294,7 @@ class TestPartialMatchFallback:
         return ToolContext(
             session_id="sess_1",
             case_id="case_123",
-            organization_id="org_1",
+            enterprise_id="org_1",
             user_id="user_1",
             in_memory_case=case,
         )
@@ -380,7 +380,7 @@ class TestVocabularyExtraction:
         return ToolContext(
             session_id="sess_1",
             case_id="case_123",
-            organization_id="org_1",
+            enterprise_id="org_1",
             user_id="user_1",
             in_memory_case=case,
         )
@@ -521,7 +521,7 @@ class TestTruncationReporting:
         return ToolContext(
             session_id="sess_1",
             case_id="case_123",
-            organization_id="org_1",
+            enterprise_id="org_1",
             user_id="user_1",
             in_memory_case=case,
         )
@@ -605,7 +605,7 @@ class TestMaxResultsOverride:
         return ToolContext(
             session_id="sess_1",
             case_id="case_123",
-            organization_id="org_1",
+            enterprise_id="org_1",
             user_id="user_1",
             in_memory_case=case,
         )
@@ -693,7 +693,7 @@ class TestCountOutputFormat:
         return ToolContext(
             session_id="sess_1",
             case_id="case_123",
-            organization_id="org_1",
+            enterprise_id="org_1",
             user_id="user_1",
             in_memory_case=case,
         )
@@ -911,7 +911,7 @@ class TestNonFileBackedEvidenceGuard:
         ctx = ToolContext(
             session_id="sess_1",
             case_id="case_123",
-            organization_id="org_1",
+            enterprise_id="org_1",
             user_id="user_1",
             in_memory_case=case,
         )
@@ -947,7 +947,7 @@ class TestNonFileBackedEvidenceGuard:
         ctx = ToolContext(
             session_id="sess_1",
             case_id="case_123",
-            organization_id="org_1",
+            enterprise_id="org_1",
             user_id="user_1",
             in_memory_case=case,
         )
@@ -980,7 +980,7 @@ class TestNonFileBackedEvidenceGuard:
         ctx = ToolContext(
             session_id="sess_1",
             case_id="case_123",
-            organization_id="org_1",
+            enterprise_id="org_1",
             user_id="user_1",
             in_memory_case=case,
         )
@@ -1020,7 +1020,7 @@ class TestSyntheticFilenameNotReported:
         return ToolContext(
             session_id="sess_1",
             case_id="case_123",
-            organization_id="org_1",
+            enterprise_id="org_1",
             user_id="user_1",
             in_memory_case=case,
         )
@@ -1067,7 +1067,7 @@ class TestSyntheticFilenameNotReported:
         ctx = ToolContext(
             session_id="sess_1",
             case_id="case_123",
-            organization_id="org_1",
+            enterprise_id="org_1",
             user_id="user_1",
             in_memory_case=case,
         )

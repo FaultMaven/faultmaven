@@ -39,7 +39,7 @@ def mock_user():
     """Create a mock authenticated user for testing."""
     return AuthenticatedUser(
         user_id="user_789",
-        organization_id="org_456",
+        enterprise_id="org_456",
         email="test@example.com",
         roles=["admin"],
         permissions=["cases:read", "cases:write", "cases:delete"],
@@ -96,7 +96,7 @@ def mock_case_summary():
         updated_at=now,
         last_activity_at=now,
         user_id="user_789",
-        organization_id="org_456",
+        enterprise_id="org_456",
         current_turn=1,
         stage=None,  # INQUIRY: no investigation stage yet
         turns_without_progress=0,

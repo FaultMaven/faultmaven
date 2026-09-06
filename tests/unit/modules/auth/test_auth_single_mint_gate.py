@@ -416,7 +416,7 @@ def test_the_predicate_refuses_when_the_flag_is_absent():
 
     token_derived = AuthenticatedUser(
         user_id="user_123",
-        organization_id="org_acme",
+        enterprise_id="org_acme",
         email="testuser@acme.example",
         roles=["user"],
         permissions=[],

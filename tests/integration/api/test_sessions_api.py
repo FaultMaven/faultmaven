@@ -33,7 +33,7 @@ def mock_user():
     """Create a mock authenticated user for testing."""
     return AuthenticatedUser(
         user_id="user_789",
-        organization_id="org_456",
+        enterprise_id="org_456",
         email="test@example.com",
         roles=["admin"],
         permissions=["sessions:read", "sessions:write", "sessions:execute"],
@@ -740,7 +740,7 @@ class TestSameOrganizationStrangerIsDenied:
 
         stranger = AuthenticatedUser(
             user_id="user_stranger",
-            organization_id=mock_user.organization_id,  # same org as the owner
+            enterprise_id=mock_user.organization_id,  # same org as the owner
             email="stranger@example.com",
             roles=["user"],
             permissions=["sessions:read", "sessions:write", "sessions:execute"],

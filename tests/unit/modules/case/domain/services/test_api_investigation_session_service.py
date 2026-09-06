@@ -89,7 +89,7 @@ def sample_session():
         session_id=f"session_{uuid4().hex[:12]}",
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="user_123",
-        organization_id="org_456",
+        enterprise_id="org_456",
         state=SessionState.ACTIVE,
         session_goal="Debug authentication issue",
         total_token_usage=1000,
@@ -117,7 +117,7 @@ class TestCreateSession:
 
         result = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id="user_123",
             session_goal="Debug issue",
         )
@@ -138,7 +138,7 @@ class TestCreateSession:
 
         result = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id="user_123",
         )
 
@@ -156,7 +156,7 @@ class TestCreateSession:
 
         result = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id="user_123",
         )
 
@@ -174,7 +174,7 @@ class TestCreateSession:
         before = datetime.now(timezone.utc)
         result = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id="user_123",
         )
         after = datetime.now(timezone.utc)
@@ -194,7 +194,7 @@ class TestCreateSession:
         with pytest.raises(NotFoundError) as exc_info:
             await session_service.create_session(
                 case_id="nonexistent_case",
-                organization_id="org_1",
+                enterprise_id="org_1",
                 user_id="user_1",
             )
 
@@ -210,7 +210,7 @@ class TestCreateSession:
         with pytest.raises(AuthorizationError):
             await session_service.create_session(
                 case_id=sample_case.case_id,
-                organization_id="different_org",
+                enterprise_id="different_org",
                 user_id="user_1",
             )
 
@@ -230,7 +230,7 @@ class TestCreateSession:
         with pytest.raises(ConflictError) as exc_info:
             await session_service.create_session(
                 case_id=sample_case.case_id,
-                organization_id=sample_case.organization_id,
+                enterprise_id=sample_case.enterprise_id,
                 user_id="user_1",
             )
 
@@ -244,7 +244,7 @@ class TestCreateSession:
         with pytest.raises(ValidationException) as exc_info:
             await session_service.create_session(
                 case_id="",
-                organization_id="org_1",
+                enterprise_id="org_1",
                 user_id="user_1",
             )
 
@@ -258,7 +258,7 @@ class TestCreateSession:
         with pytest.raises(ValidationException) as exc_info:
             await session_service.create_session(
                 case_id="case_1",
-                organization_id="org_1",
+                enterprise_id="org_1",
                 user_id="",
             )
 
@@ -272,11 +272,11 @@ class TestCreateSession:
         with pytest.raises(ValidationException) as exc_info:
             await session_service.create_session(
                 case_id="case_1",
-                organization_id="",
+                enterprise_id="",
                 user_id="user_1",
             )
 
-        assert "organization_id" in str(exc_info.value).lower()
+        assert "enterprise_id" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
     async def test_create_session_negative_budget_raises_validation_error(
@@ -286,7 +286,7 @@ class TestCreateSession:
         with pytest.raises(ValidationException) as exc_info:
             await session_service.create_session(
                 case_id="case_1",
-                organization_id="org_1",
+                enterprise_id="org_1",
                 user_id="user_1",
                 token_budget_limit=-100,
             )
@@ -304,7 +304,7 @@ class TestCreateSession:
 
         result = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id="user_123",
             token_budget_limit=5000,
         )
@@ -323,7 +323,7 @@ class TestCreateSession:
         metadata = {"priority": "high", "tags": ["debug", "auth"]}
         result = await session_service.create_session(
             case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             user_id="user_123",
             metadata=metadata,
         )
@@ -350,12 +350,12 @@ class TestGetSession:
     ):
         """Test successful session retrieval."""
         sample_session.case_id = sample_case.case_id
-        sample_session.organization_id = sample_case.organization_id
+        sample_session.enterprise_id = sample_case.enterprise_id
         mock_session_repo.get_by_id.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
 
         result = await session_service.get_session(
-            sample_session.session_id, sample_case.organization_id
+            sample_session.session_id, sample_case.enterprise_id
         )
 
         assert result is not None
@@ -408,7 +408,7 @@ class TestGetSession:
         mock_case_repo.get.return_value = sample_case
 
         result = await session_service.get_session(
-            sample_session.session_id, sample_case.organization_id
+            sample_session.session_id, sample_case.enterprise_id
         )
 
         assert result is not None
@@ -454,7 +454,7 @@ class TestUpdateSession:
 
         result = await session_service.update_session(
             sample_session.session_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             {"session_goal": "Updated goal"},
             case_id=sample_session.case_id,
         )
@@ -479,7 +479,7 @@ class TestUpdateSession:
 
         result = await session_service.update_session(
             sample_session.session_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             {"token_budget_limit": 20000},
             case_id=sample_session.case_id,
         )
@@ -504,7 +504,7 @@ class TestUpdateSession:
         new_metadata = {"priority": "high"}
         result = await session_service.update_session(
             sample_session.session_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             {"metadata": new_metadata},
             case_id=sample_session.case_id,
         )
@@ -575,7 +575,7 @@ class TestUpdateSession:
         with pytest.raises(ValidationException) as exc_info:
             await session_service.update_session(
                 sample_session.session_id,
-                sample_case.organization_id,
+                sample_case.enterprise_id,
                 {"token_budget_limit": -100},
                 case_id=sample_session.case_id,
             )
@@ -609,7 +609,7 @@ class TestPauseSession:
 
         result = await session_service.pause_session(
             sample_session.session_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             case_id=sample_session.case_id,
         )
 
@@ -634,7 +634,7 @@ class TestPauseSession:
         with pytest.raises(ValidationException) as exc_info:
             await session_service.pause_session(
                 sample_session.session_id,
-                sample_case.organization_id,
+                sample_case.enterprise_id,
                 case_id=sample_session.case_id,
             )
 
@@ -688,7 +688,7 @@ class TestResumeSession:
 
         result = await session_service.resume_session(
             sample_session.session_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             case_id=sample_session.case_id,
         )
 
@@ -713,7 +713,7 @@ class TestResumeSession:
         with pytest.raises(ValidationException) as exc_info:
             await session_service.resume_session(
                 sample_session.session_id,
-                sample_case.organization_id,
+                sample_case.enterprise_id,
                 case_id=sample_session.case_id,
             )
 
@@ -768,7 +768,7 @@ class TestCompleteSession:
 
         result = await session_service.complete_session(
             sample_session.session_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             "Found root cause: memory leak in auth module",
             case_id=sample_session.case_id,
         )
@@ -794,7 +794,7 @@ class TestCompleteSession:
 
         result = await session_service.complete_session(
             sample_session.session_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             "Root cause identified",
             case_id=sample_session.case_id,
         )
@@ -820,7 +820,7 @@ class TestCompleteSession:
         before = datetime.now(timezone.utc)
         result = await session_service.complete_session(
             sample_session.session_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             "Findings",
             case_id=sample_session.case_id,
         )
@@ -848,7 +848,7 @@ class TestCompleteSession:
 
         result = await session_service.complete_session(
             sample_session.session_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             "Findings",
             case_id=sample_session.case_id,
         )
@@ -874,7 +874,7 @@ class TestCompleteSession:
         with pytest.raises(ValidationException) as exc_info:
             await session_service.complete_session(
                 sample_session.session_id,
-                sample_case.organization_id,
+                sample_case.enterprise_id,
                 "Findings",
                 case_id=sample_session.case_id,
             )
@@ -899,7 +899,7 @@ class TestCompleteSession:
         with pytest.raises(ValidationException):
             await session_service.complete_session(
                 sample_session.session_id,
-                sample_case.organization_id,
+                sample_case.enterprise_id,
                 "Findings",
                 case_id=sample_session.case_id,
             )
@@ -966,7 +966,7 @@ class TestAbandonSession:
 
         result = await session_service.abandon_session(
             sample_session.session_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             case_id=sample_session.case_id,
         )
 
@@ -991,7 +991,7 @@ class TestAbandonSession:
         with pytest.raises(ValidationException):
             await session_service.abandon_session(
                 sample_session.session_id,
-                sample_case.organization_id,
+                sample_case.enterprise_id,
                 case_id=sample_session.case_id,
             )
 
@@ -1042,7 +1042,7 @@ class TestGetActiveSession:
         mock_session_repo.get_active_session.return_value = sample_session
 
         result = await session_service.get_active_session(
-            sample_case.case_id, sample_case.organization_id
+            sample_case.case_id, sample_case.enterprise_id
         )
 
         assert result is not None
@@ -1057,7 +1057,7 @@ class TestGetActiveSession:
         mock_session_repo.get_active_session.return_value = None
 
         result = await session_service.get_active_session(
-            sample_case.case_id, sample_case.organization_id
+            sample_case.case_id, sample_case.enterprise_id
         )
 
         assert result is None
@@ -1108,7 +1108,7 @@ class TestListSessions:
         mock_session_repo.list_by_case_id.return_value = [sample_session]
 
         result = await session_service.list_sessions(
-            sample_case.case_id, sample_case.organization_id
+            sample_case.case_id, sample_case.enterprise_id
         )
 
         assert len(result) == 1
@@ -1124,7 +1124,7 @@ class TestListSessions:
 
         await session_service.list_sessions(
             sample_case.case_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             state=SessionState.ACTIVE,
         )
 
@@ -1142,7 +1142,7 @@ class TestListSessions:
                 session_id=f"session_{i}",
                 case_id=sample_case.case_id,
                 user_id="user_1",
-                organization_id=sample_case.organization_id,
+                enterprise_id=sample_case.enterprise_id,
             )
             for i in range(10)
         ]
@@ -1150,7 +1150,7 @@ class TestListSessions:
         mock_session_repo.list_by_case_id.return_value = sessions
 
         result = await session_service.list_sessions(
-            sample_case.case_id, sample_case.organization_id, limit=5
+            sample_case.case_id, sample_case.enterprise_id, limit=5
         )
 
         assert len(result) == 5
@@ -1165,7 +1165,7 @@ class TestListSessions:
                 session_id=f"session_{i}",
                 case_id=sample_case.case_id,
                 user_id="user_1",
-                organization_id=sample_case.organization_id,
+                enterprise_id=sample_case.enterprise_id,
             )
             for i in range(10)
         ]
@@ -1173,7 +1173,7 @@ class TestListSessions:
         mock_session_repo.list_by_case_id.return_value = sessions
 
         result = await session_service.list_sessions(
-            sample_case.case_id, sample_case.organization_id, offset=3, limit=5
+            sample_case.case_id, sample_case.enterprise_id, offset=3, limit=5
         )
 
         assert len(result) == 5
@@ -1198,7 +1198,7 @@ class TestListSessions:
         mock_session_repo.list_by_case_id.return_value = []
 
         result = await session_service.list_sessions(
-            sample_case.case_id, sample_case.organization_id
+            sample_case.case_id, sample_case.enterprise_id
         )
 
         assert result == []
@@ -1225,7 +1225,7 @@ class TestCheckBudgetExceeded:
 
         result = await session_service.check_budget_exceeded(
             sample_session.session_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             case_id=sample_session.case_id,
         )
 
@@ -1252,7 +1252,7 @@ class TestCheckBudgetExceeded:
 
         result = await session_service.check_budget_exceeded(
             sample_session.session_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             case_id=sample_session.case_id,
         )
 
@@ -1277,7 +1277,7 @@ class TestCheckBudgetExceeded:
 
         result = await session_service.check_budget_exceeded(
             sample_session.session_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             case_id=sample_session.case_id,
         )
 
@@ -1330,7 +1330,7 @@ class TestGetSessionStatistics:
         mock_session_repo.list_by_case_id.return_value = [sample_session]
 
         result = await session_service.get_session_statistics(
-            sample_case.case_id, sample_case.organization_id
+            sample_case.case_id, sample_case.enterprise_id
         )
 
         assert "total_sessions" in result
@@ -1352,7 +1352,7 @@ class TestGetSessionStatistics:
         mock_session_repo.list_by_case_id.return_value = [sample_session]
 
         result = await session_service.get_session_statistics(
-            sample_case.case_id, sample_case.organization_id
+            sample_case.case_id, sample_case.enterprise_id
         )
 
         assert "by_status" in result
@@ -1369,7 +1369,7 @@ class TestGetSessionStatistics:
                 session_id=f"session_{i}",
                 case_id=sample_case.case_id,
                 user_id="user_1",
-                organization_id=sample_case.organization_id,
+                enterprise_id=sample_case.enterprise_id,
                 total_token_usage=1000,
             )
             for i in range(3)
@@ -1378,7 +1378,7 @@ class TestGetSessionStatistics:
         mock_session_repo.list_by_case_id.return_value = sessions
 
         result = await session_service.get_session_statistics(
-            sample_case.case_id, sample_case.organization_id
+            sample_case.case_id, sample_case.enterprise_id
         )
 
         assert result["total_token_usage_all_sessions"] == 3000
@@ -1393,7 +1393,7 @@ class TestGetSessionStatistics:
                 session_id=f"session_{i}",
                 case_id=sample_case.case_id,
                 user_id="user_1",
-                organization_id=sample_case.organization_id,
+                enterprise_id=sample_case.enterprise_id,
                 total_agent_executions=5,
             )
             for i in range(2)
@@ -1402,7 +1402,7 @@ class TestGetSessionStatistics:
         mock_session_repo.list_by_case_id.return_value = sessions
 
         result = await session_service.get_session_statistics(
-            sample_case.case_id, sample_case.organization_id
+            sample_case.case_id, sample_case.enterprise_id
         )
 
         assert result["total_agent_executions_all_sessions"] == 10
@@ -1417,7 +1417,7 @@ class TestGetSessionStatistics:
                 session_id=f"session_{i}",
                 case_id=sample_case.case_id,
                 user_id="user_1",
-                organization_id=sample_case.organization_id,
+                enterprise_id=sample_case.enterprise_id,
                 total_duration_ms=60000,  # 1 minute
             )
             for i in range(2)
@@ -1426,7 +1426,7 @@ class TestGetSessionStatistics:
         mock_session_repo.list_by_case_id.return_value = sessions
 
         result = await session_service.get_session_statistics(
-            sample_case.case_id, sample_case.organization_id
+            sample_case.case_id, sample_case.enterprise_id
         )
 
         assert result["avg_session_duration_ms"] == 60000.0
@@ -1452,7 +1452,7 @@ class TestGetSessionStatistics:
         mock_session_repo.list_by_case_id.return_value = []
 
         result = await session_service.get_session_statistics(
-            sample_case.case_id, sample_case.organization_id
+            sample_case.case_id, sample_case.enterprise_id
         )
 
         assert result["total_sessions"] == 0
@@ -1490,7 +1490,7 @@ class TestSessionMustBelongToNamedCase:
             session_id=f"session_{uuid4().hex[:12]}",
             case_id=f"case_{uuid4().hex[:12]}",  # NOT the case the caller names
             user_id="user_victim",
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             state=SessionState.ACTIVE,
             session_goal="Victim's investigation",
         )
@@ -1505,7 +1505,7 @@ class TestSessionMustBelongToNamedCase:
         with pytest.raises(NotFoundError):
             await session_service.pause_session(
                 foreign_session.session_id,
-                sample_case.organization_id,
+                sample_case.enterprise_id,
                 case_id=sample_case.case_id,
             )
 
@@ -1520,7 +1520,7 @@ class TestSessionMustBelongToNamedCase:
         with pytest.raises(NotFoundError):
             await session_service.resume_session(
                 foreign_session.session_id,
-                sample_case.organization_id,
+                sample_case.enterprise_id,
                 case_id=sample_case.case_id,
             )
 
@@ -1533,7 +1533,7 @@ class TestSessionMustBelongToNamedCase:
         with pytest.raises(NotFoundError):
             await session_service.complete_session(
                 foreign_session.session_id,
-                sample_case.organization_id,
+                sample_case.enterprise_id,
                 "Findings supplied by someone else",
                 case_id=sample_case.case_id,
             )
@@ -1547,7 +1547,7 @@ class TestSessionMustBelongToNamedCase:
         with pytest.raises(NotFoundError):
             await session_service.update_session(
                 foreign_session.session_id,
-                sample_case.organization_id,
+                sample_case.enterprise_id,
                 {"session_goal": "Hijacked"},
                 case_id=sample_case.case_id,
             )
@@ -1561,7 +1561,7 @@ class TestSessionMustBelongToNamedCase:
         with pytest.raises(NotFoundError):
             await session_service.abandon_session(
                 foreign_session.session_id,
-                sample_case.organization_id,
+                sample_case.enterprise_id,
                 case_id=sample_case.case_id,
             )
 
@@ -1576,7 +1576,7 @@ class TestSessionMustBelongToNamedCase:
             session_id=f"session_{uuid4().hex[:12]}",
             case_id=sample_case.case_id,
             user_id=sample_case.user_id,
-            organization_id=sample_case.organization_id,
+            enterprise_id=sample_case.enterprise_id,
             state=SessionState.ACTIVE,
         )
         mock_session_repo.get_by_id.return_value = session
@@ -1585,7 +1585,7 @@ class TestSessionMustBelongToNamedCase:
 
         result = await session_service.pause_session(
             session.session_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             case_id=sample_case.case_id,
         )
 

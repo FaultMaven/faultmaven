@@ -58,7 +58,7 @@ def create_sample_session(
         session_id=generate_session_id(),
         case_id=case_id,
         user_id=user_id,
-        organization_id=organization_id,
+        enterprise_id=organization_id,
         state=state,
         session_goal=session_goal or "Benchmark investigation session",
         token_budget_limit=token_budget_limit,

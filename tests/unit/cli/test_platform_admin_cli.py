@@ -532,7 +532,7 @@ async def test_the_audit_writer_records_the_subject_and_the_roles(monkeypatch):
     assert recorded["operator_username"] == user.username
     assert recorded["action"] is OperatorAction.ROLE_GRANTED
     # Deployment-scoped: no organization to name.
-    assert recorded["target_organization_id"] is None
+    assert recorded["target_enterprise_id"] is None
     assert recorded["details"]["roles_changed"] == [PLATFORM_ADMIN_ROLE]
     assert recorded["details"]["invoked_via"] == "fm-promote-platform-admin"
     # The human who ran kubectl exec is not authenticated; say so rather than

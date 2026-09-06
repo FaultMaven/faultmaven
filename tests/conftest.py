@@ -1024,7 +1024,7 @@ def sample_case_summary():
         title="Test Case Summary",
         state=CaseState.INQUIRY,
         user_id="test-user-456",
-        organization_id="test-org-123",
+        enterprise_id="test-org-123",
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
         last_activity_at=datetime.now(timezone.utc),

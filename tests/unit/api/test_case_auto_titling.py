@@ -59,7 +59,7 @@ def _make_case(**overrides) -> Case:
         "title": "Case-260101-1",
         "description": "",
         "user_id": "user_123",
-        "organization_id": TENANT_ORG,
+        "enterprise_id": TENANT_ORG,
         "state": CaseState.INQUIRY,
     }
     defaults.update(overrides)

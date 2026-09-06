@@ -43,13 +43,14 @@ async def share_factory():
                 "VALUES ('org-1', 'ent-1', 'Org', 'org')"
             )
         )
-        # A genuinely distinct second tenant, so cross-tenant assertions rest on
-        # two different org ids rather than two spellings of the same one.
+        # A genuinely distinct second TENANT, so the cross-tenant assertions
+        # rest on two enterprises rather than two organizations of one — which
+        # under ADR-017 D4 is not a boundary at all: a team may span cost
+        # centres, and the allowlist deliberately does not match on them.
         await conn.execute(
             text(
-                "INSERT INTO organizations "
-                "(organization_id, enterprise_id, name, slug) "
-                "VALUES ('org-2', 'ent-1', 'Other', 'other')"
+                "INSERT INTO enterprises (enterprise_id, name, slug) "
+                "VALUES ('ent-2', 'Other', 'other')"
             )
         )
         await conn.execute(
@@ -73,7 +74,7 @@ async def _share(factory, **kw):
 _KB = {
     "resource_type": "knowledge_item",
     "scope_type": "team",
-    "organization_id": "org-1",
+    "enterprise_id": "ent-1",
 }
 
 
@@ -86,7 +87,7 @@ class TestShareRepository:
                 resource_type="knowledge_item",
                 scope_type="team",
                 scope_ids=["team-A", "team-B"],
-                organization_id="org-1",
+                enterprise_id="ent-1",
             )
         assert ids == ["kb-1"]
 
@@ -109,7 +110,7 @@ class TestShareRepository:
                 resource_type="knowledge_item",
                 scope_type="team",
                 scope_ids=[],
-                organization_id="org-1",
+                enterprise_id="ent-1",
             )
         assert ids == []
 
@@ -122,7 +123,7 @@ class TestShareRepository:
                 resource_type="knowledge_item",
                 scope_type="team",
                 scope_ids=["team-A", "team-B"],
-                organization_id="org-1",
+                enterprise_id="ent-1",
             )
         assert ids == ["kb-1"]
 
@@ -141,7 +142,7 @@ class TestShareRepository:
                 resource_type="knowledge_item",
                 scope_type="team",
                 scope_ids=["team-A"],
-                organization_id="org-1",
+                enterprise_id="ent-1",
             )
         assert ids == []
 
@@ -206,7 +207,7 @@ class TestShareRepository:
                 resource_type="knowledge_item",
                 scope_type="team",
                 scope_ids=["team-A", "team-B"],
-                organization_id="org-1",
+                enterprise_id="ent-1",
             )
         assert ids == ["kb-3"]
 
@@ -219,14 +220,14 @@ class TestShareRepository:
             resource_id="job-1",
             scope_type="team",
             scope_id="team-A",
-            organization_id="org-1",
+            enterprise_id="ent-1",
         )
         async with share_factory() as session:
             kb_ids = await PostgreSQLShareRepository(session).list_resource_ids(
                 resource_type="knowledge_item",
                 scope_type="team",
                 scope_ids=["team-A"],
-                organization_id="org-1",
+                enterprise_id="ent-1",
             )
         assert kb_ids == ["kb-1"]
 
@@ -253,23 +254,23 @@ class TestShareAllowlistIsTenantScoped:
             resource_id="kb-foreign",
             scope_type="team",
             scope_id="team-A",
-            organization_id="org-2",
+            enterprise_id="ent-2",
         )
         async with share_factory() as session:
             ids = await PostgreSQLShareRepository(session).list_resource_ids(
                 resource_type="knowledge_item",
                 scope_type="team",
                 scope_ids=["team-A"],
-                organization_id="org-1",
+                enterprise_id="ent-1",
             )
         assert ids == ["kb-mine"]
 
     @pytest.mark.parametrize(
-        "querying_org,expected",
-        [("org-1", ["kb-mine"]), ("org-2", ["kb-foreign"])],
+        "querying_enterprise,expected",
+        [("ent-1", ["kb-mine"]), ("ent-2", ["kb-foreign"])],
     )
     async def test_each_tenant_sees_only_its_own_share_rows(
-        self, share_factory, querying_org, expected
+        self, share_factory, querying_enterprise, expected
     ):
         """Symmetric sweep — neither direction leaks, and each org sees something."""
         await _share(share_factory, resource_id="kb-mine", scope_id="team-A", **_KB)
@@ -279,31 +280,31 @@ class TestShareAllowlistIsTenantScoped:
             resource_id="kb-foreign",
             scope_type="team",
             scope_id="team-A",
-            organization_id="org-2",
+            enterprise_id="ent-2",
         )
         async with share_factory() as session:
             ids = await PostgreSQLShareRepository(session).list_resource_ids(
                 resource_type="knowledge_item",
                 scope_type="team",
                 scope_ids=["team-A"],
-                organization_id=querying_org,
+                enterprise_id=querying_enterprise,
             )
         assert ids == expected
 
-    @pytest.mark.parametrize("falsy_org", ["", None])
-    async def test_no_org_resolves_nothing(self, share_factory, falsy_org):
+    @pytest.mark.parametrize("falsy_enterprise", ["", None])
+    async def test_no_org_resolves_nothing(self, share_factory, falsy_enterprise):
         await _share(share_factory, resource_id="kb-mine", scope_id="team-A", **_KB)
         async with share_factory() as session:
             ids = await PostgreSQLShareRepository(session).list_resource_ids(
                 resource_type="knowledge_item",
                 scope_type="team",
                 scope_ids=["team-A"],
-                organization_id=falsy_org,
+                enterprise_id=falsy_enterprise,
             )
         assert ids == []
 
-    @pytest.mark.parametrize("falsy_org", ["", None])
-    async def test_no_org_issues_no_query_at_all(self, falsy_org):
+    @pytest.mark.parametrize("falsy_enterprise", ["", None])
+    async def test_no_org_issues_no_query_at_all(self, falsy_enterprise):
         """Fail closed means "no query", not "a query that happens to match nothing"."""
         from unittest.mock import AsyncMock, MagicMock
 
@@ -313,7 +314,7 @@ class TestShareAllowlistIsTenantScoped:
             resource_type="knowledge_item",
             scope_type="team",
             scope_ids=["team-A"],
-            organization_id=falsy_org,
+            enterprise_id=falsy_enterprise,
         )
         assert ids == []
         db.execute.assert_not_awaited()
@@ -321,7 +322,7 @@ class TestShareAllowlistIsTenantScoped:
     async def test_the_org_argument_is_mandatory(self, share_factory):
         """Omitting the tenant key cannot compile — it is not an optional filter."""
         async with share_factory() as session:
-            with pytest.raises(TypeError, match="organization_id"):
+            with pytest.raises(TypeError, match="enterprise_id"):
                 await PostgreSQLShareRepository(session).list_resource_ids(
                     resource_type="knowledge_item",
                     scope_type="team",

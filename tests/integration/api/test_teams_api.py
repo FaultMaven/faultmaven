@@ -34,7 +34,7 @@ def _make_team(team_id: str, name: str, org: str = "org_1") -> Team:
 def mock_user():
     return AuthenticatedUser(
         user_id="user_789",
-        organization_id="org_1",
+        enterprise_id="org_1",
         email="tester@example.com",
         roles=["member"],
         permissions=["cases:read"],

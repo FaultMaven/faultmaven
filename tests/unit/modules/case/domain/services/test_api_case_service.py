@@ -98,7 +98,7 @@ class TestCreateCase:
 
         result = await case_service.create_case(
             user_id="user_1",
-            organization_id="org_1",
+            enterprise_id="org_1",
             title="New Case",
             description="Description",
             severity=CaseSeverity.HIGH,
@@ -115,7 +115,7 @@ class TestCreateCase:
 
         result = await case_service.create_case(
             user_id="user_1",
-            organization_id="org_1",
+            enterprise_id="org_1",
             title="Test",
             description="",
             severity=CaseSeverity.LOW,
@@ -132,7 +132,7 @@ class TestCreateCase:
         before = datetime.now(timezone.utc)
         result = await case_service.create_case(
             user_id="user_1",
-            organization_id="org_1",
+            enterprise_id="org_1",
             title="Test",
             description="",
             severity=CaseSeverity.MEDIUM,
@@ -148,7 +148,7 @@ class TestCreateCase:
         with pytest.raises(ValidationException) as exc_info:
             await case_service.create_case(
                 user_id="user_1",
-                organization_id="org_1",
+                enterprise_id="org_1",
                 title="",
                 description="",
                 severity=CaseSeverity.LOW,
@@ -164,7 +164,7 @@ class TestCreateCase:
         with pytest.raises(ValidationException) as exc_info:
             await case_service.create_case(
                 user_id="user_1",
-                organization_id="org_1",
+                enterprise_id="org_1",
                 title="   ",
                 description="",
                 severity=CaseSeverity.LOW,
@@ -180,7 +180,7 @@ class TestCreateCase:
         with pytest.raises(ValidationException) as exc_info:
             await case_service.create_case(
                 user_id="user_1",
-                organization_id="org_1",
+                enterprise_id="org_1",
                 title="x" * 201,
                 description="",
                 severity=CaseSeverity.LOW,
@@ -196,7 +196,7 @@ class TestCreateCase:
         with pytest.raises(ValidationException) as exc_info:
             await case_service.create_case(
                 user_id="",
-                organization_id="org_1",
+                enterprise_id="org_1",
                 title="Test",
                 description="",
                 severity=CaseSeverity.LOW,
@@ -210,13 +210,13 @@ class TestCreateCase:
         with pytest.raises(ValidationException) as exc_info:
             await case_service.create_case(
                 user_id="user_1",
-                organization_id="",
+                enterprise_id="",
                 title="Test",
                 description="",
                 severity=CaseSeverity.LOW,
             )
 
-        assert "organization_id" in str(exc_info.value).lower()
+        assert "enterprise_id" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
     async def test_create_case_repo_failure_raises_service_error(
@@ -228,7 +228,7 @@ class TestCreateCase:
         with pytest.raises(ServiceError):
             await case_service.create_case(
                 user_id="user_1",
-                organization_id="org_1",
+                enterprise_id="org_1",
                 title="Test",
                 description="",
                 severity=CaseSeverity.LOW,
@@ -249,7 +249,7 @@ class TestGetCase:
         mock_case_repo.get.return_value = sample_case
 
         result = await case_service.get_case(
-            sample_case.case_id, sample_case.organization_id
+            sample_case.case_id, sample_case.enterprise_id
         )
 
         assert result is not None
@@ -284,11 +284,11 @@ class TestGetCase:
         mock_case_repo.get.return_value = sample_case
 
         result = await case_service.get_case(
-            sample_case.case_id, sample_case.organization_id
+            sample_case.case_id, sample_case.enterprise_id
         )
 
         assert result is not None
-        assert result.organization_id == sample_case.organization_id
+        assert result.enterprise_id == sample_case.enterprise_id
 
     @pytest.mark.asyncio
     async def test_get_case_empty_id_returns_none(self, case_service):
@@ -321,7 +321,7 @@ class TestUpdateCase:
 
         result = await case_service.update_case(
             sample_case.case_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             {"title": "Updated Title"},
         )
 
@@ -338,7 +338,7 @@ class TestUpdateCase:
 
         result = await case_service.update_case(
             sample_case.case_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             {"description": "New description"},
         )
 
@@ -354,7 +354,7 @@ class TestUpdateCase:
         with pytest.raises(ValidationException):
             await case_service.update_case(
                 sample_case.case_id,
-                sample_case.organization_id,
+                sample_case.enterprise_id,
                 {"state": CaseState.INVESTIGATING},
             )
 
@@ -372,7 +372,7 @@ class TestUpdateCase:
         with pytest.raises(ValidationException) as exc_info:
             await case_service.update_case(
                 sample_case.case_id,
-                sample_case.organization_id,
+                sample_case.enterprise_id,
                 {"state": CaseState.RESOLVED},
             )
         assert "terminal" in str(exc_info.value).lower()
@@ -391,7 +391,7 @@ class TestUpdateCase:
         with pytest.raises(ValidationException) as exc_info:
             await case_service.update_case(
                 sample_case.case_id,
-                sample_case.organization_id,
+                sample_case.enterprise_id,
                 {"state": "closed"},
             )
         assert "terminal" in str(exc_info.value).lower()
@@ -439,7 +439,7 @@ class TestUpdateCase:
         with pytest.raises(ValidationException) as exc_info:
             await case_service.update_case(
                 sample_case.case_id,
-                sample_case.organization_id,
+                sample_case.enterprise_id,
                 {"title": ""},
             )
 
@@ -455,7 +455,7 @@ class TestUpdateCase:
         with pytest.raises(ValidationException) as exc_info:
             await case_service.update_case(
                 sample_case.case_id,
-                sample_case.organization_id,
+                sample_case.enterprise_id,
                 {"state": "invalid_status"},
             )
 
@@ -477,7 +477,7 @@ class TestDeleteCase:
         mock_case_repo.delete.return_value = True
 
         result = await case_service.delete_case(
-            sample_case.case_id, sample_case.organization_id
+            sample_case.case_id, sample_case.enterprise_id
         )
 
         assert result is True
@@ -600,7 +600,7 @@ class TestGetCaseWithDetails:
         mock_case_repo.get.return_value = sample_case
 
         result = await case_service.get_case_with_details(
-            sample_case.case_id, sample_case.organization_id
+            sample_case.case_id, sample_case.enterprise_id
         )
 
         assert result is not None
@@ -617,7 +617,7 @@ class TestGetCaseWithDetails:
 
         result = await case_service.get_case_with_details(
             sample_case.case_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             include_sessions=True,
         )
 
@@ -638,7 +638,7 @@ class TestGetCaseWithDetails:
 
         result = await case_service.get_case_with_details(
             sample_case.case_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             include_evidence=True,
         )
 
@@ -674,7 +674,7 @@ class TestAssignCase:
 
         result = await case_service.assign_case(
             sample_case.case_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
             "new_assignee",
         )
 
@@ -718,7 +718,7 @@ class TestCloseCase:
 
         result = await case_service.close_case(
             sample_case.case_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
         )
 
         assert result.state == CaseState.RESOLVED
@@ -739,7 +739,7 @@ class TestCloseCase:
 
         result = await case_service.close_case(
             sample_case.case_id,
-            sample_case.organization_id,
+            sample_case.enterprise_id,
         )
 
         assert result.state == CaseState.RESOLVED
@@ -762,7 +762,7 @@ class TestCloseCase:
         with pytest.raises(ConflictError) as exc_info:
             await case_service.close_case(
                 sample_case.case_id,
-                sample_case.organization_id,
+                sample_case.enterprise_id,
             )
 
         assert "already closed" in str(exc_info.value).lower()

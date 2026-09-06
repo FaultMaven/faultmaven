@@ -214,7 +214,7 @@ class TestChromaDBVectorStore:
             "source_url": "https://example.invalid/runbook",
             "scope": "global",
             "owner_id": "user-1",
-            "organization_id": "org-a",
+            "enterprise_id": "org-a",
             "created_at": "2026-01-01T00:00:00Z",
             "updated_at": "2026-01-02T00:00:00Z",
             "domain": "database",

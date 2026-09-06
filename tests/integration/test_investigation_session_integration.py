@@ -189,7 +189,7 @@ def create_sample_session(
         session_id=generate_session_id(),
         case_id=case_id,
         user_id=user_id,
-        organization_id=organization_id,
+        enterprise_id=organization_id,
         state=state,
         session_goal=session_goal,
         token_budget_limit=token_budget_limit,
@@ -644,7 +644,7 @@ async def test_create_duplicate_session_fails(
         session_id=session.session_id,  # Same ID
         case_id=sample_case.case_id,
         user_id="different-user",
-        organization_id="different-org",
+        enterprise_id="different-org",
     )
 
     with pytest.raises(ValueError, match="already exists"):
@@ -740,7 +740,7 @@ async def test_session_ordering_by_started_at(
             session_id=generate_session_id(),
             case_id=sample_case.case_id,
             user_id="order-test-user",
-            organization_id="order-test-org",
+            enterprise_id="order-test-org",
             started_at=started_at,
         )
         await session_repository.create(session)

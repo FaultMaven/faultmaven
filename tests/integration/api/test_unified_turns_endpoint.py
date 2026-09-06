@@ -41,7 +41,7 @@ def _make_mock_case(**overrides) -> Case:
         "title": "Test Case",
         "description": "API latency spike",
         "user_id": "test-user-123",
-        "organization_id": "org_test123",
+        "enterprise_id": "org_test123",
         "state": CaseState.INQUIRY,
         "current_turn": 0,
     }

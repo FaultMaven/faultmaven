@@ -91,7 +91,7 @@ def _make_context(case_id: str = "case_test", evidence_items=None):
     return ToolContext(
         session_id="session_test",
         case_id=case_id,
-        organization_id="org_test",
+        enterprise_id="org_test",
         user_id="user_test",
         in_memory_case=case,
         execution_id="exec_test",
@@ -163,7 +163,7 @@ class TestReadFileExecution:
         context = ToolContext(
             session_id="s",
             case_id="case_test",
-            organization_id="o",
+            enterprise_id="o",
             user_id="u",
         )
         result = await read_file_tool.execute_with_context(

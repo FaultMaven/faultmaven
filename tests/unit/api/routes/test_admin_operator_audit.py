@@ -32,7 +32,7 @@ from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 def _operator() -> AuthenticatedUser:
     return AuthenticatedUser(
         user_id="op-1",
-        organization_id="org-operator-own",
+        enterprise_id="org-operator-own",
         email="operator@example.com",
         roles=["user", "admin", "platform_admin"],
         permissions=[],
@@ -89,7 +89,7 @@ class TestListAccessIsRecorded:
         """
         client.get("/api/v1/admin/cases")
         assert (
-            audit_repo.record_access.await_args.kwargs["target_organization_id"] is None
+            audit_repo.record_access.await_args.kwargs["target_enterprise_id"] is None
         )
 
     def test_records_the_deployment_mode_as_its_value(self, client, audit_repo):

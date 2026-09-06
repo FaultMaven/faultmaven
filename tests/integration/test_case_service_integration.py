@@ -606,7 +606,7 @@ class TestCaseDetails:
             session_id=f"sess_{uuid4().hex[:12]}",
             case_id=case.case_id,
             user_id=user_id,
-            organization_id=organization_id,
+            enterprise_id=organization_id,
             state=SessionState.ACTIVE,
         )
         await session_repo.create(session)

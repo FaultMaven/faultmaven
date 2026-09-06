@@ -60,7 +60,7 @@ def _ctx(case: Case) -> ToolContext:
     return ToolContext(
         session_id="sess_1",
         case_id=case.case_id,
-        organization_id="org_123",
+        enterprise_id="org_123",
         user_id="user_123",
         in_memory_case=case,
     )

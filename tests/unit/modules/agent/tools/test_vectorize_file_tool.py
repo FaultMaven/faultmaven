@@ -73,7 +73,7 @@ def _make_context(case_id: str = "case_123", evidence_items=None):
     return ToolContext(
         session_id="sess_1",
         case_id=case_id,
-        organization_id="org_1",
+        enterprise_id="org_1",
         user_id="user_1",
         in_memory_case=case,
     )

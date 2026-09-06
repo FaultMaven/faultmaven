@@ -1423,7 +1423,7 @@ class TestReadinessAssessments:
     def _make_case(self, **overrides):
         defaults = {
             "user_id": "user_123",
-            "organization_id": "org_123",
+            "enterprise_id": "org_123",
             "title": "Test Case",
             "description": "Database queries timing out",
             "state": CaseState.INVESTIGATING,

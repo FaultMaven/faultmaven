@@ -82,7 +82,7 @@ def _make_inquiry_case(**overrides) -> Case:
     """Create a Case in INQUIRY state with sensible defaults."""
     defaults = {
         "user_id": "test-user-123",
-        "organization_id": "test-org-456",
+        "enterprise_id": "test-org-456",
         "title": "API latency spike in production",
         "description": "",
         "state": CaseState.INQUIRY,
@@ -108,7 +108,7 @@ def _make_investigating_case(**overrides) -> Case:
     )
     defaults = {
         "user_id": "test-user-123",
-        "organization_id": "test-org-456",
+        "enterprise_id": "test-org-456",
         "title": "API latency spike in production",
         "description": description,
         "state": CaseState.INVESTIGATING,
