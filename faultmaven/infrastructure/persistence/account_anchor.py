@@ -26,10 +26,18 @@ only ever move toward a company enterprise.**
   implicit consequence of an IdP claim.
 
 Liveness and "is this a retired personal enterprise?" are read from **typed
-columns** — ``enterprises.deleted_at`` and ``enterprises.personal_tenant_retirement``
-— never from a settings blob. ``enterprises`` carries no ``organization_id`` and
-migration 018 does not enrol it, so these reads answer on the unauthenticated SSO
-callback with no tenant bound, which is exactly where the login needs them.
+columns** — ``enterprises.deleted_at`` and
+``sso_personal_enterprises.retirement_state`` — never from a settings blob.
+Neither table is RLS-enrolled (the enterprise IS the tenant; the subject row is
+read on the unauthenticated callback before one is bound), so these reads answer
+with no tenant bound, which is exactly where the login needs them.
+
+The retirement state sits on the SUBJECT row rather than on the enterprise, and
+that placement is load-bearing: the question this module answers is "was *this
+account's own* personal tenant retired?", which is a fact about the subject. An
+enterprise-level marker could not distinguish it from "the company that owned
+this account was removed", and those two have opposite consequences for the next
+sign-in.
 """
 
 from __future__ import annotations
@@ -40,8 +48,13 @@ from typing import Any, Optional
 
 import structlog
 
+from sqlalchemy import select
+
 from faultmaven.infrastructure.persistence.database import get_db_session
-from faultmaven.infrastructure.persistence.models import EnterpriseModel
+from faultmaven.infrastructure.persistence.models import (
+    EnterpriseModel,
+    SSOPersonalEnterpriseModel,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -92,7 +105,17 @@ async def read_anchor(enterprise_id: Optional[str]) -> AnchorState:
         enterprise = await session.get(EnterpriseModel, enterprise_id)
         if enterprise is None:
             return AnchorState(AnchorKind.DANGLING, enterprise_id, None)
-        policy = enterprise.personal_tenant_retirement
+        # The retirement policy is read from the SUBJECT row that owns this
+        # enterprise, not from the enterprise itself. A company enterprise has
+        # no such row, so ``policy`` is None for it — which is exactly the
+        # distinction ``DELETED`` vs ``RETIRED_PERSONAL`` turns on.
+        policy = (
+            await session.execute(
+                select(SSOPersonalEnterpriseModel.retirement_state).where(
+                    SSOPersonalEnterpriseModel.enterprise_id == enterprise_id
+                )
+            )
+        ).scalar_one_or_none()
         if enterprise.deleted_at is None:
             return AnchorState(AnchorKind.LIVE, enterprise_id, policy)
         kind = AnchorKind.RETIRED_PERSONAL if policy else AnchorKind.DELETED

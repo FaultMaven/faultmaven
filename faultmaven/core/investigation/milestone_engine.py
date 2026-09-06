@@ -4575,7 +4575,7 @@ class MilestoneEngine:
                     conversion_service,
                     request,
                     case.user_id,
-                    case.organization_id,
+                    case.enterprise_id,
                 )
             )
 
@@ -4705,7 +4705,7 @@ class MilestoneEngine:
                 shared_kb_ids = await resolve_shared_kb_ids(
                     share_repository,
                     owner_team_ids,
-                    getattr(case, "organization_id", None),
+                    getattr(case, "enterprise_id", None),
                 )
             return build_kb_scope_filter(owner_id, shared_kb_ids)
 
@@ -4716,11 +4716,11 @@ class MilestoneEngine:
         conversion_service,
         request,
         user_id: str,
-        organization_id: str,
+        enterprise_id: str,
     ) -> None:
         """Background task for runbook conversion.
 
-        ``organization_id`` is the SOURCE CASE's org, and it is required, not
+        ``enterprise_id`` is the SOURCE CASE's enterprise, and it is required, not
         optional. The conversion persists three RLS-tenanted rows (the synthetic
         ``uploaded_files`` conversion source, the ``conversion_jobs`` row, its
         ``conversion_drafts``); each is stamped with whatever this carries. It
@@ -4767,7 +4767,7 @@ class MilestoneEngine:
             result = await conversion_service.convert_from_case(
                 request=request,
                 user_id=user_id,
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
             )
             if result.drafts:
                 draft = result.drafts[0]
@@ -8295,7 +8295,7 @@ class MilestoneEngine:
             "ev_ IDs."
         )
 
-    async def _resolve_shared_kb_ids(self, user_id: str, organization_id: Any) -> list:
+    async def _resolve_shared_kb_ids(self, user_id: str, enterprise_id: Any) -> list:
         """KB item ids shared to ``user_id``'s teams — the team arm of the tool
         path's read allowlist (ADR-013 §D4).
 
@@ -8326,7 +8326,7 @@ class MilestoneEngine:
         try:
             team_ids = await team_service.list_all_user_team_ids(user_id)
             return await resolve_shared_kb_ids(
-                share_repository, team_ids, organization_id
+                share_repository, team_ids, enterprise_id
             )
         except Exception:  # noqa: BLE001
             # Degrade to global ∪ owned rather than failing the turn. Narrowing
@@ -8361,7 +8361,7 @@ class MilestoneEngine:
         )
 
         user_id = user_id or "system"
-        organization_id = getattr(case, "organization_id", "")
+        enterprise_id = getattr(case, "enterprise_id", "")
 
         # Extract current investigation stage for tool context enrichment
         metadata: dict[str, Any] = {}
@@ -8379,9 +8379,9 @@ class MilestoneEngine:
         return ToolContext(
             session_id=case.case_id,
             case_id=case.case_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             user_id=user_id,
-            shared_kb_ids=await self._resolve_shared_kb_ids(user_id, organization_id),
+            shared_kb_ids=await self._resolve_shared_kb_ids(user_id, enterprise_id),
             case_repository=self.repository,
             metadata=metadata,
             in_memory_case=case,
@@ -11816,7 +11816,7 @@ class MilestoneEngine:
                     shared_kb_ids = await resolve_shared_kb_ids(
                         share_repository,
                         owner_team_ids,
-                        getattr(case, "organization_id", None),
+                        getattr(case, "enterprise_id", None),
                     )
                 except Exception:  # noqa: BLE001
                     # Graceful degradation — global ∪ owner-personal still apply.

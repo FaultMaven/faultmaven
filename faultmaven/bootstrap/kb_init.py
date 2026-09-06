@@ -364,7 +364,7 @@ async def _reconcile_vectors(
     Returns ``(deleted_parent_ids, orphaned_row_ids)``.
 
     **Scope — only deletes built-in ``kb_<12 hex>`` vectors.** The bootstrap DB
-    session is RLS-scoped (``app.current_org_id`` is set per-transaction; see
+    session is RLS-scoped (``app.current_enterprise_id`` is set per-transaction; see
     ``database.py``), so ``db_ids`` is a SINGLE org's rows, while the shared
     ``faultmaven_kb`` collection holds every org's vectors. Diffing the full
     collection against a per-org row set would mark every OTHER tenant's runbooks

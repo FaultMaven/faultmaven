@@ -2,9 +2,9 @@
 
 ``fm-provision-sso-org`` brings a company tenant into existence out of band.
 Personal tenants are the other shape: with ``SSO_JIT_PERSONAL_TENANT_ENABLED``
-on, an SSO identity carrying no IdP organization provisions its own tenant on
+on, an SSO identity carrying no IdP enterprise provisions its own tenant on
 first sign-in. Nothing retired one, and that gap has teeth — soft-deleting the
-organization by hand fails every later login of that subject closed with no way
+enterprise by hand fails every later login of that subject closed with no way
 back, the enterprise does not cascade with it, a live refresh chain keeps minting
 for the dead tenant, and a user re-anchored to a company leaves their personal
 tenant dormant for good. This command is the operator's half of that lifecycle.
@@ -19,8 +19,8 @@ Two operations
 * ``fresh-tenant`` — the retirement **clears the account's anchor**, and the
   next org-less login provisions a brand-new personal tenant.
 
-The whole retirement state is typed columns: ``deleted_at`` on the organization
-and the enterprise, ``enterprises.personal_tenant_retirement`` for the operator's
+The whole retirement state is typed columns: ``deleted_at`` on the enterprise
+and the enterprise, ``sso_personal_enterprises.retirement_state`` for the operator's
 choice, and ``users.enterprise_id`` — nullable since migration 052 — for whether
 the account is anchored at all. Nothing is encoded in a settings blob and nothing
 is renamed; the slug uniqueness indexes are partial on ``deleted_at IS NULL``, so
@@ -28,48 +28,48 @@ a retired tenant keeps its slug and the subject's next tenant derives the same
 one.
 
 **re-anchor** moves an account off its personal enterprise onto a named,
-operator-provisioned company organization — the operator's version of what a
+operator-provisioned company enterprise — the operator's version of what a
 mapped login now does by itself, for the cases where no mapped login is coming.
 
-**purge-idp-org** removes a provider-side organization by its **explicit** id.
-Provisioning creates the IdP organization before the database transaction, so an
-attempt that minted one and then failed to commit leaves an organization with no
+**purge-idp-org** removes a provider-side enterprise by its **explicit** id.
+Provisioning creates the IdP enterprise before the database transaction, so an
+attempt that minted one and then failed to commit leaves an enterprise with no
 tenant. Cleaning that up takes the id, deliberately: an id re-derived from the
 subject also names whatever tenant that subject holds *now*.
 
 Addressing
 ----------
 A **live** tenant is addressed by ``--subject``, through its binding row. A
-**retired or partly-retired** one is addressed by ``--organization-id``: the
+**retired or partly-retired** one is addressed by ``--enterprise-id``: the
 binding is one of the first things retirement removes, and rebuilding the address
 from a derived slug cannot tell one retired tenant of a subject from another.
-Every run prints the organization id, so an interrupted one can be finished.
+Every run prints the enterprise id, so an interrupted one can be finished.
 
 What is NOT touched
 -------------------
-**Cases, evidence and knowledge items survive**, and so does the organization row
+**Cases, evidence and knowledge items survive**, and so does the enterprise row
 that owns them: it is soft-deleted, never removed, and never renamed. What a
 retired tenant keeps, and for how long, is ADR-014's subject. Neither is
-``organization_members``: the membership row of a soft-deleted organization
-grants nothing (every login binds and verifies the organization first).
+``enterprise_members``: the membership row of a soft-deleted enterprise
+grants nothing (every login binds and verifies the enterprise first).
 
 Ordering, and why an interrupted run is finishable
 --------------------------------------------------
 The steps and their reasons live in one place —
 :mod:`faultmaven.infrastructure.persistence.tenant_retirement` — because they are
-the ordering constraint, not narration about it. In short: the organization is
+the ordering constraint, not narration about it. In short: the enterprise is
 fenced **first** and the subject's tokens revoked immediately after, so neither a
 callback nor a live refresh chain can still reach the tenant; the binding goes
 before the provider calls, so no login can ask the provider to repair a
-membership and re-create the organization the next step deletes; the IdP
-organization is deleted **by the id its own mapping row records**, before that
+membership and re-create the enterprise the next step deletes; the IdP
+enterprise is deleted **by the id its own mapping row records**, before that
 mapping row goes, so the derived external id is free for a later tenant; and the
 anchor is cleared **last**, because it is the step that lets the subject
 provision again.
 
 **Run it with the owner DSN.** Like ``fm-provision-sso-org``, and for the same
 reason: it reads and writes rows of a tenant it is taking out of service, across
-``organizations`` (RLS-tenanted, migration 018) without binding it. A preflight
+``enterprises`` (RLS-tenanted, migration 018) without binding it. A preflight
 verifies the connected role really is RLS-exempt and refuses before any write.
 
 Usage (``fm-personal-tenant``, installed with the package)
@@ -78,9 +78,9 @@ Usage (``fm-personal-tenant``, installed with the package)
 
     fm-personal-tenant retire --subject user_01H...
     fm-personal-tenant retire --subject user_01H... --next-login fresh-tenant --apply
-    fm-personal-tenant retire --organization-id 8f1c... --apply
+    fm-personal-tenant retire --enterprise-id 8f1c... --apply
     fm-personal-tenant re-anchor --subject user_01H... \\
-        --organization-id <company org id> --apply
+        --enterprise-id <company org id> --apply
     fm-personal-tenant purge-idp-org --provider-org-id org_01H... --apply
 
 Dry run is the **default**: with no ``--apply`` the command reads, reports every
@@ -103,19 +103,17 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from faultmaven.config.constants import STANDALONE_ORG_ID
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
 from faultmaven.infrastructure.persistence import account_anchor, tenant_retirement
 from faultmaven.infrastructure.persistence.database import get_db_session
-from faultmaven.infrastructure.persistence.organization_liveness import (
-    organization_is_usable,
+from faultmaven.infrastructure.persistence.enterprise_liveness import (
+    enterprise_is_usable,
 )
 from faultmaven.infrastructure.persistence.rls_role_guard import (
     assert_provisioning_db_role_bypasses_rls,
 )
 from faultmaven.infrastructure.persistence.tenant_bootstrap import PROVIDER
-from faultmaven.models.rbac import Role
-from faultmaven.models.rbac_seed import SYSTEM_ROLE_IDS
 from faultmaven.modules.auth.contracts import (
     RETIREMENT_POLICY_FRESH_TENANT,
     RETIREMENT_POLICY_REFUSE,
@@ -135,7 +133,7 @@ _SUMMARY = "Retire or re-anchor a personal tenant provisioned by an SSO login."
 
 #: Nothing matched, or a guard refused. Nothing was written on either side.
 #: "No such tenant" lives here rather than under "nothing to do": it is what a
-#: mistyped subject or organization id looks like, and reporting a typo as a
+#: mistyped subject or enterprise id looks like, and reporting a typo as a
 #: successful no-op is how an operator concludes work was done that was not.
 EXIT_REFUSED = 1
 
@@ -204,7 +202,7 @@ def _require_subject(subject: str | None) -> str | None:
     if not subject.strip():
         raise _Refused(
             "--subject was given but is empty. Pass the IdP's opaque subject "
-            "handle (user_01H…), or omit the flag and pass --organization-id."
+            "handle (user_01H…), or omit the flag and pass --enterprise-id."
         )
     return subject
 
@@ -213,7 +211,7 @@ def _resolve_retirement_provider(injected: Any | None) -> Any:
     """The IdP teardown port, or a refusal naming what is missing.
 
     Refuses rather than skipping the IdP half. A retirement that left the
-    provider's organization standing would keep the derived ``external_id``
+    provider's enterprise standing would keep the derived ``external_id``
     claimed, so the subject could never be given a second tenant — and the
     command would have reported success for a step it did not run.
     """
@@ -230,7 +228,7 @@ def _resolve_retirement_provider(injected: Any | None) -> Any:
             "SSO is not configured in this environment, so the IdP half of a "
             "retirement cannot run.\n"
             "   Retiring only the FaultMaven half would leave the provider's "
-            "organization standing, and with it the derived external id — the "
+            "enterprise standing, and with it the derived external id — the "
             "subject could then never be given a second personal tenant.\n"
             "   Run this where AUTH_MODE=oauth and the WorkOS settings are "
             "present (the API pod's own environment)."
@@ -239,7 +237,7 @@ def _resolve_retirement_provider(injected: Any | None) -> Any:
         raise _Refused(
             f"The configured SSO provider ({type(provider).__name__}) does not "
             "implement personal-tenant teardown, so this command cannot remove "
-            "the provider-side organization."
+            "the provider-side enterprise."
         )
     return provider
 
@@ -275,24 +273,24 @@ async def _resolve_auth_service() -> Any:
     return auth_service
 
 
-async def _read_state(organization_id: str):
+async def _read_state(enterprise_id: str):
     async with get_db_session() as session:
         return await tenant_retirement.read_state(
-            session, provider=PROVIDER, organization_id=organization_id
+            session, provider=PROVIDER, enterprise_id=enterprise_id
         )
 
 
-async def _resolve_organization_id(
-    *, subject: str | None, organization_id: str | None
+async def _resolve_enterprise_id(
+    *, subject: str | None, enterprise_id: str | None
 ) -> str:
-    """Turn the operator's arguments into one organization id, or refuse.
+    """Turn the operator's arguments into one enterprise id, or refuse.
 
     ``--subject`` addresses a **live** tenant through its binding row; a retired
     or partly-retired one has no binding and is addressed by id. Naming both is
     a cross-check and the command refuses if they disagree.
     """
-    if organization_id and not subject:
-        return organization_id
+    if enterprise_id and not subject:
+        return enterprise_id
 
     async with get_db_session() as session:
         binding = await tenant_retirement.find_live_binding(
@@ -303,32 +301,32 @@ async def _resolve_organization_id(
             f"No live personal tenant is bound to {PROVIDER} subject "
             f"'{subject}'.\n"
             "   A retirement deletes that binding early, so a tenant that is "
-            "already part-retired is addressed by --organization-id (the id "
+            "already part-retired is addressed by --enterprise-id (the id "
             "this command prints on every run), not by subject.\n"
             "   Nothing was written."
         )
-    if organization_id and organization_id != binding.organization_id:
+    if enterprise_id and enterprise_id != binding.enterprise_id:
         raise _Refused(
-            f"--subject '{subject}' is bound to organization "
-            f"{binding.organization_id}, not {organization_id}. Naming both is "
+            f"--subject '{subject}' is bound to enterprise "
+            f"{binding.enterprise_id}, not {enterprise_id}. Naming both is "
             "a cross-check, and this is it refusing. Nothing was written."
         )
-    return binding.organization_id
+    return binding.enterprise_id
 
 
 def _assert_personal_tenant(state, *, subject: str | None) -> str:
     """Refuse anything that is not a personal tenant, and cross-check the subject.
 
     The slug of a personal tenant is derived from its subject, so parsing it is
-    what distinguishes one from a customer's organization. Retiring a company
+    what distinguishes one from a customer's enterprise. Retiring a company
     tenant here would soft-delete it and stamp it with a policy that has no
     meaning for it.
     """
-    key = personal_key_of_slug(state.organization_slug)
+    key = personal_key_of_slug(state.enterprise_slug)
     if key is None:
         raise _Refused(
-            f"Organization {state.organization_id} (slug "
-            f"'{state.organization_slug}') is not a personal tenant: its slug "
+            f"Enterprise {state.enterprise_id} (slug "
+            f"'{state.enterprise_slug}') is not a personal tenant: its slug "
             "was not derived from an IdP subject.\n"
             "   This command retires personal tenants only. A company tenant is "
             "provisioned by fm-provision-sso-org and retired by a different "
@@ -336,7 +334,7 @@ def _assert_personal_tenant(state, *, subject: str | None) -> str:
         )
     if subject is not None and personal_tenant_key(PROVIDER, subject) != key:
         raise _Refused(
-            f"Organization {state.organization_id} does not belong to subject "
+            f"Enterprise {state.enterprise_id} does not belong to subject "
             f"'{subject}': its slug derives from a different subject. Nothing "
             "was written."
         )
@@ -344,7 +342,7 @@ def _assert_personal_tenant(state, *, subject: str | None) -> str:
 
 
 def _describe(state, *, policy_flag: str, accounts: list[str]) -> None:
-    print(f"\nOrganization: {state.organization_id}  ({state.organization_slug})")
+    print(f"\nOrganization: {state.enterprise_id}  ({state.enterprise_slug})")
     print(f"Enterprise:   {state.enterprise_id}  ({state.enterprise_slug})")
     if state.binding is not None:
         print(
@@ -376,18 +374,18 @@ def _retirement_steps(state, *, policy: str, idp, auth_service, accounts) -> lis
     enterprise: list[Step] = []
     anchor: list[Step] = []
 
-    if not state.organization_retired:
+    if not state.enterprise_retired:
 
         async def _fence() -> bool:
             async with get_db_session() as session:
-                return await tenant_retirement.soft_delete_organization(
-                    session, organization_id=state.organization_id
+                return await tenant_retirement.soft_delete_enterprise(
+                    session, enterprise_id=state.enterprise_id
                 )
 
         fence.append(
             Step(
-                "organization_soft_deleted",
-                f"soft-delete organization {state.organization_id} "
+                "enterprise_soft_deleted",
+                f"soft-delete enterprise {state.enterprise_id} "
                 "(fences every login out of the tenant)",
                 _fence,
             )
@@ -399,7 +397,7 @@ def _retirement_steps(state, *, policy: str, idp, auth_service, accounts) -> lis
             async with get_db_session() as session:
                 return (
                     await tenant_retirement.delete_binding(
-                        session, organization_id=state.organization_id
+                        session, enterprise_id=state.enterprise_id
                     )
                     is not None
                 )
@@ -407,7 +405,7 @@ def _retirement_steps(state, *, policy: str, idp, auth_service, accounts) -> lis
         binding.append(
             Step(
                 "binding_deleted",
-                "delete the sso_personal_orgs row binding "
+                "delete the sso_personal_enterprises row binding "
                 f"{state.binding.provider_user_id} to this tenant",
                 _drop_binding,
             )
@@ -418,20 +416,18 @@ def _retirement_steps(state, *, policy: str, idp, auth_service, accounts) -> lis
 
         async def _retire_idp() -> bool:
             outcome = await asyncio.to_thread(
-                lambda: idp.retire_personal_organization(
-                    provider_org_id=provider_org_id
-                )
+                lambda: idp.retire_personal_enterprise(provider_org_id=provider_org_id)
             )
-            if outcome.organization_absent:
-                print(f"  · idp organization {provider_org_id} was already gone")
+            if outcome.enterprise_absent:
+                print(f"  · idp enterprise {provider_org_id} was already gone")
                 return False
             print(f"  · idp memberships removed: {outcome.memberships_deleted}")
-            return outcome.organization_deleted
+            return outcome.enterprise_deleted
 
         provider_steps.append(
             Step(
-                "idp_organization_deleted",
-                f"delete IdP organization {provider_org_id} and its memberships "
+                "idp_enterprise_deleted",
+                f"delete IdP enterprise {provider_org_id} and its memberships "
                 "(the id this tenant's mapping row records)",
                 _retire_idp,
             )
@@ -443,7 +439,7 @@ def _retirement_steps(state, *, policy: str, idp, auth_service, accounts) -> lis
                     await tenant_retirement.delete_mapping(
                         session,
                         provider=PROVIDER,
-                        organization_id=state.organization_id,
+                        enterprise_id=state.enterprise_id,
                     )
                     is not None
                 )
@@ -460,8 +456,8 @@ def _retirement_steps(state, *, policy: str, idp, auth_service, accounts) -> lis
 
         async def _retire_enterprise() -> bool:
             async with get_db_session() as session:
-                return await tenant_retirement.retire_enterprise(
-                    session, enterprise_id=state.enterprise_id, policy=policy
+                return await tenant_retirement.soft_delete_enterprise(
+                    session, enterprise_id=state.enterprise_id
                 )
 
         enterprise.append(
@@ -548,7 +544,7 @@ async def _apply(steps: list[Step]) -> int:
 async def retire(
     *,
     subject: str | None,
-    organization_id: str | None,
+    enterprise_id: str | None,
     next_login: str,
     apply: bool,
     idp: Any | None = None,
@@ -565,8 +561,8 @@ async def retire(
         revoker = (
             auth_service if auth_service is not None else await _resolve_auth_service()
         )
-        resolved_id = await _resolve_organization_id(
-            subject=subject, organization_id=organization_id
+        resolved_id = await _resolve_enterprise_id(
+            subject=subject, enterprise_id=enterprise_id
         )
         try:
             state = await _read_state(resolved_id)
@@ -579,8 +575,8 @@ async def retire(
             ) from exc
         if state is None:
             raise _Refused(
-                f"No organization '{resolved_id}' exists. Check the id — a "
-                "retired tenant keeps its organization row, so this is an "
+                f"No enterprise '{resolved_id}' exists. Check the id — a "
+                "retired tenant keeps its enterprise row, so this is an "
                 "absent tenant rather than a finished retirement. Nothing was "
                 "written."
             )
@@ -614,7 +610,7 @@ async def retire(
         )
         print(
             "   Cases, evidence and knowledge items are NOT removed by this "
-            "command; the organization is soft-deleted, not deleted."
+            "command; the enterprise is soft-deleted, not deleted."
         )
         return 0
 
@@ -623,8 +619,8 @@ async def retire(
     if code != 0:
         print(
             f"\n   Finish this retirement with:\n"
-            f"     fm-personal-tenant retire --organization-id "
-            f"{state.organization_id} --next-login {next_login} --apply"
+            f"     fm-personal-tenant retire --enterprise-id "
+            f"{state.enterprise_id} --next-login {next_login} --apply"
         )
         return code
 
@@ -664,60 +660,60 @@ async def _load_user(subject: str):
         )
     if not account_may_hold_credentials(user):
         # THE credential rule, one copy (``jwt_token_generator``). A deactivated
-        # account moved into a company organization is a member that cannot sign
+        # account moved into a company enterprise is a member that cannot sign
         # in and a membership row nobody expects.
         raise _Refused(
             f"Account {user.user_id} may not hold credentials (deactivated or "
-            "deleted), so moving its anchor would grant a company organization "
+            "deleted), so moving its anchor would grant a company enterprise "
             "a member that cannot sign in. Nothing was written."
         )
     return users, user
 
 
-async def _load_company_organization(organization_id: str):
-    from faultmaven.config.tenant_context import set_current_org_id
-    from faultmaven.infrastructure.persistence.sessionless_organization_repository import (  # noqa: E501
-        SessionlessOrganizationRepository,
+async def _load_company_enterprise(enterprise_id: str):
+    from faultmaven.config.tenant_context import set_current_enterprise_id
+    from faultmaven.infrastructure.persistence.sessionless_enterprise_repository import (  # noqa: E501
+        SessionlessEnterpriseRepository,
     )
 
-    if organization_id == STANDALONE_ORG_ID:
+    if enterprise_id == STANDALONE_ENTERPRISE_ID:
         raise _Refused(
             "That id is the Standalone sentinel, which identifies the "
             "deployment rather than a tenant (fm#850). Nothing was written."
         )
-    set_current_org_id(organization_id)
-    orgs = SessionlessOrganizationRepository()
-    organization = await orgs.get_organization(organization_id)
-    if not organization_is_usable(organization):
+    set_current_enterprise_id(enterprise_id)
+    enterprises = SessionlessEnterpriseRepository()
+    enterprise = await enterprises.get_enterprise(enterprise_id)
+    if not enterprise_is_usable(enterprise):
         # The same predicate the login's bind-and-verify tail uses, so the
         # command cannot accept a tenant a login would refuse.
         raise _Refused(
-            f"No usable organization '{organization_id}' (it is an id, not a "
+            f"No usable enterprise '{enterprise_id}' (it is an id, not a "
             "slug; a soft-deleted or inactive one does not resolve). Nothing "
             "was written."
         )
 
     async with get_db_session() as session:
         state = await tenant_retirement.read_state(
-            session, provider=PROVIDER, organization_id=organization_id
+            session, provider=PROVIDER, enterprise_id=enterprise_id
         )
     if state is None or state.mapping_provider_org_id is None:
         raise _Refused(
-            f"Organization {organization_id} has no {PROVIDER} mapping, so no "
+            f"Enterprise {enterprise_id} has no {PROVIDER} mapping, so no "
             "login can land in it and an account anchored there would be "
             "stranded.\n"
             "   Map it first with fm-provision-sso-org. Nothing was written."
         )
-    if state.binding is not None or personal_key_of_slug(state.organization_slug):
+    if state.binding is not None or personal_key_of_slug(state.enterprise_slug):
         raise _Refused(
-            f"Organization {organization_id} is itself a personal tenant. "
+            f"Enterprise {enterprise_id} is itself a personal tenant. "
             "Moving an account into somebody's personal tenant is never the "
             "right operation. Nothing was written."
         )
-    return orgs, organization
+    return enterprise
 
 
-async def reanchor(*, subject: str, organization_id: str, apply: bool) -> int:
+async def reanchor(*, subject: str, enterprise_id: str, apply: bool) -> int:
     """Move one account off its personal enterprise. Returns the exit code."""
     _print_header("Re-anchor Personal Account")
 
@@ -725,14 +721,14 @@ async def reanchor(*, subject: str, organization_id: str, apply: bool) -> int:
         subject = _require_subject(subject)
         await _preflight_role()
         users, user = await _load_user(subject)
-        orgs, organization = await _load_company_organization(organization_id)
+        enterprise = await _load_company_enterprise(enterprise_id)
 
         async with get_db_session() as session:
             binding = await tenant_retirement.find_live_binding(
                 session, provider=PROVIDER, provider_user_id=subject
             )
         current = getattr(user, "enterprise_id", None)
-        already_moved = current == organization.enterprise_id
+        already_moved = current == enterprise.enterprise_id
         anchor = await account_anchor.read_anchor(current)
         own_live_personal = binding is not None and binding.enterprise_id == current
 
@@ -758,13 +754,7 @@ async def reanchor(*, subject: str, organization_id: str, apply: bool) -> int:
 
     print(f"\nAccount:      {user.username} <{user.email}> ({user.user_id})")
     print(f"Anchored to:  {current} ({anchor.kind.value})")
-    print(
-        f"Moving to:    {organization.organization_id} ({organization.name}) "
-        f"in enterprise {organization.enterprise_id}"
-    )
-
-    role_id = SYSTEM_ROLE_IDS[Role.MEMBER]
-    existing_role = await orgs.get_member_role(organization_id, user.user_id)
+    print(f"Moving to:    {enterprise.enterprise_id} ({enterprise.name})")
 
     steps: list[Step] = []
     if not already_moved:
@@ -773,7 +763,7 @@ async def reanchor(*, subject: str, organization_id: str, apply: bool) -> int:
             return await account_anchor.move_account_anchor(
                 users,
                 user,
-                to_enterprise_id=organization.enterprise_id,
+                to_enterprise_id=enterprise.enterprise_id,
                 destination_is_personal=False,
                 own_live_personal=own_live_personal,
             )
@@ -781,24 +771,17 @@ async def reanchor(*, subject: str, organization_id: str, apply: bool) -> int:
         steps.append(
             Step(
                 "anchor_moved",
-                f"anchor {user.user_id} to enterprise " f"{organization.enterprise_id}",
+                f"anchor {user.user_id} to enterprise " f"{enterprise.enterprise_id}",
                 _move,
             )
         )
 
-    if existing_role is None:
-
-        async def _grant() -> bool:
-            await orgs.add_member(organization_id, user.user_id, role_id)
-            return True
-
-        steps.append(
-            Step(
-                "membership_granted",
-                f"grant {user.user_id} the member role in {organization_id}",
-                _grant,
-            )
-        )
+    # No membership step. Re-anchoring moves the account's ISOLATION anchor
+    # (``users.enterprise_id``), which is the whole of what "belongs to this
+    # company" means under ADR-017 D3. An ``organization_members`` row is a
+    # BILLING fact created when somebody pays (D5), so this command must not
+    # invent one — doing so would bill a cost centre for an account nobody had
+    # added to it.
 
     if binding is not None:
 
@@ -806,7 +789,7 @@ async def reanchor(*, subject: str, organization_id: str, apply: bool) -> int:
             async with get_db_session() as session:
                 return (
                     await tenant_retirement.delete_binding(
-                        session, organization_id=binding.organization_id
+                        session, enterprise_id=binding.enterprise_id
                     )
                     is not None
                 )
@@ -814,8 +797,8 @@ async def reanchor(*, subject: str, organization_id: str, apply: bool) -> int:
         steps.append(
             Step(
                 "binding_retired",
-                "delete the sso_personal_orgs row, so a later org-less login "
-                "does not resolve back into the personal tenant",
+                "delete the sso_personal_enterprises row, so a later "
+                "org-less login does not resolve back into the personal tenant",
                 _retire_binding,
             )
         )
@@ -841,8 +824,8 @@ async def reanchor(*, subject: str, organization_id: str, apply: bool) -> int:
         print(
             "   The personal tenant is now dormant: its cases stay where they "
             "are and nobody can enter it. Retire it when you are ready:\n"
-            f"     fm-personal-tenant retire --organization-id "
-            f"{binding.organization_id} --apply"
+            f"     fm-personal-tenant retire --enterprise-id "
+            f"{binding.enterprise_id} --apply"
         )
     return 0
 
@@ -855,11 +838,11 @@ async def reanchor(*, subject: str, organization_id: str, apply: bool) -> int:
 async def purge_idp_org(
     *, provider_org_id: str, apply: bool, idp: Any | None = None
 ) -> int:
-    """Remove one provider-side organization, named explicitly.
+    """Remove one provider-side enterprise, named explicitly.
 
-    Provisioning creates the IdP organization before the database transaction,
+    Provisioning creates the IdP enterprise before the database transaction,
     so an attempt that minted one and then failed to commit leaves an
-    organization with no tenant. This is how that residue is cleaned.
+    enterprise with no tenant. This is how that residue is cleaned.
 
     It takes the **id**, never a subject: an id re-derived from a subject also
     names whatever tenant that subject holds now, and deleting *that* is how a
@@ -878,19 +861,19 @@ async def purge_idp_org(
         mapping = await session.get(SSOOrgMappingModel, (PROVIDER, provider_org_id))
     if mapping is not None:
         print(
-            f"\n❌ {PROVIDER}:{provider_org_id} is mapped to organization "
-            f"{mapping.organization_id}, so it is a LIVE tenant's provider "
-            "organization, not residue.\n"
+            f"\n❌ {PROVIDER}:{provider_org_id} is mapped to enterprise "
+            f"{mapping.enterprise_id}, so it is a LIVE tenant's provider "
+            "enterprise, not residue.\n"
             "   Retire the tenant instead:\n"
-            f"     fm-personal-tenant retire --organization-id "
-            f"{mapping.organization_id} --apply\n"
+            f"     fm-personal-tenant retire --enterprise-id "
+            f"{mapping.enterprise_id} --apply\n"
             "   Nothing was written."
         )
         return EXIT_REFUSED
 
     if not apply:
         print(
-            f"\nWould apply:\n  · delete IdP organization {provider_org_id} "
+            f"\nWould apply:\n  · delete IdP enterprise {provider_org_id} "
             "and its memberships"
         )
         print("\nDry run — nothing was written. Re-run with --apply.")
@@ -898,18 +881,16 @@ async def purge_idp_org(
 
     try:
         outcome = await asyncio.to_thread(
-            lambda: provider.retire_personal_organization(
-                provider_org_id=provider_org_id
-            )
+            lambda: provider.retire_personal_enterprise(provider_org_id=provider_org_id)
         )
     except SSOProvisioningError as exc:
         print(f"\n❌ {exc}\n   Nothing was written on either side.")
         return EXIT_REFUSED
-    if outcome.organization_absent:
-        print(f"\nNo IdP organization {provider_org_id} exists. Nothing to do.")
+    if outcome.enterprise_absent:
+        print(f"\nNo IdP enterprise {provider_org_id} exists. Nothing to do.")
         return EXIT_NOTHING_TO_DO
     print(
-        f"\n  ✅ removed IdP organization {provider_org_id} "
+        f"\n  ✅ removed IdP enterprise {provider_org_id} "
         f"(memberships removed: {outcome.memberships_deleted})"
     )
     return 0
@@ -940,7 +921,7 @@ def main() -> None:
         description=_SUMMARY,
         epilog=(
             "Dry run is the default; pass --apply to write. Cases, evidence and "
-            "knowledge items are never removed — the organization is "
+            "knowledge items are never removed — the enterprise is "
             "soft-deleted. See docs/operations/sso-org-provisioning.md."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -958,10 +939,10 @@ def main() -> None:
         help="The IdP subject (user_01H…) whose LIVE personal tenant to retire",
     )
     retire_parser.add_argument(
-        "--organization-id",
+        "--enterprise-id",
         default=None,
         help=(
-            "The personal organization's id (an id, not a slug). Required once "
+            "The personal enterprise's id (an id, not a slug). Required once "
             "a retirement has started, because the subject binding is gone."
         ),
     )
@@ -985,21 +966,21 @@ def main() -> None:
         "--subject", required=True, help="The IdP subject (user_01H…) to move"
     )
     reanchor_parser.add_argument(
-        "--organization-id",
+        "--enterprise-id",
         required=True,
-        help="The mapped company organization to move them to (an id, not a slug)",
+        help="The mapped company enterprise to move them to (an id, not a slug)",
     )
     _add_apply_flags(reanchor_parser)
 
     purge_parser = sub.add_parser(
         "purge-idp-org",
-        help="Remove a provider-side organization that no tenant claims",
+        help="Remove a provider-side enterprise that no tenant claims",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     purge_parser.add_argument(
         "--provider-org-id",
         required=True,
-        help="The provider's organization id (org_01H…), named explicitly",
+        help="The provider's enterprise id (org_01H…), named explicitly",
     )
     _add_apply_flags(purge_parser)
 
@@ -1016,16 +997,16 @@ def main() -> None:
         )
 
     if args.operation == "retire":
-        if not args.subject and not args.organization_id:
+        if not args.subject and not args.enterprise_id:
             retire_parser.error(
-                "pass --subject, --organization-id, or both (naming both is a "
+                "pass --subject, --enterprise-id, or both (naming both is a "
                 "cross-check: the command refuses if they disagree)."
             )
         sys.exit(
             asyncio.run(
                 retire(
                     subject=args.subject,
-                    organization_id=args.organization_id,
+                    enterprise_id=args.enterprise_id,
                     next_login=args.next_login,
                     apply=args.apply,
                 )
@@ -1043,7 +1024,7 @@ def main() -> None:
         asyncio.run(
             reanchor(
                 subject=args.subject,
-                organization_id=args.organization_id,
+                enterprise_id=args.enterprise_id,
                 apply=args.apply,
             )
         )

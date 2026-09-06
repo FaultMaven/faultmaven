@@ -663,13 +663,13 @@ class ISSOIdentityProvider(ABC):
 
 
 class ISSOOrgMappingRepository(ABC):
-    """IdP organization → FaultMaven organization lookup port.
+    """IdP organization → FaultMaven ENTERPRISE lookup port (ADR-017 D9).
 
     Read on the **unauthenticated** SSO callback, before any tenant is bound,
     which is why the backing table is deliberately not RLS-tenanted: the
-    tenanted tables (``organizations``, ``organization_members`` — migration
-    018) are unreadable at that point. A mapping row carries only an identifier
-    equivalence, never tenant data.
+    tenanted tables (``organizations``, ``organization_members``) are unreadable
+    at that point. A mapping row carries only an identifier equivalence, never
+    tenant data.
 
     Operators create the mapping out of band
     (the ``fm-provision-sso-org`` command); there is no self-service path, so
@@ -677,10 +677,10 @@ class ISSOOrgMappingRepository(ABC):
     """
 
     @abstractmethod
-    async def get_organization_id(
+    async def get_enterprise_id(
         self, provider: str, provider_org_id: str
     ) -> Optional[str]:
-        """Return the mapped FaultMaven organization id, or None if unmapped.
+        """Return the mapped FaultMaven enterprise id, or None if unmapped.
 
         Args:
             provider: SSO provider key (e.g. ``"workos"``).
@@ -689,7 +689,7 @@ class ISSOOrgMappingRepository(ABC):
 
 
 #: The operator's ``--next-login`` choice, as
-#: ``enterprises.personal_tenant_retirement`` stores it. A retired subject's next
+#: ``sso_personal_enterprises.retirement_state`` stores it. A retired subject's next
 #: org-less sign-in is refused: the account stays anchored to the retired
 #: enterprise, and that anchor is what the login reads.
 RETIREMENT_POLICY_REFUSE = "refuse"
@@ -755,22 +755,23 @@ class ISSOTenantRetirementProvider(ABC):
 
 
 @dataclass(frozen=True)
-class PersonalOrgRecord:
+class PersonalEnterpriseRecord:
     """One subject's personal-tenant binding, as the untenanted table holds it.
 
-    ``membership_confirmed`` is why this is a record rather than a bare id: a
-    login that resolved an existing tenant still has to know whether the IdP
-    half was finished, and that answer cannot come from the organization row.
+    The tenant is an ENTERPRISE (ADR-017 D9): that is what isolates, and it is
+    what a login has to bind. ``membership_confirmed`` is why this is a record
+    rather than a bare id: a login that resolved an existing tenant still has to
+    know whether the IdP half was finished, and that answer cannot come from the
+    enterprise row.
     """
 
-    organization_id: str
     enterprise_id: str
     provider_org_id: str
     membership_confirmed: bool
 
 
-class ISSOPersonalOrgRepository(ABC):
-    """IdP subject → the personal FaultMaven organization it owns (#1045).
+class ISSOPersonalEnterpriseRepository(ABC):
+    """IdP subject → the personal FaultMaven enterprise it owns (#1045, D9).
 
     The sibling of :class:`ISSOOrgMappingRepository`, and untenanted for exactly
     the same reason: both are read on the **unauthenticated** SSO callback,
@@ -781,7 +782,7 @@ class ISSOPersonalOrgRepository(ABC):
     carry at all; and it is 1:1 per organization, so a personal tenant's row
     there is already spent on the IdP organization that holds the member.
     Membership cannot serve either — ``organization_members`` is RLS-tenanted
-    (migration 018) and invisible at callback time.
+    and invisible at callback time.
 
     Writes are hostile-input-facing: the caller is a login, not an operator.
     """
@@ -789,7 +790,7 @@ class ISSOPersonalOrgRepository(ABC):
     @abstractmethod
     async def get(
         self, provider: str, provider_user_id: str
-    ) -> Optional["PersonalOrgRecord"]:
+    ) -> Optional["PersonalEnterpriseRecord"]:
         """Return the subject's personal-tenant record, or None if it has none."""
 
     @abstractmethod
@@ -799,27 +800,9 @@ class ISSOPersonalOrgRepository(ABC):
         """Whether this subject's personal tenant lives in ``enterprise_id``.
 
         Read on the **mapped** branch, where the session is bound to the company
-        tenant and the personal organization row is invisible under RLS. It is
-        what lets a company login tell "this account is anchored to a personal
-        enterprise I may re-anchor" from "this account belongs to a different
-        company" (ADR-016 D5 as amended).
-        """
-
-    @abstractmethod
-    async def is_personal_organization(self, organization_id: str) -> bool:
-        """Whether ``organization_id`` is somebody's personal tenant.
-
-        The inverse direction of :meth:`get`, and the one the per-tenant turn
-        cap asks (ADR-016 D5.3): given a bound tenant, is this a self-service
-        personal organization — which the cap bounds — or a company one, which
-        it does not. Asked here rather than by reading ``sso_personal_orgs``
-        directly because that table is auth-owned; a caller outside this module
-        must not know its shape.
-
-        Answerable whatever tenant is bound, because the table is untenanted
-        (see the class docstring), and it has exactly one writer — the
-        just-in-time provisioning path — so no second source of truth for
-        "personal" can appear.
+        tenant. It is what lets a company login tell "this account is anchored
+        to a personal enterprise I may re-anchor" from "this account belongs to
+        a different company" (ADR-016 D5 as amended by ADR-017 D9).
         """
 
     @abstractmethod
@@ -842,24 +825,24 @@ class ISSOPersonalOrgRepository(ABC):
         name: str,
         slug: str,
     ) -> str:
-        """Create the tenant for one subject, atomically, and return its org id.
+        """Create the tenant for one subject, atomically, and return its
+        ENTERPRISE id.
 
-        Writes the enterprise, the organization, its default team, the
-        ``sso_org_mappings`` row binding ``provider_org_id`` to it and the
-        ``sso_personal_orgs`` row binding the subject — in that order and in a
-        **single transaction**, which is the ordering
-        ``fm-provision-sso-org`` already encodes.
+        Writes the tenant rows, the ``sso_org_mappings`` row binding
+        ``provider_org_id`` to the enterprise and the
+        ``sso_personal_enterprises`` row binding the subject — in one
+        transaction, the ordering ``fm-provision-sso-org`` already encodes.
 
         Implementations must be idempotent and race-safe: a second call for the
-        same subject, whether sequential or concurrent, returns the organization
+        same subject, whether sequential or concurrent, returns the enterprise
         the first one created and writes no second tenant. A failure part-way
         must leave nothing behind for a later login to adopt.
 
-        The organization id is generated and **bound as the tenant context by
-        the implementation**, not by the caller: the write runs under the
-        RLS-scoped application role, so the binding is an implementation detail
-        of persisting the row, and a caller that had to know about it could also
-        forget — or leave a nonexistent organization bound after a failure.
+        The enterprise id is generated and **bound as the tenant context by the
+        implementation**, not by the caller: the write runs under the RLS-scoped
+        application role, so the binding is an implementation detail of
+        persisting the row, and a caller that had to know about it could also
+        forget — or leave a nonexistent enterprise bound after a failure.
         """
 
     @abstractmethod
@@ -942,7 +925,7 @@ __all__ = [
     "OAuthCodeDTO",
     "AuthTokenDTO",
     "SSOIdentity",
-    "PersonalOrgRecord",
+    "PersonalEnterpriseRecord",
     "RetiredIdPOrganization",
     # Personal-tenant retirement vocabulary
     "RETIREMENT_POLICY_REFUSE",
@@ -961,6 +944,6 @@ __all__ = [
     "ISessionService",
     "ISSOIdentityProvider",
     "ISSOOrgMappingRepository",
-    "ISSOPersonalOrgRepository",
+    "ISSOPersonalEnterpriseRepository",
     "ISSOTenantRetirementProvider",
 ]

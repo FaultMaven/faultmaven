@@ -1,9 +1,16 @@
 """Persistence adapter for personal tenants (#1045, ADR-016 D5).
 
-Implements ``ISSOPersonalOrgRepository`` over ``sso_personal_orgs``
-(migration 051). Both tables this path keys on — that one and
+Implements ``ISSOPersonalEnterpriseRepository`` over
+``sso_personal_enterprises``. Both tables this path keys on — that one and
 ``sso_org_mappings`` — are deliberately outside RLS: they are read on the
 unauthenticated SSO callback, before a tenant is bound.
+
+**Stage 2 note (ADR-017).** The tenant this binds is now the ENTERPRISE, which
+is what isolates and what a login must bind. What it still *writes* — an
+organization and a default team beside the enterprise — is the pre-ADR-017
+shape; D9 says sign-up creates neither. Removing them is Phase 3's identity work
+(with the domain-derived enterprise and the personal-domain list); this change
+deliberately stops short of it, and over-provisioning rows widens nothing.
 
 The four tenant rows themselves are written by the shared
 ``infrastructure/persistence/tenant_bootstrap`` writer, the same one
@@ -17,12 +24,12 @@ Why this path does not need the operator's RLS-exempt role
 ``fm-provision-sso-org`` demands the owner DSN because it resolves an
 organization by ``(enterprise_id, slug)`` — an id-blind lookup the
 ``organizations`` policy cannot satisfy. This path has no such lookup: the
-untenanted subject row answers "which organization?" before RLS is in the way,
-and on a first sign-in there is no organization to find because this call is
-what creates it. It therefore *generates* the id and binds it before opening the
+untenanted subject row answers "which enterprise?" before RLS is in the way,
+and on a first sign-in there is no tenant to find because this call is what
+creates it. It therefore *generates* the id and binds it before opening the
 transaction, so the engine's ``begin`` listener writes it into
-``app.current_org_id`` and migration 018's policy (no ``FOR`` clause, so
-``USING`` doubles as ``WITH CHECK``) accepts every row.
+``app.current_enterprise_id`` and the policy (no ``FOR`` clause, so ``USING``
+doubles as ``WITH CHECK``) accepts every row.
 
 **The binding happens here, not in the caller.** A caller of :meth:`provision`
 should not have to know that persisting a row requires a contextvar to be set
@@ -36,8 +43,7 @@ Idempotency, races, and collisions that are not races
 The whole write is one transaction, so it commits entirely or not at all. Two
 concurrent first logins for the same subject cannot both succeed: they derive
 the same slug and the same IdP organization, so the loser trips one of the
-constraints and rolls back whole, leaving no enterprise, organization or team
-behind. It then re-reads the subject row and adopts the winner's tenant.
+constraints and rolls back whole, leaving no tenant rows behind. It then re-reads the subject row and adopts the winner's tenant.
 
 A constraint violation is **not** automatically a lost race, and conflating the
 two produced a permanent lockout with a log that named the wrong thing (#1045
@@ -59,13 +65,16 @@ import structlog
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
-from faultmaven.config.tenant_context import get_current_org_id, set_current_org_id
+from faultmaven.config.tenant_context import (
+    get_current_enterprise_id,
+    set_current_enterprise_id,
+)
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.infrastructure.persistence.models import (
     EnterpriseModel,
     OrganizationModel,
     SSOOrgMappingModel,
-    SSOPersonalOrgModel,
+    SSOPersonalEnterpriseModel,
 )
 from faultmaven.infrastructure.persistence.tenant_bootstrap import (
     OrgAlreadyClaimed,
@@ -73,8 +82,8 @@ from faultmaven.infrastructure.persistence.tenant_bootstrap import (
     bootstrap_tenant,
 )
 from faultmaven.modules.auth.contracts import (
-    ISSOPersonalOrgRepository,
-    PersonalOrgRecord,
+    ISSOPersonalEnterpriseRepository,
+    PersonalEnterpriseRecord,
 )
 
 logger = structlog.get_logger(__name__)
@@ -103,18 +112,21 @@ class PersonalTenantCollision(Exception):
         self.colliding_value = colliding_value
 
 
-class SessionlessSSOPersonalOrgRepository(ISSOPersonalOrgRepository):
+class SessionlessSSOPersonalEnterpriseRepository(ISSOPersonalEnterpriseRepository):
     """One database session per operation, as the sibling mapping repository."""
 
     async def get(
         self, provider: str, provider_user_id: str
-    ) -> Optional[PersonalOrgRecord]:
+    ) -> Optional[PersonalEnterpriseRecord]:
         async with get_db_session() as session:
-            row = await session.get(SSOPersonalOrgModel, (provider, provider_user_id))
-            if row is None:
+            # The subject is the whole primary key: an account has at most one
+            # personal enterprise, whichever IdP minted it. The provider is
+            # still compared, because a row minted by another provider is not
+            # this provider's binding even though it names the same subject.
+            row = await session.get(SSOPersonalEnterpriseModel, provider_user_id)
+            if row is None or row.provider != provider:
                 return None
-            return PersonalOrgRecord(
-                organization_id=row.organization_id,
+            return PersonalEnterpriseRecord(
                 enterprise_id=row.enterprise_id,
                 provider_org_id=row.provider_org_id,
                 membership_confirmed=bool(row.membership_confirmed),
@@ -126,46 +138,30 @@ class SessionlessSSOPersonalOrgRepository(ISSOPersonalOrgRepository):
         record = await self.get(provider, provider_user_id)
         return record is not None and record.enterprise_id == enterprise_id
 
-    async def is_personal_organization(self, organization_id: str) -> bool:
-        """Whether any subject's personal tenant IS this organization.
-
-        Keyed on ``organization_id``, which the unique ``(provider,
-        organization_id)`` constraint makes at most one row — so ``limit(1)``
-        is the whole query and no provider needs naming: a personal tenant is a
-        personal tenant whichever IdP minted it.
-        """
-        async with get_db_session() as session:
-            stmt = (
-                select(SSOPersonalOrgModel.organization_id)
-                .where(SSOPersonalOrgModel.organization_id == organization_id)
-                .limit(1)
-            )
-            return (await session.execute(stmt)).scalar_one_or_none() is not None
-
     async def count_created_since(self, provider: str, since: datetime) -> int:
         async with get_db_session() as session:
             stmt = select(func.count()).where(
-                SSOPersonalOrgModel.provider == provider,
-                SSOPersonalOrgModel.created_at >= since,
+                SSOPersonalEnterpriseModel.provider == provider,
+                SSOPersonalEnterpriseModel.created_at >= since,
             )
             return int((await session.execute(stmt)).scalar_one())
 
     async def confirm_membership(self, provider: str, provider_user_id: str) -> None:
         async with get_db_session() as session:
             await session.execute(
-                update(SSOPersonalOrgModel)
+                update(SSOPersonalEnterpriseModel)
                 .where(
-                    SSOPersonalOrgModel.provider == provider,
-                    SSOPersonalOrgModel.provider_user_id == provider_user_id,
+                    SSOPersonalEnterpriseModel.provider == provider,
+                    SSOPersonalEnterpriseModel.subject == provider_user_id,
                 )
                 .values(membership_confirmed=True, updated_at=datetime.now(UTC))
             )
 
     async def retire(self, provider: str, provider_user_id: str) -> bool:
-        """Drop the binding. The organization and its cases are left in place."""
+        """Drop the binding. The enterprise and its cases are left in place."""
         async with get_db_session() as session:
-            row = await session.get(SSOPersonalOrgModel, (provider, provider_user_id))
-            if row is None:
+            row = await session.get(SSOPersonalEnterpriseModel, provider_user_id)
+            if row is None or row.provider != provider:
                 return False
             await session.delete(row)
         logger.info("sso_personal_tenant_retired", provider=provider)
@@ -181,14 +177,16 @@ class SessionlessSSOPersonalOrgRepository(ISSOPersonalOrgRepository):
         slug: str,
     ) -> str:
         """Create the subject's tenant atomically, or adopt an existing one."""
+        enterprise_id = str(uuid.uuid4())
         organization_id = str(uuid.uuid4())
-        restore_to = get_current_org_id()
-        set_current_org_id(organization_id)
+        restore_to = get_current_enterprise_id()
+        set_current_enterprise_id(enterprise_id)
         try:
             await self._write(
                 provider=provider,
                 provider_user_id=provider_user_id,
                 provider_org_id=provider_org_id,
+                enterprise_id=enterprise_id,
                 organization_id=organization_id,
                 name=name,
                 slug=slug,
@@ -204,9 +202,9 @@ class SessionlessSSOPersonalOrgRepository(ISSOPersonalOrgRepository):
                 logger.info(
                     "sso_personal_tenant_race_adopted",
                     provider=provider,
-                    organization_id=adopted.organization_id,
+                    enterprise_id=adopted.enterprise_id,
                 )
-                return adopted.organization_id
+                return adopted.enterprise_id
             collision = await self._diagnose_collision(
                 provider=provider, provider_org_id=provider_org_id, slug=slug
             )
@@ -218,14 +216,14 @@ class SessionlessSSOPersonalOrgRepository(ISSOPersonalOrgRepository):
             )
             raise collision from None
         finally:
-            set_current_org_id(restore_to)
+            set_current_enterprise_id(restore_to)
 
         logger.info(
             "sso_personal_tenant_provisioned",
             provider=provider,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
         )
-        return organization_id
+        return enterprise_id
 
     async def _diagnose_collision(
         self, *, provider: str, provider_org_id: str, slug: str
@@ -233,8 +231,8 @@ class SessionlessSSOPersonalOrgRepository(ISSOPersonalOrgRepository):
         """Name the key that actually collided.
 
         Read outside any tenant scope, on untenanted tables plus ``enterprises``
-        (which has no ``organization_id`` and is therefore not enrolled in
-        migration 018) — so the diagnosis itself cannot be hidden by RLS. The
+        (which is the tenant itself and is therefore not RLS-enrolled) — so the
+        diagnosis itself cannot be hidden by RLS. The
         ``organizations`` probe is last and deliberately best-effort: it IS
         tenanted, so an invisible row simply does not answer, and an
         indeterminate diagnosis is reported as such rather than guessed.
@@ -245,8 +243,8 @@ class SessionlessSSOPersonalOrgRepository(ISSOPersonalOrgRepository):
                 return PersonalTenantCollision(
                     "sso_org_mappings.provider_org_id", provider_org_id
                 )
-            # LIVE rows only, matching the partial uniqueness rule (migration
-            # 052). A retired tenant keeps its slug, so naming it as the
+            # LIVE rows only, matching the partial uniqueness rule. A retired
+            # tenant keeps its slug, so naming it as the
             # collision would point an operator at a row that is not in
             # anybody's way — the "log names the wrong thing" failure again.
             enterprise = (
@@ -277,6 +275,7 @@ class SessionlessSSOPersonalOrgRepository(ISSOPersonalOrgRepository):
         provider: str,
         provider_user_id: str,
         provider_org_id: str,
+        enterprise_id: str,
         organization_id: str,
         name: str,
         slug: str,
@@ -292,6 +291,7 @@ class SessionlessSSOPersonalOrgRepository(ISSOPersonalOrgRepository):
                 name=name,
                 slug=slug,
                 provider_org_id=provider_org_id,
+                enterprise_id=enterprise_id,
                 organization_id=organization_id,
             )
 
@@ -307,10 +307,9 @@ class SessionlessSSOPersonalOrgRepository(ISSOPersonalOrgRepository):
             # ``sso_org_unmapped``.
             now = datetime.now(UTC)
             session.add(
-                SSOPersonalOrgModel(
+                SSOPersonalEnterpriseModel(
+                    subject=provider_user_id,
                     provider=provider,
-                    provider_user_id=provider_user_id,
-                    organization_id=tenant.organization.organization_id,
                     provider_org_id=provider_org_id,
                     enterprise_id=tenant.enterprise.enterprise_id,
                     membership_confirmed=False,

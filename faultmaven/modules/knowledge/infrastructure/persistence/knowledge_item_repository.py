@@ -572,28 +572,29 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         anonymous caller sees global content only. The share table is the single
         source of truth for team visibility (ADR-013 §D4 / ADR-011 D3).
         """
-        org_owned = []
+        tenant_owned = []
         if user_id:
-            org_owned.append(KnowledgeItemModel.owner_id == user_id)
+            tenant_owned.append(KnowledgeItemModel.owner_id == user_id)
         if team_ids:
             shared_ids = select(ResourceShareModel.resource_id).where(
                 ResourceShareModel.resource_type == "knowledge_item",
                 ResourceShareModel.scope_type == "team",
                 ResourceShareModel.scope_id.in_(list(team_ids)),
-                # The share row must belong to the same org as the item it
-                # grants. Without it a row stamped with a foreign org id would
-                # grant visibility — the one arm of this clause that could
-                # reach across tenants on its own.
+                # The share row must belong to the same ENTERPRISE as the item
+                # it grants. Without it a row stamped with a foreign enterprise
+                # would grant visibility — the one arm of this clause that could
+                # reach across tenants on its own. Deliberately NOT matched on
+                # the organization: a team may span cost centres (ADR-017 D4).
                 ResourceShareModel.enterprise_id == enterprise_id,
             )
-            org_owned.append(KnowledgeItemModel.item_id.in_(shared_ids))
+            tenant_owned.append(KnowledgeItemModel.item_id.in_(shared_ids))
 
         visibility = [KnowledgeItemModel.scope == "global"]
-        if org_owned:
+        if tenant_owned:
             visibility.append(
                 and_(
                     KnowledgeItemModel.enterprise_id == enterprise_id,
-                    or_(*org_owned),
+                    or_(*tenant_owned),
                 )
             )
         return or_(*visibility)

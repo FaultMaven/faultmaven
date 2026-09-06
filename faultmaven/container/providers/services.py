@@ -356,7 +356,7 @@ def create_knowledge_service(
     but they have no provider function to own the decision — this one does,
     and it already receives ``settings``. When global-tier writes under multi
     need a sentinel-org session source (the factory is what binds
-    ``app.current_org_id`` per transaction), this function is where that
+    ``app.current_enterprise_id`` per transaction), this function is where that
     choice gets made; adding an unused parameter now would only move the
     decision somewhere with less context.
     """
@@ -1023,8 +1023,8 @@ def create_sso_login_service(
     from faultmaven.infrastructure.persistence.sessionless_audit_repository import (
         SessionlessAuditRepository,
     )
-    from faultmaven.infrastructure.persistence.sessionless_organization_repository import (
-        SessionlessOrganizationRepository,
+    from faultmaven.infrastructure.persistence.sessionless_enterprise_repository import (
+        SessionlessEnterpriseRepository,
     )
     from faultmaven.infrastructure.persistence.user_repository import (
         SessionlessUserRepository,
@@ -1035,8 +1035,8 @@ def create_sso_login_service(
     from faultmaven.modules.auth.infrastructure.repositories.sso_org_mapping_repository import (
         SessionlessSSOOrgMappingRepository,
     )
-    from faultmaven.modules.auth.infrastructure.repositories.sso_personal_org_repository import (
-        SessionlessSSOPersonalOrgRepository,
+    from faultmaven.modules.auth.infrastructure.repositories.sso_personal_enterprise_repository import (
+        SessionlessSSOPersonalEnterpriseRepository,
     )
     from faultmaven.modules.auth.infrastructure.stores.sso_ephemeral_store import (
         SSOEphemeralStore,
@@ -1051,16 +1051,16 @@ def create_sso_login_service(
         dashboard_url=settings.auth.dashboard_url,
         access_token_expires_in=settings.auth.jwt_access_token_expire_minutes * 60,
         audit_log=SessionlessAuditRepository(),
-        # Multi-tenant org resolution (#869): the mapping lookup decides the
-        # tenant, the organization repository verifies it and carries the
-        # membership write. Both are wired unconditionally — single-tenant
-        # never consults them.
+        # Multi-tenant tenant resolution (#869, re-aimed by ADR-017 D9): the
+        # mapping lookup decides the ENTERPRISE, and the enterprise repository
+        # verifies it. Both are wired unconditionally — single-tenant never
+        # consults them.
         org_mapping_repository=SessionlessSSOOrgMappingRepository(),
-        organization_repository=SessionlessOrganizationRepository(),
+        enterprise_repository=SessionlessEnterpriseRepository(),
         # Personal tenants (#1045). Wired unconditionally; the login path
         # consults it only on the no-IdP-organization branch and only when
         # SSO_JIT_PERSONAL_TENANT_ENABLED is on, which it is not by default.
-        personal_org_repository=SessionlessSSOPersonalOrgRepository(),
+        personal_enterprise_repository=SessionlessSSOPersonalEnterpriseRepository(),
     )
     logger.info("✅ SSO login service initialized")
     return service

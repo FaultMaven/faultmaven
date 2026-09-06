@@ -98,18 +98,18 @@ class FileStorageService(BaseService):
         self,
         file_data: bytes,
         original_filename: str,
-        organization_id: str,
+        enterprise_id: str,
         case_id: str,
         mime_type: str,
     ) -> Dict[str, Any]:
         """Store a file via the configured storage backend.
 
-        Generates key: {organization_id}/{case_id}/{date}/{uuid}_{filename}
+        Generates key: {enterprise_id}/{case_id}/{date}/{uuid}_{filename}
 
         Args:
             file_data: Raw file bytes
             original_filename: Original filename from upload
-            organization_id: Organization ID for key organization
+            enterprise_id: Enterprise the file is isolated to (the storage prefix)
             case_id: Case ID for key organization
             mime_type: File MIME type
 
@@ -126,7 +126,7 @@ class FileStorageService(BaseService):
         self.log_operation(
             "store_file",
             original_filename=original_filename,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             case_id=case_id,
             mime_type=mime_type,
             file_size=len(file_data),
@@ -142,7 +142,7 @@ class FileStorageService(BaseService):
 
             # Generate storage key
             stored_filename, storage_key = self._generate_storage_key(
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
                 case_id=case_id,
                 original_filename=original_filename,
             )
@@ -158,7 +158,7 @@ class FileStorageService(BaseService):
             await self._write_sidecar(
                 storage_key=storage_key,
                 case_id=case_id,
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
                 linked=False,
             )
 
@@ -188,7 +188,7 @@ class FileStorageService(BaseService):
         *,
         storage_key: str,
         case_id: str,
-        organization_id: str,
+        enterprise_id: str,
         linked: bool,
     ) -> None:
         """Write the sidecar metadata object beside a stored file.
@@ -196,7 +196,7 @@ class FileStorageService(BaseService):
         Sidecar format (stable schema — read by the orphan-cleanup job):
             {
                 "case_id": "case_abc",
-                "organization_id": "org_xyz",
+                "enterprise_id": "ent_xyz",
                 "uploaded_at": "2026-04-18T10:00:00+00:00",
                 "linked": false,
                 "schema_version": 1
@@ -210,7 +210,7 @@ class FileStorageService(BaseService):
         sidecar_key = f"{storage_key}{SIDECAR_SUFFIX}"
         payload = {
             "case_id": case_id,
-            "organization_id": organization_id,
+            "enterprise_id": enterprise_id,
             "uploaded_at": datetime.now(timezone.utc).isoformat(),
             "linked": linked,
             "schema_version": 1,
@@ -503,17 +503,17 @@ class FileStorageService(BaseService):
             )
 
     def _generate_storage_key(
-        self, organization_id: str, case_id: str, original_filename: str
+        self, enterprise_id: str, case_id: str, original_filename: str
     ) -> Tuple[str, str]:
         """Generate the storage key and stored filename.
 
-        Key format: {organization_id}/{case_id}/{YYYY-MM-DD}/{uuid}_{filename}
+        Key format: {enterprise_id}/{case_id}/{YYYY-MM-DD}/{uuid}_{filename}
 
         Keys always use forward slashes: they are backend keys, not local
         paths, and S3 has no notion of an OS-specific separator.
 
         Args:
-            organization_id: Organization ID
+            enterprise_id: Enterprise ID
             case_id: Case ID
             original_filename: Original filename
 
@@ -532,13 +532,13 @@ class FileStorageService(BaseService):
         # Generate date folder
         date_folder = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        # Sanitize organization_id and case_id
-        safe_org_id = self._sanitize_path_component(organization_id)
+        # Sanitize enterprise_id and case_id
+        safe_enterprise_id = self._sanitize_path_component(enterprise_id)
         safe_case_id = self._sanitize_path_component(case_id)
 
         # Build the backend key (always POSIX-separated)
         storage_key = "/".join(
-            (safe_org_id, safe_case_id, date_folder, stored_filename)
+            (safe_enterprise_id, safe_case_id, date_folder, stored_filename)
         )
 
         return stored_filename, storage_key
@@ -593,7 +593,7 @@ class FileStorageService(BaseService):
         return safe
 
     def _sanitize_path_component(self, component: str) -> str:
-        """Sanitize a path component (organization_id, case_id).
+        """Sanitize a path component (enterprise_id, case_id).
 
         Args:
             component: Path component to sanitize

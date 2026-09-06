@@ -73,8 +73,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-import uuid
-from datetime import datetime, timezone
 
 from faultmaven.config.constants import STANDALONE_TEAM_NAME
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
@@ -129,14 +127,12 @@ async def _get_or_create_organization(
     )
 
 
-async def _ensure_mapping(
-    session, *, provider_org_id: str, organization_id: str
-) -> bool:
+async def _ensure_mapping(session, *, provider_org_id: str, enterprise_id: str) -> bool:
     """Operator shape: a conflict is a refusal a human resolves, never adopted."""
     return await _shared_ensure_mapping(
         session,
         provider_org_id=provider_org_id,
-        organization_id=organization_id,
+        enterprise_id=enterprise_id,
     )
 
 
@@ -181,7 +177,7 @@ async def provision(
             )
 
             team, team_created = await _get_or_create_default_team(
-                session, organization_id=organization.organization_id
+                session, enterprise_id=enterprise.enterprise_id
             )
 
             # Is this run about to bind the IdP org to a tenant it is not
@@ -190,7 +186,7 @@ async def provision(
             # re-run (mapping already points here) stays quiet.
             prior = await _find_mapping(session, provider_org_id=workos_org_id)
             binding_is_new = (
-                prior is None or prior.organization_id != organization.organization_id
+                prior is None or prior.enterprise_id != enterprise.enterprise_id
             )
 
             if binding_is_new and not org_created:
@@ -257,7 +253,7 @@ async def provision(
             mapping_created = await _ensure_mapping(
                 session,
                 provider_org_id=workos_org_id,
-                organization_id=organization.organization_id,
+                enterprise_id=enterprise.enterprise_id,
             )
     except LookupError as exc:
         print(f"❌ {exc}")
@@ -265,7 +261,7 @@ async def provision(
     except RemapRefused as exc:
         print(
             f"\n❌ {PROVIDER} organization '{exc.provider_org_id}' is already "
-            "mapped to a different FaultMaven organization."
+            "mapped to a different FaultMaven enterprise."
         )
         print(f"   currently mapped to: {exc.mapped_to}")
         print(f"   requested:           {exc.requested}")
@@ -277,7 +273,7 @@ async def provision(
         return False
     except OrgAlreadyClaimed as exc:
         print(
-            f"\n❌ FaultMaven organization {exc.organization_id} is already "
+            f"\n❌ FaultMaven enterprise {exc.enterprise_id} is already "
             f"claimed by a different {PROVIDER} organization."
         )
         print(f"   claimed by: {exc.claimed_by}")

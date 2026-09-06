@@ -610,7 +610,7 @@ async def reassign_cases(
         )
         return 1
 
-    print(f"\nOrganization: {organization.name} ({enterprise_id})")
+    print(f"\nEnterprise:   {enterprise.name} ({enterprise_id})")
     print(f"From:         {from_user.username} ({from_user.user_id})")
     print(f"To:           {to_user.username} ({to_user.user_id})")
     print(f"Cases:        {len(named_ids)} — {', '.join(named_ids)}")

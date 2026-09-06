@@ -2407,7 +2407,7 @@ class InvestigationService:
             storage_result = await self.file_storage_service.store_file(
                 file_data=attachment.content,
                 original_filename=attachment.filename,
-                organization_id=getattr(case, "organization_id", "default"),
+                enterprise_id=case.enterprise_id,
                 case_id=case.case_id,
                 mime_type=attachment.content_type,
             )

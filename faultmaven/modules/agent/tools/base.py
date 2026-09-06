@@ -84,7 +84,7 @@ class ToolContext:
     Attributes:
         session_id: Investigation session ID
         case_id: Case ID the session belongs to
-        organization_id: Organization ID for authorization
+        enterprise_id: Enterprise the request is isolated to (ADR-017 D1)
         user_id: User ID making the request
         case_repository: Case repository for loading case + embedded evidence
             (Optional[Any] to avoid an import-linter violation against the
@@ -103,7 +103,7 @@ class ToolContext:
 
     session_id: str
     case_id: str
-    organization_id: str
+    enterprise_id: str
     user_id: str
     # KB item ids shared to the user's teams (ADR-013 §D4) — the shared arm of
     # the KB read allowlist, pre-resolved by the orchestrator from the share
@@ -120,7 +120,7 @@ class ToolContext:
         return ToolContext(
             session_id=self.session_id,
             case_id=self.case_id,
-            organization_id=self.organization_id,
+            enterprise_id=self.enterprise_id,
             user_id=self.user_id,
             shared_kb_ids=self.shared_kb_ids,
             case_repository=self.case_repository,
