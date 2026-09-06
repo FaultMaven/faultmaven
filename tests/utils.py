@@ -259,6 +259,42 @@ async def seed_organizations(
     await session.commit()
 
 
+async def seed_teams(
+    session,
+    team_ids: Iterable[str],
+    enterprise_id: Optional[str] = None,
+) -> None:
+    """Insert team rows so share- and membership-bound tests can reference them.
+
+    A team is parented by its ENTERPRISE (ADR-017 D4): it carries no
+    ``organization_id``, and it may span organizations. ``team_members`` reaches
+    its tenant key by one hop through ``teams.enterprise_id``, so a membership
+    row is only visible once its team exists in the bound enterprise — which is
+    why seeding the team is the thing a membership test cannot skip.
+
+    ``teams`` is unique on ``(enterprise_id, name)``; the name is derived from
+    the team id, which is the table's PRIMARY KEY, so two names in one batch can
+    only collide if two ids did. Idempotent per id.
+    """
+    from faultmaven.infrastructure.persistence.models import TeamModel
+
+    enterprise_id = enterprise_id or DEFAULT_TEST_ENTERPRISE_ID
+    await seed_default_enterprise(session)
+
+    for team_id in team_ids:
+        existing = await session.get(TeamModel, team_id)
+        if existing is not None:
+            continue
+        session.add(
+            TeamModel(
+                team_id=team_id,
+                enterprise_id=enterprise_id,
+                name=f"Test Team {team_id}",
+            )
+        )
+    await session.commit()
+
+
 def install_org_autoseed(sync_session) -> None:
     """Auto-create OrganizationModel rows for any new tenanted ORM object.
 

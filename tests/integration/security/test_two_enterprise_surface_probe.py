@@ -111,10 +111,12 @@ name, and it ``pytest.fail``s with the catalog's own account of what is missing.
 test, so the reason for the red is a FAIL row rather than only a fixture error.
 
 Every test that cannot pass before its phase lands carries a **strict** xfail —
-:data:`phase1_pending` on the schema test, :data:`phase3_pending` on every
-world-backed test. Strict is what makes it a ratchet rather than a mute button:
-the moment a phase makes one of these pass, it turns XPASS → FAIL, and that
-phase's PR must remove the marker for exactly the tests it turned green. A
+:data:`phase3_pending` on every world-backed test. The schema test carries none
+any more: Phase 1 landed, and it is green; its marker was removed in the PR that
+made it pass, which is what the ratchet demands. Strict is what makes this a
+ratchet rather than a mute button: the moment a phase makes one of these pass, it
+turns XPASS → FAIL, and that phase's PR must remove the marker for exactly the
+tests it turned green. A
 fixture ``pytest.fail`` under an xfail marker is reported *xfailed*, not error
 (verified empirically, pytest ``_pytest/skipping.py`` applies the marker to any
 phase's exception, not only the call phase), so a run on main has zero ``error``,
@@ -189,17 +191,6 @@ pytestmark = [
         reason="PostgreSQL-only; set DATABASE_URL to a PG instance to run.",
     ),
 ]
-
-#: The schema test's ratchet. Removed by the Phase-1 PR, which is the PR that
-#: makes it pass.
-phase1_pending = pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "ADR-017 Phase 1 (schema): no table carries enterprise_id, every policy "
-        "is keyed on app.current_org_id, and the tables the ADR retires are "
-        "still present. Remove this marker in the Phase-1 PR."
-    ),
-)
 
 #: Every world-backed test's ratchet. The world fixtures cannot even be built
 #: until Phase 1 lands, and the assertions inside them cannot hold until the
@@ -2224,7 +2215,6 @@ def _keys(payload: Any) -> set[str]:
 # =============================================================================
 
 
-@phase1_pending
 async def test_the_schema_carries_the_enterprise_key(probe_app):
     """The same assertion the world fixtures make, so the red is a FAIL row.
 

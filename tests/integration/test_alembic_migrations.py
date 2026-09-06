@@ -15,7 +15,6 @@ Usage:
     pytest tests/integration/test_alembic_migrations.py -v
 """
 
-import json
 import os
 import shlex
 import sqlite3
@@ -33,12 +32,10 @@ from faultmaven.models.rbac_seed import SYSTEM_ROLE_IDS
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
-# Current head revision
-HEAD_REVISION = "ddee78b60664"  # current head (053 — tenant_turn_cap)
-# Parent of the RBAC-seed migration (029). Downgrading here reverses the seed
-# (029) regardless of no-op migrations stacked above it — more robust than a
-# relative "downgrade -1", which follows whatever the current head is.
-RBAC_SEED_PARENT_REVISION = "d0e1f2a3b4c5"  # 028 — polymorphic resource_shares
+# Current head revision. There is exactly one migration: ADR-017's clean
+# baseline replaced the 001-053 chain, so "downgrade to before X" is always
+# "downgrade base" and every seed assertion below reverses the whole schema.
+HEAD_REVISION = "a1e0c17bd001"  # 001_enterprise_baseline
 
 
 @pytest.fixture(scope="function")
@@ -128,12 +125,10 @@ def get_current_revision(database_url: str) -> str:
     return ""
 
 
-# Expected tables from all migrations.
-# (agent_tool_calls v1 removed in storage redesign 2026-04 phase 1;
-#  evidence_artifacts + standalone_evidence removed in phase 2;
-#  evidence_needs + evidence_need_fulfillment added in migration 014;
-#  agent_executions + agent_tool_calls dropped in migration 041 — the
-#  orchestrator that wrote them was deleted in #982 and nothing replaced it)
+# Every table the baseline creates (ADR-017). ``turn_usage`` replaces the
+# organization-keyed ``organization_turn_usage``, ``sso_personal_enterprises``
+# replaces ``sso_personal_orgs``, and ``team_invitations`` is new: the consent
+# record a team forms by.
 EXPECTED_TABLES = [
     "alembic_version",
     "case_actions",
@@ -161,7 +156,6 @@ EXPECTED_TABLES = [
     "operator_access_audit",
     "operator_access_grants",
     "organization_members",
-    "organization_turn_usage",
     "organizations",
     "permissions",
     "reports",
@@ -170,9 +164,11 @@ EXPECTED_TABLES = [
     "roles",
     "solutions",
     "sso_org_mappings",
-    "sso_personal_orgs",
+    "sso_personal_enterprises",
+    "team_invitations",
     "team_members",
     "teams",
+    "turn_usage",
     "uploaded_files",
     "user_audit_log",
     "users",
@@ -290,371 +286,8 @@ class TestAlembicMigrationInfrastructure:
             HEAD_REVISION in output
         ), f"Head revision should be in history. Output: {output}"
         assert (
-            "clean_baseline" in output.lower()
-        ), f"Clean baseline migration should be in history. Output: {output}"
-
-
-class TestGlobalKbPlatformTierMigration:
-    """Migration 033 (#770): global rows org-free, reversible WITH data.
-
-    The downgrade restamps global rows to the standalone org; regression: it
-    originally ran the restamp UPDATE against the still-present
-    ``knowledge_items_global_org_check``, which fails on any database that
-    actually contains global rows (i.e. every seeded deployment). Clean-DB
-    up/down tests cannot catch that, so this one carries data.
-    """
-
-    _STANDALONE_ORG = "00000000-0000-0000-0000-000000000001"
-
-    def _insert_rows(self):
-        conn = sqlite3.connect(TEST_DB)
-        try:
-            conn.execute(
-                "INSERT INTO knowledge_items "
-                "(item_id, organization_id, scope, title, content, item_type) "
-                "VALUES ('kb_aaaaaaaaaaaa', NULL, 'global', 'G', 'body', 'runbook')"
-            )
-            conn.execute(
-                "INSERT INTO knowledge_items "
-                "(item_id, organization_id, scope, owner_id, title, content, item_type) "
-                "VALUES ('ki_p1', 'org-1', 'personal', NULL, 'P', 'body', 'runbook')"
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
-    def _org_by_item(self):
-        return dict(
-            query_rows(TEST_DB, "SELECT item_id, organization_id FROM knowledge_items")
-        )
-
-    def test_downgrade_restamps_and_upgrade_renormalizes_with_data(
-        self, clean_database, database_url
-    ):
-        result = run_alembic("upgrade head", database_url)
-        assert result.returncode == 0, result.stderr
-        self._insert_rows()
-
-        down = run_alembic("downgrade b4c5d6e7f8a9", database_url)
-        assert (
-            down.returncode == 0
-        ), f"033 downgrade must succeed with global rows present: {down.stderr}"
-        orgs = self._org_by_item()
-        assert orgs["kb_aaaaaaaaaaaa"] == self._STANDALONE_ORG
-        assert orgs["ki_p1"] == "org-1"
-
-        up = run_alembic("upgrade head", database_url)
-        assert up.returncode == 0, up.stderr
-        orgs = self._org_by_item()
-        assert orgs["kb_aaaaaaaaaaaa"] is None, "global rows renormalized org-free"
-        assert orgs["ki_p1"] == "org-1"
-
-    def test_check_constraint_enforced_after_upgrade(
-        self, clean_database, database_url
-    ):
-        """A tenant-org-stamped global row is unrepresentable post-033."""
-        result = run_alembic("upgrade head", database_url)
-        assert result.returncode == 0, result.stderr
-
-        conn = sqlite3.connect(TEST_DB)
-        try:
-            with pytest.raises(sqlite3.IntegrityError, match="global_org_check"):
-                conn.execute(
-                    "INSERT INTO knowledge_items "
-                    "(item_id, organization_id, scope, title, content, item_type) "
-                    "VALUES ('kb_bbbbbbbbbbbb', 'org-1', 'global', 'X', 'x', 'runbook')"
-                )
-        finally:
-            conn.close()
-
-
-class TestConversionLiveCaseUniquenessMigration:
-    """Migration 034: at most one live case-conversion per case.
-
-    A nullable ``conversion_jobs.live_case_id`` with a unique index is the
-    multi-replica dedup backstop. Newest-wins initialization runs before the
-    index is built, so a pre-migration DB that already raced (two live
-    case-source jobs for one case) can still be upgraded: the newest job takes
-    the key, the older stays NULL. Clean-DB up/down cannot exercise that, so
-    this test seeds at the parent revision and upgrades across the boundary.
-    """
-
-    _PARENT = "c5d6e7f8a9b0"  # 033 — the revision before 034
-
-    def _seed_two_live_jobs_one_case(self):
-        """Two case-source jobs for the same case, each with a live draft, one
-        newer than the other — the exact pre-migration duplicate the index
-        would otherwise reject."""
-        conn = sqlite3.connect(TEST_DB)
-        try:
-            for cid, created in (
-                ("conv_old", "2026-07-22 10:00:00"),
-                ("conv_new", "2026-07-22 12:00:00"),
-            ):
-                conn.execute(
-                    "INSERT INTO conversion_jobs "
-                    "(id, organization_id, scope, status, source_file_id, "
-                    "source_type, case_id, created_at) "
-                    "VALUES (?, 'org-1', 'personal', 'completed', ?, 'case', "
-                    "'case-race', ?)",
-                    (cid, f"file_{cid}", created),
-                )
-                conn.execute(
-                    # ``runbook_id`` is per-draft, not the shared literal it
-                    # used to be: since 046 two LIVE drafts in one org may not
-                    # share one, and this fixture's two drafts are both live.
-                    # Nothing in this test's subject (``live_case_id``) depends
-                    # on the value.
-                    "INSERT INTO conversion_drafts "
-                    "(id, organization_id, conversion_id, runbook_id, title, "
-                    "file_path, status, source_type) "
-                    "VALUES (?, 'org-1', ?, ?, 'T', '/x.md', 'draft', 'case')",
-                    (f"{cid}_d", cid, f"rb-{cid}"),
-                )
-            conn.commit()
-        finally:
-            conn.close()
-
-    def test_newest_live_case_job_takes_key_oldest_stays_null(
-        self, clean_database, database_url
-    ):
-        up = run_alembic(f"upgrade {self._PARENT}", database_url)
-        assert up.returncode == 0, up.stderr
-        self._seed_two_live_jobs_one_case()
-
-        head = run_alembic("upgrade head", database_url)
-        assert (
-            head.returncode == 0
-        ), f"034 upgrade must seed newest-wins then build the index: {head.stderr}"
-
-        rows = dict(query_rows(TEST_DB, "SELECT id, live_case_id FROM conversion_jobs"))
-        assert rows["conv_new"] == "case-race", "newest live job takes the key"
-        assert rows["conv_old"] is None, "older duplicate live job stays NULL"
-
-    def test_unique_index_exists_and_is_unique(self, clean_database, database_url):
-        result = run_alembic("upgrade head", database_url)
-        assert result.returncode == 0, result.stderr
-
-        idx = query_rows(
-            TEST_DB,
-            "SELECT name, \"unique\" FROM pragma_index_list('conversion_jobs') "
-            "WHERE name = 'uq_conversion_jobs_live_case_id'",
-        )
-        assert idx, "unique index uq_conversion_jobs_live_case_id must exist"
-        assert idx[0][1] == 1, "the live_case_id index must be UNIQUE"
-
-
-class TestConversionDraftRunbookIdUniquenessMigration:
-    """Migration 046: one live ``conversion_drafts`` row per (org, runbook_id).
-
-    Three things need executing rather than asserting from the migration's
-    docstring: that the index is UNIQUE and PARTIAL and scoped to the tenant,
-    that a database which already contains a collision is REFUSED with a
-    message an operator can act on, and that the refusal is not a dead end —
-    resolving and re-running completes.
-
-    A clean-DB up/down cannot reach the refusal path, so these seed at the
-    parent revision and upgrade across the boundary, the way 034's tests do.
-    """
-
-    _PARENT = "e9f0a1b2c3d4"  # 045 (fm#1227) — the revision before 046
-    _INDEX = "uq_conversion_drafts_org_runbook_id"
-
-    @staticmethod
-    def _insert_draft(conn, draft_id, org, runbook_id, status="draft"):
-        conn.execute(
-            "INSERT INTO conversion_drafts "
-            "(id, organization_id, conversion_id, runbook_id, title, "
-            "file_path, status, source_type) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'document')",
-            (
-                draft_id,
-                org,
-                f"conv_{org}",
-                runbook_id,
-                draft_id,
-                f"data/knowledge/global/{draft_id}.md",
-                status,
-            ),
-        )
-
-    def _seed(self, drafts):
-        """``drafts`` is a list of ``(draft_id, org, runbook_id, status)``."""
-        conn = sqlite3.connect(TEST_DB)
-        try:
-            for org in sorted({d[1] for d in drafts}):
-                conn.execute(
-                    "INSERT INTO conversion_jobs "
-                    "(id, organization_id, scope, status, source_file_id, "
-                    "source_type, created_at) "
-                    "VALUES (?, ?, 'global', 'completed', ?, 'document', "
-                    "'2026-08-29 10:00:00')",
-                    (f"conv_{org}", org, f"file_{org}"),
-                )
-            for draft_id, org, runbook_id, status in drafts:
-                self._insert_draft(conn, draft_id, org, runbook_id, status)
-            conn.commit()
-        finally:
-            conn.close()
-
-    # -- the refusal ------------------------------------------------------
-
-    def test_a_pre_existing_collision_refuses_the_upgrade(
-        self, clean_database, database_url
-    ):
-        """The empty-id collision #1230 measured, seeded verbatim."""
-        assert run_alembic(f"upgrade {self._PARENT}", database_url).returncode == 0
-        self._seed(
-            [
-                ("draft_a", "org-1", "", "draft"),
-                ("draft_b", "org-1", "", "draft"),
-            ]
-        )
-
-        result = run_alembic("upgrade head", database_url)
-
-        assert result.returncode != 0, "a colliding database was migrated anyway"
-        combined = result.stdout + result.stderr
-        # Actionable: names the key, the count, and a way forward.
-        assert "org-1" in combined, combined[-2000:]
-        assert "live_drafts=2" in combined, combined[-2000:]
-        assert "SELECT id, organization_id" in combined, combined[-2000:]
-        assert "re-run the migration" in combined, combined[-2000:]
-        # And it left the schema alone.
-        assert get_current_revision(database_url) == self._PARENT
-
-    def test_resolving_the_collision_lets_the_upgrade_through(
-        self, clean_database, database_url
-    ):
-        """The refusal must not be a dead end — this is the operator's exit."""
-        assert run_alembic(f"upgrade {self._PARENT}", database_url).returncode == 0
-        self._seed(
-            [
-                ("draft_a", "org-1", "", "draft"),
-                ("draft_b", "org-1", "", "draft"),
-            ]
-        )
-        assert run_alembic("upgrade head", database_url).returncode != 0
-
-        conn = sqlite3.connect(TEST_DB)
-        conn.execute(
-            "UPDATE conversion_drafts SET status='discarded' WHERE id=?", ("draft_b",)
-        )
-        conn.commit()
-        conn.close()
-
-        result = run_alembic("upgrade head", database_url)
-        assert result.returncode == 0, result.stderr
-        assert get_current_revision(database_url) == HEAD_REVISION
-
-    def test_rows_that_only_LOOK_like_collisions_do_not_refuse(
-        self, clean_database, database_url
-    ):
-        """The qualification, executed.
-
-        Two tenants on the same runbook_id, and a discarded duplicate, are both
-        legal. Without this the refusal could be a blanket "any repeat" check
-        and still pass the test above.
-        """
-        assert run_alembic(f"upgrade {self._PARENT}", database_url).returncode == 0
-        self._seed(
-            [
-                ("draft_a", "org-1", "shared-id", "draft"),
-                ("draft_b", "org-2", "shared-id", "draft"),
-                ("draft_c", "org-1", "shared-id", "discarded"),
-            ]
-        )
-
-        result = run_alembic("upgrade head", database_url)
-        assert result.returncode == 0, result.stdout + result.stderr
-
-    # -- the index itself -------------------------------------------------
-
-    def test_the_index_is_unique_and_partial(self, clean_database, database_url):
-        assert run_alembic("upgrade head", database_url).returncode == 0
-
-        idx = query_rows(
-            TEST_DB,
-            'SELECT name, "unique", partial FROM pragma_index_list'
-            f"('conversion_drafts') WHERE name = '{self._INDEX}'",
-        )
-        assert idx, f"{self._INDEX} must exist"
-        assert idx[0][1] == 1, "the index must be UNIQUE"
-        assert idx[0][2] == 1, (
-            "the index must be PARTIAL — without the predicate a DISCARDED "
-            "draft permanently blocks re-converting its own source"
-        )
-        ddl = query_rows(
-            TEST_DB, f"SELECT sql FROM sqlite_master WHERE name = '{self._INDEX}'"
-        )[0][0]
-        assert "status <> 'discarded'" in ddl, ddl
-        assert "organization_id" in ddl and "runbook_id" in ddl, ddl
-
-    def test_the_index_rejects_a_second_live_draft_on_the_same_key(
-        self, clean_database, database_url
-    ):
-        """The index BITES. ``pragma_index_list`` reporting unique=1 is a
-        declaration; this is the enforcement."""
-        assert run_alembic("upgrade head", database_url).returncode == 0
-        self._seed([("draft_a", "org-1", "", "draft")])
-
-        conn = sqlite3.connect(TEST_DB)
-        try:
-            with pytest.raises(sqlite3.IntegrityError):
-                self._insert_draft(conn, "draft_b", "org-1", "")
-                conn.commit()
-            conn.rollback()
-            # ... while the two legal shapes still insert.
-            conn.execute(
-                "INSERT INTO conversion_jobs "
-                "(id, organization_id, scope, status, source_file_id, "
-                "source_type, created_at) VALUES "
-                "('conv_org-2', 'org-2', 'global', 'completed', 'f2', "
-                "'document', '2026-08-29 10:00:00')"
-            )
-            self._insert_draft(conn, "draft_c", "org-2", "")
-            self._insert_draft(conn, "draft_d", "org-1", "", status="discarded")
-            conn.commit()
-        finally:
-            conn.close()
-
-    def test_downgrade_drops_the_index_and_lifts_the_rejection(
-        self, clean_database, database_url
-    ):
-        """Both directions, and the second direction proves the first was real:
-        the same INSERT that was rejected above succeeds once the index is
-        gone, so the rejection came from THIS index and not from something
-        else in the schema."""
-        assert run_alembic("upgrade head", database_url).returncode == 0
-        self._seed([("draft_a", "org-1", "", "draft")])
-        # Without this the whole test passes vacuously against a build that
-        # never created the index — measured, by reverting it.
-        assert query_rows(
-            TEST_DB,
-            "SELECT name FROM pragma_index_list('conversion_drafts') "
-            f"WHERE name = '{self._INDEX}'",
-        ), "nothing to downgrade — the index was never created"
-
-        # Target 046's parent EXPLICITLY, for the reason the RBAC-seed test
-        # gives: a relative "downgrade -1" follows whatever the current head
-        # is, so the first migration stacked on top of 046 silently redirects
-        # it. 047 was that migration, and this is where it landed — one step
-        # back from the new head reversed 047 and left 046's index in place,
-        # so the assertion below saw revision 046 rather than 045.
-        assert run_alembic(f"downgrade {self._PARENT}", database_url).returncode == 0
-        assert get_current_revision(database_url) == self._PARENT
-        assert not query_rows(
-            TEST_DB,
-            "SELECT name FROM pragma_index_list('conversion_drafts') "
-            f"WHERE name = '{self._INDEX}'",
-        )
-
-        conn = sqlite3.connect(TEST_DB)
-        try:
-            self._insert_draft(conn, "draft_b", "org-1", "")
-            conn.commit()
-        finally:
-            conn.close()
+            "enterprise_baseline" in output.lower()
+        ), f"The enterprise baseline should be in history. Output: {output}"
 
 
 class TestRbacSeed:
@@ -715,23 +348,74 @@ class TestRbacSeed:
         assert dict(actual) == expected
 
     def test_seed_is_reversible_and_idempotent(self, clean_database, database_url):
-        """Downgrade removes exactly the seed; re-upgrade restores it without dupes."""
+        """Downgrade removes the seed with its tables; re-upgrade restores it.
+
+        With one baseline there is no revision between "seeded" and "no schema",
+        so the reversal is ``downgrade base`` and what it proves is narrower than
+        the chain's version could be — but it is the property that matters: a
+        re-upgrade lands on exactly the seed and not a doubled one.
+        """
         run_alembic("upgrade head", database_url)
         assert len(query_rows(TEST_DB, "SELECT role_id FROM roles")) == 3
 
-        # Step back to before 029 (tables remain; seed rows are deleted). Target
-        # 029's parent explicitly so later no-op migrations (e.g. 030 RLS) don't
-        # shift what a relative "downgrade -1" would reverse.
-        result = run_alembic(f"downgrade {RBAC_SEED_PARENT_REVISION}", database_url)
+        result = run_alembic("downgrade base", database_url)
         assert result.returncode == 0, f"downgrade failed: {result.stderr}"
-        assert query_rows(TEST_DB, "SELECT role_id FROM roles") == []
-        assert query_rows(TEST_DB, "SELECT permission_id FROM permissions") == []
-        assert query_rows(TEST_DB, "SELECT role_id FROM role_permissions") == []
+        assert get_tables(TEST_DB) == [
+            "alembic_version"
+        ], "the baseline's downgrade must drop every table it created"
 
         # Re-apply — counts return to exactly the seed, no duplication.
         run_alembic("upgrade head", database_url)
         assert len(query_rows(TEST_DB, "SELECT role_id FROM roles")) == 3
         assert len(query_rows(TEST_DB, "SELECT permission_id FROM permissions")) == 14
+        assert len(query_rows(TEST_DB, "SELECT role_id FROM role_permissions")) == 26
+
+
+class TestStandaloneTenancySeed:
+    """The baseline seeds the standalone enterprise and its default team (D8).
+
+    Nothing else in the suite pins them, and everything a standalone deployment
+    writes stamps the enterprise id: a baseline that created the tables and not
+    these two rows would fail every first write with a foreign-key error rather
+    than a message anyone could read.
+    """
+
+    STANDALONE_ENTERPRISE_ID = "00000000-0000-0000-0000-000000000002"
+    STANDALONE_TEAM_ID = "00000000-0000-0000-0000-000000000003"
+
+    def test_the_default_enterprise_and_team_are_seeded(
+        self, clean_database, database_url
+    ):
+        result = run_alembic("upgrade head", database_url)
+        assert result.returncode == 0, result.stderr
+
+        from faultmaven.config import constants
+
+        assert query_rows(TEST_DB, "SELECT enterprise_id, slug FROM enterprises") == [
+            (self.STANDALONE_ENTERPRISE_ID, "default")
+        ]
+        assert query_rows(TEST_DB, "SELECT team_id, enterprise_id FROM teams") == [
+            (self.STANDALONE_TEAM_ID, self.STANDALONE_ENTERPRISE_ID)
+        ]
+
+        # The seed and the runtime constants must name the same rows; a
+        # migration states its values rather than importing them, so this is
+        # what stops the two spellings drifting apart.
+        assert constants.STANDALONE_ENTERPRISE_ID == self.STANDALONE_ENTERPRISE_ID
+        assert constants.STANDALONE_TEAM_ID == self.STANDALONE_TEAM_ID
+
+    def test_the_team_is_parented_by_the_enterprise_not_an_organization(
+        self, clean_database, database_url
+    ):
+        """``teams.organization_id`` is gone: a team may span cost centres."""
+        run_alembic("upgrade head", database_url)
+
+        columns = {
+            row[1]
+            for row in query_rows(TEST_DB, "SELECT * FROM pragma_table_info('teams')")
+        }
+        assert "enterprise_id" in columns
+        assert "organization_id" not in columns
 
 
 class TestHelperScript:
@@ -761,6 +445,10 @@ class TestDatabaseSchemaIntegrity:
         expected_columns = [
             "case_id",
             "user_id",
+            # Both tenant terms, and the pair is the point: ``enterprise_id`` is
+            # the isolation key every policy reads, ``organization_id`` is the
+            # billing attribution beside it (ADR-017 D2).
+            "enterprise_id",
             "organization_id",
             "title",
             "state",
@@ -930,7 +618,7 @@ class TestOperatorAccessGrantsImmutability:
         "operator_user_id": "'op-other'",
         "operator_username": "'someone.else@example.com'",
         "target_case_id": "'case-other'",
-        "target_organization_id": "'org-other'",
+        "target_enterprise_id": "'ent-other'",
         "reason": "'a different justification entirely'",
         "created_at": "datetime('now', '-1 day')",
         "expires_at": "datetime('now', '+30 day')",
@@ -941,9 +629,9 @@ class TestOperatorAccessGrantsImmutability:
     def _insert(conn, grant_id: str = "g-1") -> None:
         conn.execute(
             "INSERT INTO operator_access_grants "
-            "(grant_id, operator_user_id, target_case_id, target_organization_id, "
+            "(grant_id, operator_user_id, target_case_id, target_enterprise_id, "
             " reason, created_at, expires_at, approval_state) "
-            f"VALUES ('{grant_id}', 'op-1', 'case-1', 'org-1', "
+            f"VALUES ('{grant_id}', 'op-1', 'case-1', 'ent-1', "
             "'investigating a stuck investigation for the customer', "
             "datetime('now'), datetime('now', '+1 hour'), 'auto_approved')"
         )
@@ -1176,9 +864,9 @@ class TestOperatorAccessGrantsImmutability:
                 conn.execute(
                     "INSERT INTO operator_access_grants "
                     "(grant_id, operator_user_id, target_case_id, "
-                    " target_organization_id, reason, created_at, expires_at, "
+                    " target_enterprise_id, reason, created_at, expires_at, "
                     " approval_state) "
-                    "VALUES ('g-2', 'op-1', 'case-1', 'org-1', 'because', "
+                    "VALUES ('g-2', 'op-1', 'case-1', 'ent-1', 'because', "
                     "datetime('now'), datetime('now', '+1 hour'), 'definitely_fine')"
                 )
         finally:
@@ -1195,9 +883,9 @@ class TestOperatorAccessGrantsImmutability:
                 conn.execute(
                     "INSERT INTO operator_access_grants "
                     "(grant_id, operator_user_id, target_case_id, "
-                    " target_organization_id, reason, created_at, expires_at, "
+                    " target_enterprise_id, reason, created_at, expires_at, "
                     " approval_state) "
-                    "VALUES ('g-3', 'op-1', 'case-1', 'org-1', 'because', "
+                    "VALUES ('g-3', 'op-1', 'case-1', 'ent-1', 'because', "
                     "datetime('now'), datetime('now', '-1 hour'), 'auto_approved')"
                 )
         finally:
@@ -1206,41 +894,3 @@ class TestOperatorAccessGrantsImmutability:
 
 # Test markers for different categories
 pytestmark = pytest.mark.integration
-
-
-class Test050StripsTheRetiredCauseRecord:
-    """050 removes ``causes`` and ``chunk_stamp`` from ``knowledge_items.metadata``
-    and nothing else (fm#1295). Rows without either key are not rewritten."""
-
-    def _insert(self, item_id, metadata):
-        conn = sqlite3.connect(TEST_DB)
-        try:
-            conn.execute(
-                "INSERT INTO knowledge_items "
-                "(item_id, organization_id, scope, title, content, item_type, metadata) "
-                "VALUES (?, NULL, 'global', 'T', 'body', 'runbook', ?)",
-                (item_id, json.dumps(metadata)),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
-    def test_dead_keys_are_stripped_and_others_kept(self, clean_database, database_url):
-        up = run_alembic("upgrade c3d4e5f6a7b8", database_url)
-        assert up.returncode == 0, up.stderr
-        self._insert(
-            "kb_a", {"causes": [{"cause_letter": "A"}], "chunk_stamp": "x", "keep": 1}
-        )
-        self._insert("kb_b", {"chunk_stamp": "y"})
-        self._insert("kb_c", {"other": "untouched"})
-        self._insert("kb_d", {})
-
-        head = run_alembic("upgrade head", database_url)
-        assert head.returncode == 0, head.stderr
-        rows = dict(
-            query_rows(TEST_DB, "SELECT item_id, metadata FROM knowledge_items")
-        )
-        assert json.loads(rows["kb_a"]) == {"keep": 1}
-        assert json.loads(rows["kb_b"]) == {}
-        assert json.loads(rows["kb_c"]) == {"other": "untouched"}
-        assert json.loads(rows["kb_d"]) == {}
