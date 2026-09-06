@@ -441,6 +441,7 @@ def generate_investigation_session_id() -> str:
 
 def make_org_knowledge_item(
     item_id: Optional[str] = None,
+    enterprise_id: Optional[str] = None,
     organization_id: Optional[str] = None,
     title: str = "Sample Knowledge Item",
     content: str = "This is sample content for the knowledge item.",
@@ -455,19 +456,24 @@ def make_org_knowledge_item(
     created_at: Optional[datetime] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> "KnowledgeItem":
-    """Build a valid org-owned KnowledgeItem for repository-level tests.
+    """Build a valid tenant-owned KnowledgeItem for repository-level tests.
 
-    This is the single definition of an org-owned sample item. The repository
+    This is the single definition of a tenant-owned sample item. The repository
     unit tests, the integration suite and the benchmarks all construct through
     here, so a change to the model's tenancy invariants is made in one place
     rather than in three copies that can drift apart.
 
-    Scope is TEAM, an org-owned tier:
+    ``enterprise_id`` is the ISOLATION key and is always set (ADR-017 D1);
+    ``organization_id`` is BILLING attribution and defaults to absent, which is
+    the ordinary state.
 
-    * GLOBAL is the org-free platform tier (#770) and must NOT carry an
+    Scope is TEAM, a tenant-owned tier:
+
+    * GLOBAL is the organization-free platform tier (#770) and must NOT carry an
       ``organization_id`` (mirrors the ``knowledge_items_global_org_check``
       constraint). It is also the dataclass default, so an item built without
-      an explicit scope but *with* an org id fails construction outright.
+      an explicit scope but *with* an organization id fails construction
+      outright.
     * PERSONAL would require an ``owner_id`` backed by a real ``users`` row
       under the FK-on fixtures.
 
@@ -497,7 +503,8 @@ def make_org_knowledge_item(
 
     return KnowledgeItem(
         item_id=item_id or generate_item_id(),
-        enterprise_id=organization_id or generate_org_id(),
+        enterprise_id=enterprise_id or generate_org_id(),
+        organization_id=organization_id,
         scope=KnowledgeScope.TEAM,
         title=title,
         content=content,
