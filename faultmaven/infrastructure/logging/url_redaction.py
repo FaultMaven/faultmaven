@@ -1,113 +1,114 @@
-"""Strip query strings from URLs in every log record.
+"""Strip query strings from URLs in anything FaultMaven logs.
 
-A URL's query string is a credential channel. The SSO callback carries the
-identity provider's authorization code there; the web-search tool reaches
+A URL's query string is a credential channel here. The SSO callback carries
+the identity provider's authorization code in one; the web-search tool reaches
 Google CSE as ``?key=<GOOGLE_API_KEY>&q=<the investigation's search text>``.
-Both reached the log store, which retains for 14 days, and both were fixed at
-the call site — after which two more of the same shape were found on the error
-path (``main.py``'s 500 handler, ``web_search.py``'s exception message).
-
-That recurrence is the reason this exists. Roughly 470 first-party call sites
+Five sinks leaked through it, each fixed at the call site, two of them found
+only after the first three were fixed. About 470 first-party call sites
 interpolate an exception into a log message, and an HTTP client's exception
 message embeds the request URL, so the next one arrives the same way.
 
-**Why a URL query string and not secrets in general.** Checked against the five
+**Redaction happens at render, on the finished line.** The first version of
+this walked the event dict and redacted values by type, and review found that
+every type it did not handle leaked: ``bytes`` (decoded to a string one
+processor later), ``set``, any object the renderer falls back to ``repr`` for
+— an exception passed as ``error=e`` being the obvious one — dictionary
+*keys*, and anything nested deeper than the walk went. Each was a separate
+hole with a separate fix, and the list had no natural end, because the walk
+ran *before* the renderer turned those values into text.
+
+Rendering first collapses all of that: by the time a record is a line, every
+value is a string, and one pass covers the message, the fields, the keys, the
+exception traceback and the nested structures alike. It is also cheaper — one
+scan of one string instead of a recursive walk of a dict — and it deletes the
+depth limit, the key/value distinction and the type list entirely.
+
+**Why query strings and not secrets in general.** Checked against the five
 leaks actually found: an OAuth authorization code is an opaque string and case
 content is free text, so neither is pattern-matchable. A secrets-detection
-sweep would have caught one of the five and would have to scan every value of
-every record — which in this product means scanning evidence, where IPs and
-hostnames are the signal, not noise. Stripping a query string catches three of
-the five, costs two substring checks on most values, and cannot blank an
+sweep would have caught one of the five and would have to reason about every
+value in a product whose logs legitimately carry evidence, where IPs and
+hostnames are the signal. Stripping a query string cannot blank an
 investigation's own data.
-
-**What it does not cover.** It runs where records are rendered by FaultMaven's
-handler, so a handler installed outside ``configure_structlog`` would not see
-redacted output. That is the trade for covering every logger rather than a
-list of named ones: a ``logging.Filter`` protects all handlers but only the
-logger it is attached to — not even that logger's children — and the leaks
-came from first-party loggers nobody would have thought to list.
 """
 
+import logging
 import re
-from typing import Any
+from typing import Callable
 
-# Anchored on the scheme, so this matches a URL's query string and nothing
-# else. An unanchored ``\?[^\s]*`` would eat prose: "did the disk fill?" is a
-# perfectly ordinary thing for an investigation to log.
+# Any scheme, not just http(s): postgresql://, redis://, amqp:// and mongodb://
+# DSNs carry credentials in query options (?password=, ?sslmode=, ?authSource=)
+# and a logged DSN is an ordinary thing to find in a connection error.
 #
-# The terminator set stops at whitespace and at the quote characters a URL is
-# usually embedded in, so "for url 'https://x/y?k=v'" keeps its closing quote.
-_URL_QUERY = re.compile(r"(https?://[^\s\"'<>]*)\?[^\s\"'<>]*")
+# ‼ The pre-query class excludes "?" on purpose. With "?" allowed, the greedy
+# group backtracks to the LAST question mark in the token, so
+# "https://api/v1?key=SECRET?" redacted only the trailing "?" and shipped the
+# key verbatim. Excluding it pins the match to the FIRST "?", which is where a
+# query string actually starts (RFC 3986 permits "?" inside the query itself).
+#
+# ESC is excluded so the console renderer's colour reset after a URL is not
+# swallowed with the query string.
+_SCHEME = r"[a-zA-Z][a-zA-Z0-9+.\-]*://"
+_URL_QUERY = re.compile(_SCHEME + r"[^\s\"'<>?\x1b]*" + r"\?[^\s\"'<>\x1b]*")
+_URL_QUERY_BYTES = re.compile(_URL_QUERY.pattern.encode())
 
-_REPLACEMENT = r"\1?<redacted>"
 
-# How far into nested containers to look. ``extra={"payload": {...}}`` is one
-# level; beyond a few, a log record is carrying a data structure rather than a
-# message, and walking it per record would cost more than it protects.
-_MAX_DEPTH = 4
+def _replacement(match: "re.Match") -> str:
+    url = match.group(0)
+    return url[: url.index("?")] + "?<redacted>"
+
+
+def _replacement_bytes(match: "re.Match") -> bytes:
+    url = match.group(0)
+    return url[: url.index(b"?")] + b"?<redacted>"
 
 
 def redact_urls(text: str) -> str:
     """Strip the query string from every URL in ``text``.
 
-    Two substring checks run before the regex. Most log values contain no URL,
-    and ``in`` on a str is a C-level scan, so the common case never pays for
-    the pattern.
+    Two substring checks run before the pattern. A line with no URL is the
+    common case, and ``in`` on a str is a C-level scan, so it never pays for
+    the regex.
     """
     if "?" not in text or "://" not in text:
         return text
-    return _URL_QUERY.sub(_REPLACEMENT, text)
+    return _URL_QUERY.sub(_replacement, text)
 
 
-def _redacted(value: Any, depth: int) -> Any:
-    """Return ``value`` with URLs redacted, or the same object if unchanged.
+def redact_urls_bytes(data: bytes) -> bytes:
+    """``redact_urls`` for renderers that emit bytes."""
+    if b"?" not in data or b"://" not in data:
+        return data
+    return _URL_QUERY_BYTES.sub(_replacement_bytes, data)
 
-    Containers are copied rather than mutated. A caller that logs
-    ``extra={"config": some_live_dict}`` hands us an object it still owns, and
-    a log processor has no business editing it.
+
+def redacting_renderer(renderer: Callable) -> Callable:
+    """Wrap a structlog renderer so its output carries no query strings.
+
+    Applied to whichever renderer ``configure_structlog`` selects, so the rule
+    holds for JSON and console output alike, and for foreign stdlib records as
+    well as native structlog events — they converge on the same formatter.
     """
-    if isinstance(value, str):
-        return redact_urls(value)
-    if depth >= _MAX_DEPTH:
-        return value
-    if isinstance(value, dict):
-        items = [(k, _redacted(v, depth + 1)) for k, v in value.items()]
-        if any(new is not old for (_, new), old in zip(items, value.values())):
-            return dict(items)
-        return value
-    if isinstance(value, (list, tuple)):
-        items = [_redacted(v, depth + 1) for v in value]
-        if any(new is not old for new, old in zip(items, value)):
-            return tuple(items) if isinstance(value, tuple) else items
-        return value
-    return value
+
+    def render(logger, method_name, event_dict):
+        rendered = renderer(logger, method_name, event_dict)
+        if isinstance(rendered, str):
+            return redact_urls(rendered)
+        if isinstance(rendered, bytes):
+            return redact_urls_bytes(rendered)
+        return rendered
+
+    return render
 
 
-def redact_urls_processor(logger, method_name, event_dict):
-    """structlog processor: strip URL query strings from every value.
+class RedactingFormatter(logging.Formatter):
+    """A stdlib formatter that redacts its own output.
 
-    Placed in ``ProcessorFormatter.processors`` after ``format_exc_info``, so
-    it sees native structlog events and foreign stdlib records alike, with
-    ``%``-args already interpolated and exception text already rendered into
-    the dict — the three places a URL actually turns up.
-
-    The event dict itself is structlog's, built per call, so assigning into it
-    is safe; the values inside may not be, which is why ``_redacted`` copies.
-
-    No ``try``/``except``: the only operations here are ``in`` and ``re.sub``
-    on objects already known to be ``str``. There is no failure to swallow, and
-    a bare except would turn this into a guard that reports success while
-    doing nothing — which is how the last one in this codebase went wrong.
+    For log paths that deliberately do not use structlog — the maintenance
+    jobs configure plain ``logging.basicConfig`` so their output stays a
+    process's own stdout — the rule has to hold there too, or the exception
+    from a failing job is exactly the record that carries a DSN.
     """
-    for key, value in event_dict.items():
-        # The str case is inlined rather than delegated. A record has a dozen
-        # values and almost all are strings or scalars, so a per-value function
-        # call is most of the cost; two ``in`` checks are not.
-        if isinstance(value, str):
-            if "?" in value and "://" in value:
-                event_dict[key] = _URL_QUERY.sub(_REPLACEMENT, value)
-        elif isinstance(value, (dict, list, tuple)):
-            new = _redacted(value, 0)
-            if new is not value:
-                event_dict[key] = new
-    return event_dict
+
+    def format(self, record: logging.LogRecord) -> str:
+        return redact_urls(super().format(record))

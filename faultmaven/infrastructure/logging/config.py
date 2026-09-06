@@ -9,14 +9,13 @@ at runtime, not at import time.
 """
 
 import logging
-import re
 import sys
 from typing import Any, Dict, Optional, TextIO
 
 import structlog
 from opentelemetry import trace
 
-from faultmaven.infrastructure.logging.url_redaction import redact_urls_processor
+from faultmaven.infrastructure.logging.url_redaction import redacting_renderer
 
 # Third-party loggers whose output is per-connection network tracing rather
 # than signal. httpcore logs exclusively at DEBUG, a record for every TCP/TLS
@@ -187,6 +186,14 @@ class FaultMavenLogger:
         else:
             renderer = structlog.processors.JSONRenderer()
 
+        # Redact on the RENDERED line rather than on the event dict. Walking
+        # values by type leaked every type it did not handle -- bytes, sets,
+        # dict keys, anything the renderer repr()s such as an exception passed
+        # as error=e, and anything nested past the walk's depth. After
+        # rendering, all of it is text, and one pass covers the message, the
+        # fields, the keys and the traceback alike.
+        renderer = redacting_renderer(renderer)
+
         # Native structlog loggers: filter + shared processors, then hand the
         # event to the stdlib ProcessorFormatter instead of rendering here.
         structlog.configure(
@@ -216,12 +223,6 @@ class FaultMavenLogger:
                 structlog.stdlib.ProcessorFormatter.remove_processors_meta,
                 structlog.processors.StackInfoRenderer(),
                 structlog.processors.format_exc_info,
-                # After format_exc_info so exception text is already in the
-                # dict — an HTTP client embeds the request URL in its message,
-                # which is how a Google API key and a slice of case content
-                # reached an ERROR record. Before the renderer, so it applies
-                # whichever renderer is selected above.
-                redact_urls_processor,
                 structlog.processors.UnicodeDecoder(),
                 renderer,
             ],

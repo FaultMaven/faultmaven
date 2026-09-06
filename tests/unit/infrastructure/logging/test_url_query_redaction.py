@@ -1,19 +1,15 @@
-"""A URL's query string must not survive into anything FaultMaven writes.
+"""Nothing FaultMaven writes carries a URL query string.
 
-Replaces a ``logging.Filter`` that was attached to three named third-party
-loggers. That covered httpx printing request URLs, but not the two leaks found
-next, which were first-party: ``main.py``'s 500 handler logged ``request.url``,
-and ``web_search.py`` logged an exception whose message embeds the request URL.
-A filter cannot cover those without listing every logger in the codebase — and
-a filter on a logger does not even see its own children's records.
+A URL's query string is a credential channel here: the SSO callback carries
+the identity provider's authorization code in one, and the web-search tool
+reaches Google CSE as ``?key=<GOOGLE_API_KEY>&q=<the search text>``.
 
-The processor sits in ``ProcessorFormatter.processors`` instead, where every
-record converges, so the rule is one sentence: nothing FaultMaven writes
-carries a URL query string.
-
-End-to-end assertions here read the handler's **stream**, not ``caplog``.
-``caplog`` installs its own handler with its own formatter, so it never runs
-this processor; asserting through it would test nothing and pass.
+Redaction happens on the **rendered line**. An earlier version walked the
+event dict and redacted values by type, and every type it did not handle
+leaked — bytes, sets, dict keys, anything the renderer ``repr``s (an exception
+passed as ``error=e``), and anything nested past the walk's depth. The
+``TestNothingWrittenLeaks`` cases below are one per hole that version had, and
+they are the reason the design changed rather than growing a type list.
 """
 
 import io
@@ -22,107 +18,164 @@ import logging
 import pytest
 import structlog
 
+import faultmaven.infrastructure.logging.config as logging_config
 from faultmaven.infrastructure.logging.config import (
     FaultMavenLogger,
     LoggingConfig,
     get_logger,
 )
 from faultmaven.infrastructure.logging.url_redaction import (
+    RedactingFormatter,
     redact_urls,
-    redact_urls_processor,
+    redact_urls_bytes,
+    redacting_renderer,
 )
 
-KEY = "AIzaSyREDACT-ME-0000000000"
-CODE = "authcode-Ei9kQ2xhdWRl"
+SECRET = "AIzaSyREDACT-ME-0000000000"
+URL = f"https://g.com/search?key={SECRET}&q=acme-corp"
 
 
 @pytest.mark.unit
 class TestRedactUrls:
     def test_a_query_string_is_stripped(self):
-        assert (
-            redact_urls("see https://x.com/a?b=c now")
-            == "see https://x.com/a?<redacted> now"
+        assert redact_urls("see https://x.com/a?b=c now") == (
+            "see https://x.com/a?<redacted> now"
         )
 
     def test_prose_containing_a_question_mark_is_untouched(self):
-        """The reason the pattern is anchored on the scheme.
-
-        "did the disk fill?" is an ordinary thing for this product to log, and
-        an unanchored rule would eat the rest of the sentence.
-        """
         text = "Investigation note: did the disk fill? /var/lib is at 100%"
         assert redact_urls(text) == text
 
     def test_prose_around_a_url_keeps_its_question_marks(self):
-        """This is the case that pins the anchor, and the earlier one is not.
+        """This pins the scheme anchor; the case above does not.
 
-        A value with no "://" never reaches the pattern — the fast path
-        returns it — so the plain-prose test above passes even with the anchor
-        removed. Only a value carrying BOTH a URL and a question mark tells
-        the two apart: unanchored, the "fail?" below is eaten too.
+        A value with no "://" never reaches the pattern, so the plain-prose
+        case passes with or without the anchor. Only a value carrying both a
+        URL and a question mark separates them.
         """
-        assert (
-            redact_urls("did https://x.com/a?b=c fail? check the pod")
-            == "did https://x.com/a?<redacted> fail? check the pod"
+        assert redact_urls("did https://x.com/a?b=c fail? check the pod") == (
+            "did https://x.com/a?<redacted> fail? check the pod"
+        )
+
+    def test_a_second_question_mark_does_not_defeat_the_match(self):
+        """‼ The regression this pattern was rewritten for.
+
+        With "?" allowed in the pre-query class, the greedy group backtracked
+        to the LAST question mark, so only the trailing one was replaced and
+        the key shipped verbatim. RFC 3986 permits "?" inside a query, and a
+        sentence ending in "?" right after a URL produces the same shape.
+        """
+        assert redact_urls(f"Failed to reach https://api.x/v1?key={SECRET}?") == (
+            "Failed to reach https://api.x/v1?<redacted>"
+        )
+        assert redact_urls(f"GET https://api/v1?q=why+fail?&key={SECRET}") == (
+            "GET https://api/v1?<redacted>"
+        )
+
+    def test_non_http_schemes_are_covered(self):
+        """A DSN carries credentials in its query options."""
+        assert redact_urls("connect failed: postgresql://u@h/db?password=P") == (
+            "connect failed: postgresql://u@h/db?<redacted>"
+        )
+        assert redact_urls("redis://h:6379/0?password=P") == (
+            "redis://h:6379/0?<redacted>"
         )
 
     def test_a_url_with_no_query_is_untouched(self):
         assert redact_urls("GET https://x.com/a/b") == "GET https://x.com/a/b"
 
     def test_every_url_in_the_value_is_covered(self):
-        assert (
-            redact_urls("https://a/1?x=1 and https://b/2?y=2")
-            == "https://a/1?<redacted> and https://b/2?<redacted>"
+        assert redact_urls("https://a/1?x=1 and https://b/2?y=2") == (
+            "https://a/1?<redacted> and https://b/2?<redacted>"
         )
 
     def test_a_quoted_url_keeps_its_closing_quote(self):
         """httpx renders errors as ``for url '<url>'``."""
-        assert (
-            redact_urls("for url 'https://g.com/s?key=K'")
-            == "for url 'https://g.com/s?<redacted>'"
+        assert redact_urls("for url 'https://g.com/s?key=K'") == (
+            "for url 'https://g.com/s?<redacted>'"
         )
+
+    def test_the_bytes_form_matches_the_str_form(self):
+        text = "GET https://g.com/s?key=K and https://h/i"
+        assert redact_urls_bytes(text.encode()) == redact_urls(text).encode()
 
 
 @pytest.mark.unit
-class TestProcessor:
-    def test_values_at_every_level_are_covered(self):
-        event = {
-            "event": "failed for https://g.com/s?key=K",
-            "extra": {"payload": {"url": "https://h.com/t?token=T"}},
-            "urls": ["https://i.com/u?a=1"],
-            "status_code": 200,
-        }
+class TestRedactingRenderer:
+    def test_a_bytes_renderer_is_redacted_too(self):
+        """A renderer may emit bytes; an orjson serializer is the likely one.
 
-        out = redact_urls_processor(None, "error", event)
-
-        assert "key=K" not in out["event"]
-        assert "token=T" not in out["extra"]["payload"]["url"]
-        assert "a=1" not in out["urls"][0]
-        assert out["status_code"] == 200
-
-    def test_a_caller_owned_container_is_not_mutated(self):
-        """A log call hands us objects it still owns.
-
-        ``extra={"config": live_dict}`` must come back from logging unchanged;
-        editing it in place would let a log line alter program state.
+        Without this the bytes branch is unexercised, and a future swap to a
+        bytes renderer would silently stop redacting — a security guard that
+        reports success while doing nothing.
         """
-        live = {"url": "https://g.com/s?key=K"}
+        wrapped = redacting_renderer(lambda *_: f"GET {URL}".encode())
 
-        redact_urls_processor(None, "info", {"extra": live})
+        assert SECRET.encode() not in wrapped(None, "info", {})
 
-        assert live["url"] == "https://g.com/s?key=K"
+    def test_a_str_renderer_is_redacted(self):
+        wrapped = redacting_renderer(lambda *_: f"GET {URL}")
 
-    def test_a_record_with_nothing_to_redact_is_returned_as_is(self):
-        event = {"event": "Request completed", "status_code": 200}
-        assert redact_urls_processor(None, "info", event) == event
+        assert SECRET not in wrapped(None, "info", {})
+
+
+@pytest.fixture()
+def written():
+    """Configure logging for real and capture what the handler writes.
+
+    Every global this touches is restored: structlog's configuration, the root
+    logger's level and handlers, the httpx logger's level, and the module
+    singleton. Leaving any of them behind makes the rest of the session
+    order-dependent, which this repo has a history of (#823).
+
+    Ordering matters twice over. The singleton is warmed BEFORE the handler
+    list is saved, because the first ``get_logger()`` in a process constructs a
+    ``FaultMavenLogger`` and installs a handler — saving the list first and
+    restoring it later would strip that handler permanently, since the
+    singleton stays set and nothing reinstalls it.
+    """
+    root = logging.getLogger()
+    httpx_logger = logging.getLogger("httpx")
+
+    # Warm first, then snapshot: see the docstring.
+    saved_singleton = logging_config._logger_config
+    get_logger("faultmaven.test.warmup")
+
+    saved_structlog = structlog.get_config()
+    saved_level = root.level
+    saved_httpx_level = httpx_logger.level
+    saved_handlers = list(root.handlers)
+
+    config = LoggingConfig()
+    config.LOG_FORMAT = "json"
+    config.LOG_HUMAN_READABLE = False
+    FaultMavenLogger(config).configure_structlog()
+
+    # Pinned explicitly: configure_structlog only ever LOWERS the root level,
+    # and httpx is deliberately not in NOISY_THIRD_PARTY_LOGGERS, so whatever
+    # an earlier test left on either would decide whether these records are
+    # emitted at all.
+    root.setLevel(logging.INFO)
+    httpx_logger.setLevel(logging.INFO)
+
+    buffer = io.StringIO()
+    _faultmaven_handler(root).setStream(buffer)
+    try:
+        yield buffer
+    finally:
+        root.handlers[:] = saved_handlers
+        root.setLevel(saved_level)
+        httpx_logger.setLevel(saved_httpx_level)
+        structlog.configure(**saved_structlog)
+        logging_config._logger_config = saved_singleton
 
 
 def _faultmaven_handler(root):
     """Our handler, by its marker, not by position.
 
-    pytest installs handlers of its own on the root logger, so ``handlers[0]``
-    is whichever one happens to be first — under ``-p logging`` that is
-    pytest's null handler, which has no stream at all.
+    pytest installs handlers of its own, so ``handlers[0]`` is whichever one
+    happens to be first — under the logging plugin that is pytest's null
+    handler, which has no stream at all.
     """
     marker = FaultMavenLogger._ROOT_HANDLER_MARKER
     for handler in root.handlers:
@@ -131,100 +184,112 @@ def _faultmaven_handler(root):
     raise AssertionError("configure_structlog installed no marked root handler")
 
 
-@pytest.fixture()
-def written():
-    """Configure logging for real and capture what the handler writes.
-
-    Restores every global it touches: structlog's configuration, and the root
-    logger's level and handlers. Leaving those behind makes the rest of the
-    session order-dependent, which this repo has a history of (#823).
-    """
-    config = LoggingConfig()
-    config.LOG_FORMAT = "json"
-    config.LOG_HUMAN_READABLE = False
-
-    root = logging.getLogger()
-    saved_structlog = structlog.get_config()
-    saved_level = root.level
-    saved_handlers = list(root.handlers)
-
-    # Warm the module singleton BEFORE capturing the stream. The first
-    # get_logger() call in a process constructs a FaultMavenLogger of its own,
-    # which reinstalls the root handler — and takes the captured stream with
-    # it, leaving the test asserting against an empty buffer.
-    get_logger("faultmaven.test.warmup")
-
-    FaultMavenLogger(config).configure_structlog()
-    root.setLevel(logging.INFO)
-    buffer = io.StringIO()
-    _faultmaven_handler(root).setStream(buffer)
-    try:
-        yield buffer
-    finally:
-        root.handlers[:] = saved_handlers
-        root.setLevel(saved_level)
-        structlog.configure(**saved_structlog)
-
-
 @pytest.mark.unit
 @pytest.mark.security
-class TestNothingWrittenCarriesAQueryString:
+class TestNothingWrittenLeaks:
+    """One case per hole the dict-walking version had.
+
+    Each of these was verified leaking before the design changed to redact the
+    rendered line.
+    """
+
     def test_a_foreign_record_with_positional_args(self, written):
-        """httpx passes the URL as a ``%s`` argument, not in the template.
-
-        A rule that only looked at the message template would miss it
-        entirely, which is why this runs after the args are interpolated.
-        """
         logging.getLogger("httpx").info(
-            'HTTP Request: %s %s "%s %d %s"',
-            "GET",
-            f"https://www.googleapis.com/customsearch/v1?key={KEY}&q=acme-corp",
-            "HTTP/1.1",
-            400,
-            "Bad Request",
+            'HTTP Request: %s %s "%s %d %s"', "GET", URL, "HTTP/1.1", 400, "Bad Request"
         )
-
         output = written.getvalue()
         assert "HTTP Request" in output, "the record was not written at all"
-        assert KEY not in output
+        assert SECRET not in output
         assert "acme-corp" not in output
-        assert "googleapis.com/customsearch/v1" in output, "the path must survive"
+        assert "g.com/search" in output, "the path must survive"
 
-    def test_a_first_party_record(self, written):
-        """The shape a ``logging.Filter`` on named loggers could never reach."""
-        get_logger("faultmaven.main").error(
-            f"Internal server error on GET https://app.f.ai/sso/callback?code={CODE}"
-        )
+    def test_a_first_party_message(self, written):
+        get_logger("faultmaven.main").error(f"Internal server error on GET {URL}")
+        assert SECRET not in written.getvalue()
 
-        output = written.getvalue()
-        assert "Internal server error" in output, "the record was not written"
-        assert CODE not in output
-        assert "app.f.ai/sso/callback" in output, "the path must survive"
+    def test_bytes(self, written):
+        """UnicodeDecoder turned these into a leaking str after redaction ran."""
+        get_logger("p").info("body", body=URL.encode())
+        assert SECRET not in written.getvalue()
 
-    def test_an_exception_message_carrying_a_url(self, written):
-        """~470 call sites interpolate an exception into a log message.
+    def test_a_set(self, written):
+        get_logger("p").info("seen", urls={URL})
+        assert SECRET not in written.getvalue()
 
-        httpx renders HTTPStatusError as ``... for url '<url>'``, so any of
-        them leaks whatever the URL carried.
-        """
-        get_logger("faultmaven.web").error(
-            f"Web search failed: Client error for url 'https://g.com/s?key={KEY}'"
-        )
+    def test_an_exception_passed_as_a_field(self, written):
+        """``logger.error("failed", error=e)`` — the renderer repr()s it."""
+        get_logger("p").error("failed", error=ValueError(f"for url '{URL}'"))
+        assert SECRET not in written.getvalue()
 
-        assert KEY not in written.getvalue()
+    def test_a_dictionary_key(self, written):
+        get_logger("p").info("counts", per_url={URL: 1})
+        assert SECRET not in written.getvalue()
+
+    def test_a_deeply_nested_value(self, written):
+        get_logger("p").info("deep", ctx={"a": {"b": {"c": {"d": {"e": URL}}}}})
+        assert SECRET not in written.getvalue()
+
+    def test_an_exception_traceback(self, written):
+        try:
+            raise RuntimeError(f"boom for url '{URL}'")
+        except RuntimeError:
+            get_logger("p").exception("failed")
+        assert SECRET not in written.getvalue()
+
+    def test_a_dsn(self, written):
+        get_logger("p").error("db down", url="postgresql://u:p@h/db?password=P")
+        assert "password=P" not in written.getvalue()
 
     def test_an_investigation_note_is_not_mangled(self, written):
         """The cost side: redaction must not damage the product's own data."""
         note = "did the disk fill? /var/lib at 100%"
         get_logger("faultmaven.engine").info(note)
-
         assert note in written.getvalue()
 
-    def test_the_processor_is_installed_in_the_chain(self, written):
-        """Fails if someone removes it from the formatter's processor list.
-
-        The end-to-end tests above would also fail, but this one names the
-        cause instead of leaving a reader to work out why a URL got through.
-        """
+    def test_the_renderer_is_wrapped(self, written):
+        """Names the cause when the end-to-end cases above go red together."""
         formatter = _faultmaven_handler(logging.getLogger()).formatter
-        assert redact_urls_processor in formatter.processors
+        assert formatter.processors[-1].__module__.endswith("url_redaction")
+
+
+@pytest.mark.unit
+class TestRedactingFormatter:
+    """The maintenance jobs configure plain stdlib logging, not structlog."""
+
+    def test_it_redacts_its_own_output(self):
+        record = logging.LogRecord(
+            "job", logging.ERROR, __file__, 1, "connect failed: %s", (URL,), None
+        )
+        formatted = RedactingFormatter("%(message)s").format(record)
+        assert SECRET not in formatted
+        assert "g.com/search" in formatted
+
+    def test_a_record_with_no_url_is_unchanged(self):
+        record = logging.LogRecord(
+            "job", logging.INFO, __file__, 1, "seeded %d runbooks", (91,), None
+        )
+        assert RedactingFormatter("%(message)s").format(record) == "seeded 91 runbooks"
+
+
+@pytest.mark.unit
+class TestTheFixtureLeavesNothingBehind:
+    """The fixture reconfigures process-wide logging; it must undo all of it.
+
+    Named after the failure it prevents rather than the mechanism: an earlier
+    version snapshotted the root handlers BEFORE warming the module singleton,
+    so teardown restored a list that predated the handler and stripped it for
+    the rest of the session — while the singleton stayed set, so nothing
+    reinstalled it. Every later test reading the handler then saw nothing.
+    """
+
+    def test_the_root_handler_survives(self, written):
+        get_logger("faultmaven.test").info("anything")
+
+    def test_zz_and_is_still_there_afterwards(self):
+        """Ordered to run after the case above, which is the point."""
+        marked = [
+            handler
+            for handler in logging.getLogger().handlers
+            if getattr(handler, FaultMavenLogger._ROOT_HANDLER_MARKER, False)
+        ]
+        assert marked, "the fixture stripped the FaultMaven root handler"
