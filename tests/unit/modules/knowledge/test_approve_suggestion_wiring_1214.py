@@ -103,7 +103,7 @@ async def _approve(svc):
     return await svc.approve_suggestion(
         suggestion_id=SUGGESTION_ID,
         reviewed_by="user_admin",
-        organization_id=ORG,
+        enterprise_id=ORG,
     )
 
 

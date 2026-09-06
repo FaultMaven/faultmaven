@@ -1316,6 +1316,7 @@ class KnowledgeService:
         content: str,
         enterprise_id: str,
         scope: str,
+        organization_id: Optional[str] = None,
         document_type: str = "runbook",
         tags: Optional[List[str]] = None,
         source_url: Optional[str] = None,
@@ -1337,9 +1338,14 @@ class KnowledgeService:
         Args:
             document_id: Stable id used for both the relational row and the
                 ChromaDB document.
-            enterprise_id: Owning org for the org-owned tiers (personal/team).
-                Ignored for global scope — global rows are the org-free
-                platform tier (#770) and are stored with enterprise_id NULL.
+            enterprise_id: The enterprise the row is isolated to (ADR-017 D1).
+                Required for every tier including global: it is what RLS keys
+                on, and the global-write policy compares it against the
+                Standalone sentinel.
+            organization_id: Billing attribution for the organization-owned
+                tiers (personal/team), or None. Forced to None for global
+                scope — the platform tier is organization-free (#770),
+                ``knowledge_items_global_org_check``.
             scope: REQUIRED knowledge tier — ``global`` | ``team`` |
                 ``personal``. No default (#1166): ``global`` is the platform
                 corpus every tenant reads, so publishing into it must be a
@@ -1399,13 +1405,16 @@ class KnowledgeService:
         # both stores.
         item = KnowledgeItem(
             item_id=document_id,
-            # Global scope is the org-free platform tier (#770): the row carries
-            # NO enterprise_id (knowledge_items_global_org_check). Org-owned
-            # tiers (personal/team) keep the caller's org.
-            enterprise_id=(
+            # Isolation is not optional for any tier (ADR-017 D1): every row
+            # carries an enterprise, GLOBAL included, and the column is NOT
+            # NULL. What GLOBAL drops is the ORGANIZATION — it is the
+            # organization-free platform tier (#770), which is what
+            # ``knowledge_items_global_org_check`` states.
+            enterprise_id=enterprise_id,
+            organization_id=(
                 None
                 if KnowledgeScope(scope) == KnowledgeScope.GLOBAL
-                else enterprise_id
+                else organization_id
             ),
             title=title,
             content=content,

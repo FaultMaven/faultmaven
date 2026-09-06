@@ -30,7 +30,6 @@ from faultmaven.infrastructure.persistence.models import (
     ConversionDraftModel,
     ConversionJobModel,
     EnterpriseModel,
-    OrganizationModel,
     UploadedFileModel,
 )
 from faultmaven.modules.knowledge.domain.models.conversion import (
@@ -1358,7 +1357,7 @@ class TestConvertFromCaseDedup:
 
         call_count = 0
 
-        async def slow_impl(req, user_id, organization_id=None, team_id=None):
+        async def slow_impl(req, user_id, enterprise_id=None, team_id=None):
             nonlocal call_count
             call_count += 1
             # Yield long enough for the second call to enter and find the
@@ -1384,7 +1383,7 @@ class TestConvertFromCaseDedup:
 
         call_count = 0
 
-        async def fast_impl(req, user_id, organization_id=None, team_id=None):
+        async def fast_impl(req, user_id, enterprise_id=None, team_id=None):
             nonlocal call_count
             call_count += 1
             return _make_fake_response(conversion_id=f"conv_seq_{call_count}")
@@ -1403,7 +1402,7 @@ class TestConvertFromCaseDedup:
         `_inflight_runbook` so it does not leak."""
         request = self._make_request("case-cleanup-1")
 
-        async def fast_impl(req, user_id, organization_id=None, team_id=None):
+        async def fast_impl(req, user_id, enterprise_id=None, team_id=None):
             return _make_fake_response()
 
         with patch.object(service, "_convert_from_case_impl", side_effect=fast_impl):
@@ -1417,7 +1416,7 @@ class TestConvertFromCaseDedup:
         retry can proceed."""
         request = self._make_request("case-exc-1")
 
-        async def failing_impl(req, user_id, organization_id=None, team_id=None):
+        async def failing_impl(req, user_id, enterprise_id=None, team_id=None):
             raise RuntimeError("boom")
 
         with patch.object(service, "_convert_from_case_impl", side_effect=failing_impl):
@@ -1435,7 +1434,7 @@ class TestConvertFromCaseDedup:
 
         call_count = 0
 
-        async def slow_impl(req, user_id, organization_id=None, team_id=None):
+        async def slow_impl(req, user_id, enterprise_id=None, team_id=None):
             nonlocal call_count
             call_count += 1
             await asyncio.sleep(0.05)
@@ -1687,10 +1686,11 @@ async def live_case_engine():
 
 @pytest.fixture
 async def live_case_session_factory(live_case_engine):
-    """Session factory pre-seeded with the default enterprise + organization so
-    the NOT NULL org FKs on the conversion chain bind. One factory, shared by
-    every ConversionService in a test — the single database two replicas race
-    over."""
+    """Session factory pre-seeded with the default enterprise so the NOT NULL
+    ``enterprise_id`` FKs on the conversion chain bind. No organization row: it
+    is billing attribution and nullable (ADR-017 D2), so seeding one would only
+    hide a writer that stamps the wrong column. One factory, shared by every
+    ConversionService in a test — the single database two replicas race over."""
     factory = async_sessionmaker(
         live_case_engine, class_=AsyncSession, expire_on_commit=False
     )
@@ -1700,14 +1700,6 @@ async def live_case_session_factory(live_case_engine):
                 enterprise_id=DEFAULT_ENTERPRISE_ID,
                 name="Default Enterprise",
                 slug="default",
-            )
-        )
-        session.add(
-            OrganizationModel(
-                organization_id=DEFAULT_ENTERPRISE_ID,
-                enterprise_id=DEFAULT_ENTERPRISE_ID,
-                name="Default Org",
-                slug="default-org",
             )
         )
         await session.commit()
@@ -1853,7 +1845,7 @@ class TestPersistJobLiveCaseKey:
         await svc._persist_job(
             conversion_id="conv-case-live",
             user_id="u1",
-            organization_id=DEFAULT_ENTERPRISE_ID,
+            enterprise_id=DEFAULT_ENTERPRISE_ID,
             scope="personal",
             team_id=None,
             status=ConversionStatus.COMPLETED,
@@ -1875,7 +1867,7 @@ class TestPersistJobLiveCaseKey:
         await svc._persist_job(
             conversion_id="conv-doc",
             user_id="u1",
-            organization_id=DEFAULT_ENTERPRISE_ID,
+            enterprise_id=DEFAULT_ENTERPRISE_ID,
             scope="personal",
             team_id=None,
             status=ConversionStatus.COMPLETED,
@@ -1897,7 +1889,7 @@ class TestPersistJobLiveCaseKey:
         await svc._persist_job(
             conversion_id="conv-failed",
             user_id="u1",
-            organization_id=DEFAULT_ENTERPRISE_ID,
+            enterprise_id=DEFAULT_ENTERPRISE_ID,
             scope="personal",
             team_id=None,
             status=ConversionStatus.FAILED,
@@ -2584,7 +2576,7 @@ class TestPersistJobOrgStamp:
 
     Under PostgreSQL the RLS policy from migration 018 is ``FOR ALL`` with the
     USING expression doubling as the WITH CHECK, so a row whose
-    ``organization_id`` differs from ``app.current_enterprise_id`` is *refused*, not
+    ``enterprise_id`` differs from ``app.current_enterprise_id`` is *refused*, not
     merely hidden. ``app.current_enterprise_id`` comes from the tenant contextvar (the
     engine's ``begin`` listener), so a writer that resolves a missing org to a
     hardcoded single-tenant sentinel writes a row its own transaction may not
@@ -2593,29 +2585,23 @@ class TestPersistJobOrgStamp:
     """
 
     @staticmethod
-    async def _seed_org(session_factory, org_id: str) -> None:
+    async def _seed_enterprise(session_factory, enterprise_id: str) -> None:
         async with session_factory() as session:
             session.add(
                 EnterpriseModel(
-                    enterprise_id=org_id, name="Guest Enterprise", slug=f"e-{org_id}"
-                )
-            )
-            session.add(
-                OrganizationModel(
-                    organization_id=org_id,
-                    enterprise_id=org_id,
-                    name="Guest Org",
-                    slug=f"o-{org_id}",
+                    enterprise_id=enterprise_id,
+                    name="Guest Enterprise",
+                    slug=f"e-{enterprise_id}",
                 )
             )
             await session.commit()
 
     @staticmethod
-    async def _run_persist(service, conversion_id: str, organization_id, tmp_path):
+    async def _run_persist(service, conversion_id: str, enterprise_id, tmp_path):
         await service._persist_job(
             conversion_id=conversion_id,
             user_id="u1",
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             scope="personal",
             team_id=None,
             status=ConversionStatus.COMPLETED,
@@ -2656,8 +2642,8 @@ class TestPersistJobOrgStamp:
                 .scalars()
                 .all()
             )
-            return {job.organization_id, upload.organization_id} | {
-                d.organization_id for d in drafts
+            return {job.enterprise_id, upload.enterprise_id} | {
+                d.enterprise_id for d in drafts
             }
 
     @pytest.mark.asyncio
@@ -2673,7 +2659,7 @@ class TestPersistJobOrgStamp:
         from faultmaven.config.tenant_context import _current_enterprise_id
 
         guest_org = "org_guest_7f2a"
-        await self._seed_org(live_case_session_factory, guest_org)
+        await self._seed_enterprise(live_case_session_factory, guest_org)
         service = _make_live_case_service(live_case_session_factory)
 
         token = _current_enterprise_id.set(guest_org)
@@ -2697,7 +2683,7 @@ class TestPersistJobOrgStamp:
         from faultmaven.config.tenant_context import _current_enterprise_id
 
         explicit_org = "org_explicit_11b3"
-        await self._seed_org(live_case_session_factory, explicit_org)
+        await self._seed_enterprise(live_case_session_factory, explicit_org)
         service = _make_live_case_service(live_case_session_factory)
 
         token = _current_enterprise_id.set("org_ambient_beef")

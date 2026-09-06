@@ -131,7 +131,7 @@ async def test_bootstrap_ingests_new_runbook(tmp_path: Path):
     result = await kb_init.bootstrap_kb(
         knowledge_service=knowledge_service,
         db_session_factory=_make_session_factory(existing_row=None),
-        organization_id="org-test",
+        enterprise_id="ent-test",
         project_root=tmp_path,
         pack_dir=pack_dir,
     )
@@ -170,7 +170,7 @@ async def test_bootstrap_never_loads_model(tmp_path: Path):
         result = await kb_init.bootstrap_kb(
             knowledge_service=knowledge_service,
             db_session_factory=_make_session_factory(existing_row=None),
-            organization_id="org-test",
+            enterprise_id="ent-test",
             project_root=tmp_path,
             pack_dir=pack_dir,
         )
@@ -193,7 +193,7 @@ async def test_bootstrap_skips_unchanged_runbook(tmp_path: Path):
     result = await kb_init.bootstrap_kb(
         knowledge_service=knowledge_service,
         db_session_factory=_make_session_factory(existing_row=existing),
-        organization_id="org-test",
+        enterprise_id="ent-test",
         project_root=tmp_path,
         pack_dir=pack_dir,
     )
@@ -219,7 +219,7 @@ async def test_bootstrap_re_ingests_changed_runbook(tmp_path: Path):
     result = await kb_init.bootstrap_kb(
         knowledge_service=knowledge_service,
         db_session_factory=_make_session_factory(existing_row=existing),
-        organization_id="org-test",
+        enterprise_id="ent-test",
         project_root=tmp_path,
         pack_dir=pack_dir,
     )
@@ -251,7 +251,7 @@ async def test_second_bootstrap_over_real_sqlite_skips_everything(
     first = await kb_init.bootstrap_kb(
         knowledge_service=svc,
         db_session_factory=factory,
-        organization_id="org-1",
+        enterprise_id="ent-1",
         project_root=tmp_path,
         pack_dir=pack_dir,
     )
@@ -261,7 +261,7 @@ async def test_second_bootstrap_over_real_sqlite_skips_everything(
     second = await kb_init.bootstrap_kb(
         knowledge_service=svc,
         db_session_factory=factory,
-        organization_id="org-1",
+        enterprise_id="ent-1",
         project_root=tmp_path,
         pack_dir=pack_dir,
     )
@@ -283,7 +283,7 @@ async def test_bootstrap_raises_on_zero_chunks(tmp_path: Path):
     result = await kb_init.bootstrap_kb(
         knowledge_service=knowledge_service,
         db_session_factory=_make_session_factory(existing_row=None),
-        organization_id="org-test",
+        enterprise_id="ent-test",
         project_root=tmp_path,
         pack_dir=pack_dir,
     )
@@ -324,7 +324,7 @@ async def test_bootstrap_fails_runbook_on_noncanonical_chunk_indices(
     result = await kb_init.bootstrap_kb(
         knowledge_service=knowledge_service,
         db_session_factory=_make_session_factory(existing_row=None),
-        organization_id="org-test",
+        enterprise_id="ent-test",
         project_root=tmp_path,
         pack_dir=pack_dir,
     )
@@ -349,7 +349,7 @@ async def test_bootstrap_accepts_canonical_chunk_indices(tmp_path: Path):
     result = await kb_init.bootstrap_kb(
         knowledge_service=knowledge_service,
         db_session_factory=_make_session_factory(existing_row=None),
-        organization_id="org-test",
+        enterprise_id="ent-test",
         project_root=tmp_path,
         pack_dir=pack_dir,
     )
@@ -384,7 +384,7 @@ async def test_bootstrap_empty_chunks_update_does_not_delete_existing_row(
     result = await kb_init.bootstrap_kb(
         knowledge_service=knowledge_service,
         db_session_factory=_make_session_factory(existing_row=existing),
-        organization_id="org-test",
+        enterprise_id="ent-test",
         project_root=tmp_path,
         pack_dir=pack_dir,
     )
@@ -420,7 +420,7 @@ async def test_bootstrap_malformed_update_does_not_delete_existing_row(tmp_path:
     result = await kb_init.bootstrap_kb(
         knowledge_service=knowledge_service,
         db_session_factory=_make_session_factory(existing_row=existing),
-        organization_id="org-test",
+        enterprise_id="ent-test",
         project_root=tmp_path,
         pack_dir=pack_dir,
     )
@@ -443,7 +443,7 @@ async def test_bootstrap_no_pack_is_safe(tmp_path: Path):
     result = await kb_init.bootstrap_kb(
         knowledge_service=knowledge_service,
         db_session_factory=_make_session_factory(existing_row=None),
-        organization_id="org-test",
+        enterprise_id="ent-test",
         project_root=tmp_path,
         pack_dir=tmp_path / "no-such-pack",
     )
@@ -512,14 +512,16 @@ async def fk_on_ingest_service():
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # Seed enterprise + org so knowledge_items.organization_id FK is
-        # satisfiable. Deliberately seed NO "system" user.
-        await conn.execute(
-            text(
-                "INSERT INTO enterprises (enterprise_id, name, slug) "
-                "VALUES ('ent-1', 'Default', 'default')"
+        # Seed the enterprises the pack's rows are isolated to, so the
+        # knowledge_items.enterprise_id FK is satisfiable. Deliberately seed
+        # NO "system" user.
+        for ent in ("ent-1", "ent-test"):
+            await conn.execute(
+                text(
+                    "INSERT INTO enterprises (enterprise_id, name, slug) "
+                    f"VALUES ('{ent}', '{ent}', '{ent}')"
+                )
             )
-        )
         await conn.execute(
             text(
                 "INSERT INTO organizations "
@@ -557,7 +559,7 @@ async def test_ingest_runbook_succeeds_with_fk_enforced_fresh_install(
         document_id="kb_fkprobe",
         title="Probe Runbook",
         content="# body",
-        organization_id="org-1",
+        enterprise_id="ent-1",
         scope="global",
         verified_by=None,
         verification_level=VerificationLevel.COMMUNITY,
@@ -591,7 +593,7 @@ async def test_ingest_runbook_writes_empty_metadata(fk_on_ingest_service):
         document_id="kb_metaprobe",
         title="Probe Runbook",
         content="# body\n\n## Causes\n\n### Cause A: x\n**Statement:** y\n",
-        organization_id="org-1",
+        enterprise_id="ent-1",
         scope="global",
         verified_by=None,
     )
@@ -621,7 +623,7 @@ async def test_ingest_runbook_with_sentinel_verified_by_fails_fk(
             document_id="kb_sentinel",
             title="Sentinel Runbook",
             content="# body",
-            organization_id="org-1",
+            enterprise_id="ent-1",
             scope="global",
             verified_by="system",  # no such users row → FK violation
         )
@@ -653,7 +655,7 @@ async def test_ingest_runbook_coerces_numeric_tags_for_both_models(
         document_id="kb_numtag",
         title="Numeric Tag Runbook",
         content="# body",
-        organization_id="org-1",
+        enterprise_id="ent-1",
         scope="global",
         tags=["istio", 503, "envoy"],
         verified_by=None,
@@ -885,7 +887,7 @@ async def test_reindex_missing_vectors_re_embeds_from_persisted_row(
         document_id="kb_repairme",
         title="Repair Me",
         content="# Body\n\nSome content to chunk.",
-        organization_id="org-1",
+        enterprise_id="ent-1",
         scope="global",
         tags=["postgres"],
         verified_by=None,

@@ -46,13 +46,17 @@ def _mk_item(
     *,
     scope=KnowledgeScope.GLOBAL,
     owner_id=None,
-    org="org-1",
+    enterprise="ent-1",
+    org=None,
     is_published=True,
 ):
     return KnowledgeItem(
         item_id=item_id,
-        # Global rows are the org-free platform tier (#770).
-        enterprise_id=None if scope == KnowledgeScope.GLOBAL else org,
+        # Isolation is not optional for any tier (ADR-017 D1): GLOBAL is the
+        # ORGANIZATION-free platform tier (#770), and it still lives in an
+        # enterprise. Only the organization goes away.
+        enterprise_id=enterprise,
+        organization_id=None if scope == KnowledgeScope.GLOBAL else org,
         title="Runbook",
         content="# body\nline two\nline three",
         item_type=KnowledgeItemType.RUNBOOK,
@@ -69,7 +73,7 @@ def _mk_item(
 
 @pytest.fixture
 async def db_factory():
-    """FK-on aiosqlite session factory with two orgs and two users seeded."""
+    """FK-on aiosqlite session factory with two enterprises and two users."""
     from sqlalchemy import event, text
     from sqlalchemy.ext.asyncio import (
         AsyncSession,
@@ -89,18 +93,11 @@ async def db_factory():
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        await conn.execute(
-            text(
-                "INSERT INTO enterprises (enterprise_id, name, slug) "
-                "VALUES ('ent-1', 'Default', 'default')"
-            )
-        )
-        for org in ("org-1", "org-2"):
+        for ent in ("ent-1", "ent-2"):
             await conn.execute(
                 text(
-                    "INSERT INTO organizations "
-                    "(organization_id, enterprise_id, name, slug) "
-                    f"VALUES ('{org}', 'ent-1', '{org}', '{org}')"
+                    "INSERT INTO enterprises (enterprise_id, name, slug) "
+                    f"VALUES ('{ent}', '{ent}', '{ent}')"
                 )
             )
         for uid in ("user-1", "user-2"):
@@ -122,11 +119,11 @@ async def _seed(factory, item):
         await DatabaseKnowledgeItemRepository(session).create(item)
 
 
-async def _visible(factory, item_id, org, user_id=None, team_ids=None):
+async def _visible(factory, item_id, enterprise, user_id=None, team_ids=None):
     async with factory() as session:
         return await DatabaseKnowledgeItemRepository(session).get_visible_by_id(
             item_id,
-            organization_id=org,
+            enterprise_id=enterprise,
             user_id=user_id,
             team_ids=team_ids,
         )
@@ -138,10 +135,14 @@ async def _visible(factory, item_id, org, user_id=None, team_ids=None):
 class TestGetVisibleByIdSQL:
     async def test_global_visible_to_everyone(self, db_factory):
         # The platform tier is org-free (#770): an org member, a caller from a
-        # different org, and an actorless load all reach it.
+        # different enterprise, and an actorless load all reach it.
         await _seed(db_factory, _mk_item(GLOBAL_ID))
-        for org, user_id in (("org-1", "user-1"), ("org-2", "user-2"), ("org-1", None)):
-            got = await _visible(db_factory, GLOBAL_ID, org, user_id=user_id)
+        for enterprise, user_id in (
+            ("ent-1", "user-1"),
+            ("ent-2", "user-2"),
+            ("ent-1", None),
+        ):
+            got = await _visible(db_factory, GLOBAL_ID, enterprise, user_id=user_id)
             assert got is not None and got.item_id == GLOBAL_ID
 
     @pytest.mark.parametrize("is_published", [True, False])
@@ -159,7 +160,7 @@ class TestGetVisibleByIdSQL:
                 is_published=is_published,
             ),
         )
-        got = await _visible(db_factory, "p-1", "org-1", user_id="user-1")
+        got = await _visible(db_factory, "p-1", "ent-1", user_id="user-1")
         assert got is not None and got.item_id == "p-1"
 
     async def test_unpublished_global_is_unreachable_by_a_non_owner(self, db_factory):
@@ -169,8 +170,15 @@ class TestGetVisibleByIdSQL:
         # route, so leaving it id-readable would serve deleted content to any
         # authenticated caller.
         await _seed(db_factory, _mk_item(GLOBAL_ID, is_published=False))
-        for org, user_id in (("org-1", "user-1"), ("org-2", "user-2"), ("org-1", None)):
-            assert await _visible(db_factory, GLOBAL_ID, org, user_id=user_id) is None
+        for enterprise, user_id in (
+            ("ent-1", "user-1"),
+            ("ent-2", "user-2"),
+            ("ent-1", None),
+        ):
+            assert (
+                await _visible(db_factory, GLOBAL_ID, enterprise, user_id=user_id)
+                is None
+            )
 
     async def test_unpublished_team_share_is_unreachable_by_a_member(self, db_factory):
         # Same rule on the share arm: only the owner is exempt.
@@ -193,19 +201,19 @@ class TestGetVisibleByIdSQL:
                 resource_id="t-3",
                 scope_type="team",
                 scope_id="team-A",
-                organization_id="org-1",
+                enterprise_id="ent-1",
                 created_by="user-1",
             )
 
         assert (
             await _visible(
-                db_factory, "t-3", "org-1", user_id="user-2", team_ids=["team-A"]
+                db_factory, "t-3", "ent-1", user_id="user-2", team_ids=["team-A"]
             )
             is None
         )
         # The author still reaches their own unpublished row.
         owner = await _visible(
-            db_factory, "t-3", "org-1", user_id="user-1", team_ids=["team-A"]
+            db_factory, "t-3", "ent-1", user_id="user-1", team_ids=["team-A"]
         )
         assert owner is not None and owner.item_id == "t-3"
 
@@ -214,7 +222,7 @@ class TestGetVisibleByIdSQL:
             db_factory,
             _mk_item("p-1", scope=KnowledgeScope.PERSONAL, owner_id="user-1"),
         )
-        assert await _visible(db_factory, "p-1", "org-1", user_id="user-2") is None
+        assert await _visible(db_factory, "p-1", "ent-1", user_id="user-2") is None
         assert await _visible(db_factory, "p-1", "org-1") is None
 
     async def test_team_share_grants_visibility(self, db_factory):
@@ -232,15 +240,15 @@ class TestGetVisibleByIdSQL:
                 resource_id="t-1",
                 scope_type="team",
                 scope_id="team-A",
-                organization_id="org-1",
+                enterprise_id="ent-1",
                 created_by="user-1",
             )
 
         member = await _visible(
-            db_factory, "t-1", "org-1", user_id="user-2", team_ids=["team-A"]
+            db_factory, "t-1", "ent-1", user_id="user-2", team_ids=["team-A"]
         )
         nonmember = await _visible(
-            db_factory, "t-1", "org-1", user_id="user-2", team_ids=["team-B"]
+            db_factory, "t-1", "ent-1", user_id="user-2", team_ids=["team-B"]
         )
         assert member is not None and member.item_id == "t-1"
         assert nonmember is None
@@ -255,7 +263,9 @@ class TestGetVisibleByIdSQL:
 
         await _seed(
             db_factory,
-            _mk_item("t-2", scope=KnowledgeScope.TEAM, owner_id="user-1", org="org-2"),
+            _mk_item(
+                "t-2", scope=KnowledgeScope.TEAM, owner_id="user-1", enterprise="ent-2"
+            ),
         )
         async with db_factory() as session:
             await PostgreSQLShareRepository(session).share(
@@ -263,13 +273,13 @@ class TestGetVisibleByIdSQL:
                 resource_id="t-2",
                 scope_type="team",
                 scope_id="team-A",
-                organization_id="org-2",
+                enterprise_id="ent-2",
                 created_by="user-1",
             )
 
         assert (
             await _visible(
-                db_factory, "t-2", "org-1", user_id="user-2", team_ids=["team-A"]
+                db_factory, "t-2", "ent-1", user_id="user-2", team_ids=["team-A"]
             )
             is None
         )
@@ -287,7 +297,9 @@ class TestGetVisibleByIdSQL:
 
         await _seed(
             db_factory,
-            _mk_item("t-4", scope=KnowledgeScope.TEAM, owner_id="user-1", org="org-1"),
+            _mk_item(
+                "t-4", scope=KnowledgeScope.TEAM, owner_id="user-1", enterprise="ent-1"
+            ),
         )
         async with db_factory() as session:
             await PostgreSQLShareRepository(session).share(
@@ -295,25 +307,25 @@ class TestGetVisibleByIdSQL:
                 resource_id="t-4",
                 scope_type="team",
                 scope_id="team-A",
-                organization_id="org-2",  # not the resource's org
+                enterprise_id="ent-2",  # not the resource's org
                 created_by="user-1",
             )
 
         assert (
             await _visible(
-                db_factory, "t-4", "org-1", user_id="user-2", team_ids=["team-A"]
+                db_factory, "t-4", "ent-1", user_id="user-2", team_ids=["team-A"]
             )
             is None
         )
         # Same clause, same rule on the listing surface.
         async with db_factory() as session:
             listed = await DatabaseKnowledgeItemRepository(session).list_for_inventory(
-                organization_id="org-1", user_id="user-2", team_ids=["team-A"]
+                enterprise_id="ent-1", user_id="user-2", team_ids=["team-A"]
             )
         assert [i.item_id for i in listed] == []
 
     async def test_absent_id_returns_none(self, db_factory):
-        assert await _visible(db_factory, "nope", "org-1", user_id="user-1") is None
+        assert await _visible(db_factory, "nope", "ent-1", user_id="user-1") is None
 
 
 # ===========================================================================
@@ -333,9 +345,13 @@ class TestGetVisibleByIdInMemory:
 
     async def test_global_visible_to_everyone(self):
         repo = await self._repo_with([_mk_item(GLOBAL_ID)])
-        for org, user_id in (("org-1", "user-1"), ("org-2", "user-2"), ("org-1", None)):
+        for enterprise, user_id in (
+            ("ent-1", "user-1"),
+            ("ent-2", "user-2"),
+            ("ent-1", None),
+        ):
             got = await repo.get_visible_by_id(
-                GLOBAL_ID, organization_id=org, user_id=user_id
+                GLOBAL_ID, enterprise_id=enterprise, user_id=user_id
             )
             assert got is not None and got.item_id == GLOBAL_ID
 
@@ -354,7 +370,7 @@ class TestGetVisibleByIdInMemory:
             ]
         )
         got = await repo.get_visible_by_id(
-            "p-1", organization_id="org-1", user_id="user-1"
+            "p-1", enterprise_id="ent-1", user_id="user-1"
         )
         assert got is not None
 
@@ -362,10 +378,14 @@ class TestGetVisibleByIdInMemory:
         # Mirrors the SQL rule: unpublish is the delete semantics for built-in
         # global rows, so a non-owner must not reach an unpublished row.
         repo = await self._repo_with([_mk_item(GLOBAL_ID, is_published=False)])
-        for org, user_id in (("org-1", "user-1"), ("org-2", "user-2"), ("org-1", None)):
+        for enterprise, user_id in (
+            ("ent-1", "user-1"),
+            ("ent-2", "user-2"),
+            ("ent-1", None),
+        ):
             assert (
                 await repo.get_visible_by_id(
-                    GLOBAL_ID, organization_id=org, user_id=user_id
+                    GLOBAL_ID, enterprise_id=enterprise, user_id=user_id
                 )
                 is None
             )
@@ -375,20 +395,16 @@ class TestGetVisibleByIdInMemory:
             [_mk_item("p-1", scope=KnowledgeScope.PERSONAL, owner_id="user-1")]
         )
         assert (
-            await repo.get_visible_by_id(
-                "p-1", organization_id="org-1", user_id="user-2"
-            )
+            await repo.get_visible_by_id("p-1", enterprise_id="ent-1", user_id="user-2")
+            is None
+        )
+        assert (
+            await repo.get_visible_by_id("p-1", enterprise_id="ent-2", user_id="user-1")
             is None
         )
         assert (
             await repo.get_visible_by_id(
-                "p-1", organization_id="org-2", user_id="user-1"
-            )
-            is None
-        )
-        assert (
-            await repo.get_visible_by_id(
-                "nope", organization_id="org-1", user_id="user-1"
+                "nope", enterprise_id="ent-1", user_id="user-1"
             )
             is None
         )
@@ -397,7 +413,7 @@ class TestGetVisibleByIdInMemory:
         assert (
             await repo.get_visible_by_id(
                 "p-1",
-                organization_id="org-1",
+                enterprise_id="ent-1",
                 user_id="user-2",
                 team_ids=["team-A"],
             )
@@ -434,8 +450,8 @@ class TestGetDocumentVisibleService:
             _mk_item("p-1", scope=KnowledgeScope.PERSONAL, owner_id="user-1"),
         )
 
-        owner = SimpleNamespace(user_id="user-1", organization_id="org-1")
-        other = SimpleNamespace(user_id="user-2", organization_id="org-1")
+        owner = SimpleNamespace(user_id="user-1", enterprise_id="ent-1")
+        other = SimpleNamespace(user_id="user-2", enterprise_id="ent-1")
 
         doc = await svc.get_document_visible("p-1", user=owner, team_ids=[])
         assert doc is not None

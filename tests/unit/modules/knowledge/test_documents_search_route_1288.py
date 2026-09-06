@@ -28,6 +28,10 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
 )
 
 ORG = "org-1"
+#: The enterprise every row here is isolated to — the one the fixture seeds.
+#: It is not optional for any tier: GLOBAL carries no ORGANIZATION (#770), but
+#: it still carries an enterprise, and the column is NOT NULL with an FK.
+ENTERPRISE = "ent-1"
 USER_ID = "user-1"
 TEAM_ID = "team-9"
 
@@ -42,10 +46,11 @@ GLOBAL_BODY = f"# Runbook\nStep 1: {BODY_SECRET}\nStep 2: ENOSPC when /var fills
 TEAM_BODY = "# Team runbook\nThe ENOSPC alert is routed to the platform team.\n"
 
 
-def _item(item_id, title, content, scope, owner_id=None, org=None):
+def _item(item_id, title, content, scope, owner_id=None, organization=None):
     return KnowledgeItem(
         item_id=item_id,
-        enterprise_id=org,
+        enterprise_id=ENTERPRISE,
+        organization_id=organization,
         title=title,
         content=content,
         item_type=KnowledgeItemType.RUNBOOK,
@@ -126,7 +131,7 @@ async def wired():
                 TEAM_BODY,
                 KnowledgeScope.TEAM,
                 owner_id=None,
-                org=ORG,
+                organization=ORG,
             )
         )
         # The share row is the single source of truth for team visibility.
@@ -134,9 +139,9 @@ async def wired():
             text(
                 "INSERT INTO resource_shares "
                 "(share_id, resource_type, resource_id, scope_type, scope_id, "
-                " organization_id) "
+                " enterprise_id, organization_id) "
                 f"VALUES ('s1', 'knowledge_item', '{TEAM_ID_DOC}', 'team', "
-                f"'{TEAM_ID}', '{ORG}')"
+                f"'{TEAM_ID}', '{ENTERPRISE}', '{ORG}')"
             )
         )
         await session.commit()
@@ -163,7 +168,11 @@ async def wired():
     await engine.dispose()
 
 
-AUTHED = SimpleNamespace(user_id=USER_ID, organization_id=ORG)
+#: The route reads the caller's ENTERPRISE to scope the share allowlist
+#: (ADR-017 D1), so a principal carrying only a billing organization resolves no
+#: team memberships and the "shared to my teams" arm goes dead again — the exact
+#: defect this module was written for.
+AUTHED = SimpleNamespace(user_id=USER_ID, enterprise_id=ENTERPRISE, organization_id=ORG)
 
 
 def _search(client, **body):

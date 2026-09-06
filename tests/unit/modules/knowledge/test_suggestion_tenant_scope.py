@@ -48,13 +48,13 @@ SUG_A = "sug_ownedbyorga"
 SUG_B = "sug_ownedbyorgb"
 
 
-def _suggestion(suggestion_id: str, organization_id: str) -> KnowledgeSuggestion:
+def _suggestion(suggestion_id: str, enterprise_id: str) -> KnowledgeSuggestion:
     """A review-ready suggestion. Identical across tenants but for the org, so a
     404 can only come from the tenant predicate and not from some other guard
     (unscanned PII, wrong status) firing first."""
     return KnowledgeSuggestion(
         suggestion_id=suggestion_id,
-        enterprise_id=organization_id,
+        enterprise_id=enterprise_id,
         case_id="case-1",
         status=SuggestionStatus.PENDING_REVIEW,
         suggested_title="Connection pool exhaustion",
@@ -89,7 +89,7 @@ def _service() -> SuggestionService:
     )
 
 
-def _admin(organization_id) -> DevUser:
+def _admin(enterprise_id) -> DevUser:
     return DevUser(
         user_id="user-admin",
         username="admin",
@@ -97,7 +97,7 @@ def _admin(organization_id) -> DevUser:
         display_name="Admin",
         created_at=datetime.now(timezone.utc),
         roles=["admin", "platform_admin"],
-        organization_id=organization_id,
+        enterprise_id=enterprise_id,
     )
 
 
@@ -262,7 +262,7 @@ def test_an_org_less_actor_is_refused_on_the_list_route():
 @pytest.mark.parametrize("route", ROUTES)
 def test_the_standalone_sentinel_is_not_a_tenant_under_multi(route):
     """Under ``TENANT_PROVIDER=multi`` the sentinel identifies the single-tenant
-    deployment, not an organization — accepting it would scope an operator to a
+    deployment, not an enterprise — accepting it would scope an operator to a
     pseudo-tenant that owns nothing and bypass the real one."""
     from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 
@@ -308,7 +308,7 @@ async def test_get_suggestion_visible_sweeps_the_tenant_grid(
     actor_org, wanted, expected
 ):
     service = _service()
-    got = await service.get_suggestion_visible(wanted, organization_id=actor_org)
+    got = await service.get_suggestion_visible(wanted, enterprise_id=actor_org)
     assert (got.suggestion_id if got else None) == expected
 
 
@@ -317,9 +317,7 @@ async def test_get_suggestion_visible_sweeps_the_tenant_grid(
 @pytest.mark.parametrize("falsy_org", ["", None])
 async def test_get_suggestion_visible_fails_closed_without_a_tenant(falsy_org):
     service = _service()
-    assert (
-        await service.get_suggestion_visible(SUG_A, organization_id=falsy_org) is None
-    )
+    assert await service.get_suggestion_visible(SUG_A, enterprise_id=falsy_org) is None
 
 
 @pytest.mark.security
@@ -341,11 +339,11 @@ async def test_a_tenantless_actor_cannot_match_a_tenantless_row(row_org, actor_o
     would mishandle.
     """
     orphan = _suggestion("sug_orphan", ORG_A)
-    orphan.organization_id = row_org
+    orphan.enterprise_id = row_org
     repository = InMemorySuggestionRepository()
     repository.seed(orphan)
     service = SuggestionService(suggestion_repository=repository)
-    got = await service.get_suggestion_visible("sug_orphan", organization_id=actor_org)
+    got = await service.get_suggestion_visible("sug_orphan", enterprise_id=actor_org)
     assert got is None
 
 
@@ -353,7 +351,7 @@ async def test_a_tenantless_actor_cannot_match_a_tenantless_row(row_org, actor_o
 @pytest.mark.asyncio
 @pytest.mark.parametrize("falsy_org", ["", None])
 async def test_list_suggestions_fails_closed_without_a_tenant(falsy_org):
-    result = await _service().list_suggestions(organization_id=falsy_org)
+    result = await _service().list_suggestions(enterprise_id=falsy_org)
     assert result["suggestions"] == []
     assert result["total_count"] == 0
 
@@ -364,4 +362,4 @@ async def test_the_unscoped_load_is_still_available_to_trusted_callers():
     """``get_suggestion`` stays unscoped on purpose — extraction has no actor to
     scope by. The split is the point; collapsing them would break that path."""
     service = _service()
-    assert (await service.get_suggestion(SUG_B)).organization_id == ORG_B
+    assert (await service.get_suggestion(SUG_B)).enterprise_id == ORG_B

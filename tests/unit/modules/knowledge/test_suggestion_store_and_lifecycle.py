@@ -20,7 +20,7 @@ flywheel exists to accumulate. A process-memory bound would have become
 permanent destruction, so the bound moved onto the queue that actually needs
 bounding. The tests that asserted eviction now assert its opposite.
 
-**The cap is scoped per organization**, because the durable store is one table
+**The cap is scoped per enterprise**, because the durable store is one table
 shared by every tenant and a deployment-wide count would let one tenant's
 undrained inbox refuse another tenant's extraction.
 
@@ -104,17 +104,17 @@ async def _stored(svc: SuggestionService, suggestion_id: str):
 
 
 async def _stored_ids(svc: SuggestionService) -> set:
-    page, _ = await svc._repository.list_for_organization(ORG, limit=1000)
+    page, _ = await svc._repository.list_for_enterprise(ORG, limit=1000)
     return {s.suggestion_id for s in page}
 
 
 async def _stored_count(svc: SuggestionService) -> int:
-    return await svc._repository.count_for_organization(ORG)
+    return await svc._repository.count_for_enterprise(ORG)
 
 
 async def _extract(svc: SuggestionService, case_id: str = "case_aabb11223344"):
     return await svc.extract_knowledge_from_case(
-        case_id=case_id, organization_id=ORG, extracted_by="user_extractor"
+        case_id=case_id, enterprise_id=ORG, extracted_by="user_extractor"
     )
 
 
@@ -242,7 +242,7 @@ class TestTheUnreviewedQueueIsWhatIsCapped:
                 suggestion_id="pending",
                 reviewed_by="user_admin",
                 rejection_reason="not reusable",
-                organization_id=ORG,
+                enterprise_id=ORG,
             )
             is True
         )
@@ -322,7 +322,7 @@ class TestAFailedScanRecovers:
         result = await svc.approve_suggestion(
             suggestion_id=suggestion.suggestion_id,
             reviewed_by="user-admin",
-            organization_id=ORG,
+            enterprise_id=ORG,
         )
 
         assert result is not None, "a recovered scan should let approval proceed"
@@ -353,7 +353,7 @@ class TestAFailedScanRecovers:
         result = await svc.approve_suggestion(
             suggestion_id=suggestion.suggestion_id,
             reviewed_by="user-admin",
-            organization_id=ORG,
+            enterprise_id=ORG,
         )
 
         assert result is None
@@ -380,7 +380,7 @@ class TestAFailedScanRecovers:
         result = await svc.approve_suggestion(
             suggestion_id=suggestion.suggestion_id,
             reviewed_by="user-admin",
-            organization_id=ORG,
+            enterprise_id=ORG,
         )
 
         assert result is None

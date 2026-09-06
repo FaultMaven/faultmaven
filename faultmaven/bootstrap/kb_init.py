@@ -80,7 +80,7 @@ class BootstrapResult:
 async def bootstrap_kb(
     knowledge_service: Any,
     db_session_factory: Callable[[], Awaitable[Any]],
-    organization_id: str,
+    enterprise_id: str,
     project_root: Optional[Path] = None,
     pack_dir: Optional[Path] = None,
 ) -> BootstrapResult:
@@ -89,7 +89,9 @@ async def bootstrap_kb(
     Args:
         knowledge_service: The wired-up KnowledgeService (post-DI).
         db_session_factory: Async session factory (``get_db_session``).
-        organization_id: Default org for the global-scope runbooks.
+        enterprise_id: The enterprise the pack's rows are isolated to
+            (ADR-017 D1). Global scope drops the ORGANIZATION, never the
+            enterprise — the column is NOT NULL and RLS keys on it.
         project_root: Override the project root (test injection).
         pack_dir: Explicit pack directory (test injection). When None, resolves
             from ``KB_PACK_DIR`` settings, falling back to the bundled baseline.
@@ -139,7 +141,7 @@ async def bootstrap_kb(
                 runbook=runbook,
                 knowledge_service=knowledge_service,
                 db_session_factory=db_session_factory,
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
             )
             if outcome == "ingested":
                 result.ingested.append(runbook.relpath)
@@ -197,7 +199,7 @@ async def _ingest_pack_runbook(
     runbook: Any,  # kb_pack.PackRunbook
     knowledge_service: Any,
     db_session_factory: Callable[[], Awaitable[Any]],
-    organization_id: str,
+    enterprise_id: str,
 ) -> str:
     """Ingest one pack runbook. Returns ``"ingested"`` or ``"skipped"``.
 
@@ -266,7 +268,7 @@ async def _ingest_pack_runbook(
         document_id=runbook.item_id,
         title=runbook.title,
         content=runbook.content,
-        organization_id=organization_id,
+        enterprise_id=enterprise_id,
         document_type="runbook",
         tags=runbook.tags,
         source_url=runbook.source_url,

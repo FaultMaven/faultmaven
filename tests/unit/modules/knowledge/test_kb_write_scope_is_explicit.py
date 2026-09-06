@@ -162,7 +162,7 @@ async def test_a_publish_call_that_omits_the_tier_raises_instead_of_publishing(
             document_id="doc-1",
             title="Tenant runbook",
             content="# Tenant runbook\n\nRemediation.",
-            organization_id="org-1",
+            enterprise_id="ent-1",
         ),
         "upload_document": dict(
             content="# Tenant runbook\n\nRemediation.",
