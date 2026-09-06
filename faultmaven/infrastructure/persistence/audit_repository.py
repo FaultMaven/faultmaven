@@ -13,11 +13,20 @@ policy's WITH CHECK under the limited ``faultmaven_app`` role instead of writing
 a NULL the column forbids. ``organization_id`` beside it is nullable billing
 attribution and is stamped from the request's billing organization, or left NULL.
 
-⚠️ ``TENANT_PROVIDER=multi`` precondition: an unauthenticated caller (e.g. the
-SSO callback) leaves the tenant context at the standalone default, whose
-enterprise row exists but is the sentinel rather than a tenant — the audit row
-lands there. That is the deliberate fail-open direction for a pre-auth event:
-losing the record is worse than storing it under the sentinel.
+⚠️ ``TENANT_PROVIDER=multi``: an unauthenticated caller does NOT leave the
+context at the standalone default, which is what this note used to claim.
+``bind_request_enterprise_context`` binds the empty **non-tenant** sentinel for
+unauthenticated and invalid-token requests, precisely so such a session matches
+no enterprise's rows and holds no global-write licence. That value passes
+``NOT NULL`` and then dies on the ``enterprises`` foreign key, so the row was
+lost anyway — as an opaque ``IntegrityError`` several frames from the cause,
+inside whatever transaction the caller had open.
+
+The stamp therefore goes through ``writable_enterprise_id``, which refuses an
+unscoped context by name at the point it becomes knowable. Callers of
+``log_event`` already treat the audit trail as fail-open (the SSO JIT path logs
+loudly and continues), so what changes is the shape of the failure, not whether
+the record survives: it could not.
 """
 
 import json
@@ -30,7 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.config.tenant_context import (
     get_current_billing_organization_id,
-    get_current_enterprise_id,
+    writable_enterprise_id,
 )
 from faultmaven.infrastructure.persistence.models import UserAuditLogModel
 from faultmaven.models.interfaces_user import (
@@ -101,7 +110,7 @@ class PostgreSQLAuditRepository(IAuditRepository):
         """Persist one audit event. See the module docstring for the stamping."""
         model = UserAuditLogModel(
             user_id=user_id,
-            enterprise_id=enterprise_id or get_current_enterprise_id(),
+            enterprise_id=writable_enterprise_id(enterprise_id),
             organization_id=(organization_id or get_current_billing_organization_id()),
             event_type=(
                 event_type.value

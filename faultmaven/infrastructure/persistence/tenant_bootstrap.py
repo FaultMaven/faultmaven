@@ -60,6 +60,9 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 
 from faultmaven.config.constants import STANDALONE_TEAM_NAME
+from faultmaven.infrastructure.persistence.enterprise_liveness import (
+    enterprise_is_usable,
+)
 from faultmaven.infrastructure.persistence.models import (
     EnterpriseModel,
     OrganizationModel,
@@ -120,17 +123,32 @@ async def get_or_create_enterprise(
 
     Callers must use the returned row's id rather than the one they proposed;
     on the adopt arm they differ, and binding the proposed one names no row.
+
+    Raises ``LookupError`` when ``enterprise_id`` is given and names no LIVE
+    enterprise. Naming an id is a claim that it exists, and the operator command
+    that makes that claim documents this refusal.
     """
     if enterprise_id:
         found = await session.get(EnterpriseModel, enterprise_id)
-        if found is not None:
+        if enterprise_is_usable(found):
             return found, False
-        # NOT a LookupError any more. Under ADR-017 the login path generates the
-        # ENTERPRISE id and binds it before opening the transaction (RLS refuses
-        # a write for an unbound tenant), so it arrives here naming a row that
-        # does not exist yet and that this call is what creates. Refusing would
-        # make first sign-in impossible. The operator path passes an id only for
-        # an enterprise it has already resolved, so it never reaches this arm.
+        # A NAMED id is a claim that the enterprise exists. An operator typing
+        # ``--enterprise-id`` is saying "put this under the tenant I named", and
+        # the two ways that can be wrong — a typo, and an id whose tenant has
+        # since been retired — have the same silent consequence if this falls
+        # through: the slug arm below joins, or CREATES, an enterprise the
+        # operator did not name, the "REUSING AN EXISTING TENANT" warning is
+        # never printed, and accounts land under a tenant nobody chose. From
+        # there every login fails closed with ``enterprise_mismatch`` and the fix
+        # is a manual migration.
+        #
+        # ``enterprise_is_usable`` rather than a bare ``is not None`` because a
+        # retired enterprise is exactly as unusable as an absent one here, and
+        # adopting it would put a new organization inside a fenced tenant.
+        #
+        # The sign-up path proposes NO id (it uses the one this call returns),
+        # so nothing legitimate reaches this arm expecting a create.
+        raise LookupError(f"enterprise {enterprise_id} does not exist or is retired")
 
     # LIVE rows only. The slug uniqueness rules are partial on
     # ``deleted_at IS NULL`` — a retired tenant keeps its slug — so a writer

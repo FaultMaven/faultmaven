@@ -403,21 +403,36 @@ async def test_the_policy_column_refuses_a_value_the_code_has_no_branch_for(
     with pytest.raises(IntegrityError) as exc:
         await _as_owner_write(
             owner_url,
-            "UPDATE sso_personal_enterprises SET retirement_state = "
-            "'wipe_everything' WHERE subject = :s",
+            "UPDATE sso_personal_enterprises SET retired_at = now(), "
+            "retirement_state = 'wipe_everything' WHERE subject = :s",
             s=subject,
         )
     # The CHECK is named, not merely "something refused it". The invented value
     # is deliberately short enough to fit ``varchar(16)``: a longer one is
     # rejected for its LENGTH, and a test that accepted that refusal would pass
-    # on a database with no CHECK at all.
+    # on a database with no CHECK at all. ``retired_at`` is set alongside it so
+    # the PAIR check (below) is satisfied and the value check is what fires —
+    # otherwise this would pass on a schema with no value constraint at all.
     assert "sso_personal_enterprises_retirement_state_check" in str(exc.value)
 
-    for policy in (RETIREMENT_POLICY_REFUSE, RETIREMENT_POLICY_FRESH_TENANT):
+    # The pair, which is the other half: the three readers of "is this retired?"
+    # split between the two columns, and a row with one set and the other NULL
+    # answers differently depending on which one asked.
+    with pytest.raises(IntegrityError) as pair:
         await _as_owner_write(
             owner_url,
             "UPDATE sso_personal_enterprises SET retirement_state = :p "
             "WHERE subject = :s",
+            p=RETIREMENT_POLICY_REFUSE,
+            s=subject,
+        )
+    assert "sso_personal_enterprises_retirement_pair_check" in str(pair.value)
+
+    for policy in (RETIREMENT_POLICY_REFUSE, RETIREMENT_POLICY_FRESH_TENANT):
+        await _as_owner_write(
+            owner_url,
+            "UPDATE sso_personal_enterprises SET retired_at = now(), "
+            "retirement_state = :p WHERE subject = :s",
             p=policy,
             s=subject,
         )
@@ -868,3 +883,94 @@ async def test_a_refresh_is_refused_for_a_retired_tenant(
 def test_the_module_is_not_silently_skipping():
     """CI greps this lane for "skipped"; the skipif above must not be firing."""
     assert os.environ.get("DATABASE_URL", "").startswith("postgresql")
+
+
+async def test_a_fresh_tenant_login_completes_the_anchor_move_it_authorised(
+    owner_url, repository, subject, switch_on
+):
+    """Resolution is not the end of the login, and the anchor step is where it broke.
+
+    The sibling above stops at ``_resolve_login_enterprise``. This one runs the
+    step that comes next, and it is the step a ``fresh-tenant`` account could
+    never get past: provisioning **re-points** the subject row onto the new
+    enterprise and clears the retirement it has honoured, so by the time
+    ``_ensure_enterprise_anchor`` reads the OLD anchor there is no subject row
+    naming it. ``read_anchor`` then classifies a soft-deleted enterprise with no
+    retirement record as DELETED — a company that was removed — and refuses the
+    move onto a personal tenant.
+
+    Permanently: every retry repeats it, and the operator's recorded decision to
+    let this account start over could never take effect. The verdict is now read
+    BEFORE the re-point and carried into the move, so the row that answers it is
+    the row that was there when the question was asked.
+    """
+    enterprise_id = await _provision(repository, subject)
+    user_id = await _seed_user(owner_url, subject=subject, enterprise_id=enterprise_id)
+    assert await _retire(owner_url, enterprise_id, policy="fresh-tenant") == 0
+
+    service = await _login_service(repository)
+    identity = _identity(subject)
+    enterprise, error = await service._resolve_login_enterprise(identity)
+    assert error is None and enterprise is not None
+
+    user = await service._users.get_by_sso(PROVIDER, subject)
+    assert user is not None
+
+    admitted = await service._ensure_enterprise_anchor(user, enterprise)
+
+    assert admitted is True, (
+        "the account the operator authorised to start over was refused by the "
+        "anchor step, and every retry repeats it"
+    )
+    anchored = await _as_owner(
+        owner_url,
+        "SELECT enterprise_id FROM users WHERE user_id = :u",
+        u=user_id or user.user_id,
+    )
+    assert anchored[0].enterprise_id == enterprise.enterprise_id, (
+        "the login was admitted but the account is still anchored to the "
+        "enterprise the retirement fenced"
+    )
+
+
+async def test_an_interrupted_retirement_does_not_release_provisioning(
+    owner_url, repository, subject, switch_on, capsys, caplog
+):
+    """A retirement releases provisioning only when the whole run finished.
+
+    The steps are ordered so each partial state is finishable, and the
+    binding stamp lands at step 3 — before the IdP organization is deleted (4)
+    and before its mapping row is dropped (5). Reading the stamp alone as "you
+    may start over" therefore released provisioning while the IdP organization
+    the replacement will mint **by the same derived external id** was still
+    there: the next sign-in collided at the provider instead of resolving.
+
+    The completion signal is the mapping row's absence: step 5 is the last
+    thing a retirement does, so a mapping still naming the retired enterprise
+    means steps 4 and 5 have not both landed. Here the mapping is put back to
+    simulate the interrupted run, and the login must refuse rather than
+    provision.
+    """
+    enterprise_id = await _provision(repository, subject)
+    idp_org = await _idp_org_of(owner_url, enterprise_id)
+    await _seed_user(owner_url, subject=subject, enterprise_id=enterprise_id)
+    assert await _retire(owner_url, enterprise_id, policy="fresh-tenant") == 0
+
+    # Steps 1-3 landed; 4 and 5 did not. The row step 5 removes is the evidence.
+    await _as_owner_write(
+        owner_url,
+        "INSERT INTO sso_org_mappings (provider, provider_org_id, enterprise_id) "
+        "VALUES (:p, :o, :e)",
+        p=PROVIDER,
+        o=idp_org,
+        e=enterprise_id,
+    )
+
+    service = await _login_service(repository)
+    enterprise, error = await service._resolve_login_enterprise(_identity(subject))
+
+    assert enterprise is None, (
+        "a half-finished retirement released provisioning; the replacement "
+        "tenant collides with the IdP organization step 4 has not removed"
+    )
+    assert error == "sso_org_unmapped"

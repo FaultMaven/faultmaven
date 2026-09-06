@@ -313,6 +313,21 @@ class IEnterpriseRepository(ABC):
         """Update enterprise. Returns True if a row was updated."""
 
     @abstractmethod
+    async def find_live_by_domain(self, domain: str) -> Optional[Enterprise]:
+        """The LIVE enterprise for an email domain, or ``None``. Reads only.
+
+        The half of :meth:`get_or_create_for_domain` that writes nothing, so a
+        caller can find out whether admitting this login would CREATE a tenant
+        before it decides whether the login may be admitted at all. Without it
+        the sign-up path had to write first and could only refuse afterwards,
+        leaving a live enterprise for the company's domain behind every refusal
+        — a row every later org-less sign-up from that domain then resolves to.
+
+        Case-folded like the writer, and scoped to live rows like the partial
+        unique index, so the two agree on what "already exists" means.
+        """
+
+    @abstractmethod
     async def get_or_create_for_domain(
         self, *, domain: str, name: str, slug: str
     ) -> Enterprise:

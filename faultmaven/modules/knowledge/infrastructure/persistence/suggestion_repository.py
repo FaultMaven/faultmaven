@@ -49,6 +49,9 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy import func, select, update
 
+from faultmaven.config.tenant_context import (
+    get_current_billing_organization_id,
+)
 from faultmaven.infrastructure.persistence.models import KnowledgeSuggestionModel
 
 # The domain model this repository maps. Contract 4 exempts exactly this edge
@@ -287,6 +290,13 @@ class DatabaseSuggestionRepository(SuggestionRepository):
             case_id = None
         return {
             "enterprise_id": suggestion.enterprise_id,
+            # Billing attribution, read from the actor's organization like every
+            # other writer (ADR-017 D2). Read HERE rather than carried on the
+            # domain model: the model has no such field, nothing constructs one
+            # with an organization in mind, and the default belongs in the one
+            # writer so the next caller cannot forget it. ``None`` — an actor in
+            # no organization — is the ordinary answer.
+            "organization_id": get_current_billing_organization_id(),
             "case_id": case_id,
             "knowledge_item_id": suggestion.knowledge_item_id,
             "status": suggestion.status.value,

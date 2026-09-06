@@ -107,7 +107,10 @@ ignore_imports =
     faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository -> faultmaven.modules.case.domain.owned_models.*
     faultmaven.modules.case.infrastructure.case_repository -> faultmaven.modules.case.domain.models
     faultmaven.modules.case.infrastructure.case_repository -> faultmaven.modules.case.domain.owned_models.*
-    faultmaven.modules.case.infrastructure.investigation_session_repository -> faultmaven.modules.case.domain.investigation_session
+    # investigation_session_repository ignore removed with the module: the case
+    # module carried a second, IMPORT-FREE copy of the session repository that
+    # nothing in faultmaven/ or tests/ ever imported. The live one is
+    # infrastructure/persistence/investigation_session_repository.py.
     faultmaven.modules.case.infrastructure.sqlite_case_repository -> faultmaven.modules.case.contracts
     # sqlite_case_repository -> owned_models.* ignore removed in storage redesign
     # 2026-04 phase 2: the standalone evidence path was deleted and those imports

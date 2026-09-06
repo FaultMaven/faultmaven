@@ -189,6 +189,8 @@ class DatabaseUserStore:
         display_name: str = None,
         account_kind: str = "individual",
         service_channel: str = None,
+        *,
+        enterprise_id: str,
     ) -> DevUser:
         """Create new development user
 
@@ -202,6 +204,14 @@ class DatabaseUserStore:
             service_channel: Which integration a 'service' account serves
                 ('slack'), or None for a human. Set at creation for the same
                 reason: it is what decides the derived ``cases.source``.
+            enterprise_id: The enterprise this account is anchored to (ADR-017
+                D3) — keyword-only and REQUIRED, with no default. A default here
+                would be the #1143 trap: every caller that stayed quiet would
+                get the Standalone sentinel, which under ``multi`` is not a
+                tenant, so the account's next refresh mints an empty isolation
+                claim and every request it makes afterwards is refused. Callers
+                that genuinely mean "this deployment's one enterprise" say so by
+                passing the binding.
 
         Returns:
             Created DevUser
@@ -258,6 +268,7 @@ class DatabaseUserStore:
             # Create User model for repository
             user = User(
                 user_id=user_id,
+                enterprise_id=enterprise_id,
                 username=username,
                 email=email,
                 display_name=display_name,

@@ -19,6 +19,9 @@ from typing import Dict, List, Optional
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from faultmaven.config.tenant_context import (
+    get_current_billing_organization_id,
+)
 from faultmaven.infrastructure.persistence.db_compat import dialect_insert
 from faultmaven.infrastructure.persistence.models import ResourceShareModel
 from faultmaven.models.interfaces_sharing import IShareRepository, ResourceShare
@@ -74,7 +77,18 @@ class PostgreSQLShareRepository(IShareRepository):
 
         ``enterprise_id`` is the isolation key the read allowlist matches on;
         ``organization_id`` is billing attribution and matches nothing.
+
+        The attribution DEFAULTS to the actor's organization rather than to
+        ``NULL``. Two of the three callers passed nothing, so the rows they wrote
+        were billed to nobody while the resources they shared were billed to
+        somebody — and each new caller was one more chance to forget. Putting the
+        default in the shared writer is what makes forgetting harmless: an actor
+        in no organization still resolves to ``None``, which is the ordinary
+        answer, and a caller that genuinely knows better still wins by passing a
+        value.
         """
+        if organization_id is None:
+            organization_id = get_current_billing_organization_id()
         stmt = dialect_insert(self.db, ResourceShareModel).values(
             share_id=str(uuid.uuid4()),
             resource_type=resource_type,

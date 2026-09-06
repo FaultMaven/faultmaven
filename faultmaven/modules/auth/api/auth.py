@@ -52,7 +52,10 @@ from faultmaven.api.v1.dependencies import (
     get_user_service_optional,
 )
 from faultmaven.config.settings import AuthMode, get_settings
-from faultmaven.config.tenant_context import usable_tenant_id
+from faultmaven.config.tenant_context import (
+    get_current_enterprise_id,
+    usable_tenant_id,
+)
 from faultmaven.container import container
 from faultmaven.exceptions import FaultMavenException, UserLookupFailed
 from faultmaven.infrastructure.observability.tracing import trace
@@ -583,6 +586,11 @@ async def local_register(
             username=request_body.username,
             email=request_body.email,
             display_name=request_body.display_name,
+            # Local-mode self-registration: the account is anchored to the
+            # enterprise this request is bound to, which in a standalone
+            # deployment is the seeded one. The binder forces it, so a forged
+            # claim cannot re-scope the account being created.
+            enterprise_id=get_current_enterprise_id(),
         )
         logger.info(
             f"User registration: {request_body.username} (new user: {user.user_id})"

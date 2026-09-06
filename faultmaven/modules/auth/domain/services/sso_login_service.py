@@ -65,6 +65,7 @@ import asyncio
 import re
 import secrets
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -79,6 +80,7 @@ from faultmaven.exceptions import ConflictError
 from faultmaven.infrastructure.persistence.account_anchor import (
     AnchorKind,
     move_account_anchor,
+    move_is_permitted,
     read_anchor,
 )
 from faultmaven.infrastructure.persistence.enterprise_liveness import (
@@ -127,6 +129,17 @@ ERROR_ACCESS_DENIED = "sso_access_denied"
 # nothing — it says only that this deployment does not know that IdP org.
 ERROR_ORG_UNMAPPED = "sso_org_unmapped"
 ERROR_FAILED = "sso_failed"
+
+#: The anchor state the personal sign-up arm read BEFORE it provisioned, carried
+#: to the anchor step later in the same callback (see
+#: ``account_anchor.move_account_anchor``'s ``current``). A ContextVar rather than
+#: an attribute on the service, which is a process-wide singleton: this is a fact
+#: about one request, and the callback runs in one task, so the contextvar's
+#: scope is exactly the fact's scope. ``None`` — the default, and what every
+#: other login path leaves it as — means "read it yourself".
+_anchor_verdict_at_provisioning: ContextVar[Any | None] = ContextVar(
+    "sso_anchor_verdict_at_provisioning", default=None
+)
 
 # Why an org-less login was refused, keyed on what the account's anchor is.
 # Distinct slugs because the remedies are opposite: an employee arriving
@@ -674,6 +687,21 @@ class SSOLoginService:
             )
             return None, ERROR_FAILED
 
+        if getattr(identity, "email_verified", False) is not True:
+            # ADR-017 D3 derives the enterprise from the domain of the
+            # **IdP-verified** email, and the verification is the whole of what
+            # makes joining a domain enterprise safe: without it, anyone who can
+            # get an IdP to accept ``someone@acme.com`` becomes eligible to be
+            # invited to an Acme team. Refused on BOTH arms — an unverified
+            # address is no better a basis for minting a private enterprise than
+            # for joining a shared one.
+            logger.warning(
+                "sso_signup_refused",
+                reason="signup_email_unverified",
+                provider=identity.provider,
+            )
+            return None, ERROR_FAILED
+
         domain = email_domain(identity.email)
         if is_personal_domain(domain, _personal_email_domains()):
             return await self._resolve_personal_enterprise(identity)
@@ -702,6 +730,25 @@ class SSOLoginService:
         refusal = await self._signup_preflight_refusal(identity)
         if refusal is not None:
             return None, refusal
+
+        # **A refused login writes nothing**, on this arm as on the personal
+        # one. The only write here is the creation of the domain's enterprise,
+        # so the anchor rule is evaluated exactly when that creation is what
+        # would happen: an account anchored elsewhere is refused later by
+        # ``_ensure_enterprise_anchor`` regardless, and before this check it left
+        # a live ``enterprises(domain=…)`` row behind on the way out — the row
+        # every later org-less sign-up from that domain then resolves to, created
+        # by a login that was never admitted.
+        #
+        # Conditional on the creation, not applied unconditionally: an account
+        # already anchored to the domain's existing enterprise is a returning
+        # employee with a LIVE anchor, and refusing those would lock out
+        # everybody the feature is for.
+        existing = await self._enterprises.find_live_by_domain(domain)
+        if existing is None:
+            refusal = await self._domain_anchor_refusal(identity)
+            if refusal is not None:
+                return None, refusal
 
         try:
             enterprise = await self._enterprises.get_or_create_for_domain(
@@ -753,11 +800,19 @@ class SSOLoginService:
             record = await self._personal_enterprises.get(identity.provider, subject)
             if record is None:
                 refusal = await self._signup_preflight_refusal(identity)
+                anchor = None
                 if refusal is None:
-                    refusal = await self._personal_anchor_refusal(identity)
+                    refusal, anchor = await self._personal_anchor_refusal(identity)
                 if refusal is not None:
                     return None, refusal
                 enterprise_id = await self._provision_personal_tenant(identity)
+                # The anchor verdict was read from the subject row BEFORE
+                # provisioning re-pointed it. Carrying it forward is what lets
+                # the anchor step admit the move the operator authorised; a
+                # re-read now would see a soft-deleted enterprise no subject row
+                # names and refuse it forever. See
+                # ``account_anchor.move_account_anchor``.
+                _anchor_verdict_at_provisioning.set(anchor)
             else:
                 enterprise_id = record.enterprise_id
                 if not record.membership_confirmed:
@@ -834,8 +889,69 @@ class SSOLoginService:
             return ERROR_FAILED
         return None
 
-    async def _personal_anchor_refusal(self, identity: SSOIdentity) -> str | None:
+    async def _domain_anchor_refusal(self, identity: SSOIdentity) -> str | None:
+        """May this account join a domain enterprise that does not exist yet?
+
+        Asked only when admitting the login would CREATE the enterprise, because
+        that creation is the only write this arm performs and "a refused login
+        writes nothing" is what it exists to keep true.
+
+        The verdict is the one ``account_anchor`` owns, asked about a company
+        destination: an unanchored account may be set, a retired personal anchor
+        may move, this subject's own live personal tenant may switch (#1320), and
+        a live company affiliation stays put. That last case is the one that used
+        to leave the stray row — and it is refused a step later anyway, by
+        ``_ensure_enterprise_anchor``, on this same rule.
+        """
+        user = await self._users.get_by_sso(
+            identity.provider, identity.provider_user_id
+        )
+        if user is None:
+            # No account yet: the anchor will be a SET, which the rule always
+            # permits. Nothing to refuse.
+            return None
+
+        current = getattr(user, "enterprise_id", None)
+        own_live_personal = False
+        if self._personal_enterprises is not None and current:
+            try:
+                own_live_personal = await self._personal_enterprises.find_by_enterprise(
+                    identity.provider, identity.provider_user_id, current
+                )
+            except Exception:
+                # Unreadable: the rule cannot be established, so it is not
+                # satisfied. Refusing costs a retry; admitting writes a tenant.
+                logger.exception(
+                    "sso_domain_anchor_lookup_failed", user_id=user.user_id
+                )
+                return ERROR_FAILED
+
+        anchor = await read_anchor(current)
+        if move_is_permitted(
+            anchor,
+            destination_is_personal=False,
+            own_live_personal=own_live_personal,
+        ):
+            return None
+
+        logger.warning(
+            "sso_signup_refused",
+            reason="domain_account_already_anchored",
+            provider=identity.provider,
+            user_id=user.user_id,
+            from_kind=anchor.kind.value,
+        )
+        return ERROR_ORG_UNMAPPED
+
+    async def _personal_anchor_refusal(
+        self, identity: SSOIdentity
+    ) -> tuple[str | None, Any | None]:
         """May this account be given a NEW personal enterprise? Asked before any write.
+
+        Returns ``(refusal_slug_or_None, the anchor state it read)``. The state
+        comes back because provisioning is about to invalidate the row it was
+        read from, and the anchor move that follows has to be judged against the
+        answer as of now — see :func:`account_anchor.move_account_anchor`.
 
         An account that is already anchored to something and arrives with no IdP
         organization must not be handed a personal tenant: provisioning would
@@ -854,10 +970,10 @@ class SSOLoginService:
             identity.provider, identity.provider_user_id
         )
         if user is None:
-            return None
+            return None, None
         anchor = await read_anchor(getattr(user, "enterprise_id", None))
         if anchor.releases_provisioning:
-            return None
+            return None, anchor
         logger.warning(
             "sso_personal_refused",
             reason=_ANCHOR_REFUSAL_REASONS.get(
@@ -866,7 +982,7 @@ class SSOLoginService:
             provider=identity.provider,
             user_id=user.user_id,
         )
-        return ERROR_ORG_UNMAPPED
+        return ERROR_ORG_UNMAPPED, anchor
 
     async def _provision_personal_tenant(self, identity: SSOIdentity) -> str:
         """Create this subject's IdP organization and FaultMaven enterprise.
@@ -1058,6 +1174,7 @@ class SSOLoginService:
             to_enterprise_id=enterprise.enterprise_id,
             destination_is_personal=destination_is_personal,
             own_live_personal=own_live_personal,
+            current=_anchor_verdict_at_provisioning.get(),
         )
         if not moved:
             return False

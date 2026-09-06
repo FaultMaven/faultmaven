@@ -62,6 +62,7 @@ from sqlalchemy import select
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.infrastructure.persistence.models import (
     EnterpriseModel,
+    SSOOrgMappingModel,
     SSOPersonalEnterpriseModel,
 )
 from faultmaven.modules.auth.contracts import RETIREMENT_POLICY_FRESH_TENANT
@@ -95,6 +96,22 @@ class AnchorState:
     kind: AnchorKind
     enterprise_id: Optional[str]
     retirement_policy: Optional[str]
+    #: Whether the retirement that produced this anchor RAN TO COMPLETION.
+    #:
+    #: The retirement's steps are ordered so each partial state is finishable,
+    #: and the binding stamp lands at step 3 — before the IdP organization is
+    #: deleted (4) and before its mapping row is dropped (5). The stamp alone is
+    #: therefore not evidence that the run finished, and reading it as one
+    #: released provisioning while the IdP organization the replacement mints
+    #: **by the same derived external id** was still there: the next sign-in
+    #: collided at the provider instead of resolving, for as long as the
+    #: half-finished run stood.
+    #:
+    #: Step 5 is the last thing a retirement does, so the mapping row's absence
+    #: is the completion signal — a positive, typed statement read from the
+    #: database, like everything else this module decides on. Defaults True so
+    #: the field says nothing about anchors that are not retirements.
+    retirement_complete: bool = True
 
     @property
     def releases_provisioning(self) -> bool:
@@ -108,10 +125,12 @@ class AnchorState:
           ``users.enterprise_id`` became NOT NULL (ADR-017 D3), and kept for the
           in-memory account that has not been anchored yet;
         * **this subject's own personal tenant, retired with the
-          ``fresh_tenant`` policy** — the operator's recorded decision that this
-          subject may start over. This is what replaced "clear the anchor":
-          NOT NULL leaves no absence to mean it, so the release became the
-          typed value an operator actually chose.
+          ``fresh_tenant`` policy, by a run that COMPLETED** — the operator's
+          recorded decision that this subject may start over. This is what
+          replaced "clear the anchor": NOT NULL leaves no absence to mean it, so
+          the release became the typed value an operator actually chose. The
+          completion half is why the value alone is not enough; see
+          :attr:`retirement_complete`.
 
         Everything else refuses — a live anchor, a dangling one, a retired
         company, and a personal retirement whose policy is ``refuse`` or was
@@ -124,6 +143,9 @@ class AnchorState:
         return (
             self.kind is AnchorKind.RETIRED_PERSONAL
             and self.retirement_policy == RETIREMENT_POLICY_FRESH_TENANT
+            # And the run that recorded that policy actually finished. See
+            # :attr:`retirement_complete`.
+            and self.retirement_complete
         )
 
 
@@ -149,7 +171,18 @@ async def read_anchor(enterprise_id: Optional[str]) -> AnchorState:
         if enterprise.deleted_at is None:
             return AnchorState(AnchorKind.LIVE, enterprise_id, policy)
         kind = AnchorKind.RETIRED_PERSONAL if policy else AnchorKind.DELETED
-        return AnchorState(kind, enterprise_id, policy)
+        # The retirement's last step deletes the mapping row, so a mapping still
+        # naming this enterprise means steps 4 and 5 have not both landed.
+        outstanding_mapping = (
+            await session.execute(
+                select(SSOOrgMappingModel.provider_org_id).where(
+                    SSOOrgMappingModel.enterprise_id == enterprise_id
+                )
+            )
+        ).first()
+        return AnchorState(
+            kind, enterprise_id, policy, retirement_complete=outstanding_mapping is None
+        )
 
 
 def move_is_permitted(
@@ -206,12 +239,27 @@ async def move_account_anchor(
     to_enterprise_id: str,
     destination_is_personal: bool,
     own_live_personal: bool = False,
+    current: Optional[AnchorState] = None,
 ) -> bool:
     """Set or move ``user``'s anchor to ``to_enterprise_id``. True when written.
 
     ``own_live_personal`` is passed straight through to
     :func:`move_is_permitted`, which owns the whole rule. This function does the
     I/O — read the current anchor, write the new one — and decides nothing.
+
+    ``current`` lets a caller hand in an anchor state it has **already read**,
+    and exists for one situation: the fresh-tenant re-provision. That login reads
+    the verdict (a personal tenant retired with ``fresh_tenant``), then
+    provisions the replacement — and provisioning RE-POINTS the subject row onto
+    the new enterprise and clears the retirement it has just honoured. Re-reading
+    the old anchor afterwards finds a soft-deleted enterprise with no subject row
+    naming it, classifies it ``DELETED`` (a company that was removed) and refuses
+    the move, permanently: every retry repeats it, and the account the operator
+    authorised to start over can never sign in again. The verdict has to come
+    from the row that was there when the question was asked.
+
+    It changes no rule: :func:`move_is_permitted` still decides, on the same
+    fields it always did.
 
     Returns False without writing when the rule refuses, so a caller can turn
     that into its own refusal. Raises nothing on the refusal path.
@@ -220,7 +268,8 @@ async def move_account_anchor(
     if current_id == to_enterprise_id:
         return True
 
-    current = await read_anchor(current_id)
+    if current is None:
+        current = await read_anchor(current_id)
     if not move_is_permitted(
         current,
         destination_is_personal=destination_is_personal,

@@ -200,6 +200,8 @@ class RedisUserStore:
         display_name: str = None,
         account_kind: str = "individual",
         service_channel: str = None,
+        *,
+        enterprise_id: str,
     ) -> DevUser:
         """Create new development user
 
@@ -213,6 +215,11 @@ class RedisUserStore:
                 holds.
             service_channel: Which integration a 'service' account serves
                 ('slack'), or None for a human.
+            enterprise_id: The enterprise this account is anchored to (ADR-017
+                D3) — keyword-only and REQUIRED, in step with
+                ``DatabaseUserStore`` for the reason stated there: the container
+                picks between the two stores at runtime, so a caller cannot know
+                which one it holds.
 
         Returns:
             Created DevUser
@@ -279,6 +286,7 @@ class RedisUserStore:
                 is_active=True,
                 # Explicit, so this path and DatabaseUserStore visibly agree.
                 roles=["user"],
+                enterprise_id=enterprise_id,
                 account_kind=account_kind,
                 service_channel=service_channel,
             )

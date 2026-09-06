@@ -454,6 +454,14 @@ class FakeEnterpriseRepository:
             return found
         return found
 
+    async def find_live_by_domain(self, domain: str):
+        """The read-only half. The sign-up arm asks it BEFORE deciding whether a
+        login that would CREATE the enterprise may be admitted at all."""
+        for enterprise in self.enterprises.values():
+            if enterprise.domain == domain and enterprise.deleted_at is None:
+                return enterprise
+        return None
+
     async def get_or_create_for_domain(self, *, domain: str, name: str, slug: str):
         self.domain_calls.append(domain)
         if self.create_error is not None:

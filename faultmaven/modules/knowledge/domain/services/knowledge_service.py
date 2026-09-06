@@ -36,7 +36,10 @@ if TYPE_CHECKING:
         VerificationLevel,
     )
 
-from faultmaven.config.tenant_context import usable_tenant_id
+from faultmaven.config.tenant_context import (
+    get_current_billing_organization_id,
+    usable_tenant_id,
+)
 from faultmaven.exceptions import ValidationException
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KB_COLLECTION,
@@ -1316,7 +1319,6 @@ class KnowledgeService:
         content: str,
         enterprise_id: str,
         scope: str,
-        organization_id: Optional[str] = None,
         document_type: str = "runbook",
         tags: Optional[List[str]] = None,
         source_url: Optional[str] = None,
@@ -1342,10 +1344,6 @@ class KnowledgeService:
                 Required for every tier including global: it is what RLS keys
                 on, and the global-write policy compares it against the
                 Standalone sentinel.
-            organization_id: Billing attribution for the organization-owned
-                tiers (personal/team), or None. Forced to None for global
-                scope — the platform tier is organization-free (#770),
-                ``knowledge_items_global_org_check``.
             scope: REQUIRED knowledge tier — ``global`` | ``team`` |
                 ``personal``. No default (#1166): ``global`` is the platform
                 corpus every tenant reads, so publishing into it must be a
@@ -1411,10 +1409,17 @@ class KnowledgeService:
             # organization-free platform tier (#770), which is what
             # ``knowledge_items_global_org_check`` states.
             enterprise_id=enterprise_id,
+            # Billing attribution, read from the actor's organization like every
+            # other writer (ADR-017 D2). It used to be a parameter, and not one
+            # of the three call sites ever supplied it — so every runbook this
+            # path published was billed to nobody, silently, and the parameter
+            # read as a decision somebody had made. Forced to None for GLOBAL:
+            # the platform tier is organization-free (#770,
+            # ``knowledge_items_global_org_check``).
             organization_id=(
                 None
                 if KnowledgeScope(scope) == KnowledgeScope.GLOBAL
-                else organization_id
+                else get_current_billing_organization_id()
             ),
             title=title,
             content=content,

@@ -203,6 +203,7 @@ class DatabaseInvestigationSessionRepository(InvestigationSessionRepository):
                 case_id=session.case_id,
                 user_id=session.user_id,
                 enterprise_id=session.enterprise_id,
+                organization_id=session.organization_id,
                 state=session.state.value,
                 started_at=session.started_at,
                 ended_at=session.ended_at,

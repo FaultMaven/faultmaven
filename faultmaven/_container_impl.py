@@ -822,6 +822,10 @@ class DIContainer(BaseDIContainer):
         import uuid
         from datetime import datetime
 
+        from faultmaven.config.tenant_context import (
+            get_current_billing_organization_id,
+            get_current_enterprise_id,
+        )
         from faultmaven.modules.case.domain.models import Case, CaseState
 
         class MinimalCaseService:
@@ -855,9 +859,18 @@ class DIContainer(BaseDIContainer):
 
                     raise ValidationException("Owner ID is required")
 
-                # Create case with proper Case model structure
+                # Create case with proper Case model structure.
+                #
+                # Isolation from the request BINDING, billing from the actor's
+                # organization — the two columns come from two different places
+                # and mean two different things (ADR-017 D1/D2). This used to
+                # stamp ``organization_id = owner_id``, which is neither: a user
+                # id in an organization FK, and no ``enterprise_id`` at all, so
+                # the degraded path 500'd on a required field the moment
+                # ``Case`` gained one.
                 final_user_id = owner_id
-                final_org_id = owner_id
+                final_enterprise_id = get_current_enterprise_id()
+                final_org_id = get_current_billing_organization_id()
 
                 # Phase 2: Handle initial_message transactionally
                 current_time = datetime.now(timezone.utc)
@@ -889,6 +902,7 @@ class DIContainer(BaseDIContainer):
                     title=provided_title,
                     description=description or "",
                     user_id=final_user_id,
+                    enterprise_id=final_enterprise_id,
                     organization_id=final_org_id,
                     status=CaseState.INQUIRY,
                     message_count=message_count,

@@ -119,13 +119,19 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
         the persistence write — they belong on the parent enterprise
         (`enterprises` table). enterprise_id must be set on the domain
         object; the column is NOT NULL.
+
+        A missing one **raises** rather than being filled with the Standalone
+        sentinel. Under ``multi`` that sentinel is not a tenant, so the
+        substitution wrote a billing target into a tenant nobody is in, and it
+        did so where the caller could not see it. The caller is the only party
+        that knows which enterprise is paying.
         """
         if not org.enterprise_id:
-            from faultmaven.providers.tenancy.single_tenant import (
-                DEFAULT_ENTERPRISE_ID,
+            raise ValueError(
+                f"organization {org.organization_id!r} has no enterprise_id; an "
+                "organization is a billing target INSIDE an enterprise "
+                "(ADR-017 D5) and the caller must resolve which"
             )
-
-            org.enterprise_id = DEFAULT_ENTERPRISE_ID
         model = OrganizationModel(
             organization_id=org.organization_id,
             enterprise_id=org.enterprise_id,

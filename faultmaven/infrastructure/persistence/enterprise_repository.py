@@ -32,6 +32,21 @@ def _parse_settings(raw) -> dict:
     return raw
 
 
+def _folded_domain(domain):
+    """The domain as it is STORED: case-folded, or ``None``.
+
+    ``enterprises.domain``'s uniqueness is on the raw column, and only the
+    get-or-create writer folded — so ``Acme.com`` and ``acme.com`` were two
+    enterprises for one company, each invisible to the other's sign-ups, and
+    the second one is the shape a hand-written admin write produces. A domain is
+    case-insensitive; folding it on every write is what makes the column mean
+    what the index enforces.
+    """
+    if not domain:
+        return None
+    return domain.casefold()
+
+
 def _serialize_settings(settings: dict) -> str:
     """Serialize settings dict for JsonBlob (TEXT on SQLite, JSONB on PG)."""
     return json.dumps(settings or {})
@@ -74,7 +89,7 @@ class PostgreSQLEnterpriseRepository(IEnterpriseRepository):
             max_members=enterprise.max_members,
             max_cases=enterprise.max_cases,
             billing_email=enterprise.billing_email,
-            domain=enterprise.domain,
+            domain=_folded_domain(enterprise.domain),
             settings=_serialize_settings(enterprise.settings),
             created_at=enterprise.created_at,
             updated_at=enterprise.updated_at,
@@ -100,6 +115,18 @@ class PostgreSQLEnterpriseRepository(IEnterpriseRepository):
     async def get_enterprise_by_slug(self, slug: str) -> Optional[Enterprise]:
         stmt = select(EnterpriseModel).where(
             EnterpriseModel.slug == slug,
+            EnterpriseModel.deleted_at.is_(None),
+        )
+        result = await self.db.execute(stmt)
+        model = result.scalar_one_or_none()
+        return _model_to_domain(model) if model else None
+
+    async def find_live_by_domain(self, domain: str) -> Optional[Enterprise]:
+        """See :meth:`IEnterpriseRepository.find_live_by_domain`."""
+        if not domain:
+            return None
+        stmt = select(EnterpriseModel).where(
+            EnterpriseModel.domain == domain.casefold(),
             EnterpriseModel.deleted_at.is_(None),
         )
         result = await self.db.execute(stmt)
@@ -140,7 +167,7 @@ class PostgreSQLEnterpriseRepository(IEnterpriseRepository):
                 max_members=enterprise.max_members,
                 max_cases=enterprise.max_cases,
                 billing_email=enterprise.billing_email,
-                domain=enterprise.domain,
+                domain=_folded_domain(enterprise.domain),
                 settings=_serialize_settings(enterprise.settings),
                 updated_at=enterprise.updated_at,
             )

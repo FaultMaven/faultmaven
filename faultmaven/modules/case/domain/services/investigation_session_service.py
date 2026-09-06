@@ -21,6 +21,9 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from uuid import uuid4
 
+from faultmaven.config.tenant_context import (
+    get_current_billing_organization_id,
+)
 from faultmaven.services.base import BaseService
 
 # Interface imports for clean architecture compliance
@@ -236,6 +239,11 @@ class APIInvestigationSessionService(BaseService):
                 case_id=case_id,
                 user_id=user_id,
                 enterprise_id=enterprise_id,
+                # Billing attribution from the actor's organization, the same
+                # place every other writer takes it (ADR-017 D2). Not a
+                # parameter: the caller is a route that already binds it, and a
+                # parameter would be one more place to forget.
+                organization_id=get_current_billing_organization_id(),
                 state=SessionState.ACTIVE,
                 started_at=now,
                 last_activity_at=now,

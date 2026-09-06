@@ -115,18 +115,21 @@ class SessionlessSSOPersonalEnterpriseRepository(ISSOPersonalEnterpriseRepositor
         self, provider: str, provider_user_id: str
     ) -> Optional[PersonalEnterpriseRecord]:
         async with get_db_session() as session:
-            # The subject is the whole primary key: an account has at most one
-            # personal enterprise, whichever IdP minted it. The provider is
-            # still compared, because a row minted by another provider is not
-            # this provider's binding even though it names the same subject.
+            # ``(provider, subject)`` is the primary key: a subject handle is
+            # only unique WITHIN an IdP, so keying on the subject alone made a
+            # same-spelled subject from a second provider collide with the
+            # first's row — either failing on the key or resolving to a tenant
+            # belonging to a different person at a different IdP.
             #
             # ``retired_at`` is part of the predicate, not a caller's
             # afterthought: a retired row is kept precisely so the anchor check
             # can read the operator's next-login policy off it, and answering
             # with it here would resolve the subject straight back into the
             # tenant the retirement fenced them out of.
-            row = await session.get(SSOPersonalEnterpriseModel, provider_user_id)
-            if row is None or row.provider != provider or row.retired_at is not None:
+            row = await session.get(
+                SSOPersonalEnterpriseModel, (provider_user_id, provider)
+            )
+            if row is None or row.retired_at is not None:
                 return None
             return PersonalEnterpriseRecord(
                 enterprise_id=row.enterprise_id,
@@ -169,8 +172,10 @@ class SessionlessSSOPersonalEnterpriseRepository(ISSOPersonalEnterpriseRepositor
         stamped row would tell the anchor check the opposite.
         """
         async with get_db_session() as session:
-            row = await session.get(SSOPersonalEnterpriseModel, provider_user_id)
-            if row is None or row.provider != provider:
+            row = await session.get(
+                SSOPersonalEnterpriseModel, (provider_user_id, provider)
+            )
+            if row is None:
                 return False
             await session.delete(row)
         logger.info("sso_personal_tenant_retired", provider=provider)
@@ -187,12 +192,11 @@ class SessionlessSSOPersonalEnterpriseRepository(ISSOPersonalEnterpriseRepositor
     ) -> str:
         """Create the subject's enterprise atomically, or adopt an existing one."""
         try:
-            # The id the WRITE actually used, not the one this call proposed.
-            # ``get_or_create_enterprise`` adopts a live row with the same
-            # derived slug rather than always inserting, and that row is what
-            # the binding then names — so returning the proposed uuid would hand
-            # the login an enterprise id that names nothing. Reachable through
-            # the #1320 switch, which drops the binding and leaves the
+            # The id the WRITE actually used. ``get_or_create_enterprise``
+            # adopts a live row with the same derived slug rather than always
+            # inserting, and that row is what the binding then names — so an id
+            # chosen here would hand the login one that names nothing. Reachable
+            # through the #1320 switch, which drops the binding and leaves the
             # enterprise and its mapping standing: the subject's next
             # provisioning conflicts with nothing, adopts, and would otherwise
             # bind an id ``get_enterprise`` cannot resolve.
@@ -200,7 +204,13 @@ class SessionlessSSOPersonalEnterpriseRepository(ISSOPersonalEnterpriseRepositor
                 provider=provider,
                 provider_user_id=provider_user_id,
                 provider_org_id=provider_org_id,
-                enterprise_id=str(uuid.uuid4()),
+                # No proposed id. The writer generates one when it creates, and
+                # its by-id arm now REFUSES an id that names no live enterprise
+                # (an operator naming a tenant that is gone) — a refusal this
+                # call site was the only reason it could not make. Nothing here
+                # needed to choose the id: the returned one is what the binding
+                # names.
+                enterprise_id=None,
                 name=name,
                 slug=slug,
             )
@@ -276,14 +286,15 @@ class SessionlessSSOPersonalEnterpriseRepository(ISSOPersonalEnterpriseRepositor
         provider: str,
         provider_user_id: str,
         provider_org_id: str,
-        enterprise_id: str,
+        enterprise_id: str | None,
         name: str,
         slug: str,
     ) -> str:
         """Enterprise, mapping, subject row — one transaction, three rows.
 
         Returns the enterprise id the write **used**, which is not necessarily
-        the one proposed: the slug arm adopts an existing live row.
+        the one proposed: the slug arm adopts an existing live row, and
+        ``enterprise_id=None`` leaves the writer to generate one.
 
         Three, not five: ADR-017 D5/D4 say a sign-up creates no organization and
         no team, so those rows are not written here and their absence is the
@@ -322,7 +333,9 @@ class SessionlessSSOPersonalEnterpriseRepository(ISSOPersonalEnterpriseRepositor
             # has now been honoured, and leaving it set would tell the next
             # anchor read that the tenant this call just created is retired.
             now = datetime.now(UTC)
-            row = await session.get(SSOPersonalEnterpriseModel, provider_user_id)
+            row = await session.get(
+                SSOPersonalEnterpriseModel, (provider_user_id, provider)
+            )
             if row is None:
                 session.add(
                     SSOPersonalEnterpriseModel(

@@ -465,19 +465,27 @@ class PostgreSQLUserRepository(UserRepository):
     def _domain_to_dict(self, user: User) -> dict:
         """Convert User domain object to dict for ORM model assignment.
 
-        enterprise_id is taken from the user object; it falls back to
-        DEFAULT_ENTERPRISE_ID when unset (standalone / single-tenant, where
-        every user belongs to the one default enterprise) since the column is
-        NOT NULL.
+        enterprise_id is taken from the user object and is **required**. It
+        used to fall back to the Standalone sentinel, and that substitution was
+        silent and wrong in the direction that matters: under ``multi`` the
+        sentinel is not a tenant, so the row lands somewhere no session can
+        reach, and the caller — who is the only one able to resolve the right
+        one — never learns it failed to. A ``None`` isolation key is a caller
+        bug; it surfaces here, where it becomes knowable, rather than as a row
+        nobody can read.
 
         ``User.organization_id`` is deliberately absent from the returned dict:
         it is a runtime-only mint-time field (#869) and the ``users`` table has
         no such column — organization affiliation is a row in
         ``organization_members``, written by the SSO login path.
         """
-        from faultmaven.providers.tenancy.single_tenant import DEFAULT_ENTERPRISE_ID
-
-        enterprise_id = user.enterprise_id or DEFAULT_ENTERPRISE_ID
+        if not user.enterprise_id:
+            raise ValueError(
+                f"user {user.user_id!r} has no enterprise_id; every account is "
+                "anchored to exactly one enterprise (ADR-017 D3) and the caller "
+                "is the only one that can resolve which"
+            )
+        enterprise_id = user.enterprise_id
         return {
             "user_id": user.user_id,
             "enterprise_id": enterprise_id,

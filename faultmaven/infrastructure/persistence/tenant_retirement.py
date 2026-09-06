@@ -147,9 +147,12 @@ async def find_live_binding(
     afterthought: a retired binding is kept precisely so a later sign-in can
     read the retirement, and treating it as live would let a re-run retire an
     already-retired tenant a second time.
+
+    The provider is part of the KEY now rather than a field compared after the
+    fetch: a subject handle is unique only within an IdP.
     """
-    row = await session.get(SSOPersonalEnterpriseModel, provider_user_id)
-    if row is None or row.provider != provider or row.retired_at is not None:
+    row = await session.get(SSOPersonalEnterpriseModel, (provider_user_id, provider))
+    if row is None or row.retired_at is not None:
         return None
     return _binding_of(row)
 

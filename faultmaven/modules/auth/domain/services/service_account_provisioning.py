@@ -20,6 +20,7 @@ from typing import Any, Optional
 
 import jwt
 
+from faultmaven.config.tenant_context import get_current_enterprise_id
 from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     account_may_hold_credentials,
@@ -164,6 +165,12 @@ async def provision_service_account_credential(
     # #831: before the account is read (or created).
     state_read_at = capture_state_read_at()
 
+    # The enterprise this account is anchored to, resolved ONCE and used for
+    # both the create and the correction below. ``enterprise_id`` is None on a
+    # single-tenant deployment (``_validate_enterprise`` refuses one there), and
+    # the binding answers that deployment's one enterprise.
+    anchor_enterprise_id = enterprise_id or get_current_enterprise_id()
+
     user = await user_store.get_user_by_username(username)
     if user is None:
         user = await user_store.create_user(
@@ -171,19 +178,29 @@ async def provision_service_account_credential(
             display_name=f"{username} (service account)",
             account_kind=account_kind,
             service_channel=service_channel,
+            enterprise_id=anchor_enterprise_id,
         )
         account_created = True
     elif (
         getattr(user, "account_kind", None) != account_kind
         or getattr(user, "service_channel", None) != service_channel
+        or getattr(user, "enterprise_id", None) != anchor_enterprise_id
     ):
         # An account provisioned before ADR-017, or one demoted by a code path
         # that round-tripped it through a model without these fields. Both are
         # corrected together: the channel alone decides the derived case
         # source, so an account carrying the right kind and a lost channel
         # would stamp every case it opens as a copilot case.
+        #
+        # The ANCHOR is corrected here too, and this is the write that was
+        # missing: the stamp below reached only the in-memory object the token
+        # generator reads, so the ROW kept whatever it had — the sentinel, for
+        # every account created before this parameter existed. The refresh paths
+        # mint the isolation claim from the row, so the credential worked once
+        # and then every request was 403.
         user.account_kind = account_kind
         user.service_channel = service_channel
+        user.enterprise_id = anchor_enterprise_id
         user = await user_store.update_user(user)
         account_kind_corrected = True
 
@@ -196,13 +213,12 @@ async def provision_service_account_credential(
             "be rejected on first use. Reactivate the account first."
         )
 
-    if enterprise_id is not None:
-        # Stamp the tenant on the user object the generator reads. Required
-        # rather than optional: the repository model has no organization column
-        # and ``DevUser.__post_init__`` stamps the Standalone sentinel on every
-        # user the store returns, which under multi-tenant resolves to the empty
-        # claim. Mirrors `/auth/refresh` step 2b (#869, #873).
-        setattr(user, "enterprise_id", enterprise_id)
+    # The object the generator reads carries the same anchor the row does. It is
+    # re-stamped rather than assumed because ``update_user`` writes only the
+    # columns ``DevUser`` knows about and returns a re-hydrated object; keeping
+    # the two in step here means the minted claim and the persisted row cannot
+    # disagree, which is the failure this whole path had.
+    setattr(user, "enterprise_id", anchor_enterprise_id)
 
     refresh_token = await token_generator.generate_refresh_token(
         user, state_read_at=state_read_at
