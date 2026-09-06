@@ -104,7 +104,7 @@ async def pg(tmp_path_factory):
         session.add(
             CaseModel(
                 case_id=ids["case"],
-                enterprise_id=ids["organization"],
+                enterprise_id=ids["enterprise"],
                 title="JSONB probe",
             )
         )
@@ -113,14 +113,18 @@ async def pg(tmp_path_factory):
     yield factory, ids
 
     async with factory() as session:
-        for table, column in (
-            ("knowledge_suggestions", "organization_id"),
-            ("cases", "organization_id"),
-            ("organizations", "organization_id"),
+        # Each table is deleted by the column it is actually scoped by: the
+        # tenant rows carry ``enterprise_id`` (ADR-017 D1) and only
+        # ``organizations`` is keyed by its own id. Deleting the first two by
+        # organization would match nothing and leak them into a shared database.
+        for table, column, value in (
+            ("knowledge_suggestions", "enterprise_id", ids["enterprise"]),
+            ("cases", "enterprise_id", ids["enterprise"]),
+            ("organizations", "organization_id", ids["organization"]),
         ):
             await session.execute(
                 text(f"DELETE FROM {table} WHERE {column} = :v"),  # nosec B608
-                {"v": ids["organization"]},
+                {"v": value},
             )
         await session.execute(
             text("DELETE FROM enterprises WHERE enterprise_id = :v"),
@@ -133,7 +137,7 @@ async def pg(tmp_path_factory):
 def _suggestion(ids, suggestion_id, **kwargs):
     return KnowledgeSuggestion(
         suggestion_id=suggestion_id,
-        enterprise_id=ids["organization"],
+        enterprise_id=ids["enterprise"],
         case_id=ids["case"],
         suggested_title="JSONB probe",
         suggested_content="## Problem\n...",
@@ -187,11 +191,11 @@ class TestTheVerdictColumnsHoldJsonArrays:
             await session.execute(
                 text(
                     "INSERT INTO knowledge_suggestions "
-                    "(suggestion_id, organization_id, suggested_title, "
+                    "(suggestion_id, enterprise_id, suggested_title, "
                     " suggested_content, extracted_at, created_at, updated_at) "
-                    "VALUES (:i, :o, 't', 'c', now(), now(), now())"
+                    "VALUES (:i, :e, 't', 'c', now(), now(), now())"
                 ),
-                {"i": defaulted_id, "o": ids["organization"]},
+                {"i": defaulted_id, "e": ids["enterprise"]},
             )
             await session.commit()
 

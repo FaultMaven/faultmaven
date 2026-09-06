@@ -63,7 +63,7 @@ from faultmaven.modules.case.domain.owned_models.report import (
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
     PostgreSQLHybridCaseRepository,
 )
-from tests.utils import seed_organizations, seed_users
+from tests.utils import seed_enterprises, seed_users
 
 pytestmark = [
     pytest.mark.integration,
@@ -105,13 +105,18 @@ async def pg_repo(pg_engine):
         yield repo
 
 
-def _make_case(org_id: str, user_id: str) -> Case:
+def _make_case(enterprise_id: str, user_id: str) -> Case:
     """A case whose JSONB columns are all non-trivially populated, so a
-    dropped/again-broken cast surfaces as a real read-back mismatch."""
+    dropped/again-broken cast surfaces as a real read-back mismatch.
+
+    Scoped by the ENTERPRISE (ADR-017 D1) — ``cases.enterprise_id`` is the
+    isolation key and carries the FK to ``enterprises``, so an organization id
+    here is a foreign-key violation rather than a mis-scoped row.
+    """
     return Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id=user_id,
-        enterprise_id=org_id,
+        enterprise_id=enterprise_id,
         title="PG round-trip case",
         description="Exercises JSONB + timestamptz casts on real PostgreSQL",
         state=CaseState.INVESTIGATING,
@@ -130,12 +135,12 @@ async def test_case_save_roundtrip_with_jsonb_columns(pg_repo):
     then get() reads them back. The ``:name::jsonb`` bug made every one of
     these writes raise 'syntax error at or near ":"'."""
     session = pg_repo.db
-    org_id = f"org_{uuid4().hex[:8]}"
+    enterprise_id = f"ent_{uuid4().hex[:8]}"
     user_id = f"user_{uuid4().hex[:8]}"
-    await seed_organizations(session, [org_id])
+    await seed_enterprises(session, [enterprise_id])
     await seed_users(session, [user_id])
 
-    case = _make_case(org_id, user_id)
+    case = _make_case(enterprise_id, user_id)
     file_id = f"file_{uuid4().hex[:12]}"
     case.uploaded_files.append(
         UploadedFile(
@@ -229,13 +234,13 @@ async def test_upsert_case_entities_roundtrip(pg_repo):
     newly converted to an f-string. Exercise it directly so the
     AmbiguousParameterError fix (and the f-string conversion) is validated."""
     session = pg_repo.db
-    org_id = f"org_{uuid4().hex[:8]}"
+    enterprise_id = f"ent_{uuid4().hex[:8]}"
     user_id = f"user_{uuid4().hex[:8]}"
-    await seed_organizations(session, [org_id])
+    await seed_enterprises(session, [enterprise_id])
     await seed_users(session, [user_id])
 
     # The entity FK-references an evidence row, so save a case with one first.
-    case = _make_case(org_id, user_id)
+    case = _make_case(enterprise_id, user_id)
     file_id = f"file_{uuid4().hex[:12]}"
     evidence_id = f"ev_{uuid4().hex[:12]}"
     case.uploaded_files.append(
@@ -294,11 +299,11 @@ async def test_upsert_case_entities_roundtrip(pg_repo):
 async def test_add_message_roundtrip(pg_repo):
     """add_message() exercises the case_messages metadata JSONB cast."""
     session = pg_repo.db
-    org_id = f"org_{uuid4().hex[:8]}"
+    enterprise_id = f"ent_{uuid4().hex[:8]}"
     user_id = f"user_{uuid4().hex[:8]}"
-    await seed_organizations(session, [org_id])
+    await seed_enterprises(session, [enterprise_id])
     await seed_users(session, [user_id])
-    case = _make_case(org_id, user_id)
+    case = _make_case(enterprise_id, user_id)
     await pg_repo.save(case)
 
     # created_at is an ISO STRING here, exactly as the live turn flow passes
@@ -334,11 +339,11 @@ async def test_get_returns_messages_interleaved_by_created_at(pg_repo):
     ``ORDER BY created_at``. SQLite never hit this (it already ORDER BYs).
     """
     session = pg_repo.db
-    org_id = f"org_{uuid4().hex[:8]}"
+    enterprise_id = f"ent_{uuid4().hex[:8]}"
     user_id = f"user_{uuid4().hex[:8]}"
-    await seed_organizations(session, [org_id])
+    await seed_enterprises(session, [enterprise_id])
     await seed_users(session, [user_id])
-    case = _make_case(org_id, user_id)
+    case = _make_case(enterprise_id, user_id)
     await pg_repo.save(case)
 
     # Interleaved in time (user, assistant, user, assistant). If the aggregate
@@ -387,14 +392,14 @@ async def test_search_by_case_id_and_title_scoped_to_user(pg_repo):
     nothing. Also guards user-scoping: it must happen in SQL, not after LIMIT.
     """
     session = pg_repo.db
-    org_id = f"org_{uuid4().hex[:8]}"
+    enterprise_id = f"ent_{uuid4().hex[:8]}"
     u1 = f"user_{uuid4().hex[:8]}"
     u2 = f"user_{uuid4().hex[:8]}"
-    await seed_organizations(session, [org_id])
+    await seed_enterprises(session, [enterprise_id])
     await seed_users(session, [u1, u2])
 
-    mine = _make_case(org_id, u1)
-    other = _make_case(org_id, u2)
+    mine = _make_case(enterprise_id, u1)
+    other = _make_case(enterprise_id, u2)
     # Same title, different owner — the scoping must come from SQL, not text.
     object.__setattr__(mine, "title", "Redis eviction storm")
     object.__setattr__(other, "title", "Redis eviction storm")
@@ -416,13 +421,13 @@ async def test_search_by_case_id_and_title_scoped_to_user(pg_repo):
 async def test_source_roundtrips_and_filters(pg_repo):
     """cases.source (ADR-012) persists through save()/get() and filters in list()."""
     session = pg_repo.db
-    org_id = f"org_{uuid4().hex[:8]}"
+    enterprise_id = f"ent_{uuid4().hex[:8]}"
     user_id = f"user_{uuid4().hex[:8]}"
-    await seed_organizations(session, [org_id])
+    await seed_enterprises(session, [enterprise_id])
     await seed_users(session, [user_id])
 
-    copilot_case = _make_case(org_id, user_id)  # default source='copilot'
-    slack_case = _make_case(org_id, user_id)
+    copilot_case = _make_case(enterprise_id, user_id)  # default source='copilot'
+    slack_case = _make_case(enterprise_id, user_id)
     object.__setattr__(slack_case, "source", "slack")
     await pg_repo.save(copilot_case)
     await pg_repo.save(slack_case)
@@ -445,11 +450,11 @@ async def test_add_report_roundtrip_with_timestamptz(pg_repo):
     generated_at/updated_at (TIMESTAMPTZ) casts — the timestamptz arm of the
     same bug class."""
     session = pg_repo.db
-    org_id = f"org_{uuid4().hex[:8]}"
+    enterprise_id = f"ent_{uuid4().hex[:8]}"
     user_id = f"user_{uuid4().hex[:8]}"
-    await seed_organizations(session, [org_id])
+    await seed_enterprises(session, [enterprise_id])
     await seed_users(session, [user_id])
-    case = _make_case(org_id, user_id)
+    case = _make_case(enterprise_id, user_id)
     await pg_repo.save(case)
 
     report = CaseReport(
@@ -481,11 +486,11 @@ async def test_create_checkpoint_roundtrip_with_timestamptz(pg_repo):
     """create_checkpoint() exercises case_snapshot + metadata (JSONB) AND
     created_at (TIMESTAMPTZ) casts."""
     session = pg_repo.db
-    org_id = f"org_{uuid4().hex[:8]}"
+    enterprise_id = f"ent_{uuid4().hex[:8]}"
     user_id = f"user_{uuid4().hex[:8]}"
-    await seed_organizations(session, [org_id])
+    await seed_enterprises(session, [enterprise_id])
     await seed_users(session, [user_id])
-    case = _make_case(org_id, user_id)
+    case = _make_case(enterprise_id, user_id)
     await pg_repo.save(case)
 
     from datetime import datetime, timezone
@@ -517,12 +522,12 @@ async def test_causal_graph_roundtrip(pg_repo):
     FK ordering (nodes before edges/hypotheses/solutions; node-evidence after
     evidence)."""
     session = pg_repo.db
-    org_id = f"org_{uuid4().hex[:8]}"
+    enterprise_id = f"ent_{uuid4().hex[:8]}"
     user_id = f"user_{uuid4().hex[:8]}"
-    await seed_organizations(session, [org_id])
+    await seed_enterprises(session, [enterprise_id])
     await seed_users(session, [user_id])
 
-    case = _make_case(org_id, user_id)
+    case = _make_case(enterprise_id, user_id)
 
     # Evidence the node-evidence junction can FK to (USER_DESCRIPTION needs no file).
     ev_id = f"ev_{uuid4().hex[:12]}"
@@ -662,12 +667,12 @@ async def test_pruned_causal_graph_does_not_resurrect(pg_repo):
     additive upsert and resurrect on the next load. Covers both a stale node and
     a stale edge whose endpoints both survive (not caught by the FK cascade)."""
     session = pg_repo.db
-    org_id = f"org_{uuid4().hex[:8]}"
+    enterprise_id = f"ent_{uuid4().hex[:8]}"
     user_id = f"user_{uuid4().hex[:8]}"
-    await seed_organizations(session, [org_id])
+    await seed_enterprises(session, [enterprise_id])
     await seed_users(session, [user_id])
 
-    case = _make_case(org_id, user_id)
+    case = _make_case(enterprise_id, user_id)
     d = CausalNode(
         statement="Checkout returns 500s",
         node_type=NodeType.PROBLEM,
@@ -740,9 +745,9 @@ async def test_list_pagination_and_include_empty_soundness_pg(pg_repo):
     parity" claim, verified against the backend cloud runs on).
     """
     session = pg_repo.db
-    org_id = f"org_{uuid4().hex[:8]}"
+    enterprise_id = f"ent_{uuid4().hex[:8]}"
     user_id = f"user_{uuid4().hex[:8]}"
-    await seed_organizations(session, [org_id])
+    await seed_enterprises(session, [enterprise_id])
     await seed_users(session, [user_id])
 
     # 4 active (current_turn > 0) + 2 empty (current_turn == 0) = 6 rows.
@@ -750,7 +755,7 @@ async def test_list_pagination_and_include_empty_soundness_pg(pg_repo):
         case = Case(
             case_id=f"case_{uuid4().hex[:12]}",
             user_id=user_id,
-            enterprise_id=org_id,
+            enterprise_id=enterprise_id,
             title=f"PG paginate {i}",
             state=CaseState.INQUIRY,
             inquiry=InquiryData(),
@@ -797,12 +802,12 @@ async def test_message_authorship_round_trips_on_both_read_paths(pg_repo):
     by the SQLite suite, so both are asserted here.
     """
     session = pg_repo.db
-    org_id = f"org_{uuid4().hex[:8]}"
+    enterprise_id = f"ent_{uuid4().hex[:8]}"
     owner_id = f"user_{uuid4().hex[:8]}"
     teammate_id = f"user_{uuid4().hex[:8]}"
-    await seed_organizations(session, [org_id])
+    await seed_enterprises(session, [enterprise_id])
     await seed_users(session, [owner_id, teammate_id])
-    case = _make_case(org_id, owner_id)
+    case = _make_case(enterprise_id, owner_id)
     await pg_repo.save(case)
 
     # The three author states a team-shared transcript produces: the owner, a
@@ -848,12 +853,12 @@ async def test_message_authorship_is_write_once_but_fillable(pg_repo):
     cannot speak for this one.
     """
     session = pg_repo.db
-    org_id = f"org_{uuid4().hex[:8]}"
+    enterprise_id = f"ent_{uuid4().hex[:8]}"
     owner_id = f"user_{uuid4().hex[:8]}"
     teammate_id = f"user_{uuid4().hex[:8]}"
-    await seed_organizations(session, [org_id])
+    await seed_enterprises(session, [enterprise_id])
     await seed_users(session, [owner_id, teammate_id])
-    case = _make_case(org_id, owner_id)
+    case = _make_case(enterprise_id, owner_id)
     await pg_repo.save(case)
 
     attributed = f"msg_{uuid4().hex[:12]}"
