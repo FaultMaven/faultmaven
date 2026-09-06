@@ -1562,7 +1562,14 @@ async def record_turn(
     # Detect state changes (gate signals and progress indicators)
     # NOTE: the mitigation pair (mitigation_accepted/mitigation_verified) are
     # LLM emission symbols that materialize into the single progress.mitigation
-    # record; cause_state is engine-derived (recomputed, not boolean-diffed here).
+    # record. cause_state is engine-derived, so it is not boolean-diffed here —
+    # the recompute reports its own rising edge instead, and the engine appends
+    # "root_cause_identified" to this turn's milestones on the turn cause_state
+    # newly reaches IDENTIFIED. The name is the one the derived
+    # CaseProgress.completed_milestones map already uses, so the per-turn list
+    # and the case-level snapshot share one vocabulary. Without that append the
+    # per-turn readers (the transparency counter above all) key on a name that
+    # engine-derivation stopped producing — see INV-35.
     STAGE_GATE_MILESTONES = {"mitigation_accepted", "mitigation_verified", "solution_accepted", "solution_verified"}
     PROGRESS_INDICATORS = {"symptom_verified", "solution_proposed"}
 

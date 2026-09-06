@@ -115,7 +115,7 @@ def test_validated_root_projects_hypothesis_to_validated():
     root = _root(_nid(1), NodeState.VALIDATED)
     hyp = _hyp(HypothesisState.ACTIVE, root.node_id)
     case = _case(nodes=[root], hyps=[hyp])
-    assert project_hypothesis_states_from_roots(case) is True
+    assert project_hypothesis_states_from_roots(case).changed is True
     assert hyp.state == HypothesisState.VALIDATED
 
 
@@ -127,7 +127,7 @@ def test_non_validated_root_leaves_hypothesis_active(node_state):
     root = _root(_nid(2), node_state)
     hyp = _hyp(HypothesisState.ACTIVE, root.node_id)
     case = _case(nodes=[root], hyps=[hyp])
-    assert project_hypothesis_states_from_roots(case) is False
+    assert project_hypothesis_states_from_roots(case).changed is False
     assert hyp.state == HypothesisState.ACTIVE
 
 
@@ -137,21 +137,21 @@ def test_stale_validated_reverts_to_active_when_root_loses_validation():
     root = _root(_nid(3), NodeState.INCONCLUSIVE)
     hyp = _hyp(HypothesisState.VALIDATED, root.node_id)
     case = _case(nodes=[root], hyps=[hyp])
-    assert project_hypothesis_states_from_roots(case) is True
+    assert project_hypothesis_states_from_roots(case).changed is True
     assert hyp.state == HypothesisState.ACTIVE
 
 
 def test_hypothesis_without_root_never_validates():
     hyp = _hyp(HypothesisState.ACTIVE, None)
     case = _case(nodes=[], hyps=[hyp])
-    assert project_hypothesis_states_from_roots(case) is False
+    assert project_hypothesis_states_from_roots(case).changed is False
     assert hyp.state == HypothesisState.ACTIVE
 
 
 def test_hypothesis_pointing_at_missing_node_never_validates():
     hyp = _hyp(HypothesisState.ACTIVE, _nid(99))  # no such node
     case = _case(nodes=[], hyps=[hyp])
-    assert project_hypothesis_states_from_roots(case) is False
+    assert project_hypothesis_states_from_roots(case).changed is False
     assert hyp.state == HypothesisState.ACTIVE
 
 
@@ -167,7 +167,7 @@ def test_refuted_hypothesis_is_never_resurrected_to_active():
     root = _root(_nid(4), NodeState.REFUTED)
     hyp = _hyp(HypothesisState.REFUTED, root.node_id)
     case = _case(nodes=[root], hyps=[hyp])
-    assert project_hypothesis_states_from_roots(case) is False
+    assert project_hypothesis_states_from_roots(case).changed is False
     assert hyp.state == HypothesisState.REFUTED
 
 
@@ -177,7 +177,7 @@ def test_refuted_hypothesis_not_projected_even_if_root_validated():
     root = _root(_nid(5), NodeState.VALIDATED)
     hyp = _hyp(HypothesisState.REFUTED, root.node_id)
     case = _case(nodes=[root], hyps=[hyp])
-    assert project_hypothesis_states_from_roots(case) is False
+    assert project_hypothesis_states_from_roots(case).changed is False
     assert hyp.state == HypothesisState.REFUTED
 
 
@@ -186,7 +186,7 @@ def test_retired_and_captured_untouched():
     retired = _hyp(HypothesisState.RETIRED, root.node_id)
     captured = _hyp(HypothesisState.CAPTURED, root.node_id)
     case = _case(nodes=[root], hyps=[retired, captured])
-    assert project_hypothesis_states_from_roots(case) is False
+    assert project_hypothesis_states_from_roots(case).changed is False
     assert retired.state == HypothesisState.RETIRED
     assert captured.state == HypothesisState.CAPTURED
 
