@@ -54,6 +54,8 @@ This means the counter tracks "N turns of investigative work without a milestone
 
 Transparent mode is **stage-scoped**. A stage transition resets the counter. A milestone completion in the current stage turns the light off.
 
+Cause identification turns it off like any other milestone, and that costs the engine one deliberate step: `cause_state` is engine-derived (INV-35), so no LLM claim puts `root_cause_identified` in the turn's `milestones_completed`. The engine appends it itself, on the turn `cause_state` newly reaches `IDENTIFIED`. The counter reads the per-turn list, so **without that append the light stays on through the case's most important milestone** — which is what it did until the append existed.
+
 **Scope:** Progress transparency applies only during the INVESTIGATING phase. INQUIRY has no milestones to track. TERMINAL is read-only.
 
 ---

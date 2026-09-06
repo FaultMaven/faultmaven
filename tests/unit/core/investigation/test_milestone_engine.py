@@ -1064,6 +1064,55 @@ class TestMilestoneEngine:
         assert "resolved" in result["agent_response"].lower()
         assert "root cause" in result["agent_response"].lower()
 
+        # #1284: a PROPOSAL is not an advancement. This case is not yet
+        # resolution-ready, so it lands on the NEEDS_INFO branch — which always
+        # scored False. The READY branch, which did not, is pinned by
+        # test_ready_dropdown_proposal_scores_no_progress below.
+        meta = result["metadata"]
+        assert meta["progress_made"] is False
+        assert meta["milestones_completed"] == []
+        assert not meta.get("status_transitioned")
+
+    @pytest.mark.asyncio
+    async def test_ready_dropdown_proposal_scores_no_progress(
+        self, mock_llm, mock_repo, base_case
+    ):
+        """#1284: proposing a terminal transition is not progress on ANY affordance.
+
+        The READY branch of the INVESTIGATING->RESOLVED dropdown asserted
+        ``progress_made=True`` with every arm 0 — the shape ``case_telemetry``
+        names a LYING COUNTER — for a turn that transitions nothing. The
+        handshake (§1.2) puts the case action on the user's LATER confirm turn,
+        which scores it through ``confirmed_transition_arms``; counting the
+        proposal too double-counts one case action, and made the same event
+        score or not according to which affordance the user reached for (the
+        three LLM-path proposal sites let the predicate decide, and it says no).
+
+        Reaching this branch needs a genuinely resolution-ready case — a
+        ``causal_absence_evidence`` row, not merely a root cause and a solution.
+        """
+        _make_resolution_ready(base_case)
+
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        result = await engine.process_turn(
+            case=base_case,
+            user_message="The issue is resolved.",
+            intent_type="status_transition",
+            intent_data={"from_state": "investigating", "to_state": "resolved"},
+        )
+
+        updated_case = result["case_updated"]
+        # Positive control: this is the READY branch, not the NEEDS_INFO one —
+        # otherwise the assertions below would pin a path that always passed.
+        assert updated_case.pending_transition is not None
+        assert not updated_case.pending_transition.get("needs_info")
+        assert updated_case.state == CaseState.INVESTIGATING
+
+        meta = result["metadata"]
+        assert meta["progress_made"] is False
+        assert meta["milestones_completed"] == []
+        assert not meta.get("status_transitioned")
+
     @pytest.mark.asyncio
     async def test_resolved_dropdown_suggests_close_when_not_ready(
         self, mock_llm, mock_repo, base_case
