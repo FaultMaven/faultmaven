@@ -279,7 +279,7 @@ class OrganizationMembershipService:
             ) from exc
 
     async def remove_member(
-        self, organization_id: str, user_id: str
+        self, organization_id: str, user_id: str, enterprise_id: str
     ) -> MembershipRemovalResult:
         """Remove ``user_id`` from ``organization_id`` and revoke their tokens.
 
@@ -301,6 +301,9 @@ class OrganizationMembershipService:
         Args:
             organization_id: Organization to remove the membership from.
             user_id: User to remove.
+            enterprise_id: The enterprise that organization belongs to — the
+                tenant the write is RLS-filtered by, and the value the bound
+                context must already name.
 
         Returns:
             :class:`MembershipRemovalResult` — whether a row was deleted, and the
@@ -308,14 +311,14 @@ class OrganizationMembershipService:
 
         Raises:
             MembershipRemovalMisscoped: The bound tenant context names a
-                different organization, so the delete would silently match
+                different enterprise, so the delete would silently match
                 nothing. Raised before any write.
             MembershipRemovalIncomplete: The delete landed but the watermark was
                 not written. The caller must NOT report the removal as complete;
                 re-running finishes it.
         """
         self._require_bound_to(
-            organization_id,
+            enterprise_id,
             write="remove a membership",
             misscoped=MembershipRemovalMisscoped,
         )
@@ -352,7 +355,11 @@ class OrganizationMembershipService:
         )
 
     async def set_member_role(
-        self, organization_id: str, user_id: str, role_id: str
+        self,
+        organization_id: str,
+        user_id: str,
+        role_id: str,
+        enterprise_id: str,
     ) -> MembershipRoleChangeResult:
         """Set ``user_id``'s role in ``organization_id`` and revoke their tokens (#1042).
 
@@ -382,6 +389,8 @@ class OrganizationMembershipService:
 
         Args:
             organization_id: Organization the membership belongs to.
+            enterprise_id: The enterprise that organization belongs to — the
+                tenant the write is RLS-filtered by.
             user_id: Member whose role is being set.
             role_id: Role to store. This is the stable ``role_id`` (see
                 ``faultmaven.models.rbac_seed.SYSTEM_ROLE_IDS``), not a role
@@ -395,7 +404,7 @@ class OrganizationMembershipService:
 
         Raises:
             MembershipRoleChangeMisscoped: The bound tenant context names a
-                different organization, so the update would silently match
+                different enterprise, so the update would silently match
                 nothing. Raised before any write.
             MembershipRoleChangeIncomplete: The role was written but the
                 watermark was not. The caller must NOT report the change as
@@ -403,7 +412,7 @@ class OrganizationMembershipService:
                 every outstanding token. Re-running finishes it.
         """
         self._require_bound_to(
-            organization_id,
+            enterprise_id,
             write="change a member's role",
             misscoped=MembershipRoleChangeMisscoped,
         )
