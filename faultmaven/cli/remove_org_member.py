@@ -156,6 +156,7 @@ async def _resolve_user(user_store, identifier: str):
 
 async def remove_org_member(
     *,
+    enterprise_id: str,
     organization_id: str,
     user_identifier: str,
     dry_run: bool,
@@ -164,7 +165,7 @@ async def remove_org_member(
     """Run the paired removal. Returns the process exit code."""
     from sqlalchemy.exc import DBAPIError
 
-    from faultmaven.config.tenant_context import set_current_org_id
+    from faultmaven.config.tenant_context import set_current_enterprise_id
     from faultmaven.container import container
     from faultmaven.exceptions import UserLookupFailed
     from faultmaven.infrastructure.persistence.organization_repository import (
@@ -207,10 +208,13 @@ async def remove_org_member(
         print(f"\n❌ Refusing to remove the membership: {unusable}.")
         return 1
 
-    # RLS (migration 018) scopes organizations and organization_members by
-    # `app.current_org_id`. Bind it to the target org so the lookups and the
-    # DELETE below run under the pod's own application role.
-    set_current_org_id(organization_id)
+    # RLS scopes organizations and organization_members by
+    # `app.current_enterprise_id` (ADR-017 D1), so the ENTERPRISE has to be
+    # bound before anything is read — an organization id alone resolves nothing
+    # under the pod's own application role. It is a required argument rather
+    # than derived from the organization row for exactly that reason: deriving
+    # it would need the read the binding is a precondition of.
+    set_current_enterprise_id(enterprise_id)
 
     orgs = SessionlessOrganizationRepository()
     organization = await orgs.get_organization(organization_id)
@@ -304,7 +308,9 @@ async def remove_org_member(
         organization_repository=orgs, auth_service=auth_service
     )
     try:
-        result = await service.remove_member(organization_id, user.user_id)
+        result = await service.remove_member(
+            organization_id, user.user_id, enterprise_id
+        )
     except MembershipRemovalMisscoped as exc:
         print(f"\n❌ {exc}")
         return 1
@@ -373,6 +379,14 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
+        "--enterprise-id",
+        required=True,
+        help=(
+            "Enterprise the organization belongs to — the tenant every read and "
+            "write below is RLS-scoped by (an id, not a slug)"
+        ),
+    )
+    parser.add_argument(
         "--organization-id",
         required=True,
         help="Organization id to remove the user from (an id, not a slug)",
@@ -413,6 +427,7 @@ def main() -> None:
     sys.exit(
         asyncio.run(
             remove_org_member(
+                enterprise_id=args.enterprise_id,
                 organization_id=args.organization_id,
                 user_identifier=args.user,
                 dry_run=args.dry_run,

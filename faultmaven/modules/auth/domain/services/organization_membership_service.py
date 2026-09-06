@@ -78,7 +78,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 
-from faultmaven.config.tenant_context import get_current_org_id
+from faultmaven.config.tenant_context import get_current_enterprise_id
 from faultmaven.models.interfaces_user import IOrganizationRepository
 
 logger = logging.getLogger(__name__)
@@ -87,12 +87,16 @@ logger = logging.getLogger(__name__)
 class MembershipWriteMisscoped(Exception):
     """The bound tenant context does not name the organization being written to.
 
-    ``organization_members`` is RLS-tenanted (migration 018) and every write is
-    filtered by ``app.current_org_id``, so a call whose context names a
-    *different* organization matches no row — and the repository reports that as
-    ``rowcount == 0``, indistinguishable from "was not a member". The caller
-    would then read a silent no-op as a completed write while the row survives
-    untouched and only the tokens were revoked.
+    ``organization_members`` is RLS-tenanted on ``enterprise_id`` (ADR-017 D1)
+    and every write is filtered by ``app.current_enterprise_id``, so a call whose
+    context names a *different* enterprise matches no row — and the repository
+    reports that as ``rowcount == 0``, indistinguishable from "was not a member".
+    The caller would then read a silent no-op as a completed write while the row
+    survives untouched and only the tokens were revoked.
+
+    The check is on the ENTERPRISE rather than the organization because that is
+    what the policy filters by: an organization is a row *inside* a tenant, and
+    two organizations of one enterprise are equally reachable from one binding.
 
     Always raised **before** either write, so nothing has happened when it
     surfaces. Subclassed per operation so a caller can report which write it
@@ -101,7 +105,7 @@ class MembershipWriteMisscoped(Exception):
 
 
 class MembershipRemovalMisscoped(MembershipWriteMisscoped):
-    """A removal was refused because the tenant context names another org.
+    """A removal was refused because the tenant context names another enterprise.
 
     The DELETE would have matched nothing and reported as "was not a member",
     putting the user back in on their next login while the caller believed
@@ -110,7 +114,7 @@ class MembershipRemovalMisscoped(MembershipWriteMisscoped):
 
 
 class MembershipRoleChangeMisscoped(MembershipWriteMisscoped):
-    """A role change was refused because the tenant context names another org.
+    """A role change was refused: the tenant context names another enterprise.
 
     The UPDATE would have matched nothing and reported as "not a member", so a
     demotion would read as "already handled" while the member kept the role the
@@ -229,14 +233,14 @@ class OrganizationMembershipService:
         than trusting each caller is the point of being the chokepoint: a caller
         that forgot to bind gets an error, not a silent success.
         """
-        bound_org_id = get_current_org_id()
-        if bound_org_id != organization_id:
+        bound_enterprise_id = get_current_enterprise_id()
+        if bound_enterprise_id != enterprise_id:
             raise misscoped(
-                f"Refusing to {write} in organization {organization_id} while the "
-                f"tenant context is bound to {bound_org_id}: the write is "
+                f"Refusing to {write} in enterprise {enterprise_id} while the "
+                f"tenant context is bound to {bound_enterprise_id}: the write is "
                 "RLS-filtered by the bound context and would match nothing, which "
                 "is indistinguishable from 'was not a member'. Bind the context to "
-                "the target organization (set_current_org_id) before calling."
+                "the target enterprise (set_current_enterprise_id) before calling."
             )
 
     async def _revoke_or_report_half_state(

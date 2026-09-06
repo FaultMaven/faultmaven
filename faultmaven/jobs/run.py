@@ -21,11 +21,11 @@ job module declares ``JOB_TENANT_SCOPE``:
 
 - ``tenant_neutral`` — touches no tenanted tables (e.g. filesystem sweeps).
   Runs identically in both tenancy modes.
-- ``org`` — operates on one organization's tenanted rows. Under the
-  multi-tenant provider the caller must pass ``--organization-id``; the runner
+- ``org`` — operates on one enterprise's tenanted rows. Under the
+  multi-tenant provider the caller must pass ``--enterprise-id``; the runner
   binds it to the tenant contextvar (the RLS scope) and logs the binding.
   Under single-tenant the Standalone default already scopes correctly.
-- ``cross_tenant`` — needs a view across ALL organizations (e.g. case_cleanup
+- ``cross_tenant`` — needs a view across ALL enterprises (e.g. case_cleanup
   diffs the DB case-id set against ChromaDB collections, which are not
   org-partitioned; storage_cleanup diffs the DB ``uploaded_files.storage_ref``
   set against stored objects, whose keys carry no tenant the backend enforces).
@@ -39,7 +39,7 @@ job module declares ``JOB_TENANT_SCOPE``:
   refuses anything else). Each run emits an audit log line with the job, DB
   role, and arguments. See docs/operations/evidence-job-scheduling.md.
 
-``--organization-id`` is operator input: the runner binds whatever org id the
+``--enterprise-id`` is operator input: the runner binds whatever enterprise the
 caller passes (and logs it). The scope model is a mis-scoping guard for
 in-cluster maintenance, not an authorization boundary.
 
@@ -54,7 +54,7 @@ a misprovisioned (RLS-exempt) DB role must refuse to run, exactly like the API.
 ## Runner-global vs job-specific flags
 
 Most flags configure the *runner* and apply to whatever job is named
-(``--verbose``, ``--organization-id``, ``--cross-tenant-maintenance``). A few
+(``--verbose``, ``--enterprise-id``, ``--cross-tenant-maintenance``). A few
 configure ONE job: ``--dry-run``/``--no-dry-run`` and ``--ttl-hours`` belong to
 ``storage_cleanup``. A job accepts a job-specific flag only by declaring it as
 an explicit parameter of its ``run()``; passing one to a job that merely
@@ -176,12 +176,12 @@ def _enforce_tenant_scope(
     module: Any,
     module_path: str,
     is_multi_tenant: bool,
-    organization_id: Optional[str],
+    enterprise_id: Optional[str],
     cross_tenant_maintenance: bool = False,
 ) -> Optional[str]:
-    """Enforce the job's declared tenant scope; return the org id to bind.
+    """Enforce the job's declared tenant scope; return the enterprise to bind.
 
-    Returns the organization id to set on the tenant contextvar before the job
+    Returns the enterprise id to set on the tenant contextvar before the job
     runs, or ``None`` when the ambient default is already correct (single-tenant,
     or a tenant-neutral job) or when the maintenance path bypasses RLS entirely.
 
@@ -194,7 +194,7 @@ def _enforce_tenant_scope(
 
     Raises:
         JobTenantScopeError: If the scope declaration is missing/invalid, if an
-            ``org``-scoped job runs under multi without ``--organization-id``,
+            ``org``-scoped job runs under multi without ``--enterprise-id``,
             if a ``cross_tenant`` job runs under multi without the maintenance
             acknowledgment, or if the acknowledgment is passed where it does
             not apply.
@@ -216,13 +216,13 @@ def _enforce_tenant_scope(
                 "org. Remove the flag (it usually indicates a manifest copied "
                 "from a cloud deployment)."
             )
-        # Single-tenant: the contextvar default (Standalone org) scopes every
-        # session correctly; --organization-id is not a scoping instruction here.
+        # Single-tenant: the contextvar default (Standalone enterprise) scopes
+        # every session correctly; --enterprise-id is not a scoping instruction.
         return None
 
-    if cross_tenant_maintenance and organization_id:
+    if cross_tenant_maintenance and enterprise_id:
         raise JobTenantScopeError(
-            "--cross-tenant-maintenance and --organization-id are mutually "
+            "--cross-tenant-maintenance and --enterprise-id are mutually "
             "exclusive: the maintenance path bypasses RLS entirely, so an org "
             "id could not scope anything and passing one indicates a confused "
             "manifest. Drop one of the two."
@@ -252,7 +252,7 @@ def _enforce_tenant_scope(
                 f"Job '{module_path}' requires a cross-tenant view, which the "
                 "multi-tenant deployment refuses by default: row-level "
                 "security scopes every DB transaction to the single "
-                "organization bound in the tenant context, so the job would "
+                "enterprise bound in the tenant context, so the job would "
                 "operate on a partial view of tenanted data (for cleanup "
                 "jobs, that means deleting other tenants' resources). To run "
                 "it, use the audited maintenance path: pass "
@@ -268,15 +268,15 @@ def _enforce_tenant_scope(
         return None
 
     if scope == TENANT_SCOPE_ORG:
-        if not organization_id:
+        if not enterprise_id:
             raise JobTenantScopeError(
-                f"Job '{module_path}' is organization-scoped: under the "
+                f"Job '{module_path}' is tenant-scoped: under the "
                 "multi-tenant provider it must be invoked with an explicit "
-                "--organization-id (there is no ambient tenant on the CLI "
+                "--enterprise-id (there is no ambient tenant on the CLI "
                 "path, and the contextvar default is the never-seeded "
                 "Standalone org)."
             )
-        return organization_id
+        return enterprise_id
 
     return None  # tenant_neutral: no tenanted DB access, nothing to bind
 
@@ -401,11 +401,11 @@ async def run_job(
 
     # Enforce the job's declared tenant scope before any heavy initialization.
     try:
-        bind_org_id = _enforce_tenant_scope(
+        bind_enterprise_id = _enforce_tenant_scope(
             module,
             module_path,
             is_multi_tenant=is_multi_tenant,
-            organization_id=kwargs.get("organization_id"),
+            enterprise_id=kwargs.get("enterprise_id"),
             cross_tenant_maintenance=cross_tenant_maintenance,
         )
     except JobTenantScopeError:
@@ -477,17 +477,17 @@ async def run_job(
             logger.critical("Refusing to run job: app DB role is exempt from RLS")
             raise
 
-    # Bind the job's tenant scope (multi + org-scoped jobs only). The engine's
-    # per-transaction listener reads this contextvar, so every DB transaction
-    # the job opens is RLS-scoped to the requested organization.
-    if bind_org_id is not None:
-        from faultmaven.config.tenant_context import set_current_org_id
+    # Bind the job's tenant scope (multi + tenant-scoped jobs only). The
+    # engine's per-transaction listener reads this contextvar, so every DB
+    # transaction the job opens is RLS-scoped to the requested enterprise.
+    if bind_enterprise_id is not None:
+        from faultmaven.config.tenant_context import set_current_enterprise_id
 
-        set_current_org_id(bind_org_id)
+        set_current_enterprise_id(bind_enterprise_id)
         logger.info(
-            "Tenant scope bound: job '%s' runs scoped to organization_id=%s",
+            "Tenant scope bound: job '%s' runs scoped to enterprise_id=%s",
             job_name,
-            bind_org_id,
+            bind_enterprise_id,
         )
 
     # Run the job
@@ -561,13 +561,13 @@ Examples:
         help="Enable verbose logging",
     )
     parser.add_argument(
-        "--organization-id",
+        "--enterprise-id",
         type=str,
         help=(
-            "Organization ID for organization-scoped jobs. Required under the "
+            "Enterprise ID for tenant-scoped jobs. Required under the "
             "multi-tenant provider for jobs with JOB_TENANT_SCOPE='org'; the "
             "runner binds it to the tenant context so all DB access is "
-            "RLS-scoped to that organization."
+            "RLS-scoped to that enterprise."
         ),
     )
     parser.add_argument(
@@ -659,8 +659,8 @@ def main(args: Optional[List[str]] = None) -> int:
 
     # Build kwargs from parsed args
     kwargs: Dict[str, Any] = {}
-    if parsed_args.organization_id:
-        kwargs["organization_id"] = parsed_args.organization_id
+    if parsed_args.enterprise_id:
+        kwargs["enterprise_id"] = parsed_args.enterprise_id
     if parsed_args.cross_tenant_maintenance:
         kwargs["cross_tenant_maintenance"] = True
 

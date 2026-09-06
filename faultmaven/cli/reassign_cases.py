@@ -1,4 +1,4 @@
-"""Move a set of cases from one owner to another inside one organization.
+"""Move a set of cases from one owner to another inside one enterprise.
 
 Built for the Slack per-workspace cutover (faultmaven-slack-agent#61 step 4,
 ADR-012 D10): the global ``slack-agent`` account owns every Slack case opened
@@ -10,7 +10,7 @@ owner-scoped view, unrecoverably.
 
 Usage (``fm-reassign-cases``, installed with the package)::
 
-    fm-reassign-cases --organization-id <org-id> \\
+    fm-reassign-cases --enterprise-id <org-id> \\
         --from-user slack-agent --to-user slack-T0B9XNZDR44 \\
         --case-ids-file ids.txt --dry-run
 
@@ -56,7 +56,7 @@ Why the team share is created rather than carried
 membership at case-creation time. A global service account that belongs to no
 Team therefore produced no share rows at all — so there is nothing to "move",
 and a bare owner swap would leave the migrated cases the only Slack cases in the
-organization that no human can see, while every case created after the bind is
+enterprise that no human can see, while every case created after the bind is
 team-visible. Creating the row here is what makes the history match what the
 live path now produces.
 
@@ -65,24 +65,23 @@ Why both a file and a sweep
 The backend records **no** Slack workspace on a case; the agent's own
 ``thread_cases`` map is the only place that is written down. So the caller names
 the cases (``--case-ids-file``, produced from that map) *and* this command sweeps
-the organization for everything ``--from-user`` owns — and refuses unless the two
+the enterprise for everything ``--from-user`` owns — and refuses unless the two
 sets are exactly equal. The file alone would silently move nothing on a mistyped
 id; the sweep alone would happily merge two workspaces' histories into one
 account on a deployment where the global account had served both. Together, a
 named-but-not-owned id and an owned-but-unnamed id are each a refusal that names
 the ids.
 
-Why the target must be an organization member but the source need not be
-------------------------------------------------------------------------
+Why the target must be in the enterprise but the source need not be
+-------------------------------------------------------------------
 ``users`` is not tenant-scoped, so both lookups find any account in the
 deployment. An unchecked ``--to-user`` is the whole risk here: a mistyped id
 would hand a workspace's transcripts to whatever account it resolved to. So the
-target must hold an ``organization_members`` row in ``--organization-id`` — the
-same basis on which ``fm-remove-org-member`` refuses — must be active, and must
-not be the source. The **source** is deliberately not held to that: the global
-``slack-agent`` has no membership row in any organization (RLS keys on the
-token's claim, not on membership), which is exactly the account this exists to
-retire. Requiring it would refuse the only run this command was written for.
+target must be **anchored to** ``--enterprise-id`` (``users.enterprise_id``,
+ADR-017 D3 — the isolation membership, not the billing roster), must be active,
+and must not be the source. The **source** is deliberately not held to that: the
+account this command exists to retire may already have been moved or may predate
+the anchor, and requiring it would refuse the only run this was written for.
 
 Exit codes
 ----------
@@ -109,7 +108,7 @@ from faultmaven.cli._confirmation import require_confirmation
 #: argparse's ``description``. A literal, not derived from ``__doc__``: ``python
 #: -OO`` strips docstrings, and that expression would raise before argparse ran.
 _SUMMARY = (
-    "Reassign a named set of cases to a new owner within one organization, "
+    "Reassign a named set of cases to a new owner within one enterprise, "
     "sharing them to the new owner's Teams and recording the move."
 )
 
@@ -190,7 +189,7 @@ def describe_set_mismatch(named: list[str], owned: set[str], from_label: str) ->
     unowned = sorted(named_set - owned)
     if unowned:
         lines.append(
-            f"  named but NOT owned by {from_label} in this organization "
+            f"  named but NOT owned by {from_label} in this enterprise "
             f"({len(unowned)}): {', '.join(unowned)}"
         )
     unnamed = sorted(owned - named_set)
@@ -220,10 +219,10 @@ async def _resolve_user(user_store, identifier: str):
     return None
 
 
-async def _swept_case_ids(organization_id: str, from_user_id: str) -> set[str]:
-    """Every case id in this organization currently owned by ``from_user_id``.
+async def _swept_case_ids(enterprise_id: str, from_user_id: str) -> set[str]:
+    """Every case id in this enterprise currently owned by ``from_user_id``.
 
-    ``organization_id`` is in the predicate as well as bound into the RLS scope.
+    ``enterprise_id`` is in the predicate as well as bound into the RLS scope.
     Redundant against ``faultmaven_app`` — the policy already restricts it — but
     this command also has to be correct when run against a connection that is not
     RLS-enforcing, and a sweep that silently spanned tenants is the one error
@@ -237,15 +236,15 @@ async def _swept_case_ids(organization_id: str, from_user_id: str) -> set[str]:
         result = await session.execute(
             text(
                 "SELECT case_id FROM cases "
-                "WHERE user_id = :from_user_id AND organization_id = :org_id"
+                "WHERE user_id = :from_user_id AND enterprise_id = :enterprise_id"
             ),
-            {"from_user_id": from_user_id, "org_id": organization_id},
+            {"from_user_id": from_user_id, "enterprise_id": enterprise_id},
         )
         return {row[0] for row in result.fetchall()}
 
 
-async def _team_ids_in_org(user_id: str, organization_id: str) -> list[str]:
-    """The user's teams **in this organization**, by id.
+async def _team_ids_in_enterprise(user_id: str, enterprise_id: str) -> list[str]:
+    """The user's teams **in this enterprise**, by id.
 
     ``list_all_user_team_ids`` returns ids only and leans entirely on RLS to
     keep them same-tenant. That is the same assumption ``_swept_case_ids``
@@ -254,7 +253,7 @@ async def _team_ids_in_org(user_id: str, organization_id: str) -> list[str]:
     tenant's team is precisely the error that would not announce itself — it
     would print success while making the cases visible to strangers and to
     nobody who should see them. ``list_user_teams`` carries
-    ``organization_id``, so the predicate can be applied here rather than
+    ``enterprise_id``, so the predicate can be applied here rather than
     assumed.
     """
 
@@ -263,12 +262,12 @@ async def _team_ids_in_org(user_id: str, organization_id: str) -> list[str]:
     )
 
     teams = await SessionlessTeamRepository().list_user_teams(user_id)
-    return [t.team_id for t in teams if t.organization_id == organization_id]
+    return [t.team_id for t in teams if t.enterprise_id == enterprise_id]
 
 
 async def _apply(
     *,
-    organization_id: str,
+    enterprise_id: str,
     case_ids: list[str],
     from_user_id: str,
     to_user_id: str,
@@ -303,7 +302,7 @@ async def _apply(
     )
     from faultmaven.models.interfaces_user import AuditCategory, AuditEventType
 
-    # `organization_id` is in the predicate as well as bound into the RLS
+    # `enterprise_id` is in the predicate as well as bound into the RLS
     # scope, for the same reason the sweep carries it: this command also has to
     # be correct when run against a connection that is not RLS-enforcing, and a
     # cross-tenant write is the one error that would not announce itself.
@@ -316,7 +315,7 @@ async def _apply(
         "UPDATE cases SET user_id = :to_user_id, version = version + 1, "
         "updated_at = :now "
         "WHERE case_id = :case_id AND user_id = :from_user_id "
-        "AND organization_id = :org_id"
+        "AND enterprise_id = :enterprise_id"
     )
 
     moved_at = datetime.now(timezone.utc)
@@ -329,7 +328,7 @@ async def _apply(
                     "to_user_id": to_user_id,
                     "case_id": case_id,
                     "from_user_id": from_user_id,
-                    "org_id": organization_id,
+                    "enterprise_id": enterprise_id,
                     "now": moved_at,
                 },
             )
@@ -357,7 +356,7 @@ async def _apply(
                         resource_id=case_id,
                         scope_type="team",
                         scope_id=team_id,
-                        organization_id=organization_id,
+                        enterprise_id=enterprise_id,
                         created_by=to_user_id,
                     )
                     .on_conflict_do_nothing(
@@ -380,14 +379,14 @@ async def _apply(
                 text(
                     "DELETE FROM resource_shares "
                     "WHERE resource_type = 'case' AND scope_type = 'team' "
-                    "AND organization_id = :org_id "
+                    "AND enterprise_id = :enterprise_id "
                     "AND resource_id IN :case_ids AND scope_id IN :team_ids"
                 ).bindparams(
                     bindparam("case_ids", expanding=True),
                     bindparam("team_ids", expanding=True),
                 ),
                 {
-                    "org_id": organization_id,
+                    "enterprise_id": enterprise_id,
                     "case_ids": case_ids,
                     "team_ids": revoke_team_ids,
                 },
@@ -397,7 +396,7 @@ async def _apply(
         # `resource_id` is the natural key an auditor filters on, so "what
         # happened to THIS case" is a row rather than a JSON blob to parse.
         # (`user_audit_log` indexes only (user_id, created_at) and
-        # (organization_id, created_at) — `resource_id` is queried, not indexed.)
+        # (enterprise_id, created_at) — `resource_id` is queried, not indexed.)
         #
         # `user_id` is None on purpose. It is the row's SUBJECT, and attributing
         # this to the new owner would read as the service account having moved
@@ -408,7 +407,7 @@ async def _apply(
             session.add(
                 UserAuditLogModel(
                     user_id=None,
-                    organization_id=organization_id,
+                    enterprise_id=enterprise_id,
                     event_type=AuditEventType.CASE_REASSIGNED.value,
                     event_category=AuditCategory.ADMINISTRATION.value,
                     resource_type="case",
@@ -431,7 +430,7 @@ async def _apply(
 
 async def reassign_cases(
     *,
-    organization_id: str,
+    enterprise_id: str,
     from_identifier: str,
     to_identifier: str,
     case_ids_file: str,
@@ -440,11 +439,11 @@ async def reassign_cases(
     dry_run: bool,
 ) -> int:
     """Run the reassignment. Returns the process exit code."""
-    from faultmaven.config.tenant_context import set_current_org_id
+    from faultmaven.config.tenant_context import set_current_enterprise_id
     from faultmaven.container import container
     from faultmaven.exceptions import UserLookupFailed
-    from faultmaven.infrastructure.persistence.sessionless_organization_repository import (
-        SessionlessOrganizationRepository,
+    from faultmaven.infrastructure.persistence.sessionless_enterprise_repository import (
+        SessionlessEnterpriseRepository,
     )
 
     print("=" * 80)
@@ -462,18 +461,18 @@ async def reassign_cases(
     print("\nInitializing...")
     await container.initialize()
 
-    # RLS scopes cases, resource_shares and teams by `app.current_org_id`. Bind
+    # RLS scopes cases, resource_shares and teams by `app.current_enterprise_id`. Bind
     # it before opening any session: the engine applies it per transaction from
     # this contextvar, so a session opened first would run unbound (#935).
-    set_current_org_id(organization_id)
+    set_current_enterprise_id(enterprise_id)
 
-    orgs = SessionlessOrganizationRepository()
-    organization = await orgs.get_organization(organization_id)
-    if organization is None:
+    enterprises = SessionlessEnterpriseRepository()
+    enterprise = await enterprises.get_enterprise(enterprise_id)
+    if enterprise is None:
         print(
-            f"\n❌ No organization '{organization_id}' is visible.\n"
+            f"\n❌ No enterprise '{enterprise_id}' is visible.\n"
             "   Check the id (it is an id, not a slug), and note that a deleted "
-            "organization does not resolve."
+            "enterprise does not resolve."
         )
         return 1
 
@@ -540,21 +539,18 @@ async def reassign_cases(
         return 1
 
     # `users` is not tenant-scoped, so the lookup above found this account
-    # wherever it lives. Membership is what ties it to THIS organization.
-    if await orgs.get_member_role(organization_id, to_user.user_id) is None:
+    # wherever it lives. The anchor is what ties it to THIS enterprise.
+    if getattr(to_user, "enterprise_id", None) != enterprise_id:
         print(
-            f"\n❌ {to_user.username} is not a member of {organization.name} "
-            f"({organization_id}), so it must not own that organization's "
-            "cases.\n"
+            f"\n❌ {to_user.username} is not anchored to {enterprise.name} "
+            f"({enterprise_id}), so it must not own that enterprise's cases.\n"
             "   This is what a mistyped --to-user looks like, and moving the "
             "cases anyway would hand them to an unrelated account or leave them "
-            "owned by someone RLS shows them to nobody as.\n"
-            "   For a Slack workspace account, the install-time bind is what "
-            "creates this membership — run it first."
+            "owned by someone RLS shows them to nobody as."
         )
         return 1
 
-    owned_ids = await _swept_case_ids(organization_id, from_user.user_id)
+    owned_ids = await _swept_case_ids(enterprise_id, from_user.user_id)
     named_set = set(named_ids)
 
     # Split by direction, because the two mismatches mean opposite things.
@@ -566,8 +562,8 @@ async def reassign_cases(
     if unowned:
         print(
             f"\n❌ {len(unowned)} named case id(s) are NOT owned by "
-            f"{from_user.username} in this organization: {', '.join(unowned)}\n"
-            "   Refusing: that is what a typo, a wrong --organization-id, or an "
+            f"{from_user.username} in this enterprise: {', '.join(unowned)}\n"
+            "   Refusing: that is what a typo, a wrong --enterprise-id, or an "
             "already-completed run looks like. Re-derive the file from the "
             "agent's thread_cases map and check the organization id."
         )
@@ -594,17 +590,17 @@ async def reassign_cases(
         )
         return 1
 
-    team_ids = await _team_ids_in_org(to_user.user_id, organization_id)
+    team_ids = await _team_ids_in_enterprise(to_user.user_id, enterprise_id)
     # Teams the OLD owner is in and the new one is not: their share rows would
     # otherwise survive the swap and keep those teams reading the moved cases.
     revoke_team_ids = [
         t
-        for t in await _team_ids_in_org(from_user.user_id, organization_id)
+        for t in await _team_ids_in_enterprise(from_user.user_id, enterprise_id)
         if t not in team_ids
     ]
     if not team_ids and not allow_no_team:
         print(
-            f"\n❌ {to_user.username} belongs to no Team in this organization, "
+            f"\n❌ {to_user.username} belongs to no Team in this enterprise, "
             "so the moved cases would be shared to nothing and stay owner-only "
             "— invisible to every human, while cases created after the bind are "
             "team-visible.\n"
@@ -614,7 +610,7 @@ async def reassign_cases(
         )
         return 1
 
-    print(f"\nOrganization: {organization.name} ({organization_id})")
+    print(f"\nOrganization: {organization.name} ({enterprise_id})")
     print(f"From:         {from_user.username} ({from_user.user_id})")
     print(f"To:           {to_user.username} ({to_user.user_id})")
     print(f"Cases:        {len(named_ids)} — {', '.join(named_ids)}")
@@ -628,7 +624,7 @@ async def reassign_cases(
         print(f"Left behind:  {', '.join(unnamed)} (--leave-unnamed)")
     print(
         "Untouched:    case_messages.author_id, uploaded_files.uploaded_by "
-        "(attribution, not ownership), cases.organization_id"
+        "(attribution, not ownership), cases.enterprise_id"
     )
 
     if dry_run:
@@ -640,7 +636,7 @@ async def reassign_cases(
 
     try:
         await _apply(
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             case_ids=named_ids,
             from_user_id=from_user.user_id,
             to_user_id=to_user.user_id,
@@ -673,14 +669,14 @@ def main() -> None:
         description=_SUMMARY,
         epilog=(
             "The cases must be named in a file AND be exactly what --from-user "
-            "owns in --organization-id; the two are cross-checked and any "
+            "owns in --enterprise-id; the two are cross-checked and any "
             "difference refuses the run. Ownership moves; attribution "
             "(case_messages.author_id, uploaded_files.uploaded_by) does not."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "--organization-id",
+        "--enterprise-id",
         required=True,
         help="Organization the cases live in (an id, not a slug)",
     )
@@ -694,7 +690,7 @@ def main() -> None:
         required=True,
         help=(
             "New owner: username, email address, or user id. Must be an active "
-            "member of --organization-id"
+            "member of --enterprise-id"
         ),
     )
     parser.add_argument(
@@ -744,7 +740,7 @@ def main() -> None:
     sys.exit(
         asyncio.run(
             reassign_cases(
-                organization_id=args.organization_id,
+                enterprise_id=args.enterprise_id,
                 from_identifier=args.from_user,
                 to_identifier=args.to_user,
                 case_ids_file=args.case_ids_file,

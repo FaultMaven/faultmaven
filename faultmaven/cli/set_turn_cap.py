@@ -109,6 +109,7 @@ async def set_turn_cap(
     new_value: object,
     show_only: bool,
     dry_run: bool,
+    enterprise_id: str,
     resolver=None,
     organizations=None,
     ledger=None,
@@ -127,31 +128,34 @@ async def set_turn_cap(
     goes around it; and the write goes through ``update_organization``, so the
     domain object is what carries the value.
     """
-    from faultmaven.config.tenant_context import set_current_org_id
+    from faultmaven.config.tenant_context import set_current_enterprise_id
     from faultmaven.infrastructure.persistence.sessionless_organization_repository import (  # noqa: E501
         SessionlessOrganizationRepository,
     )
     from faultmaven.infrastructure.protection.tenant_turn_cap import (
+        SUBJECT_ORGANIZATION,
+        BillingSubject,
         CapPolicyResolver,
         SqlTurnLedger,
         utc_day,
-    )
-    from faultmaven.modules.auth.infrastructure.repositories.sso_personal_org_repository import (  # noqa: E501
-        SessionlessSSOPersonalOrgRepository,
     )
 
     print("=" * 80)
     print("Tenant Daily Turn Cap")
     print("=" * 80)
 
-    # RLS (migration 018) scopes `organizations` and the usage ledger by
-    # `app.current_org_id`. Bind it before any read so everything below runs
-    # under the pod's own application role, exactly as the request path does.
-    set_current_org_id(organization_id)
+    # RLS scopes `organizations` and the usage ledger by
+    # ``app.current_enterprise_id`` (ADR-017 D1). Bind the ENTERPRISE before any
+    # read so everything below runs under the pod's own application role,
+    # exactly as the request path does — an organization id alone resolves
+    # nothing, which is why the enterprise is a required argument rather than
+    # something this could derive.
+    set_current_enterprise_id(enterprise_id)
+
+    subject = BillingSubject(SUBJECT_ORGANIZATION, organization_id)
 
     organizations = organizations or SessionlessOrganizationRepository()
     resolver = resolver or CapPolicyResolver(
-        SessionlessSSOPersonalOrgRepository(),
         organizations,
         # An operator asking about a tenant is asking about the multi-tenant
         # policy even on a box where the API happens to run single-tenant, so
@@ -171,8 +175,8 @@ async def set_turn_cap(
         )
         return 1
 
-    policy = await resolver.resolve(organization_id)
-    used_today = await ledger.usage(organization_id, today)
+    policy = await resolver.resolve(subject)
+    used_today = await ledger.usage(subject, today)
 
     print(f"\nOrganization: {organization.name} ({organization_id})")
     print(f"Current cap:  {_describe(policy)}")
@@ -243,6 +247,14 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
+        "--enterprise-id",
+        required=True,
+        help=(
+            "Enterprise the organization belongs to — the tenant every read and "
+            "write below is RLS-scoped by (an id, not a slug)"
+        ),
+    )
+    parser.add_argument(
         "--organization-id",
         required=True,
         help="Organization id to read or change (an id, not a slug)",
@@ -304,6 +316,7 @@ def main() -> None:
     sys.exit(
         asyncio.run(
             set_turn_cap(
+                enterprise_id=args.enterprise_id,
                 organization_id=args.organization_id,
                 new_value=new_value,
                 show_only=args.show,
