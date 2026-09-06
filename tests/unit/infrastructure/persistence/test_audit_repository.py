@@ -100,7 +100,7 @@ async def test_log_event_stamps_tenant_org_when_none_given(repo):
         event_category=AuditCategory.AUTHENTICATION,
     )
     entries = await repo.get_user_audit_log("u-1")
-    assert entries[0].organization_id == STANDALONE_ENTERPRISE_ID
+    assert entries[0].enterprise_id == STANDALONE_ENTERPRISE_ID
 
 
 @pytest.mark.unit
@@ -165,20 +165,20 @@ async def test_user_log_is_newest_first_and_paginated(repo):
 
 
 @pytest.mark.unit
-async def test_org_log_filters_by_organization(repo):
+async def test_the_audit_log_filters_by_enterprise(repo):
     await repo.log_event(
         user_id="u-1",
         event_type=AuditEventType.LOGIN,
         event_category=AuditCategory.AUTHENTICATION,
-        organization_id="org-a",
+        enterprise_id="ent-a",
     )
     await repo.log_event(
         user_id="u-2",
         event_type=AuditEventType.LOGIN,
         event_category=AuditCategory.AUTHENTICATION,
-        organization_id="org-b",
+        enterprise_id="ent-b",
     )
-    entries = await repo.get_organization_audit_log("org-a")
+    entries = await repo.get_enterprise_audit_log("ent-a")
     assert [e.user_id for e in entries] == ["u-1"]
 
 
@@ -234,12 +234,12 @@ async def test_sessionless_wrapper_round_trips_through_fresh_sessions(
         event_type=AuditEventType.ACCOUNT_CREATED,
         event_category=AuditCategory.AUTHENTICATION,
         details={"provider": "workos"},
-        organization_id="org-a",
+        enterprise_id="ent-a",
     )
     entries = await repo.get_user_audit_log("u-1")
     assert len(entries) == 1
     assert entries[0].details == {"provider": "workos"}
-    assert (await repo.get_organization_audit_log("org-a"))[0].user_id == "u-1"
+    assert (await repo.get_enterprise_audit_log("ent-a"))[0].user_id == "u-1"
 
 
 @pytest.mark.unit
