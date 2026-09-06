@@ -1,6 +1,6 @@
 """``POST /cases/{id}/extract-knowledge`` stamps the ACTOR's tenant (#1227).
 
-The route used to pass ``getattr(case, "organization_id", "default")`` to
+The route used to pass ``getattr(case, "enterprise_id", "default")`` to
 ``extract_knowledge_from_case``. Two things were wrong with that, and moving the
 store into ``knowledge_suggestions`` turned the second from cosmetic into fatal:
 
@@ -9,9 +9,9 @@ store into ``knowledge_suggestions`` turned the second from cosmetic into fatal:
    predicate with ``require_actor_enterprise``. A suggestion stamped with
    anything else is invisible to the reviewer, which is the same
    extract-then-404 shape #1214 fixed, arrived at from the other end.
-2. **``"default"`` is not an organization id.** It was inert while the store was
-   a dict keyed by nothing. ``knowledge_suggestions.organization_id`` is a NOT
-   NULL foreign key to ``organizations`` and ``database.py`` sets
+2. **``"default"`` is not an enterprise id.** It was inert while the store was
+   a dict keyed by nothing. ``knowledge_suggestions.enterprise_id`` is a NOT
+   NULL foreign key to ``enterprises`` and ``database.py`` sets
    ``PRAGMA foreign_keys=ON``, so the fallback now fails the INSERT — and under
    PostgreSQL RLS it would fail the policy's WITH CHECK too, because the value
    does not match the session's ``app.current_enterprise_id``.
@@ -19,7 +19,7 @@ store into ``knowledge_suggestions`` turned the second from cosmetic into fatal:
    measures that against a real database; this file pins what the route sends.
 
 These are unit tests over the route: the suggestion service is a double whose
-only job is to record which ``organization_id`` it was handed.
+only job is to record which ``enterprise_id`` it was handed.
 """
 
 from __future__ import annotations
@@ -51,11 +51,11 @@ from faultmaven.modules.knowledge.domain.models.suggestion import (
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
 CASE_ID = "case_aabb11223344"
-ACTOR_ORG = "org-actor-1111"
-CASE_ORG = "org-onthecase-2222"
+ACTOR_ENT = "ent-actor-1111"
+CASE_ENT = "ent-onthecase-2222"
 
 
-def _user(organization_id) -> DevUser:
+def _user(enterprise_id) -> DevUser:
     return DevUser(
         user_id="user-admin",
         username="admin",
@@ -63,28 +63,28 @@ def _user(organization_id) -> DevUser:
         display_name="Admin",
         created_at=datetime.now(timezone.utc),
         roles=["admin", "platform_admin"],
-        organization_id=organization_id,
+        enterprise_id=enterprise_id,
     )
 
 
 class _Case:
     """A case object shaped like the one ``case_service.get_case`` returns."""
 
-    def __init__(self, organization_id=CASE_ORG):
+    def __init__(self, enterprise_id=CASE_ENT):
         self.case_id = CASE_ID
         self.title = "Connection pool exhaustion"
         self.description = "Prod DB latency spike"
-        self.organization_id = organization_id
+        self.enterprise_id = enterprise_id
 
 
-class _OrglessPrincipal:
-    """An authenticated principal with no ``organization_id`` attribute."""
+class _UnscopedPrincipal:
+    """An authenticated principal with no ``enterprise_id`` attribute."""
 
     user_id = "user-admin"
     username = "admin"
 
 
-class _CaseWithoutAnOrg:
+class _CaseWithoutAnEnterprise:
     """The shape the old ``getattr(..., "default")`` fallback existed for."""
 
     case_id = CASE_ID
@@ -93,14 +93,14 @@ class _CaseWithoutAnOrg:
 
 
 def _suggestion_service_double():
-    """Records the organization_id it is handed and returns a plausible
+    """Records the enterprise_id it is handed and returns a plausible
     suggestion, so the route reaches its 201 either way."""
     double = MagicMock()
 
-    async def _extract(*, organization_id, case_id, extracted_by, **_kwargs):
+    async def _extract(*, enterprise_id, case_id, extracted_by, **_kwargs):
         return KnowledgeSuggestion(
             suggestion_id="sug_recorded001",
-            enterprise_id=organization_id,
+            enterprise_id=enterprise_id,
             case_id=case_id,
             suggested_title="Connection pool exhaustion",
             suggested_content="## Problem\n...",
@@ -130,45 +130,47 @@ def _client(user, case=None, suggestion_service=None) -> TestClient:
     return TestClient(app, raise_server_exceptions=False)
 
 
-def _stamped_org(suggestion_service) -> str:
+def _stamped_enterprise(suggestion_service) -> str:
     return suggestion_service.extract_knowledge_from_case.await_args.kwargs[
-        "organization_id"
+        "enterprise_id"
     ]
 
 
 class TestTheActorsTenantIsWhatGetsStamped:
-    def test_the_suggestion_is_stamped_with_the_actors_organization(self):
-        """The case here carries a DIFFERENT organization_id, so reading it off
+    def test_the_suggestion_is_stamped_with_the_actors_enterprise(self):
+        """The case here carries a DIFFERENT enterprise_id, so reading it off
         the case and reading it off the actor give different answers — which is
         what makes this test able to fail."""
         service = _suggestion_service_double()
-        client = _client(_user(ACTOR_ORG), suggestion_service=service)
+        client = _client(_user(ACTOR_ENT), suggestion_service=service)
 
         resp = client.post(f"/cases/{CASE_ID}/extract-knowledge", json={})
 
         assert resp.status_code == 201, resp.text
-        assert _stamped_org(service) == ACTOR_ORG
-        assert _stamped_org(service) != CASE_ORG
+        assert _stamped_enterprise(service) == ACTOR_ENT
+        assert _stamped_enterprise(service) != CASE_ENT
 
-    def test_a_case_object_with_no_organization_never_yields_the_default_literal(
+    def test_a_case_object_with_no_enterprise_never_yields_the_default_literal(
         self,
     ):
         """The exact shape the old fallback was written for. ``"default"`` is
-        not an organization id and the foreign key rejects it; the actor's
+        not an enterprise id and the foreign key rejects it; the actor's
         tenant is an answer that exists."""
         service = _suggestion_service_double()
         client = _client(
-            _user(ACTOR_ORG), case=_CaseWithoutAnOrg(), suggestion_service=service
+            _user(ACTOR_ENT),
+            case=_CaseWithoutAnEnterprise(),
+            suggestion_service=service,
         )
 
         resp = client.post(f"/cases/{CASE_ID}/extract-knowledge", json={})
 
         assert resp.status_code == 201, resp.text
-        assert _stamped_org(service) == ACTOR_ORG
-        assert _stamped_org(service) != "default"
+        assert _stamped_enterprise(service) == ACTOR_ENT
+        assert _stamped_enterprise(service) != "default"
 
     def test_the_standalone_sentinel_is_stamped_in_a_single_tenant_deployment(self):
-        """The common case: one organization, and it is a real row that the
+        """The common case: one enterprise, and it is a real row that the
         foreign key accepts."""
         service = _suggestion_service_double()
         client = _client(_user(STANDALONE_ENTERPRISE_ID), suggestion_service=service)
@@ -176,18 +178,18 @@ class TestTheActorsTenantIsWhatGetsStamped:
         resp = client.post(f"/cases/{CASE_ID}/extract-knowledge", json={})
 
         assert resp.status_code == 201, resp.text
-        assert _stamped_org(service) == STANDALONE_ENTERPRISE_ID
+        assert _stamped_enterprise(service) == STANDALONE_ENTERPRISE_ID
 
 
-class TestAnOrglessActorIsRefused:
+class TestAnUnscopedActorIsRefused:
     """Fail closed. The route previously degraded to a literal; there is
     nowhere to put an extraction for a request that owns no tenant."""
 
-    def test_the_empty_org_answers_403_rather_than_stamping_something(self):
+    def test_the_empty_enterprise_answers_403_rather_than_stamping_something(self):
         """``""`` is the value ``api/middleware/tenant_scope`` binds for an
         unauthenticated or invalid-token request. It would pass NOT NULL and,
         on PostgreSQL, even the RLS WITH CHECK (``current_setting`` is ``""``
-        too) — and then die on the ``organizations`` foreign key as an opaque
+        too) — and then die on the ``enterprises`` foreign key as an opaque
         IntegrityError several frames later. 403 says the true thing at the
         point it becomes knowable.
 
@@ -204,12 +206,12 @@ class TestAnOrglessActorIsRefused:
         assert resp.status_code == 403, resp.text
         assert resp.json()["detail"] == UNSCOPED_REQUEST_MSG
 
-    def test_a_user_object_carrying_no_org_attribute_at_all_is_refused(self):
+    def test_a_user_object_carrying_no_enterprise_attribute_at_all_is_refused(self):
         """``require_actor_enterprise`` reads the attribute defensively, so
         the refusal must hold for a principal shape that simply has no tenant
         field — not only for one whose field is empty."""
         service = _suggestion_service_double()
-        client = _client(_OrglessPrincipal(), suggestion_service=service)
+        client = _client(_UnscopedPrincipal(), suggestion_service=service)
 
         resp = client.post(f"/cases/{CASE_ID}/extract-knowledge", json={})
 

@@ -81,7 +81,8 @@ def _make_case(**overrides) -> Case:
     defaults = dict(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="user_alpha",
-        organization_id="org_alpha",
+        enterprise_id="ent_alpha",
+        organization_id=None,
         title="Clarification round-trip",
     )
     defaults.update(overrides)
@@ -212,7 +213,8 @@ def _pg_row(metadata: dict) -> SimpleNamespace:
     return SimpleNamespace(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="user_alpha",
-        organization_id="org_alpha",
+        enterprise_id="ent_alpha",
+        organization_id=None,
         source="copilot",
         title="Clarification round-trip",
         description="",

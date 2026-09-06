@@ -39,7 +39,8 @@ def _make_case(
     case = Case(
         title=kwargs.get("title", "Test Case"),
         user_id=user_id,
-        enterprise_id=kwargs.get("organization_id", "org_default"),
+        enterprise_id=kwargs.get("enterprise_id", "ent_default"),
+        organization_id=kwargs.get("organization_id"),
         description=kwargs.get("description", "test description"),
     )
     # Use object.__setattr__ to bypass Pydantic cross-field validators

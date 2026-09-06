@@ -198,8 +198,8 @@ class TestPgSurfacedTurnsSql:
 
 @pytest.mark.unit
 class TestSurfacedTurnsMigrationTypeIsJsonbOnPostgres:
-    """Migration 043 must declare ``surfaced_turns`` with the PostgreSQL JSONB
-    variant, not a bare ``sa.Text()``.
+    """The schema baseline must declare ``surfaced_turns`` with the PostgreSQL
+    JSONB variant, not a bare ``sa.Text()``.
 
     The repository writes this column through ``_cast('surfaced_turns')``, which
     emits ``CAST(... AS JSONB)`` on PostgreSQL. A TEXT column would accept every
@@ -209,12 +209,13 @@ class TestSurfacedTurnsMigrationTypeIsJsonbOnPostgres:
     """
 
     def test_migration_declares_the_jsonb_variant(self):
-        source = (
-            Path(__file__).resolve().parents[5]
-            / "alembic"
-            / "versions"
-            / "20260817_1200_b6c7d8e9f0a1_043_evidence_need_surfaced_turns.py"
-        ).read_text()
+        # Globbed, not spelled: the baseline's filename carries its revision
+        # hash, so a rename would read here as a missing declaration rather
+        # than as the rename it is.
+        versions = Path(__file__).resolve().parents[5] / "alembic" / "versions"
+        baselines = sorted(versions.glob("*_001_enterprise_baseline.py"))
+        assert baselines, "the enterprise baseline migration is gone"
+        source = "\n".join(p.read_text() for p in baselines)
 
         assert "surfaced_turns" in source
         assert "with_variant(" in source and "postgresql.JSONB" in source, (
