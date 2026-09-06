@@ -112,7 +112,7 @@ async def list_users(
     Raises:
         401 Unauthorized: No valid JWT token
         403 Forbidden: Caller is not a platform admin, or carries no
-            organization to be confined to
+            enterprise to be confined to
         422 Unprocessable Entity: Invalid query parameters
     """
     # Resolved OUTSIDE the try below: a missing membership store is a 503 and a
@@ -135,11 +135,11 @@ async def list_users(
             AdminUserListItem(
                 user_id=user.user_id,
                 # True by construction rather than by assumption (#1318): every
-                # row here is a member of the operator's own organization, or
-                # the deployment is single-tenant and there is only one. Before
-                # the predicate this stamp reported another tenant's user as
-                # belonging to the caller's org.
-                organization_id=current_user.organization_id,
+                # row here is anchored to the operator's own enterprise, or the
+                # deployment is single-tenant and there is only one. Before the
+                # predicate this stamp reported another tenant's user as
+                # belonging to the caller's tenant.
+                enterprise_id=current_user.enterprise_id,
                 email=user.email,
                 full_name=user.display_name,
                 roles=user.roles if user.roles else ["member"],
@@ -202,7 +202,7 @@ async def get_user_details(
     Raises:
         401 Unauthorized: No valid JWT token
         403 Forbidden: Caller is not a platform admin, or carries no
-            organization to be confined to
+            enterprise to be confined to
         404 Not Found: User does not exist, or is not in the operator's
             organization — one answer for both, deliberately
     """
@@ -226,7 +226,7 @@ async def get_user_details(
             # by the service (#1318). It is the truth here by construction: the
             # predicate above admitted this user as a member of the operator's
             # organization, or the deployment is single-tenant and there is one.
-            organization_id=current_user.organization_id,
+            enterprise_id=current_user.enterprise_id,
             email=user_data["email"],
             full_name=user_data["full_name"],
             roles=user_data["roles"],
@@ -292,7 +292,7 @@ async def deactivate_user(
     try:
         updated_user = await user_service.deactivate_user_admin(
             user_id=user_id,
-            organization_id=current_user.organization_id,
+            enterprise_id=current_user.enterprise_id,
             admin_user_id=current_user.user_id,
         )
 
@@ -339,7 +339,7 @@ async def activate_user(
     Raises:
         401 Unauthorized: No valid JWT token
         403 Forbidden: Caller is not a platform admin, or carries no
-            organization to be confined to
+            enterprise to be confined to
         404 Not Found: User does not exist, or is not in the operator's
             organization — one answer for both, deliberately
         409 Conflict: User already active
@@ -350,7 +350,7 @@ async def activate_user(
     try:
         updated_user = await user_service.activate_user_admin(
             user_id=user_id,
-            organization_id=current_user.organization_id,
+            enterprise_id=current_user.enterprise_id,
             admin_user_id=current_user.user_id,
         )
 
@@ -417,7 +417,7 @@ async def assign_role(
         updated_user = await user_service.assign_role(
             user_id=user_id,
             role=request.role,
-            organization_id=current_user.organization_id,
+            enterprise_id=current_user.enterprise_id,
             admin_user_id=current_user.user_id,
         )
 
@@ -496,7 +496,7 @@ async def remove_role(
         updated_user = await user_service.remove_role(
             user_id=user_id,
             role=role,
-            organization_id=current_user.organization_id,
+            enterprise_id=current_user.enterprise_id,
             admin_user_id=current_user.user_id,
         )
 

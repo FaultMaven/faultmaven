@@ -5,7 +5,7 @@ Implements ``IOperatorGrantRepository`` over ``operator_access_grants``
 
 **Not tenant-scoped, deliberately.** A grant is a record about the *operator*,
 not about the tenant, and it is written by a session bound to the operator's own
-organization while naming a different one. Applying RLS to it would make a grant
+enterprise while naming a different one. Applying RLS to it would make a grant
 unreadable at exactly the moment it is needed.
 
 **No update path beyond revocation and approval.** The justification columns are
@@ -56,7 +56,7 @@ def _model_to_domain(model: OperatorAccessGrantModel) -> OperatorAccessGrant:
         operator_user_id=model.operator_user_id,
         operator_username=model.operator_username,
         target_case_id=model.target_case_id,
-        target_organization_id=model.target_organization_id,
+        target_enterprise_id=model.target_enterprise_id,
         reason=model.reason,
         created_at=_as_utc(model.created_at),
         expires_at=_as_utc(model.expires_at),
@@ -82,7 +82,7 @@ class OperatorGrantRepository(IOperatorGrantRepository):
             operator_user_id=grant.operator_user_id,
             operator_username=grant.operator_username,
             target_case_id=grant.target_case_id,
-            target_organization_id=grant.target_organization_id,
+            target_enterprise_id=grant.target_enterprise_id,
             reason=grant.reason,
             created_at=grant.created_at,
             expires_at=grant.expires_at,
@@ -140,7 +140,7 @@ class OperatorGrantRepository(IOperatorGrantRepository):
         self,
         operator_user_id: Optional[str] = None,
         target_case_id: Optional[str] = None,
-        target_organization_id: Optional[str] = None,
+        target_enterprise_id: Optional[str] = None,
         live_only: bool = False,
         limit: int = 100,
         offset: int = 0,
@@ -153,10 +153,9 @@ class OperatorGrantRepository(IOperatorGrantRepository):
             )
         if target_case_id:
             filters.append(OperatorAccessGrantModel.target_case_id == target_case_id)
-        if target_organization_id:
+        if target_enterprise_id:
             filters.append(
-                OperatorAccessGrantModel.target_organization_id
-                == target_organization_id
+                OperatorAccessGrantModel.target_enterprise_id == target_enterprise_id
             )
         if live_only:
             approved = [s.value for s in APPROVED_STATES]
