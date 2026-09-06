@@ -44,11 +44,11 @@ class SessionlessTeamRepository(ITeamRepository):
             repo = PostgreSQLTeamRepository(session)
             return await repo.delete_team(team_id)
 
-    async def list_organization_teams(self, organization_id: str) -> List[Team]:
-        """List all teams in an organization."""
+    async def list_enterprise_teams(self, enterprise_id: str) -> List[Team]:
+        """List all teams in an enterprise."""
         async with get_db_session() as session:
             repo = PostgreSQLTeamRepository(session)
-            return await repo.list_organization_teams(organization_id)
+            return await repo.list_enterprise_teams(enterprise_id)
 
     async def list_user_teams(self, user_id: str) -> List[Team]:
         """List the teams a user belongs to (full objects; RLS-scoped)."""
