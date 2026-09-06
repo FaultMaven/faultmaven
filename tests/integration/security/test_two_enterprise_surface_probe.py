@@ -170,7 +170,10 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.config.constants import (
+    STANDALONE_ENTERPRISE_ID,
+    STANDALONE_ORG_ID,
+)
 from tests.integration.security.conftest import (
     create_limited_role,
     drop_limited_role,
@@ -224,6 +227,9 @@ phase3_pending = pytest.mark.xfail(
 #: re-keyed on a billing subject (ADR-017 D5, "what the inventory settled"). It
 #: is pinned here AND cross-checked against the catalog's own RLS enrolment
 #: below, so a new tenant table cannot appear without an enterprise key.
+#: ``team_invitations`` joins it because Phase 1 introduces it as tenant data
+#: (D4's consent record): who was invited into which team is exactly the sort of
+#: row the wall exists to keep on one side of it.
 ENTERPRISE_SCOPED_TABLES = frozenset(
     {
         "case_actions",
@@ -250,6 +256,7 @@ ENTERPRISE_SCOPED_TABLES = frozenset(
         "reports",
         "resource_shares",
         "solutions",
+        "team_invitations",
         "team_members",
         "teams",
         "turn_usage",
@@ -279,13 +286,20 @@ RETIRED_GUC = "app.current_org_id"
 #: The organization sentinel. ``knowledge_items``' global-write arms compare the
 #: bound tenant against a sentinel; under ADR-017 that comparison moves to
 #: ``STANDALONE_ENTERPRISE_ID`` and this value must appear in no policy body.
-RETIRED_ORG_SENTINEL = "00000000-0000-0000-0000-000000000001"
+#: Taken from ``config.constants`` rather than spelled out, so a probe asserting
+#: the sentinel is gone cannot go on passing after the constant is renumbered.
+RETIRED_ORG_SENTINEL = STANDALONE_ORG_ID
 
 #: Deleted, not deprecated (owner rule, 2026-09-06).
 RETIRED_TABLES = ("organization_turn_usage", "sso_personal_orgs")
 
-#: Introduced by the Phase-1 baseline.
-REQUIRED_TABLES = ("turn_usage", "team_invitations")
+#: Introduced by the Phase-1 baseline. ``team_invitations`` is NOT here: it
+#: carries tenant data (who was invited into which team) and therefore belongs
+#: to :data:`ENTERPRISE_SCOPED_TABLES`, which already demands that it exist, be
+#: keyed and be enrolled in RLS. Listing it in both would report its absence
+#: twice and, worse, would let a Phase-1 baseline that created it *unkeyed*
+#: satisfy this list.
+REQUIRED_TABLES = ("turn_usage",)
 
 #: The turn ledger's new subject key (ADR-017 D5): the organization when the
 #: account has one, the account itself otherwise.
@@ -343,6 +357,11 @@ async def _catalog(conn) -> SimpleNamespace:
             )
         ).all()
     }
+    # A constraint name is unique per TABLE, not per schema, so the joins are
+    # qualified by ``table_name`` as well as by schema. Without that, two tables
+    # that both name their FK ``fk_enterprise`` cross-credit each other and a
+    # table with no FK at all is reported as having one — the check would then
+    # pass on exactly the schema it exists to reject.
     enterprise_fks = {
         (table, column)
         for table, column in (
@@ -352,12 +371,14 @@ async def _catalog(conn) -> SimpleNamespace:
                     "FROM information_schema.table_constraints tc "
                     "JOIN information_schema.key_column_usage kcu "
                     "  ON kcu.constraint_name = tc.constraint_name "
-                    " AND kcu.table_schema = tc.table_schema "
+                    " AND kcu.constraint_schema = tc.constraint_schema "
+                    " AND kcu.table_name = tc.table_name "
                     "JOIN information_schema.constraint_column_usage ccu "
                     "  ON ccu.constraint_name = tc.constraint_name "
-                    " AND ccu.table_schema = tc.table_schema "
+                    " AND ccu.constraint_schema = tc.constraint_schema "
                     "WHERE tc.constraint_type = 'FOREIGN KEY' "
                     "  AND tc.table_schema = 'public' "
+                    "  AND ccu.table_schema = 'public' "
                     "  AND ccu.table_name = 'enterprises'"
                 )
             )
@@ -485,9 +506,11 @@ def _policy_gaps(cat) -> tuple[list[str], list[str], list[str]]:
                 f"the global-write arm on STANDALONE_ENTERPRISE_ID "
                 f"({STANDALONE_ENTERPRISE_ID})"
             )
-        if table == ENTERPRISE_KEY_BY_HOP and (
-            "teams" not in body or "enterprise_id" not in body
-        ):
+        # The literal ``teams.enterprise_id``, not "teams" and "enterprise_id"
+        # separately: the GUC is itself named ``app.current_enterprise_id``, so
+        # the looser spelling was satisfied by any policy that read the GUC and
+        # mentioned teams — which the org-keyed policy on main already does.
+        if table == ENTERPRISE_KEY_BY_HOP and "teams.enterprise_id" not in body:
             defects.append(f"{table}.{name}: does not hop through teams.enterprise_id")
     # The WRITE arms only. Migration 033 split ``knowledge_items`` into four
     # per-command policies, and the read arm grants every tenant the global tier
@@ -594,12 +617,37 @@ def _structural_gaps(cat) -> list[str]:
                 f"{sorted(TURN_USAGE_PRIMARY_KEY)}"
             )
 
-    unkeyed_rls = sorted(cat.rls_tables - ENTERPRISE_SCOPED_TABLES)
-    for table in unkeyed_rls:
+    # Both directions, because either one alone can be satisfied by a schema
+    # nobody would accept. RLS-enabled-but-unlisted catches a new tenant table
+    # appearing without an enterprise key; listed-but-unenrolled catches the
+    # mirror — a table that carries the key and is not actually protected by it,
+    # which is the shape a baseline written column-first produces.
+    #
+    # ``operator_access_grants`` and ``operator_access_audit`` are deliberately
+    # NOT in the scoped set and deliberately outside RLS: break-glass is a
+    # cross-tenant mechanism (ADR-012 D9), and a grant row scoped to the tenant
+    # it grants access to could not be read by the operator who needs it. So an
+    # enterprise-keyed *column* on them is required (item 3 above) while RLS
+    # enrolment is not — and if a future baseline enrols them anyway, the first
+    # loop below flags it, which is the correct outcome rather than a false
+    # alarm: enrolling them would silently break the audited escape hatch.
+    for table in sorted(cat.rls_tables - ENTERPRISE_SCOPED_TABLES):
         gaps.append(
             f"{table} has RLS enabled but is not in ENTERPRISE_SCOPED_TABLES; "
             "a tenant table must not appear un-keyed"
         )
+    for table in sorted(ENTERPRISE_SCOPED_TABLES - cat.rls_tables):
+        absent = "" if table in cat.tables else " (the table does not exist)"
+        gaps.append(f"{table} has no row-level security{absent}")
+
+    # Per TABLE, where the policy list above is per POLICY. A table carrying
+    # enterprise_id with no policy at all has nothing to appear in that list, so
+    # it would pass every other check here while being readable by everyone.
+    enterprise_keyed_tables = {
+        table for table, _name, _cmd, body in cat.policies if TENANT_GUC in body
+    }
+    for table in sorted(ENTERPRISE_SCOPED_TABLES - enterprise_keyed_tables):
+        gaps.append(f"{table} has no policy keyed on {TENANT_GUC}")
     return gaps
 
 
@@ -661,6 +709,45 @@ async def _require_enterprise_schema(superuser_url: str) -> None:
     gaps = _SCHEMA_GAPS[superuser_url]
     if gaps:
         pytest.fail("\n".join(gaps), pytrace=False)
+
+
+#: What ``config.tenant_context`` must export once Phase 2 lands. The contextvar
+#: is in the list because the seeding helpers bind through it directly, exactly
+#: as the request front door will.
+PHASE2_BINDER_NAMES = (
+    "set_current_enterprise_id",
+    "get_current_enterprise_id",
+    "get_current_tenant_id",
+    "_current_enterprise_id",
+)
+
+
+def _require_enterprise_binder() -> None:
+    """Refuse to build a world whose binder does not exist yet, BY NAME.
+
+    Runs immediately after the schema gate and before any Phase-2 import. Without
+    it the first such import raises ``ImportError: cannot import name
+    '_current_enterprise_id'`` from inside a seeding helper — a message that names
+    a symptom four frames from the cause, and one that a later rename would turn
+    into a fresh mystery for whoever reads the run. Here the reason is a sentence
+    and the missing names are listed.
+
+    It also draws the line the ratchet needs: after Phase 1 the schema gate goes
+    quiet, and this is what then says which phase the world is still waiting on.
+    """
+    import faultmaven.config.tenant_context as tenant_context
+
+    missing = [
+        name for name in PHASE2_BINDER_NAMES if not hasattr(tenant_context, name)
+    ]
+    if missing:
+        pytest.fail(
+            "ADR-017 Phase 2 (binder) has not landed: "
+            f"faultmaven.config.tenant_context exports none of {missing}. "
+            "The isolation key is still the organization, so nothing here can "
+            "bind an enterprise the way a request will.",
+            pytrace=False,
+        )
 
 
 # =============================================================================
@@ -735,6 +822,33 @@ PRIVATE_MARKERS = (
 #: The signing key the probe's ``AuthService`` verifies with. Local (HS256)
 #: mode: the tokens here are forged directly, so a mint path is not needed.
 _JWT_SECRET = "two-enterprise-probe-secret-padded-to-32-bytes"
+
+#: Every key the two ``POST /cases/search`` injection cases put in the body,
+#: spelled once so :func:`test_the_search_injection_names_only_real_request_fields`
+#: can check it against the live request model. A body field pydantic does not
+#: declare is silently DROPPED (``CaseSearchRequest`` takes the default
+#: ``extra="ignore"``), so an injection naming one asserts nothing at all — which
+#: is what an ``enterprise_id`` in this body would have been, and why it is not
+#: here: the enterprise reaches the endpoint through the verified claim only, and
+#: there is no body field for it to be honoured from.
+INJECTED_SEARCH_KEYS = ("query", "user_id", "organization_id", "team_id", "limit")
+
+
+def _search_injection_body(*, query, user_id, organization_id, team_id):
+    """The injection body. Its keys are exactly :data:`INJECTED_SEARCH_KEYS`."""
+    body = {
+        "query": query,
+        "user_id": user_id,
+        "organization_id": organization_id,
+        "team_id": team_id,
+        "limit": 50,
+    }
+    assert set(body) == set(INJECTED_SEARCH_KEYS), (
+        "the injection body and INJECTED_SEARCH_KEYS have drifted, so the guard "
+        "that checks them against CaseSearchRequest is checking the wrong keys"
+    )
+    return body
+
 
 #: Statuses that count as "the surface refused". 401 is absent on purpose: the
 #: attacker holds a VALID token, so a 401 would mean the probe failed to
@@ -1454,6 +1568,36 @@ async def _delete_case_rows(conn, case_ids) -> None:
         await conn.execute(text("DELETE FROM cases WHERE case_id = :c"), {"c": case_id})
 
 
+async def _delete_operator_rows(engine, enterprises) -> None:
+    """Remove the append-only operator rows this module's own tests minted.
+
+    The break-glass case and the grant-listing case both POST a grant, and every
+    granted read writes an ``operator_access_audit`` row. The probe is the writer,
+    so the probe has to be the remover — and these two tables are keyed on
+    ``target_enterprise_id`` rather than ``enterprise_id``, because break-glass is
+    cross-tenant by construction (ADR-012 D9), which is also why the main teardown
+    loop cannot reach them.
+
+    ``session_replication_role = 'replica'`` because migrations 035/036 make both
+    tables append-only with ``BEFORE DELETE`` triggers that ``RAISE EXCEPTION``
+    unconditionally — measured: the DELETE is rejected for the table-owning
+    SUPERUSER too, so there is no owner exemption to lean on. Disabling user
+    triggers for one transaction is the only way to clean up after ourselves, it
+    is superuser-only (the deployed ``faultmaven_app`` role cannot set it, so the
+    append-only guarantee this bypasses is untouched where it matters), and
+    ``SET LOCAL`` scopes it to this transaction alone. Run BEFORE the enterprise
+    rows go, in case Phase 1 gives ``target_enterprise_id`` a restricting FK.
+    """
+    async with engine.begin() as conn:
+        await conn.exec_driver_sql("SET LOCAL session_replication_role = 'replica'")
+        for enterprise_id in enterprises:
+            for table in ("operator_access_grants", "operator_access_audit"):
+                await conn.execute(
+                    text(f"DELETE FROM {table} WHERE target_enterprise_id = :e"),
+                    {"e": enterprise_id},
+                )
+
+
 async def _teardown_rows(engine, *, enterprises, users, case_ids, conversion_ids):
     """Delete everything the world seeded, explicitly.
 
@@ -1464,6 +1608,7 @@ async def _teardown_rows(engine, *, enterprises, users, case_ids, conversion_ids
     this module beside siblings that count rows, so residue is a defect in them,
     not only here.
     """
+    await _delete_operator_rows(engine, enterprises)
     async with engine.begin() as conn:
         for conversion_id in conversion_ids:
             await conn.execute(
@@ -1517,6 +1662,7 @@ async def _wall_world(probe_app, arm: str):
     ``owned ∪ shared-to-my-teams`` resolution can refuse.
     """
     await _require_enterprise_schema(probe_app.superuser_url)
+    _require_enterprise_binder()
 
     import httpx
 
@@ -1585,146 +1731,170 @@ async def _wall_world(probe_app, arm: str):
         enterprise_members=[user_b],
     )
 
-    session_factory = get_session_factory()
-    # A's team also holds the operator, so the user-administration controls in
-    # arm 1 have somebody in the operator's own enterprise to act on.
-    await _seed_team(
-        session_factory,
-        enterprise_id=enterprise_a,
-        team_id=party_a.team_id,
-        name=f"team-a-{_RUN}",
-        member_ids=[user_a, operator_a],
-    )
-    await _seed_team(
-        session_factory,
-        enterprise_id=enterprise_b,
-        team_id=party_b.team_id,
-        name=f"team-b-{_RUN}",
-        member_ids=[user_b],
-    )
-    for party in (party_a, party_b):
-        await _seed_knowledge_item(
-            session_factory,
-            enterprise_id=party.enterprise_id,
-            organization_id=None,
-            item_id=party.kb_personal_id,
-            scope="personal",
-            owner_id=party.user_id,
-            title=f"{party.secret}-runbook-personal",
-        )
-        await _seed_knowledge_item(
-            session_factory,
-            enterprise_id=party.enterprise_id,
-            organization_id=None,
-            item_id=party.kb_team_id,
-            scope="team",
-            owner_id=party.user_id,
-            title=f"{party.secret}-runbook-team",
-            share_to_team=party.team_id,
-        )
-
-    party_b.case = await _seed_case_with_content(
-        enterprise_id=enterprise_b,
-        organization_id=None,
-        user_id=user_b,
-        title=SECRET_B_TITLE,
-        secret_prefix=SECRET_B,
-    )
-    party_a.case = await _seed_case_with_content(
-        enterprise_id=enterprise_a,
-        organization_id=None,
-        user_id=user_a,
-        title=f"{SECRET_A}-own-incident",
-        secret_prefix=SECRET_A,
-    )
-    await _seed_conversion_and_suggestion(session_factory, party_b)
-    await _seed_conversion_and_suggestion(session_factory, party_a)
-
-    # A FRESH ChromaDB per test, not the one the module fixture built: the corpus
-    # must be a function of this test rather than of everything that ran before
-    # it, which is the ordering dependence the sibling KB probe records as its
-    # own first defect.
-    vector_store = KnowledgeVectorStore(_fresh_chroma())
-    app.state.knowledge_service._vector_store = vector_store
-    await _seed_kb_chunks(
-        vector_store,
-        [
-            (p.kb_personal_id, f"{p.secret}-runbook-personal", p.user_id)
-            for p in (party_a, party_b)
-        ]
-        + [
-            (p.kb_team_id, f"{p.secret}-runbook-team", p.user_id)
-            for p in (party_a, party_b)
-        ],
-    )
-
-    auth_service = app.state.auth_service
-    token_a = _forge_token(
-        auth_service,
-        user_id=user_a,
-        enterprise_id=enterprise_a,
-        organization_id=None,
-        email=f"{user_a}@example.com",
-        roles=["user", "admin"],
-    )
-    token_b = _forge_token(
-        auth_service,
-        user_id=user_b,
-        enterprise_id=enterprise_b,
-        organization_id=None,
-        email=f"{user_b}@example.com",
-        roles=["user", "admin"],
-    )
-    # A platform operator whose *request* still binds enterprise A. The
-    # cross-tenant role is the strongest principal the deployment mints, and the
-    # question this module asks of it is whether the role alone reaches B's rows.
-    token_operator_a = _forge_token(
-        auth_service,
-        user_id=operator_a,
-        enterprise_id=enterprise_a,
-        organization_id=None,
-        email=f"{operator_a}@example.com",
-        roles=["user", "platform_admin"],
-    )
-
     # The runbook-publish control writes a markdown file under the KB root.
-    # Snapshotted here and diffed at teardown, so a run leaves the filesystem as
-    # it found it, and the path is resolved from settings rather than assumed.
+    # Snapshotted BEFORE the try, so the finally can always diff against it.
     kb_root = knowledge_root()
     kb_entries_before = set(kb_root.iterdir()) if kb_root.exists() else set()
 
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://probe", timeout=60.0
-    ) as http:
-        yield SimpleNamespace(
-            arm=arm,
-            app=app,
-            http=http,
-            a=party_a,
-            b=party_b,
-            token_a=token_a,
-            token_b=token_b,
-            token_operator_a=token_operator_a,
-            superuser_engine=superuser_engine,
-            superuser_maker=superuser_maker,
+    # try/finally rather than try/except-and-re-raise, for one reason: the
+    # normal path and the failure path have to run the SAME teardown. Once
+    # the superuser commit above lands, enterprises and users EXIST; if the
+    # first Phase-2 import below then raises — which is precisely what a name
+    # mismatch during Phases 2-3 looks like — an unguarded fixture leaves them,
+    # the engine undisposed, and the `-m postgres` siblings looking at residue.
+    # `finally` needs no `raise`: the exception propagates on its own.
+    try:
+        session_factory = get_session_factory()
+        # A's team also holds the operator, so the user-administration controls in
+        # arm 1 have somebody in the operator's own enterprise to act on.
+        await _seed_team(
+            session_factory,
+            enterprise_id=enterprise_a,
+            team_id=party_a.team_id,
+            name=f"team-a-{_RUN}",
+            member_ids=[user_a, operator_a],
+        )
+        await _seed_team(
+            session_factory,
+            enterprise_id=enterprise_b,
+            team_id=party_b.team_id,
+            name=f"team-b-{_RUN}",
+            member_ids=[user_b],
+        )
+        for party in (party_a, party_b):
+            await _seed_knowledge_item(
+                session_factory,
+                enterprise_id=party.enterprise_id,
+                organization_id=None,
+                item_id=party.kb_personal_id,
+                scope="personal",
+                owner_id=party.user_id,
+                title=f"{party.secret}-runbook-personal",
+            )
+            await _seed_knowledge_item(
+                session_factory,
+                enterprise_id=party.enterprise_id,
+                organization_id=None,
+                item_id=party.kb_team_id,
+                scope="team",
+                owner_id=party.user_id,
+                title=f"{party.secret}-runbook-team",
+                share_to_team=party.team_id,
+            )
+
+        party_b.case = await _seed_case_with_content(
+            enterprise_id=enterprise_b,
+            organization_id=None,
+            user_id=user_b,
+            title=SECRET_B_TITLE,
+            secret_prefix=SECRET_B,
+        )
+        party_a.case = await _seed_case_with_content(
+            enterprise_id=enterprise_a,
+            organization_id=None,
+            user_id=user_a,
+            title=f"{SECRET_A}-own-incident",
+            secret_prefix=SECRET_A,
+        )
+        await _seed_conversion_and_suggestion(session_factory, party_b)
+        await _seed_conversion_and_suggestion(session_factory, party_a)
+
+        # A FRESH ChromaDB per test, not the one the module fixture built: the corpus
+        # must be a function of this test rather than of everything that ran before
+        # it, which is the ordering dependence the sibling KB probe records as its
+        # own first defect.
+        vector_store = KnowledgeVectorStore(_fresh_chroma())
+        app.state.knowledge_service._vector_store = vector_store
+        await _seed_kb_chunks(
+            vector_store,
+            [
+                (p.kb_personal_id, f"{p.secret}-runbook-personal", p.user_id)
+                for p in (party_a, party_b)
+            ]
+            + [
+                (p.kb_team_id, f"{p.secret}-runbook-team", p.user_id)
+                for p in (party_a, party_b)
+            ],
         )
 
-    await close_database()
-    if kb_root.exists():
-        for entry in set(kb_root.iterdir()) - kb_entries_before:
-            if entry.is_dir():
-                shutil.rmtree(entry, ignore_errors=True)
-            else:
-                entry.unlink(missing_ok=True)
-    await _teardown_rows(
-        superuser_engine,
-        enterprises=sorted({enterprise_a, enterprise_b}),
-        users=[user_a, user_b, operator_a],
-        case_ids=[party_a.case.case_id, party_b.case.case_id],
-        conversion_ids=[party_a.conversion_id, party_b.conversion_id],
-    )
-    await superuser_engine.dispose()
+        auth_service = app.state.auth_service
+        token_a = _forge_token(
+            auth_service,
+            user_id=user_a,
+            enterprise_id=enterprise_a,
+            organization_id=None,
+            email=f"{user_a}@example.com",
+            roles=["user", "admin"],
+        )
+        token_b = _forge_token(
+            auth_service,
+            user_id=user_b,
+            enterprise_id=enterprise_b,
+            organization_id=None,
+            email=f"{user_b}@example.com",
+            roles=["user", "admin"],
+        )
+        # A platform operator whose *request* still binds enterprise A. The
+        # cross-tenant role is the strongest principal the deployment mints, and the
+        # question this module asks of it is whether the role alone reaches B's rows.
+        token_operator_a = _forge_token(
+            auth_service,
+            user_id=operator_a,
+            enterprise_id=enterprise_a,
+            organization_id=None,
+            email=f"{operator_a}@example.com",
+            roles=["user", "platform_admin"],
+        )
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://probe", timeout=60.0
+        ) as http:
+            yield SimpleNamespace(
+                arm=arm,
+                app=app,
+                http=http,
+                a=party_a,
+                b=party_b,
+                token_a=token_a,
+                token_b=token_b,
+                token_operator_a=token_operator_a,
+                superuser_engine=superuser_engine,
+                superuser_maker=superuser_maker,
+            )
+
+    finally:
+        await close_database()
+        if kb_root.exists():
+            for entry in set(kb_root.iterdir()) - kb_entries_before:
+                if entry.is_dir():
+                    shutil.rmtree(entry, ignore_errors=True)
+                else:
+                    entry.unlink(missing_ok=True)
+        # `getattr`, because a failure part-way through seeding leaves some of
+        # these unset and the teardown still has to remove what DID land.
+        await _teardown_rows(
+            superuser_engine,
+            enterprises=sorted({enterprise_a, enterprise_b}),
+            users=[user_a, user_b, operator_a],
+            case_ids=[
+                case.case_id
+                for case in (
+                    getattr(party_a, "case", None),
+                    getattr(party_b, "case", None),
+                )
+                if case is not None
+            ],
+            conversion_ids=[
+                conversion_id
+                for conversion_id in (
+                    getattr(party_a, "conversion_id", None),
+                    getattr(party_b, "conversion_id", None),
+                )
+                if conversion_id is not None
+            ],
+        )
+        await superuser_engine.dispose()
 
 
 @pytest.fixture(params=["two_enterprises", "same_enterprise_no_team"])
@@ -1763,6 +1933,7 @@ async def shared_world(probe_app):
     or by a deployment whose case table is unreadable.
     """
     await _require_enterprise_schema(probe_app.superuser_url)
+    _require_enterprise_binder()
 
     import httpx
 
@@ -1806,142 +1977,150 @@ async def shared_world(probe_app):
     kb_shared_id = f"kb_sh_{uuid.uuid4().hex[:12]}"
     kb_private_id = f"kb_pv_{uuid.uuid4().hex[:12]}"
 
-    session_factory = get_session_factory()
-    async with _as_enterprise(enterprise):
-        async with session_factory() as session:
-            await session.execute(
-                _BILLING_MEMBERSHIP_INSERT,
-                {"u": user_a, "o": org_x, "e": enterprise},
-            )
-            await session.execute(
-                _BILLING_MEMBERSHIP_INSERT,
-                {"u": user_b, "o": org_y, "e": enterprise},
-            )
-            await session.commit()
+    # Bound before the try so the finally can name them whatever failed; see
+    # `_wall_world` for why this is try/finally and not try/except.
+    shared_case = None
+    private_case = None
+    try:
+        session_factory = get_session_factory()
+        async with _as_enterprise(enterprise):
+            async with session_factory() as session:
+                await session.execute(
+                    _BILLING_MEMBERSHIP_INSERT,
+                    {"u": user_a, "o": org_x, "e": enterprise},
+                )
+                await session.execute(
+                    _BILLING_MEMBERSHIP_INSERT,
+                    {"u": user_b, "o": org_y, "e": enterprise},
+                )
+                await session.commit()
 
-    await _seed_team(
-        session_factory,
-        enterprise_id=enterprise,
-        team_id=team_shared,
-        name=f"team-shared-{_RUN}",
-        member_ids=[user_a, user_b],
-    )
-    await _seed_team(
-        session_factory,
-        enterprise_id=enterprise,
-        team_id=team_a_own,
-        name=f"team-a-own-{_RUN}",
-        member_ids=[user_a],
-    )
-    await _seed_team(
-        session_factory,
-        enterprise_id=enterprise,
-        team_id=team_b_own,
-        name=f"team-b-own-{_RUN}",
-        member_ids=[user_b],
-    )
-
-    await _seed_knowledge_item(
-        session_factory,
-        enterprise_id=enterprise,
-        organization_id=org_x,
-        item_id=kb_shared_id,
-        scope="team",
-        owner_id=user_a,
-        title=SHARED_KB,
-        share_to_team=team_shared,
-    )
-    await _seed_knowledge_item(
-        session_factory,
-        enterprise_id=enterprise,
-        organization_id=org_x,
-        item_id=kb_private_id,
-        scope="personal",
-        owner_id=user_a,
-        title=PRIVATE_KB,
-    )
-
-    shared_case = await _seed_case_with_content(
-        enterprise_id=enterprise,
-        organization_id=org_x,
-        user_id=user_a,
-        title=SHARED_TITLE,
-        secret_prefix=SHARED,
-    )
-    private_case = await _seed_case_with_content(
-        enterprise_id=enterprise,
-        organization_id=org_x,
-        user_id=user_a,
-        title=PRIVATE_TITLE,
-        secret_prefix=PRIVATE,
-    )
-    await _share_case(
-        session_factory,
-        enterprise_id=enterprise,
-        organization_id=org_x,
-        case_id=shared_case.case_id,
-        team_id=team_shared,
-        by=user_a,
-    )
-
-    vector_store = KnowledgeVectorStore(_fresh_chroma())
-    app.state.knowledge_service._vector_store = vector_store
-    await _seed_kb_chunks(
-        vector_store,
-        [(kb_shared_id, SHARED_KB, user_a), (kb_private_id, PRIVATE_KB, user_a)],
-    )
-
-    auth_service = app.state.auth_service
-    token_a = _forge_token(
-        auth_service,
-        user_id=user_a,
-        enterprise_id=enterprise,
-        organization_id=org_x,
-        email=f"{user_a}@example.com",
-        roles=["user"],
-    )
-    token_b = _forge_token(
-        auth_service,
-        user_id=user_b,
-        enterprise_id=enterprise,
-        organization_id=org_y,
-        email=f"{user_b}@example.com",
-        roles=["user"],
-    )
-
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://probe", timeout=60.0
-    ) as http:
-        yield SimpleNamespace(
-            app=app,
-            http=http,
+        await _seed_team(
+            session_factory,
             enterprise_id=enterprise,
-            org_x=org_x,
-            org_y=org_y,
-            user_a=user_a,
-            user_b=user_b,
-            team_shared=team_shared,
-            team_a_own=team_a_own,
-            team_b_own=team_b_own,
-            shared_case=shared_case,
-            private_case=private_case,
-            kb_shared_id=kb_shared_id,
-            kb_private_id=kb_private_id,
-            token_a=token_a,
-            token_b=token_b,
-            superuser_engine=superuser_engine,
+            team_id=team_shared,
+            name=f"team-shared-{_RUN}",
+            member_ids=[user_a, user_b],
+        )
+        await _seed_team(
+            session_factory,
+            enterprise_id=enterprise,
+            team_id=team_a_own,
+            name=f"team-a-own-{_RUN}",
+            member_ids=[user_a],
+        )
+        await _seed_team(
+            session_factory,
+            enterprise_id=enterprise,
+            team_id=team_b_own,
+            name=f"team-b-own-{_RUN}",
+            member_ids=[user_b],
         )
 
-    await close_database()
-    await _teardown_rows(
-        superuser_engine,
-        enterprises=[enterprise],
-        users=[user_a, user_b],
-        case_ids=[shared_case.case_id, private_case.case_id],
-        conversion_ids=[],
-    )
-    await superuser_engine.dispose()
+        await _seed_knowledge_item(
+            session_factory,
+            enterprise_id=enterprise,
+            organization_id=org_x,
+            item_id=kb_shared_id,
+            scope="team",
+            owner_id=user_a,
+            title=SHARED_KB,
+            share_to_team=team_shared,
+        )
+        await _seed_knowledge_item(
+            session_factory,
+            enterprise_id=enterprise,
+            organization_id=org_x,
+            item_id=kb_private_id,
+            scope="personal",
+            owner_id=user_a,
+            title=PRIVATE_KB,
+        )
+
+        shared_case = await _seed_case_with_content(
+            enterprise_id=enterprise,
+            organization_id=org_x,
+            user_id=user_a,
+            title=SHARED_TITLE,
+            secret_prefix=SHARED,
+        )
+        private_case = await _seed_case_with_content(
+            enterprise_id=enterprise,
+            organization_id=org_x,
+            user_id=user_a,
+            title=PRIVATE_TITLE,
+            secret_prefix=PRIVATE,
+        )
+        await _share_case(
+            session_factory,
+            enterprise_id=enterprise,
+            organization_id=org_x,
+            case_id=shared_case.case_id,
+            team_id=team_shared,
+            by=user_a,
+        )
+
+        vector_store = KnowledgeVectorStore(_fresh_chroma())
+        app.state.knowledge_service._vector_store = vector_store
+        await _seed_kb_chunks(
+            vector_store,
+            [(kb_shared_id, SHARED_KB, user_a), (kb_private_id, PRIVATE_KB, user_a)],
+        )
+
+        auth_service = app.state.auth_service
+        token_a = _forge_token(
+            auth_service,
+            user_id=user_a,
+            enterprise_id=enterprise,
+            organization_id=org_x,
+            email=f"{user_a}@example.com",
+            roles=["user"],
+        )
+        token_b = _forge_token(
+            auth_service,
+            user_id=user_b,
+            enterprise_id=enterprise,
+            organization_id=org_y,
+            email=f"{user_b}@example.com",
+            roles=["user"],
+        )
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://probe", timeout=60.0
+        ) as http:
+            yield SimpleNamespace(
+                app=app,
+                http=http,
+                enterprise_id=enterprise,
+                org_x=org_x,
+                org_y=org_y,
+                user_a=user_a,
+                user_b=user_b,
+                team_shared=team_shared,
+                team_a_own=team_a_own,
+                team_b_own=team_b_own,
+                shared_case=shared_case,
+                private_case=private_case,
+                kb_shared_id=kb_shared_id,
+                kb_private_id=kb_private_id,
+                token_a=token_a,
+                token_b=token_b,
+                superuser_engine=superuser_engine,
+            )
+
+    finally:
+        await close_database()
+        await _teardown_rows(
+            superuser_engine,
+            enterprises=[enterprise],
+            users=[user_a, user_b],
+            case_ids=[
+                case.case_id for case in (shared_case, private_case) if case is not None
+            ],
+            conversion_ids=[],
+        )
+        await superuser_engine.dispose()
 
 
 # =============================================================================
@@ -2148,22 +2327,29 @@ async def test_a_search_body_naming_the_other_party_does_not_widen_the_scope(wor
     """The body carries tenant-shaped fields. Are they honoured?
 
     ``CaseSearchRequest`` lets the caller name another principal, so the attack
-    names B outright — with both of the identifiers that could conceivably
-    select B's row under ADR-017: the owner and the enterprise. A filter field
-    that *narrows* within the caller's own scope is harmless; one that *selects*
-    is the boundary, and the scope must come from the verified claim rather than
-    from anything in the body.
+    names B outright, in every DECLARED field that could select a row: the owner,
+    the organization and the team. A filter field that *narrows* within the
+    caller's own scope is harmless; one that *selects* is the boundary, and the
+    scope must come from the verified claim rather than from anything in the body.
+
+    ``organization_id`` is the retired key and the sharpest of the three under
+    ADR-017: it is still a declared field, so a Phase-3 repository that kept
+    honouring it as a selector would compile, pass every type check, and hand the
+    caller rows chosen by a value the caller supplied. In these arms no
+    organization exists, so a forged one is what an attacker would have; the
+    shared arm sends a REAL organization that really does stamp the target row,
+    which is the half that could actually leak.
     """
     attack = await as_a(
         world,
         "POST",
         "/api/v1/cases/search",
-        json={
-            "query": SECRET_B_TITLE,
-            "enterprise_id": world.b.enterprise_id,
-            "user_id": world.b.user_id,
-            "limit": 50,
-        },
+        json=_search_injection_body(
+            query=SECRET_B_TITLE,
+            user_id=world.b.user_id,
+            organization_id=f"org_forged_{_RUN}",
+            team_id=world.b.team_id,
+        ),
     )
 
     assert attack.status_code in (200, 403, 422)
@@ -2269,26 +2455,42 @@ async def test_case_reports_are_refused_to_the_other_party(world):
 async def test_a_report_cannot_be_edited_or_deleted_by_the_other_party(world):
     """Mutation, not just reading. The destructive half of the same surface.
 
-    The DELETE is asserted against the DATABASE afterwards, not against the
-    response: a route that answers 404 and deletes anyway would satisfy a
-    status-code assertion while destroying the row.
+    Three writes, and the third is the one the predecessor listed as probed and
+    never called: ``link-case`` takes only a report id and a closure note, and
+    derives the case from ``report.case_id`` — so the attack is not "link B's
+    report to A's case" (the route offers no such handle) but "make B's report
+    the closure record of B's case, as A". It flips ``reports.linked_to_closure``
+    and moves the case toward closure, which is why it belongs here rather than
+    among the reads.
+
+    Every one is asserted against the DATABASE afterwards, not against the
+    response: a route that answers 404 and writes anyway would satisfy a
+    status-code assertion while changing the row.
     """
     by_id = f"/api/v1/reports/{world.b.case.report_id}"
 
     assert_refused(
         await as_a(world, "PUT", by_id, json={"content": "PWNED"}), f"PUT {by_id}"
     )
+    assert_refused(
+        await as_a(world, "POST", f"{by_id}/link-case", json={"closure_note": "PWNED"}),
+        f"POST {by_id}/link-case",
+    )
     assert_refused(await as_a(world, "DELETE", by_id), f"DELETE {by_id}")
 
     async with world.superuser_engine.begin() as conn:
         row = (
             await conn.execute(
-                text("SELECT title FROM reports WHERE report_id = :r"),
+                text(
+                    "SELECT title, linked_to_closure FROM reports "
+                    "WHERE report_id = :r"
+                ),
                 {"r": world.b.case.report_id},
             )
         ).first()
     assert row is not None, "A's refused DELETE removed B's report anyway"
     assert SECRET_B_REPORT in row[0], "A's refused PUT rewrote B's report anyway"
+    assert row[1] is False, "A's refused link-case closed B's report anyway"
 
 
 @phase3_pending
@@ -2830,13 +3032,33 @@ async def test_every_case_addressed_operation_refuses_the_other_party(
     rather than a refusal — which this assertion rejects. That is what keeps the
     battery honest for the write paths whose collaborators are not wired here:
     they cannot pass by being unavailable.
+
+    The control is deliberately weak, and weak is what it can be: B's identical
+    call on B's OWN case must not be 422. Nothing stronger is assertable — most
+    of these operations need collaborators this module does not wire, so their
+    owner-side status is unpredictable (200, 400, 404, 500 are all legitimate
+    here) and pinning one would make the battery a test of the engine. But 422 is
+    different: it means the BODY never validated, so the request died before the
+    tenant check and A's refusal above measured request parsing rather than the
+    boundary. That is the exact way a battery like this rots — a response model
+    gains a required field and every parametrisation quietly starts asserting
+    nothing.
     """
+    # One path: B's case is both the attacker's target and the control's own
+    # case, so the two calls differ ONLY in who makes them.
     path = template.format(case_id=world.b.case.case_id)
     if body is not None and "__form__" in body:
         response = await as_a(world, method, path, data=body["__form__"])
+        control = await as_b(world, method, path, data=body["__form__"])
     else:
         response = await as_a(world, method, path, json=body)
+        control = await as_b(world, method, path, json=body)
 
+    assert control.status_code != 422, (
+        f"control: {method} {path} answered 422 to its OWN case's owner, so the "
+        f"body never reached the tenant check and the refusal below is a "
+        f"validation error rather than the boundary: {control.text[:300]}"
+    )
     assert_refused(response, f"{method} {path}")
 
 
@@ -3023,10 +3245,19 @@ async def test_a_runbook_cannot_be_published_into_the_other_partys_team(world):
         f"({attack.status_code}): {attack.text[:300]}"
     )
 
+    # Both halves ask "what could this call have written?", which is why neither
+    # is a bare count. A's two SEEDED runbooks are owned by A and carry SECRET_A
+    # in their titles, so a title-and-owner count can never reach zero and would
+    # be a green assertion measuring nothing; the item ids are excluded instead.
+    # The share half is scoped to knowledge_item shares so the case-share the
+    # neighbouring test plants (or fails to) cannot move this number.
     async with world.superuser_engine.begin() as conn:
         planted = (
             await conn.execute(
-                text("SELECT count(*) FROM resource_shares WHERE scope_id = :t"),
+                text(
+                    "SELECT count(*) FROM resource_shares "
+                    "WHERE scope_id = :t AND resource_type = 'knowledge_item'"
+                ),
                 {"t": world.b.team_id},
             )
         ).scalar()
@@ -3034,16 +3265,23 @@ async def test_a_runbook_cannot_be_published_into_the_other_partys_team(world):
             await conn.execute(
                 text(
                     "SELECT count(*) FROM knowledge_items "
-                    "WHERE owner_id = :o AND title LIKE :t"
+                    "WHERE owner_id = :o AND item_id NOT IN (:seeded_p, :seeded_t)"
                 ),
-                {"o": world.a.user_id, "t": f"{SECRET_A}%"},
+                {
+                    "o": world.a.user_id,
+                    "seeded_p": world.a.kb_personal_id,
+                    "seeded_t": world.a.kb_team_id,
+                },
             )
         ).scalar()
     assert planted == 1, (
-        "a refused publish added a resource_shares row to the other party's team "
-        f"(expected only the seeded knowledge_item share, found {planted})"
+        "a refused publish added a knowledge_item share to the other party's team "
+        f"(expected only the seeded one, found {planted})"
     )
-    assert foreign_items == 0, "a refused publish wrote the runbook anyway"
+    assert foreign_items == 0, (
+        "a refused publish wrote a knowledge item anyway: A owns "
+        f"{foreign_items} item(s) beyond the two this world seeded"
+    )
 
     control = await as_b(
         world,
@@ -3546,6 +3784,30 @@ async def test_case_search_finds_the_shared_case_and_not_the_private_one(shared_
     assert hunted.status_code == 200
     assert world.private_case.case_id not in _ids(hunted.json(), "case_id")
     assert_no_private_content(hunted, "POST /api/v1/cases/search (teammate)")
+
+    # The same query with every declared selector naming A: A's own id, A's
+    # BILLING organization (which really does stamp the private case) and A's
+    # own team (which B is not in). This is the arm where those values are real
+    # rather than forged, so a repository that still selected on any of them
+    # would hand B the private case here and nowhere else.
+    injected = await as_teammate(
+        world,
+        "POST",
+        "/api/v1/cases/search",
+        json=_search_injection_body(
+            query=PRIVATE_TITLE,
+            user_id=world.user_a,
+            organization_id=world.org_x,
+            team_id=world.team_a_own,
+        ),
+    )
+    assert injected.status_code in (200, 403, 422)
+    assert world.private_case.case_id not in _ids(
+        injected.json() if injected.status_code == 200 else [], "case_id"
+    )
+    assert_no_private_content(
+        injected, "POST /api/v1/cases/search (teammate, owner ids injected)"
+    )
 
 
 @phase3_pending
@@ -4061,7 +4323,7 @@ SURFACE_INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     ("POST", "/api/v1/reports/generate"): (_PROBED, "case_id rides in the query"),
     ("POST", "/api/v1/reports/{report_id}/link-case"): (
         _PROBED,
-        "case-addressed battery (report id resolves first)",
+        "closure link, row-checked (linked_to_closure)",
     ),
     # --- knowledge ---------------------------------------------------------
     ("GET", "/api/v1/knowledge/documents/{document_id}"): (_PROBED, "item read"),
@@ -4345,3 +4607,131 @@ def test_the_inventory_states_a_reason_for_every_unprobed_surface():
             assert (
                 "#" in reason
             ), f"{method} {path}: a finding must name the issue that tracks it"
+
+
+# =============================================================================
+# The guards that run today — and the last word on residue
+# =============================================================================
+
+
+def test_the_search_injection_names_only_real_request_fields():
+    """A body field the request model does not declare is an injection of nothing.
+
+    ``CaseSearchRequest`` takes pydantic's default ``extra="ignore"``, so a key
+    it has never heard of is dropped before any handler sees it: the request
+    succeeds, the assertion that follows passes, and the probe has measured the
+    parser. This runs today, unmarked, because it needs neither the enterprise
+    schema nor the binder — only the live model — and it is the thing that would
+    have caught an ``enterprise_id`` in that body.
+
+    Bidirectional, for the same reason the route inventory is. Forward: every key
+    the injection sends must be a declared field. Backward: every declared field
+    that can name another principal's row must be one the injection sends, so a
+    new selector cannot appear on the model without someone deciding whether it
+    is attackable.
+    """
+    from faultmaven.models.api_models import CaseSearchRequest
+
+    declared = set(CaseSearchRequest.model_fields)
+
+    undeclared = sorted(set(INJECTED_SEARCH_KEYS) - declared)
+    assert not undeclared, (
+        "the search-injection body names fields CaseSearchRequest does not "
+        f"declare, so pydantic drops them and the injection asserts nothing: "
+        f"{undeclared}"
+    )
+
+    uninjected = sorted((declared & TENANT_SCOPED_FIELDS) - set(INJECTED_SEARCH_KEYS))
+    assert not uninjected, (
+        "CaseSearchRequest declares tenant-shaped fields the injection cases do "
+        f"not send, so nothing shows whether they select: {uninjected}"
+    )
+
+
+#: The id prefixes every world builds its rows under. Kept beside the residue
+#: check rather than inside it: the builders derive their ids from these, so a
+#: prefix that changes in one place and not the other is a check aimed at
+#: nothing.
+PROBE_ENTERPRISE_PREFIX = "ent_"
+PROBE_USER_PREFIXES = ("user_a_", "user_b_", "user_op_", "user_sa_", "user_sb_")
+PROBE_ORG_PREFIXES = ("org_x_", "org_y_")
+PROBE_TEAM_PREFIXES = ("team_a_", "team_b_", "team_t_", "team_ao_", "team_bo_")
+
+
+def test_the_probe_left_no_rows_behind(probe_app):
+    """Nothing this module seeded may outlive it. UNMARKED, and LAST.
+
+    Unmarked because it is the one assertion here that must never be xfailed.
+    Every world-backed test carries a strict xfail, and an xfail swallows a
+    teardown failure exactly as it swallows the assertion failure it was written
+    for — so once the worlds do build, a teardown that raised half way through
+    would leave enterprises, users and teams in the database and every test in
+    this file would still report ``xfailed``. The `-m postgres` lane runs
+    siblings that count rows against this same database; they would go red, and
+    the module that caused it would look green.
+
+    Last in the file because pytest runs tests in definition order, so by the
+    time this executes every world in the module has been built and torn down.
+    It passes today for the honest reason that no world is built at all, and it
+    starts doing real work on the day the schema gate goes quiet — which is the
+    day the risk it guards against begins.
+
+    Read as the SUPERUSER: a residue check under RLS would report "clean" for
+    rows it simply could not see.
+
+    One row is deliberately NOT counted: the default test enterprise
+    ``seed_users`` creates as its parent (``tests.utils.DEFAULT_TEST_ENTERPRISE_ID``).
+    It is idempotent scaffolding shared with every other module in the suite, and
+    deleting it is how you break them. The probe's own enterprises all carry the
+    ``ent_`` prefix, which is what this looks for.
+    """
+
+    async def leftovers() -> dict[str, list[str]]:
+        engine = create_async_engine(probe_app.superuser_url, future=True)
+        try:
+            async with engine.connect() as conn:
+                found: dict[str, list[str]] = {}
+                for label, table, column, prefixes in (
+                    (
+                        "enterprises",
+                        "enterprises",
+                        "enterprise_id",
+                        (PROBE_ENTERPRISE_PREFIX,),
+                    ),
+                    ("users", "users", "user_id", PROBE_USER_PREFIXES),
+                    (
+                        "organizations",
+                        "organizations",
+                        "organization_id",
+                        PROBE_ORG_PREFIXES,
+                    ),
+                    ("teams", "teams", "team_id", PROBE_TEAM_PREFIXES),
+                ):
+                    rows: list[str] = []
+                    for prefix in prefixes:
+                        # ``LIKE :p`` with the wildcard bound into the VALUE, so
+                        # the underscores in these prefixes stay literal without
+                        # an ESCAPE clause to get wrong.
+                        rows.extend(
+                            (
+                                await conn.execute(
+                                    text(
+                                        f"SELECT {column} FROM {table} "
+                                        f"WHERE {column} LIKE :p"
+                                    ),
+                                    {"p": prefix.replace("_", r"\_") + "%"},
+                                )
+                            ).scalars()
+                        )
+                    if rows:
+                        found[label] = sorted(rows)
+                return found
+        finally:
+            await engine.dispose()
+
+    residue = asyncio.run(leftovers())
+    assert not residue, (
+        "this module left rows behind; a world teardown did not complete, and "
+        "the strict xfail on every world-backed test hid it: "
+        + "; ".join(f"{table}: {ids}" for table, ids in sorted(residue.items()))
+    )

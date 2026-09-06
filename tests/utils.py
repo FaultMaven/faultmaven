@@ -191,28 +191,25 @@ async def seed_enterprises(session, enterprise_ids: Iterable[str]) -> None:
     to build two of them without inventing an organization to hang them off.
 
     ``enterprises.slug`` is unique among live rows (migration 052's partial
-    index), so the slug is derived from the id and de-duplicated within the
-    batch exactly as ``seed_organizations`` does. Idempotent per id: an
-    enterprise that already exists is left alone rather than re-stamped.
+    index) and is derived here from the enterprise id, which is the table's
+    PRIMARY KEY — so two slugs in one batch can only collide if two ids did,
+    which the key already forbids. That is why there is no de-duplication loop
+    here and there is one in ``seed_organizations``: an organization's slug is
+    unique per ENTERPRISE, so distinct org ids in different enterprises really
+    can collide on it. Idempotent per id: an enterprise that already exists is
+    left alone rather than re-stamped.
     """
     from faultmaven.infrastructure.persistence.models import EnterpriseModel
 
-    seen_slugs: set[str] = set()
     for enterprise_id in enterprise_ids:
         existing = await session.get(EnterpriseModel, enterprise_id)
         if existing is not None:
             continue
-        slug = enterprise_id
-        suffix = 0
-        while slug in seen_slugs:
-            suffix += 1
-            slug = f"{enterprise_id}-{suffix}"
-        seen_slugs.add(slug)
         session.add(
             EnterpriseModel(
                 enterprise_id=enterprise_id,
                 name=f"Test Enterprise {enterprise_id}",
-                slug=slug,
+                slug=enterprise_id,
             )
         )
     await session.commit()
