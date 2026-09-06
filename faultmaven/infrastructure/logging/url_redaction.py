@@ -36,31 +36,35 @@ import logging
 import re
 from typing import Callable
 
-# Any scheme, not just http(s): postgresql://, redis://, amqp:// and mongodb://
-# DSNs carry credentials in query options (?password=, ?sslmode=, ?authSource=)
-# and a logged DSN is an ordinary thing to find in a connection error.
+# Anchored on the literal "://".
 #
-# ‼ The pre-query class excludes "?" on purpose. With "?" allowed, the greedy
-# group backtracks to the LAST question mark in the token, so
-# "https://api/v1?key=SECRET?" redacted only the trailing "?" and shipped the
-# key verbatim. Excluding it pins the match to the FIRST "?", which is where a
-# query string actually starts (RFC 3986 permits "?" inside the query itself).
+# The pattern used to start with a scheme class, `[a-zA-Z][a-zA-Z0-9+.-]*://`,
+# and that is a polynomial ReDoS: at every position the engine consumes a long
+# alphanumeric run and only then fails on "://", so a line of n such characters
+# costs O(n^2). Measured before this change, one 16 KB line took 443 ms of
+# blocking CPU and 64 KB took 8 seconds, with time quadrupling as length
+# doubled. Log lines carry case content, which is supplied by whoever is being
+# helped, so that input is reachable.
+#
+# Leading with the literal lets the engine scan for it directly, so a failed
+# match is cheap to locate. The scheme is deliberately NOT matched: it sits to
+# the left of "://", is not part of what gets replaced, and leaving it out
+# covers every scheme at once -- postgresql://, redis://, amqp:// and mongodb://
+# DSNs all carry credentials in query options.
+#
+# The pre-query class excludes "?" so the greedy run stops at the FIRST question
+# mark. Admitting it let the group backtrack to the LAST one, which shipped the
+# credential verbatim; RFC 3986 permits "?" inside a query. That exclusion is
+# the ONLY thing pinning the match, which is why the replacement below is a
+# capture group rather than a function -- a function that truncated at the first
+# "?" would mask the bug and make the mutation test for it vacuous.
 #
 # ESC is excluded so the console renderer's colour reset after a URL is not
 # swallowed with the query string.
-_SCHEME = r"[a-zA-Z][a-zA-Z0-9+.\-]*://"
-_URL_QUERY = re.compile(_SCHEME + r"[^\s\"'<>?\x1b]*" + r"\?[^\s\"'<>\x1b]*")
+_URL_QUERY = re.compile(r"(://[^\s\"'<>?\x1b]*)\?[^\s\"'<>\x1b]*")
 _URL_QUERY_BYTES = re.compile(_URL_QUERY.pattern.encode())
-
-
-def _replacement(match: "re.Match") -> str:
-    url = match.group(0)
-    return url[: url.index("?")] + "?<redacted>"
-
-
-def _replacement_bytes(match: "re.Match") -> bytes:
-    url = match.group(0)
-    return url[: url.index(b"?")] + b"?<redacted>"
+_REPLACEMENT = r"\1?<redacted>"
+_REPLACEMENT_BYTES = rb"\1?<redacted>"
 
 
 def redact_urls(text: str) -> str:
@@ -72,14 +76,14 @@ def redact_urls(text: str) -> str:
     """
     if "?" not in text or "://" not in text:
         return text
-    return _URL_QUERY.sub(_replacement, text)
+    return _URL_QUERY.sub(_REPLACEMENT, text)
 
 
 def redact_urls_bytes(data: bytes) -> bytes:
     """``redact_urls`` for renderers that emit bytes."""
     if b"?" not in data or b"://" not in data:
         return data
-    return _URL_QUERY_BYTES.sub(_replacement_bytes, data)
+    return _URL_QUERY_BYTES.sub(_REPLACEMENT_BYTES, data)
 
 
 def redacting_renderer(renderer: Callable) -> Callable:

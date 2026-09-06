@@ -14,6 +14,7 @@ they are the reason the design changed rather than growing a type list.
 
 import io
 import logging
+import time
 
 import pytest
 import structlog
@@ -107,6 +108,28 @@ class TestRedactUrls:
         assert redact_urls("for url 'https://g.com/s?key=K'") == (
             "for url 'https://g.com/s?<redacted>'"
         )
+
+    def test_a_long_near_miss_line_does_not_blow_up(self):
+        """‼ Polynomial ReDoS guard, with a measured anchor.
+
+        The pattern used to lead with a scheme class, so at every position the
+        engine consumed a long alphanumeric run before failing on "://".
+        Measured on that version: 443 ms for a 16 KB line, 8.0 SECONDS for
+        64 KB, quadrupling as the length doubled. Log lines carry case content
+        supplied by whoever is being helped, so the input is reachable, and
+        this runs on every emitted record.
+
+        Leading with the literal "://" makes it linear: the same 64 KB line
+        measures 0.26 ms. The 250 ms budget below is ~1000x the fixed cost and
+        ~30x under the broken one, so it is neither flaky nor vacuous.
+        """
+        haystack = "a" * 64_000 + "? ://x"
+
+        start = time.perf_counter()
+        redact_urls(haystack)
+        elapsed = time.perf_counter() - start
+
+        assert elapsed < 0.25, f"redaction took {elapsed:.3f}s -- quadratic again?"
 
     def test_the_bytes_form_matches_the_str_form(self):
         text = "GET https://g.com/s?key=K and https://h/i"
