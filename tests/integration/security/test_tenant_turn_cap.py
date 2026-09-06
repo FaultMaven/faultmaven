@@ -265,10 +265,13 @@ async def test_the_ledger_carries_the_subject_key_and_no_timestamps(limited_role
     which does not fire SQLAlchemy's ``onupdate`` — so a timestamp here would
     freeze at the first turn of the day while looking like it tracked the last.
 
-    The columns that ARE here are the subject key (ADR-017 D5) plus the
-    enterprise every tenant-scoped table carries for RLS. The enterprise is not
-    part of the KEY: two accounts of one enterprise in different organizations
-    are charged separately, which is the whole reason the key moved.
+    The columns that ARE here are the subject key (ADR-017 D5) and the
+    enterprise every tenant-scoped table carries for RLS. Both are in the primary
+    key: the subject because two accounts of one enterprise in different
+    organizations are charged separately, and the enterprise because a conflict
+    target narrower than the RLS predicate can resolve to a row the inserting
+    session cannot see (see
+    ``test_a_same_day_re_anchor_does_not_break_the_rest_of_the_day``).
     """
     rows = await _as_owner(
         limited_role_env,
@@ -657,3 +660,68 @@ async def test_no_billing_subject_is_capped_at_the_default_and_writes_nothing(
 
     with pytest.raises(TenantTurnCapUnavailable):
         await service.reserve(None)
+
+
+async def test_a_same_day_re_anchor_does_not_break_the_rest_of_the_day(
+    limited_role_env, service
+):
+    """The conflict target must carry the enterprise, because RLS does.
+
+    An account keeps its ``billing_subject_id`` when it is moved to another
+    enterprise (``fm-personal-tenant re-anchor``). With the enterprise out of the
+    primary key, the second reservation of the day conflicts with the row the
+    FIRST enterprise wrote — a row the new session's policy hides. ``ON CONFLICT
+    DO UPDATE`` cannot update what it cannot see, so PostgreSQL raises rather
+    than inserting a duplicate, and every remaining turn of the UTC day becomes
+    ``TenantTurnCapUnavailable``: a cap outage that lasts until midnight and is
+    caused by an ordinary operator action.
+
+    Both reservations must land, as two rows, because they are two facts: the
+    ledger is per enterprise, per subject, per day.
+    """
+    second_enterprise = f"ent_reanchor_{uuid.uuid4().hex[:8]}"
+    await _as_owner(
+        limited_role_env,
+        "INSERT INTO enterprises (enterprise_id, name, slug) VALUES (:e, :n, :s)",
+        e=second_enterprise,
+        n="Re-anchor target",
+        s=f"reanchor-{second_enterprise[-8:]}",
+    )
+    subject = _make_account()
+    try:
+        set_current_enterprise_id(DEFAULT_ENTERPRISE_ID)
+        first = await service.reserve(subject)
+        assert first.used == 1
+
+        # The move. Nothing about the SUBJECT changes — that is the point.
+        set_current_enterprise_id(second_enterprise)
+        second = await service.reserve(subject)
+        assert second.used == 1, (
+            "the new enterprise's ledger continued the old enterprise's count, "
+            "so the two tenants share one allowance"
+        )
+
+        rows = await _as_owner(
+            limited_role_env,
+            "SELECT enterprise_id, turn_count FROM turn_usage "
+            "WHERE billing_subject_kind = :k AND billing_subject_id = :i "
+            "AND usage_date = :d ORDER BY enterprise_id",
+            k=subject.kind,
+            i=subject.subject_id,
+            d=cap.utc_day(),
+        )
+        assert {(r[0], r[1]) for r in rows} == {
+            (DEFAULT_ENTERPRISE_ID, 1),
+            (second_enterprise, 1),
+        }
+    finally:
+        await _as_owner(
+            limited_role_env,
+            "DELETE FROM turn_usage WHERE billing_subject_id = :i",
+            i=subject.subject_id,
+        )
+        await _as_owner(
+            limited_role_env,
+            "DELETE FROM enterprises WHERE enterprise_id = :e",
+            e=second_enterprise,
+        )

@@ -589,3 +589,51 @@ async def test_the_in_memory_ledger_counts_without_a_ceiling():
     day = cap.utc_day()
     for expected in range(1, 6):
         assert await ledger.reserve(COMPANY, day, None) == expected
+
+
+async def test_an_organization_that_does_not_resolve_is_not_uncapped(caplog):
+    """The other fail-open, one branch along from the one above.
+
+    ``get_organization`` answers ``None`` — not an exception — for a
+    soft-deleted organization, for one in another enterprise (RLS hides it), and
+    for a bogus id out of a stale refresh chain. The resolver read that ``None``
+    as ``daily_turn_cap = None``, which for an ORGANIZATION subject means
+    *uncapped*: an id nobody can resolve bought an unlimited allowance, and the
+    easiest way to hold one was to keep presenting a claim naming an
+    organization that had been deleted.
+
+    An unresolvable subject is exactly as indeterminate as an unreadable one, and
+    gets the same answer: the default cap, and a line saying so.
+    """
+    _, resolver, orgs = _service()
+    ghost = BillingSubject(SUBJECT_ORGANIZATION, "org-deleted-yesterday")
+
+    with caplog.at_level(logging.WARNING):
+        policy = await resolver.resolve(ghost)
+
+    assert policy.limit == 30
+    assert policy.source == "indeterminate"
+    assert orgs.asked == [ghost.subject_id], "the lookup did not happen at all"
+    assert any(
+        "org-deleted-yesterday" in record.getMessage() for record in caplog.records
+    ), "an unresolvable billing subject was downgraded silently"
+
+
+async def test_a_resolvable_organization_is_still_uncapped():
+    """The control: the branch must fire on absence, not on organizations."""
+    _, resolver, *_ = _service()
+    policy = await resolver.resolve(COMPANY)
+    assert policy.limit is None
+    assert policy.source == "company_uncapped"
+
+
+async def test_an_unresolvable_organization_is_refused_at_the_default():
+    """End to end: the fail-closed policy has to reach the enforcement."""
+    service, *_ = _service(default=2)
+    ghost = BillingSubject(SUBJECT_ORGANIZATION, "org-deleted-yesterday")
+
+    await service.reserve(ghost)
+    await service.reserve(ghost)
+    with pytest.raises(TenantTurnCapExceeded) as raised:
+        await service.reserve(ghost)
+    assert raised.value.limit == 2

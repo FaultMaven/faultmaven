@@ -336,12 +336,16 @@ class SqlTurnLedger(ITurnLedger):
         from faultmaven.infrastructure.persistence.models import TurnUsageModel
 
         table = TurnUsageModel
+        enterprise_id = get_current_enterprise_id()
         async with get_db_session() as session:
             statement = dialect_insert(session, table).values(
                 # The row carries the enterprise because every tenant-scoped
-                # table does and RLS keys on it; the KEY is the billing subject,
-                # because that is who pays (ADR-017 D5).
-                enterprise_id=get_current_enterprise_id(),
+                # table does and RLS keys on it; the subject is who PAYS
+                # (ADR-017 D5). Both are in the key, and the enterprise has to
+                # be: a conflict target narrower than the RLS predicate can
+                # resolve to a row this session cannot see, and ``DO UPDATE``
+                # cannot update what it cannot see.
+                enterprise_id=enterprise_id,
                 billing_subject_kind=subject.kind,
                 billing_subject_id=subject.subject_id,
                 usage_date=day,
@@ -349,6 +353,7 @@ class SqlTurnLedger(ITurnLedger):
             )
             conflict = {
                 "index_elements": [
+                    "enterprise_id",
                     "billing_subject_kind",
                     "billing_subject_id",
                     "usage_date",
@@ -366,13 +371,21 @@ class SqlTurnLedger(ITurnLedger):
     async def usage(self, subject: BillingSubject, day: date) -> int:
         from sqlalchemy import select
 
+        from faultmaven.config.tenant_context import get_current_enterprise_id
         from faultmaven.infrastructure.persistence.database import get_db_session
         from faultmaven.infrastructure.persistence.models import TurnUsageModel
 
         async with get_db_session() as session:
             value = (
                 await session.execute(
+                    # The enterprise is named as well as bound. RLS would scope
+                    # this read anyway, but the row is keyed on the enterprise
+                    # and a subject whose account has been re-anchored has one
+                    # row per enterprise for the same day — an unqualified
+                    # ``scalar_one_or_none`` over those would raise rather than
+                    # answer.
                     select(TurnUsageModel.turn_count).where(
+                        TurnUsageModel.enterprise_id == get_current_enterprise_id(),
                         TurnUsageModel.billing_subject_kind == subject.kind,
                         TurnUsageModel.billing_subject_id == subject.subject_id,
                         TurnUsageModel.usage_date == day,
@@ -478,9 +491,25 @@ class CapPolicyResolver:
             )
             return CapPolicy(limit=self._default_limit(), source="indeterminate")
 
-        override = (
-            getattr(organization, "daily_turn_cap", None) if organization else None
-        )
+        if organization is None:
+            # The subject names an organization that does not resolve: soft
+            # deleted, in another enterprise (RLS hides it), or a bogus id out of
+            # a stale refresh chain. Reading that as "no override" made it
+            # *uncapped*, because an organization with no override is — so an id
+            # nobody can resolve bought an unlimited allowance, and the easiest
+            # way to hold one was to keep presenting a claim naming a deleted
+            # organization.
+            #
+            # An unresolvable subject is exactly as indeterminate as an
+            # unreadable one, and takes the same answer for the same reason.
+            logger.warning(
+                "turn cap: billing subject organization %s does not resolve; "
+                "applying the default cap",
+                subject.subject_id,
+            )
+            return CapPolicy(limit=self._default_limit(), source="indeterminate")
+
+        override = getattr(organization, "daily_turn_cap", None)
         if override is not None:
             if override == UNLIMITED_OVERRIDE:
                 return CapPolicy(limit=None, source="override_unlimited")

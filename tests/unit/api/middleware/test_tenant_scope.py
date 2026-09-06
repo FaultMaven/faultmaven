@@ -119,7 +119,16 @@ async def test_multi_tenant_binds_the_verified_enterprise_claim(multi):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_the_billing_organization_is_bound_beside_it(multi):
-    """Both facts, from one verified claim set, into two separate bindings."""
+    """Both facts, from one verified claim set, into two separate bindings.
+
+    The organization claim is validated against a live organization of the bound
+    enterprise before it is bound; the repository here answers with one, so this
+    case measures the binding rather than the check. The check's own directions
+    are in ``test_billing_claim_validation.py``.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
     auth_service = _auth_service(
         {
             "sub": "user-1",
@@ -127,9 +136,17 @@ async def test_the_billing_organization_is_bound_beside_it(multi):
             "organization_id": BILLING_ORG,
         }
     )
+    organizations = MagicMock()
+    organizations.get_organization = AsyncMock(
+        return_value=SimpleNamespace(
+            organization_id=BILLING_ORG, enterprise_id=OTHER_ENTERPRISE
+        )
+    )
 
     await bind_request_enterprise_context(
-        request_with_authorization("Bearer good-token"), auth_service=auth_service
+        request_with_authorization("Bearer good-token"),
+        auth_service=auth_service,
+        organization_repository=organizations,
     )
 
     assert get_current_enterprise_id() == OTHER_ENTERPRISE

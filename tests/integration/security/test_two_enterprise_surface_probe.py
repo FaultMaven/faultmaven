@@ -84,7 +84,8 @@ Schema (Phase 1, one clean Alembic baseline):
    unique); ``team_invitations`` exists; ``sso_personal_orgs`` and
    ``organization_turn_usage`` do not; ``turn_usage(enterprise_id NOT NULL,
    billing_subject_kind, billing_subject_id, usage_date, turn_count)`` does, with
-   its primary key on the three subject/date columns.
+   its primary key on the enterprise AND the three subject/date columns (see
+   :data:`TURN_USAGE_PRIMARY_KEY` for why the enterprise belongs in it).
 
 Binder and tokens (Phase 2):
 
@@ -325,8 +326,23 @@ TURN_USAGE_COLUMNS = (
     "usage_date",
     "turn_count",
 )
+
+#: **Contract change, made by the architect during the fm#1353 review round.**
+#: This module was written expecting the key to be the three subject/date columns
+#: and ``enterprise_id`` to be an RLS column only. That is wrong, and the review
+#: is where it was found: RLS scopes ``turn_usage`` on ``enterprise_id``, so a
+#: conflict target that omits it can resolve to a row the inserting session
+#: cannot see. ``ON CONFLICT DO UPDATE`` cannot update a hidden row, and
+#: PostgreSQL raises rather than inserting a duplicate — so after an ordinary
+#: same-day re-anchor (``fm-personal-tenant re-anchor``) every remaining turn of
+#: the UTC day is refused with ``TenantTurnCapUnavailable``.
+#:
+#: The ledger is per enterprise, per subject, per day, and the key now says so.
+#: Proven by
+#: ``tests/integration/security/test_tenant_turn_cap.py::
+#: test_a_same_day_re_anchor_does_not_break_the_rest_of_the_day``.
 TURN_USAGE_PRIMARY_KEY = frozenset(
-    {"billing_subject_kind", "billing_subject_id", "usage_date"}
+    {"enterprise_id", "billing_subject_kind", "billing_subject_id", "usage_date"}
 )
 
 
