@@ -78,6 +78,21 @@ async def session_factory(engine):
     return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
+@pytest.fixture(autouse=True)
+def bound_billing_organization():
+    """Bind an actor organization for the whole module.
+
+    ``ingest_runbook`` reads billing attribution from this binding rather than
+    from a parameter (fm#1353 review, A19), so a global-tier assertion that the
+    column is NULL only says something when there IS an organization to drop.
+    """
+    from faultmaven.config.tenant_context import set_current_billing_organization_id
+
+    set_current_billing_organization_id(BILLING_ORG_ID)
+    yield
+    set_current_billing_organization_id(None)
+
+
 @pytest.fixture(scope="function")
 async def seeded_session_factory(session_factory):
     """Seed the enterprise (the NOT NULL isolation FK) and a billing org."""
@@ -148,10 +163,6 @@ class TestIngestRunbookDualWrite:
             title="Redis OOM",
             content="# Redis OOM\n\nIncrease maxmemory.",
             enterprise_id=DEFAULT_ENTERPRISE_ID,
-            # Supplied on purpose: the assertion below is that a GLOBAL write
-            # drops it. Omitting it would let the parameter default to None and
-            # the assertion would hold without the code doing anything.
-            organization_id=BILLING_ORG_ID,
             scope="global",
             owner_id="user-1",
             verified_by="user-1",
@@ -172,23 +183,16 @@ class TestIngestRunbookDualWrite:
             assert row.title == "Redis OOM"
             assert row.scope == "global"
             # A GLOBAL row is the organization-free platform tier (#770,
-            # ``knowledge_items_global_org_check``): the billing organization
-            # supplied above is FORCED to NULL.
+            # ``knowledge_items_global_org_check``): the actor's billing
+            # organization — BOUND by the fixture above, and stamped on every
+            # other tier — is FORCED to NULL here.
             #
-            # What actually observes that here is the CALL RETURNING, not the
-            # line below. ``ingest_runbook`` drops the organization before
-            # constructing the ``KnowledgeItem``, whose own guard raises
-            # ``ValueError`` on a global row that still carries one — so
-            # removing the drop turns this test red at the ingest call.
-            #
-            # The row-level assertion is kept because it states the contract
-            # and will bite once the repository honours it, but it is NOT
-            # load-bearing today: ``DatabaseKnowledgeItemRepository.create``
-            # never maps ``organization_id`` onto the ORM model at all, so the
-            # column reads NULL for EVERY tier and this line holds for a reason
-            # unrelated to global scope. (Reported as a defect — billing
-            # attribution never reaches ``knowledge_items``.) The ENTERPRISE is
-            # mapped, and is the tenancy fact this row can genuinely pin.
+            # This is load-bearing now, in both halves. ``ingest_runbook`` reads
+            # the organization from the request binding rather than from a
+            # parameter no caller ever supplied (fm#1353 review, A19), and
+            # ``DatabaseKnowledgeItemRepository.create`` maps it onto the ORM
+            # model — so a row that kept it would read the bound value here
+            # rather than NULL-for-every-tier.
             assert row.organization_id is None
             assert row.enterprise_id == DEFAULT_ENTERPRISE_ID
             assert row.item_type == KnowledgeItemType.RUNBOOK.value

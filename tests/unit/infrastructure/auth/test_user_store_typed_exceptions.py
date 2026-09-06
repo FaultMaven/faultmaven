@@ -31,6 +31,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.exceptions import (
     ConflictError,
     NotFoundError,
@@ -110,19 +111,28 @@ class TestDatabaseUserStoreTypedExceptions:
     async def test_invalid_username_format_raises_validation_exception(self):
         store = _make_db_store_with_repo()
         with pytest.raises(ValidationException) as exc:
-            await store.create_user(username="bad username with spaces")
+            await store.create_user(
+                username="bad username with spaces",
+                enterprise_id=STANDALONE_ENTERPRISE_ID,
+            )
         assert "Invalid username format" in str(exc.value)
 
     async def test_invalid_email_format_raises_validation_exception(self):
         store = _make_db_store_with_repo()
         with pytest.raises(ValidationException) as exc:
-            await store.create_user(username="alice", email="not-an-email")
+            await store.create_user(
+                username="alice",
+                email="not-an-email",
+                enterprise_id=STANDALONE_ENTERPRISE_ID,
+            )
         assert "Invalid email format" in str(exc.value)
 
     async def test_duplicate_username_raises_conflict_error(self):
         store = _make_db_store_with_repo(existing_username="alice")
         with pytest.raises(ConflictError) as exc:
-            await store.create_user(username="alice")
+            await store.create_user(
+                username="alice", enterprise_id=STANDALONE_ENTERPRISE_ID
+            )
         # Carry metadata so the response can include actionable detail.
         assert exc.value.resource_type == "user"
         assert exc.value.resource_id == "alice"
@@ -131,7 +141,11 @@ class TestDatabaseUserStoreTypedExceptions:
     async def test_duplicate_email_raises_conflict_error(self):
         store = _make_db_store_with_repo(existing_email="alice@x.example")
         with pytest.raises(ConflictError) as exc:
-            await store.create_user(username="bob", email="alice@x.example")
+            await store.create_user(
+                username="bob",
+                email="alice@x.example",
+                enterprise_id=STANDALONE_ENTERPRISE_ID,
+            )
         assert exc.value.conflict_reason == "duplicate_email"
 
     async def test_update_user_not_found_raises_not_found_error(self):
@@ -175,27 +189,46 @@ class TestRedisUserStoreTypedExceptions:
     async def test_invalid_username_format_raises_validation_exception(self):
         store = _make_redis_store()
         with pytest.raises(ValidationException) as exc:
-            await store.create_user(username="bad username with spaces")
+            await store.create_user(
+                username="bad username with spaces",
+                enterprise_id=STANDALONE_ENTERPRISE_ID,
+            )
         assert "Invalid username format" in str(exc.value)
 
     async def test_invalid_email_format_raises_validation_exception(self):
         store = _make_redis_store()
         with pytest.raises(ValidationException) as exc:
-            await store.create_user(username="alice", email="not-an-email")
+            await store.create_user(
+                username="alice",
+                email="not-an-email",
+                enterprise_id=STANDALONE_ENTERPRISE_ID,
+            )
         assert "Invalid email format" in str(exc.value)
 
     async def test_duplicate_username_raises_conflict_error(self):
         store = _make_redis_store()
-        await store.create_user(username="alice")
+        await store.create_user(
+            username="alice", enterprise_id=STANDALONE_ENTERPRISE_ID
+        )
         with pytest.raises(ConflictError) as exc:
-            await store.create_user(username="alice")
+            await store.create_user(
+                username="alice", enterprise_id=STANDALONE_ENTERPRISE_ID
+            )
         assert exc.value.conflict_reason == "duplicate_username"
 
     async def test_duplicate_email_raises_conflict_error(self):
         store = _make_redis_store()
-        await store.create_user(username="alice", email="shared@x.example")
+        await store.create_user(
+            username="alice",
+            email="shared@x.example",
+            enterprise_id=STANDALONE_ENTERPRISE_ID,
+        )
         with pytest.raises(ConflictError) as exc:
-            await store.create_user(username="bob", email="shared@x.example")
+            await store.create_user(
+                username="bob",
+                email="shared@x.example",
+                enterprise_id=STANDALONE_ENTERPRISE_ID,
+            )
         assert exc.value.conflict_reason == "duplicate_email"
 
     async def test_update_user_not_found_raises_not_found_error(self):

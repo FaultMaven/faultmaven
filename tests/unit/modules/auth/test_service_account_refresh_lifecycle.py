@@ -82,8 +82,11 @@ class _UserStore:
         display_name=None,
         account_kind="individual",
         service_channel=None,
+        *,
+        enterprise_id,
     ) -> DevUser:
         user = DevUser(
+            enterprise_id=enterprise_id,
             user_id=f"user-{username}",
             username=username,
             email=email or f"{username}@faultmaven.example",

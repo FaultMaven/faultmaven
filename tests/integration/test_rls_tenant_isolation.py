@@ -256,13 +256,20 @@ async def test_login_by_username_resolves_under_limited_role_without_context(
         PostgreSQLUserRepository,
         User,
     )
-    from tests.utils import seed_default_enterprise
+    from tests.utils import DEFAULT_TEST_ENTERPRISE_ID, seed_default_enterprise
 
     uid = f"login_user_{uuid4().hex[:8]}"
     now = datetime.now(timezone.utc)
     # Seed as superuser (bypasses RLS). Use a real email TLD — the domain User
     # model's EmailStr rejects reserved TLDs like `.local`, and get_by_username
     # hydrates the row back into User on read.
+    #
+    # The account names its enterprise, because every account does (ADR-017 D3)
+    # and the repository now REFUSES to invent one: a ``None`` isolation key used
+    # to become the Standalone sentinel silently, inside the writer, where the
+    # caller could not see it. Which enterprise this account is in changes
+    # nothing about what is under test — ``users`` is not tenant-scoped, and the
+    # reads below are made with no enterprise bound and with a mismatched one.
     su_maker = async_sessionmaker(superuser_engine, expire_on_commit=False)
     async with su_maker() as session:
         await seed_default_enterprise(session)
@@ -272,6 +279,7 @@ async def test_login_by_username_resolves_under_limited_role_without_context(
                 username=uid,
                 email=f"{uid}@example.com",
                 display_name=uid,
+                enterprise_id=DEFAULT_TEST_ENTERPRISE_ID,
                 created_at=now,
                 updated_at=now,
                 roles=["user"],

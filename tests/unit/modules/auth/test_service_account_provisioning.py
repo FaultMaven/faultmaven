@@ -64,12 +64,19 @@ class _FakeUserStore:
         display_name=None,
         account_kind="individual",
         service_channel=None,
+        *,
+        enterprise_id,
     ) -> DevUser:
+        # ``enterprise_id`` is keyword-only and required: a default here would
+        # be the #1143 trap, and the store's real signature says so. Recorded
+        # rather than swallowed, so a provisioning that stopped passing it shows
+        # up as a missing key instead of a silent sentinel.
         self.created.append(
             {
                 "username": username,
                 "account_kind": account_kind,
                 "service_channel": service_channel,
+                "enterprise_id": enterprise_id,
             }
         )
         user = _user(
@@ -78,6 +85,7 @@ class _FakeUserStore:
             service_channel=service_channel,
             display_name=display_name,
         )
+        user.enterprise_id = enterprise_id
         self.users[username] = user
         return user
 
@@ -163,6 +171,11 @@ class TestProvisioning:
                 "username": "slack-agent",
                 "account_kind": "service",
                 "service_channel": "slack",
+                # Single-tenant here: the deployment's one enterprise, taken
+                # from the request binding because ``--enterprise-id`` is
+                # refused under ``single``. It is written to the ROW, which is
+                # what the refresh path mints the claim from (fm#1353 A5).
+                "enterprise_id": STANDALONE_ENTERPRISE_ID,
             }
         ]
         assert credential.user.account_kind == "service"

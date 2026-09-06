@@ -25,6 +25,7 @@ A leak of either across requests is a defect, but only the first is a wall.
 """
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -33,6 +34,7 @@ from httpx import ASGITransport, AsyncClient
 
 from faultmaven.api.middleware.auth import get_auth_service
 from faultmaven.api.middleware.tenant_scope import bind_request_enterprise_context
+from faultmaven.api.v1.dependencies import get_organization_repository
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.tenant_context import (
     get_current_billing_organization_id,
@@ -112,6 +114,24 @@ def _probe_app() -> FastAPI:
 
     auth_service.verify_token_with_revocation_check.side_effect = _verify
     app.dependency_overrides[get_auth_service] = lambda: auth_service
+
+    # The organization claim is VALIDATED before it is bound: it must name a
+    # live organization of the enterprise the same request is bound to, or it is
+    # dropped and the request acts as an account in no organization. This
+    # repository answers for ``ORGANIZATION_A`` and nothing else, so the arms
+    # below still measure the binding rather than the check — whose own
+    # directions are in ``tests/unit/api/middleware/test_billing_claim_validation.py``.
+    organizations = AsyncMock()
+
+    async def _get_organization(organization_id):
+        if organization_id == ORGANIZATION_A:
+            return SimpleNamespace(
+                organization_id=ORGANIZATION_A, enterprise_id=ENTERPRISE_A
+            )
+        return None
+
+    organizations.get_organization.side_effect = _get_organization
+    app.dependency_overrides[get_organization_repository] = lambda: organizations
     return app
 
 

@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.infrastructure.auth.user_store import RedisUserStore
 
 pytestmark = pytest.mark.asyncio
@@ -26,7 +27,10 @@ def _store() -> RedisUserStore:
 
 async def test_created_user_is_not_an_admin():
     created = await _store().create_user(
-        username="slack-agent", account_kind="service", service_channel="slack"
+        username="slack-agent",
+        account_kind="service",
+        service_channel="slack",
+        enterprise_id=STANDALONE_ENTERPRISE_ID,
     )
 
     assert created.roles == ["user"]
@@ -38,7 +42,10 @@ async def test_the_kind_and_the_channel_are_recorded():
     says a human or an agent, the channel says which integration — and only the
     channel decides the derived ``cases.source``."""
     created = await _store().create_user(
-        username="slack-agent", account_kind="service", service_channel="slack"
+        username="slack-agent",
+        account_kind="service",
+        service_channel="slack",
+        enterprise_id=STANDALONE_ENTERPRISE_ID,
     )
 
     assert created.account_kind == "service"
@@ -48,7 +55,9 @@ async def test_the_kind_and_the_channel_are_recorded():
 async def test_a_human_serves_no_channel():
     """The default, and the direction that matters: a human whose channel came
     back 'slack' would have every case they open stamped as a Slack case."""
-    created = await _store().create_user(username="alice")
+    created = await _store().create_user(
+        username="alice", enterprise_id=STANDALONE_ENTERPRISE_ID
+    )
 
     assert created.account_kind == "individual"
     assert created.service_channel is None

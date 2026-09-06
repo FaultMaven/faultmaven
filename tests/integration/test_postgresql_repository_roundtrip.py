@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from faultmaven.modules.case.domain.models import (
@@ -92,17 +93,55 @@ async def pg_engine():
     await engine.dispose()
 
 
+#: Read before the test and diffed after, so the teardown removes exactly what
+#: the test added and nothing a sibling module owns.
+_ENTERPRISES_HERE = text(
+    "SELECT enterprise_id FROM enterprises WHERE enterprise_id LIKE 'ent\\_%'"
+)
+
+
 @pytest.fixture
 async def pg_repo(pg_engine):
     """A PostgreSQLHybridCaseRepository on a real PG session, with the
-    case's FK prerequisites (enterprise/org/user) seeded."""
+    case's FK prerequisites (enterprise/org/user) seeded.
+
+    Every test here mints its own ``ent_…`` enterprise, and they used to be
+    left behind. That is not a private mess: the two-enterprise probe's residue
+    check greps exactly that prefix, so this suite's leftovers fail a sibling
+    module. It passed only because ``tests/integration/security/`` sorts before
+    this file and the database was fresh — a green that depends on collection
+    order rather than on the property.
+
+    The teardown diffs the enterprise set around the test and removes what
+    appeared, so it can never reach a row another module owns.
+    """
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        before = set((await session.execute(_ENTERPRISES_HERE)).scalars())
+
     async with Session() as session:
         # Sanity: the factory-style detection must agree this is PG, or the
         # cast helper would silently emit SQLite-style bare placeholders.
         repo = PostgreSQLHybridCaseRepository(session)
         assert repo._is_pg is True
         yield repo
+
+    async with Session() as session:
+        added = set((await session.execute(_ENTERPRISES_HERE)).scalars()) - before
+        for enterprise_id in added:
+            # Cases first: the child rows cascade from the case, and
+            # ``cases.enterprise_id`` is itself an FK to the row being removed.
+            await session.execute(
+                text("DELETE FROM cases WHERE enterprise_id = :e"), {"e": enterprise_id}
+            )
+            await session.execute(
+                text("DELETE FROM users WHERE enterprise_id = :e"), {"e": enterprise_id}
+            )
+            await session.execute(
+                text("DELETE FROM enterprises WHERE enterprise_id = :e"),
+                {"e": enterprise_id},
+            )
+        await session.commit()
 
 
 def _make_case(enterprise_id: str, user_id: str) -> Case:

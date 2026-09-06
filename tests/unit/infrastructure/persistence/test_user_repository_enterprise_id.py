@@ -14,7 +14,6 @@ from faultmaven.infrastructure.persistence.user_repository import (
     PostgreSQLUserRepository,
     User,
 )
-from faultmaven.providers.tenancy.single_tenant import DEFAULT_ENTERPRISE_ID
 
 pytestmark = pytest.mark.unit
 
@@ -79,7 +78,15 @@ def test_domain_to_dict_uses_user_enterprise_id():
     assert _repo()._domain_to_dict(user)["enterprise_id"] == "ent-42"
 
 
-def test_domain_to_dict_defaults_enterprise_id_when_unset():
+def test_domain_to_dict_refuses_to_invent_an_enterprise():
+    """It used to fill the Standalone sentinel here, silently.
+
+    Under ``multi`` that sentinel is not a tenant, so the substitution wrote a
+    row no session can reach — and it happened inside the writer, where the
+    caller could not see it. A ``None`` isolation key means the caller did not
+    resolve one; the call site is the only place that can, so that is where the
+    failure has to surface (fm#1353 review, A5b).
+    """
     user = User(
         user_id="u-1",
         username="alice",
@@ -89,5 +96,6 @@ def test_domain_to_dict_defaults_enterprise_id_when_unset():
         updated_at=datetime(2026, 7, 20, tzinfo=timezone.utc),
     )
     assert user.enterprise_id is None  # model default
-    # Column is NOT NULL → the write path fills the standalone default.
-    assert _repo()._domain_to_dict(user)["enterprise_id"] == DEFAULT_ENTERPRISE_ID
+
+    with pytest.raises(ValueError, match="enterprise_id"):
+        _repo()._domain_to_dict(user)

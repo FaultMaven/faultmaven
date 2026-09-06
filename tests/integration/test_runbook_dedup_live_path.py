@@ -57,10 +57,6 @@ _TOY_EMBEDDING = [0.1] * _DIM
 #: global-write policy arm compares against (D8).
 _ENTERPRISE_ID = STANDALONE_ENTERPRISE_ID
 
-#: A billing organization (ADR-017 D2). Only the third test passes one, and
-#: only to show it is DROPPED on a global write.
-_BILLING_ORG_ID = "org-ignored-for-global"
-
 _RUNBOOK_MD = """# Runbook: Connection pool exhaustion
 
 ## Symptoms
@@ -328,11 +324,12 @@ async def test_a_pack_published_global_runbook_is_found_by_every_principal(
         title="Runbook: OOMKilled pods after deploy",
         content="# Runbook: OOMKilled pods after deploy\n\nRaise the limit.",
         enterprise_id=_ENTERPRISE_ID,
-        # Named for what happens to it: a GLOBAL row is the organization-free
-        # platform tier, so this billing organization is forced to NULL
-        # (``knowledge_items_global_org_check``). The ENTERPRISE above is kept
-        # — it is NOT NULL for every tier (ADR-017 D1).
-        organization_id=_BILLING_ORG_ID,
+        # No billing organization is named, and none can be: the writer reads
+        # the actor's from the request binding (fm#1353 review, A19) rather than
+        # from a parameter no caller ever supplied. A GLOBAL row is the
+        # organization-free platform tier either way, so whatever is bound is
+        # forced to NULL (``knowledge_items_global_org_check``). The ENTERPRISE
+        # above is kept — it is NOT NULL for every tier (ADR-017 D1).
         document_type="runbook",
         scope="global",
         prechunked=[

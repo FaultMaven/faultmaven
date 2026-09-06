@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.infrastructure.auth.database_user_store import DatabaseUserStore
 from faultmaven.infrastructure.persistence.user_repository import User
 
@@ -92,7 +93,10 @@ class TestAccountKindRoundTrip:
         store, repo = _store()
 
         created = await store.create_user(
-            username="slack-agent", account_kind="service", service_channel="slack"
+            username="slack-agent",
+            account_kind="service",
+            service_channel="slack",
+            enterprise_id=STANDALONE_ENTERPRISE_ID,
         )
 
         assert (created.account_kind, created.service_channel) == ("service", "slack")
@@ -108,7 +112,9 @@ class TestAccountKindRoundTrip:
         """
         store, repo = _store()
 
-        created = await store.create_user(username="alice")
+        created = await store.create_user(
+            username="alice", enterprise_id=STANDALONE_ENTERPRISE_ID
+        )
 
         assert created.account_kind == "individual"
         assert created.service_channel is None

@@ -315,6 +315,49 @@ async def test_a_knowledge_suggestion_is_billed_to_the_actors_organization(
         )
 
 
+def test_the_remaining_writers_read_the_actors_organization():
+    """``cases``, ``investigation_sessions`` and ``conversion_jobs``.
+
+    Asserted on the SOURCE rather than by a round trip, for the reason the
+    knowledge case above states: each of these writers reaches its row through
+    collaborators this module would have to stand in for, and a round trip
+    through stand-ins measures the stand-ins. What the review found is narrower
+    and checkable exactly here — the value comes from the same contextvar every
+    peer writer reads, rather than from a parameter or from nothing.
+
+    ``cases`` is additionally round-tripped end to end by the two-enterprise
+    probe (``test_a_created_case_is_stamped_with_the_enterprise_and_the_billing_org``),
+    which is where a real request writes one.
+    """
+    import inspect
+
+    from faultmaven.modules.case.domain.services import investigation_session_service
+    from faultmaven.modules.case.domain.services.case_service import CaseService
+    from faultmaven.modules.knowledge.domain.services.conversion_service import (
+        ConversionService,
+    )
+
+    for label, source in (
+        (
+            "cases",
+            inspect.getsource(CaseService.create_case),
+        ),
+        (
+            "investigation_sessions",
+            inspect.getsource(
+                investigation_session_service.APIInvestigationSessionService.create_session
+            ),
+        ),
+        (
+            "conversion_jobs",
+            inspect.getsource(ConversionService._persist_job_rows),
+        ),
+    ):
+        assert (
+            "organization_id" in source
+        ), f"{label}: its writer names no billing attribution at all"
+
+
 #: Tables whose writer this module holds to the rule — by a round trip where the
 #: writer can be driven here, and by reading the writer itself where it cannot.
 _STAMPED_HERE = (

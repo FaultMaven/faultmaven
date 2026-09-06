@@ -74,19 +74,30 @@ def mock_session_service():
 def mock_case_service(mock_user):
     """A case service that grants the authenticated user access to their case.
 
-    Session routes are gated on the parent case (#1044): the caller must own the
-    case or have it shared to one of their teams, not merely share an
-    enterprise with its owner. Every test below acts as the case's owner, so
-    this returns a case for them and ``None`` for anyone else — the same two
-    meanings ``CaseService.get_case`` collapses in production.
+    Session routes are gated on the parent case (#1044): on a READ the caller
+    must own the case or have it shared to one of their teams, and on a WRITE
+    they must OWN it (ADR-017 D4 — a share is read visibility, not ownership).
+    Every test below acts as the case's owner, so this returns a case for them
+    and ``None`` for anyone else — the same two meanings ``CaseService.get_case``
+    collapses in production.
+
+    ``owner_only`` is accepted and HONOURED rather than swallowed: the gate now
+    chooses the resolver from the request method, and a double that ignored the
+    flag would let a route which asked for the wrong one still look correct here.
+    Every caller in this module is the owner, so both arms answer the same — what
+    the parameter has to do is exist.
     """
     case = MagicMock()
     case.case_id = "case_456def"
     case.user_id = mock_user.user_id
     case.enterprise_id = mock_user.enterprise_id
 
-    async def get_case(case_id, user_id=None):
-        return case if user_id == mock_user.user_id else None
+    async def get_case(case_id, user_id=None, *, owner_only=False):
+        if user_id != mock_user.user_id:
+            return None
+        if owner_only and case.user_id != user_id:
+            return None
+        return case
 
     service = AsyncMock()
     service.get_case = AsyncMock(side_effect=get_case)
