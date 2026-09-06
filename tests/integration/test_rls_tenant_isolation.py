@@ -31,6 +31,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from tests.utils import seed_enterprises
 
 pytestmark = [
@@ -325,7 +326,12 @@ async def test_rls_scopes_team_members_by_the_hop_through_teams(
 
     su_maker = async_sessionmaker(superuser_engine, expire_on_commit=False)
     async with su_maker() as session:
-        await seed_users(session, [user_a, user_b])
+        # Each account in ITS OWN team's enterprise. Not decoration: the
+        # ``team_members_same_enterprise`` trigger refuses the mixed shape this
+        # used to seed (both accounts in the default enterprise, their teams in
+        # A and B), which is the state ADR-017 D4 says cannot exist.
+        await seed_users(session, [user_a], enterprise_id=ent_a)
+        await seed_users(session, [user_b], enterprise_id=_ent_b)
         for uid, tid in ((user_a, team_a), (user_b, team_b)):
             await session.execute(
                 text("INSERT INTO team_members (user_id, team_id) VALUES (:u, :t)"),
@@ -544,8 +550,6 @@ _KI_DELETE = text("DELETE FROM knowledge_items WHERE item_id = :i")
 @pytest.fixture
 async def kb_rows(superuser_engine, two_enterprises):
     """One platform-tier global row + one enterprise-A personal row."""
-    from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
-
     ent_a, ent_b, _team_a, _team_b = two_enterprises
     global_id = f"kb_{uuid4().hex[:12]}"
     personal_id = f"ki_{uuid4().hex[:8]}"
@@ -618,8 +622,6 @@ async def test_tenant_session_cannot_write_platform_tier(limited_engine, kb_rows
     rows — the read exemption must not double as a write license (#770 I2)."""
     from sqlalchemy.exc import DBAPIError
 
-    from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
-
     ent_a, _ent_b, global_id, _personal_id = kb_rows
     maker = async_sessionmaker(limited_engine, expire_on_commit=False)
 
@@ -663,12 +665,15 @@ async def test_tenant_session_cannot_write_platform_tier(limited_engine, kb_rows
 async def test_tenant_cannot_publish_a_global_row_billed_to_an_organization(
     limited_engine, kb_rows, superuser_engine
 ):
-    """``knowledge_items_global_org_check`` is what closes the last hole.
+    """``knowledge_items_global_org_check``: the platform tier is nobody's cost centre.
 
-    A tenant stamping ``scope='global'`` with its OWN enterprise passes the
-    policy's own-enterprise arm — the platform tier is readable by everyone, so a
-    row a tenant could plant there would be readable by everyone too. The CHECK
-    refuses the one shape that would make it a *billed* global row.
+    This used to be the LAST line of defence, because the INSERT policy's
+    own-enterprise arm admitted any global row a tenant stamped with its own
+    enterprise and the CHECK refused only the billed shape. The policy now
+    refuses every global row from a tenant session
+    (``test_a_tenant_cannot_plant_a_global_row_under_its_own_enterprise``), so
+    what this case pins is the CHECK's own, narrower guarantee — measured where
+    RLS does not apply, since the table owner bypasses it.
     """
     from sqlalchemy.exc import DBAPIError, IntegrityError
 
@@ -684,6 +689,31 @@ async def test_tenant_cannot_publish_a_global_row_billed_to_an_organization(
         maker = async_sessionmaker(limited_engine, expire_on_commit=False)
         async with maker() as session:
             await _bind(session, ent_a)
+            with pytest.raises((IntegrityError, DBAPIError)) as excinfo:
+                await session.execute(
+                    _KI_INSERT,
+                    {
+                        "i": f"kb_{uuid4().hex[:12]}",
+                        "e": ent_a,
+                        "org": org_id,
+                        "s": "global",
+                        "t": "X",
+                        "c": "x",
+                    },
+                )
+                await session.commit()
+        # Either mechanism is a pass, and which one fires says something. The
+        # policy now refuses ANY global row from a tenant session, so it reaches
+        # this shape first; the CHECK is what still holds where RLS does not
+        # apply at all, which the superuser leg below exercises.
+        assert "row-level security" in str(excinfo.value) or "global_org_check" in str(
+            excinfo.value
+        ), str(excinfo.value)
+
+        # The table-level guarantee, measured where no policy is in force: the
+        # table OWNER bypasses RLS, so this leg is the only one that can attest
+        # to the CHECK itself.
+        async with su_maker() as session:
             with pytest.raises((IntegrityError, DBAPIError), match="global_org_check"):
                 await session.execute(
                     _KI_INSERT,
@@ -716,8 +746,6 @@ async def test_standalone_enterprise_session_can_maintain_platform_tier(
     limited app role: this is the KB pack bootstrap path. Under multi no tenant
     session ever binds that sentinel (fail-closed request binder), so this arm is
     unreachable for tenants."""
-    from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
-
     item_id = f"kb_{uuid4().hex[:12]}"
     maker = async_sessionmaker(limited_engine, expire_on_commit=False)
     async with maker() as session:
@@ -745,3 +773,201 @@ async def test_standalone_enterprise_session_can_maintain_platform_tier(
         result = await session.execute(_KI_DELETE, {"i": item_id})
         assert result.rowcount == 1
         await session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.security
+async def test_a_tenant_cannot_plant_a_global_row_under_its_own_enterprise(
+    limited_engine, kb_rows
+):
+    """The base suite's ``test_tenant_cannot_publish_global`` invariant, restored.
+
+    ``knowledge_items_global_org_check`` refuses a global row that names a
+    *billing organization*, and the sibling case above pins that. It does not
+    refuse the shape that matters more: ``scope='global'`` stamped with the
+    tenant's OWN enterprise and no organization at all. That row passed the
+    INSERT policy's own-enterprise arm — ``enterprise_id`` matched the session —
+    and the READ policy then served it to **every** enterprise, because the read
+    exemption is ``scope = 'global'`` and asks nothing about who wrote it. One
+    tenant could therefore publish into every other tenant's knowledge base.
+
+    Migration 033 had this covered by pinning the organization sentinel in the
+    write arms; re-keying to the enterprise dropped it. The policies now carry
+    ``AND scope <> 'global'`` on the own-enterprise write arms, so the ONLY way
+    to write a global row is the platform arm — which requires the session to be
+    bound to the Standalone enterprise AND the row to be stamped with it.
+    """
+    from sqlalchemy.exc import DBAPIError
+
+    ent_a, _ent_b, _global_id, _personal_id = kb_rows
+    maker = async_sessionmaker(limited_engine, expire_on_commit=False)
+
+    async with maker() as session:
+        await _bind(session, ent_a)
+        with pytest.raises(DBAPIError, match="row-level security"):
+            await session.execute(
+                _KI_INSERT,
+                {
+                    "i": f"kb_{uuid4().hex[:12]}",
+                    "e": ent_a,
+                    "org": None,
+                    "s": "global",
+                    "t": "PLANTED",
+                    "c": "readable by every enterprise",
+                },
+            )
+            await session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.security
+async def test_a_tenant_cannot_promote_its_own_row_to_the_platform_tier(
+    limited_engine, kb_rows
+):
+    """The UPDATE half of the same hole.
+
+    Refusing the INSERT alone would leave the two-step route open: write a
+    ``personal`` row (legitimate), then UPDATE its scope to ``global``. The USING
+    arm admits the row (it is the tenant's own), so only the WITH CHECK can
+    refuse the new shape — which is why ``AND scope <> 'global'`` is on the check
+    and not only on the insert.
+    """
+    from sqlalchemy.exc import DBAPIError
+
+    ent_a, _ent_b, _global_id, personal_id = kb_rows
+    maker = async_sessionmaker(limited_engine, expire_on_commit=False)
+
+    async with maker() as session:
+        await _bind(session, ent_a)
+        with pytest.raises(DBAPIError, match="row-level security"):
+            await session.execute(
+                text("UPDATE knowledge_items SET scope = 'global' WHERE item_id = :i"),
+                {"i": personal_id},
+            )
+            await session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.security
+async def test_the_platform_arm_pins_the_row_to_the_standalone_enterprise(
+    limited_engine, two_enterprises
+):
+    """A Standalone-bound session may not stamp a global row with a tenant.
+
+    The platform write arm is gated on the SESSION being bound to the Standalone
+    enterprise. Without also pinning the NEW ROW's ``enterprise_id`` to it, that
+    arm would admit a global row carrying enterprise A — which the own-enterprise
+    USING arm would then hand back to A as A's row to update and delete, making a
+    tenant the owner of a row every other tenant reads.
+    """
+    from sqlalchemy.exc import DBAPIError
+
+    ent_a, _ent_b, _team_a, _team_b = two_enterprises
+    maker = async_sessionmaker(limited_engine, expire_on_commit=False)
+
+    async with maker() as session:
+        await _bind(session, STANDALONE_ENTERPRISE_ID)
+        with pytest.raises(DBAPIError, match="row-level security"):
+            await session.execute(
+                _KI_INSERT,
+                {
+                    "i": f"kb_{uuid4().hex[:12]}",
+                    "e": ent_a,
+                    "org": None,
+                    "s": "global",
+                    "t": "X",
+                    "c": "x",
+                },
+            )
+            await session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.security
+async def test_a_team_member_must_belong_to_the_teams_enterprise(
+    limited_engine, superuser_engine, two_enterprises
+):
+    """``team_members`` is keyed by a hop, and the hop only checks the TEAM.
+
+    The membership policy scopes on ``teams.enterprise_id``, so a session bound
+    to enterprise A may write a row naming any team of A's — including one whose
+    ``user_id`` belongs to enterprise B. Nothing in SQL said the member had to be
+    in the team's enterprise, and the whole of ADR-017 D4's "members must be in
+    the same enterprise" rested on the application remembering to check.
+
+    The database now says it: a ``BEFORE INSERT OR UPDATE`` trigger compares
+    ``users.enterprise_id`` against the team's. This is the same shape as the
+    last-admin guard, and for the same reason — the rule is an invariant of the
+    row, not of the code path that happened to write it.
+    """
+    from sqlalchemy.exc import DBAPIError
+
+    from tests.utils import seed_users
+
+    ent_a, ent_b, team_a, _team_b = two_enterprises
+    stranger = f"user_b_{uuid4().hex[:8]}"
+    su_maker = async_sessionmaker(superuser_engine, expire_on_commit=False)
+    async with su_maker() as session:
+        await seed_users(session, [stranger], enterprise_id=ent_b)
+        await session.commit()
+
+    try:
+        maker = async_sessionmaker(limited_engine, expire_on_commit=False)
+        async with maker() as session:
+            await _bind(session, ent_a)
+            with pytest.raises(DBAPIError, match="same enterprise"):
+                await session.execute(
+                    text(
+                        "INSERT INTO team_members (user_id, team_id, team_role) "
+                        "VALUES (:u, :t, 'member')"
+                    ),
+                    {"u": stranger, "t": team_a},
+                )
+                await session.commit()
+    finally:
+        async with su_maker() as session:
+            await session.execute(
+                text("DELETE FROM team_members WHERE user_id = :u"), {"u": stranger}
+            )
+            await session.execute(
+                text("DELETE FROM users WHERE user_id = :u"), {"u": stranger}
+            )
+            await session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.security
+async def test_a_member_of_the_teams_own_enterprise_is_still_admitted(
+    limited_engine, superuser_engine, two_enterprises
+):
+    """The control: the trigger must refuse the stranger, not everyone."""
+    from tests.utils import seed_users
+
+    ent_a, _ent_b, team_a, _team_b = two_enterprises
+    colleague = f"user_a_{uuid4().hex[:8]}"
+    su_maker = async_sessionmaker(superuser_engine, expire_on_commit=False)
+    async with su_maker() as session:
+        await seed_users(session, [colleague], enterprise_id=ent_a)
+        await session.commit()
+
+    try:
+        maker = async_sessionmaker(limited_engine, expire_on_commit=False)
+        async with maker() as session:
+            await _bind(session, ent_a)
+            await session.execute(
+                text(
+                    "INSERT INTO team_members (user_id, team_id, team_role) "
+                    "VALUES (:u, :t, 'member')"
+                ),
+                {"u": colleague, "t": team_a},
+            )
+            await session.commit()
+    finally:
+        async with su_maker() as session:
+            await session.execute(
+                text("DELETE FROM team_members WHERE user_id = :u"), {"u": colleague}
+            )
+            await session.execute(
+                text("DELETE FROM users WHERE user_id = :u"), {"u": colleague}
+            )
+            await session.commit()

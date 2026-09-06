@@ -255,6 +255,9 @@ class EnterpriseModel(Base):
         # next tenant for the same subject derives exactly the same one — the
         # derived key is a function of the subject, not of the tenant — so
         # deployment-wide uniqueness would force a rename on every retirement.
+        # The partial unique index is the only one: it has the same leading
+        # column and every lookup is for a LIVE enterprise, so a second plain
+        # B-tree on ``slug`` served no query and was maintained on every write.
         Index(
             "ix_enterprises_slug_live",
             "slug",
@@ -262,7 +265,6 @@ class EnterpriseModel(Base):
             sqlite_where=text("deleted_at IS NULL"),
             postgresql_where=text("deleted_at IS NULL"),
         ),
-        Index("ix_enterprises_slug", "slug"),
         # Same liveness rule as the slug, and for a sharper reason: a retired
         # enterprise keeps its domain, and the next sign-up from that domain must
         # be able to create the live one. Unique among live rows is what makes
@@ -501,14 +503,23 @@ class TurnUsageModel(Base):
     refusal message promises the user ("resets at 00:00 UTC") and a sliding
     window could not honour it.
 
-    The composite primary key over the three subject/date columns is what lets
-    the reservation be a single ``INSERT … ON CONFLICT … DO UPDATE SET
-    turn_count = turn_count + 1 WHERE turn_count < :cap RETURNING turn_count``:
-    an empty RETURNING *is* the refusal, so the check and the increment cannot
-    interleave and a refused turn increments nothing. ``enterprise_id`` is the
-    isolation key and deliberately NOT part of that key — a subject belongs to
-    one enterprise, so adding it would only make the conflict target wider than
-    the fact it arbitrates.
+    The composite primary key is what lets the reservation be a single
+    ``INSERT … ON CONFLICT … DO UPDATE SET turn_count = turn_count + 1
+    WHERE turn_count < :cap RETURNING turn_count``: an empty RETURNING *is* the
+    refusal, so the check and the increment cannot interleave and a refused turn
+    increments nothing.
+
+    ``enterprise_id`` **leads that key**, and it has to: RLS scopes this table on
+    it, so a conflict target that omits it can resolve to a row the inserting
+    session cannot see. That is not hypothetical — an account that is re-anchored
+    to a new enterprise mid-day (``fm-personal-tenant re-anchor``) keeps its
+    ``billing_subject_id``, so its next reservation conflicts with the row its
+    old enterprise wrote this morning. The policy hides that row, ``ON CONFLICT
+    DO UPDATE`` cannot update what it cannot see, and PostgreSQL raises rather
+    than inserting a duplicate — turning every remaining turn of the UTC day into
+    ``TenantTurnCapUnavailable``. With the enterprise in the key the two rows are
+    two facts, which is what they are: the ledger is per enterprise, per subject,
+    per day.
 
     There are deliberately no ``created_at``/``updated_at`` columns — every write
     after the first arrives through ``ON CONFLICT DO UPDATE``, which does not
@@ -533,8 +544,7 @@ class TurnUsageModel(Base):
     enterprise_id = Column(
         String(36),
         ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
+        primary_key=True,
     )
     billing_subject_kind = Column(String(20), primary_key=True)
     billing_subject_id = Column(String(36), primary_key=True)
@@ -601,33 +611,42 @@ class SSOOrgMappingModel(Base):
 class SSOPersonalEnterpriseModel(Base):
     """IdP **subject** → the personal enterprise it owns (ADR-017 D9).
 
-    The sibling of :class:`SSOOrgMappingModel`, and outside RLS for exactly the
-    same reason: it is read on the unauthenticated SSO callback, before any
-    tenant is bound, because binding the tenant is what the lookup decides.
+        The sibling of :class:`SSOOrgMappingModel`, and outside RLS for exactly the
+        same reason: it is read on the unauthenticated SSO callback, before any
+        tenant is bound, because binding the tenant is what the lookup decides.
 
-    It exists because ``sso_org_mappings`` cannot answer this question. That
-    table is keyed on the IdP's *organization* id, and AuthKit only reports one
-    when the sign-in was organization-scoped — a returning individual's login
-    may carry none at all. So a returning individual needs a lookup keyed on the
-    one identifier every login carries, the subject.
+        It exists because ``sso_org_mappings`` cannot answer this question. That
+        table is keyed on the IdP's *organization* id, and AuthKit only reports one
+        when the sign-in was organization-scoped — a returning individual's login
+        may carry none at all. So a returning individual needs a lookup keyed on the
+        one identifier every login carries, the subject.
 
-    ``subject`` is the primary key: a subject owns at most one personal
-    enterprise, which is what makes first-login provisioning idempotent and what
-    arbitrates a race between two concurrent first logins — the loser's INSERT
-    violates this key and rolls its whole transaction back. ``enterprise_id`` is
-    unique in the other direction: a personal enterprise belongs to exactly one
-    subject, so it can never become a shared tenant by a second row pointing at
-    it.
+    ``(provider, subject)`` is the primary key: a subject of ONE provider owns at
+        most one personal enterprise, which is what makes first-login provisioning
+        idempotent and what arbitrates a race between two concurrent first logins —
+        the loser's INSERT violates this key and rolls its whole transaction back.
 
-    A row holds identifiers and no tenant data. The subject is the IdP's own
-    opaque handle, never an email.
+        The provider is part of it because a subject handle is only unique *within*
+        an IdP. Keyed on ``subject`` alone, a same-spelled subject arriving from a
+        second provider collides with the first provider's row: the second sign-in
+        either fails on the primary key or, worse, resolves to a tenant belonging to
+        a different person at a different IdP. ``find_live_binding`` already filters
+        on the provider, so the lookup was asking a question the key could not
+        answer.
+
+        ``enterprise_id`` is unique in the other direction: a personal enterprise
+        belongs to exactly one subject, so it can never become a shared tenant by a
+        second row pointing at it.
+
+        A row holds identifiers and no tenant data. The subject is the IdP's own
+        opaque handle, never an email.
     """
 
     __tablename__ = "sso_personal_enterprises"
 
     #: The IdP's opaque subject handle (``user_01H…``).
     subject = Column(String(255), primary_key=True)
-    provider = Column(String(50), nullable=False)
+    provider = Column(String(50), primary_key=True)
     enterprise_id = Column(
         String(36),
         ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
@@ -671,10 +690,24 @@ class SSOPersonalEnterpriseModel(Base):
         UniqueConstraint(
             "enterprise_id", name="uq_sso_personal_enterprises_enterprise"
         ),
+        # The velocity gate counts recent provisionings for one provider.
+        Index(
+            "ix_sso_personal_enterprises_provider_created_at",
+            "provider",
+            "created_at",
+        ),
         CheckConstraint(
             "retirement_state IS NULL OR retirement_state IN "
             "('refuse', 'fresh_tenant')",
             name="sso_personal_enterprises_retirement_state_check",
+        ),
+        # C2: the two "is this retired?" predicates cannot disagree. Three
+        # readers ask the question — the login path, the CLI and the repository —
+        # and a row with one column set and the other NULL would answer
+        # differently depending on which one asked.
+        CheckConstraint(
+            "(retired_at IS NULL) = (retirement_state IS NULL)",
+            name="sso_personal_enterprises_retirement_pair_check",
         ),
     )
 
@@ -869,7 +902,6 @@ class UserAuditLogModel(Base):
         String(36),
         ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
     )
     organization_id = Column(
         String(36),
@@ -891,7 +923,12 @@ class UserAuditLogModel(Base):
 
     __table_args__ = (
         Index("ix_user_audit_log_user_id", "user_id", "created_at"),
-        Index("ix_user_audit_log_organization_id", "organization_id", "created_at"),
+        # Read per enterprise, newest first: the RLS policy keys on
+        # ``enterprise_id`` and every listing orders by ``created_at``. Its
+        # leading column also serves the plain enterprise lookups, so this
+        # replaces the bare single-column index rather than joining it. There is
+        # no organization pair: billing attribution is stamped, never filtered.
+        Index("ix_user_audit_log_enterprise_id", "enterprise_id", "created_at"),
     )
 
 
@@ -2488,14 +2525,26 @@ class KnowledgeItemModel(Base):
     `personal` (one user), `team` (one team), `global` (platform corpus,
     readable by every tenant).
 
-    Ownership invariant (#770, enforced by knowledge_items_global_org_check):
-    a global row is the platform tier and is billed to no organization
-    (organization_id IS NULL), so a tenant-org-owned global row is
-    unrepresentable. The converse no longer holds and is not asserted: under
-    ADR-017 D3/D5 an account may be in **no** organization, so a personal or
-    team row legitimately carries a NULL organization too. What every row does
-    carry is ``enterprise_id`` — the platform tier's is the standalone
-    enterprise, which is what the global-write policy arm compares against."""
+    Ownership invariant (#770): **a tenant cannot plant a global row.** The read
+    exemption is ``scope = 'global'`` and asks nothing about who wrote the row, so
+    a global row a tenant could write is a row that tenant publishes into every
+    other tenant's knowledge base. Two rules, in two places, make that
+    unrepresentable:
+
+    * the RLS write policies (baseline) refuse ``scope = 'global'`` on their
+      own-enterprise arm, leaving the platform arm — session bound to the
+      Standalone enterprise AND the new row stamped with it — as the only way in.
+      Pinning the row's ``enterprise_id`` as well as the session is what stops a
+      global row from becoming some tenant's to update and delete;
+    * ``knowledge_items_global_org_check`` refuses a global row billed to an
+      organization (``organization_id IS NULL``), so the platform tier is nobody's
+      cost centre.
+
+    The converse of the CHECK does not hold and is not asserted: under ADR-017
+    D3/D5 an account may be in **no** organization, so a personal or team row
+    legitimately carries a NULL organization too. What every row does carry is
+    ``enterprise_id`` — the platform tier's is the standalone enterprise, which is
+    what the global-write policy arm compares against."""
 
     __tablename__ = "knowledge_items"
 

@@ -173,12 +173,36 @@ _GLOBAL_ROW_SENTINEL_SESSION = (
     "(scope = 'global' "
     f"AND current_setting('{_TENANT_GUC}', true) = '{_STANDALONE_ENTERPRISE_ID}')"
 )
-#: New-row arm for INSERT/UPDATE WITH CHECK: additionally pins the incoming row
-#: shape (billed to no organization) rather than relying on the CHECK alone.
+#: New-row arm for INSERT/UPDATE WITH CHECK. Three conjuncts, and the
+#: ``enterprise_id`` one is load-bearing: gating on the SESSION alone would admit
+#: a global row stamped with a TENANT's enterprise, which the own-enterprise
+#: USING arm below would then hand back to that tenant as its own row to update
+#: and delete — a tenant owning a row every other tenant reads. Pinning the new
+#: row to the Standalone enterprise is what keeps the platform tier the
+#: platform's. ``organization_id IS NULL`` pins the same row's billing shape
+#: rather than relying on the table CHECK alone.
 _GLOBAL_NEW_ROW_SENTINEL_SESSION = (
     "(scope = 'global' AND organization_id IS NULL "
+    f"AND enterprise_id = '{_STANDALONE_ENTERPRISE_ID}' "
     f"AND current_setting('{_TENANT_GUC}', true) = '{_STANDALONE_ENTERPRISE_ID}')"
 )
+
+#: The own-enterprise arm on the WRITE side, and the whole of what migration 033
+#: guaranteed at the database level: **a tenant cannot plant a global row.**
+#:
+#: The read exemption is ``scope = 'global'`` and asks nothing about who wrote
+#: the row, so a tenant that could stamp its OWN enterprise on a global row would
+#: be publishing into every other tenant's knowledge base. The own-enterprise
+#: write arm therefore refuses that scope outright, leaving the platform arm
+#: above as the only way in — and that arm requires the session to be bound to
+#: the Standalone enterprise, which no tenant session ever is under ``multi``
+#: (fail-closed request binder).
+#:
+#: It is on the UPDATE ``WITH CHECK`` as well as the INSERT for the two-step
+#: route: write a ``personal`` row (legitimate), then promote its scope. USING
+#: admits the row because it is the tenant's own, so only the check can refuse
+#: the new shape.
+_OWN_ENTERPRISE_NEW_ROW = f"({_ENTERPRISE_MATCHES_SESSION} AND scope <> 'global')"
 
 _KNOWLEDGE_POLICIES = (
     (
@@ -188,14 +212,14 @@ _KNOWLEDGE_POLICIES = (
     (
         "knowledge_items_tenant_insert",
         "FOR INSERT WITH CHECK "
-        f"({_ENTERPRISE_MATCHES_SESSION} OR {_GLOBAL_NEW_ROW_SENTINEL_SESSION})",
+        f"({_OWN_ENTERPRISE_NEW_ROW} OR {_GLOBAL_NEW_ROW_SENTINEL_SESSION})",
     ),
     (
         "knowledge_items_tenant_update",
         "FOR UPDATE USING "
         f"({_ENTERPRISE_MATCHES_SESSION} OR {_GLOBAL_ROW_SENTINEL_SESSION}) "
         "WITH CHECK "
-        f"({_ENTERPRISE_MATCHES_SESSION} OR {_GLOBAL_NEW_ROW_SENTINEL_SESSION})",
+        f"({_OWN_ENTERPRISE_NEW_ROW} OR {_GLOBAL_NEW_ROW_SENTINEL_SESSION})",
     ),
     (
         "knowledge_items_tenant_delete",
@@ -355,6 +379,89 @@ DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION {_LAST_ADMIN_FUNCTION}()
 """
 
+# --- team_members: the member must be in the team's enterprise (ADR-017 D4) --
+#
+# ``team_members`` is the one tenant table with no ``enterprise_id`` of its own,
+# and its policy reaches the key by a hop through ``teams`` — which checks the
+# TEAM and says nothing about the MEMBER. A session bound to enterprise A could
+# therefore write ``(a user of B, a team of A)``: the policy admits it, the team
+# is A's, and the share allowlist downstream resolves through team membership.
+# "Members must be in the same enterprise" rested entirely on the application
+# remembering to check.
+#
+# It is an invariant of the row, not of the code path that wrote it, so the
+# database states it. Same shape as the last-admin guard above, and raised as a
+# ``check_violation`` for the same reason: callers that already handle
+# constraint violations handle it without learning a new error class.
+#
+# BEFORE INSERT OR UPDATE rather than a deferred constraint trigger: unlike the
+# last-admin rule this needs no serialisation point and no cross-row count, and
+# refusing the statement outright is what a caller can act on.
+_TEAM_MEMBER_ENTERPRISE_FUNCTION = "team_members_same_enterprise_guard"
+_TEAM_MEMBER_ENTERPRISE_TRIGGER = "team_members_same_enterprise"
+
+_CREATE_TEAM_MEMBER_ENTERPRISE_FUNCTION = f"""
+CREATE OR REPLACE FUNCTION {_TEAM_MEMBER_ENTERPRISE_FUNCTION}()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+    v_team_enterprise text;
+    v_user_enterprise text;
+BEGIN
+    SELECT enterprise_id INTO v_team_enterprise
+      FROM teams WHERE team_id = NEW.team_id;
+    SELECT enterprise_id INTO v_user_enterprise
+      FROM users WHERE user_id = NEW.user_id;
+
+    -- A missing team or user is the foreign keys' business, not this guard's;
+    -- refusing here would report the wrong constraint for a plain bad id.
+    IF v_team_enterprise IS NULL OR v_user_enterprise IS NULL THEN
+        RETURN NEW;
+    END IF;
+
+    IF v_team_enterprise IS DISTINCT FROM v_user_enterprise THEN
+        RAISE EXCEPTION
+            'team member % is not in the same enterprise as team %',
+            NEW.user_id, NEW.team_id
+            USING ERRCODE = '{_LAST_ADMIN_ERRCODE}',
+                  CONSTRAINT = '{_TEAM_MEMBER_ENTERPRISE_TRIGGER}',
+                  HINT = 'A team may only hold accounts of its own enterprise.';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+"""
+
+_CREATE_TEAM_MEMBER_ENTERPRISE_TRIGGER = f"""
+CREATE TRIGGER {_TEAM_MEMBER_ENTERPRISE_TRIGGER}
+BEFORE INSERT OR UPDATE ON team_members
+FOR EACH ROW EXECUTE FUNCTION {_TEAM_MEMBER_ENTERPRISE_FUNCTION}()
+"""
+
+#: The same rule on SQLite. Standalone has exactly one enterprise, so no row it
+#: can hold violates this — which is precisely why it is cheap to state, and why
+#: leaving it out would make the two dialects disagree about what a row means the
+#: day standalone grows a second enterprise. SQLite has no plpgsql, so the
+#: predicate is inlined and there is one trigger per event (``BEFORE INSERT OR
+#: UPDATE`` is PostgreSQL syntax).
+_SQLITE_TEAM_MEMBER_ENTERPRISE_TRIGGERS = tuple(f"""
+CREATE TRIGGER {_TEAM_MEMBER_ENTERPRISE_TRIGGER}_{event.lower()}
+BEFORE {event} ON team_members
+FOR EACH ROW
+WHEN (SELECT enterprise_id FROM teams WHERE team_id = NEW.team_id) IS NOT NULL
+ AND (SELECT enterprise_id FROM users WHERE user_id = NEW.user_id) IS NOT NULL
+ AND (SELECT enterprise_id FROM teams WHERE team_id = NEW.team_id)
+  <> (SELECT enterprise_id FROM users WHERE user_id = NEW.user_id)
+BEGIN
+    SELECT RAISE(ABORT,
+        'team member is not in the same enterprise as team');
+END;
+""" for event in ("INSERT", "UPDATE"))
+
 #: Every standalone plpgsql function this baseline creates. Dropping a table
 #: takes its triggers with it but never these, so ``downgrade`` names them.
 _PG_FUNCTIONS = (
@@ -366,6 +473,7 @@ _PG_FUNCTIONS = (
     "operator_access_grants_denial_final",
     "operator_access_grants_no_truncate_fn",
     _LAST_ADMIN_FUNCTION,
+    _TEAM_MEMBER_ENTERPRISE_FUNCTION,
 )
 
 
@@ -765,7 +873,9 @@ def upgrade() -> None:
         sqlite_where=sa.text("deleted_at IS NULL"),
         postgresql_where=sa.text("deleted_at IS NULL"),
     )
-    op.create_index("ix_enterprises_slug", "enterprises", ["slug"], unique=False)
+    # The partial unique index below serves every query the plain one did (same
+    # leading column, and every lookup is for a LIVE enterprise), so the plain
+    # one was a second B-tree maintained on every write for nothing.
     op.create_index(
         "ix_enterprises_slug_live",
         "enterprises",
@@ -977,16 +1087,28 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.CheckConstraint(
+            "(retired_at IS NULL) = (retirement_state IS NULL)",
+            name="sso_personal_enterprises_retirement_pair_check",
+        ),
+        sa.CheckConstraint(
             "retirement_state IS NULL OR retirement_state IN ('refuse', 'fresh_tenant')",
             name="sso_personal_enterprises_retirement_state_check",
         ),
         sa.ForeignKeyConstraint(
             ["enterprise_id"], ["enterprises.enterprise_id"], ondelete="CASCADE"
         ),
-        sa.PrimaryKeyConstraint("subject"),
+        sa.PrimaryKeyConstraint("provider", "subject"),
         sa.UniqueConstraint(
             "enterprise_id", name="uq_sso_personal_enterprises_enterprise"
         ),
+    )
+    # C9: the velocity gate counts recent provisionings for one provider, and
+    # had no index to do it with.
+    op.create_index(
+        "ix_sso_personal_enterprises_provider_created_at",
+        "sso_personal_enterprises",
+        ["provider", "created_at"],
+        unique=False,
     )
     op.create_table(
         "teams",
@@ -1037,14 +1159,8 @@ def upgrade() -> None:
             ["enterprise_id"], ["enterprises.enterprise_id"], ondelete="CASCADE"
         ),
         sa.PrimaryKeyConstraint(
-            "billing_subject_kind", "billing_subject_id", "usage_date"
+            "enterprise_id", "billing_subject_kind", "billing_subject_id", "usage_date"
         ),
-    )
-    op.create_index(
-        op.f("ix_turn_usage_enterprise_id"),
-        "turn_usage",
-        ["enterprise_id"],
-        unique=False,
     )
     op.create_table(
         "users",
@@ -1728,22 +1844,21 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["user_id"], ["users.user_id"], ondelete="SET NULL"),
         sa.PrimaryKeyConstraint("audit_id"),
     )
+    # C9: the trail is read per enterprise, newest first — the RLS policy keys
+    # on ``enterprise_id`` and every listing orders by ``created_at``. The
+    # composite serves both, and serves the single-column enterprise lookups the
+    # bare index used to (leading column). The organization pair went with the
+    # query nobody writes any more: billing attribution is stamped, not filtered.
     op.create_index(
-        op.f("ix_user_audit_log_enterprise_id"),
+        "ix_user_audit_log_enterprise_id",
         "user_audit_log",
-        ["enterprise_id"],
+        ["enterprise_id", "created_at"],
         unique=False,
     )
     op.create_index(
         op.f("ix_user_audit_log_event_type"),
         "user_audit_log",
         ["event_type"],
-        unique=False,
-    )
-    op.create_index(
-        "ix_user_audit_log_organization_id",
-        "user_audit_log",
-        ["organization_id", "created_at"],
         unique=False,
     )
     op.create_index(
@@ -3534,6 +3649,15 @@ def upgrade() -> None:
     if dialect == "postgresql":
         op.execute(_CREATE_LAST_ADMIN_FUNCTION)
         op.execute(_CREATE_LAST_ADMIN_TRIGGER)
+        # Stated on BOTH dialects, unlike the last-admin guard: standalone has
+        # one enterprise, so no row it can hold violates this — which is what
+        # makes it cheap to state, and what would make the two dialects disagree
+        # about what a row means if it were left out.
+        op.execute(_CREATE_TEAM_MEMBER_ENTERPRISE_FUNCTION)
+        op.execute(_CREATE_TEAM_MEMBER_ENTERPRISE_TRIGGER)
+    elif dialect == "sqlite":
+        for statement in _SQLITE_TEAM_MEMBER_ENTERPRISE_TRIGGERS:
+            op.execute(statement)
     _seed(dialect)
 
 
@@ -3752,9 +3876,8 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_case_actions_case_id"), table_name="case_actions")
     op.drop_table("case_actions")
     op.drop_index("ix_user_audit_log_user_id", table_name="user_audit_log")
-    op.drop_index("ix_user_audit_log_organization_id", table_name="user_audit_log")
     op.drop_index(op.f("ix_user_audit_log_event_type"), table_name="user_audit_log")
-    op.drop_index(op.f("ix_user_audit_log_enterprise_id"), table_name="user_audit_log")
+    op.drop_index("ix_user_audit_log_enterprise_id", table_name="user_audit_log")
     op.drop_table("user_audit_log")
     op.drop_index("ix_resource_shares_scope", table_name="resource_shares")
     op.drop_index(
@@ -3830,10 +3953,13 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_users_enterprise_id"), table_name="users")
     op.drop_index("ix_users_email", table_name="users")
     op.drop_table("users")
-    op.drop_index(op.f("ix_turn_usage_enterprise_id"), table_name="turn_usage")
     op.drop_table("turn_usage")
     op.drop_index(op.f("ix_teams_enterprise_id"), table_name="teams")
     op.drop_table("teams")
+    op.drop_index(
+        "ix_sso_personal_enterprises_provider_created_at",
+        table_name="sso_personal_enterprises",
+    )
     op.drop_table("sso_personal_enterprises")
     op.drop_table("sso_org_mappings")
     op.drop_table("role_permissions")
@@ -3865,7 +3991,6 @@ def downgrade() -> None:
         sqlite_where=sa.text("deleted_at IS NULL"),
         postgresql_where=sa.text("deleted_at IS NULL"),
     )
-    op.drop_index("ix_enterprises_slug", table_name="enterprises")
     op.drop_index(
         "ix_enterprises_domain_live",
         table_name="enterprises",
