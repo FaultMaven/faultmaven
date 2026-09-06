@@ -179,22 +179,30 @@ class UserRepository(ABC):
         limit: int = 50,
         offset: int = 0,
         is_active: Optional[bool] = None,
-        user_ids: Optional[Collection[str]] = None,
+        enterprise_id: Optional[str] = None,
     ) -> tuple[List[User], int]:
-        """List users with pagination, an optional active filter and an id allowlist.
+        """List users with pagination, an optional active filter and a tenant.
 
-        ``user_ids`` is the tenant predicate the operator surface resolves from
-        ``users.enterprise_id`` (``api/operator_user_scope``, #1318). It is a
-        query predicate rather than a post-filter on purpose: the operator
-        listings otherwise load every user row in the deployment and project the
-        caller's tenant out of them, which makes ``total`` a deployment-wide
-        count and couples one tenant's listing to every other tenant's rows —
-        a single row that fails hydration (an email the model rejects, say)
-        takes the listing down for everyone.
+        ``enterprise_id`` is the tenant predicate the operator surface confines
+        by (``api/operator_user_scope``, #1318). It is a query predicate rather
+        than a post-filter on purpose: the operator listings otherwise load every
+        user row in the deployment and project the caller's tenant out of them,
+        which makes ``total`` a deployment-wide count and couples one tenant's
+        listing to every other tenant's rows — a single row that fails hydration
+        (an email the model rejects, say) takes the listing down for everyone.
 
-        ``None`` means no restriction. An EMPTY collection means "this tenant
-        has no users" and must return nothing; implementations must not read it
-        as ``None``.
+        It is the ENTERPRISE ID and not a materialised set of account ids, which
+        is what it used to be: the scope read every member id of the enterprise
+        and handed them over as an ``IN (...)`` list, so an enterprise with ten
+        thousand accounts cost a full id scan plus a ten-thousand-element
+        parameter list on every page of every listing. The column is indexed and
+        the predicate is one comparison.
+
+        ``None`` means no restriction, which is only ever the single-tenant
+        answer — the deployment IS the tenant. Under ``multi`` the scope always
+        resolves an enterprise, so "no restriction" and "an enterprise with no
+        accounts" cannot be confused: the latter is a real id that matches
+        nothing.
         """
         pass
 
@@ -331,14 +339,12 @@ class InMemoryUserRepository(UserRepository):
         limit: int = 50,
         offset: int = 0,
         is_active: Optional[bool] = None,
-        user_ids: Optional[Collection[str]] = None,
+        enterprise_id: Optional[str] = None,
     ) -> tuple[List[User], int]:
-        """List users with pagination, an optional active filter and an id allowlist."""
+        """List users with pagination, an optional active filter and a tenant."""
         all_users = list(self._users.values())
-        # `is not None`, not truthiness: an empty allowlist selects nothing.
-        if user_ids is not None:
-            allowed = set(user_ids)
-            all_users = [u for u in all_users if u.user_id in allowed]
+        if enterprise_id is not None:
+            all_users = [u for u in all_users if u.enterprise_id == enterprise_id]
         if is_active is not None:
             all_users = [u for u in all_users if u.is_active == is_active]
         all_users.sort(key=lambda u: u.created_at, reverse=True)
@@ -616,9 +622,9 @@ class PostgreSQLUserRepository(UserRepository):
         limit: int = 50,
         offset: int = 0,
         is_active: Optional[bool] = None,
-        user_ids: Optional[Collection[str]] = None,
+        enterprise_id: Optional[str] = None,
     ) -> tuple[List[User], int]:
-        """List users with pagination, an optional active filter and an id allowlist."""
+        """List users with pagination, an optional active filter and a tenant."""
         from sqlalchemy import func, select
 
         from faultmaven.infrastructure.persistence.models import UserModel
@@ -626,12 +632,13 @@ class PostgreSQLUserRepository(UserRepository):
         base_filter = []
         if is_active is not None:
             base_filter.append(UserModel.is_active == is_active)
-        # `is not None`, not truthiness: an empty allowlist becomes `IN ()`,
-        # which selects nothing — the fail-CLOSED reading. Treating it as "no
-        # filter" would turn a tenant with no members into a deployment-wide
-        # listing.
-        if user_ids is not None:
-            base_filter.append(UserModel.user_id.in_(list(user_ids)))
+        # One indexed comparison, where this used to be an ``IN (...)`` over
+        # every account id of the enterprise — materialised by the caller, per
+        # page. ``None`` is the single-tenant "no restriction"; a real id that
+        # matches nothing is a tenant with no accounts, and correctly returns
+        # nothing.
+        if enterprise_id is not None:
+            base_filter.append(UserModel.enterprise_id == enterprise_id)
 
         count_stmt = select(func.count()).select_from(UserModel).where(*base_filter)
         count_result = await self.db.execute(count_stmt)
@@ -809,13 +816,16 @@ class SessionlessUserRepository(UserRepository):
         limit: int = 50,
         offset: int = 0,
         is_active: Optional[bool] = None,
-        user_ids: Optional[Collection[str]] = None,
+        enterprise_id: Optional[str] = None,
     ) -> tuple[List[User], int]:
         from faultmaven.infrastructure.persistence.database import get_db_session
 
         async with get_db_session() as session:
             return await PostgreSQLUserRepository(session).list_users(
-                limit=limit, offset=offset, is_active=is_active, user_ids=user_ids
+                limit=limit,
+                offset=offset,
+                is_active=is_active,
+                enterprise_id=enterprise_id,
             )
 
     async def list_enterprise_member_ids(self, enterprise_id: str) -> frozenset:

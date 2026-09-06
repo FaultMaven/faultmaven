@@ -410,8 +410,13 @@ def generate_item_id() -> str:
 
 
 def generate_org_id() -> str:
-    """Generate a valid organization ID."""
+    """Generate a valid organization ID (BILLING attribution, ADR-017 D2)."""
     return f"org_{uuid4().hex[:12]}"
+
+
+def generate_enterprise_id() -> str:
+    """Generate a valid enterprise ID — the ISOLATION key (ADR-017 D1)."""
+    return f"ent_{uuid4().hex[:12]}"
 
 
 def generate_evidence_id() -> str:

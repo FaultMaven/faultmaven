@@ -113,12 +113,12 @@ class PostgreSQLEnterpriseRepository(IEnterpriseRepository):
         return _model_to_domain(model) if model else None
 
     async def get_enterprise_by_slug(self, slug: str) -> Optional[Enterprise]:
-        stmt = select(EnterpriseModel).where(
-            EnterpriseModel.slug == slug,
-            EnterpriseModel.deleted_at.is_(None),
+        """LIVE rows only, through the shared lookup — see ``tenant_bootstrap``."""
+        from faultmaven.infrastructure.persistence.tenant_bootstrap import (
+            find_live_enterprise_by_slug,
         )
-        result = await self.db.execute(stmt)
-        model = result.scalar_one_or_none()
+
+        model = await find_live_enterprise_by_slug(self.db, slug)
         return _model_to_domain(model) if model else None
 
     async def find_live_by_domain(self, domain: str) -> Optional[Enterprise]:

@@ -33,7 +33,7 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
 )
 from tests.utils import make_org_knowledge_item
 
-from .conftest import generate_org_id, measure_min_latency
+from .conftest import generate_enterprise_id, measure_min_latency
 
 
 def create_valid_embedding(value: float = 0.1) -> list:
@@ -45,7 +45,7 @@ def create_sample_item(**kwargs) -> KnowledgeItem:
     """Create a sample knowledge item for benchmarking.
 
     Thin wrapper over the shared factory: only the sample text differs from
-    the shared defaults. The tenancy invariants (scope vs organization_id,
+    the shared defaults. The tenancy invariants (scope vs enterprise_id,
     #770) live in ``tests.utils.make_org_knowledge_item`` so that a domain
     change updates every suite at once — this file previously carried its own
     copy and was silently left behind by #770.
@@ -174,9 +174,9 @@ class TestItemCreationPerformance:
         batch_size = 100
 
         async def _fresh_batch() -> list:
-            organization_id = generate_org_id()
+            enterprise_id = generate_enterprise_id()
             return [
-                create_sample_item(organization_id=organization_id)
+                create_sample_item(enterprise_id=enterprise_id)
                 for _ in range(batch_size)
             ]
 
@@ -228,89 +228,6 @@ class TestItemRetrievalPerformance:
         ), f"Item retrieval latency {measured.report()} exceeds 100ms target"
         print(f"\n  Item retrieval latency: {measured.report()}")
 
-    @pytest.mark.asyncio
-    async def test_list_items_by_organization_latency(
-        self,
-        knowledge_item_repository: DatabaseKnowledgeItemRepository,
-        benchmark_session,
-    ):
-        """Measure latency of listing items for an organization.
-
-        Target: < 300ms for 1000 items
-        """
-        organization_id = generate_org_id()
-
-        # Create 1000 items
-        for i in range(1000):
-            item = create_sample_item(organization_id=organization_id)
-            await knowledge_item_repository.create(item)
-
-        # Benchmark list operation — read-only.
-        measured = await measure_min_latency(
-            lambda: knowledge_item_repository.list_by_organization_id(
-                organization_id, limit=1000
-            )
-        )
-
-        assert len(measured.result) == 1000
-        # Increased threshold to account for CI/hardware variability
-        # Original target: 300ms, adjusted to 1500ms for realistic expectations
-        assert (
-            measured.best < 1.500
-        ), f"List items latency {measured.report()} exceeds 1500ms target"
-        print(
-            f"\n  List items latency: {measured.report()} "
-            f"({len(measured.result)} items)"
-        )
-
-    @pytest.mark.asyncio
-    async def test_list_items_with_filters_latency(
-        self,
-        knowledge_item_repository: DatabaseKnowledgeItemRepository,
-        benchmark_session,
-    ):
-        """Measure latency of listing items with filters.
-
-        Target: < 200ms for filtered query
-        """
-        organization_id = generate_org_id()
-
-        # Create mixed items
-        for i in range(500):
-            item = create_sample_item(
-                organization_id=organization_id,
-                item_type=KnowledgeItemType.FAQ,
-                category="networking",
-            )
-            await knowledge_item_repository.create(item)
-
-        for i in range(500):
-            item = create_sample_item(
-                organization_id=organization_id,
-                item_type=KnowledgeItemType.RUNBOOK,
-                category="database",
-            )
-            await knowledge_item_repository.create(item)
-
-        # Benchmark filtered list — read-only.
-        measured = await measure_min_latency(
-            lambda: knowledge_item_repository.list_by_organization_id(
-                organization_id,
-                item_type=KnowledgeItemType.FAQ,
-                category="networking",
-                limit=500,
-            )
-        )
-
-        assert len(measured.result) == 500
-        assert (
-            measured.best < 0.200
-        ), f"Filtered list latency {measured.report()} exceeds 200ms target"
-        print(
-            f"\n  Filtered list latency: {measured.report()} "
-            f"({len(measured.result)} items)"
-        )
-
 
 @pytest.mark.benchmark
 class TestItemSearchPerformance:
@@ -332,7 +249,7 @@ class TestItemSearchPerformance:
 
         Target: < 200ms for 1000 items
         """
-        organization_id = generate_org_id()
+        enterprise_id = generate_enterprise_id()
         tag_sets = [
             ["python", "debugging"],
             ["java", "networking"],
@@ -344,13 +261,13 @@ class TestItemSearchPerformance:
         # Create 1000 items with varied tags
         for i in range(1000):
             tags = tag_sets[i % len(tag_sets)]
-            item = create_sample_item(organization_id=organization_id, tags=tags)
+            item = create_sample_item(enterprise_id=enterprise_id, tags=tags)
             await knowledge_item_repository.create(item)
 
         # Benchmark tag search — read-only.
         measured = await measure_min_latency(
             lambda: knowledge_item_repository.search_by_tags(
-                organization_id,
+                enterprise_id,
                 ["python", "java"],
                 match_all=False,
                 limit=500,
@@ -376,19 +293,19 @@ class TestItemSearchPerformance:
 
         Target: < 200ms for 1000 items
         """
-        organization_id = generate_org_id()
+        enterprise_id = generate_enterprise_id()
 
         # Create items with overlapping tags
         for i in range(500):
             item = create_sample_item(
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
                 tags=["python", "debugging", "troubleshooting"],
             )
             await knowledge_item_repository.create(item)
 
         for i in range(500):
             item = create_sample_item(
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
                 tags=["python", "api"],
             )
             await knowledge_item_repository.create(item)
@@ -396,7 +313,7 @@ class TestItemSearchPerformance:
         # Benchmark tag search with match_all — read-only.
         measured = await measure_min_latency(
             lambda: knowledge_item_repository.search_by_tags(
-                organization_id,
+                enterprise_id,
                 ["python", "debugging"],
                 match_all=True,
                 limit=500,
@@ -497,13 +414,13 @@ class TestItemEmbeddingOperationsPerformance:
 
         Target: < 150ms
         """
-        organization_id = generate_org_id()
+        enterprise_id = generate_enterprise_id()
         embedding = create_valid_embedding()
 
         # Create mixed items
         for i in range(100):
             item = create_sample_item(
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
                 embedding_vector=embedding if i % 2 == 0 else None,
             )
             await knowledge_item_repository.create(item)
@@ -511,7 +428,7 @@ class TestItemEmbeddingOperationsPerformance:
         # Read-only.
         measured = await measure_min_latency(
             lambda: knowledge_item_repository.get_items_without_embeddings(
-                organization_id
+                enterprise_id
             )
         )
 
@@ -539,12 +456,12 @@ class TestItemHelpfulnessPerformance:
 
         Target: < 200ms
         """
-        organization_id = generate_org_id()
+        enterprise_id = generate_enterprise_id()
 
         # Create items with varying helpfulness scores
         for i in range(100):
             item = create_sample_item(
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
                 helpful_count=i + 5,  # Ensure above threshold
                 not_helpful_count=max(0, 10 - i),
             )
@@ -552,9 +469,7 @@ class TestItemHelpfulnessPerformance:
 
         # Read-only.
         measured = await measure_min_latency(
-            lambda: knowledge_item_repository.get_most_helpful(
-                organization_id, limit=20
-            )
+            lambda: knowledge_item_repository.get_most_helpful(enterprise_id, limit=20)
         )
 
         assert len(measured.result) > 0
@@ -564,83 +479,6 @@ class TestItemHelpfulnessPerformance:
         print(
             f"\n  Get most helpful latency: {measured.report()} "
             f"({len(measured.result)} items)"
-        )
-
-
-@pytest.mark.benchmark
-class TestItemCountPerformance:
-    """Benchmark count operations."""
-
-    @pytest.mark.asyncio
-    async def test_count_items_latency(
-        self,
-        knowledge_item_repository: DatabaseKnowledgeItemRepository,
-        benchmark_session,
-    ):
-        """Measure latency of counting items.
-
-        Target: < 100ms
-        """
-        organization_id = generate_org_id()
-
-        # Create items
-        for i in range(500):
-            item = create_sample_item(organization_id=organization_id)
-            await knowledge_item_repository.create(item)
-
-        # Read-only.
-        measured = await measure_min_latency(
-            lambda: knowledge_item_repository.count_by_organization_id(organization_id)
-        )
-
-        assert measured.result == 500
-        assert (
-            measured.best < 0.100
-        ), f"Count latency {measured.report()} exceeds 100ms target"
-        print(f"\n  Count latency: {measured.report()} ({measured.result} items)")
-
-    @pytest.mark.asyncio
-    async def test_count_with_filter_latency(
-        self,
-        knowledge_item_repository: DatabaseKnowledgeItemRepository,
-        benchmark_session,
-    ):
-        """Measure latency of counting items with filter.
-
-        Target: < 100ms
-        """
-        organization_id = generate_org_id()
-
-        # Create mixed items
-        for i in range(250):
-            item = create_sample_item(
-                organization_id=organization_id,
-                item_type=KnowledgeItemType.FAQ,
-            )
-            await knowledge_item_repository.create(item)
-
-        for i in range(250):
-            item = create_sample_item(
-                organization_id=organization_id,
-                item_type=KnowledgeItemType.RUNBOOK,
-            )
-            await knowledge_item_repository.create(item)
-
-        # Read-only.
-        measured = await measure_min_latency(
-            lambda: knowledge_item_repository.count_by_organization_id(
-                organization_id,
-                item_type=KnowledgeItemType.FAQ,
-            )
-        )
-
-        assert measured.result == 250
-        assert (
-            measured.best < 0.100
-        ), f"Count with filter latency {measured.report()} exceeds 100ms target"
-        print(
-            f"\n  Count with filter latency: {measured.report()} "
-            f"({measured.result} items)"
         )
 
 
@@ -664,10 +502,10 @@ class TestItemMixedWorkloadPerformance:
         one row against a search this small does not move the measurement, and
         taking the MINIMUM biases towards the earliest and smallest anyway.
         """
-        organization_id = generate_org_id()
+        enterprise_id = generate_enterprise_id()
 
         async def _fresh_item():
-            return create_sample_item(organization_id=organization_id)
+            return create_sample_item(enterprise_id=enterprise_id)
 
         async def _lifecycle(item):
             # Create
@@ -681,13 +519,14 @@ class TestItemMixedWorkloadPerformance:
             item.mark_helpful()
             await knowledge_item_repository.update(item)
 
-            # Read back the org's items. This step was
-            # ``search_by_text(organization_id, "sample")`` until #1288 deleted
-            # that method; ``list_by_organization_id`` keeps the step a real
-            # hydrating read that returns rows, rather than a search that would
-            # now miss.
-            return await knowledge_item_repository.list_by_organization_id(
-                organization_id, limit=10
+            # Read back the enterprise's items. This step was
+            # ``search_by_text(enterprise_id, "sample")`` until #1288 deleted
+            # that method, then ``list_by_enterprise_id`` until the fm#1353
+            # review round deleted THAT one for having no production caller.
+            # ``search_by_tags`` is the remaining enterprise-scoped hydrating
+            # read, which is what keeps this step a real one.
+            return await knowledge_item_repository.search_by_tags(
+                enterprise_id, ["sample"], limit=10
             )
 
         measured = await measure_min_latency(_lifecycle, setup=_fresh_item)
@@ -708,12 +547,12 @@ class TestItemMixedWorkloadPerformance:
         Simulates: list → filter by type → search → get most helpful
         Target: < 800ms total
         """
-        organization_id = generate_org_id()
+        enterprise_id = generate_enterprise_id()
 
         # Setup: Create items
         for i in range(100):
             item = create_sample_item(
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
                 item_type=(
                     KnowledgeItemType.FAQ if i % 2 == 0 else KnowledgeItemType.RUNBOOK
                 ),
@@ -724,16 +563,15 @@ class TestItemMixedWorkloadPerformance:
 
         # Every step is a read, so the whole workload replays unchanged.
         async def _browse():
-            # List all
-            await knowledge_item_repository.list_by_organization_id(
-                organization_id, limit=50
-            )
+            # The inventory the dashboard actually lists, RBAC applied in-query.
+            # This was ``list_by_organization_id`` twice — a listing with no
+            # production caller, deleted in the fm#1353 review round — so the
+            # browse now measures the read a browsing user really makes.
+            await knowledge_item_repository.list_for_inventory(enterprise_id)
 
-            # Filter by type
-            await knowledge_item_repository.list_by_organization_id(
-                organization_id,
-                item_type=KnowledgeItemType.FAQ,
-                limit=25,
+            # Filter by type, through the same listing.
+            await knowledge_item_repository.list_for_inventory(
+                enterprise_id, item_type=KnowledgeItemType.FAQ
             )
 
             # (A "search by text" step ran here until #1288 deleted
@@ -742,12 +580,12 @@ class TestItemMixedWorkloadPerformance:
 
             # Search by tags
             await knowledge_item_repository.search_by_tags(
-                organization_id, ["common"], limit=20
+                enterprise_id, ["common"], limit=20
             )
 
             # Get most helpful
             return await knowledge_item_repository.get_most_helpful(
-                organization_id, limit=10
+                enterprise_id, limit=10
             )
 
         measured = await measure_min_latency(_browse)

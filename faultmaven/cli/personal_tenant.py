@@ -111,8 +111,8 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
+from faultmaven.config.tenant_context import usable_tenant_id
 from faultmaven.infrastructure.persistence import account_anchor, tenant_retirement
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.infrastructure.persistence.enterprise_liveness import (
@@ -653,27 +653,16 @@ async def _load_user(subject: str):
 
 
 async def _load_company_enterprise(enterprise_id: str):
-    from faultmaven.config.tenant_context import set_current_enterprise_id
-    from faultmaven.infrastructure.persistence.sessionless_enterprise_repository import (  # noqa: E501
-        SessionlessEnterpriseRepository,
-    )
+    from faultmaven.cli._tenant import EnterpriseRefused, bind_and_load_enterprise
 
-    if enterprise_id == STANDALONE_ENTERPRISE_ID:
-        raise _Refused(
-            "That id is the Standalone sentinel, which identifies the "
-            "deployment rather than a tenant (fm#850). Nothing was written."
-        )
-    set_current_enterprise_id(enterprise_id)
-    enterprises = SessionlessEnterpriseRepository()
-    enterprise = await enterprises.get_enterprise(enterprise_id)
-    if not enterprise_is_usable(enterprise):
-        # The same predicate the login's bind-and-verify tail uses, so the
-        # command cannot accept a tenant a login would refuse.
-        raise _Refused(
-            f"No usable enterprise '{enterprise_id}' (it is an id, not a "
-            "slug; a soft-deleted or inactive one does not resolve). Nothing "
-            "was written."
-        )
+    # Bind and check through the one helper every operator command uses: the
+    # sentinel rule and the liveness predicate are the login's own, so this
+    # command cannot accept a tenant a login would refuse — and the other three
+    # commands cannot drift into a weaker version of the same check.
+    try:
+        enterprise = await bind_and_load_enterprise(enterprise_id)
+    except EnterpriseRefused as exc:
+        raise _Refused(str(exc)) from exc
 
     async with get_db_session() as session:
         state = await tenant_retirement.read_state(

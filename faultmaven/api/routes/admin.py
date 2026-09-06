@@ -115,14 +115,14 @@ async def list_users(
             enterprise to be confined to
         422 Unprocessable Entity: Invalid query parameters
     """
-    # Resolved OUTSIDE the try below: a missing membership store is a 503 and a
-    # caller with no tenant is a 403, and the blanket handler would turn either
-    # into a 500 that reads like a bug in the listing.
-    member_ids = await scope.member_ids(current_user)
+    # Resolved OUTSIDE the try below: a caller with no tenant is a 403, and the
+    # blanket handler would turn it into a 500 that reads like a bug in the
+    # listing.
+    confined_to = scope.listing_enterprise(current_user)
 
     try:
         users, total = await user_service.list_users(
-            restrict_to_user_ids=member_ids,
+            enterprise_id=confined_to,
             is_active=is_active,
             role=role,
             search=search,

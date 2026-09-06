@@ -396,29 +396,31 @@ class DatabaseUserStore:
         self,
         limit: int = 100,
         offset: int = 0,
-        user_ids: Optional[Collection[str]] = None,
+        enterprise_id: Optional[str] = None,
     ) -> List[DevUser]:
-        """List users with pagination, optionally restricted to an id allowlist
+        """List users with pagination, optionally confined to one enterprise
 
         Args:
             limit: Maximum number of users to return
             offset: Pagination offset
-            user_ids: The only users the caller may see, or ``None`` for no
-                restriction. The operator surface resolves it from
-                ``organization_members`` (``api/operator_user_scope``, #1318)
-                and passes it here rather than filtering the returned page: the
-                page is deployment-wide, so a tenant's users could fall outside
-                it, and one row elsewhere that fails hydration empties this
-                listing for every caller (the ``except`` below returns ``[]``).
+            enterprise_id: The tenant the listing is confined to, or ``None`` for
+                no restriction — which is only ever the single-tenant answer.
+                The operator surface confines by it
+                (``api/operator_user_scope``, #1318) and passes it here rather
+                than filtering the returned page: the page is deployment-wide, so
+                a tenant's users could fall outside it, and one row elsewhere
+                that fails hydration empties this listing for every caller (the
+                ``except`` below returns ``[]``). It used to be a materialised
+                set of account ids, which is a full roster scan to express one
+                indexed comparison.
 
         Returns:
             List of DevUser objects
         """
         try:
-            # `is not None`, not truthiness: an empty allowlist selects nothing.
-            if user_ids is not None:
+            if enterprise_id is not None:
                 users, _ = await self.user_repository.list_users(
-                    limit=limit, offset=offset, user_ids=user_ids
+                    limit=limit, offset=offset, enterprise_id=enterprise_id
                 )
             else:
                 users, _ = await self.user_repository.list(limit=limit, offset=offset)
@@ -427,13 +429,23 @@ class DatabaseUserStore:
             logger.error(f"Failed to list users: {e}")
             return []
 
-    async def count_users(self) -> int:
-        """Get total number of users
+    async def count_users(self, enterprise_id: Optional[str] = None) -> int:
+        """Get total number of users, optionally confined to one enterprise
+
+        Args:
+            enterprise_id: The tenant to count, or ``None`` for the deployment.
 
         Returns:
-            Total user count
+            Total user count. ``0`` on failure, which the confined caller reads
+            as "nothing to show" rather than as the deployment's population —
+            the direction that cannot disclose another tenant's size.
         """
         try:
+            if enterprise_id is not None:
+                _, total = await self.user_repository.list_users(
+                    limit=1, offset=0, enterprise_id=enterprise_id
+                )
+                return total
             _, total = await self.user_repository.list(limit=1, offset=0)
             return total
         except Exception as e:

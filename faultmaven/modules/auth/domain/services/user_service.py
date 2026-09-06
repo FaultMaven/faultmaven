@@ -859,37 +859,38 @@ class UserService(BaseService):
         is_active: Optional[bool] = None,
         role: Optional[str] = None,
         search: Optional[str] = None,
-        restrict_to_user_ids: Optional[Collection[str]] = None,
     ) -> Tuple[List[RepositoryUser], int]:
         """List users with pagination and optional filtering.
 
         Args:
-            enterprise_id: Enterprise context for scoping (not yet enforced in in-memory repo)
-            limit: Maximum results
-            offset: Pagination offset
-            is_active: Filter by active status
-            role: Filter by role (admin, member, viewer) - TASK-019
-            search: Search by email or name (case-insensitive) - TASK-019
-            restrict_to_user_ids: The only users the caller may see, or ``None``
-                for no restriction. This is the tenant predicate the operator
-                surface resolves from ``users.enterprise_id``
-                (``api/operator_user_scope``, #1318). It goes down to the
+            enterprise_id: The tenant the listing is confined to, or ``None``
+                for no restriction — which is only ever the single-tenant
+                answer, because the deployment IS the tenant there. This is the
+                predicate the operator surface confines by
+                (``api/operator_user_scope``, #1318), and it goes down to the
                 repository as a QUERY predicate rather than being applied to the
                 page this method fetches: the 1000-row window below is
                 deployment-wide, so a tenant's users could fall outside it, and
                 loading every tenant's rows to project one out of them makes
                 ``total`` a deployment-wide count and couples this listing to
                 rows the caller may not see — one that fails hydration takes it
-                down for everyone. An empty collection returns nothing rather
-                than everything. ``enterprise_id`` above remains a context
-                label the repository does not filter on; passing it does not
-                confine anything, which is why the confined caller passes this.
+                down for everyone.
+
+                It used to be a materialised set of account ids beside a
+                ``enterprise_id`` the repository ignored: the scope read every
+                member id of the enterprise to build an ``IN (...)``, per page.
+                One indexed comparison says the same thing.
+            limit: Maximum results
+            offset: Pagination offset
+            is_active: Filter by active status
+            role: Filter by role (admin, member, viewer) - TASK-019
+            search: Search by email or name (case-insensitive) - TASK-019
 
         Returns:
             Tuple of (users, total_count)
         """
-        # Get base users list from repository. The allowlist goes DOWN as a
-        # query predicate rather than being applied only here: the 1000-row
+        # Get base users list from repository. The tenant predicate goes DOWN as
+        # a query predicate rather than being applied only here: the 1000-row
         # window is deployment-wide, so post-filtering would leave `total`
         # counting other tenants and would couple this listing to their rows —
         # one row that fails hydration takes every operator's listing with it.
@@ -897,14 +898,14 @@ class UserService(BaseService):
             limit=1000,  # Get all for filtering
             offset=0,
             is_active=is_active,
-            user_ids=restrict_to_user_ids,
+            enterprise_id=enterprise_id,
         )
 
         # Apply additional filters (TASK-019). The tenant predicate is NOT
         # re-applied here: the repository answered it, and a second copy of the
         # rule would be one that could drift from the query without any test
-        # able to tell them apart (see `restrict_to_user_ids` above for why the
-        # query is where it has to live).
+        # able to tell them apart (see `enterprise_id` above for why the query
+        # is where it has to live).
         filtered_users = []
         for user in users:
             # Ensure is_active filtering even if repository doesn't apply it

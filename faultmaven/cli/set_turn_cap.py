@@ -84,6 +84,15 @@ import asyncio
 import sys
 
 from faultmaven.cli._confirmation import require_confirmation
+from faultmaven.infrastructure.protection.tenant_turn_cap import (
+    CAP_POLICY_SOURCES,
+    SOURCE_COMPANY_UNCAPPED,
+    SOURCE_DEFAULT_PERSONAL,
+    SOURCE_INDETERMINATE,
+    SOURCE_OVERRIDE,
+    SOURCE_OVERRIDE_UNLIMITED,
+    SOURCE_SINGLE_TENANT,
+)
 
 #: argparse's ``description``. A literal, not derived from ``__doc__``: ``python
 #: -OO`` strips docstrings, and that expression would raise before argparse ran.
@@ -99,23 +108,31 @@ _SUMMARY = (
 #: will actually meet, resolved by the same object, not a second description of
 #: the policy that can drift from it.
 _SOURCE_WORDS = {
-    "single_tenant": "uncapped — single-tenant deployments are never capped",
-    "override_unlimited": "override 0 → uncapped (explicitly)",
-    "override": "override {limit} → {limit} turns/day",
-    "default_personal": (
+    SOURCE_SINGLE_TENANT: "uncapped — single-tenant deployments are never capped",
+    SOURCE_OVERRIDE_UNLIMITED: "override 0 → uncapped (explicitly)",
+    SOURCE_OVERRIDE: "override {limit} → {limit} turns/day",
+    SOURCE_DEFAULT_PERSONAL: (
         "no override → {limit} turns/day "
         "(the deployment default, because nobody pays for this account)"
     ),
-    "company_uncapped": "no override → uncapped (a company organization)",
-    "indeterminate": (
+    SOURCE_COMPANY_UNCAPPED: "no override → uncapped (a company organization)",
+    SOURCE_INDETERMINATE: (
         "could not be determined → {limit} turns/day "
         "(the default, applied fail-closed)"
     ),
+    # Not a resolver source: the word this command prints after a --clear, where
+    # there is no policy to resolve yet.
     "cleared": (
         "no override → the deployment policy "
         "(the default cap for an unpaid account, uncapped for a company)"
     ),
 }
+
+#: A source the resolver can answer with but this table cannot word would print
+#: a bare number, which reads like an answer and is not one.
+assert CAP_POLICY_SOURCES <= set(_SOURCE_WORDS), sorted(
+    CAP_POLICY_SOURCES - set(_SOURCE_WORDS)
+)
 
 
 def _describe(policy) -> str:
@@ -135,6 +152,7 @@ async def set_turn_cap(
     resolver=None,
     organizations=None,
     ledger=None,
+    enterprises=None,
 ) -> int:
     """Read, and optionally write, one billing subject's cap. Returns the exit code.
 
@@ -153,16 +171,14 @@ async def set_turn_cap(
     goes around it; and the write goes through ``update_organization``, so the
     domain object is what carries the value.
     """
-    from faultmaven.config.tenant_context import set_current_enterprise_id
+    from faultmaven.cli._tenant import EnterpriseRefused, bind_and_load_enterprise
     from faultmaven.infrastructure.persistence.sessionless_organization_repository import (  # noqa: E501
         SessionlessOrganizationRepository,
     )
     from faultmaven.infrastructure.protection.tenant_turn_cap import (
-        SUBJECT_ACCOUNT,
-        SUBJECT_ORGANIZATION,
-        BillingSubject,
         CapPolicyResolver,
         SqlTurnLedger,
+        billing_subject_for,
         utc_day,
     )
 
@@ -176,18 +192,22 @@ async def set_turn_cap(
     print("=" * 80)
 
     # RLS scopes `organizations` and the usage ledger by
-    # ``app.current_enterprise_id`` (ADR-017 D1). Bind the ENTERPRISE before any
-    # read so everything below runs under the pod's own application role,
-    # exactly as the request path does — a subject id alone resolves nothing,
-    # which is why the enterprise is a required argument rather than something
-    # this could derive.
-    set_current_enterprise_id(enterprise_id)
+    # ``app.current_enterprise_id`` (ADR-017 D1). The shared helper binds the
+    # ENTERPRISE before any read so everything below runs under the pod's own
+    # application role, exactly as the request path does — a subject id alone
+    # resolves nothing, which is why the enterprise is a required argument rather
+    # than something this could derive — and refuses a sentinel or a retired
+    # tenant, which this command used to accept and then report caps for.
+    try:
+        await bind_and_load_enterprise(enterprise_id, repository=enterprises)
+    except EnterpriseRefused as exc:
+        print(f"\n❌ {exc}")
+        return 1
 
-    subject = (
-        BillingSubject(SUBJECT_ORGANIZATION, organization_id)
-        if organization_id
-        else BillingSubject(SUBJECT_ACCOUNT, account_id)
-    )
+    # Through the shared constructor, not a local copy of the same two-arm rule:
+    # "the organization when the account has one, the account itself otherwise"
+    # is one decision (ADR-017 D5), and the enforcement path already makes it.
+    subject = billing_subject_for(organization_id, account_id)
 
     organizations = organizations or SessionlessOrganizationRepository()
     resolver = resolver or CapPolicyResolver(

@@ -875,30 +875,30 @@ async def list_users(
     unchanged.
     """
     # Resolved before the store read and outside the try: a caller with no
-    # tenant is a 403 and a missing membership store is a 503, neither of which
-    # should reach the blanket 500 below.
-    member_ids = await scope.member_ids(operator)
+    # tenant is a 403, which should not reach the blanket 500 below.
+    confined_to = scope.listing_enterprise(operator)
 
     try:
         user_store = await get_user_store(request)
-        if member_ids is None:
+        if confined_to is None:
             # Single-tenant: the deployment IS the tenant. Called exactly as it
             # always was, so a store that predates the predicate is unaffected.
             users = await user_store.list_users(limit=1000)
             total_count = await user_store.count_users()
         else:
-            # The allowlist goes INTO the store call rather than filtering the
-            # page it returns: the 1000-row window is deployment-wide, so a
-            # tenant's users could fall outside it, and loading every tenant's
-            # rows couples this listing to them — one row that fails hydration
-            # empties it for everyone (`DatabaseUserStore.list_users` answers
-            # `[]` on any exception). A store that does not accept the argument
-            # raises here rather than quietly serving an unconfined page.
-            users = await user_store.list_users(limit=1000, user_ids=member_ids)
+            # The tenant goes INTO the store call rather than filtering the page
+            # it returns: the 1000-row window is deployment-wide, so a tenant's
+            # users could fall outside it, and loading every tenant's rows
+            # couples this listing to them — one row that fails hydration empties
+            # it for everyone (`DatabaseUserStore.list_users` answers `[]` on any
+            # exception). A store that does not accept the argument raises here
+            # rather than quietly serving an unconfined page.
+            users = await user_store.list_users(limit=1000, enterprise_id=confined_to)
             # The tenant's population, which is what `truncated` below has to be
-            # measured against. `count_users()` counts the deployment and would
-            # report this page as truncated whenever ANOTHER tenant has users.
-            total_count = len(member_ids)
+            # measured against. An unconfined `count_users()` counts the
+            # deployment and would report this page as truncated whenever ANOTHER
+            # tenant has users.
+            total_count = await user_store.count_users(enterprise_id=confined_to)
 
         users_list = [
             {

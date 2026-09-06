@@ -45,12 +45,13 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
     DatabaseKnowledgeItemRepository,
 )
 
-# generate_case_id is used by the warm-up fixture below; generate_org_id is
-# re-exported for test_knowledge_item_operations.py. generate_item_id was
-# dropped when that module stopped importing it — ruff cannot flag it here
-# (conftest.py has F401 in per-file-ignores, and CI's rule selection excludes
-# F401 anyway).
-from tests.utils import generate_case_id, generate_org_id
+# generate_case_id is used by the warm-up fixture below; generate_enterprise_id
+# is re-exported for test_knowledge_item_operations.py, which keys its fixtures
+# on the ISOLATION boundary (ADR-017 D1) rather than on the organization, which
+# no repository read filters by. generate_item_id was dropped when that module
+# stopped importing it — ruff cannot flag it here (conftest.py has F401 in
+# per-file-ignores, and CI's rule selection excludes F401 anyway).
+from tests.utils import generate_case_id, generate_enterprise_id
 
 #: Timed samples taken per measured operation, after one untimed warm-up call.
 #:

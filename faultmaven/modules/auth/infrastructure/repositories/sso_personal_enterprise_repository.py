@@ -75,6 +75,7 @@ from faultmaven.infrastructure.persistence.tenant_bootstrap import (
     OrgAlreadyClaimed,
     RemapRefused,
     ensure_mapping,
+    find_live_enterprise_by_slug,
     get_or_create_enterprise,
 )
 from faultmaven.modules.auth.contracts import (
@@ -264,18 +265,11 @@ class SessionlessSSOPersonalEnterpriseRepository(ISSOPersonalEnterpriseRepositor
                 return PersonalTenantCollision(
                     "sso_org_mappings.provider_org_id", provider_org_id
                 )
-            # LIVE rows only, matching the partial uniqueness rule. A retired
-            # tenant keeps its slug, so naming it as the
-            # collision would point an operator at a row that is not in
-            # anybody's way — the "log names the wrong thing" failure again.
-            enterprise = (
-                await session.execute(
-                    select(EnterpriseModel.enterprise_id).where(
-                        EnterpriseModel.slug == slug,
-                        EnterpriseModel.deleted_at.is_(None),
-                    )
-                )
-            ).scalar_one_or_none()
+            # LIVE rows only, through the shared lookup: a retired tenant keeps
+            # its slug, so naming it as the collision would point an operator at
+            # a row that is not in anybody's way — the "log names the wrong
+            # thing" failure again.
+            enterprise = await find_live_enterprise_by_slug(session, slug)
             if enterprise is not None:
                 return PersonalTenantCollision("enterprises.slug", slug)
         return PersonalTenantCollision("unknown", slug)

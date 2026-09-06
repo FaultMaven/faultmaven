@@ -74,8 +74,7 @@ from urllib.parse import urlencode
 import structlog
 from pydantic import EmailStr, TypeAdapter, ValidationError
 
-from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
-from faultmaven.config.tenant_context import set_current_enterprise_id
+from faultmaven.config.tenant_context import set_current_enterprise_id, usable_tenant_id
 from faultmaven.exceptions import ConflictError
 from faultmaven.infrastructure.persistence.account_anchor import (
     AnchorKind,
@@ -514,16 +513,13 @@ class SSOLoginService:
             # Epoch seconds, not isoformat: a number cannot be naive, so the
             # exchange-side parse has no aware/naive failure class (#831).
             "state_read_at": state_read_at.timestamp(),
+            # No tenancy rides here. The ENTERPRISE claim is minted from
+            # ``users.enterprise_id`` at exchange time (ADR-017 D9), which the
+            # anchor step above has just written; the billing organization is
+            # read from the account, and a sign-up creates none (D5). Carrying
+            # either in the completion code would be a second source for a fact
+            # the row already answers.
         }
-        if enterprise is not None:
-            # Mint-time tenancy rides the completion code. The ENTERPRISE claim
-            # is minted from ``users.enterprise_id`` at exchange time (ADR-017
-            # D9), which the anchor step above has just written — so what rides
-            # here is only the billing organization, and a sign-up creates none
-            # (D5). Left absent deliberately rather than filled with the
-            # enterprise: a reader that found the tenant in the organization
-            # claim would be reading exactly the conflation this campaign undid.
-            pass
         if identity.provider_session_id:
             # The IdP session id is known only here, on the callback leg, but is
             # needed by the leg that answers the client. It rides the completion
@@ -625,7 +621,11 @@ class SSOLoginService:
            A tenant that is missing or disabled is an operator problem, not
            something to tell the browser about.
         """
-        if enterprise_id == STANDALONE_ENTERPRISE_ID:
+        # ``usable_tenant_id`` is the one place the sentinel rule lives — and it
+        # is provider-aware, which an inline equality is not: under ``single``
+        # the sentinel IS the deployment's tenant, and this branch is reached
+        # from a multi-tenant callback only.
+        if not usable_tenant_id(enterprise_id):
             logger.error(
                 "sso_org_resolution_failed",
                 reason=f"{reason_prefix}_is_sentinel",

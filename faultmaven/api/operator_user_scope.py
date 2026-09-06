@@ -98,7 +98,8 @@ class OperatorUserScope:
 
     Resolved per request from the composition root, then asked — by the route —
     whether a specific target is inside the operator's enterprise
-    (:meth:`admits`) or which accounts are (:meth:`member_ids`).
+    (:meth:`admits`) or which enterprise a listing is confined to
+    (:meth:`listing_enterprise`).
 
     Deliberately **not** a dependency that refuses on its own. The account store
     is consulted only where the predicate bites, so a single-tenant deployment
@@ -160,19 +161,22 @@ class OperatorUserScope:
         # admitted for want of a value to compare.
         return getattr(target, "enterprise_id", None) == enterprise_id
 
-    async def member_ids(self, operator) -> Optional[frozenset[str]]:
-        """The account ids this operator may administer, or ``None`` for all.
+    def listing_enterprise(self, operator) -> Optional[str]:
+        """The enterprise a listing by this operator is confined to, or ``None``.
 
-        ``None`` is the single-tenant answer — the deployment is the tenant —
+        ``None`` is the single-tenant answer — the deployment IS the tenant —
         and is what the listing routes pass through as "do not filter". It is
-        never the answer under ``multi``: an operator whose enterprise holds no
-        accounts resolves to the empty set, which filters everything out, so the
-        two cannot be confused.
+        never the answer under ``multi``: :meth:`tenant` refuses a caller with no
+        usable enterprise (403), so the two cannot be confused.
+
+        This replaces a ``member_ids`` that materialised every account id of the
+        enterprise to hand the query an ``IN (...)``. That is a full scan of the
+        tenant's roster on every page of every listing, and a parameter list as
+        long as the tenant, to express one indexed comparison. It also needed the
+        account store, which is why this no longer does: the enterprise comes off
+        the request, and the confinement is a predicate the repository applies.
         """
-        enterprise_id = self.tenant(operator)
-        if enterprise_id is None:
-            return None
-        return await self._repository().list_enterprise_member_ids(enterprise_id)
+        return self.tenant(operator)
 
 
 async def get_operator_user_scope(request: Request) -> OperatorUserScope:

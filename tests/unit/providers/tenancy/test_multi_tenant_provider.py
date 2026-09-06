@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from faultmaven.exceptions import AuthorizationError, NotFoundError, ValidationException
+from faultmaven.exceptions import NotFoundError, ValidationException
 from faultmaven.models.interfaces_user import Enterprise, EnterprisePlanTier
 from faultmaven.modules.auth.domain.models.user import User
 from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider
@@ -86,33 +86,46 @@ async def test_an_enterprise_that_does_not_exist_is_not_found(provider, enterpri
         )
 
 
-async def test_an_account_anchored_elsewhere_is_refused(provider, enterprises):
-    """The whole membership check, and it reads one column.
-
-    B's account, A's enterprise: the row exists and is perfectly readable, so
-    the refusal can only come from the anchor comparison.
-    """
-    enterprises.get_enterprise.return_value = _enterprise(ENTERPRISE_A)
-
-    with pytest.raises(AuthorizationError):
-        await provider.get_current_enterprise(
-            current_user=_user(ENTERPRISE_B), enterprise_id=ENTERPRISE_A
-        )
-
-
-async def test_an_unanchored_account_is_refused_rather_than_admitted(
+async def test_the_provider_does_not_re_check_membership_per_request(
     provider, enterprises
 ):
-    """Absence is not membership.
+    """And the caller object cannot change the answer — by design.
 
-    The fail-open shape this guards is ``if user.enterprise_id and ... !=``,
-    which admits every account that never resolved an anchor.
+    This used to compare ``current_user.enterprise_id`` against the requested
+    tenant and raise. Both sides come from the SAME place, the request binding:
+    the argument is the bound enterprise, and ``AuthenticatedUser`` fills its own
+    field from that binding. The comparison was tautological and the branch
+    unreachable — a guard that cannot fail, reading like one that can.
+
+    So the property now asserted is the honest one: whatever the caller object
+    says about its enterprise, resolution answers with the row for the enterprise
+    the request is bound to. What establishes membership is upstream and is a
+    fact about a row — the claim is minted from ``users.enterprise_id`` and
+    re-read on every rotation — and underneath it RLS scopes every read to the
+    bound enterprise regardless of what this object believes.
     """
     enterprises.get_enterprise.return_value = _enterprise(ENTERPRISE_A)
 
-    with pytest.raises(AuthorizationError):
+    for claimed in (ENTERPRISE_A, ENTERPRISE_B, None):
+        resolved = await provider.get_current_enterprise(
+            current_user=_user(claimed), enterprise_id=ENTERPRISE_A
+        )
+        assert resolved.enterprise_id == ENTERPRISE_A
+
+
+async def test_an_enterprise_that_does_not_resolve_is_still_refused(
+    provider, enterprises
+):
+    """The check that CAN fail, and the one this class is left holding.
+
+    A bound enterprise naming no row is a data fault or a stale claim chain, and
+    it must not resolve to something.
+    """
+    enterprises.get_enterprise.return_value = None
+
+    with pytest.raises(NotFoundError):
         await provider.get_current_enterprise(
-            current_user=_user(None), enterprise_id=ENTERPRISE_A
+            current_user=_user(ENTERPRISE_A), enterprise_id=ENTERPRISE_A
         )
 
 

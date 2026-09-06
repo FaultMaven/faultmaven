@@ -207,13 +207,39 @@ def billing_subject_for(
     return None
 
 
+#: Every value ``CapPolicy.source`` can take, named here rather than spelled at
+#: each site. ``fm-set-turn-cap`` renders one line per source, and it used to key
+#: that mapping on string literals of its own — so a source added or renamed here
+#: silently fell through to a bare number in the operator's output, which reads
+#: like an answer and is not one.
+SOURCE_SINGLE_TENANT = "single_tenant"
+SOURCE_INDETERMINATE = "indeterminate"
+SOURCE_DEFAULT_PERSONAL = "default_personal"
+SOURCE_OVERRIDE = "override"
+SOURCE_OVERRIDE_UNLIMITED = "override_unlimited"
+SOURCE_COMPANY_UNCAPPED = "company_uncapped"
+
+#: Every source a resolved policy can carry. ``fm-set-turn-cap`` asserts its
+#: rendering table covers this set, so a new source cannot ship unworded.
+CAP_POLICY_SOURCES = frozenset(
+    {
+        SOURCE_SINGLE_TENANT,
+        SOURCE_INDETERMINATE,
+        SOURCE_DEFAULT_PERSONAL,
+        SOURCE_OVERRIDE,
+        SOURCE_OVERRIDE_UNLIMITED,
+        SOURCE_COMPANY_UNCAPPED,
+    }
+)
+
+
 @dataclass(frozen=True)
 class CapPolicy:
     """The cap in force for one billing subject, and where it came from.
 
-    ``limit is None`` means uncapped. ``source`` is carried for the log line, so
-    an operator reading a refusal can tell an override from the default without
-    querying anything.
+    ``limit is None`` means uncapped. ``source`` is one of
+    :data:`CAP_POLICY_SOURCES`, carried for the log line, so an operator reading
+    a refusal can tell an override from the default without querying anything.
     """
 
     limit: Optional[int]
@@ -455,7 +481,7 @@ class CapPolicyResolver:
     async def resolve(self, subject: Optional[BillingSubject]) -> CapPolicy:
         """The cap in force. Never raises; ambiguity resolves to the default."""
         if not self._multi_tenant():
-            return CapPolicy(limit=None, source="single_tenant")
+            return CapPolicy(limit=None, source=SOURCE_SINGLE_TENANT)
 
         if subject is None:
             # Multi-tenant with nobody to charge. Unreachable through the front
@@ -464,14 +490,16 @@ class CapPolicyResolver:
             # an account — and guarded anyway, because this must not be the
             # place that decides an unscoped request is free.
             logger.warning("turn cap: no billing subject; applying the default cap")
-            return CapPolicy(limit=self._default_limit(), source="indeterminate")
+            return CapPolicy(limit=self._default_limit(), source=SOURCE_INDETERMINATE)
 
         if subject.is_account:
             # An account in no organization: nobody is paying for it, so it gets
             # the self-service allowance. This is the whole of what "personal"
             # means under ADR-017 D5 — there is no table to consult and no flag
             # to read, so there is also no unreadable-table branch to fail into.
-            return CapPolicy(limit=self._default_limit(), source="default_personal")
+            return CapPolicy(
+                limit=self._default_limit(), source=SOURCE_DEFAULT_PERSONAL
+            )
 
         try:
             organization = await self._organizations.get_organization(
@@ -489,7 +517,7 @@ class CapPolicyResolver:
                 subject.subject_id,
                 type(exc).__name__,
             )
-            return CapPolicy(limit=self._default_limit(), source="indeterminate")
+            return CapPolicy(limit=self._default_limit(), source=SOURCE_INDETERMINATE)
 
         if organization is None:
             # The subject names an organization that does not resolve: soft
@@ -507,15 +535,15 @@ class CapPolicyResolver:
                 "applying the default cap",
                 subject.subject_id,
             )
-            return CapPolicy(limit=self._default_limit(), source="indeterminate")
+            return CapPolicy(limit=self._default_limit(), source=SOURCE_INDETERMINATE)
 
         override = getattr(organization, "daily_turn_cap", None)
         if override is not None:
             if override == UNLIMITED_OVERRIDE:
-                return CapPolicy(limit=None, source="override_unlimited")
-            return CapPolicy(limit=int(override), source="override")
+                return CapPolicy(limit=None, source=SOURCE_OVERRIDE_UNLIMITED)
+            return CapPolicy(limit=int(override), source=SOURCE_OVERRIDE)
 
-        return CapPolicy(limit=None, source="company_uncapped")
+        return CapPolicy(limit=None, source=SOURCE_COMPANY_UNCAPPED)
 
 
 class TurnCapService:
@@ -642,7 +670,7 @@ class UnconfiguredTurnCap:
         self, subject: Optional[BillingSubject], *, now: Optional[datetime] = None
     ) -> Reservation:
         if not _is_multi_tenant():
-            return Reservation(subject, used=0, limit=None, source="single_tenant")
+            return Reservation(subject, used=0, limit=None, source=SOURCE_SINGLE_TENANT)
         logger.error(
             "turn cap: no cap service was wired into this InvestigationService, "
             "and this is a multi-tenant deployment; refusing the turn"

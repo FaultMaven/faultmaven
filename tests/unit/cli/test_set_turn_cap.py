@@ -35,6 +35,7 @@ import pytest
 
 from faultmaven.cli import set_turn_cap
 from faultmaven.infrastructure.protection.tenant_turn_cap import (
+    CAP_POLICY_SOURCES,
     SUBJECT_ACCOUNT,
     SUBJECT_ORGANIZATION,
     BillingSubject,
@@ -77,6 +78,24 @@ class FakeOrganizations:
         return True
 
 
+def _live_enterprises():
+    """An enterprise repository answering with a LIVE row.
+
+    The command binds and CHECKS its enterprise before any read now, through the
+    one helper every operator command shares — so a test that supplies no
+    enterprise is refused before it reaches the cap logic. Supplying a live one
+    is what keeps these cases about the cap.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    repository = AsyncMock()
+    repository.get_enterprise.return_value = SimpleNamespace(
+        enterprise_id=ENTERPRISE, name="Acme", deleted_at=None
+    )
+    return repository
+
+
 def _wiring(rows=None, ledger=None):
     organizations = FakeOrganizations(
         rows if rows is not None else {COMPANY: None, CAPPED: 50}
@@ -99,6 +118,7 @@ async def _run(organization_id=CAPPED, **kwargs):
         resolver=resolver,
         organizations=organizations,
         ledger=ledger,
+        enterprises=_live_enterprises(),
         **defaults,
     )
     return code, organizations
@@ -188,6 +208,7 @@ async def test_a_write_that_matches_no_row_is_reported_as_a_failure():
         resolver=resolver,
         organizations=organizations,
         ledger=InMemoryTurnLedger(),
+        enterprises=_live_enterprises(),
     )
     assert code == 1
 
@@ -219,6 +240,7 @@ async def test_an_account_is_addressable_and_reads_as_the_deployment_default(cap
         resolver=resolver,
         organizations=organizations,
         ledger=ledger,
+        enterprises=_live_enterprises(),
     )
     out = capsys.readouterr().out
 
@@ -247,6 +269,7 @@ async def test_writing_an_accounts_cap_is_refused_and_names_the_remedy(capsys):
         resolver=resolver,
         organizations=organizations,
         ledger=ledger,
+        enterprises=_live_enterprises(),
     )
     out = capsys.readouterr().out
 
@@ -325,26 +348,44 @@ def test_every_source_the_resolver_can_answer_with_has_words(source, limit, expe
 
 
 def test_the_rendered_sources_are_exactly_the_ones_the_resolver_emits():
-    """Derived from the resolver, not remembered beside it.
+    """Derived from the policy module, not remembered beside it.
 
     A new ``CapPolicy.source`` added to the policy without a word here would
     print ``{limit}`` at an operator, and the parametrised case above cannot
     catch that because its list is written by hand.
+
+    This used to scrape ``source="..."`` literals out of the resolver's source
+    text. It no longer can, and that is the improvement: the sources are named
+    constants now, declared once in :data:`CAP_POLICY_SOURCES`, so the set is a
+    value rather than something a regex has to recover from formatting. Both
+    directions are still checked — the words cover the declaration, and the
+    declaration covers what the resolver actually emits, so neither half can
+    fall behind the other.
     """
     import inspect
 
     from faultmaven.infrastructure.protection import tenant_turn_cap
 
+    assert CAP_POLICY_SOURCES <= set(set_turn_cap._SOURCE_WORDS), (
+        "the resolver can answer with a source this command has no words for: "
+        f"{sorted(CAP_POLICY_SOURCES - set(set_turn_cap._SOURCE_WORDS))}"
+    )
+
     emitted = set(
         re.findall(
-            r'source="([a-z_]+)"',
+            r"source=(SOURCE_[A-Z_]+)",
             inspect.getsource(tenant_turn_cap.CapPolicyResolver),
         )
     )
     assert emitted, "no sources were found in the resolver — the pattern drifted"
-    assert emitted <= set(set_turn_cap._SOURCE_WORDS), (
-        "the resolver can answer with a source this command has no words for: "
-        f"{sorted(emitted - set(set_turn_cap._SOURCE_WORDS))}"
+    undeclared = {
+        name
+        for name in emitted
+        if getattr(tenant_turn_cap, name) not in CAP_POLICY_SOURCES
+    }
+    assert not undeclared, (
+        "the resolver emits a source that CAP_POLICY_SOURCES does not declare, "
+        f"so nothing forces this command to word it: {sorted(undeclared)}"
     )
 
 

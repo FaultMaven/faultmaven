@@ -97,11 +97,26 @@ def wiring(monkeypatch):
         ),
     )
 
+    # The ENTERPRISE the command binds before it reads anything. It used to bind
+    # without checking, and go straight to the organization — so a mistyped
+    # enterprise reported "no organization" and sent the operator hunting for
+    # the wrong thing. The shared helper checks it, which means this fixture has
+    # to supply one that resolves.
+    enterprises = AsyncMock()
+    enterprises.get_enterprise.return_value = SimpleNamespace(
+        enterprise_id=ENTERPRISE_ID, name="Acme", deleted_at=None
+    )
+
     monkeypatch.setattr("faultmaven.container.container", container)
     monkeypatch.setattr(
         "faultmaven.infrastructure.persistence.sessionless_organization_repository"
         ".SessionlessOrganizationRepository",
         lambda: orgs,
+    )
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.persistence.sessionless_enterprise_repository"
+        ".SessionlessEnterpriseRepository",
+        lambda: enterprises,
     )
     return SimpleNamespace(
         orgs=orgs,
@@ -109,6 +124,7 @@ def wiring(monkeypatch):
         auth_service=auth_service,
         container=container,
         revocation_store=revocation_store,
+        enterprises=enterprises,
     )
 
 

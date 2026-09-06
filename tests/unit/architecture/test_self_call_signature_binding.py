@@ -52,6 +52,43 @@ _MODULES_UNDER_GUARD = {
     "faultmaven.modules.knowledge.domain.services.conversion_service": (
         "ConversionService"
     ),
+    # Every module this campaign gave a required ``enterprise_id`` to, and whose
+    # class calls its own helpers with enough arguments for a reorder to still
+    # bind. That is the whole selection rule: the trap needs a wide, positional,
+    # tenancy-carrying self-call, and adding a required parameter ahead of a
+    # defaulted one is exactly how the campaign moved these signatures.
+    "faultmaven.core.investigation.milestone_engine": "MilestoneEngine",
+    "faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository": (
+        "PostgreSQLHybridCaseRepository"
+    ),
+    "faultmaven.modules.case.infrastructure.sqlite_case_repository": (
+        "SQLiteCaseRepository"
+    ),
+    "faultmaven.modules.knowledge.domain.services.knowledge_service": (
+        "KnowledgeService"
+    ),
+    "faultmaven.modules.case.domain.services.investigation_session_service": (
+        "APIInvestigationSessionService"
+    ),
+    "faultmaven.modules.auth.domain.services.sso_login_service": "SSOLoginService",
+    "faultmaven.modules.case.domain.services.api_case_service": "APICaseService",
+    "faultmaven.modules.case.domain.services.case_service": "CaseService",
+    "faultmaven.modules.knowledge.domain.services.suggestion_service": (
+        "SuggestionService"
+    ),
+    "faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository": (  # noqa: E501
+        "DatabaseKnowledgeItemRepository"
+    ),
+    "faultmaven.modules.auth.domain.services.user_service": "UserService",
+    "faultmaven.infrastructure.persistence.user_repository": (
+        "PostgreSQLUserRepository"
+    ),
+    "faultmaven.infrastructure.auth.database_user_store": "DatabaseUserStore",
+    "faultmaven.infrastructure.auth.user_store": "RedisUserStore",
+    "faultmaven.infrastructure.persistence.investigation_session_repository": (
+        "DatabaseInvestigationSessionRepository"
+    ),
+    "faultmaven.api.operator_user_scope": "OperatorUserScope",
 }
 
 
@@ -135,7 +172,12 @@ def test_the_detector_finds_the_calls_it_is_supposed_to_check() -> None:
     make the guard above pass vacuously — which is the same failure mode it
     exists to prevent, one level up.
     """
-    module_path, class_name = sorted(_MODULES_UNDER_GUARD.items())[0]
+    # Named, not "the first entry": the two helpers asserted below are this
+    # module's, and the list is now long enough that alphabetical order picks a
+    # different one — which would leave this control checking a module whose
+    # helpers it cannot name.
+    module_path = "faultmaven.modules.knowledge.domain.services.conversion_service"
+    class_name = _MODULES_UNDER_GUARD[module_path]
     module = __import__(module_path, fromlist=[class_name])
     source = Path(inspect.getsourcefile(module)).read_text(encoding="utf-8")
 

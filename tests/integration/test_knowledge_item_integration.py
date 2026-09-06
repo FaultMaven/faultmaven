@@ -512,128 +512,9 @@ async def test_multiple_usage_updates(repository: DatabaseKnowledgeItemRepositor
 # ============================================================
 
 
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_list_by_enterprise_with_filters(
-    repository: DatabaseKnowledgeItemRepository,
-):
-    """Test listing items with multiple filters."""
-    enterprise_id = generate_enterprise_id()
-
-    await repository.create(
-        create_sample_item(
-            enterprise_id=enterprise_id,
-            item_type=KnowledgeItemType.FAQ,
-            category="networking",
-        )
-    )
-    await repository.create(
-        create_sample_item(
-            enterprise_id=enterprise_id,
-            item_type=KnowledgeItemType.FAQ,
-            category="database",
-        )
-    )
-    await repository.create(
-        create_sample_item(
-            enterprise_id=enterprise_id,
-            item_type=KnowledgeItemType.RUNBOOK,
-            category="networking",
-        )
-    )
-
-    # Filter by type
-    faqs = await repository.list_by_enterprise_id(
-        enterprise_id,
-        item_type=KnowledgeItemType.FAQ,
-    )
-    assert len(faqs) == 2
-
-    # Filter by category
-    networking = await repository.list_by_enterprise_id(
-        enterprise_id,
-        category="networking",
-    )
-    assert len(networking) == 2
-
-
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_list_pagination(repository: DatabaseKnowledgeItemRepository):
-    """Test pagination works correctly."""
-    enterprise_id = generate_enterprise_id()
-
-    for i in range(25):
-        await repository.create(create_sample_item(enterprise_id=enterprise_id))
-
-    page1 = await repository.list_by_enterprise_id(enterprise_id, limit=10, offset=0)
-    page2 = await repository.list_by_enterprise_id(enterprise_id, limit=10, offset=10)
-    page3 = await repository.list_by_enterprise_id(enterprise_id, limit=10, offset=20)
-
-    assert len(page1) == 10
-    assert len(page2) == 10
-    assert len(page3) == 5
-
-
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_list_ordering_by_created_at(repository: DatabaseKnowledgeItemRepository):
-    """Test items are ordered by created_at descending."""
-    enterprise_id = generate_enterprise_id()
-    base_time = datetime.now(timezone.utc)
-
-    for i in range(10):
-        await repository.create(
-            create_sample_item(
-                enterprise_id=enterprise_id,
-                created_at=base_time - timedelta(hours=i),
-            )
-        )
-
-    items = await repository.list_by_enterprise_id(enterprise_id)
-
-    for i in range(len(items) - 1):
-        assert items[i].created_at >= items[i + 1].created_at
-
-
 # ============================================================
 # Count Tests
 # ============================================================
-
-
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_count_with_type_filter(repository: DatabaseKnowledgeItemRepository):
-    """Test count with item type filter."""
-    enterprise_id = generate_enterprise_id()
-
-    await repository.create(
-        create_sample_item(
-            enterprise_id=enterprise_id,
-            item_type=KnowledgeItemType.FAQ,
-        )
-    )
-    await repository.create(
-        create_sample_item(
-            enterprise_id=enterprise_id,
-            item_type=KnowledgeItemType.FAQ,
-        )
-    )
-    await repository.create(
-        create_sample_item(
-            enterprise_id=enterprise_id,
-            item_type=KnowledgeItemType.RUNBOOK,
-        )
-    )
-
-    faq_count = await repository.count_by_enterprise_id(
-        enterprise_id,
-        item_type=KnowledgeItemType.FAQ,
-    )
-    total_count = await repository.count_by_enterprise_id(enterprise_id)
-
-    assert faq_count == 2
-    assert total_count == 3
 
 
 # ============================================================
@@ -733,40 +614,6 @@ async def test_null_metadata(repository: DatabaseKnowledgeItemRepository):
 # ============================================================
 
 
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_publish_unpublish_workflow(repository: DatabaseKnowledgeItemRepository):
-    """Test publish and unpublish workflow."""
-    enterprise_id = generate_enterprise_id()
-    item = create_sample_item(enterprise_id=enterprise_id, is_published=True)
-    await repository.create(item)
-
-    # Item is visible in published list
-    published = await repository.list_by_enterprise_id(enterprise_id, is_published=True)
-    assert len(published) == 1
-
-    # Unpublish
-    item.unpublish()
-    await repository.update(item)
-
-    # Item no longer in published list
-    published = await repository.list_by_enterprise_id(enterprise_id, is_published=True)
-    assert len(published) == 0
-
-    # Item visible in unpublished list
-    unpublished = await repository.list_by_enterprise_id(
-        enterprise_id, is_published=False
-    )
-    assert len(unpublished) == 1
-
-    # Republish
-    item.publish()
-    await repository.update(item)
-
-    published = await repository.list_by_enterprise_id(enterprise_id, is_published=True)
-    assert len(published) == 1
-
-
 # ============================================================
 # Organization Isolation Tests
 # ============================================================
@@ -787,15 +634,25 @@ async def test_enterprise_isolation(repository: DatabaseKnowledgeItemRepository)
     enterprise_1 = generate_enterprise_id()
     enterprise_2 = generate_enterprise_id()
 
-    # Create items for each enterprise
+    # One shared tag, so the query cannot separate the two enterprises by
+    # anything but the enterprise itself.
+    tag = "isolation-probe"
     for _ in range(3):
-        await repository.create(create_sample_item(enterprise_id=enterprise_1))
+        await repository.create(
+            create_sample_item(enterprise_id=enterprise_1, tags=[tag])
+        )
     for _ in range(5):
-        await repository.create(create_sample_item(enterprise_id=enterprise_2))
+        await repository.create(
+            create_sample_item(enterprise_id=enterprise_2, tags=[tag])
+        )
 
-    # Each enterprise sees only its own items
-    items_1 = await repository.list_by_enterprise_id(enterprise_1)
-    items_2 = await repository.list_by_enterprise_id(enterprise_2)
+    # Each enterprise sees only its own items. Through ``search_by_tags``, which
+    # is enterprise-scoped and has production callers: the per-enterprise
+    # list/count/delete trio this used to use had none at all and went with the
+    # review round, so pinning isolation on it would have been pinning it on a
+    # query nobody makes.
+    items_1 = await repository.search_by_tags(enterprise_1, [tag], limit=50)
+    items_2 = await repository.search_by_tags(enterprise_2, [tag], limit=50)
 
     assert len(items_1) == 3
     assert len(items_2) == 5
@@ -842,24 +699,6 @@ async def test_inmemory_full_lifecycle(inmemory_repository):
     assert await inmemory_repository.get_by_id(item.item_id) is None
 
 
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_inmemory_enterprise_delete(inmemory_repository):
-    """Test in-memory delete all items for an enterprise."""
-    enterprise_id = generate_enterprise_id()
-
-    for _ in range(5):
-        await inmemory_repository.create(
-            create_sample_item(enterprise_id=enterprise_id)
-        )
-
-    count = inmemory_repository.delete_items_for_enterprise(enterprise_id)
-    assert count == 5
-
-    remaining = await inmemory_repository.count_by_enterprise_id(enterprise_id)
-    assert remaining == 0
-
-
 # ============================================================
 # Edge Cases
 # ============================================================
@@ -899,16 +738,18 @@ async def test_all_item_types(repository: DatabaseKnowledgeItemRepository):
     """Test creating items with all possible types."""
     enterprise_id = generate_enterprise_id()
 
+    tag = "all-types-probe"
     for item_type in KnowledgeItemType:
         await repository.create(
             create_sample_item(
                 enterprise_id=enterprise_id,
                 item_type=item_type,
+                tags=[tag],
             )
         )
 
-    count = await repository.count_by_enterprise_id(enterprise_id)
-    assert count == len(KnowledgeItemType)
+    listed = await repository.search_by_tags(enterprise_id, [tag], limit=50)
+    assert len(listed) == len(KnowledgeItemType)
 
 
 @pytest.mark.asyncio

@@ -107,6 +107,31 @@ class BootstrappedTenant:
     mapping_created: bool
 
 
+async def find_live_enterprise_by_slug(session, slug: str):
+    """The LIVE enterprise with this slug, or ``None``.
+
+    LIVE rows only, and that is the whole content of the function: the slug
+    uniqueness rules are **partial on ``deleted_at IS NULL``** — a retired tenant
+    keeps its slug — so a reader scoped any other way disagrees with the
+    constraint about what "already exists" means. A writer that adopted a
+    soft-deleted row would hand a "fresh" tenant straight back to the retired one
+    it is supposed to replace; a collision report that named one would point an
+    operator at a row that is in nobody's way.
+
+    Three call sites asked this question with three copies of the same two-clause
+    ``WHERE``. One of them getting the liveness clause wrong is invisible until a
+    retirement, which is the situation it exists for.
+    """
+    return (
+        await session.execute(
+            select(EnterpriseModel).where(
+                EnterpriseModel.slug == slug,
+                EnterpriseModel.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+
+
 async def get_or_create_enterprise(
     session, *, enterprise_id: str | None, name: str, slug: str
 ) -> tuple[EnterpriseModel, bool]:
@@ -150,20 +175,7 @@ async def get_or_create_enterprise(
         # so nothing legitimate reaches this arm expecting a create.
         raise LookupError(f"enterprise {enterprise_id} does not exist or is retired")
 
-    # LIVE rows only. The slug uniqueness rules are partial on
-    # ``deleted_at IS NULL`` — a retired tenant keeps its slug — so a writer
-    # that adopted a soft-deleted row would hand a "fresh" tenant straight back
-    # to the retired one it is supposed to replace. The lookup has to be scoped
-    # exactly the way the constraint is, or the two disagree about what "already
-    # exists" means.
-    existing = (
-        await session.execute(
-            select(EnterpriseModel).where(
-                EnterpriseModel.slug == slug,
-                EnterpriseModel.deleted_at.is_(None),
-            )
-        )
-    ).scalar_one_or_none()
+    existing = await find_live_enterprise_by_slug(session, slug)
     if existing is not None:
         return existing, False
 

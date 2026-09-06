@@ -330,6 +330,7 @@ def resolve_enterprise_claim(user: User) -> str:
     # Deferred: tenancy config pulls in settings, which must not be imported at
     # auth-module import time.
     from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+    from faultmaven.config.tenant_context import usable_tenant_id
     from faultmaven.providers.tenancy.factory import (
         BUILTIN_MULTI,
         requested_tenant_provider,
@@ -342,7 +343,12 @@ def resolve_enterprise_claim(user: User) -> str:
         # account.
         return enterprise_id or STANDALONE_ENTERPRISE_ID
 
-    if not enterprise_id or enterprise_id == STANDALONE_ENTERPRISE_ID:
+    # ``usable_tenant_id`` decides "is this a real tenant?" for the request
+    # front door, the route dependency and every degrading read path. The mint
+    # asked the same question with its own inline copy of the rule — two
+    # spellings of one predicate, which is one more than can be kept in step.
+    usable = usable_tenant_id(enterprise_id)
+    if not usable:
         logger.warning(
             "Minting a token with no enterprise claim: user %s carries no "
             "enterprise under multi-tenant (%s); the request will be refused.",
@@ -351,7 +357,7 @@ def resolve_enterprise_claim(user: User) -> str:
         )
         return _NO_ENTERPRISE_CLAIM
 
-    return enterprise_id
+    return usable
 
 
 def resolve_billing_organization(user: User) -> Optional[str]:

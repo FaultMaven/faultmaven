@@ -439,12 +439,9 @@ async def reassign_cases(
     dry_run: bool,
 ) -> int:
     """Run the reassignment. Returns the process exit code."""
-    from faultmaven.config.tenant_context import set_current_enterprise_id
+    from faultmaven.cli._tenant import EnterpriseRefused, bind_and_load_enterprise
     from faultmaven.container import container
     from faultmaven.exceptions import UserLookupFailed
-    from faultmaven.infrastructure.persistence.sessionless_enterprise_repository import (
-        SessionlessEnterpriseRepository,
-    )
 
     print("=" * 80)
     print("Reassign Cases")
@@ -461,19 +458,14 @@ async def reassign_cases(
     print("\nInitializing...")
     await container.initialize()
 
-    # RLS scopes cases, resource_shares and teams by `app.current_enterprise_id`. Bind
-    # it before opening any session: the engine applies it per transaction from
-    # this contextvar, so a session opened first would run unbound (#935).
-    set_current_enterprise_id(enterprise_id)
-
-    enterprises = SessionlessEnterpriseRepository()
-    enterprise = await enterprises.get_enterprise(enterprise_id)
-    if enterprise is None:
-        print(
-            f"\n❌ No enterprise '{enterprise_id}' is visible.\n"
-            "   Check the id (it is an id, not a slug), and note that a deleted "
-            "enterprise does not resolve."
-        )
+    # RLS scopes cases, resource_shares and teams by `app.current_enterprise_id`.
+    # The shared helper binds it before opening any session — the engine applies
+    # it per transaction from this contextvar, so a session opened first would
+    # run unbound (#935) — and refuses a sentinel or an unusable tenant.
+    try:
+        enterprise = await bind_and_load_enterprise(enterprise_id)
+    except EnterpriseRefused as exc:
+        print(f"\n❌ {exc}")
         return 1
 
     user_store = container.get_user_store()
