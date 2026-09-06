@@ -523,17 +523,19 @@ class PersonalTenantLimitsStatus(BaseModel):
     sso_jit_personal_tenant_max_per_hour: int = Field(
         description=(
             "SSO_JIT_PERSONAL_TENANT_MAX_PER_HOUR — the ceiling on NEW personal "
-            "tenants provisioned per rolling hour, deployment-wide. It bounds "
-            "provisioning only; tenants that already exist sign in regardless."
+            "enterprises provisioned per rolling hour, deployment-wide. It "
+            "bounds provisioning only; tenants that already exist sign in "
+            "regardless."
         )
     )
     tenant_daily_turn_cap: int = Field(
         description=(
-            "TENANT_DAILY_TURN_CAP — investigation turns a PERSONAL tenant may "
-            "take per UTC day before further turns are refused with 429. The "
-            "deployment DEFAULT only: a company organization is uncapped, a "
-            "single-tenant deployment is never capped, and a per-organization "
-            "override set with fm-set-turn-cap beats this value."
+            "TENANT_DAILY_TURN_CAP — investigation turns an account in NO "
+            "organization may take per UTC day before further turns are "
+            "refused with 429. The deployment DEFAULT only: an organization is "
+            "uncapped, a single-tenant deployment is never capped, and a "
+            "per-organization override set with fm-set-turn-cap beats this "
+            "value."
         )
     )
 
