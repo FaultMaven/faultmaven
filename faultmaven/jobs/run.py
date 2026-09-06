@@ -80,6 +80,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
+from faultmaven.infrastructure.logging.url_redaction import RedactingFormatter
 from faultmaven.providers.tenancy.factory import TenancyConfigurationError
 
 # Valid JOB_TENANT_SCOPE declarations (see module docstring).
@@ -150,11 +151,12 @@ def setup_logging(verbose: bool = False) -> None:
     # honour is the same knob the API honours — LOG_FORMAT=json emits JSON here
     # too, so a CronJob's lines carry the `level` label the collector extracts.
     fmt = _job_log_format()
-    logging.basicConfig(
-        level=level,
-        format=fmt,
-        handlers=[logging.StreamHandler(sys.stdout)],
-    )
+    # RedactingFormatter, not the default: a failing job's exception is
+    # exactly the record that carries a DSN, and this path never reaches the
+    # structlog renderer where that is otherwise handled.
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(RedactingFormatter(fmt))
+    logging.basicConfig(level=level, handlers=[handler])
 
 
 def list_available_jobs() -> List[Dict[str, str]]:

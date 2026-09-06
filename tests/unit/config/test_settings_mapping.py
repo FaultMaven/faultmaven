@@ -454,6 +454,7 @@ class TestLogFormatSelectsTheRenderer:
 
     @staticmethod
     def _renderer_for(monkeypatch, **env):
+        import inspect
         import logging
 
         import structlog
@@ -479,7 +480,11 @@ class TestLogFormatSelectsTheRenderer:
             for h in logging.getLogger().handlers
             if getattr(h, FaultMavenLogger._ROOT_HANDLER_MARKER, False)
         )
-        return handler.formatter.processors[-1]
+        # Unwrap: the renderer is wrapped by redacting_renderer so no query
+        # string survives into a written line. The wrapper sets __wrapped__,
+        # so this still asserts on the renderer LOG_FORMAT actually selected
+        # rather than on the wrapper.
+        return inspect.unwrap(handler.formatter.processors[-1])
 
     def test_console_selects_the_console_renderer(self, monkeypatch):
         import structlog

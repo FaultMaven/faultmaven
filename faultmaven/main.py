@@ -2669,6 +2669,15 @@ if __name__ == "__main__":
             workers=workers,
             log_level="info",
             access_log=False,
+            # log_config=None so uvicorn installs no handlers of its own.
+            # Its default config gives the `uvicorn` logger a handler and
+            # propagate=False, so `uvicorn.error` records -- including the
+            # "Exception in ASGI application" traceback, which embeds an HTTP
+            # client's exception message and therefore its request URL -- stop
+            # at uvicorn's handler and never reach the root logger where the
+            # redacting renderer lives. With no config of its own, uvicorn's
+            # loggers propagate to root and are rendered like everything else.
+            log_config=None,
         )
     else:
         uvicorn.run(
@@ -2678,4 +2687,13 @@ if __name__ == "__main__":
             reload=reload,
             log_level="info",
             access_log=False,
+            # log_config=None so uvicorn installs no handlers of its own.
+            # Its default config gives the `uvicorn` logger a handler and
+            # propagate=False, so `uvicorn.error` records -- including the
+            # "Exception in ASGI application" traceback, which embeds an HTTP
+            # client's exception message and therefore its request URL -- stop
+            # at uvicorn's handler and never reach the root logger where the
+            # redacting renderer lives. With no config of its own, uvicorn's
+            # loggers propagate to root and are rendered like everything else.
+            log_config=None,
         )
