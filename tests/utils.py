@@ -702,7 +702,8 @@ def forge_access_token(
     auth_service,
     *,
     user_id: str,
-    organization_id: str,
+    enterprise_id: str,
+    organization_id: Optional[str] = None,
     email: str,
     roles: List[str],
     username: Optional[str] = None,
@@ -725,6 +726,15 @@ def forge_access_token(
     Unlike the live mint, the tenancy claims are whatever the caller passes:
     forging exists to control claims, including ones
     ``resolve_enterprise_claim`` would never produce.
+
+    The two claims follow the live mint's SHAPE, though, because a forger whose
+    shape drifts stops testing the thing it stands in for (``ADR-017``, and
+    ``test_token_forger_shape_parity``): ``enterprise_id`` — the isolation claim
+    the binder refuses a token without — is required, and ``organization_id`` —
+    billing attribution — is OMITTED when it is falsy, because absence is how
+    "this account is in no organization" is spelled. Pass ``organization_id=""``
+    and you still get no claim; to forge a token carrying an *empty* claim, use
+    ``sign_claims_for`` directly and say so.
     """
     from datetime import timedelta
 
@@ -734,13 +744,16 @@ def forge_access_token(
         auth_mode = "oauth" if auth_service._algorithm == "RS256" else "local"
 
     now = datetime.now(timezone.utc)
+    tenancy = {"enterprise_id": enterprise_id}
+    if organization_id:
+        tenancy["organization_id"] = organization_id
     return sign_claims_for(
         auth_service,
         {
             "sub": user_id,
             "username": user_id if username is None else username,
             "email": email,
-            "organization_id": organization_id,
+            **tenancy,
             "roles": roles,
             "scopes": (
                 list(LIVE_ACCESS_TOKEN_SCOPES) if scopes is None else list(scopes)
@@ -760,21 +773,30 @@ def forge_refresh_token(
     auth_service,
     *,
     user_id: str,
-    organization_id: str,
+    enterprise_id: str,
+    organization_id: Optional[str] = None,
     expires_in_days: Optional[int] = None,
 ) -> str:
-    """Forge a refresh token ``auth_service.verify_token`` accepts."""
+    """Forge a refresh token ``auth_service.verify_token`` accepts.
+
+    Same tenancy shape as :func:`forge_access_token`, for the same reason: both
+    live generators put BOTH claims in the refresh payload as well, so a rotation
+    forged without them tests a chain production never mints.
+    """
     from datetime import timedelta
 
     if expires_in_days is None:
         expires_in_days = auth_service._settings.auth.jwt_refresh_token_expire_days
 
     now = datetime.now(timezone.utc)
+    tenancy = {"enterprise_id": enterprise_id}
+    if organization_id:
+        tenancy["organization_id"] = organization_id
     return sign_claims_for(
         auth_service,
         {
             "sub": user_id,
-            "organization_id": organization_id,
+            **tenancy,
             "iss": auth_service._settings.security.jwt_issuer,
             "aud": auth_service._settings.security.jwt_audience,
             "iat": int(now.timestamp()),

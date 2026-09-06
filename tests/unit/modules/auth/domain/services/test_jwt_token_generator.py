@@ -110,13 +110,25 @@ def token_generator(mock_revocation_store):
 
 @pytest.fixture
 def mock_user():
-    """Mock user object."""
-    user = Mock()
+    """Mock user object.
+
+    ``spec`` is not decoration here: a bare ``Mock`` answers every attribute
+    with another ``Mock``, so ``resolve_enterprise_claim`` would put one in the
+    claim set and the mint would die in ``json.dumps`` rather than tell you the
+    generator read an attribute the real user does not have. The spec pins the
+    account's shape — an ENTERPRISE anchor (isolation, ADR-017 D3) and no
+    organization, which is the ordinary account.
+    """
+    user = Mock(
+        spec=["user_id", "username", "email", "roles", "enterprise_id", "is_active"]
+    )
     user.user_id = "user_123"
     user.username = "testuser"
     user.email = "testuser@example.com"
     user.roles = ["user"]
-    user.organization_id = "org_123"
+    user.enterprise_id = "ent_123"
+    # Present AND true: ``account_may_hold_credentials`` refuses on absence.
+    user.is_active = True
     return user
 
 

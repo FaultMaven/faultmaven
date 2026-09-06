@@ -1145,7 +1145,7 @@ class SSOLoginService:
         self,
         identity: SSOIdentity,
         *,
-        organization: Any | None = None,
+        enterprise: Any | None = None,
         client_ip: str | None = None,
         user_agent: str | None = None,
     ) -> Any | None:
@@ -1156,12 +1156,11 @@ class SSOLoginService:
         email — linking is deliberately out of scope). Failures are logged
         with the provider only, never the subject or email.
 
-        ``organization`` is the tenant this login resolved to under
-        multi-tenant (None in single-tenant). The new account is anchored to
-        that organization's enterprise instead of the standalone default the
-        repository would otherwise fall back to. Organization *membership* is
-        written afterwards by ``_ensure_org_affiliation``, which covers the
-        returning-user path with the same code.
+        ``enterprise`` is the tenant this login resolved to under multi-tenant
+        (None in single-tenant). The new account is anchored to it — one column,
+        ``users.enterprise_id`` (ADR-017 D3) — instead of the standalone default
+        the repository would otherwise fall back to, which under multi would
+        pool every JIT account into the deployment's sentinel tenant.
         """
         if not _is_usable_email(identity.email):
             logger.warning(
@@ -1184,7 +1183,7 @@ class SSOLoginService:
                 user_id=str(uuid.uuid4()),
                 username=username,
                 enterprise_id=(
-                    organization.enterprise_id if organization is not None else None
+                    enterprise.enterprise_id if enterprise is not None else None
                 ),
                 email=identity.email,
                 display_name=display_name,

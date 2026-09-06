@@ -1181,10 +1181,11 @@ class TestRoleChangeAuditTrail:
         assert kwargs["user_id"] == "user-2"
         assert kwargs["details"]["changed_by"] == "user-1"
         assert kwargs["details"]["role"] == "admin"
-        # The row must be stamped with the caller's org: user_audit_log is
-        # RLS-tenanted and migration 018 declares only USING, which PostgreSQL
-        # applies to INSERT as well — an unstamped row is rejected outright.
-        assert kwargs["organization_id"] == "org-123"
+        # The row must be stamped with the caller's ENTERPRISE: user_audit_log
+        # is RLS-tenanted on app.current_enterprise_id and the policy declares
+        # only USING, which PostgreSQL applies to INSERT as well — an unstamped
+        # row is rejected outright.
+        assert kwargs["enterprise_id"] == "ent-123"
 
     @pytest.mark.asyncio
     async def test_removing_a_role_is_recorded_as_a_removal(

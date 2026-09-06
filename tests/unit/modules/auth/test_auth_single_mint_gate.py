@@ -745,7 +745,7 @@ async def test_deleting_a_user_revokes_their_outstanding_tokens_first():
             username="doomed",
             request=request,
             operator=None,
-            scope=OperatorUserScope(organizations=None),
+            scope=OperatorUserScope(users=None),
         )
 
     assert result["user_id"] == "user_123"
@@ -790,7 +790,7 @@ async def test_a_failed_revocation_blocks_the_delete():
                 username="doomed",
                 request=request,
                 operator=None,
-                scope=OperatorUserScope(organizations=None),
+                scope=OperatorUserScope(users=None),
             )
 
     assert deleted == [], "the account was deleted despite revocation failing"

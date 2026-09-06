@@ -38,7 +38,7 @@ from tests.utils import InMemoryRevocationStore
 pytestmark = pytest.mark.asyncio
 
 CLIENT_ID = "faultmaven-copilot"
-REAL_ORG = "22222222-2222-2222-2222-222222222222"
+REAL_ENTERPRISE = "22222222-2222-2222-2222-222222222222"
 
 
 def _rsa_keypair() -> tuple[str, str]:
@@ -276,17 +276,18 @@ class TestServiceAccountRefreshLifecycle:
 
 
 class TestMultiTenantCredentialChain:
-    """The tenant survives the whole chain under multi-tenant (#873).
+    """The tenant survives the whole chain under multi-tenant (#873, ADR-017).
 
-    Mint and rotation are separate code paths — provisioning stamps the org on
-    the user before minting, the oauth refresh grant re-attaches the presented
-    token's claim before re-minting. Either one missing leaves the credential
-    org-less, which under multi-tenant is refused at
-    ``bind_request_org_context``. This walks the whole chain the Slack agent
-    walks, end to end.
+    The tenant is the ENTERPRISE: it is what isolates, and it is the claim
+    ``bind_request_enterprise_context`` refuses a token without. Mint and
+    rotation are separate code paths — provisioning anchors the account before
+    minting, and the oauth refresh grant re-derives the claim from the stored row
+    on every rotation. Either one missing leaves the credential unscoped and the
+    Slack agent locked out on its first call after that point, which is why this
+    walks the whole chain end to end rather than asserting on the first mint.
     """
 
-    async def test_the_organization_rides_mint_and_rotation(
+    async def test_the_enterprise_rides_mint_and_rotation(
         self, as_tenant_provider, user_store, token_generator, oauth_service
     ):
         as_tenant_provider(TenantProvider.MULTI)
@@ -295,12 +296,12 @@ class TestMultiTenantCredentialChain:
             username="slack-agent",
             user_store=user_store,
             token_generator=token_generator,
-            organization_id=REAL_ORG,
+            enterprise_id=REAL_ENTERPRISE,
         )
         minted = jwt.decode(
             credential.refresh_token, options={"verify_signature": False}
         )
-        assert minted["organization_id"] == REAL_ORG
+        assert minted["enterprise_id"] == REAL_ENTERPRISE
 
         tokens = await oauth_service.refresh_access_token(
             refresh_token=credential.refresh_token,
@@ -309,4 +310,4 @@ class TestMultiTenantCredentialChain:
 
         for token in (tokens.access_token, tokens.refresh_token):
             claims = jwt.decode(token, options={"verify_signature": False})
-            assert claims["organization_id"] == REAL_ORG
+            assert claims["enterprise_id"] == REAL_ENTERPRISE
