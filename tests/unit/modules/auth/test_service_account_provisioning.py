@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import jwt
 import pytest
 
-from faultmaven.config.constants import STANDALONE_ORG_ID
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.settings import TenantProvider
 from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
@@ -89,7 +89,7 @@ def _token_generator(expires_in_days: int = 7):
 
 def _real_token_generator() -> HS256JWTTokenGenerator:
     """The real generator, so the ``organization_id`` claim comes from the real
-    ``resolve_organization_claim`` rather than from a stub that could agree with
+    ``resolve_enterprise_claim`` rather than from a stub that could agree with
     a broken implementation."""
     return HS256JWTTokenGenerator(
         secret_key=SECRET,
@@ -268,16 +268,16 @@ class TestOrganizationClaim:
     ):
         as_tenant_provider(TenantProvider.MULTI)
         store = _FakeUserStore(_user())
-        assert store.users["slack-agent"].organization_id == STANDALONE_ORG_ID
+        assert store.users["slack-agent"].enterprise_id == STANDALONE_ENTERPRISE_ID
 
         credential = await provision_service_account_credential(
             username="slack-agent",
             user_store=store,
             token_generator=_real_token_generator(),
-            organization_id=REAL_ORG,
+            enterprise_id=REAL_ORG,
         )
 
-        assert _claims(credential.refresh_token)["organization_id"] == REAL_ORG
+        assert _claims(credential.refresh_token)["enterprise_id"] == REAL_ORG
 
     async def test_a_surrounding_whitespace_only_organization_is_not_an_organization(
         self, as_tenant_provider
@@ -291,7 +291,7 @@ class TestOrganizationClaim:
                 username="slack-agent",
                 user_store=_FakeUserStore(_user()),
                 token_generator=_real_token_generator(),
-                organization_id="   ",
+                enterprise_id="   ",
             )
 
     async def test_organization_is_trimmed_before_it_reaches_the_claim(
@@ -303,10 +303,10 @@ class TestOrganizationClaim:
             username="slack-agent",
             user_store=_FakeUserStore(_user()),
             token_generator=_real_token_generator(),
-            organization_id=f"  {REAL_ORG}\n",
+            enterprise_id=f"  {REAL_ORG}\n",
         )
 
-        assert _claims(credential.refresh_token)["organization_id"] == REAL_ORG
+        assert _claims(credential.refresh_token)["enterprise_id"] == REAL_ORG
 
     async def test_multi_tenant_refuses_without_an_organization(
         self, as_tenant_provider
@@ -316,7 +316,7 @@ class TestOrganizationClaim:
         as_tenant_provider(TenantProvider.MULTI)
         store = _FakeUserStore(_user())
 
-        with pytest.raises(ServiceAccountProvisioningError, match="--organization-id"):
+        with pytest.raises(ServiceAccountProvisioningError, match="--enterprise-id"):
             await provision_service_account_credential(
                 username="slack-agent",
                 user_store=store,
@@ -341,7 +341,7 @@ class TestOrganizationClaim:
                 username="slack-agent",
                 user_store=store,
                 token_generator=_real_token_generator(),
-                organization_id=STANDALONE_ORG_ID,
+                enterprise_id=STANDALONE_ENTERPRISE_ID,
             )
 
         assert store.created == []
@@ -357,7 +357,7 @@ class TestOrganizationClaim:
                 username="slack-agent",
                 user_store=_FakeUserStore(_user()),
                 token_generator=_real_token_generator(),
-                organization_id=REAL_ORG,
+                enterprise_id=REAL_ORG,
             )
 
     async def test_single_tenant_without_an_organization_is_unchanged(
@@ -372,4 +372,7 @@ class TestOrganizationClaim:
             token_generator=_real_token_generator(),
         )
 
-        assert _claims(credential.refresh_token)["organization_id"] == STANDALONE_ORG_ID
+        assert (
+            _claims(credential.refresh_token)["enterprise_id"]
+            == STANDALONE_ENTERPRISE_ID
+        )

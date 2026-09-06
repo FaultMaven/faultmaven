@@ -29,8 +29,11 @@ from httpx import ASGITransport, AsyncClient
 from faultmaven.api.middleware import tenant_scope
 from faultmaven.api.middleware.auth import get_auth_service
 from faultmaven.api.middleware.tenant_scope import bind_request_org_context
-from faultmaven.config.constants import STANDALONE_ORG_ID
-from faultmaven.config.tenant_context import get_current_org_id, set_current_org_id
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.config.tenant_context import (
+    get_current_enterprise_id,
+    set_current_enterprise_id,
+)
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.providers.tenancy.factory import BUILTIN_MULTI, BUILTIN_SINGLE
 
@@ -48,9 +51,9 @@ _PROVIDER_TARGET = "faultmaven.providers.tenancy.factory.requested_tenant_provid
 @pytest.fixture(autouse=True)
 def _reset_org_context():
     """Keep contextvar state from leaking across tests."""
-    set_current_org_id(STANDALONE_ORG_ID)
+    set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
     yield
-    set_current_org_id(STANDALONE_ORG_ID)
+    set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
 
 
 def _user(token: str) -> AuthenticatedUser:
@@ -67,7 +70,7 @@ def _probe_app() -> FastAPI:
 
     @app.get("/org")
     async def read_org():
-        return {"org": get_current_org_id()}
+        return {"org": get_current_enterprise_id()}
 
     @app.get("/org-slow")
     async def read_org_slow():
@@ -75,7 +78,7 @@ def _probe_app() -> FastAPI:
         # binder for this request and this read. If request tasks shared a
         # context, the other request's org would show up here.
         await asyncio.sleep(0.05)
-        return {"org": get_current_org_id()}
+        return {"org": get_current_enterprise_id()}
 
     # The auth service is only consulted in multi-tenant mode; token -> org.
     auth_service = AsyncMock()
@@ -123,7 +126,7 @@ async def test_org_bound_in_one_request_does_not_leak_into_the_next(monkeypatch)
     # platform-tier write license, #770); ORG_A must not have leaked.
     assert second.json() == {"org": ""}
     # And nothing leaked out into the test's own context either.
-    assert get_current_org_id() == STANDALONE_ORG_ID
+    assert get_current_enterprise_id() == STANDALONE_ENTERPRISE_ID
 
 
 @pytest.mark.integration
@@ -167,7 +170,7 @@ async def test_single_tenant_forces_standalone_through_the_stack(monkeypatch):
     async with _client(_probe_app()) as client:
         response = await client.get("/org", headers={"Authorization": "Bearer token-a"})
 
-    assert response.json() == {"org": STANDALONE_ORG_ID}
+    assert response.json() == {"org": STANDALONE_ENTERPRISE_ID}
 
 
 @pytest.mark.integration

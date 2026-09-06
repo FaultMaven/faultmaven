@@ -258,10 +258,15 @@ class AuthenticatedUser:
 
     user_id: str
     enterprise_id: str
-    organization_id: str
     email: str
     roles: list[str]
     permissions: list[str]
+    #: Billing, and DEFAULTED — an account in no organization is the ordinary
+    #: case (ADR-017 D5), so a construction site that says nothing about billing
+    #: is saying "nobody pays for this one" rather than forgetting a field. The
+    #: isolation key above is deliberately NOT defaulted: a caller that failed to
+    #: resolve a tenant must not be able to build this object at all.
+    organization_id: str = ""
     token_jti: Optional[str] = None
 
     def has_permission(self, permission: str) -> bool:

@@ -4,7 +4,7 @@ The chat-triggered case→runbook flow persists three RLS-tenanted rows — the
 synthetic ``uploaded_files`` conversion source, the ``conversion_jobs`` row, and
 its ``conversion_drafts``. The policy from migration 018 is ``FOR ALL`` with the
 USING expression doubling as the WITH CHECK, so a row stamped with an
-``organization_id`` other than the session's ``app.current_org_id`` is
+``organization_id`` other than the session's ``app.current_enterprise_id`` is
 **refused**, not merely hidden.
 
 The bug: with no org supplied, the service stamped a hardcoded single-tenant
@@ -46,7 +46,10 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from faultmaven.config.tenant_context import _current_org_id, get_current_org_id
+from faultmaven.config.tenant_context import (
+    _current_enterprise_id,
+    get_current_enterprise_id,
+)
 from faultmaven.infrastructure.persistence.models import (
     ConversionDraftModel,
     ConversionJobModel,
@@ -150,7 +153,7 @@ async def tenant_session_factory(superuser_engine):
 
     The ``begin`` listener is the same one ``infrastructure/persistence/database``
     installs: it samples the tenant contextvar once per transaction and binds it
-    to ``app.current_org_id``. Reproducing it here is what makes the test a test
+    to ``app.current_enterprise_id``. Reproducing it here is what makes the test a test
     of the real posture rather than of a hand-set GUC.
     """
     async with superuser_engine.begin() as conn:
@@ -176,8 +179,10 @@ async def tenant_session_factory(superuser_engine):
     @event.listens_for(engine.sync_engine, "begin")
     def _scope_tenant_per_transaction(conn):
         conn.execute(
-            text("SELECT set_config('app.current_org_id', :org_id, true)"),
-            {"org_id": get_current_org_id()},
+            text(
+                "SELECT set_config('app.current_enterprise_id', :enterprise_id, true)"
+            ),
+            {"enterprise_id": get_current_enterprise_id()},
         )
 
     yield async_sessionmaker(engine, expire_on_commit=False)
@@ -266,11 +271,11 @@ async def test_conversion_persists_under_tenant_rls(
     written_conversions.append(conversion_id)
     service = _service(tenant_session_factory)
 
-    token = _current_org_id.set(tenant_org)
+    token = _current_enterprise_id.set(tenant_org)
     try:
         await _persist(service, conversion_id, None, tmp_path)
     finally:
-        _current_org_id.reset(token)
+        _current_enterprise_id.reset(token)
 
     # Read back as superuser so the assertion measures what was WRITTEN rather
     # than what the writing tenant is allowed to see.
@@ -315,13 +320,13 @@ async def test_sentinel_org_stamp_is_refused_under_tenant_rls(
     """
     service = _service(tenant_session_factory)
 
-    token = _current_org_id.set(tenant_org)
+    token = _current_enterprise_id.set(tenant_org)
     try:
         with pytest.raises(DBAPIError) as exc:
             await _persist(
                 service, f"conv_{uuid4().hex[:12]}", DEFAULT_ORGANIZATION_ID, tmp_path
             )
     finally:
-        _current_org_id.reset(token)
+        _current_enterprise_id.reset(token)
 
     assert "row-level security" in str(exc.value).lower()

@@ -334,9 +334,9 @@ def test_main_rejects_dry_run_together_with_yes():
 
 @pytest.mark.asyncio
 async def test_the_rls_scope_is_bound_before_any_session_is_opened(wiring, monkeypatch):
-    """`set_current_org_id` is what makes every later query tenant-scoped.
+    """`set_current_enterprise_id` is what makes every later query tenant-scoped.
 
-    The engine applies `app.current_org_id` per transaction from this
+    The engine applies `app.current_enterprise_id` per transaction from this
     contextvar, so a session opened before the bind runs unscoped (#935 was
     exactly that bug). A code review proved this line could be deleted with the
     whole suite green — a guard no test can see removed is one that will be.
@@ -344,7 +344,7 @@ async def test_the_rls_scope_is_bound_before_any_session_is_opened(wiring, monke
     from faultmaven.config import tenant_context
 
     bound: list[str] = []
-    monkeypatch.setattr(tenant_context, "set_current_org_id", bound.append)
+    monkeypatch.setattr(tenant_context, "set_current_enterprise_id", bound.append)
     # The sweep is the first thing to touch the database, so record when it ran.
     monkeypatch.setattr(
         reassign_cases,

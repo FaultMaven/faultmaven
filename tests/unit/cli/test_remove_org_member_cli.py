@@ -251,19 +251,21 @@ async def test_removal_goes_through_the_paired_service(wiring, capsys):
 
 
 async def test_tenant_context_is_bound_to_the_target_org(wiring, monkeypatch):
-    """RLS (migration 018) scopes both tables by ``app.current_org_id``.
+    """RLS (migration 018) scopes both tables by ``app.current_enterprise_id``.
 
     Without this the lookups and the DELETE run against whatever org the context
     defaulted to — the Standalone sentinel — and silently affect nothing.
     """
     bound: list[str] = []
-    real_set = tenant_context.set_current_org_id
+    real_set = tenant_context.set_current_enterprise_id
 
     def _record(org_id):
         bound.append(org_id)
         real_set(org_id)
 
-    monkeypatch.setattr("faultmaven.config.tenant_context.set_current_org_id", _record)
+    monkeypatch.setattr(
+        "faultmaven.config.tenant_context.set_current_enterprise_id", _record
+    )
 
     code = await remove_org_member.remove_org_member(
         organization_id=ORG_ID, user_identifier="alice", dry_run=False

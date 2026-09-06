@@ -55,7 +55,7 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 # Fixtures
 # =============================================================================
 
-DEFAULT_ORG_ID = "00000000-0000-0000-0000-000000000001"
+DEFAULT_ENTERPRISE_ID = "00000000-0000-0000-0000-000000000001"
 DEFAULT_ENTERPRISE_ID = "00000000-0000-0000-0000-000000000002"
 
 
@@ -86,7 +86,7 @@ async def seeded_session_factory(session_factory):
         )
         session.add(
             OrganizationModel(
-                organization_id=DEFAULT_ORG_ID,
+                organization_id=DEFAULT_ENTERPRISE_ID,
                 enterprise_id=DEFAULT_ENTERPRISE_ID,
                 name="Default Org",
                 slug="default-org",
@@ -142,7 +142,7 @@ class TestIngestRunbookDualWrite:
             document_id=item_id,
             title="Redis OOM",
             content="# Redis OOM\n\nIncrease maxmemory.",
-            organization_id=DEFAULT_ORG_ID,
+            organization_id=DEFAULT_ENTERPRISE_ID,
             scope="global",
             owner_id="user-1",
             verified_by="user-1",
@@ -182,7 +182,7 @@ class TestIngestRunbookDualWrite:
             document_id=item_id,
             title="Unverified",
             content="raw content",
-            organization_id=DEFAULT_ORG_ID,
+            organization_id=DEFAULT_ENTERPRISE_ID,
             scope="personal",
             owner_id="user-2",
             verified_by=None,
@@ -215,7 +215,7 @@ class TestIngestRunbookDualWrite:
                 document_id=item_id,
                 title="Doomed embed",
                 content="content",
-                organization_id=DEFAULT_ORG_ID,
+                organization_id=DEFAULT_ENTERPRISE_ID,
                 scope="global",
                 verified_by="user-3",
             )
@@ -246,7 +246,7 @@ class TestIngestRunbookDualWrite:
                 document_id=item_id,
                 title="Empty result",
                 content="content",
-                organization_id=DEFAULT_ORG_ID,
+                organization_id=DEFAULT_ENTERPRISE_ID,
                 scope="global",
                 verified_by="user-4",
             )
@@ -276,7 +276,7 @@ class TestIngestRunbookDualWrite:
             document_id=item_id,
             title="Original",
             content="c",
-            organization_id=DEFAULT_ORG_ID,
+            organization_id=DEFAULT_ENTERPRISE_ID,
             scope="global",
         )
         first_chroma_count = service._index_document_in_vector_store.await_count
@@ -289,7 +289,7 @@ class TestIngestRunbookDualWrite:
                 document_id=item_id,
                 title="Duplicate",
                 content="c2",
-                organization_id=DEFAULT_ORG_ID,
+                organization_id=DEFAULT_ENTERPRISE_ID,
                 scope="global",
             )
 

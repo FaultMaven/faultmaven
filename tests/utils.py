@@ -642,7 +642,7 @@ async def asgi_request(app, method: str, path: str, **kwargs):
 # ``AuthService`` mints nothing. It used to carry a second, independent signing
 # surface — ``generate_access_token`` / ``generate_refresh_token`` /
 # ``generate_token_pair`` — that took a subject id and an ``organization_id``
-# string and signed them verbatim, bypassing ``resolve_organization_claim``
+# string and signed them verbatim, bypassing ``resolve_enterprise_claim``
 # (#850). It reached no route and was removed in #853; ``IJWTTokenGenerator`` is
 # the one mint path.
 #
@@ -722,9 +722,9 @@ def forge_access_token(
     service verifies with. ``username`` defaults to ``user_id``; the live mint
     takes ``user.username``, so pass it explicitly when a test reads that claim.
 
-    Unlike the live mint, the organization claim is whatever the caller passes:
+    Unlike the live mint, the tenancy claims are whatever the caller passes:
     forging exists to control claims, including ones
-    ``resolve_organization_claim`` would never produce.
+    ``resolve_enterprise_claim`` would never produce.
     """
     from datetime import timedelta
 

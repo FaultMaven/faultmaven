@@ -59,7 +59,7 @@ CONTENT_PATHS = (
 def _operator() -> AuthenticatedUser:
     return AuthenticatedUser(
         user_id="op-1",
-        organization_id="org-operator-own",
+        enterprise_id="org-operator-own",
         email="operator@example.com",
         roles=["user", "admin", "platform_admin"],
         permissions=[],
@@ -72,7 +72,7 @@ def _grant(**overrides) -> OperatorAccessGrant:
         grant_id="grant-1",
         operator_user_id="op-1",
         target_case_id=CASE_ID,
-        target_organization_id=GRANT_ORG,
+        target_enterprise_id=GRANT_ORG,
         reason="customer reports the investigation is stuck; ticket SUP-4821",
         created_at=now,
         expires_at=now + timedelta(minutes=60),
@@ -309,7 +309,7 @@ class TestTheAuditRowNamesTheGrant:
     ):
         """An operator must not choose which tenant their audit row names.
 
-        ``target_organization_id`` on a grant is written by the operator and is
+        ``target_enterprise_id`` on a grant is written by the operator and is
         never validated against the case. Under ``single`` nothing exercises it —
         no rebind happens — so recording it verbatim would let the audited party
         misattribute their own access to a tenant they never touched, in a row
@@ -319,18 +319,18 @@ class TestTheAuditRowNamesTheGrant:
         from faultmaven.api import operator_grants
 
         monkeypatch.setattr(
-            operator_grants, "get_current_org_id", lambda: "org-actually-bound"
+            operator_grants, "get_current_enterprise_id", lambda: "ent-actually-bound"
         )
         # The grant claims some other tenant entirely.
         grant_repo.find_live_grant = AsyncMock(
-            return_value=_grant(target_organization_id="org-someone-elses")
+            return_value=_grant(target_enterprise_id="org-someone-elses")
         )
 
         client.get(CONTENT_PATHS[0])
 
         assert (
-            audit_repo.record_access.await_args.kwargs["target_organization_id"]
-            == "org-actually-bound"
+            audit_repo.record_access.await_args.kwargs["target_enterprise_id"]
+            == "ent-actually-bound"
         )
 
     def test_under_multi_tenancy_the_grants_org_is_recorded(
@@ -338,7 +338,7 @@ class TestTheAuditRowNamesTheGrant:
     ):
         """There the claim has already been made load-bearing.
 
-        ``bind_grant_org_scope`` rebinds RLS to the named organization before the
+        ``bind_grant_enterprise_scope`` rebinds RLS to the named organization before the
         read, so a false claim returns no rows and 404s. Having survived that,
         the grant's org is a fact about the request rather than an assertion
         about it — and it is the only value that names the tenant reached.
@@ -349,13 +349,15 @@ class TestTheAuditRowNamesTheGrant:
             operator_grants, "requested_tenant_provider", lambda: "multi"
         )
         monkeypatch.setattr(operator_grants, "BUILTIN_MULTI", "multi")
-        monkeypatch.setattr(operator_grants, "set_current_org_id", lambda _org: None)
+        monkeypatch.setattr(
+            operator_grants, "set_current_enterprise_id", lambda _org: None
+        )
         grant_repo.find_live_grant = AsyncMock(return_value=_grant())
 
         client.get(CONTENT_PATHS[0])
 
         assert (
-            audit_repo.record_access.await_args.kwargs["target_organization_id"]
+            audit_repo.record_access.await_args.kwargs["target_enterprise_id"]
             == GRANT_ORG
         )
 
@@ -467,7 +469,7 @@ class TestRlsIsReboundNotBypassed:
 
         bound = []
         monkeypatch.setattr(
-            operator_grants, "set_current_org_id", lambda org: bound.append(org)
+            operator_grants, "set_current_enterprise_id", lambda org: bound.append(org)
         )
         monkeypatch.setattr(
             operator_grants, "requested_tenant_provider", lambda: "multi"
@@ -488,7 +490,7 @@ class TestRlsIsReboundNotBypassed:
 
         bound = []
         monkeypatch.setattr(
-            operator_grants, "set_current_org_id", lambda org: bound.append(org)
+            operator_grants, "set_current_enterprise_id", lambda org: bound.append(org)
         )
         grant_repo.find_live_grant = AsyncMock(return_value=_grant())
 

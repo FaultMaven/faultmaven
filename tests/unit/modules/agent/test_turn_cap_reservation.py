@@ -30,6 +30,8 @@ import pytest
 from faultmaven.core.investigation.schemas import TurnPayload
 from faultmaven.exceptions import NotFoundError, PermissionDeniedException
 from faultmaven.infrastructure.protection.tenant_turn_cap import (
+    SUBJECT_ACCOUNT,
+    BillingSubject,
     CapPolicyResolver,
     InMemoryTurnLedger,
     TenantTurnCapExceeded,
@@ -39,7 +41,10 @@ from faultmaven.infrastructure.protection.tenant_turn_cap import (
 
 pytestmark = pytest.mark.unit
 
-ORG = "org-personal"
+ORG = "ent-personal"
+#: The turn is charged to a BILLING SUBJECT (ADR-017 D5). Neither party here is
+#: in an organization, so the subject is the account itself.
+OWNER_SUBJECT = BillingSubject(SUBJECT_ACCOUNT, "user-owner")
 OWNER = "user-owner"
 STRANGER = "user-stranger"
 #: ``case_`` plus 12 hex — the shape the repo's own factories use, and
@@ -55,15 +60,9 @@ class _Orgs:
         return SimpleNamespace(organization_id=organization_id, daily_turn_cap=self.cap)
 
 
-class _People:
-    async def is_personal_organization(self, organization_id):
-        return True
-
-
 def _cap_service(ledger, *, override=None, default=30):
     return TurnCapService(
         CapPolicyResolver(
-            _People(),
             _Orgs(override),
             default_limit=lambda: default,
             multi_tenant=lambda: True,
@@ -74,12 +73,12 @@ def _cap_service(ledger, *, override=None, default=30):
 
 @pytest.fixture(autouse=True)
 def bound_tenant():
-    from faultmaven.config.constants import STANDALONE_ORG_ID
-    from faultmaven.config.tenant_context import set_current_org_id
+    from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+    from faultmaven.config.tenant_context import set_current_enterprise_id
 
-    set_current_org_id(ORG)
+    set_current_enterprise_id(ORG)
     yield
-    set_current_org_id(STANDALONE_ORG_ID)
+    set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
 
 
 def _case(**overrides):
@@ -91,7 +90,7 @@ def _case(**overrides):
         title="Probe",
         description="",
         user_id=OWNER,
-        organization_id=ORG,
+        enterprise_id=ORG,
         state=CaseState.INQUIRY,
         current_turn=0,
     )
@@ -99,7 +98,7 @@ def _case(**overrides):
     return Case(**defaults)
 
 
-def _service(ledger, *, case=None, override=None):
+def _service(ledger, *, case=None, default=30):
     from faultmaven.modules.agent.domain.services.investigation_service import (
         InvestigationService,
     )
@@ -117,7 +116,7 @@ def _service(ledger, *, case=None, override=None):
         case_repository=repository,
         preprocessing_service=preprocessing,
         file_storage_service=MagicMock(),
-        turn_cap=_cap_service(ledger, override=override),
+        turn_cap=_cap_service(ledger, default=default),
     )
     # Everything past the reservation is out of scope here; the cases below all
     # end at or before it.
@@ -135,7 +134,7 @@ async def test_a_missing_case_costs_the_tenant_nothing():
     with pytest.raises(NotFoundError):
         await service.process_turn(CASE_ID, OWNER, TurnPayload(query="hello"))
 
-    assert await ledger.usage(ORG, utc_day()) == 0
+    assert await ledger.usage(OWNER_SUBJECT, utc_day()) == 0
 
 
 async def test_a_case_the_caller_may_not_touch_costs_the_prober_nothing():
@@ -153,29 +152,33 @@ async def test_a_case_the_caller_may_not_touch_costs_the_prober_nothing():
     with pytest.raises(PermissionDeniedException):
         await service.process_turn(CASE_ID, STRANGER, TurnPayload(query="hello"))
 
-    assert await ledger.usage(ORG, utc_day()) == 0
+    assert await ledger.usage(OWNER_SUBJECT, utc_day()) == 0
 
 
 async def test_a_capped_tenant_is_refused_before_any_attachment_is_processed():
     """Charged before STEP 1, so a refused turn writes no files and no evidence."""
     ledger = InMemoryTurnLedger()
-    service = _service(ledger, case=_case(), override=1)
+    # Capped at the DEPLOYMENT DEFAULT, because the subject here is an ACCOUNT:
+    # neither party is in an organization, so nobody is paying and the
+    # self-service allowance applies (ADR-017 D5). An organization override is a
+    # different subject's cap and would not bite this turn.
+    service = _service(ledger, case=_case(), default=1)
 
-    await ledger.reserve(ORG, utc_day(), None)  # the day's one turn, already spent
+    await ledger.reserve(OWNER_SUBJECT, utc_day(), None)  # the day's turn, spent
 
     with pytest.raises(TenantTurnCapExceeded):
         await service.process_turn(CASE_ID, OWNER, TurnPayload(query="hello"))
 
     # ``_preprocess_attachment`` is rigged to fail loudly if it runs; the
     # refusal above is what proves it did not.
-    assert await ledger.usage(ORG, utc_day()) == 1
+    assert await ledger.usage(OWNER_SUBJECT, utc_day()) == 1
 
 
 async def test_the_refusal_carries_the_message_and_the_reset_instant():
     ledger = InMemoryTurnLedger()
-    service = _service(ledger, case=_case(), override=2)
-    await ledger.reserve(ORG, utc_day(), None)
-    await ledger.reserve(ORG, utc_day(), None)
+    service = _service(ledger, case=_case(), default=2)
+    await ledger.reserve(OWNER_SUBJECT, utc_day(), None)
+    await ledger.reserve(OWNER_SUBJECT, utc_day(), None)
 
     with pytest.raises(TenantTurnCapExceeded) as raised:
         await service.process_turn(CASE_ID, OWNER, TurnPayload(query="hello"))
@@ -212,7 +215,7 @@ async def test_an_uninjected_cap_is_uncapped_under_single_tenant():
     assert isinstance(fallback, UnconfiguredTurnCap)
     assert service.turn_cap is fallback, "the lazy default must be built once"
 
-    reservation = await fallback.reserve(ORG)
+    reservation = await fallback.reserve(OWNER_SUBJECT)
     assert reservation.limit is None
     assert reservation.source == "single_tenant"
 
@@ -233,4 +236,4 @@ async def test_an_uninjected_cap_refuses_under_multi_tenant(monkeypatch):
 
     monkeypatch.setattr(module, "_is_multi_tenant", lambda: True)
     with pytest.raises(TenantTurnCapUnavailable):
-        await UnconfiguredTurnCap().reserve(ORG)
+        await UnconfiguredTurnCap().reserve(OWNER_SUBJECT)

@@ -1239,18 +1239,22 @@ def case_with_conversation():
 
 @pytest.fixture
 def restore_tenant_context():
-    """Keep a bound organization from leaking into the next test.
+    """Keep a bound enterprise from leaking into the next test.
 
     Deliberately NOT autouse at this scope: it resets a process-wide contextvar,
     and the modules that need it say so with ``pytestmark = pytest.mark
     .usefixtures("restore_tenant_context")`` rather than every test in the suite
     paying for a reset it never asked for.
     """
-    from faultmaven.config.constants import STANDALONE_ORG_ID
-    from faultmaven.config.tenant_context import set_current_org_id
+    from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+    from faultmaven.config.tenant_context import (
+        set_current_billing_organization_id,
+        set_current_enterprise_id,
+    )
 
     yield
-    set_current_org_id(STANDALONE_ORG_ID)
+    set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
+    set_current_billing_organization_id(None)
 
 
 class RecordingIdP:

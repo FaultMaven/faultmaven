@@ -461,7 +461,7 @@ async def test_a_broken_verifier_degrades_instead_of_500ing(auth_service):
 # ---------------------------------------------------------------------------
 # Tenancy: the raw-credential scope distinguished org contexts as a side effect
 # (the org claim rides inside the signed token). Keying on ``sub`` alone would
-# drop that and lean on ``resolve_organization_claim`` reading the org off the
+# drop that and lean on ``resolve_enterprise_claim`` reading the org off the
 # user record — an invariant that lives in another module, is not enforced here,
 # and would put two different-tenant requests in one bucket if it ever stopped
 # holding. The org is carried in the scope instead.

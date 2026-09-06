@@ -459,7 +459,7 @@ async def test_the_oauth_exchange_still_reports_its_own_protocol_error():
 #: The parallel mint path `AuthService` used to carry. Each took a `user_id` and
 #: an `organization_id` **string** and signed the latter verbatim, so a caller
 #: could put any value in the `organization_id` claim — bypassing
-#: `resolve_organization_claim`, the guard every real mint funnels through
+#: `resolve_enterprise_claim`, the guard every real mint funnels through
 #: (#850). Its only caller passed `organization_id or "org-default"`: a truthy,
 #: non-sentinel, fabricated tenant that both layers of the #850 fix would have
 #: waved through. Nothing routed to it, so it was removed rather than gated.

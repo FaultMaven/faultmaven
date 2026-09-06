@@ -264,9 +264,9 @@ def test_the_standalone_sentinel_is_not_a_tenant_under_multi(route):
     """Under ``TENANT_PROVIDER=multi`` the sentinel identifies the single-tenant
     deployment, not an organization — accepting it would scope an operator to a
     pseudo-tenant that owns nothing and bypass the real one."""
-    from faultmaven.config.constants import STANDALONE_ORG_ID
+    from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 
-    client = _client(_service(), _admin(STANDALONE_ORG_ID))
+    client = _client(_service(), _admin(STANDALONE_ENTERPRISE_ID))
     with _MULTI:
         resp = dict(_call(client, SUG_A))[route]
     assert resp.status_code == 403
@@ -276,12 +276,12 @@ def test_the_standalone_sentinel_is_not_a_tenant_under_multi(route):
 @pytest.mark.security
 def test_the_standalone_sentinel_is_a_tenant_under_single():
     """The same id is the legitimate tenant in a Standalone deployment."""
-    from faultmaven.config.constants import STANDALONE_ORG_ID
+    from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 
     repository = InMemorySuggestionRepository()
-    repository.seed(_suggestion(SUG_A, STANDALONE_ORG_ID))
+    repository.seed(_suggestion(SUG_A, STANDALONE_ENTERPRISE_ID))
     service = SuggestionService(suggestion_repository=repository)
-    client = _client(service, _admin(STANDALONE_ORG_ID))
+    client = _client(service, _admin(STANDALONE_ENTERPRISE_ID))
     with _SINGLE:
         resp = client.get(f"/knowledge/suggestions/{SUG_A}")
     assert resp.status_code == 200

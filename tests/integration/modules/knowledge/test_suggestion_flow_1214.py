@@ -58,7 +58,7 @@ from faultmaven.api.v1.dependencies import get_case_service
 from faultmaven.api.v1.dependencies import (
     get_suggestion_service as shared_get_suggestion_service,
 )
-from faultmaven.config.constants import STANDALONE_ORG_ID
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.infrastructure.persistence.models import (
     Base,
     EnterpriseModel,
@@ -108,7 +108,7 @@ async def session_factory():
         )
         session.add(
             OrganizationModel(
-                organization_id=STANDALONE_ORG_ID,
+                organization_id=STANDALONE_ENTERPRISE_ID,
                 enterprise_id=DEFAULT_ENTERPRISE_ID,
                 name="Default Org",
                 slug="default-org",
@@ -143,7 +143,7 @@ class _Case:
     case_id = CASE_ID
     title = "Connection pool exhaustion"
     description = "Prod DB latency spike"
-    organization_id = STANDALONE_ORG_ID
+    organization_id = STANDALONE_ENTERPRISE_ID
 
 
 def _admin() -> DevUser:
@@ -154,7 +154,7 @@ def _admin() -> DevUser:
         display_name="Admin",
         created_at=datetime.now(timezone.utc),
         roles=["admin", "platform_admin"],
-        organization_id=STANDALONE_ORG_ID,
+        organization_id=STANDALONE_ENTERPRISE_ID,
     )
 
 
@@ -575,7 +575,7 @@ class TestAFullReviewInboxRefusesHonestly:
         assert "queue is full" in resp.json()["detail"]
         assert (
             await suggestion_service._repository.count_for_organization(
-                STANDALONE_ORG_ID
+                STANDALONE_ENTERPRISE_ID
             )
             == 1
         )

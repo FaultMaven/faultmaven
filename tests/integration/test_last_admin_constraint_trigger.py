@@ -567,7 +567,7 @@ async def test_guard_holds_for_the_limited_application_role(engine, org):
                 # RLS scopes this role's writes; the chokepoint binds the GUC
                 # per transaction, so the test binds it the same way.
                 await conn.execute(
-                    text("SELECT set_config('app.current_org_id', :o, true)"),
+                    text("SELECT set_config('app.current_enterprise_id', :o, true)"),
                     {"o": org_id},
                 )
                 await conn.execute(

@@ -45,12 +45,12 @@ class _People:
 
 @pytest.fixture(autouse=True)
 def bound_tenant():
-    from faultmaven.config.constants import STANDALONE_ORG_ID
-    from faultmaven.config.tenant_context import set_current_org_id
+    from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+    from faultmaven.config.tenant_context import set_current_enterprise_id
 
-    set_current_org_id(ORG)
+    set_current_enterprise_id(ORG)
     yield
-    set_current_org_id(STANDALONE_ORG_ID)
+    set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
 
 
 @pytest.fixture

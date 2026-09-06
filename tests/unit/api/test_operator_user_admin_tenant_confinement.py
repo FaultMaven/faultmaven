@@ -610,7 +610,7 @@ def test_an_operator_carrying_no_organization_is_refused(world):
     """403, and the same 403 for every id — so it is not an oracle either.
 
     Holding the deployment-wide role does not exempt a caller from acting inside
-    the organization their request is bound to; ``require_actor_organization``
+    the organization their request is bound to; ``require_actor_enterprise``
     refuses rather than handing back ``None`` for the route to degrade into an
     unscoped query.
     """

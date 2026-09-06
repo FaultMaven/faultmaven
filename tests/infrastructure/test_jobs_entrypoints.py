@@ -558,7 +558,9 @@ def _fake_job(tenant_scope, mock_container, mock_settings, provider="multi"):
                 ".assert_maintenance_db_role_posture",
                 maintenance_guard,
             ),
-            patch("faultmaven.config.tenant_context.set_current_org_id", set_org),
+            patch(
+                "faultmaven.config.tenant_context.set_current_enterprise_id", set_org
+            ),
             patch.dict(
                 "faultmaven.jobs.run.AVAILABLE_JOBS",
                 {"fake_job": FAKE_JOB_MODULE},
