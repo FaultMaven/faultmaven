@@ -78,6 +78,15 @@ async def test_intent_routing():
     # =========================================================================
     print("🧪 Test 1: Heuristic Greeting Detection")
 
+    from faultmaven.modules.agent.domain.services.orientation import (
+        OrientationKind,
+        detect_orientation,
+    )
+
+    def _heuristic(msg):
+        kind = detect_orientation(msg)
+        return IntentType.GREETING if kind and kind != OrientationKind.EMPTY else None
+
     greetings = ["Hello", "hi", "Hi FaultMaven", "Greetings.", "Help!", "hey"]
     non_greetings = [
         "Hello, the system is down",
@@ -86,14 +95,14 @@ async def test_intent_routing():
     ]
 
     for msg in greetings:
-        intent = service._detect_intent_heuristic(msg)
+        intent = _heuristic(msg)
         if intent == IntentType.GREETING:
             print(f"✅ Correctly detected GREETING for: '{msg}'")
         else:
             print(f"❌ FAILED to detect GREETING for: '{msg}' (Got: {intent})")
 
     for msg in non_greetings:
-        intent = service._detect_intent_heuristic(msg)
+        intent = _heuristic(msg)
         if intent is None:
             print(f"✅ Correctly ignored non-greeting: '{msg}'")
         else:

@@ -171,6 +171,24 @@ class TestStateAware:
         assert "describe the problem" not in resp.agent_response
         engine.process_turn.assert_not_called()
         assert saved.messages[-1]["metadata"]["orientation"] == "greeting"
+        # Recorded and tagged as an aside (PR #1343 review): not investigation
+        # work, hidden from the history the engine sees next turn.
+        assert saved.turn_history[-1].outcome == TurnOutcome.OUT_OF_BAND
+        assert saved.messages[-2]["metadata"]["out_of_band"] == "orientation"
+        assert saved.messages[-1]["metadata"]["out_of_band"] == "orientation"
+        assert resp.investigation_turn == 1
+        assert resp.turn_number == 2
+
+    async def test_a_pending_terminal_proposal_goes_to_the_engine(
+        self, service, recording_case_repository, investigating, engine
+    ):
+        """ "?" / "hi" / "" over a standing resolve proposal answers THAT question;
+        the engine's gate handling owns it (PR #1343 review)."""
+        investigating.pending_transition = {"to_state": "resolved"}
+        for query in ("hi", "", "help"):
+            engine.process_turn.reset_mock()
+            await _turn(service, recording_case_repository, investigating, query=query)
+            engine.process_turn.assert_called_once()
 
     async def test_help_is_orientation_not_onboarding(
         self, service, recording_case_repository, investigating, engine

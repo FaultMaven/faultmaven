@@ -449,6 +449,19 @@ class TestTurnEndpointNamesTheCase:
         assert response.status_code >= 500
         assert _is_default_case_title(case.title)
 
+    def test_an_empty_turn_is_accepted_by_the_route(self, client, case):
+        """No query, no file, no paste: the route no longer answers 400 (#1343,
+        contract 2.8.0); the service receives an empty TurnPayload and answers
+        it with a state-aware orientation."""
+        response = client.post(f"/api/v1/cases/{case.case_id}/turns", data={})
+
+        assert response.status_code == 200
+        payload = client.fm_investigation_service.process_turn.await_args.kwargs[
+            "payload"
+        ]
+        assert payload.has_query is False
+        assert payload.has_attachments is False
+
     def test_an_upload_only_turn_names_the_case(self, client, case):
         """The population fm#1069 is about: the user typed nothing, they uploaded.
 

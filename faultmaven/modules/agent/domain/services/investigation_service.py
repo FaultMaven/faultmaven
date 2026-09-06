@@ -11,7 +11,6 @@ This service wraps the MilestoneEngine and provides:
 """
 
 import logging
-import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timezone
 from enum import Enum
@@ -75,7 +74,9 @@ from faultmaven.models.api_models import (
     TurnResponse,
 )
 from faultmaven.modules.agent.domain.services.orientation import (
+    OUT_OF_BAND_MARKER,
     OrientationKind,
+    back_to_investigation_follow_up,
     build_orientation,
     detect_orientation,
 )
@@ -1328,9 +1329,10 @@ class InvestigationService:
             # ── The per-tenant daily turn cap (ADR-016 D5.3) ──
             # HERE, and the position is the decision. Everything that can refuse
             # this request for a reason that is not "you have spent your day"
-            # has already run: the route's own validation (no query and no
-            # attachment → 400, oversize → 413, unknown intent → 422, a closed
-            # case → 409), the route's case lookup, and the two refusals
+            # has already run: the route's own validation (oversize → 413,
+            # unknown intent → 422, a closed case → 409; an EMPTY turn is
+            # accepted since #1343 and charged like any other — it is answered
+            # with an orientation), the route's case lookup, and the two refusals
             # immediately above. So a malformed turn, a probe at another
             # tenant's case id, and a turn to a case that does not exist all
             # cost the tenant nothing — where a route-level guard charged them
@@ -1542,13 +1544,25 @@ class InvestigationService:
             # Analysis. Any attachment disqualifies, not just a novel one: a
             # re-submission still belongs on the path that knows what to do
             # with a duplicate.
-            if intent_type == IntentType.CONVERSATION and not payload.has_attachments:
+            if (
+                intent_type == IntentType.CONVERSATION
+                and not payload.has_attachments
+                # A blank or greeting-shaped reply over a pending terminal
+                # proposal is an answer to THAT question; the engine's own
+                # gate handling re-presents or withdraws it. Same guard as
+                # the out-of-band lane below.
+                and not getattr(case, "pending_transition", None)
+            ):
                 # ``query`` may be empty here: a bare @mention in Slack arrives
                 # with no text and no file, and used to be refused by the route.
                 # That is the EMPTY orientation — "where are we, what can I do".
                 orientation_kind = detect_orientation(query)
                 if orientation_kind is not None:
                     intent_type = IntentType.GREETING
+                    # Tag the user row like an aside (#1329): the history
+                    # renderers and the investigation-turn count read this key.
+                    user_message_obj["metadata"]["out_of_band"] = OUT_OF_BAND_MARKER
+                    user_message_obj["metadata"]["orientation"] = orientation_kind.value
                     logger.info(
                         "Orientation turn (%s) on case %s",
                         orientation_kind.value,
@@ -3045,6 +3059,12 @@ class InvestigationService:
             "metadata": {
                 "progress_made": False,
                 "milestones_completed": [],
+                # Recorded as an aside (#1329): not investigation work, so it is
+                # excluded from every investigative-turn count and hidden from
+                # every history fidelity — the engine must not ground its next
+                # turn on a recap of itself.
+                "outcome": TurnOutcome.OUT_OF_BAND.value,
+                "out_of_band": OUT_OF_BAND_MARKER,
                 "orientation": kind.value,
                 **report_turn_uploads(case.case_id, case.current_turn, attachments),
             },
@@ -3066,15 +3086,10 @@ class InvestigationService:
         agent_response = await answer_out_of_band(
             self.engine.llm_provider, case, user_message, kind
         )
-        title = (case.title or "the investigation")[:80]
         return {
             "agent_response": agent_response,
             "suggested_follow_ups": [
-                {
-                    "label": f"Back to: {title}",
-                    "action_type": "FREE_SPEECH",
-                    "hints": ["new data", "what you tried", "next step"],
-                },
+                back_to_investigation_follow_up(case),
                 {"label": "Ask another question", "action_type": "FREE_SPEECH"},
             ],
             "case_updated": case,
@@ -3086,15 +3101,6 @@ class InvestigationService:
                 **report_turn_uploads(case.case_id, case.current_turn, None),
             },
         }
-
-    def _detect_intent_heuristic(self, message: str) -> Optional[IntentType]:
-        """Server-side intent from message text: GREETING for any orientation
-        (greeting, "help"), else ``None``. The empty message is handled by the
-        caller, which has the attachment context this method does not."""
-        kind = detect_orientation(message)
-        if kind is not None and kind != OrientationKind.EMPTY:
-            return IntentType.GREETING
-        return None
 
     @trace("investigation_service_transition_to_investigating")
     async def transition_to_investigating(

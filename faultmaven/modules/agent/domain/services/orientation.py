@@ -22,7 +22,14 @@ import re
 from enum import Enum
 from typing import Any, Optional
 
-from faultmaven.modules.case.contracts import CaseState
+from faultmaven.core.investigation.evidence_need_surfacing import is_ask_exhausted
+from faultmaven.modules.case.contracts import CaseState, is_default_case_title
+
+#: Marker on both message rows of a turn answered outside the investigation.
+#: Shares the ``out_of_band`` key with #1329's asides so every reader that
+#: hides or discounts an aside (history renderers, the investigation-turn
+#: count) treats an orientation reply the same way without a second key.
+OUT_OF_BAND_MARKER = "orientation"
 
 _FM = r"(?:,?\s*faultmaven)?"
 _TAIL = r"[\s.!?,]*$"
@@ -32,9 +39,15 @@ GREETING_RE = re.compile(
     r"(?: there)?" + _FM + _TAIL,
     re.I,
 )
+# Whole-message requests for help ABOUT THE ASSISTANT. Deliberately not "?",
+# "what should I do", "how does this work", "what do you do": mid-investigation
+# those are next-step questions the engine must answer with reasoning (and
+# "?"/blank over a pending gate has its own engine handling). Only phrasings
+# that cannot be read as a question about the incident qualify.
 HELP_RE = re.compile(
-    r"^(?:help|help me|\?+|what can you do|how can you help(?: me)?|"
-    r"what do you do|how does this work|what should i do)" + _FM + _TAIL,
+    r"^(?:help|help me|help please|what can you do|how can you help(?: me)?)"
+    + _FM
+    + _TAIL,
     re.I,
 )
 
@@ -83,7 +96,16 @@ _CAPABILITIES = (
 
 
 def _title(case: Any) -> str:
-    return str(getattr(case, "title", "") or "").strip()[:_TITLE_CHARS]
+    """The case's subject, or "" while it still carries the placeholder title.
+
+    The route answers the turn BEFORE auto-titling runs, titling is best-effort,
+    and older cases kept the placeholder forever — so ``Case-260905-3`` is a
+    normal thing to find here, and quoting it as the subject reads as nonsense.
+    """
+    title = str(getattr(case, "title", "") or "").strip()
+    if is_default_case_title(title):
+        return ""
+    return title[:_TITLE_CHARS]
 
 
 def _first_sentence(text: str, limit: int) -> str:
@@ -99,26 +121,58 @@ def _first_sentence(text: str, limit: int) -> str:
 
 
 def _pending_need(case: Any) -> Optional[str]:
-    """The newest evidence need still open, as the request the user was asked."""
+    """The open evidence need the user was most recently ASKED for, or ``None``.
+
+    Not the list tail: symptom needs are created in bulk and hydrated in
+    creation order, so the tail is whichever was created last, not what was
+    put to the user. A need qualifies only if it is outstanding, has actually
+    been surfaced, and the engine has not stopped asking for it
+    (``is_ask_exhausted`` — the #1079 decay rule this must not undo). Among
+    those, the one surfaced most recently is "the last thing I asked for".
+    """
     needs = getattr(case, "evidence_needs", None) or []
-    for need in reversed(needs):
-        state = getattr(getattr(need, "state", None), "value", None) or getattr(
-            need, "state", None
-        )
-        if state in ("pending", "partially_met") and getattr(need, "request_text", ""):
-            return _first_sentence(str(need.request_text), _ASK_CHARS)
-    return None
+    current_turn = int(getattr(case, "current_turn", 0) or 0)
+    best = None
+    for need in needs:
+        if not getattr(need, "is_outstanding", False):
+            continue
+        last = getattr(need, "last_surfaced_turn", None)
+        if last is None or not getattr(need, "request_text", ""):
+            continue
+        if is_ask_exhausted(need, current_turn):
+            continue
+        if best is None or last > best[0]:
+            best = (last, need)
+    if best is None:
+        return None
+    return _first_sentence(str(best[1].request_text), _ASK_CHARS)
 
 
-def _last_investigation_ask(case: Any) -> Optional[str]:
-    """The assistant's last investigation message — asides skipped (#1329)."""
+def last_investigation_message(case: Any, limit: int = _ASK_CHARS) -> Optional[str]:
+    """The assistant's last INVESTIGATION message: asides (#1329) and earlier
+    orientation replies are skipped, so two greetings in a row do not quote the
+    first recap back as "where we left off".
+
+    Shared with ``out_of_band`` for the same reason; one predicate, one place.
+    """
     for msg in reversed(getattr(case, "messages", None) or []):
         if msg.get("role") != "assistant" or not msg.get("content"):
             continue
-        if (msg.get("metadata") or {}).get("out_of_band"):
+        meta = msg.get("metadata") or {}
+        if meta.get("out_of_band") or meta.get("orientation"):
             continue
-        return _first_sentence(str(msg["content"]), _ASK_CHARS)
+        return _first_sentence(str(msg["content"]), limit)
     return None
+
+
+def back_to_investigation_follow_up(case: Any) -> dict[str, Any]:
+    """The one "resume the investigation" chip both aside lanes offer."""
+    title = _title(case)
+    return {
+        "label": f"Back to: {title[:60]}" if title else "Back to the investigation",
+        "action_type": "FREE_SPEECH",
+        "hints": ["new data", "what you tried", "next step"],
+    }
 
 
 def _opener(kind: OrientationKind, fresh: bool) -> str:
@@ -182,7 +236,7 @@ def build_orientation(case: Any, kind: OrientationKind) -> dict[str, Any]:
             else f"We're {phrase}."
         )
         need = _pending_need(case)
-        ask = need or _last_investigation_ask(case)
+        ask = need or last_investigation_message(case)
         if need:
             last = f"Last I asked for: {need}"
         elif ask:

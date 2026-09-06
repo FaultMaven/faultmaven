@@ -200,19 +200,16 @@ def _bounded(text: str, limit: int) -> str:
 
 
 def _last_assistant_message(case: Any) -> str:
-    """The assistant's last INVESTIGATION message — asides are skipped.
+    """The assistant's last investigation message for the classifier's context.
 
-    After one aside the most recent assistant row is the joke; showing that
-    as "the previous message" would lose the very question ("shall I
-    proceed with the rollback?") a short reply is answering.
+    Delegates to ``orientation.last_investigation_message`` so asides AND
+    orientation replies are skipped by one predicate (PR #1343 review).
     """
-    for msg in reversed(getattr(case, "messages", None) or []):
-        if msg.get("role") != "assistant" or not msg.get("content"):
-            continue
-        if (msg.get("metadata") or {}).get("out_of_band"):
-            continue
-        return _bounded(str(msg["content"]), _PREVIOUS_AGENT_CHARS)
-    return ""
+    from faultmaven.modules.agent.domain.services.orientation import (
+        last_investigation_message,
+    )
+
+    return last_investigation_message(case, _PREVIOUS_AGENT_CHARS) or ""
 
 
 def _role_route_kwargs(settings: Any, role: str) -> dict[str, Any]:

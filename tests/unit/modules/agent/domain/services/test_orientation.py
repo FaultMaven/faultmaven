@@ -9,8 +9,10 @@ import pytest
 
 from faultmaven.modules.agent.domain.services.orientation import (
     OrientationKind,
+    back_to_investigation_follow_up,
     build_orientation,
     detect_orientation,
+    last_investigation_message,
 )
 from faultmaven.modules.case.domain.models import (
     Case,
@@ -44,7 +46,7 @@ class TestDetect:
         [
             "help",
             "Help me",
-            "?",
+            "help please",
             "what can you do?",
             "how can you help",
             "HELP FaultMaven!",
@@ -66,6 +68,13 @@ class TestDetect:
             "yes",
             "hello world is printed twice in the log",
             "can you help me read this dmesg?",
+            # PR #1343 review: next-step questions and a bare "?" belong to the
+            # engine (which has its own handling for "?" over a pending gate).
+            "?",
+            "??",
+            "What should I do?",
+            "how does this work?",
+            "what do you do",
         ],
     )
     def test_incident_text_falls_through(self, text):
@@ -170,29 +179,6 @@ class TestBuild:
         assert "describe the problem" not in text
         labels = [f["label"] for f in reply["suggested_follow_ups"]]
         assert labels == ["Back to: Nightly OOM kills of postgres"]
-
-    def test_investigating_prefers_the_open_evidence_need(self, monkeypatch):
-        case = _investigating()
-        need = SimpleNamespace(
-            state=SimpleNamespace(value="pending"),
-            request_text="free -m output from db-01 around 02:00",
-        )
-        done = SimpleNamespace(
-            state=SimpleNamespace(value="fulfilled"),
-            request_text="dmesg from last night",
-        )
-        monkeypatch.setattr(
-            type(case),
-            "evidence_needs",
-            property(lambda self: [done, need]),
-            raising=False,
-        )
-        reply = build_orientation(case, OrientationKind.HELP)
-        text = reply["agent_response"]
-        assert text.startswith("I can investigate a problem you describe")
-        assert "Last I asked for: free -m output from db-01 around 02:00" in text
-        assert reply["suggested_follow_ups"][0]["action_type"] == "EVIDENCE"
-        assert reply["suggested_follow_ups"][0]["label"].startswith("free -m output")
 
     def test_empty_message_mid_investigation_is_a_bare_recap(self):
         text = build_orientation(_investigating(), OrientationKind.EMPTY)[

@@ -224,8 +224,8 @@ class TestEachServiceRoutedHandler:
 
 
 class TestTheGreetingHeuristicDoesNotSwallowData:
-    """``_detect_intent_heuristic`` rewrites CONVERSATION->GREETING from the
-    message text alone, and ``_handle_greeting`` answers from a static string
+    """``detect_orientation`` rewrites CONVERSATION->GREETING from the
+    message text alone, and ``_handle_greeting`` answers from case state
     without ever calling the engine. So "hi" plus a genuinely new log was
     persisted and dedup-classified, and the engine was told nothing arrived —
     no upload keys, no progress arm, and the two #1224 degradation warnings
