@@ -312,3 +312,53 @@ class TestFormatResults:
         ]
         formatted = WebSearchTool._format_results(results, "q")
         assert "Verify" in formatted
+
+
+@pytest.mark.unit
+@pytest.mark.security
+class TestWebSearchErrorLogOmitsCredentials:
+    """The failure path must not log the exception verbatim.
+
+    ``GoogleCSEProvider`` sends the API key and the investigation's search text
+    as query parameters. httpx renders ``HTTPStatusError`` as
+    ``"... for url '<full url>'"``, so ``logger.error(f"Web search failed:
+    {e}")`` wrote both into an ERROR record on every failed search — and a 400
+    is exactly the response that reaches this path.
+
+    The query-string redaction filter does not cover this: it is attached to
+    the ``httpx`` logger, and this record is emitted on a first-party logger
+    whose ``msg`` is a structlog event dict.
+    """
+
+    async def test_a_failed_search_does_not_log_the_key_or_the_query(self, caplog):
+        import httpx
+
+        key = "AIzaSy-REAL-KEY-0000"
+        query = "db creds for acme-corp"
+        url = f"https://www.googleapis.com/customsearch/v1?key={key}&q=db+creds+for+acme-corp"
+
+        provider = MagicMock()
+        provider.is_available.return_value = True
+        provider.search = AsyncMock(
+            side_effect=httpx.HTTPStatusError(
+                f"Client error '400 Bad Request' for url '{url}'",
+                request=httpx.Request("GET", url),
+                response=httpx.Response(400, request=httpx.Request("GET", url)),
+            )
+        )
+
+        tool = WebSearchTool(provider=provider)
+        context = MagicMock()
+        context.metadata = {}
+
+        with caplog.at_level("DEBUG"):
+            result = await tool.execute_with_context({"query": query}, context)
+
+        assert result.success is False
+        emitted = " ".join(
+            record.getMessage() + repr(record.__dict__) for record in caplog.records
+        )
+        assert key not in emitted, "the Google API key reached a log record"
+        assert "acme-corp" not in emitted, "the search text reached a log record"
+        assert "HTTPStatusError" in emitted, "the failure type must survive"
+        assert "400" in emitted, "the status code must survive"

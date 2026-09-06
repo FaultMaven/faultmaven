@@ -104,7 +104,15 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             "path": request.url.path,
             "client_ip": resolve_client_ip_once(request, self._trusted_proxies),
             "user_agent": request.headers.get("user-agent", "unknown"),
-            "query_params": str(request.query_params),
+            # Names only, never values. The SSO callback takes the IdP's
+            # authorization code and the CSRF state as query parameters
+            # (modules/auth/api/sso.py), so logging the query string verbatim
+            # wrote a live credential into an INFO record on every sign-in —
+            # the same class as fm#1156, which exception_handlers.py:1028 notes
+            # cannot be caught downstream because the structlog chain has no
+            # redaction processor. Which parameters were present is what
+            # debugging actually needs.
+            "query_param_names": sorted(request.query_params.keys()),
         }
 
         # Create context with both business and HTTP context
@@ -133,9 +141,17 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             message=f"Request started: {request.method} {request.url.path}{session_info}{user_info}",
             method=request.method,
             path=request.url.path,
-            query_params=str(request.query_params),
-            client_ip=context.attributes.get("client_ip", "unknown"),
-            user_agent=context.attributes.get("user_agent", "unknown"),
+            # Read from the dict we just built, not from context.attributes.
+            # start_request takes **initial_context, so the `attributes=` kwarg
+            # lands as an attribute literally named "attributes" —
+            # context.attributes is {"attributes": {...}}, and every
+            # .get("client_ip", "unknown") here fell through to its default. The
+            # request-start line has therefore been naming "unknown" as the
+            # client on every request, which is the forensics failure the
+            # client_ip work set out to fix, in a different line.
+            query_param_names=http_context["query_param_names"],
+            client_ip=http_context["client_ip"],
+            user_agent=http_context["user_agent"],
             correlation_id=context.correlation_id,
             session_id=session_id,
             user_id=user_id,
