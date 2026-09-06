@@ -336,6 +336,12 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             item_model = KnowledgeItemModel(
                 item_id=item.item_id,
                 enterprise_id=item.enterprise_id,
+                # Billing attribution (ADR-017 D2), stamped alongside the
+                # isolation key and never read for visibility. ``None`` is an
+                # ordinary answer — an account may be in no organization — and
+                # is the only permitted one for a global row, which the domain
+                # model's own validator enforces before this write.
+                organization_id=item.organization_id,
                 scope=item.scope.value,
                 owner_id=item.owner_id,
                 title=item.title,
@@ -424,6 +430,10 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 update(KnowledgeItemModel)
                 .where(KnowledgeItemModel.item_id == item.item_id)
                 .values(
+                    # Carried on the update too: an UPDATE that omitted it
+                    # would leave the row's attribution frozen at whatever the
+                    # first write happened to stamp.
+                    organization_id=item.organization_id,
                     scope=item.scope.value,
                     owner_id=item.owner_id,
                     title=item.title,
@@ -853,6 +863,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         return KnowledgeItem(
             item_id=model.item_id,
             enterprise_id=model.enterprise_id,
+            organization_id=model.organization_id,
             # Coerce the DB-side string into the typed enum at the boundary.
             # KnowledgeItem.scope is now strongly typed; raw strings would
             # raise from __post_init__.
