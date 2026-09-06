@@ -264,12 +264,18 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 duration
             )
 
-            # Add error to context for cascade prevention
+            # Ask BEFORE recording. should_log_error("api") is
+            # `layer not in layer_errors`, and add_layer_error puts "api"
+            # there — so recording first made the predicate answer False on
+            # every request and this ERROR record unreachable. The two call
+            # sites in infrastructure/logging/unified.py have always done it in
+            # this order, which is why no test caught it.
             if context.error_context:
+                should_log = context.error_context.should_log_error("api")
                 context.error_context.add_layer_error("api", e)
 
                 # Only log if this layer should handle it (prevents cascade)
-                if context.error_context.should_log_error("api"):
+                if should_log:
                     LoggingCoordinator.log_once(
                         operation_key=f"request_error:{context.correlation_id}",
                         logger=logger,

@@ -108,7 +108,6 @@ class TestErrorContext:
         assert error_ctx.original_error is None
         assert isinstance(error_ctx.layer_errors, dict)
         assert len(error_ctx.layer_errors) == 0
-        assert error_ctx.recovery_attempts == 0
 
     def test_add_layer_error_first_error(self):
         """Test adding first error sets it as original."""
@@ -142,7 +141,13 @@ class TestErrorContext:
         assert error_ctx.layer_errors["api"]["type"] == "RuntimeError"
 
     def test_should_log_error_cascade_prevention(self):
-        """Test error cascade prevention logic."""
+        """Cascade prevention is the whole of the rule.
+
+        There used to be a second clause, ``or self.recovery_attempts > 0``,
+        letting a layer log again during a recovery, plus a test that set that
+        counter by hand. Nothing in the codebase ever incremented it, so the
+        test proved a branch unreachable in production; both are gone.
+        """
         error_ctx = ErrorContext()
         test_error = ValueError("Test error")
 
@@ -156,19 +161,6 @@ class TestErrorContext:
         assert not error_ctx.should_log_error("service")
         assert error_ctx.should_log_error("api")
         assert error_ctx.should_log_error("core")
-
-    def test_should_log_error_during_recovery(self):
-        """Test that errors can be logged during recovery attempts."""
-        error_ctx = ErrorContext()
-        test_error = ValueError("Test error")
-
-        # Add error to service layer
-        error_ctx.add_layer_error("service", test_error)
-        assert not error_ctx.should_log_error("service")
-
-        # During recovery, service should be able to log again
-        error_ctx.recovery_attempts = 1
-        assert error_ctx.should_log_error("service")
 
 
 class TestPerformanceTracker:

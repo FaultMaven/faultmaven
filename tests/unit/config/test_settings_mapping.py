@@ -125,9 +125,6 @@ class TestLoggingSettingsMapping:
 
         # Check defaults
         assert settings.logging.log_output_format == "json"
-        assert settings.logging.log_dedupe is True
-        assert settings.logging.log_buffer_size == 100
-        assert settings.logging.log_flush_interval == 5.0
         assert settings.logging.log_human_readable is False
 
     def test_logging_from_env(self):
@@ -140,9 +137,6 @@ class TestLoggingSettingsMapping:
             os.environ,
             {
                 "LOG_FORMAT": "console",
-                "LOG_DEDUPE": "false",
-                "LOG_BUFFER_SIZE": "200",
-                "LOG_FLUSH_INTERVAL": "10.0",
                 "LOG_HUMAN_READABLE": "true",
             },
         ):
@@ -150,9 +144,6 @@ class TestLoggingSettingsMapping:
             settings = get_settings()
 
             assert settings.logging.log_output_format == "console"
-            assert settings.logging.log_dedupe is False
-            assert settings.logging.log_buffer_size == 200
-            assert settings.logging.log_flush_interval == 10.0
             assert settings.logging.log_human_readable is True
 
 
@@ -433,7 +424,6 @@ class TestSettingsIntegration:
                 "CONFIG_PRESET": "",  # Disable preset auto-detection
                 "LOG_LEVEL": "DEBUG",
                 "LOG_FORMAT": "console",
-                "LOG_DEDUPE": "false",
             },
         ):
             with mock_patch("faultmaven.config.presets.ensure_preset_applied"):
@@ -450,7 +440,6 @@ class TestSettingsIntegration:
                     config.LOG_LEVEL == "DEBUG" or config.LOG_LEVEL == "INFO"
                 )  # Accept default or env value
                 assert config.LOG_FORMAT == "console"
-                assert config.LOG_DEDUPE is False
 
 
 class TestLogFormatSelectsTheRenderer:

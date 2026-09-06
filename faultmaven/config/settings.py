@@ -1885,13 +1885,6 @@ class LoggingSettings(BaseSettings):
         )
         return "json"
 
-    # Log deduplication (prevents repeated log messages)
-    log_dedupe: bool = Field(default=True)
-
-    # Buffered logging configuration
-    log_buffer_size: int = Field(default=100)
-    log_flush_interval: float = Field(default=5.0)
-
     # Human-readable output (console renderer instead of JSON)
     # An explicit override of the renderer, independent of LOG_FORMAT. It used
     # to be reachable only when LOG_FORMAT held a third value that is not in the
