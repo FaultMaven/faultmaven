@@ -65,7 +65,15 @@ class DatabaseUserStore:
         self.username_pattern = re.compile(r"^([^@]+@[^@]+\.[^@]+|[a-zA-Z0-9._-]+)$")
 
     def _user_to_devuser(self, user: User) -> DevUser:
-        """Convert User (repository model) to DevUser (auth model)"""
+        """Convert User (repository model) to DevUser (auth model).
+
+        ``enterprise_id`` is carried across because it is the account's
+        persisted isolation anchor and the source of the token's ``enterprise_id``
+        claim (ADR-017 D3/D9). Dropping it here would leave
+        ``DevUser.__post_init__`` to stamp the Standalone sentinel, which under
+        ``multi`` mints an empty claim and a dead credential — fail-closed, but
+        for the wrong reason and on every login.
+        """
         return DevUser(
             user_id=user.user_id,
             username=user.username,
@@ -75,6 +83,7 @@ class DatabaseUserStore:
             is_dev_user=True,
             is_active=user.is_active,
             roles=user.roles if user.roles else ["user"],
+            enterprise_id=user.enterprise_id,
             account_kind=user.account_kind,
         )
 

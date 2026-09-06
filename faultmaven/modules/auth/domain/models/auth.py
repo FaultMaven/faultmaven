@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
-from faultmaven.config.constants import STANDALONE_ORG_ID
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.modules.auth.domain.models.rbac import PLATFORM_ADMIN_ROLE
 from faultmaven.utils.datetime import parse_utc_timestamp
 from faultmaven.utils.serialization import to_json_compatible
@@ -49,7 +49,12 @@ class DevUser:
         is_active: Account active status
         roles: List of user roles for access control (e.g., ['user'],
             ['user', 'admin', 'platform_admin'])
-        organization_id: Organization UUID (defaults to config.constants.STANDALONE_ORG_ID)
+        enterprise_id: Enterprise UUID — the ISOLATION boundary (ADR-017 D1).
+            Defaults to ``config.constants.STANDALONE_ENTERPRISE_ID``, which is
+            the standalone deployment's one enterprise.
+        organization_id: Organization UUID, or ``None`` — BILLING attribution
+            only (ADR-017 D2). An account may be in no organization; ``None`` is
+            the ordinary answer, and it grants and denies nothing.
         account_kind: ADR-012 account kind — 'individual' (human) or 'slack'
             (service account owning a workspace's cases). Carried here because
             the user store round-trips users through DevUser on update; dropping
@@ -65,20 +70,28 @@ class DevUser:
     is_dev_user: bool = True
     is_active: bool = True
     roles: list[str] = None  # Will be set to ['user'] by default in __post_init__
-    organization_id: str = None  # Will be set to STANDALONE_ORG_ID in __post_init__
+    # Isolation. Defaults to the standalone sentinel in __post_init__.
+    enterprise_id: str = None
+    # Billing. ``None`` is a legitimate steady state (no organization pays for
+    # this account) and is NOT defaulted to anything — a sentinel here would be
+    # a value some later reader mistakes for a tenant.
+    organization_id: Optional[str] = None
     account_kind: str = "individual"
 
     def __post_init__(self):
-        """Set default roles and organization_id if not provided"""
+        """Set default roles and enterprise_id if not provided"""
         if self.roles is None:
             # Least privilege. Any construction path that forgets to pass
             # roles gets a baseline account, never a privileged one — a
             # privileged default silently promotes every such caller,
             # including service accounts. Callers wanting elevation say so.
             self.roles = ["user"]
-        if self.organization_id is None:
-            # Implicit single-tenant org (standalone); see config.constants.
-            self.organization_id = STANDALONE_ORG_ID
+        if self.enterprise_id is None:
+            # Implicit single-tenant enterprise (standalone); see
+            # config.constants. Under ``multi`` this sentinel is refused as a
+            # tenant by ``usable_tenant_id``, so defaulting here cannot widen
+            # anything — it only keeps single-tenant construction sites total.
+            self.enterprise_id = STANDALONE_ENTERPRISE_ID
 
     def is_platform_admin(self) -> bool:
         """Check if user holds the cross-tenant operator role.
@@ -99,6 +112,7 @@ class DevUser:
             "is_dev_user": self.is_dev_user,
             "is_active": self.is_active,
             "roles": self.roles if self.roles else ["user"],
+            "enterprise_id": self.enterprise_id,
             "organization_id": self.organization_id,
             "account_kind": self.account_kind,
         }
@@ -115,6 +129,7 @@ class DevUser:
             is_dev_user=data.get("is_dev_user", True),
             is_active=data.get("is_active", True),
             roles=data.get("roles", ["user"]),  # Least privilege when absent
+            enterprise_id=data.get("enterprise_id"),
             organization_id=data.get("organization_id"),
             account_kind=data.get("account_kind", "individual"),
         )
@@ -229,7 +244,12 @@ class AuthenticatedUser:
 
     Attributes:
         user_id: User UUID (from 'sub' claim)
-        organization_id: Organization UUID (from 'organization_id' claim)
+        enterprise_id: Enterprise UUID (from the 'enterprise_id' claim) — the
+            isolation boundary (ADR-017 D1). Every tenant-scoped resolution
+            keys on this.
+        organization_id: Organization UUID (from the 'organization_id' claim),
+            or ``""`` when the account is in none. BILLING only (ADR-017 D2):
+            it must never be read as a visibility predicate.
         email: User email address
         roles: List of organization-level roles (admin, member, viewer)
         permissions: List of granular permissions (cases:read, sessions:execute, etc.)
@@ -237,6 +257,7 @@ class AuthenticatedUser:
     """
 
     user_id: str
+    enterprise_id: str
     organization_id: str
     email: str
     roles: list[str]
@@ -299,6 +320,7 @@ class AuthenticatedUser:
         """Convert to dictionary for JSON serialization."""
         return {
             "user_id": self.user_id,
+            "enterprise_id": self.enterprise_id,
             "organization_id": self.organization_id,
             "email": self.email,
             "roles": self.roles,
@@ -318,6 +340,7 @@ class AuthenticatedUser:
         """
         return cls(
             user_id=claims.get("sub", ""),
+            enterprise_id=claims.get("enterprise_id", ""),
             organization_id=claims.get("organization_id", ""),
             email=claims.get("email", ""),
             roles=claims.get("roles", []),
@@ -369,7 +392,9 @@ class TokenClaims:
         jti: JWT ID (unique token identifier for revocation)
 
     Custom Claims:
-        organization_id: Organization ID
+        enterprise_id: Enterprise ID — the isolation claim the binder reads
+            (ADR-017 D9). A token without it is refused.
+        organization_id: Organization ID (billing context; ``""`` when none)
         email: User email
         roles: User roles in organization
         permissions: Granular permissions
@@ -378,6 +403,7 @@ class TokenClaims:
     """
 
     sub: str  # user_id
+    enterprise_id: str
     organization_id: str
     email: str
     roles: list[str]
@@ -393,6 +419,7 @@ class TokenClaims:
         """Serialize to a JWT payload dict. Field ``token_type`` maps to claim ``"type"``."""
         return {
             "sub": self.sub,
+            "enterprise_id": self.enterprise_id,
             "organization_id": self.organization_id,
             "email": self.email,
             "roles": self.roles,

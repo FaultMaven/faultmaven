@@ -17,7 +17,6 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import TypedDict
 
-from faultmaven.config.constants import STANDALONE_ORG_ID
 from faultmaven.utils.serialization import to_json_compatible
 
 
@@ -54,11 +53,6 @@ class SessionContext(BaseModel):
     user_id: str = Field(
         ..., description="User identifier - REQUIRED for authorization"
     )
-    organization_id: str = Field(
-        default=STANDALONE_ORG_ID,
-        description="Implicit single-tenant org; multi-tenant isolation is in-core PostgreSQL RLS (ADR-010)",
-    )
-
     # Multi-device support fields (spec lines 263-269)
     client_id: Optional[str] = Field(
         None, description="Client/device identifier for session resumption"

@@ -111,7 +111,7 @@ class OAuthCodeDTO:
     #: tenant survives the hop from the authenticated authorize request to the
     #: unauthenticated token exchange. Under single-tenant it holds the Standalone
     #: sentinel (what the request was bound to), which is also what
-    #: ``resolve_organization_claim`` would supply on its own — so it changes
+    #: ``resolve_billing_organization`` would supply on its own — so it changes
     #: nothing there. Optional because a code issued before this field existed
     #: carries none, and an absent value must mint an unusable claim rather than a
     #: guessed one.
