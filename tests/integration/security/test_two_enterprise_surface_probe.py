@@ -73,8 +73,13 @@ Schema (Phase 1, one clean Alembic baseline):
    global-write arms compare against ``STANDALONE_ENTERPRISE_ID``
    (``…0002``), never the organization sentinel ``…0001``.
 3. ``teams`` has no ``organization_id``; ``organization_id`` on data rows is
-   nullable billing attribution; ``operator_access_grants.target_enterprise_id``
-   NOT NULL and ``operator_access_audit.target_enterprise_id``, with no
+   nullable billing attribution; ``users.enterprise_id`` is NOT NULL with an FK
+   to ``enterprises`` — every account is anchored to exactly one enterprise
+   (D3), and migration 052's widening dies with the personal-*organization*
+   path it was written for (brief D6/D9; retirement is re-targeted in Phase 4
+   and never leaves an account unanchored);
+   ``operator_access_grants.target_enterprise_id`` NOT NULL and
+   ``operator_access_audit.target_enterprise_id``, with no
    ``target_organization_id`` on either; ``enterprises.domain`` (nullable,
    unique); ``team_invitations`` exists; ``sso_personal_orgs`` and
    ``organization_turn_usage`` do not; ``turn_usage(enterprise_id NOT NULL,
@@ -369,12 +374,17 @@ async def _catalog(conn) -> SimpleNamespace:
             )
         ).scalars()
     )
+    # ``cmd`` is carried alongside the body because the body cannot be asked
+    # which command it guards: ``qual`` and ``with_check`` are boolean
+    # expressions, so a filter looking for the word "INSERT" in them matches
+    # nothing and silently admits the read policy to a write-arm verdict.
+    # ``pg_policies.cmd`` reports one of SELECT | INSERT | UPDATE | DELETE | ALL.
     policies = [
-        (table, name, f"{qual or ''} {check or ''}")
-        for table, name, qual, check in (
+        (table, name, cmd, f"{qual or ''} {check or ''}")
+        for table, name, cmd, qual, check in (
             await conn.execute(
                 text(
-                    "SELECT tablename, policyname, qual, with_check "
+                    "SELECT tablename, policyname, cmd, qual, with_check "
                     "FROM pg_policies WHERE schemaname = 'public' "
                     "ORDER BY tablename, policyname"
                 )
@@ -457,15 +467,17 @@ def _enterprise_key_gaps(cat) -> list[str]:
 def _policy_gaps(cat) -> tuple[list[str], list[str], list[str]]:
     """(still org-keyed, not enterprise-keyed, sentinel/hop defects)."""
     org_keyed = [
-        f"{table}.{name}" for table, name, body in cat.policies if RETIRED_GUC in body
+        f"{table}.{name}"
+        for table, name, _cmd, body in cat.policies
+        if RETIRED_GUC in body
     ]
     not_enterprise_keyed = [
         f"{table}.{name}"
-        for table, name, body in cat.policies
+        for table, name, _cmd, body in cat.policies
         if TENANT_GUC not in body
     ]
     defects: list[str] = []
-    for table, name, body in cat.policies:
+    for table, name, _cmd, body in cat.policies:
         if RETIRED_ORG_SENTINEL in body:
             defects.append(
                 f"{table}.{name}: compares the bound tenant against the "
@@ -477,10 +489,16 @@ def _policy_gaps(cat) -> tuple[list[str], list[str], list[str]]:
             "teams" not in body or "enterprise_id" not in body
         ):
             defects.append(f"{table}.{name}: does not hop through teams.enterprise_id")
+    # The WRITE arms only. Migration 033 split ``knowledge_items`` into four
+    # per-command policies, and the read arm grants every tenant the global tier
+    # unconditionally — so a sentinel named only there would satisfy nothing
+    # about who may WRITE a global row, which is the invariant fm#850 protects.
+    # Selected by ``cmd`` rather than by looking for a command keyword in the
+    # body, because the body never contains one.
     knowledge_write_arms = [
         body
-        for table, _name, body in cat.policies
-        if table == "knowledge_items" and "INSERT" not in body
+        for table, _name, cmd, body in cat.policies
+        if table == "knowledge_items" and cmd != "SELECT"
     ]
     if knowledge_write_arms and not any(
         STANDALONE_ENTERPRISE_ID in body for body in knowledge_write_arms
@@ -535,6 +553,19 @@ def _structural_gaps(cat) -> list[str]:
                 "operator_access_grants.target_enterprise_id is nullable; a "
                 "grant with no enterprise is a grant over everything"
             )
+
+    users_enterprise = cat.columns.get(("users", "enterprise_id"))
+    if users_enterprise is None:
+        gaps.append("users.enterprise_id does not exist")
+    else:
+        if users_enterprise[2]:
+            gaps.append(
+                "users.enterprise_id is nullable; every account is anchored to "
+                "exactly one enterprise (ADR-017 D3); migration 052's widening "
+                "dies with the personal-organization path"
+            )
+        if ("users", "enterprise_id") not in cat.enterprise_fks:
+            gaps.append("users.enterprise_id has no FK to enterprises")
 
     domain = cat.columns.get(("enterprises", "domain"))
     if domain is None:
@@ -2680,10 +2711,14 @@ async def test_a_token_without_an_enterprise_claim_is_refused(world):
     assertion rather than an aspiration: the enterprise claim is the only
     isolation input from day one, and a binder that derived the enterprise from
     ``users.enterprise_id`` when the claim was absent would honour every token
-    minted before the cutover. Worse here than it sounds: ``users.enterprise_id``
-    is NULLABLE on main (widened by migration 052 for personal-tenant
-    retirement), so such a fallback would resolve to ``None`` for a retired
-    account and fail open.
+    minted before the cutover — which is the whole of what the rule forbids, and
+    reason enough on its own.
+
+    Not a nullability argument. ``users.enterprise_id`` was widened to nullable
+    by migration 052 for personal-*organization* retirement, and the Phase-1
+    baseline restores it NOT NULL along with the path 052 served (the schema
+    check pins that). So the column is sound under this contract; the fallback
+    is still wrong, because what it honours is the token, not the row.
 
     The control is A's ordinary token on the identical call — otherwise a 403
     from a broken route would look like the guard working.
