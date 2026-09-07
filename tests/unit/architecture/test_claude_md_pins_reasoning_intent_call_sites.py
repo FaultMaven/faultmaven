@@ -19,15 +19,16 @@ the information — "only these five calls declare an intent" is what tells a
 reader the mechanism is narrow and deliberate. So the table stays and this
 pins it.
 
+**Table paths are relative to** ``faultmaven/`` (``core/investigation/…``, not
+``faultmaven/core/investigation/…``). A row written repo-relative reports the
+same filename under both "undocumented" and "claimed but not in the code",
+which reads as a contradiction but is just the two spellings failing to match.
+
 The code side is an AST scan, deliberately not a grep: ``black`` reflows call
 sites across lines, so a text anchor written today silently stops matching
-after the next format pass. The scan keys on the one thing that distinguishes a
-*declaring* call site from the plumbing around it — a keyword argument
-``reasoning_intent=`` whose value is a literal ``ReasoningIntent`` member.
-``route(reasoning_intent=reasoning_intent)`` forwards a name and is not a
-declaration; ``if intent is ReasoningIntent.INFERENCE`` is a comparison, not a
-call keyword. Both are excluded by construction rather than by an exemption
-list that could itself drift.
+after the next format pass. The scan keys on a keyword argument
+``reasoning_intent=`` whose value *names* an intent, in any of the spellings
+the runtime actually honours (see ``_declared_intent``).
 """
 
 import ast
@@ -37,20 +38,30 @@ from pathlib import Path
 
 import pytest
 
+from faultmaven.infrastructure.llm.providers.base import ReasoningIntent
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _CLAUDE_MD = _PROJECT_ROOT / "CLAUDE.md"
 _PACKAGE = _PROJECT_ROOT / "faultmaven"
+_ENGINE = _PACKAGE / "core" / "investigation" / "milestone_engine.py"
 
-# The enum whose members a call site names to declare its intent.
-_INTENT_CLASS = "ReasoningIntent"
 # The knobs the table's "Declares" column records, in the order it lists them.
 _KNOBS = ("reasoning_intent", "min_output_tokens")
 
+# Member names, and the wire spellings ``ReasoningIntent.coerce`` accepts for
+# them. Derived from the enum rather than restated, so a renamed member cannot
+# leave this guard matching a name the runtime no longer knows.
+_MEMBER_NAMES = {member.name for member in ReasoningIntent}
+_VALUE_TO_NAME = {member.value: member.name for member in ReasoningIntent}
+
 _TABLE_HEADER = "| Call site | Declares |"
 _BACKTICKED = re.compile(r"`([^`]+)`")
-# A prose count of call sites, wrap-tolerant. Only checked when the captured
-# word is itself a number — "the call sites" must not read as a stale count.
-_CALL_SITE_COUNT = re.compile(r"([A-Za-z]+)\s+call\s+sites", re.IGNORECASE)
+# A prose count of call sites. Emphasis markers between the number and the noun
+# are tolerated: the shipped text bolds this region, and tightening
+# "**five call sites**" to the more idiomatic "**five** call sites" must not
+# disarm the guard. Only checked when the captured word is itself a number —
+# "the call sites" must not read as a stale count.
+_CALL_SITE_COUNT = re.compile(r"([A-Za-z0-9]+)[*_`]*\s+call\s+sites", re.IGNORECASE)
 _NUMBER_WORDS = {
     1: "one",
     2: "two",
@@ -67,10 +78,45 @@ _NUMBER_WORDS = {
 }
 
 
+def _declared_intent(node: ast.AST) -> str | None:
+    """The intent this ``reasoning_intent=`` value names, or ``None``.
+
+    Every spelling the runtime honours has to be recognised, or the guard is
+    trivially bypassed by writing the declaration a different way:
+
+    - ``ReasoningIntent.INFERENCE`` — the canonical form. Matched on the
+      *attribute* alone, not on the qualifier, so ``RI.INFERENCE`` from an
+      aliased import and ``base.ReasoningIntent.INFERENCE`` are covered too.
+    - ``"inference"`` — a bare string. NOT hypothetical: ``coerce`` accepts it
+      and ``router.route`` coerces (router.py:456) *before* the
+      INFERENCE-requires-a-floor check on the next line, so the string behaves
+      identically to the member. mypy is no backstop here (``ignore_errors``).
+    - ``ReasoningIntent["INFERENCE"]`` — subscript lookup, same object.
+
+    The one form left uncovered is a **bare name** (``reasoning_intent=_CONST``
+    or a forwarded parameter). It is deliberate and unfixable at this level: a
+    bare ``Name`` is syntactically identical whether it forwards a parameter or
+    dereferences a module constant, and forwarding is what ``router.py`` and
+    ``milestone_engine._generate_structured_output`` actually do. Treating
+    names as declarations would demand table rows for plumbing and get the
+    guard switched off; treating them as plumbing loses a rare declaration
+    style nothing in the tree uses. The trade is stated rather than hidden.
+    """
+    if isinstance(node, ast.Attribute) and node.attr in _MEMBER_NAMES:
+        return node.attr
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return _VALUE_TO_NAME.get(node.value)
+    if isinstance(node, ast.Subscript):
+        key = node.slice
+        if isinstance(key, ast.Constant) and key.value in _MEMBER_NAMES:
+            return str(key.value)
+    return None
+
+
 def _declares_in(source: str) -> list[str]:
     """Every declaring call in ``source``, rendered as the table renders it.
 
-    A declaration is a call keyword ``reasoning_intent=ReasoningIntent.X``.
+    A declaration is a call keyword ``reasoning_intent=<names an intent>``.
     When the same call also passes ``min_output_tokens``, that is recorded too
     — the pair is the unit that matters, since ``INFERENCE`` without a floor is
     a ``ValueError`` at the router and a refused lift at the Gemini provider.
@@ -80,14 +126,12 @@ def _declares_in(source: str) -> list[str]:
         if not isinstance(node, ast.Call):
             continue
         keywords = {kw.arg: kw.value for kw in node.keywords if kw.arg}
-        intent = keywords.get("reasoning_intent")
-        if not (
-            isinstance(intent, ast.Attribute)
-            and isinstance(intent.value, ast.Name)
-            and intent.value.id == _INTENT_CLASS
-        ):
+        if "reasoning_intent" not in keywords:
+            continue
+        intent = _declared_intent(keywords["reasoning_intent"])
+        if intent is None:
             continue  # forwarded parameter, not a declaration
-        parts = [f"reasoning_intent={intent.attr}"]
+        parts = [f"reasoning_intent={intent}"]
         floor = keywords.get("min_output_tokens")
         if floor is not None:
             parts.append(f"min_output_tokens={ast.unparse(floor)}")
@@ -100,13 +144,14 @@ def _declared_call_sites() -> Counter:
 
     A count rather than a set: ``out_of_band.py`` declares the same knobs at
     two separate call sites (triage and answer), and the table lists both.
+
+    Every module is parsed. An earlier version skipped files not containing
+    the literal ``ReasoningIntent``, which meant a module declaring purely by
+    string spelling was never even read.
     """
     found: Counter = Counter()
     for path in sorted(_PACKAGE.rglob("*.py")):
-        source = path.read_text(encoding="utf-8")
-        if _INTENT_CLASS not in source:
-            continue
-        for declares in _declares_in(source):
+        for declares in _declares_in(path.read_text(encoding="utf-8")):
             found[(str(path.relative_to(_PACKAGE)), declares)] += 1
     return found
 
@@ -140,6 +185,21 @@ def _documented_call_sites(text: str) -> Counter:
         ]
         documented[(path.group(1), ", ".join(knobs))] += 1
     return documented
+
+
+def _engine_constant(name: str) -> int:
+    """Read a module-level ``int`` constant out of ``milestone_engine`` by AST.
+
+    Parsed rather than imported: the engine pulls in most of the application,
+    and this guard needs one integer.
+    """
+    tree = ast.parse(_ENGINE.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == name:
+                    return int(node.value.value)
+    raise AssertionError(f"{name} is not a module-level int in {_ENGINE.name}")
 
 
 @pytest.mark.unit
@@ -194,6 +254,32 @@ response = await router.route(
 
 @pytest.mark.unit
 @pytest.mark.architecture
+def test_the_scanner_reads_every_honoured_spelling() -> None:
+    """A declaration written any way the runtime honours is still a declaration.
+
+    Each of these reaches the provider as the same member, so a guard that saw
+    only the canonical attribute could be bypassed — accidentally or not — by
+    writing the call differently. The string form is the live one: ``coerce``
+    accepts it and the router coerces before its floor check.
+    """
+    by_string = 'router.route(reasoning_intent="inference", min_output_tokens=N)\n'
+    assert _declares_in(by_string) == [
+        "reasoning_intent=INFERENCE, min_output_tokens=N"
+    ]
+
+    by_subscript = 'router.route(reasoning_intent=ReasoningIntent["EXTRACTION"])\n'
+    assert _declares_in(by_subscript) == ["reasoning_intent=EXTRACTION"]
+
+    aliased = "router.route(reasoning_intent=RI.INFERENCE, min_output_tokens=N)\n"
+    assert _declares_in(aliased) == ["reasoning_intent=INFERENCE, min_output_tokens=N"]
+
+    # A string that is not a member spelling names no intent, and must not be
+    # reported as one.
+    assert _declares_in('router.route(reasoning_intent="banana")\n') == []
+
+
+@pytest.mark.unit
+@pytest.mark.architecture
 def test_the_table_parser_reads_the_shipped_table() -> None:
     """Positive control: the table is where the parser looks for it.
 
@@ -222,9 +308,10 @@ def test_claude_md_documents_every_reasoning_intent_call_site() -> None:
         "CLAUDE.md's reasoning-intent call-site table has drifted from the "
         f"code (#1357).\n  undocumented in CLAUDE.md: {sorted(missing)}\n"
         f"  claimed by CLAUDE.md but not in the code: {sorted(stale)}\n"
-        "Add, remove or correct the row — and re-read the prose around the "
-        "table, which asserts what the declared intents are and whether any "
-        "of them lifts a starvation guard."
+        "Paths in the table are relative to faultmaven/. Add, remove or "
+        "correct the row — and re-read the prose around the table, which "
+        "asserts what the declared intents are and whether any of them lifts "
+        "a starvation guard."
     )
 
 
@@ -255,4 +342,38 @@ def test_claude_md_counts_the_call_sites_correctly() -> None:
     assert not wrong, (
         f"CLAUDE.md counts the reasoning-intent call sites as {wrong}; the code "
         f"declares {total} ({_NUMBER_WORDS[total]})."
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.architecture
+def test_claude_md_states_the_output_floor_correctly() -> None:
+    """The two numeric claims the #1357 prose added are pinned to the code.
+
+    The table records the constant's *name*, so on its own it would let the
+    value drift under the sentence that quotes it — the same defect class
+    #1357 exists to close, re-introduced by the fix for it. The prose asserts
+    both a literal ("(2048)") and a relation ("well under
+    ``STRUCTURED_OUTPUT_MAX_TOKENS``"); the relation is what makes the floor
+    safe, because a floor at or above the cap would raise the cap rather than
+    merely forbidding a starvable partition.
+    """
+    floor = _engine_constant("TOOLLESS_INFERENCE_OUTPUT_FLOOR")
+    cap = _engine_constant("STRUCTURED_OUTPUT_MAX_TOKENS")
+    text = _CLAUDE_MD.read_text(encoding="utf-8")
+
+    quoted = re.search(r"TOOLLESS_INFERENCE_OUTPUT_FLOOR``?\s*\((\d+)\)", text)
+    assert quoted, (
+        "CLAUDE.md no longer quotes TOOLLESS_INFERENCE_OUTPUT_FLOOR's value; "
+        "either restore the '(N)' form or drop this guard with it"
+    )
+    assert int(quoted.group(1)) == floor, (
+        f"CLAUDE.md says TOOLLESS_INFERENCE_OUTPUT_FLOOR is "
+        f"{quoted.group(1)}; milestone_engine.py says {floor}."
+    )
+    assert floor < cap, (
+        f"CLAUDE.md says the floor sits 'well under' "
+        f"STRUCTURED_OUTPUT_MAX_TOKENS, but {floor} is not below {cap} — the "
+        "floor would raise the generation cap instead of only forbidding a "
+        "starvable partition."
     )
