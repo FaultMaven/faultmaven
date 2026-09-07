@@ -272,8 +272,10 @@ class TeamInvitation(BaseModel):
     stranger from pulling a colleague into a team's view without a word
     (ADR-017 D4). Membership is created only by the invitee's own accept.
 
-    ``email`` is always present and always case-folded; ``invited_user_id`` is
-    the account that address resolved to and is ``None`` until it has one. An
+    ``email`` is always present and always ``strip().lower()``-normalised —
+    matching ``func.lower(users.email)``, which is the index the account lookup
+    uses; see ``normalize_invitation_email``. ``invited_user_id`` is the account
+    that address resolved to and is ``None`` until it has one. An
     address with no account yet can be invited, and the invitation resolves
     when that address signs up **and lands in the same enterprise** (D4). An
     address that signs up into a different enterprise never resolves — the
@@ -284,8 +286,10 @@ class TeamInvitation(BaseModel):
     invitation_id: str
     enterprise_id: str
     team_id: str
-    #: Case-folded by every writer. The comparison is exact: an address is a
-    #: key here, and two spellings of one address must not be two invitations.
+    #: Lower-cased and trimmed by every writer, never case-folded: the key has
+    #: to match ``func.lower(users.email)`` or the account lookup misses. The
+    #: comparison is exact — an address is a key here, and two spellings of one
+    #: address must not be two invitations.
     email: str
     invited_user_id: Optional[str] = None
     invited_by: Optional[str] = None
@@ -622,6 +626,28 @@ class LeaveOutcome(str, Enum):
     ABSENT = "absent"
 
 
+class AcceptOutcome(str, Enum):
+    """What :meth:`ITeamRepository.accept_invitation` did, in one transaction.
+
+    The accept is the one operation on this surface that writes *two* rows — the
+    consent record and the membership it creates — and the two must land or
+    neither must. Ordering them differently only moves which half is left
+    behind: stamping first spends a one-shot token the retry then cannot use;
+    upserting first leaves a membership nobody consented to when the offer turns
+    out to have been withdrawn. Neither ordering is safe, so there is no
+    ordering — there is a transaction.
+    """
+
+    #: Both rows written: the invitation is `accepted` and the membership exists.
+    ACCEPTED = "accepted"
+    #: The invitation was not pending when the transaction reached it (answered,
+    #: withdrawn or expired). **Nothing was written**, membership included.
+    NOT_PENDING = "not_pending"
+    #: The invitation, or its team, is not in this enterprise; or the account
+    #: cannot be a member of that team. Nothing was written.
+    ABSENT = "absent"
+
+
 class ITeamRepository(ABC):
     """Interface for team data persistence operations."""
 
@@ -732,27 +758,15 @@ class ITeamRepository(ABC):
         pass
 
     @abstractmethod
-    async def update_team(self, team: Team) -> bool:
-        """Update team.
+    async def update_team(self, enterprise_id: str, team: Team) -> bool:
+        """Update team, within an enterprise.
 
         Args:
+            enterprise_id: The enterprise the caller is bound to
             team: Team object with updates
 
         Returns:
             True if update was successful
-        """
-        pass
-
-    @abstractmethod
-    async def delete_team(self, enterprise_id: str, team_id: str) -> bool:
-        """Soft delete a team, within an enterprise.
-
-        Args:
-            enterprise_id: The enterprise the caller is bound to
-            team_id: Team identifier
-
-        Returns:
-            True if deletion was successful
         """
         pass
 
@@ -817,30 +831,28 @@ class ITeamRepository(ABC):
 
     @abstractmethod
     async def add_member(
-        self, team_id: str, user_id: str, team_role: Optional[str] = None
+        self,
+        enterprise_id: str,
+        team_id: str,
+        user_id: str,
+        team_role: Optional[str] = None,
     ) -> bool:
-        """Add user to team.
+        """Add user to team, within an enterprise.
+
+        The tenant predicate is a parameter here for a sharper reason than on
+        the reads: a write that addresses a row by bare id does not merely
+        *observe* another tenant's data, it changes it. Every write on this port
+        carries the enterprise for that reason, so a missing predicate is a
+        signature error rather than a matter of discipline.
 
         Args:
+            enterprise_id: The enterprise the caller is bound to
             team_id: Team identifier
             user_id: User identifier
             team_role: Optional team-specific role ('lead', 'member')
 
         Returns:
             True if member was added successfully
-        """
-        pass
-
-    @abstractmethod
-    async def remove_member(self, team_id: str, user_id: str) -> bool:
-        """Remove user from team.
-
-        Args:
-            team_id: Team identifier
-            user_id: User identifier
-
-        Returns:
-            True if member was removed successfully
         """
         pass
 
@@ -857,19 +869,6 @@ class ITeamRepository(ABC):
         Returns:
             List of team members (empty when the team is absent from that
             enterprise)
-        """
-        pass
-
-    @abstractmethod
-    async def is_team_member(self, team_id: str, user_id: str) -> bool:
-        """Check if user is member of team.
-
-        Args:
-            team_id: Team identifier
-            user_id: User identifier
-
-        Returns:
-            True if user is team member
         """
         pass
 
@@ -1006,7 +1005,7 @@ class ITeamRepository(ABC):
         Args:
             enterprise_id: The enterprise the caller is bound to
             user_id: The caller's account id
-            email: The caller's case-folded address
+            email: The caller's address, lower-cased as it is stored
 
         Returns:
             Pending invitations, newest first (empty when none)
@@ -1014,28 +1013,49 @@ class ITeamRepository(ABC):
         pass
 
     @abstractmethod
-    async def mark_invitation_accepted(
-        self, invitation_id: str, user_id: str, at: datetime
-    ) -> bool:
-        """Stamp an invitation accepted, but only if it is still pending.
+    async def accept_invitation(
+        self,
+        enterprise_id: str,
+        invitation_id: str,
+        user_id: str,
+        team_role: str,
+        at: datetime,
+    ) -> tuple["AcceptOutcome", Optional[Team]]:
+        """Stamp the invitation accepted AND write the membership. One transaction.
 
-        The pending predicate is part of the UPDATE, not a check the caller
-        makes first: two accepts of one invitation must not both succeed, and a
-        read-then-write leaves exactly that window open.
+        The consent that forms a team writes two rows, and the surface's central
+        invariant — *a withdrawn offer grants nothing* — is a statement about
+        both of them together. Two separate commits cannot make that statement
+        in either order:
+
+        * stamp first, upsert second: a failed upsert leaves the offer spent and
+          the invitee with no membership, and no retry can help because the row
+          that would have authorised it is gone;
+        * upsert first, stamp second: a revoke landing in between leaves a
+          **real membership** behind while the caller is told 409 — a member of
+          a team nobody consented to admit.
+
+        So it is one transaction, taking a row lock on the invitation first, in
+        the shape :meth:`create_team_with_admin` and :meth:`leave_team` already
+        use. A concurrent revoke either lands wholly before it (the pending
+        predicate then matches nothing and NOTHING is written) or waits.
 
         Args:
+            enterprise_id: The enterprise the caller is bound to
             invitation_id: Invitation identifier
-            user_id: The accepting account, stamped as ``invited_user_id``
+            user_id: The accepting account
+            team_role: The role to stamp on the new membership
             at: Acceptance timestamp
 
         Returns:
-            True when this call was the one that accepted it
+            ``(outcome, team)`` — the team only when the outcome is
+            :attr:`AcceptOutcome.ACCEPTED`. Every other outcome wrote nothing.
         """
         pass
 
     @abstractmethod
     async def mark_invitation_revoked(
-        self, invitation_id: str, by_user_id: str, at: datetime
+        self, enterprise_id: str, invitation_id: str, by_user_id: str, at: datetime
     ) -> bool:
         """Stamp an invitation revoked, but only if it is still pending.
 
@@ -1043,6 +1063,7 @@ class ITeamRepository(ABC):
         invitee declining it. ``by_user_id`` is what tells them apart later.
 
         Args:
+            enterprise_id: The enterprise the caller is bound to
             invitation_id: Invitation identifier
             by_user_id: Who ended it
             at: Timestamp
@@ -1053,8 +1074,10 @@ class ITeamRepository(ABC):
         pass
 
     @abstractmethod
-    async def expire_invitations(self, invitation_ids: List[str]) -> int:
-        """Stamp pending invitations expired. One statement, any number of ids.
+    async def expire_invitations(
+        self, enterprise_id: str, invitation_ids: List[str]
+    ) -> List[str]:
+        """Stamp pending invitations expired, and report WHICH ones moved.
 
         Expiry is lazy — there is no sweeper — so this is called by the read or
         the accept that first notices ``expires_at`` has passed. Idempotent: a
@@ -1064,11 +1087,20 @@ class ITeamRepository(ABC):
         elapsed row it saw, and doing that one commit at a time made the cost of
         reading a stale mailbox linear in how stale it was.
 
+        **Returns the ids it actually moved, not a count**, and the caller must
+        use that rather than assuming its whole candidate list was stamped. A
+        row accepted or revoked between the caller's read and this UPDATE is
+        skipped by the pending predicate — reporting it as expired anyway told
+        the caller 410 for an invitation that had in fact been accepted, which
+        is the very "depends who read first" inconsistency lazy expiry was made
+        consistent to remove.
+
         Args:
+            enterprise_id: The enterprise the caller is bound to
             invitation_ids: Invitation identifiers (an empty list is a no-op)
 
         Returns:
-            How many rows this call moved to ``expired``
+            The ids this call moved to ``expired``
         """
         pass
 
@@ -1090,7 +1122,7 @@ class ITeamRepository(ABC):
 
         Args:
             enterprise_id: The enterprise the account just anchored to
-            email: The account's case-folded address
+            email: The account's address, lower-cased as it is stored
             user_id: The account id to stamp
 
         Returns:

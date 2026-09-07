@@ -20,7 +20,7 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from sqlalchemy import and_, delete, func, or_, select, text, update
+from sqlalchemy import and_, delete, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,6 +31,7 @@ from faultmaven.infrastructure.persistence.models import (
     TeamModel,
 )
 from faultmaven.models.interfaces_user import (
+    AcceptOutcome,
     ITeamRepository,
     LeaveOutcome,
     Team,
@@ -43,25 +44,18 @@ from faultmaven.models.interfaces_user import (
 logger = logging.getLogger(__name__)
 
 
-#: The name of the partial unique index that admits one LIVE team name per
-#: enterprise. Matched against an ``IntegrityError``'s text so a duplicate name
-#: becomes a 409 rather than a 500, and matched by NAME so a different
-#: constraint on the same table still surfaces as itself.
-_TEAM_NAME_CONSTRAINT = "teams_enterprise_name_unique"
-
-#: Likewise for the one LIVE offer per (team, address).
-_PENDING_INVITATION_CONSTRAINT = "ix_team_invitations_pending_unique"
-
-
-def _violates(error: IntegrityError, constraint: str) -> bool:
-    """Whether ``error`` is the named constraint, and not some other one.
-
-    ``IntegrityError`` covers foreign keys, checks and every unique index on the
-    table. Treating all of them as "that name is taken" would report a genuine
-    corruption as an ordinary user-caused collision, so the constraint name has
-    to appear in the driver's message. Both asyncpg and SQLite include it.
-    """
-    return constraint in str(getattr(error, "orig", error))
+# An ``IntegrityError`` says *a* constraint was violated; it does not portably
+# say which. The first version of this file matched the index name in the
+# driver's message, which asyncpg supplies and **SQLite does not** — SQLite says
+# ``UNIQUE constraint failed: teams.enterprise_id, teams.name`` and names no
+# index — so every recovery below degraded to a re-raise on the single-tenant
+# dialect, where it could take down default-team bootstrap at startup.
+#
+# So nothing here reads a driver message. Each recovery rolls back and
+# **re-reads to decide**, which is dialect-independent and is also what the
+# recovery actually means: not "was this error the unique index?" but "is there
+# now a row that makes my write redundant?". If there is not, the error was
+# something else and is re-raised unchanged.
 
 
 def _member_to_domain(model: TeamMemberModel) -> TeamMember:
@@ -110,6 +104,57 @@ class PostgreSQLTeamRepository(ITeamRepository):
     def __init__(self, db_session: AsyncSession):
         self.db = db_session
 
+    def _dialect(self) -> Optional[str]:
+        """The bound dialect's name, or ``None`` when it cannot be determined.
+
+        ``None`` matters because of how it is used: the lock is taken *unless*
+        the dialect is positively identified as SQLite. The first version asked
+        ``bind is not None and dialect != "sqlite"``, which skipped the lock
+        whenever the bind was merely unresolvable — silently removing the one
+        mechanism the method exists to provide, in exactly the situation where
+        least is known. Failing closed here means an unknown dialect gets the
+        lock and, at worst, an error naming the unsupported syntax.
+        """
+        bind = None
+        try:
+            bind = self.db.get_bind()
+        except Exception:  # noqa: BLE001 - an unbound session is the point
+            bind = getattr(self.db, "bind", None)
+        return getattr(getattr(bind, "dialect", None), "name", None)
+
+    def _with_row_lock(self, stmt):
+        """``SELECT … FOR UPDATE``, except on SQLite, which has no such thing.
+
+        SQLite is the single-tenant store, where team collaboration is unwired
+        entirely (``team_service is None``), so the only deployment that can
+        reach the locked paths is the one that has the lock. Skipping it there
+        is not a degraded guarantee; it is an unreachable branch kept honest.
+        """
+        if self._dialect() == "sqlite":
+            return stmt
+        return stmt.with_for_update()
+
+    async def _live_team_named(
+        self, enterprise_id: str, name: str, exclude_team_id: str
+    ) -> bool:
+        """Is there a LIVE team of this enterprise with this name, other than mine?
+
+        The re-read that decides what an ``IntegrityError`` on ``teams`` was:
+        this is the only conflict the caller has a better answer for than
+        "something went wrong".
+        """
+        found = (
+            await self.db.execute(
+                select(TeamModel.team_id).where(
+                    TeamModel.enterprise_id == enterprise_id,
+                    TeamModel.name == name,
+                    TeamModel.team_id != exclude_team_id,
+                    TeamModel.deleted_at.is_(None),
+                )
+            )
+        ).first()
+        return found is not None
+
     def _team_row(self, team: Team) -> TeamModel:
         return TeamModel(
             team_id=team.team_id,
@@ -127,7 +172,7 @@ class PostgreSQLTeamRepository(ITeamRepository):
             await self.db.commit()
         except IntegrityError as error:
             await self.db.rollback()
-            if _violates(error, _TEAM_NAME_CONSTRAINT):
+            if await self._live_team_named(team.enterprise_id, team.name, team.team_id):
                 raise TeamNameTakenError(team.name) from error
             raise
 
@@ -180,7 +225,7 @@ class PostgreSQLTeamRepository(ITeamRepository):
             await self.db.commit()
         except IntegrityError as error:
             await self.db.rollback()
-            if _violates(error, _TEAM_NAME_CONSTRAINT):
+            if await self._live_team_named(team.enterprise_id, team.name, team.team_id):
                 raise TeamNameTakenError(team.name) from error
             raise
 
@@ -221,13 +266,14 @@ class PostgreSQLTeamRepository(ITeamRepository):
         result = await self.db.execute(stmt)
         return {row[0]: row[1] for row in result.all()}
 
-    async def update_team(self, team: Team) -> bool:
-        """Update team."""
+    async def update_team(self, enterprise_id: str, team: Team) -> bool:
+        """Update team, within an enterprise."""
         team.updated_at = datetime.now(timezone.utc)
         stmt = (
             update(TeamModel)
             .where(
                 TeamModel.team_id == team.team_id,
+                TeamModel.enterprise_id == enterprise_id,
                 TeamModel.deleted_at.is_(None),
             )
             .values(
@@ -235,21 +281,6 @@ class PostgreSQLTeamRepository(ITeamRepository):
                 description=team.description,
                 updated_at=team.updated_at,
             )
-        )
-        result = await self.db.execute(stmt)
-        await self.db.commit()
-        return result.rowcount > 0
-
-    async def delete_team(self, enterprise_id: str, team_id: str) -> bool:
-        """Soft delete a team, within an enterprise."""
-        stmt = (
-            update(TeamModel)
-            .where(
-                TeamModel.team_id == team_id,
-                TeamModel.enterprise_id == enterprise_id,
-                TeamModel.deleted_at.is_(None),
-            )
-            .values(deleted_at=datetime.now(timezone.utc))
         )
         result = await self.db.execute(stmt)
         await self.db.commit()
@@ -273,13 +304,13 @@ class PostgreSQLTeamRepository(ITeamRepository):
         the only deployment that can reach this method is the one that has the
         lock.
         """
-        locked = select(TeamModel).where(
-            TeamModel.team_id == team_id,
-            TeamModel.enterprise_id == enterprise_id,
-            TeamModel.deleted_at.is_(None),
+        locked = self._with_row_lock(
+            select(TeamModel).where(
+                TeamModel.team_id == team_id,
+                TeamModel.enterprise_id == enterprise_id,
+                TeamModel.deleted_at.is_(None),
+            )
         )
-        if self.db.bind is not None and self.db.bind.dialect.name != "sqlite":
-            locked = locked.with_for_update()
         team = (await self.db.execute(locked)).scalar_one_or_none()
         if team is None:
             await self.db.rollback()
@@ -326,6 +357,25 @@ class PostgreSQLTeamRepository(ITeamRepository):
             # team is gone) nor declined (declining writes against a team
             # nobody can see), so it is ended here, in the transaction that
             # retires the team, rather than left to be discovered.
+            #
+            # Split by ``expires_at``, the same way every other reader settles
+            # it. An offer that had already run out was ended by the clock, and
+            # stamping it `revoked` with the leaver's id records a withdrawal
+            # nobody performed — in the one column whose whole job is to say who
+            # ended the offer, and against a person who was answering a
+            # different question.
+            # ``expires_at <= now`` is NULL for a row with no deadline, and NULL
+            # is not true, so a never-expiring offer falls through to the revoke
+            # below without a second predicate saying so.
+            await self.db.execute(
+                update(TeamInvitationModel)
+                .where(
+                    TeamInvitationModel.team_id == team_id,
+                    TeamInvitationModel.status == TeamInvitationStatus.PENDING.value,
+                    TeamInvitationModel.expires_at <= now,
+                )
+                .values(status=TeamInvitationStatus.EXPIRED.value)
+            )
             await self.db.execute(
                 update(TeamInvitationModel)
                 .where(
@@ -379,7 +429,11 @@ class PostgreSQLTeamRepository(ITeamRepository):
         return [_model_to_domain(m) for m in models]
 
     async def add_member(
-        self, team_id: str, user_id: str, team_role: Optional[str] = None
+        self,
+        enterprise_id: str,
+        team_id: str,
+        user_id: str,
+        team_role: Optional[str] = None,
     ) -> bool:
         """Add user to team (upsert), refusing a member from another enterprise.
 
@@ -400,10 +454,10 @@ class PostgreSQLTeamRepository(ITeamRepository):
             await self.db.execute(
                 text(
                     "SELECT (SELECT enterprise_id FROM teams WHERE team_id = :t "
-                    "AND deleted_at IS NULL), "
+                    "AND enterprise_id = :e AND deleted_at IS NULL), "
                     "(SELECT enterprise_id FROM users WHERE user_id = :u)"
                 ),
-                {"t": team_id, "u": user_id},
+                {"t": team_id, "e": enterprise_id, "u": user_id},
             )
         ).first()
         team_enterprise, user_enterprise = anchors if anchors else (None, None)
@@ -442,16 +496,6 @@ class PostgreSQLTeamRepository(ITeamRepository):
         logger.info(f"Added user {user_id} to team {team_id} (role={team_role})")
         return True
 
-    async def remove_member(self, team_id: str, user_id: str) -> bool:
-        """Remove user from team."""
-        stmt = delete(TeamMemberModel).where(
-            TeamMemberModel.team_id == team_id,
-            TeamMemberModel.user_id == user_id,
-        )
-        result = await self.db.execute(stmt)
-        await self.db.commit()
-        return result.rowcount > 0
-
     async def list_team_members(
         self, enterprise_id: str, team_id: str
     ) -> List[TeamMember]:
@@ -473,15 +517,6 @@ class PostgreSQLTeamRepository(ITeamRepository):
         )
         result = await self.db.execute(stmt)
         return [_member_to_domain(row) for row in result.scalars().all()]
-
-    async def is_team_member(self, team_id: str, user_id: str) -> bool:
-        """Check if user is member of team."""
-        stmt = select(func.count()).where(
-            TeamMemberModel.team_id == team_id,
-            TeamMemberModel.user_id == user_id,
-        )
-        result = await self.db.execute(stmt)
-        return (result.scalar() or 0) > 0
 
     async def list_all_user_team_ids(self, user_id: str) -> List[str]:
         """List every team id a user belongs to (KB scope resolution).
@@ -534,21 +569,20 @@ class PostgreSQLTeamRepository(ITeamRepository):
         self.db.add(model)
         try:
             await self.db.commit()
-        except IntegrityError as error:
+        except IntegrityError:
             await self.db.rollback()
-            if not _violates(error, _PENDING_INVITATION_CONSTRAINT):
-                raise
             # Another admin invited the same address in the window between this
             # caller's read and this write. Returning their row is exactly what
             # this endpoint promises for a repeat invite; raising would answer
             # 500 to two people doing the same reasonable thing at once.
+            #
+            # The re-read is also what identifies the conflict: if there is no
+            # live offer for this address, the error was something else — a
+            # foreign key, a check — and is re-raised unchanged.
             existing = await self.find_pending_invitation(
                 invitation.enterprise_id, invitation.team_id, invitation.email
             )
-            if existing is None:
-                # The winner was answered or expired between the violation and
-                # this read, so there is nothing live to hand back. Say so
-                # rather than inventing a row.
+            if existing is None or existing.invitation_id == invitation.invitation_id:
                 raise
             logger.info(
                 "Team invitation for team %s already existed; returning %s",
@@ -626,14 +660,74 @@ class PostgreSQLTeamRepository(ITeamRepository):
         result = await self.db.execute(stmt)
         return [_invitation_to_domain(m) for m in result.scalars().all()]
 
-    async def mark_invitation_accepted(
-        self, invitation_id: str, user_id: str, at: datetime
-    ) -> bool:
-        """Stamp an invitation accepted, but only if it is still pending."""
-        stmt = (
+    async def accept_invitation(
+        self,
+        enterprise_id: str,
+        invitation_id: str,
+        user_id: str,
+        team_role: str,
+        at: datetime,
+    ) -> tuple[AcceptOutcome, Optional[Team]]:
+        """Stamp the invitation accepted AND write the membership. One transaction.
+
+        The row lock on the invitation is taken first and everything else hangs
+        off it, so a concurrent revoke either lands wholly before this (and the
+        locked read then sees a row that is not pending, writing nothing) or
+        waits behind it. There is no interleaving that produces a membership the
+        invitee's offer did not authorise.
+
+        The anchor comparison is repeated here rather than delegated to
+        ``add_member`` for the reason ``create_team_with_admin`` repeats it:
+        ``add_member`` commits, and calling it would end this transaction half
+        way through — which is the whole thing this method exists to prevent.
+        """
+        locked = self._with_row_lock(
+            select(TeamInvitationModel).where(
+                TeamInvitationModel.invitation_id == invitation_id,
+                TeamInvitationModel.enterprise_id == enterprise_id,
+            )
+        )
+        invitation = (await self.db.execute(locked)).scalar_one_or_none()
+        if invitation is None:
+            await self.db.rollback()
+            return AcceptOutcome.ABSENT, None
+        if invitation.status != TeamInvitationStatus.PENDING.value:
+            await self.db.rollback()
+            return AcceptOutcome.NOT_PENDING, None
+
+        team = (
+            await self.db.execute(
+                select(TeamModel).where(
+                    TeamModel.team_id == invitation.team_id,
+                    TeamModel.enterprise_id == enterprise_id,
+                    TeamModel.deleted_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if team is None:
+            await self.db.rollback()
+            return AcceptOutcome.ABSENT, None
+
+        anchor = (
+            await self.db.execute(
+                text("SELECT enterprise_id FROM users WHERE user_id = :u"),
+                {"u": user_id},
+            )
+        ).first()
+        if not anchor or not anchor[0] or anchor[0] != team.enterprise_id:
+            await self.db.rollback()
+            logger.warning(
+                "Refusing accept: %s is not anchored to team %s's enterprise",
+                user_id,
+                invitation.team_id,
+            )
+            return AcceptOutcome.ABSENT, None
+
+        stamped = await self.db.execute(
             update(TeamInvitationModel)
             .where(
                 TeamInvitationModel.invitation_id == invitation_id,
+                TeamInvitationModel.enterprise_id == enterprise_id,
                 TeamInvitationModel.status == TeamInvitationStatus.PENDING.value,
             )
             .values(
@@ -642,18 +736,43 @@ class PostgreSQLTeamRepository(ITeamRepository):
                 accepted_at=at,
             )
         )
-        result = await self.db.execute(stmt)
+        if not stamped.rowcount:
+            # Belt to the lock's braces: on a dialect without ``FOR UPDATE``
+            # this is the predicate that still refuses, and it refuses BEFORE
+            # any membership is written.
+            await self.db.rollback()
+            return AcceptOutcome.NOT_PENDING, None
+
+        member = dialect_insert(self.db, TeamMemberModel).values(
+            user_id=user_id,
+            team_id=invitation.team_id,
+            team_role=team_role,
+            joined_at=at,
+        )
+        await self.db.execute(
+            member.on_conflict_do_update(
+                index_elements=["user_id", "team_id"],
+                set_={"team_role": team_role},
+            )
+        )
         await self.db.commit()
-        return result.rowcount > 0
+        logger.info(
+            "Invitation %s accepted: %s joined team %s",
+            invitation_id,
+            user_id,
+            invitation.team_id,
+        )
+        return AcceptOutcome.ACCEPTED, _model_to_domain(team)
 
     async def mark_invitation_revoked(
-        self, invitation_id: str, by_user_id: str, at: datetime
+        self, enterprise_id: str, invitation_id: str, by_user_id: str, at: datetime
     ) -> bool:
         """Stamp an invitation revoked, but only if it is still pending."""
         stmt = (
             update(TeamInvitationModel)
             .where(
                 TeamInvitationModel.invitation_id == invitation_id,
+                TeamInvitationModel.enterprise_id == enterprise_id,
                 TeamInvitationModel.status == TeamInvitationStatus.PENDING.value,
             )
             .values(
@@ -666,21 +785,34 @@ class PostgreSQLTeamRepository(ITeamRepository):
         await self.db.commit()
         return result.rowcount > 0
 
-    async def expire_invitations(self, invitation_ids: List[str]) -> int:
-        """Stamp pending invitations expired (lazy, on read or accept)."""
+    async def expire_invitations(
+        self, enterprise_id: str, invitation_ids: List[str]
+    ) -> List[str]:
+        """Stamp pending invitations expired, and report WHICH ones moved.
+
+        ``RETURNING`` rather than a rowcount, because the caller needs the
+        identity of the rows and not their number: a row accepted between its
+        read and this UPDATE is skipped by the pending predicate, and telling
+        the caller "all of them" made it report an accepted invitation as
+        expired. Supported by both dialects in use (PostgreSQL, and SQLite from
+        3.35).
+        """
         if not invitation_ids:
-            return 0
+            return []
         stmt = (
             update(TeamInvitationModel)
             .where(
                 TeamInvitationModel.invitation_id.in_(list(invitation_ids)),
+                TeamInvitationModel.enterprise_id == enterprise_id,
                 TeamInvitationModel.status == TeamInvitationStatus.PENDING.value,
             )
             .values(status=TeamInvitationStatus.EXPIRED.value)
+            .returning(TeamInvitationModel.invitation_id)
         )
         result = await self.db.execute(stmt)
+        moved = [row[0] for row in result.all()]
         await self.db.commit()
-        return int(result.rowcount or 0)
+        return moved
 
     async def resolve_invitations_for_account(
         self, enterprise_id: str, email: str, user_id: str
