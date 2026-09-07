@@ -45,11 +45,12 @@ def _config(base_url: str, model: str) -> ProviderConfig:
 
 # (label, base_url, model, expected_endpoint_suffix)
 #
-# ``generate`` dispatches to Ollama when "ollama" appears in the base URL OR the
-# model name, which is why the Ollama row uses a host that contains it — the
-# port number alone selects nothing.
+# ``generate`` dispatches on the URL PATH (``resolve_local_transport``), so the
+# Ollama row names that protocol with an ``/api`` suffix. It used to dispatch on
+# the substring "ollama" in the host, which is why this row once needed a host
+# containing it; hostnames no longer select anything (#1356 review F1).
 _TRANSPORTS = [
-    ("ollama", "http://ollama:11434", "llama3.2", "/api/generate"),
+    ("ollama", "http://ollama:11434/api", "llama3.2", "/api/generate"),
     (
         "openai_compatible",
         "http://localhost:8000/v1",
@@ -295,7 +296,7 @@ async def test_one_message_shape_across_all_three_transports():
     """
     seen = set()
     for base_url, model in [
-        ("http://ollama:11434", "llama3.2"),
+        ("http://ollama:11434/api", "llama3.2"),
         ("http://localhost:8000/v1", "vllm-model"),
     ]:
         session, _ = _recording_session(

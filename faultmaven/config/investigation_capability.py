@@ -297,13 +297,36 @@ def validate_investigation_tooling(settings: "Settings", registry: Any) -> None:
     if cap.tool_capable:
         return
 
-    remedy = (
-        "Use a tool-capable CHAT_PROVIDER (anthropic, openai, gemini) — or set "
-        "DA_PROVIDER to override just the investigation provider — or set "
-        "ALLOW_TOOLLESS_INVESTIGATION=true to run in degraded mode "
-        "(no search_file/deep_analysis; responses limited to structural-index "
-        "summaries)."
-    )
+    # The remedy is provider-shaped: a self-hosted endpoint is the operator's
+    # own infrastructure, so "adopt a cloud vendor" is not a remedy there — it
+    # is an instruction to abandon the deployment model FaultMaven advertises
+    # as supported (#1356). A `local` provider can only reach this gate two
+    # ways now, and both have a fix on the operator's side of the wire.
+    if cap.provider == "local":
+        remedy = (
+            "For a self-hosted endpoint the fix is on your side of the wire, "
+            "and there are exactly two ways to get here. (1) LOCAL_LLM_URL ends "
+            "in /api or /api/generate, which names Ollama's native API — that "
+            "protocol has no tool_calls in its response, so no model can do "
+            "tool calling over it. Drop the suffix (use http://HOST:11434, or "
+            "http://HOST:11434/v1): the same port also serves the "
+            "OpenAI-compatible API, which does carry tool calls. (2) You set "
+            "LOCAL_LLM_TOOL_CALLING=false — clear it if the serving stack does "
+            "support tools (vLLM with --enable-auto-tool-choice, llama.cpp with "
+            "a tool-capable chat template). Failing both, set DA_PROVIDER to "
+            "route just the investigation calls to a tool-capable provider, or "
+            "set ALLOW_TOOLLESS_INVESTIGATION=true to run in degraded mode "
+            "(no search_file/deep_analysis; responses limited to "
+            "structural-index summaries)."
+        )
+    else:
+        remedy = (
+            "Use a tool-capable CHAT_PROVIDER (anthropic, openai, gemini) — or "
+            "set DA_PROVIDER to override just the investigation provider — or "
+            "set ALLOW_TOOLLESS_INVESTIGATION=true to run in degraded mode "
+            "(no search_file/deep_analysis; responses limited to "
+            "structural-index summaries)."
+        )
 
     if settings.llm.allow_toolless_investigation:
         # Knowing opt-in — boot, but loudly, and /health will report degraded.

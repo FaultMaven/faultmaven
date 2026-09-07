@@ -362,6 +362,9 @@ class ProviderRegistry:
         # Operator reasoning-effort default — only the OpenAI branch sets it;
         # None elsewhere (= shape-based defaults, identical requests).
         reasoning_effort = None
+        # Operator tool-calling declaration — only the local branch sets it
+        # (#1356); None elsewhere (= the provider's own capability rule).
+        tool_calling = None
 
         # Settings is required - use settings-based configuration
         llm_settings = self.settings.llm
@@ -387,6 +390,7 @@ class ProviderRegistry:
             api_key = None  # Local doesn't need API key
             model = llm_settings.local_model
             base_url = llm_settings.local_url
+            tool_calling = getattr(llm_settings, "local_tool_calling", None)
         elif provider_name == "anthropic":
             api_key = (
                 llm_settings.anthropic_api_key.get_secret_value()
@@ -508,6 +512,7 @@ class ProviderRegistry:
             thinking_mode=thinking_mode,
             thinking_budget_tokens=thinking_budget_tokens,
             reasoning_effort=reasoning_effort,
+            tool_calling=tool_calling,
         )
 
     def _initialize_provider(self, name: str, config: ProviderConfig):

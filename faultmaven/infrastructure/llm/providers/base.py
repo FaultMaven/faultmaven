@@ -404,6 +404,15 @@ class ProviderConfig:
     # constraints still win. Additive so every existing construction site is
     # unaffected.
     reasoning_effort: Optional[str] = None
+    # Operator declaration of a self-hosted endpoint's tool-calling support
+    # (LOCAL_LLM_TOOL_CALLING, #1356). Same contract as the two knobs above:
+    # `None` everywhere by default, read only by LocalProvider, where `None`
+    # means "derive the answer from the transport". Only a self-hosted endpoint
+    # needs it — every other provider's capability is a property of a catalogue
+    # FaultMaven can know, while a local endpoint's is known only to the
+    # operator who built it. Additive so every existing ProviderConfig
+    # construction site is unaffected.
+    tool_calling: Optional[bool] = None
 
     def __post_init__(self):
         if self.models is None:
