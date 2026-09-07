@@ -518,15 +518,19 @@ class TestLocalProviderOverride:
         capability = provider.get_structured_output_capability("phi3-mini")
         assert capability == StructuredOutputCapability.BEST_EFFORT
 
-    def test_functionary_on_ollama_base_url_downgrades_to_best_effort(self):
-        """functionary/hermes on the Ollama transport CANNOT return tool_calls,
-        so the capability must downgrade to BEST_EFFORT — claiming
+    def test_functionary_on_ollama_native_path_downgrades_to_best_effort(self):
+        """functionary/hermes on Ollama's NATIVE transport cannot return
+        tool_calls, so the capability must downgrade to BEST_EFFORT — claiming
         FUNCTION_CALLING would have the engine force a tool call the
-        /api/generate transport silently can't satisfy."""
+        /api/generate protocol silently can't satisfy.
+
+        Selected by the URL path. This test used to select it with the hostname
+        "my-ollama-host", which is exactly the defect #1356's review found: the
+        same endpoint under a different name got the opposite verdict."""
         config = ProviderConfig(
             name="local",
             api_key=None,
-            base_url="http://my-ollama-host:11434",
+            base_url="http://my-ollama-host:11434/api",
             models=["functionary-7b-v2"],
             default_model="functionary-7b-v2",
         )
@@ -537,9 +541,11 @@ class TestLocalProviderOverride:
         )
         assert provider.supports_tool_calling("functionary-7b-v2") is False
 
-    def test_hermes_with_ollama_in_model_name_downgrades(self):
-        """Ollama detection also keys off the model string (mirrors generate()'s
-        dispatch), not just base_url."""
+    def test_ollama_in_the_model_name_no_longer_downgrades(self):
+        """The model name never selected a transport in reality; the old rule
+        only made it look that way. ``hermes-2-pro-ollama`` on an
+        OpenAI-compatible endpoint is served over that endpoint, so it keeps
+        FUNCTION_CALLING."""
         config = ProviderConfig(
             name="local",
             api_key=None,
@@ -550,9 +556,9 @@ class TestLocalProviderOverride:
         provider = LocalProvider(config)
         assert (
             provider.get_structured_output_capability("hermes-2-pro-ollama")
-            == StructuredOutputCapability.BEST_EFFORT
+            == StructuredOutputCapability.FUNCTION_CALLING
         )
-        assert provider.supports_tool_calling("hermes-2-pro-ollama") is False
+        assert provider.supports_tool_calling("hermes-2-pro-ollama") is True
 
     def test_functionary_on_openai_compatible_transport_keeps_function_calling(self):
         """The OpenAI-compatible transport (no 'ollama' anywhere) keeps

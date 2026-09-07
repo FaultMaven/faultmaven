@@ -24,6 +24,55 @@ from .base import (
     normalize_stop_reason,
 )
 
+# The two protocols a self-hosted endpoint can speak to FaultMaven.
+TRANSPORT_OPENAI_COMPATIBLE = "openai_compatible"  # POST {root}/v1/chat/completions
+TRANSPORT_OLLAMA_NATIVE = "ollama_native"  # POST {root}/api/generate
+
+# Path suffixes an operator may legitimately paste into LOCAL_LLM_URL. Both the
+# bare API root and the full endpoint path are accepted for each protocol,
+# because both are what the upstream projects print in their own docs.
+_OLLAMA_NATIVE_SUFFIXES = ("/api/generate", "/api")
+_OPENAI_COMPATIBLE_SUFFIXES = ("/v1/chat/completions", "/v1")
+
+
+def resolve_local_transport(base_url: Optional[str]) -> tuple[str, str]:
+    """Decide which protocol ``base_url`` names, and the root to build URLs from.
+
+    THE single source of truth for that decision (#1356 review F1): the
+    capability answer and ``generate()``'s dispatch both call this, so they
+    cannot disagree. A capability answer that contradicts the dispatch is worse
+    than either being wrong alone — it is what makes a boot gate pass and every
+    request then fail.
+
+    Decided by the URL **path**, never by the host's name. The path is where the
+    operator says which API they pointed at; the hostname says nothing about it.
+    Keying on the substring "ollama" in the host — the rule this replaces — read
+    ``http://ollama:11434/v1`` (Ollama's own OpenAI-compatible endpoint, and the
+    service name in Ollama's own compose examples and Helm chart) as toolless,
+    refused to boot on it, and flipped its verdict when the host was renamed.
+    That is the same "capability from a name" category error #1356 exists to fix,
+    one layer down.
+
+    Returns ``(transport, root)``. ``root`` has any recognised API suffix
+    stripped, so the caller appends the full path exactly once — a base of
+    ``…:11434`` and one of ``…:11434/v1`` both POST to ``…:11434/v1/chat/completions``
+    rather than the second producing ``/v1/v1/…`` and a 404 (review F2).
+
+    A bare host resolves to the OpenAI-compatible protocol: that is what
+    ``.env.example`` documents, what every serving stack except Ollama offers,
+    and what Ollama also serves on the same port. Selecting Ollama's native
+    ``/api/generate`` is therefore explicit — point at ``/api``.
+    """
+    raw = (base_url or "").strip().rstrip("/")
+    lowered = raw.lower()
+    for suffix in _OLLAMA_NATIVE_SUFFIXES:
+        if lowered.endswith(suffix):
+            return TRANSPORT_OLLAMA_NATIVE, raw[: -len(suffix)]
+    for suffix in _OPENAI_COMPATIBLE_SUFFIXES:
+        if lowered.endswith(suffix):
+            return TRANSPORT_OPENAI_COMPATIBLE, raw[: -len(suffix)]
+    return TRANSPORT_OPENAI_COMPATIBLE, raw
+
 
 class LocalProvider(BaseLLMProvider):
     """Local LLM provider implementation"""
@@ -31,6 +80,15 @@ class LocalProvider(BaseLLMProvider):
     def __init__(self, config: ProviderConfig):
         super().__init__(config)
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
+        # One-shot latch for the "declaration not honoured" warning (review F4).
+        # `supports_tool_calling` is on the /health path via
+        # `resolve_investigation_capability`, so an unlatched warning is emitted
+        # by every liveness probe, forever, on a documented configuration.
+        self._declared_tool_calling_warned = False
+
+    def _transport(self) -> tuple[str, str]:
+        """This endpoint's ``(transport, root)`` — see ``resolve_local_transport``."""
+        return resolve_local_transport(self.config.base_url)
 
     @property
     def provider_name(self) -> str:
@@ -44,33 +102,21 @@ class LocalProvider(BaseLLMProvider):
         """Get list of supported models"""
         return self.config.models.copy()
 
-    def _uses_openai_compatible_transport(self, effective_model: str) -> bool:
-        """Whether this model will be served over the OpenAI-compatible
-        ``/v1/chat/completions`` path (the only local transport that returns
-        OpenAI-style ``tool_calls``).
-
-        ``generate()`` routes to the Ollama ``/api/generate`` transport when
-        ``base_url`` or the model name says "ollama" — that protocol does NOT
-        return ``tool_calls``, so function calling cannot work there. Mirrors
-        the dispatch in ``generate()``.
-        """
-        base = (self.config.base_url or "").lower()
-        return "ollama" not in base and "ollama" not in effective_model.lower()
-
     # --- Tool calling ------------------------------------------------------
     #
     # A model's tool-calling capability is a property of the ENDPOINT serving
     # it, not of its name (#1356). For a self-hosted endpoint exactly two such
     # properties are knowable from configuration, and this rule uses both:
     #
-    # 1. The TRANSPORT. ``generate()`` dispatches to Ollama's ``/api/generate``
-    #    whenever "ollama" appears in the base URL or the model name. That
-    #    protocol has no ``tool_calls`` field at all, so NO model can do tool
-    #    calling over it — a protocol-level fact, not a model-level one.
-    #    Everything else reaches ``/v1/chat/completions``, the transport that
-    #    does carry them. (The raw llama.cpp ``/completion`` fallback is
-    #    entered only when that path answers 404 at runtime; a tool call that
-    #    then fails is Layer 2's job — ``ToolCallingUnsupportedError``.)
+    # 1. The TRANSPORT, as named by the URL PATH — ``resolve_local_transport``,
+    #    the same function ``generate()`` dispatches on, so the two can never
+    #    disagree. Ollama's native ``/api/generate`` has no ``tool_calls`` field
+    #    at all, so NO model can do tool calling over it — a protocol-level
+    #    fact, not a model-level one, and not a fact about the hostname. Every
+    #    other path reaches ``/v1/chat/completions``, which does carry them.
+    #    (The raw llama.cpp ``/completion`` fallback is entered only when that
+    #    path answers 404 at runtime; a tool call that then fails is Layer 2's
+    #    job — ``ToolCallingUnsupportedError``.)
     # 2. The OPERATOR'S DECLARATION (``LOCAL_LLM_TOOL_CALLING`` →
     #    ``ProviderConfig.tool_calling``). Only the person who built the serving
     #    stack knows whether it was started with tool support (vLLM
@@ -96,6 +142,14 @@ class LocalProvider(BaseLLMProvider):
     #   merely inverted, and could never be right for every operator. The
     #   declaration IS that denylist, re-keyed to the only identifier that
     #   distinguishes local endpoints: the deployment's own configuration.
+    # * CLASSIFYING BY HOSTNAME (the rule this replaced, and the shape the
+    #   first cut of this fix kept) is the same category error one layer down:
+    #   it read Ollama's own OpenAI-compatible endpoint as toolless because the
+    #   service was called "ollama", and renaming the host flipped the verdict
+    #   on a byte-identical endpoint. Honouring the declaration on every
+    #   transport is not the repair either — ``generate()`` dispatches on the
+    #   same predicate, so a declaration the dispatch ignores just moves the
+    #   failure from boot to every request.
     # * A STARTUP PROBE asks the right question but cannot answer it at boot. A
     #   local server routinely starts alongside or after the API, so "not up
     #   yet" is indistinguishable from "not capable" and the gate would fail
@@ -113,19 +167,21 @@ class LocalProvider(BaseLLMProvider):
         call — and the OpenAI-compatible transport is capable unless the
         operator declares otherwise.
         """
-        effective_model = self.get_effective_model(model)
         declared = getattr(self.config, "tool_calling", None)
+        transport, _root = self._transport()
 
-        if not self._uses_openai_compatible_transport(effective_model):
-            if declared:
+        if transport != TRANSPORT_OPENAI_COMPATIBLE:
+            if declared and not self._declared_tool_calling_warned:
+                # Latched: /health resolves capability on every probe (F4).
+                self._declared_tool_calling_warned = True
                 self.logger.warning(
                     "LOCAL_LLM_TOOL_CALLING=true is not honoured for %r: this "
-                    "configuration routes to Ollama's /api/generate, whose "
-                    "response has no tool_calls field, so tool calling is "
-                    "impossible there for every model. Point LOCAL_LLM_URL at "
-                    "an OpenAI-compatible endpoint (Ollama serves one under "
-                    "/v1) to use tools.",
-                    effective_model,
+                    "URL names Ollama's native /api/generate API, whose response "
+                    "has no tool_calls field, so tool calling is impossible "
+                    "there for every model. Drop the /api suffix from "
+                    "LOCAL_LLM_URL — the same port also serves the "
+                    "OpenAI-compatible API, which does carry tool calls.",
+                    self.config.base_url,
                 )
             return False
 
@@ -194,13 +250,11 @@ class LocalProvider(BaseLLMProvider):
         # must never reach a request body. Logs any intent it cannot act on.
         self._discard_reasoning_kwargs(kwargs, model=effective_model)
 
-        # Intelligently detect API format for optimal compatibility
-        # Priority order: Ollama -> OpenAI-compatible -> Raw llama.cpp
+        # Which protocol this endpoint speaks, decided by the SAME function
+        # `supports_tool_calling` uses so the two cannot drift (#1356 review F1).
+        transport, root = self._transport()
 
-        if (
-            "ollama" in self.config.base_url.lower()
-            or "ollama" in effective_model.lower()
-        ):
+        if transport == TRANSPORT_OLLAMA_NATIVE:
             # Ollama-specific API
             try:
                 return await self._call_ollama_api(
@@ -284,6 +338,8 @@ class LocalProvider(BaseLLMProvider):
     ) -> LLMResponse:
         """Call Ollama-style API"""
 
+        _transport, root = self._transport()
+
         payload = {
             "model": model,
             "prompt": prompt,
@@ -303,7 +359,7 @@ class LocalProvider(BaseLLMProvider):
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                f"{self.config.base_url}/api/generate",
+                f"{root}/api/generate",
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=self.config.timeout),
             ) as response:
@@ -348,9 +404,10 @@ class LocalProvider(BaseLLMProvider):
     ) -> LLMResponse:
         """Call OpenAI-compatible API (for llama.cpp with OpenAI API, Phi-3 ONNX and similar)"""
 
-        self.logger.debug(
-            f"Starting OpenAI-compatible API call to {self.config.base_url}"
-        )
+        # Normalised root: a base already ending in /v1 must not become /v1/v1
+        # and 404 (#1356 review F2).
+        _transport, root = self._transport()
+        self.logger.debug(f"Starting OpenAI-compatible API call to {root}")
         self.logger.debug(
             f"Model: {model}, Max tokens: {max_tokens}, Temperature: {temperature}"
         )
@@ -383,7 +440,7 @@ class LocalProvider(BaseLLMProvider):
         async with aiohttp.ClientSession() as session:
             try:
                 async with session.post(
-                    f"{self.config.base_url}/v1/chat/completions",
+                    f"{root}/v1/chat/completions",
                     headers=headers,
                     json=payload,
                     timeout=aiohttp.ClientTimeout(total=self.config.timeout),
@@ -500,6 +557,8 @@ class LocalProvider(BaseLLMProvider):
     ) -> LLMResponse:
         """Call raw llama.cpp server API (completions endpoint)"""
 
+        _transport, root = self._transport()
+
         # llama.cpp server uses completions endpoint, not chat/completions
         payload = {
             "prompt": prompt,
@@ -532,7 +591,7 @@ class LocalProvider(BaseLLMProvider):
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                f"{self.config.base_url}/completion",
+                f"{root}/completion",
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=self.config.timeout),
             ) as response:

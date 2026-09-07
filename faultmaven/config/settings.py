@@ -425,6 +425,22 @@ class LLMSettings(BaseSettings):
         default=None, validation_alias="LOCAL_LLM_TOOL_CALLING"
     )
 
+    @field_validator("local_tool_calling", mode="before")
+    @classmethod
+    def _blank_tool_calling_is_unset(cls, value):
+        """A bare ``LOCAL_LLM_TOOL_CALLING=`` means "unset", not a type error.
+
+        This is the only Optional[bool] in the settings, and pydantic rejects
+        "" for bool — so the habitual way of neutralising a key in a .env file
+        (delete the value, keep the line) crashed startup here and nowhere else
+        (#1356 review F3). It is also what makes .env.example able to document
+        the real default: the commented line shows a blank, and uncommenting it
+        is the no-op the file's header promises.
+        """
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
+
     # Base URLs for each provider
     openai_base_url: str = Field(
         default="https://api.openai.com/v1", validation_alias="OPENAI_API_BASE"

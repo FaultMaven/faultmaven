@@ -13,7 +13,7 @@ Provider capability matrix for FaultMaven's LLM routing system. These capabiliti
 | Gemini | Yes | BEST_EFFORT | Full capability |
 | Cohere | Yes | BEST_EFFORT | Full capability |
 | HuggingFace | No | BEST_EFFORT | No DA tool use, degraded investigation |
-| Local (Ollama/vLLM) | Transport-dependent | Model-dependent | Assumed on the OpenAI-compatible transport; never on Ollama `/api/generate` |
+| Local (Ollama/vLLM) | Transport-dependent | Model-dependent | Assumed on the OpenAI-compatible path; never on Ollama's native `/api/generate` |
 | OpenRouter | Inherited | Inherited | Depends on underlying model |
 
 ## Role Routing
@@ -202,16 +202,24 @@ the same weights do tools under vLLM `--enable-auto-tool-choice` and do not
 under a llama.cpp build with no chat template, so there is nothing in a
 self-hosted model id to infer capability from.
 
-- **Ollama `/api/generate`** (routed to when "ollama" appears in `LOCAL_LLM_URL`
-  or the model name): `supports_tool_calling()` is always `False`. The protocol
-  has no `tool_calls` field, so this is not model-dependent and an operator
-  declaration cannot override it. The startup gate refuses to boot here unless
+The protocol is chosen by the **path** of `LOCAL_LLM_URL`, by the single
+predicate `resolve_local_transport` that `generate()` also dispatches on — the
+capability answer and the request that gets sent cannot disagree. The hostname
+is never consulted: `http://ollama:11434/v1` is Ollama's OpenAI-compatible
+endpoint and is treated as one.
+
+- **Ollama native `/api/generate`** (selected by an `/api` or `/api/generate`
+  suffix): `supports_tool_calling()` is always `False`. The protocol has no
+  `tool_calls` field, so this is not model-dependent and an operator declaration
+  cannot override it. The startup gate refuses to boot here unless
   `ALLOW_TOOLLESS_INVESTIGATION=true`.
-- **OpenAI-compatible `/v1/chat/completions`**: assumed capable — the same
-  default `BaseLLMProvider` gives every other OpenAI-compatible provider. A
-  stack built without tool support is declared with `LOCAL_LLM_TOOL_CALLING=false`,
-  which is the local equivalent of the Fireworks denylist, keyed on the
-  deployment rather than on a catalogue entry that does not exist here.
+- **OpenAI-compatible `/v1/chat/completions`** (a bare host, or a `/v1` or
+  `/v1/chat/completions` suffix — the suffix is stripped before the request URL
+  is built, so no form doubles the path): assumed capable, the same default
+  `BaseLLMProvider` gives every other OpenAI-compatible provider. A stack built
+  without tool support is declared with `LOCAL_LLM_TOOL_CALLING=false`, which is
+  the local equivalent of the Fireworks denylist, keyed on the deployment rather
+  than on a catalogue entry that does not exist here.
 - Structured output is a separate axis and still keys on the model family:
   `functionary`/`hermes` report `FUNCTION_CALLING`, everything else
   `BEST_EFFORT`. That signal promotes above the safe default rather than
