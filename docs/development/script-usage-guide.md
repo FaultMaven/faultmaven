@@ -468,6 +468,5 @@ ss -tlnp | grep -E ':(8090|8000|3000)'
 
 ## See Also
 
-- [QUICKSTART.md](../../QUICKSTART.md) - Getting started guide
-- [Fixed Script Improvements](../working/FIXED-script-improvements-2026-02-13.md) - Recent fixes and changes
-- [Testing Standards](../../.claude/standards/TESTING_STANDARDS.md) - Testing guidelines
+- [Quickstart](../getting-started/quickstart.md) - Getting started guide
+- [Testing Standards](../standards/TESTING_STANDARDS.md) - Testing guidelines

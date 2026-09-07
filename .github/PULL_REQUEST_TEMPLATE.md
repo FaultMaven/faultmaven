@@ -55,7 +55,7 @@ INSTRUCTIONS:
 <details>
 <summary><b>🧪 Testing</b> (expand if new code added)</summary>
 
-- [ ] New code has unit tests (maintain 40%+ coverage)
+- [ ] New code has unit tests (maintain 45%+ coverage, the CI gate)
 - [ ] Critical paths have integration tests
 - [ ] Edge cases and error paths tested
 - [ ] Tests follow [Testing Standards](../docs/standards/TESTING_STANDARDS.md)
