@@ -514,15 +514,22 @@ def _defining_module(obj) -> str:
 def _is_genuinely_first_party(module) -> bool:
     """A real module of this package, as opposed to a stand-in for one.
 
-    ``__file__ is None`` is NOT the discriminator: three genuine namespace
-    packages (``faultmaven.api``, ``faultmaven.providers``,
-    ``faultmaven.modules.case.domain.services``) have no ``__init__.py`` and so
-    no ``__file__``. What every real one does have is a spec that locates it
-    inside the package directory — by ``origin`` for a regular module, by
-    ``submodule_search_locations`` for a namespace package. All three stand-in
-    shapes fail that: a ``SimpleNamespace`` is not a module, a hand-built
-    ``ModuleType`` has no spec, and a helper-installed stand-in has a spec that
-    locates nothing.
+    ``__file__ is None`` is NOT the discriminator. A namespace package has no
+    ``__init__.py`` and so no ``__file__``, yet is perfectly genuine. What every
+    real one does have is a spec that locates it inside the package directory —
+    by ``origin`` for a regular module, by ``submodule_search_locations`` for a
+    namespace package. All three stand-in shapes fail that: a ``SimpleNamespace``
+    is not a module, a hand-built ``ModuleType`` has no spec, and a
+    helper-installed stand-in has a spec that locates nothing.
+
+    This package no longer HAS a first-party namespace package —
+    ``faultmaven.api``, ``faultmaven.providers`` and
+    ``faultmaven.modules.case.domain.services`` were the three, and each gained
+    an ``__init__.py`` so that grimp would put it in the import graph and the
+    import-linter contracts naming it could fail. The namespace branch stays
+    because the shape is still legal and a future package could take it; the
+    positive control below builds one rather than borrowing one from the tree,
+    so it cannot quietly stop testing this branch again.
     """
     if not isinstance(module, types.ModuleType):
         return False
@@ -587,7 +594,16 @@ def test_the_shadow_sweep_rejects_each_stand_in_shape():
     real = importlib.import_module("faultmaven.core.processing.log_analyzer")
     assert _is_genuinely_first_party(real) is True
 
-    namespace_pkg = importlib.import_module("faultmaven.api")
+    # A namespace package's shape, built rather than borrowed: no __file__ and
+    # no spec origin, located only by submodule_search_locations. This used to
+    # import faultmaven.api, which stopped being a namespace package when it
+    # gained an __init__.py — at which point the assertion below was no longer
+    # exercising the namespace branch at all.
+    namespace_pkg = types.ModuleType("faultmaven.pretend_namespace")
+    namespace_pkg.__spec__ = importlib.machinery.ModuleSpec(
+        "faultmaven.pretend_namespace", loader=None, origin=None, is_package=True
+    )
+    namespace_pkg.__spec__.submodule_search_locations = [str(PACKAGE_ROOT / "api")]
     assert getattr(namespace_pkg, "__file__", None) is None
     assert _is_genuinely_first_party(namespace_pkg) is True, (
         "a genuine namespace package was rejected — the sweep would fail on a "

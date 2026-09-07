@@ -29,8 +29,7 @@ from faultmaven.models.interfaces_user import (
     OrgPlanTier,
     Team,
 )
-from faultmaven.modules.auth.domain.models.user import User
-from faultmaven.providers.tenancy.base import TenantProvider
+from faultmaven.providers.tenancy.base import TenantProvider, TenantUser
 
 # Re-exported for callers that import the module-level symbol.
 DEFAULT_ENTERPRISE_ID = STANDALONE_ENTERPRISE_ID
@@ -92,7 +91,7 @@ class SingleTenantProvider(TenantProvider):
         self._default_team: Optional[Team] = None
 
     async def get_current_organization(
-        self, current_user: User, organization_id: Optional[str] = None
+        self, current_user: TenantUser, organization_id: Optional[str] = None
     ) -> Organization:
         """Always returns the default organization (ignores organization_id).
 

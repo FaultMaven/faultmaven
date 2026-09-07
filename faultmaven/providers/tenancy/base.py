@@ -5,10 +5,28 @@ services that work in both single-tenant and multi-tenant environments.
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, Protocol
 
 from faultmaven.models.interfaces_user import Organization
-from faultmaven.modules.auth.domain.models.user import User
+
+
+class TenantUser(Protocol):
+    """What tenancy needs of an authenticated user, and nothing more.
+
+    Structural, so the auth module's ``User`` satisfies it without this package
+    importing it. That import was a real boundary violation — a cross-cutting
+    provider reaching into another module's DOMAIN models — and because every
+    module reaches tenancy through ``config.tenant_context``, it made all five
+    of them transitively importers of ``auth.domain``. It went unseen because
+    ``faultmaven/providers`` had no ``__init__.py``, so grimp never put it in
+    the import graph and the contracts naming it could not fail.
+
+    Only these two attributes are ever read (``multi_tenant`` uses both; the
+    other implementations ignore the argument), so this is the whole dependency.
+    """
+
+    user_id: str
+    email: str
 
 
 class TenantProvider(ABC):
@@ -29,7 +47,7 @@ class TenantProvider(ABC):
 
     @abstractmethod
     async def get_current_organization(
-        self, current_user: User, organization_id: Optional[str] = None
+        self, current_user: TenantUser, organization_id: Optional[str] = None
     ) -> Organization:
         """Resolve the current organization context.
 

@@ -12,8 +12,7 @@ from typing import Optional
 
 from faultmaven.exceptions import AuthorizationError, NotFoundError, ValidationException
 from faultmaven.models.interfaces_user import IOrganizationRepository, Organization
-from faultmaven.modules.auth.domain.models.user import User
-from faultmaven.providers.tenancy.base import TenantProvider
+from faultmaven.providers.tenancy.base import TenantProvider, TenantUser
 
 
 class MultiTenantProvider(TenantProvider):
@@ -43,7 +42,7 @@ class MultiTenantProvider(TenantProvider):
         self.organization_repository = organization_repository
 
     async def get_current_organization(
-        self, current_user: User, organization_id: Optional[str] = None
+        self, current_user: TenantUser, organization_id: Optional[str] = None
     ) -> Organization:
         """Get organization with membership validation.
 

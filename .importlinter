@@ -229,6 +229,16 @@ ignore_imports =
     faultmaven.container.providers.services -> faultmaven.modules.auth.infrastructure.stores.*
     faultmaven.container.providers.infrastructure -> faultmaven.modules.auth.infrastructure.stores.*
     faultmaven.container.providers.infrastructure -> faultmaven.infrastructure.auth.*
+    # The shared API-layer auth dependency, newly visible now that
+    # faultmaven/api is a real package. Every module's routes depend on it to
+    # authenticate a request — that is what it is for — and it is not one of the
+    # five modules this contract governs: it is the application's auth wiring.
+    # Its own use of auth internals is therefore not a module reaching across a
+    # boundary, and without these three "module X has an authenticated route"
+    # reads as "module X imports auth.domain".
+    faultmaven.api.v1.auth_dependencies -> faultmaven.modules.auth.domain.**
+    faultmaven.api.middleware.auth -> faultmaven.modules.auth.domain.**
+    faultmaven.api.v1.auth_dependencies -> faultmaven.container
 
 # ============================================================================
 # CONTRACT 11: No Direct Database Access to Auth Tables
@@ -246,8 +256,12 @@ source_modules =
     faultmaven.modules.agent
     faultmaven.modules.report
 forbidden_modules =
-    faultmaven.modules.auth.infrastructure.repositories.oauth_code_repository
-    faultmaven.modules.auth.infrastructure.repositories.token_repository
+    # The PACKAGE, not a hand-listed set of modules. The list named
+    # `token_repository`, which no longer exists, and missed the two SSO
+    # repositories added since — a rule that silently stops covering what it
+    # was written to cover. Every repository here reads auth tables, which is
+    # exactly what this contract forbids other modules from doing.
+    faultmaven.modules.auth.infrastructure.repositories
 allow_indirect_imports = false
 ignore_imports =
     # Container is the composition root - allowed to wire all module internals
@@ -275,6 +289,10 @@ ignore_imports =
     # Container is the composition root - allowed to wire infrastructure
     faultmaven.container.providers.infrastructure -> faultmaven.modules.case.infrastructure.sessionless_case_repository
     faultmaven.container.providers.infrastructure -> faultmaven.modules.case.infrastructure.case_repository
+    # Reaching the container is reaching everything it wires. Same composition-root
+    # rationale as the two lines above; newly visible because faultmaven/api is a
+    # real package now.
+    faultmaven.api.v1.auth_dependencies -> faultmaven.container
 
 # ============================================================================
 # CONTRACT 13: Other Modules Use Case Contracts Only
@@ -285,18 +303,31 @@ ignore_imports =
 # - Case contracts re-exports models for cross-module use
 # Note: Evidence, Agent, Report can still have domain/models for backward compat
 #       but they re-export from Case contracts
-# TEMPORARILY DISABLED: faultmaven.api and faultmaven.core are not proper Python
-# packages (no __init__.py). Contract 12 already covers the critical boundary.
-# [importlinter:contract:13]
-# name = Other modules use Case contracts for shared models
-# type = forbidden
-# source_modules =
-#     faultmaven.services
-#     faultmaven.api
-#     faultmaven.core
-# forbidden_modules =
-#     faultmaven.modules.case.infrastructure
-# allow_indirect_imports = false
+# Re-enabled: faultmaven/api now has an __init__.py, so it is a regular package
+# and its modules appear in the import graph. While it did not, this contract was
+# unfalsifiable, which is why it was commented out rather than left to pass.
+[importlinter:contract:13]
+name = Other modules use Case contracts for shared models
+type = forbidden
+source_modules =
+    faultmaven.services
+    faultmaven.api
+    faultmaven.core
+forbidden_modules =
+    faultmaven.modules.case.infrastructure
+allow_indirect_imports = false
+ignore_imports =
+    # Composition roots, wiring implementations. `service_factory` is the
+    # legacy one the DI container is replacing (see the Contract 1 note); both
+    # are allowed to name infrastructure because selecting implementations is
+    # the job. Same rationale as the container entries on contracts 11 and 12.
+    faultmaven.services.service_factory -> faultmaven.modules.case.infrastructure.**
+    faultmaven.api.v1.auth_dependencies -> faultmaven.container
+    # The Case module's own domain service reaching its own repository is
+    # internal to Case, not a caller crossing a boundary. What this contract is
+    # about is OTHER layers naming Case infrastructure directly; reaching it
+    # through Case's domain service is the supported route.
+    faultmaven.modules.case.domain.services.api_case_service -> faultmaven.modules.case.infrastructure.**
 
 # ============================================================================
 # CONTRACT 14: Preprocessing Module Uses Case Contracts Only
