@@ -63,7 +63,22 @@ DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
         # Sonnet tier: $3 input / $15 output per 1M, cache write ~1.25x, read ~0.1x.
         "claude-sonnet-4-5": TokenRates(3.0, 15.0, 0.30, 3.75),
         "claude-sonnet-4-6": TokenRates(3.0, 15.0, 0.30, 3.75),
+        # Opus tier. The generic "claude-opus-4" key is the ORIGINAL Opus 4 /
+        # 4.1 rate ($15 in / $75 out) and stays correct for those ids; the two
+        # specific keys below win by longest-match for the generations that
+        # repriced. Keeping all three is what makes the substring scheme safe
+        # here — a version-blind key does not merely go stale, it silently
+        # bills a NEWER model at an OLDER rate, and unlike an unpriced model
+        # that failure never reaches the unpriced counter.
         "claude-opus-4": TokenRates(15.0, 75.0, 1.50, 18.75),
+        # claude-opus-4-6 is what the dashboard picker offers for Opus, and it
+        # was matching the generic key above — a 3x over-report. Opus repriced
+        # to $5 in / $25 out at 4.5 and has held there through 4.6/4.7/4.8.
+        "claude-opus-4-6": TokenRates(5.0, 25.0, 0.50, 6.25),
+        # Opus 5 ($5 in / $25 out) — the generation the generic key cannot
+        # reach at all, since "claude-opus-4" is not a substring of
+        # "claude-opus-5" (#1359).
+        "claude-opus-5": TokenRates(5.0, 25.0, 0.50, 6.25),
         "claude-haiku": TokenRates(0.80, 4.0, 0.08, 1.0),
     },
     "openai": {
@@ -121,6 +136,14 @@ DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
     "groq": {
         "llama-3.3-70b": TokenRates(0.59, 0.79, 0.0, 0.0),
         "llama-3.1-8b": TokenRates(0.05, 0.08, 0.0, 0.0),
+        # Groq's only STRICT structured-output models, and therefore the only
+        # ones here fit to be CHAT_PROVIDER. Keys are the bare model names so
+        # they also match the "openai/"-prefixed ids the picker and GROQ_MODEL
+        # use — the same substring convention as the claude-* keys. Cached
+        # input is half the input rate (OpenAI-family caching); Groq does not
+        # bill a separate cache write.
+        "gpt-oss-120b": TokenRates(0.15, 0.60, 0.075, 0.0),
+        "gpt-oss-20b": TokenRates(0.075, 0.30, 0.0375, 0.0),
     },
     "cohere": {
         "command-r-plus": TokenRates(2.50, 10.0, 0.0, 0.0),

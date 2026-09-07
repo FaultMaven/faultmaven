@@ -119,3 +119,151 @@ def test_default_model_is_priced(provider: str) -> None:
         "infrastructure/llm/pricing.py — a deployment that changed nothing "
         "would report $0 spend."
     )
+
+
+# ---------------------------------------------------------------------------
+# Configuration-shaped keys (#1358)
+# ---------------------------------------------------------------------------
+
+# Keys whose VALUE is an environment variable name. Nothing resolves
+# configuration *through* these keys — ``_create_provider_config`` reads each
+# provider's own settings field directly — so a wrong value cannot surface as a
+# bug. It just misinforms the next reader, which is what ``base_url_var`` did
+# for four years: unread everywhere, and for ``local`` it advertised
+# ``LOCAL_LLM_BASE_URL`` while the code read ``LOCAL_LLM_URL``.
+_ENV_VAR_KEY_SUFFIX = "_var"
+
+
+def _settings_snapshot() -> dict:
+    """Every LLMSettings field value, with SecretStr unwrapped for comparison."""
+    from faultmaven.config.settings import LLMSettings
+
+    settings = LLMSettings()
+    snapshot = {}
+    for field in type(settings).model_fields:
+        value = getattr(settings, field, None)
+        if hasattr(value, "get_secret_value"):
+            value = value.get_secret_value()
+        snapshot[field] = value
+    return snapshot
+
+
+@pytest.mark.unit
+def test_every_env_var_key_names_a_variable_settings_consumes(monkeypatch) -> None:
+    """A ``*_var`` value must name an env var the settings layer actually reads.
+
+    This is the invariant #1358 states: a configuration-shaped key names the
+    environment variable actually consumed for that provider, or it does not
+    exist. It is asserted BEHAVIOURALLY rather than by grepping settings.py,
+    because a field reaches its env var two different ways — an explicit
+    ``validation_alias`` (``local_url`` <- ``LOCAL_LLM_URL``) or the pydantic
+    default of the field's own name (``openai_model`` <- ``OPENAI_MODEL``) —
+    and only one of those is greppable.
+
+    Method: snapshot every LLMSettings field, set the advertised variable to a
+    sentinel, rebuild, and require that some field moved. Comparing against a
+    baseline rather than a fixed expectation keeps the test honest when a
+    developer's .env already sets the variable: os.environ outranks .env, so
+    the sentinel still wins, and any value the .env contributed is present in
+    BOTH snapshots and cancels out.
+    """
+    env_var_keys = sorted(
+        {
+            key
+            for schema in PROVIDER_SCHEMA.values()
+            for key in schema
+            if key.endswith(_ENV_VAR_KEY_SUFFIX)
+        }
+    )
+    assert env_var_keys, "PROVIDER_SCHEMA advertises no env vars — test is inert"
+
+    unread = []
+    for provider, schema in sorted(PROVIDER_SCHEMA.items()):
+        for key in env_var_keys:
+            env_var = schema.get(key)
+            if env_var is None:
+                continue  # e.g. local has api_key_var=None — no key needed
+            baseline = _settings_snapshot()
+            monkeypatch.setenv(env_var, "fm-sentinel-value")
+            try:
+                moved = [
+                    field
+                    for field, value in _settings_snapshot().items()
+                    if value != baseline[field]
+                ]
+            finally:
+                monkeypatch.delenv(env_var, raising=False)
+            if not moved:
+                unread.append(f"{provider}.{key} = {env_var!r}")
+
+    assert not unread, (
+        "PROVIDER_SCHEMA advertises environment variables that no LLMSettings "
+        f"field consumes: {unread}. Setting one changes nothing, so the key is "
+        "documentation that lies. Fix the value to the variable the code "
+        "actually reads, or delete the key (what #1358 did for base_url_var)."
+    )
+
+
+@pytest.mark.unit
+def test_base_url_var_is_not_reintroduced() -> None:
+    """Regression pin for #1358.
+
+    ``base_url_var`` had no reader anywhere in the repo and, for ``local``,
+    disagreed with the code outright. ``default_base_url`` — which IS read, by
+    ``_create_provider_config`` — stays. Re-adding a base-URL env var name
+    here means re-adding a key nothing consults, so it must come with a reader
+    that makes it authoritative.
+    """
+    offenders = [p for p, schema in PROVIDER_SCHEMA.items() if "base_url_var" in schema]
+    assert not offenders, (
+        f"{offenders} re-declare 'base_url_var'. It has no reader — the "
+        "construction path reads llm_settings.<provider>_base_url directly. "
+        "Give it a reader or leave it deleted (#1358)."
+    )
+
+
+@pytest.mark.unit
+def test_groq_picker_offers_a_strict_model() -> None:
+    """Groq's picker must offer at least one STRICT structured-output model.
+
+    The investigation engine drives state from schema-constrained responses.
+    A BEST_EFFORT model only gets the schema asked for in-prompt, so it can
+    omit required fields, the engine drops the state_updates, and the
+    investigation degrades. Groq's ONLY STRICT models are openai/gpt-oss-20b
+    and openai/gpt-oss-120b (GroqProvider.get_structured_output_capability);
+    until #1359 the picker listed the two Llama models and nothing else, so
+    every Groq configuration an operator could pick from the UI degraded
+    primary CHAT, and the one usable pair could only be reached by setting
+    GROQ_MODEL by hand.
+
+    Asserted against the provider's own capability method rather than a
+    hardcoded model list, so it tracks the provider if the STRICT set moves.
+    """
+    from faultmaven.infrastructure.llm.providers.base import ProviderConfig
+    from faultmaven.infrastructure.llm.providers.groq_provider import GroqProvider
+    from faultmaven.infrastructure.llm.structured_output_capability import (
+        StructuredOutputCapability,
+    )
+
+    offered = PROVIDER_SCHEMA["groq"]["available_models"]
+    provider = GroqProvider(
+        ProviderConfig(
+            name="groq",
+            api_key="test-key",
+            base_url=PROVIDER_SCHEMA["groq"]["default_base_url"],
+            models=list(offered),
+            default_model=PROVIDER_SCHEMA["groq"]["default_model"],
+        )
+    )
+
+    strict = [
+        model
+        for model in offered
+        if provider.get_structured_output_capability(model)
+        is StructuredOutputCapability.STRICT
+    ]
+    assert strict, (
+        f"Groq's picker offers {offered!r}, none of which enforce a schema "
+        "natively. Every option degrades primary CHAT, and the models that "
+        "would not are unreachable from the UI (#1359)."
+    )

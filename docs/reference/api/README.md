@@ -5999,6 +5999,7 @@ Individual LLM provider status for dashboard display.
 - `models` (array, optional)
 - `name` (string, required)
 - `selected_model` (object, optional) — Currently active model for this provider
+- `selected_model_priced` (object, optional) — Whether selected_model has a rate in the cost table. False means this provider's calls report $0 spend. None when no model is resolved yet (provider not initialized).
 - `state` (string, optional) — Provider lifecycle state: not_configured, configured, or active
 
 ---
