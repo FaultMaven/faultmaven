@@ -26,6 +26,7 @@ from faultmaven.api.exception_handlers import (
     not_found_exception_handler,
     oauth_protocol_error_handler,
     service_error_handler,
+    team_operation_refused_handler,
     validation_exception_handler,
 )
 from faultmaven.exceptions import (
@@ -36,6 +37,7 @@ from faultmaven.exceptions import (
     ValidationException,
 )
 from faultmaven.models.exceptions import OAuthProtocolError
+from faultmaven.modules.auth.exceptions import TeamOperationRefused
 
 
 @pytest.fixture
@@ -392,6 +394,7 @@ class TestGetExceptionHandlers:
             AuthorizationError,
             ValidationException,
             ConflictError,
+            TeamOperationRefused,
             ServiceError,
             OAuthProtocolError,
         }
@@ -444,6 +447,79 @@ class TestOAuthProtocolErrorHandler:
 
         assert response.headers["cache-control"] == "no-store"
         assert response.headers["pragma"] == "no-cache"
+
+
+class TestTeamOperationRefusedHandler:
+    """The refusal shape the team consent surface publishes (ADR-017 D4)."""
+
+    @pytest.mark.asyncio
+    async def test_the_reason_slug_reaches_the_client(self, mock_request):
+        """`reason` is its own field, beside `detail` — not inside it.
+
+        This handler exists precisely because it could not be an
+        ``HTTPException``: ``http_exception_handler`` flattens a dict ``detail``
+        down to its human message, deliberately, since clients render ``detail``
+        verbatim. A slug carried there would be silently discarded, and the
+        client would be left parsing prose to tell "you are already a member"
+        from "that address cannot join a team in this enterprise".
+        """
+        response = await team_operation_refused_handler(
+            mock_request,
+            TeamOperationRefused(
+                reason="already_a_member",
+                message="That address is already a member of this team.",
+                status_code=409,
+            ),
+        )
+
+        assert response.status_code == 409
+        assert json.loads(response.body) == {
+            "error": "Conflict",
+            "detail": "That address is already a member of this team.",
+            "status_code": 409,
+            "reason": "already_a_member",
+        }
+
+    @pytest.mark.asyncio
+    async def test_it_carries_each_status_the_surface_uses(self, mock_request):
+        """403, 404, 409 and 410 all travel on the exception.
+
+        The 410 is the one that would go wrong quietly: it is outside the range
+        every other handler here answers, and a hardcoded status would turn "this
+        invitation has expired" into "you may not have it", which is a different
+        statement to the person holding it.
+        """
+        for status_code, title in (
+            (403, "Forbidden"),
+            (404, "Not Found"),
+            (409, "Conflict"),
+            (410, "Gone"),
+        ):
+            response = await team_operation_refused_handler(
+                mock_request,
+                TeamOperationRefused(
+                    reason="whatever", message="no", status_code=status_code
+                ),
+            )
+            assert response.status_code == status_code
+            assert json.loads(response.body)["error"] == title
+
+    @pytest.mark.asyncio
+    async def test_an_unexpected_status_does_not_crash_the_handler(self, mock_request):
+        """A status outside the map answers, rather than raising inside a handler.
+
+        The title map is a lookup with a default rather than
+        ``HTTPStatus(...).phrase`` for exactly this: an exception raised while
+        rendering a deliberate 4xx turns it into a 500 carrying none of the
+        message it was meant to deliver.
+        """
+        response = await team_operation_refused_handler(
+            mock_request,
+            TeamOperationRefused(reason="odd", message="no", status_code=418),
+        )
+
+        assert response.status_code == 418
+        assert json.loads(response.body)["reason"] == "odd"
 
 
 class TestDictDetailIsCoerced:
