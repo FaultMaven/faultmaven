@@ -130,6 +130,26 @@ STATE_SUMMARY_DIGEST_CHARS = 180
 # Max chars per KB solution in context (prevents verbose runbooks from consuming budget)
 KB_MAX_SOLUTION_CHARS = 800
 
+
+def _kb_prefetch_enabled() -> bool:
+    """Is the KB PUSH channel enabled for this deployment? (``KB_PREFETCH_ENABLED``)
+
+    Imported locally and guarded like every other settings read in this module:
+    helpers here are imported by tests that never build a settings object.
+
+    Falls back to ``True`` — the shipped default — when settings cannot be read.
+    The fallback direction matters: this gate decides whether a block is
+    REMOVED from the prompt, so an unreadable configuration must leave the
+    prompt as it was rather than silently strip retrieved knowledge out of it.
+    """
+    try:
+        from faultmaven.config.settings import get_settings
+
+        return bool(get_settings().knowledge.kb_prefetch_enabled)
+    except Exception:  # noqa: BLE001 - settings absent in some test contexts
+        return True
+
+
 # Min structural-index length for an uploaded file to count as a searchable
 # target. This is the single source of truth: the context builder renders a
 # file as ``<uploaded_file searchable="true">`` only above this length, and
@@ -3820,9 +3840,22 @@ def build_investigation_context(
     # 7. Knowledge Base Results
     # Cap individual solution text to prevent a single verbose runbook from
     # consuming the remaining token budget.
-    # KB context: combine passed-in results with case-level pre-fetched context
+    # KB context: combine passed-in results with case-level pre-fetched context.
+    #
+    # ``case.kb_context`` is the PUSH channel (fm#1360) — runbooks the engine
+    # handed the model unasked, via ``MilestoneEngine._prefetch_kb_context``.
+    # ``KB_PREFETCH_ENABLED`` governs it, and THIS is the seam where the policy
+    # has to bite: the flag's whole claim is that the block is absent from the
+    # rendered prompt, and a producer-side guard alone cannot make that true for
+    # a case reloaded with context already persisted on it.
+    #
+    # ``kb_results`` (the parameter) is deliberately NOT gated. It is a
+    # caller-supplied channel, not the pre-fetch, and the flag is scoped to the
+    # push. It is ``None`` at the only production call site today, so the block
+    # below is the pre-fetch and nothing else — but scoping the gate to the
+    # field it names keeps that true if a caller ever starts passing results.
     all_kb_results = list(kb_results or [])
-    if case.kb_context:
+    if case.kb_context and _kb_prefetch_enabled():
         all_kb_results.extend(case.kb_context)
 
     kb_str = ""

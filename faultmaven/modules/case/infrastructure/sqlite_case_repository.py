@@ -2544,6 +2544,19 @@ class SQLiteCaseRepository(CaseRepository):
                         if case.last_suggestions
                         else None
                     ),
+                    # The KB PUSH channel's payload (fm#1360). It MUST round
+                    # trip, or the push is inert: both triggers fire during
+                    # response application — after this turn's prompt was
+                    # built — so the only prompt the pre-fetched runbooks can
+                    # ever reach is a LATER turn's, and a field dropped at save
+                    # never gets there. Measured before this line existed:
+                    # save() → get() returned ``kb_context is None`` for a case
+                    # saved with three admitted hits, and 7 of 7 pre-fetch
+                    # firings across three recorded runs had no LLM call after
+                    # them in the same request.
+                    "kb_context": (
+                        to_json_compatible(case.kb_context) if case.kb_context else None
+                    ),
                 }
             ),
         }
@@ -3554,6 +3567,9 @@ class SQLiteCaseRepository(CaseRepository):
             ),
             "pending_transition": metadata.get("pending_transition"),
             "last_suggestions": metadata.get("last_suggestions"),
+            # Pre-fetched runbooks (the KB push channel, fm#1360). See the
+            # writer for why dropping this made the channel inert.
+            "kb_context": metadata.get("kb_context"),
             "progress": progress,
             "current_turn": int(row.current_turn or 0),
             "turns_without_progress": int(row.turns_without_progress or 0),

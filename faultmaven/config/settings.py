@@ -2035,6 +2035,40 @@ class UploadSettings(BaseSettings):
 class KnowledgeSettings(BaseSettings):
     """Knowledge base and search configuration"""
 
+    # Policy control over the KB PUSH channel (fm#1360, Option B).
+    #
+    # Knowledge reaches the model through two channels with different
+    # economics. The PULL channel is the ``kb_qa`` directed-analysis tool,
+    # which the model elects; a model that needs no runbook calls none and
+    # pays nothing. The PUSH channel is
+    # ``MilestoneEngine._prefetch_kb_context``: a deterministic hybrid KB
+    # search fired at two case triggers whose top hits are written to
+    # ``case.kb_context`` and rendered into every subsequent prompt as
+    # ``<knowledge_context>``. Only the pull channel adapted; the push had no
+    # control at all, and the only way to stop it was to remove the knowledge
+    # service — which removes the pull channel and the flywheel's read path
+    # with it.
+    #
+    # This flag governs the PUSH ONLY. ``kb_qa`` stays registered and elected
+    # independently, so turning the push off narrows what the model is handed
+    # unasked, never what it can ask for. That split is what the measurement
+    # behind #1360 licenses: over 86 consumed turns (6 cases, 3 runs,
+    # OpenAI + Gemini) the model elected ``kb_qa`` on 64.6% of the turns where
+    # it was on the table and in 6 of 6 cases — so "push off" is emphatically
+    # not "no KB".
+    #
+    # A global boolean covering BOTH channels is deliberately NOT offered:
+    # it would remove the model's ability to ask even where asking helps.
+    kb_prefetch_enabled: bool = Field(
+        default=True,
+        validation_alias="KB_PREFETCH_ENABLED",
+        description=(
+            "Governs the deterministic KB pre-fetch (PUSH) that injects "
+            "matched runbooks into the investigation prompt. The kb_qa tool "
+            "(PULL) is unaffected and stays available to the model either way."
+        ),
+    )
+
     enable_web_search: bool = Field(default=True)
     serp_api_key: Optional[SecretStr] = Field(default=None)
     tavily_api_key: Optional[SecretStr] = Field(default=None)

@@ -256,6 +256,15 @@ FIELD_ALLOWLIST: frozenset[str] = frozenset(
         # paragraph that produced nothing", carrying no content
         "user_message_chars",
         "attachment_count",
+        # retrieval — which runbooks the KB PUSH channel handed this turn
+        # (fm#1361). Ids and scores only: the allowlist admits token-shaped
+        # values, and a runbook TITLE is prose that would (correctly) be
+        # dropped by the guard below. An id joins back to ``knowledge_items``
+        # server-side for anyone entitled to make that join, which is the same
+        # bargain ``case_id`` already makes.
+        "kb_prefetch_hits",
+        "kb_prefetch_top_score",
+        "kb_runbook_ids",
     }
 )
 
@@ -263,6 +272,10 @@ FIELD_ALLOWLIST: frozenset[str] = frozenset(
 #: transcript summaries are long and carry spaces and punctuation.
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9_.:@/-]*$")
 _MAX_TOKEN_LEN = 64
+
+#: Hard cap on how many elements a list-valued field may carry. See the
+#: sequence branch of ``_sanitize``.
+_MAX_SEQUENCE_LEN = 16
 
 
 def _is_token(value: str) -> bool:
@@ -320,6 +333,34 @@ def _sanitize(payload: Mapping[str, Any]) -> dict[str, Any]:
                         "case telemetry dropped %r bucket %r: %s", key, str(k), exc
                     )
             clean[key] = bucket
+        elif isinstance(value, (list, tuple)):
+            # A bounded list of ids. Checked PER ELEMENT for exactly the reason
+            # the mapping branch is: the natural way to break this is to append
+            # a title beside an id, and dropping the whole list over one bad
+            # member would turn a partially-wrong field into an ABSENT one —
+            # which reads as "retrieval returned nothing" rather than "one entry
+            # was malformed".
+            #
+            # ``str`` is a Sequence and must not land here; the isinstance test
+            # names list/tuple explicitly rather than testing for Sequence.
+            #
+            # Length-capped: this field's producer already slices to
+            # ``KB_CONTEXT_MAX_ENTRIES``, but the cap belongs on the guard too —
+            # an unbounded id list is the one shape that could make a row
+            # arbitrarily large, and the guard's job is to hold whatever a
+            # future producer does.
+            items: list[Any] = []
+            for element in list(value)[:_MAX_SEQUENCE_LEN]:
+                try:
+                    items.append(_scalar(element))
+                except ValueError as exc:
+                    _diag.warning(
+                        "case telemetry dropped %r element %r: %s",
+                        key,
+                        str(element)[:32],
+                        exc,
+                    )
+            clean[key] = items
         else:
             try:
                 clean[key] = _scalar(value)
@@ -515,6 +556,45 @@ def _assessment(case: "Case") -> dict[str, Any]:
     }
 
 
+def _kb_retrieval(case: "Case") -> dict[str, Any]:
+    """What the KB PUSH channel put in front of the model for this case.
+
+    The stream carried no retrieval signal at all before fm#1361, so
+    "did the model use what retrieval gave it, or fall back on parametric
+    knowledge?" was not answerable from stored data — it could only be
+    reconstructed by re-running the case.
+
+    Reads ``case.kb_context``, which is the pre-fetch's own output: the
+    admitted hits, already floored and already sliced to
+    ``KB_CONTEXT_MAX_ENTRIES``. When the push is disabled
+    (``KB_PREFETCH_ENABLED=false``) the pre-fetch clears the field, so this
+    reports zero hits — the same reading a case that searched and matched
+    nothing produces. Whether the push is enabled at all is deployment
+    configuration, reported by ``GET /admin/config/status``, not per turn.
+
+    ``kb_prefetch_top_score`` is the max rather than the mean because the
+    question it answers is "did retrieval find anything genuinely close?", and
+    a mean over a fixed-size slice answers a different one — three mediocre
+    hits and one excellent hit beside two poor ones average alike.
+    """
+    entries = getattr(case, "kb_context", None) or []
+    scores = []
+    for entry in entries:
+        try:
+            scores.append(float(entry.get("score") or 0.0))
+        except (AttributeError, TypeError, ValueError):
+            continue
+    return {
+        "kb_prefetch_hits": len(entries),
+        "kb_prefetch_top_score": max(scores) if scores else 0.0,
+        "kb_runbook_ids": [
+            str(entry.get("parent_document_id") or "")
+            for entry in entries
+            if isinstance(entry, Mapping) and entry.get("parent_document_id")
+        ],
+    }
+
+
 def build_case_turn_event(
     case: "Case",
     *,
@@ -571,6 +651,7 @@ def build_case_turn_event(
     payload.update(ask)
     payload.update(_frontier(case))
     payload.update(_assessment(case))
+    payload.update(_kb_retrieval(case))
     return _sanitize(payload)
 
 

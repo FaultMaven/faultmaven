@@ -19,6 +19,7 @@ from faultmaven.core.investigation.case_telemetry import (
     PROGRESS_ARM_KEYS,
     TELEMETRY_LOGGER_NAME,
     TurnPath,
+    _is_token,
     build_case_turn_event,
     collect_progress_arms,
     emit_case_turn,
@@ -499,6 +500,16 @@ def test_every_emitted_field_is_allowlisted_and_content_free():
     for key, value in event.items():
         if isinstance(value, dict):
             assert all(isinstance(v, (int, float, bool)) for v in value.values()), key
+        elif isinstance(value, list):
+            # List-valued fields carry ids (``kb_runbook_ids``, fm#1361). The
+            # content-free claim is asserted per ELEMENT and is not weakened by
+            # admitting the shape: every element must be a scalar, and a string
+            # element must be TOKEN-shaped, which is what excludes the prose a
+            # careless producer would put beside the ids.
+            for element in value:
+                assert isinstance(element, (int, float, bool, str)), key
+                if isinstance(element, str):
+                    assert _is_token(element), f"{key}: {element!r}"
         else:
             assert value is None or isinstance(value, (int, float, bool, str)), key
 

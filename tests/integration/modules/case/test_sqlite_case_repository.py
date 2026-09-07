@@ -1004,3 +1004,102 @@ class TestScopedAddUploadedFile:
         assert final.uploaded_files[0].uploaded_at_turn == 2
         # COALESCE protected the artifact against the NULL re-commit.
         assert final.uploaded_files[0].summary == "burst"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestKBContextRoundTrip:
+    """``case.kb_context`` must survive save → get, or the KB push is inert.
+
+    The push channel (fm#1360) writes matched runbooks to ``case.kb_context``
+    from ``MilestoneEngine._prefetch_kb_context``. Both of its triggers fire
+    during RESPONSE APPLICATION — after this turn's prompt was already built —
+    so the only prompt the pre-fetched runbooks can ever reach belongs to a
+    LATER turn, which loads the case back from this repository. A field dropped
+    at save is therefore a field the model never sees, on any turn, ever.
+
+    Read back through a SEPARATE session for the same reason the upload tests
+    above are: the writing session can see its own uncommitted state, so a
+    same-session read would stay green against a repository that never
+    persisted anything.
+    """
+
+    def _fresh_session(self, engine):
+        return sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)()
+
+    def _case(self, case_id: str):
+        from faultmaven.modules.case.domain.models import (
+            Case,
+            CaseState,
+            DocumentationData,
+            InquiryData,
+            InvestigationProgress,
+        )
+
+        return Case(
+            case_id=case_id,
+            user_id="user_001",
+            enterprise_id="00000000-0000-0000-0000-000000000001",
+            title="KB push round trip",
+            state=CaseState.INQUIRY,
+            inquiry=InquiryData(),
+            documentation=DocumentationData(),
+            progress=InvestigationProgress(),
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+
+    async def test_prefetched_runbooks_survive_the_turn_boundary(
+        self, sqlite_session, sqlite_engine
+    ):
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
+        )
+
+        case_id = f"case_{uuid4().hex[:12]}"
+        case = self._case(case_id)
+        case.kb_context = [
+            {
+                "title": "ENOSPC triage on a full root volume",
+                "summary": "Look for deleted-but-open descriptors with lsof +L1",
+                "score": 0.91,
+                "type": "runbook",
+                "parent_document_id": "rb_enospc_triage",
+                "trigger": "symptom",
+            }
+        ]
+        await SQLiteCaseRepository(sqlite_session).save(case)
+
+        async with self._fresh_session(sqlite_engine) as other:
+            reloaded = await SQLiteCaseRepository(other).get(case_id)
+
+        assert reloaded is not None
+        assert reloaded.kb_context, (
+            "the pre-fetched runbooks were dropped at save; the push can never "
+            "reach a prompt"
+        )
+        entry = reloaded.kb_context[0]
+        # Field by field: a blob that round-trips as ``[{}]`` would satisfy a
+        # truthiness check while carrying nothing the prompt or the citation
+        # list can use.
+        assert entry["parent_document_id"] == "rb_enospc_triage"
+        assert entry["title"] == "ENOSPC triage on a full root volume"
+        assert entry["score"] == 0.91
+        assert entry["trigger"] == "symptom"
+
+    async def test_a_case_with_no_prefetch_reloads_as_none(
+        self, sqlite_session, sqlite_engine
+    ):
+        """The empty case, so the writer cannot pass by storing a placeholder."""
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
+        )
+
+        case_id = f"case_{uuid4().hex[:12]}"
+        await SQLiteCaseRepository(sqlite_session).save(self._case(case_id))
+
+        async with self._fresh_session(sqlite_engine) as other:
+            reloaded = await SQLiteCaseRepository(other).get(case_id)
+
+        assert reloaded is not None
+        assert not reloaded.kb_context
