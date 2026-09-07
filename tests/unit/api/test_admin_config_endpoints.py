@@ -1995,3 +1995,64 @@ class TestEveryFeatureReportsEffectNotIntent:
             f"reporting False, so that arm cannot discriminate and the sweep "
             f"does not cover this member."
         )
+
+
+# ============================================================
+# selected_model_priced (#1359)
+# ============================================================
+
+
+@pytest.mark.unit
+class TestSelectedModelPricedPassthrough:
+    """The route surfaces the registry's priced flag verbatim.
+
+    The flag itself is DERIVED in ProviderRegistry.get_provider_status, beside
+    the model resolution — see
+    tests/infrastructure/test_llm_registry_comprehensive.py::
+    TestSelectedModelPriced for the real logic. Asserting the derivation here
+    would prove nothing: this suite mocks get_provider_status, so a test of the
+    value would only read back what it just wrote. What IS this route's job,
+    and is testable here, is passing the flag through unaltered — including
+    None, which must not be normalised into False.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("flag", [True, False, None])
+    async def test_flag_reaches_the_response_unaltered(
+        self, mock_admin_user, mock_llm_provider, mock_settings, flag
+    ):
+        mock_llm_provider.registry.get_provider_status.return_value = {
+            "anthropic": {
+                "available": True,
+                "models": ["some-model"],
+                "selected_model": "some-model",
+                "available_models": ["some-model"],
+                "selected_model_priced": flag,
+                "confidence_score": 0.85,
+                "in_fallback_chain": True,
+            }
+        }
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_llm_config(
+                current_user=mock_admin_user, llm_provider=mock_llm_provider
+            )
+
+        assert result.providers["anthropic"].selected_model_priced is flag
+
+    @pytest.mark.asyncio
+    async def test_uninitialized_provider_reports_none(
+        self, mock_admin_user, mock_llm_provider, mock_settings
+    ):
+        """A provider with no runtime status has no model, so nothing to say."""
+        mock_llm_provider.registry.get_provider_status.return_value = {}
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_llm_config(
+                current_user=mock_admin_user, llm_provider=mock_llm_provider
+            )
+
+        assert result.providers
+        assert all(
+            detail.selected_model_priced is None for detail in result.providers.values()
+        )

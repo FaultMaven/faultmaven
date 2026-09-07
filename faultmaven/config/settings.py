@@ -414,6 +414,32 @@ class LLMSettings(BaseSettings):
     # Local provider configuration
     local_url: Optional[str] = Field(default=None, validation_alias="LOCAL_LLM_URL")
     local_model: Optional[str] = Field(default=None, validation_alias="LOCAL_LLM_MODEL")
+    # Operator declaration of the endpoint's tool-calling support (#1356).
+    # Unset = derive it from the transport: the OpenAI-compatible
+    # /v1/chat/completions path is assumed capable, Ollama's /api/generate
+    # never is (that protocol has no tool_calls field). Set false when the
+    # serving stack was built without tool support, so the engine stops paying
+    # for a tool call it cannot satisfy on every turn; true is honoured only
+    # where the transport can carry it.
+    local_tool_calling: Optional[bool] = Field(
+        default=None, validation_alias="LOCAL_LLM_TOOL_CALLING"
+    )
+
+    @field_validator("local_tool_calling", mode="before")
+    @classmethod
+    def _blank_tool_calling_is_unset(cls, value):
+        """A bare ``LOCAL_LLM_TOOL_CALLING=`` means "unset", not a type error.
+
+        This is the only Optional[bool] in the settings, and pydantic rejects
+        "" for bool — so the habitual way of neutralising a key in a .env file
+        (delete the value, keep the line) crashed startup here and nowhere else
+        (#1356 review F3). It is also what makes .env.example able to document
+        the real default: the commented line shows a blank, and uncommenting it
+        is the no-op the file's header promises.
+        """
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
 
     # Base URLs for each provider
     openai_base_url: str = Field(

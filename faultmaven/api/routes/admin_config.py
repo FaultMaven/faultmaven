@@ -125,6 +125,7 @@ async def get_llm_config(
                     models=ps.get("models", []),
                     selected_model=ps.get("selected_model"),
                     available_models=ps.get("available_models", []),
+                    selected_model_priced=ps.get("selected_model_priced"),
                     health=hs.get("health", "unknown"),
                     avg_latency_ms=hs.get("avg_latency_ms", 0.0),
                 )

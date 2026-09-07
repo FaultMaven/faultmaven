@@ -392,6 +392,14 @@ class LLMProviderDetail(BaseModel):
         default_factory=list,
         description="Models the user can choose from for this provider",
     )
+    selected_model_priced: Optional[bool] = Field(
+        None,
+        description=(
+            "Whether selected_model has a rate in the cost table. False means "
+            "this provider's calls report $0 spend. None when no model is "
+            "resolved yet (provider not initialized)."
+        ),
+    )
     error_message: Optional[str] = None
     health: str = Field(
         default="unknown", description="HEALTHY, DEGRADED, UNHEALTHY, or UNKNOWN"

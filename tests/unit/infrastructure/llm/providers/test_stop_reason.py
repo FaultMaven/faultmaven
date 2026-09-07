@@ -355,7 +355,9 @@ class TestLocalProvider:
     """All three sub-paths: Ollama, OpenAI-compatible, raw llama.cpp."""
 
     async def test_ollama_done_reason(self):
-        provider = LocalProvider(_config("local", "http://ollama:11434", "llama3.2"))
+        provider = LocalProvider(
+            _config("local", "http://ollama:11434/api", "llama3.2")
+        )
         body = {"response": "partial", "eval_count": 7, "done_reason": "length"}
         session = _mock_aiohttp_session(body)
         with patch("aiohttp.ClientSession", return_value=session):
