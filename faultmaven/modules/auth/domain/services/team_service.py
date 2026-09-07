@@ -36,11 +36,12 @@ enterprise" — carry a reason slug on ``TeamOperationRefused``.
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, List, Optional
+from typing import List, Optional
 
 from faultmaven.exceptions import NotFoundError
 from faultmaven.infrastructure.persistence.user_repository import UserRepository
 from faultmaven.models.interfaces_user import (
+    AcceptOutcome,
     IEnterpriseRepository,
     ITeamRepository,
     LeaveOutcome,
@@ -261,19 +262,6 @@ class TeamService:
         )
         return created
 
-    async def get_team_for_member(
-        self, *, enterprise_id: str, team_id: str, user_id: str
-    ) -> Team:
-        """The team, iff it is in ``enterprise_id`` and ``user_id`` is in it.
-
-        The 404 shape, stated once: a team in another enterprise, a team that
-        does not exist, and a team the caller is simply not in are one answer.
-        """
-        team, _ = await self._team_and_roster(
-            enterprise_id=enterprise_id, team_id=team_id, user_id=user_id
-        )
-        return team
-
     async def list_members(
         self, *, enterprise_id: str, team_id: str, user_id: str
     ) -> List[TeamMember]:
@@ -350,7 +338,7 @@ class TeamService:
            same team → that offer is returned, not a second row — including when
            a concurrent invite won the race, which the repository settles.
         """
-        team = await self._require_team_admin(
+        team, roster = await self._require_team_admin(
             enterprise_id=enterprise_id, team_id=team_id, user_id=actor_user_id
         )
         address = self._normalize_email(email)
@@ -367,7 +355,14 @@ class TeamService:
                 status_code=403,
             )
 
-        if email_domain(address) != enterprise_domain.lower():
+        # Case-FOLDED on both sides here, unlike the address key itself. The two
+        # normalisations answer to two different stores: the address is
+        # lower-cased because ``users.email`` is looked up by ``func.lower``,
+        # while ``enterprises.domain`` is written case-folded by the sign-up
+        # path (``personal_tenant.email_domain``). Comparing a folded domain
+        # against a merely lowered one would fail on exactly the addresses A7
+        # was about.
+        if email_domain(address) != enterprise_domain.casefold():
             raise self._outside_domain()
 
         account = await self._users.get_by_email(address)
@@ -377,7 +372,9 @@ class TeamService:
                 # Rule 3's second half. Same refusal as rule 2, by construction.
                 raise self._outside_domain()
             invited_user_id = account.user_id
-            if await self._team_repository.is_team_member(team_id, account.user_id):
+            # The roster is already in hand from the admin check above, and it
+            # is the same fact a membership query would go and fetch.
+            if any(member.user_id == account.user_id for member in roster):
                 raise TeamOperationRefused(
                     reason=REASON_ALREADY_A_MEMBER,
                     message="That address is already a member of this team.",
@@ -447,9 +444,10 @@ class TeamService:
         invitation = await self._read_invitation(enterprise_id, invitation_id)
         if invitation.team_id != team_id:
             raise _not_found()
+        invitation = await self._settle_expiry(invitation)
         self._require_open(invitation)
         await self._team_repository.mark_invitation_revoked(
-            invitation_id, actor_user_id, _now()
+            enterprise_id, invitation_id, actor_user_id, _now()
         )
 
     async def list_my_invitations(
@@ -495,57 +493,55 @@ class TeamService:
         nowhere else on this surface — a pending invitation grants nothing, and
         an admin cannot add a member directly.
 
-        **The membership is written before the offer is stamped**, and the order
-        is the whole of whether a partial failure is recoverable. Stamping first
-        spends a one-shot token: if the membership then fails — the team was
-        retired between the read and the write, the invitee's anchor moved after
-        the token was minted — the row reads ``accepted`` with no membership and
-        every retry answers 409, because the only thing that could have
-        authorised the retry is the row just spent. Writing the membership first
-        fails the other way: ``add_member`` is an idempotent upsert, so a
-        failure after it leaves the offer pending and the retry both re-writes
-        the same membership row and completes the stamp.
+        **The stamp and the membership are one repository transaction**, and
+        that is the third answer to a question two orderings both got wrong.
+        Stamping first spends a one-shot token, so a failed membership leaves
+        the invitee with nothing and no way to retry. Upserting first — which
+        this file did until now — leaves a **real membership** behind when a
+        revoke lands in between, while the caller is told 409: a member of a
+        team nobody consented to admit, which is the exact invariant the whole
+        surface exists to hold. Neither half may outlive the other, so neither
+        ordering is right and there is no ordering.
+
+        Entitlement is decided here, before anything is written and before the
+        row is even settled for expiry — see :meth:`_read_invitation`.
         """
         invitation = await self._read_invitation(enterprise_id, invitation_id)
         self._require_addressed_to(invitation, user_id=user_id, email=email)
+        invitation = await self._settle_expiry(invitation)
         self._require_open(invitation)
 
-        team = await self._team_repository.get_team(enterprise_id, invitation.team_id)
-        if team is None:
-            raise _not_found()
-
-        added = await self._team_repository.add_member(
-            invitation.team_id, user_id, TEAM_ROLE_MEMBER
+        outcome, team = await self._team_repository.accept_invitation(
+            enterprise_id,
+            invitation_id,
+            user_id,
+            TEAM_ROLE_MEMBER,
+            _now(),
         )
-        if not added:
-            # ``add_member`` refuses a member anchored to another enterprise.
-            # Nothing has been consumed, so the offer stays answerable.
-            logger.warning(
-                "Membership refused for %s on invitation %s; the offer is " "unchanged",
-                user_id,
+        if outcome is AcceptOutcome.ACCEPTED and team is not None:
+            logger.info(
+                "Invitation %s accepted: %s joined team %s",
                 invitation_id,
+                user_id,
+                invitation.team_id,
             )
-            raise _not_found()
-
-        accepted = await self._team_repository.mark_invitation_accepted(
-            invitation_id, user_id, _now()
-        )
-        if not accepted:
-            # Somebody answered it between the read and the stamp. The
-            # membership upsert above is idempotent, so nothing is left
-            # half-done either way; this call simply did not accept it.
+            return team
+        if outcome is AcceptOutcome.NOT_PENDING:
+            # Somebody answered it between this caller's read and the
+            # transaction. Nothing was written — membership included.
             raise TeamOperationRefused(
                 reason=REASON_INVITATION_NOT_PENDING,
                 message="This invitation is no longer open.",
                 status_code=409,
             )
-        logger.info(
-            "Invitation %s accepted: %s joined team %s",
-            invitation_id,
+        # The team is gone, or the account cannot be a member of it. The offer
+        # is untouched, so it stays answerable if the situation resolves.
+        logger.warning(
+            "Accept refused for %s on invitation %s; nothing was written",
             user_id,
-            invitation.team_id,
+            invitation_id,
         )
-        return team
+        raise _not_found()
 
     async def decline_invitation(
         self, *, enterprise_id: str, invitation_id: str, user_id: str, email: str
@@ -553,9 +549,10 @@ class TeamService:
         """Refuse an offer. Recorded, so the admin can see it was answered."""
         invitation = await self._read_invitation(enterprise_id, invitation_id)
         self._require_addressed_to(invitation, user_id=user_id, email=email)
+        invitation = await self._settle_expiry(invitation)
         self._require_open(invitation)
         await self._team_repository.mark_invitation_revoked(
-            invitation.invitation_id, user_id, _now()
+            enterprise_id, invitation.invitation_id, user_id, _now()
         )
 
     async def resolve_invitations_for_account(
@@ -572,16 +569,15 @@ class TeamService:
         repository's own predicate enforces. Idempotent: it touches only rows
         whose ``invited_user_id`` is still NULL.
 
-        Short-circuits for an enterprise with no domain. A personal enterprise
-        refuses every invitation at send time (rule 1), so it can hold none —
-        and this runs on the hot login path, where a guaranteed-empty write
-        transaction is a cost with no possible result.
+        **Unconditional**, deliberately. A guard that skipped the UPDATE for an
+        enterprise with no domain looked like a saving and was not: it added a
+        SELECT to *every* login — including every company login, where the
+        UPDATE is exactly the thing that has to run — in order to avoid one
+        empty UPDATE on personal tenants. The common case paid two round trips
+        where it had been paying one.
         """
         address = self._normalize_email(email)
         if not address:
-            return 0
-        enterprise = await self._enterprises.get_enterprise(enterprise_id)
-        if not getattr(enterprise, "domain", None):
             return 0
         return await self._team_repository.resolve_invitations_for_account(
             enterprise_id, address, user_id
@@ -647,8 +643,13 @@ class TeamService:
 
     async def _require_team_admin(
         self, *, enterprise_id: str, team_id: str, user_id: str
-    ) -> Team:
-        """The team, iff the caller is a member AND its admin.
+    ) -> tuple[Team, List[TeamMember]]:
+        """The team AND its roster, iff the caller is a member AND its admin.
+
+        Returns the roster it had to read anyway: ``invite`` needs it a second
+        time, to decide whether the invited address is already a member, and
+        going back to the database for a fact already in memory is a round trip
+        bought with nothing.
 
         Two different answers on purpose. A non-member is told the team is not
         there (404) — the enterprise-crossing shape, and the one that discloses
@@ -667,26 +668,29 @@ class TeamService:
                 message="Only a team admin can manage this team's invitations.",
                 status_code=403,
             )
-        return team
+        return team, roster
 
     async def _read_invitation(
         self, enterprise_id: str, invitation_id: str
     ) -> TeamInvitation:
-        """The one way an invitation is read, expiry already settled.
+        """The one way an invitation is read. **Reads only — settles nothing.**
 
-        Every verb went through its own combination of "read the row" and
-        "notice it elapsed", and they disagreed: decline and revoke looked only
-        at the stored status, so an elapsed offer was recorded as *revoked* — a
-        withdrawal nobody performed — and accept answered 410 or 409 depending
-        on whether anything had listed the row first. Settling here means the
-        row every caller holds is already the row the database now has.
+        Settling used to happen here, and that made every caller's *first* act a
+        write: any authenticated account in the enterprise could name somebody
+        else's invitation id, mutate that row to ``expired``, and be told 404
+        for its trouble — and a team-A admin could settle team-B's offer the
+        same way. A refusal must not be reached through a side effect.
+
+        So the settle moved out to the callers, after their entitlement check.
+        The verbs still agree about an elapsed offer, which is what A6 was for;
+        what changed is that only somebody entitled to the row can cause it.
         """
         invitation = await self._team_repository.get_invitation(
             enterprise_id, invitation_id
         )
         if invitation is None:
             raise _not_found()
-        return await self._settle_expiry(invitation)
+        return invitation
 
     @staticmethod
     def _require_addressed_to(
@@ -748,10 +752,18 @@ class TeamService:
         ]
         if not elapsed:
             return list(invitations)
-        await self._team_repository.expire_invitations(
-            [invitation.invitation_id for invitation in elapsed]
+        # The ids the UPDATE actually moved, not the ids offered to it. A row
+        # accepted or revoked between the read above and the write is skipped by
+        # the pending predicate, and rebuilding it as EXPIRED anyway told the
+        # caller 410 for an invitation that had in fact been accepted — the same
+        # "depends who read first" answer lazy expiry was made consistent to
+        # remove, one layer down.
+        stamped = set(
+            await self._team_repository.expire_invitations(
+                self._enterprise_of(elapsed),
+                [invitation.invitation_id for invitation in elapsed],
+            )
         )
-        stamped = {invitation.invitation_id for invitation in elapsed}
         return [
             (
                 invitation.model_copy(update={"status": TeamInvitationStatus.EXPIRED})
@@ -760,6 +772,17 @@ class TeamService:
             )
             for invitation in invitations
         ]
+
+    @staticmethod
+    def _enterprise_of(invitations: List[TeamInvitation]) -> str:
+        """The enterprise a batch of invitations belongs to.
+
+        Every caller of :meth:`_settle_all` has already scoped its read to one
+        enterprise, so the batch is homogeneous by construction; taking it off
+        the rows rather than threading a parameter through keeps the two from
+        ever disagreeing.
+        """
+        return invitations[0].enterprise_id
 
     async def _settle_expiry(self, invitation: TeamInvitation) -> TeamInvitation:
         """The single-row form of :meth:`_settle_all`."""

@@ -538,17 +538,21 @@ def create_team_service(
     ``GET /meta/capabilities`` reports team sharing off, and the team-management
     and invitation routes refuse with a reason slug.
 
-    ``enterprise_repository`` is what the invitation rule needs beyond the team
-    tables: the domain an address must match is ``enterprises.domain`` (ADR-017
-    D3). It is **required**, and its absence returns ``None`` here rather than a
-    half-wired service. Every factory in this module answers ``None`` on
-    failure, so "the enterprise repository could not be built" is a reachable
-    state; a ``TeamService`` built without it answered 404 for every team in the
-    deployment — a wiring failure wearing the shape of "you asked for a row that
-    does not exist", which is the one answer nobody investigates. ``None`` here
-    is the honest failure: ``team_service is None`` is already the
-    deployment-wide "team collaboration is not available" signal, and the
-    surface answers its own 403 saying so.
+    ``None`` means exactly one thing here: **single-tenant**, where team
+    collaboration is inert by design (ADR-017 D8 — one enterprise, one default
+    team, one account, nobody to invite). Every consumer reads it that way, and
+    they read it for more than the consent routes: the team arm of the case read
+    allowlist, KB visibility, the milestone engine and ``GET /teams`` all
+    collapse to "this deployment has no team sharing" when it is ``None``.
+
+    So a missing dependency under **multi**-tenant is **fatal**, not ``None``.
+    Returning ``None`` there was a worse failure than the one it replaced: it
+    did not merely disable the consent routes, it silently removed every
+    team-shared case and runbook from every user's scope — quieter and wider
+    than the 404 it was fixing, and indistinguishable from a correctly
+    configured standalone deployment. A multi-tenant deployment that cannot
+    build this service is misconfigured, and the honest response to a
+    misconfiguration is to refuse to start.
 
     The user repository is built here rather than passed: it is sessionless and
     stateless, and the multi-tenant provider implies a persistent database, so
@@ -564,12 +568,13 @@ def create_team_service(
         return None
 
     if enterprise_repository is None:
-        logger.error(
-            "TeamService skipped: no enterprise repository. Team collaboration "
-            "will report itself unavailable rather than refuse every team as "
-            "though it did not exist."
+        raise RuntimeError(
+            "TeamService cannot be built: no enterprise repository. Under "
+            "TENANT_PROVIDER=multi this is a misconfiguration, not a degraded "
+            "mode — continuing would disable team sharing across every read "
+            "path (cases, knowledge, the investigation engine) while looking "
+            "exactly like a correctly configured standalone deployment."
         )
-        return None
 
     from faultmaven.infrastructure.persistence.user_repository import (
         SessionlessUserRepository,
