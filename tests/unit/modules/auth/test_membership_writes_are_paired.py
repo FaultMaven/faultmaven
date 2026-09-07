@@ -58,14 +58,6 @@ ALLOWED_REMOVAL_CALLERS = {
     # The sessionless wrapper delegating to the concrete repository. It is the
     # transport for the call above, not a caller with a policy of its own.
     "infrastructure/persistence/sessionless_organization_repository.py",
-    # Team membership, not organization membership: leaving a team narrows KB
-    # read scope, it does not end tenancy, and no token claim carries it — and
-    # under ADR-017 D4 leaving is the member's own act, so revoking their
-    # session for it would sign somebody out for declining to share. The
-    # consent surface does not call this at all: ``ITeamRepository.leave_team``
-    # performs the removal inside the transaction that decides the last-admin
-    # rule, because that rule cannot be decided outside it.
-    "infrastructure/persistence/sessionless_team_repository.py",
 }
 
 #: Files allowed to call ``.update_member_role(``, the *repository* write. Unlike

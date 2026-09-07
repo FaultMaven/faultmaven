@@ -38,6 +38,7 @@ from faultmaven.infrastructure.persistence.team_repository import (
     PostgreSQLTeamRepository,
 )
 from faultmaven.models.interfaces_user import (
+    AcceptOutcome,
     LeaveOutcome,
     Team,
     TeamInvitation,
@@ -312,8 +313,12 @@ async def test_a4_leaving_takes_a_row_lock_on_the_team(
     assert team is not None
     async with session_factory() as session:
         repository = PostgreSQLTeamRepository(session)
-        assert await repository.add_member(team.team_id, accounts[1], ADMIN)
-        assert await repository.add_member(team.team_id, accounts[2], "member")
+        assert await repository.add_member(
+            DEFAULT_ENTERPRISE_ID, team.team_id, accounts[1], ADMIN
+        )
+        assert await repository.add_member(
+            DEFAULT_ENTERPRISE_ID, team.team_id, accounts[2], "member"
+        )
 
     async with session_factory() as blocker:
         await blocker.execute(
@@ -361,8 +366,12 @@ async def test_a4_the_last_admin_of_a_team_with_members_is_refused(
     assert team is not None
     async with session_factory() as session:
         repository = PostgreSQLTeamRepository(session)
-        assert await repository.add_member(team.team_id, accounts[1], ADMIN)
-        assert await repository.add_member(team.team_id, accounts[2], "member")
+        assert await repository.add_member(
+            DEFAULT_ENTERPRISE_ID, team.team_id, accounts[1], ADMIN
+        )
+        assert await repository.add_member(
+            DEFAULT_ENTERPRISE_ID, team.team_id, accounts[2], "member"
+        )
 
     async def leave(user_id: str) -> LeaveOutcome:
         async with session_factory() as session:
@@ -404,7 +413,7 @@ async def test_a4_two_admins_and_nobody_else_may_both_leave(
     assert team is not None
     async with session_factory() as session:
         assert await PostgreSQLTeamRepository(session).add_member(
-            team.team_id, accounts[1], ADMIN
+            DEFAULT_ENTERPRISE_ID, team.team_id, accounts[1], ADMIN
         )
 
     async def leave(user_id: str) -> LeaveOutcome:
@@ -500,3 +509,194 @@ async def test_a5_a_name_at_the_request_limit_fits_the_column(
 
     created = await _create(session_factory, cleanup_teams, name, accounts[0])
     assert created is not None and created.name == name
+
+
+# =============================================================================
+# D1 — the accept is one transaction, against the real database
+# =============================================================================
+
+
+async def test_d1_a_revoked_offer_accepted_writes_no_membership(
+    session_factory, accounts, cleanup_teams
+):
+    """The invariant, on the storage that has to hold it.
+
+    The unit test asserts the service and its double agree; this asserts the SQL
+    does. A revoke that has committed is exactly what a concurrent one looks
+    like to the accept's locked read — the row it finds is not pending — and the
+    transaction must write nothing at all, membership included.
+    """
+    team = await _create(
+        session_factory,
+        cleanup_teams,
+        f"consent-revoked-{uuid.uuid4().hex[:8]}",
+        accounts[0],
+    )
+    assert team is not None
+    now = datetime.now(UTC)
+    invitation_id = str(uuid.uuid4())
+    async with session_factory() as session:
+        await PostgreSQLTeamRepository(session).create_invitation(
+            TeamInvitation(
+                invitation_id=invitation_id,
+                enterprise_id=DEFAULT_ENTERPRISE_ID,
+                team_id=team.team_id,
+                email=f"{accounts[1]}@acme.example",
+                invited_user_id=accounts[1],
+                invited_by=accounts[0],
+                status=TeamInvitationStatus.PENDING,
+                created_at=now,
+                expires_at=now + timedelta(days=14),
+            )
+        )
+    async with session_factory() as session:
+        assert await PostgreSQLTeamRepository(session).mark_invitation_revoked(
+            DEFAULT_ENTERPRISE_ID, invitation_id, accounts[0], now
+        )
+
+    async with session_factory() as session:
+        outcome, joined = await PostgreSQLTeamRepository(session).accept_invitation(
+            DEFAULT_ENTERPRISE_ID, invitation_id, accounts[1], "member", now
+        )
+
+    assert outcome is AcceptOutcome.NOT_PENDING
+    assert joined is None
+    async with session_factory() as session:
+        members = (
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM team_members "
+                    "WHERE team_id = :t AND user_id = :u"
+                ),
+                {"t": team.team_id, "u": accounts[1]},
+            )
+        ).scalar()
+    assert members == 0, (
+        "the accept left a membership behind for a withdrawn offer — a member "
+        "of a team nobody consented to admit"
+    )
+
+
+async def test_d1_accepting_writes_both_rows(session_factory, accounts, cleanup_teams):
+    """The control: the transaction must still do its job.
+
+    Without this, "write nothing" is satisfiable by a method that never writes
+    anything at all, and every refusal above would be vacuous.
+    """
+    team = await _create(
+        session_factory,
+        cleanup_teams,
+        f"consent-accept-{uuid.uuid4().hex[:8]}",
+        accounts[0],
+    )
+    assert team is not None
+    now = datetime.now(UTC)
+    invitation_id = str(uuid.uuid4())
+    async with session_factory() as session:
+        await PostgreSQLTeamRepository(session).create_invitation(
+            TeamInvitation(
+                invitation_id=invitation_id,
+                enterprise_id=DEFAULT_ENTERPRISE_ID,
+                team_id=team.team_id,
+                email=f"{accounts[1]}@acme.example",
+                invited_user_id=accounts[1],
+                invited_by=accounts[0],
+                status=TeamInvitationStatus.PENDING,
+                created_at=now,
+                expires_at=now + timedelta(days=14),
+            )
+        )
+
+    async with session_factory() as session:
+        outcome, joined = await PostgreSQLTeamRepository(session).accept_invitation(
+            DEFAULT_ENTERPRISE_ID, invitation_id, accounts[1], "member", now
+        )
+
+    assert outcome is AcceptOutcome.ACCEPTED
+    assert joined is not None and joined.team_id == team.team_id
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                text(
+                    "SELECT i.status, "
+                    "(SELECT count(*) FROM team_members m "
+                    " WHERE m.team_id = i.team_id AND m.user_id = :u) "
+                    "FROM team_invitations i WHERE i.invitation_id = :i"
+                ),
+                {"i": invitation_id, "u": accounts[1]},
+            )
+        ).first()
+    assert row[0] == "accepted"
+    assert row[1] == 1
+
+
+async def test_d5_retirement_expires_elapsed_offers_and_revokes_live_ones(
+    session_factory, accounts, cleanup_teams
+):
+    """Both endings in one retirement, against the real UPDATE split.
+
+    ``revoked_by`` names who ended an offer. An offer the clock had already
+    ended was being stamped ``revoked`` with the leaver's id — a withdrawal
+    nobody performed, and a third writer of a column the published contract
+    describes as having two.
+    """
+    team = await _create(
+        session_factory,
+        cleanup_teams,
+        f"consent-split-{uuid.uuid4().hex[:8]}",
+        accounts[0],
+    )
+    assert team is not None
+    now = datetime.now(UTC)
+    live_id, elapsed_id = str(uuid.uuid4()), str(uuid.uuid4())
+    async with session_factory() as session:
+        repository = PostgreSQLTeamRepository(session)
+        await repository.create_invitation(
+            TeamInvitation(
+                invitation_id=live_id,
+                enterprise_id=DEFAULT_ENTERPRISE_ID,
+                team_id=team.team_id,
+                email=f"live-{uuid.uuid4().hex[:6]}@acme.example",
+                invited_by=accounts[0],
+                status=TeamInvitationStatus.PENDING,
+                created_at=now,
+                expires_at=now + timedelta(days=14),
+            )
+        )
+        await repository.create_invitation(
+            TeamInvitation(
+                invitation_id=elapsed_id,
+                enterprise_id=DEFAULT_ENTERPRISE_ID,
+                team_id=team.team_id,
+                email=f"gone-{uuid.uuid4().hex[:6]}@acme.example",
+                invited_by=accounts[0],
+                status=TeamInvitationStatus.PENDING,
+                created_at=now - timedelta(days=30),
+                expires_at=now - timedelta(days=16),
+            )
+        )
+
+    async with session_factory() as session:
+        outcome = await PostgreSQLTeamRepository(session).leave_team(
+            DEFAULT_ENTERPRISE_ID, team.team_id, accounts[0], ADMIN
+        )
+    assert outcome is LeaveOutcome.LEFT_AND_RETIRED
+
+    async with session_factory() as session:
+        rows = dict(
+            (row[0], (row[1], row[2]))
+            for row in (
+                await session.execute(
+                    text(
+                        "SELECT invitation_id, status, revoked_by "
+                        "FROM team_invitations WHERE team_id = :t"
+                    ),
+                    {"t": team.team_id},
+                )
+            ).all()
+        )
+    assert rows[live_id] == ("revoked", accounts[0])
+    assert rows[elapsed_id] == (
+        "expired",
+        None,
+    ), "an offer the clock ended was recorded as withdrawn by the leaver"

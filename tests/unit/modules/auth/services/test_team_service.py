@@ -92,16 +92,35 @@ def test_create_team_service_none_without_repository():
 
 
 @pytest.mark.unit
-def test_create_team_service_none_without_an_enterprise_repository():
-    """A9: a wiring failure must not become a resource-shaped 404.
+def test_create_team_service_refuses_to_build_without_an_enterprise_repository():
+    """D7: a wiring failure under MULTI is fatal, not a quiet degradation.
 
-    Every factory in the composition root answers ``None`` on failure, so a
-    missing enterprise repository is reachable — and a ``TeamService`` built
-    without one refused every team in the deployment as though the id did not
-    exist. ``None`` here routes it to the honest answer instead: the surface
-    reports team collaboration unavailable.
+    Two wrong answers were tried before this one. Building the service anyway
+    made it refuse every team in the deployment as a 404 — a misconfiguration
+    wearing the shape of "no such row". Returning ``None`` was worse: ``None``
+    is the deployment-wide "there is no team sharing here" signal, read by the
+    case read allowlist, KB visibility, the milestone engine and ``GET /teams``,
+    so it silently emptied every user's shared scope AND was indistinguishable
+    from a correctly configured standalone deployment.
+
+    Raising is the only answer that cannot be mistaken for a working
+    deployment: the container does not catch it, so the process does not start.
     """
-    assert create_team_service(Mock(), Mock(), None) is None
+    with pytest.raises(RuntimeError, match="enterprise repository"):
+        create_team_service(Mock(), Mock(), None)
+
+
+@pytest.mark.unit
+def test_create_team_service_is_still_none_in_single_tenant():
+    """The control for D7: ``None`` now means exactly one thing.
+
+    Standalone legitimately has no consent surface and no team sharing (ADR-017
+    D8), and it must still start. If the fatal branch above had been written
+    without this, "refuse to build" would have taken standalone with it.
+    """
+    single = SingleTenantProvider(enterprise_repository=Mock())
+
+    assert create_team_service(single, Mock(), None) is None
 
 
 @pytest.mark.unit

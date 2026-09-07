@@ -42,6 +42,7 @@ from faultmaven.infrastructure.persistence.user_repository import (
     User,
 )
 from faultmaven.models.interfaces_user import (
+    AcceptOutcome,
     LeaveOutcome,
     Team,
     TeamInvitation,
@@ -169,7 +170,13 @@ class FakeTeamRepository:
                 names[team_id] = team.name
         return names
 
-    async def delete_team(self, enterprise_id: str, team_id: str) -> bool:
+    def has_member(self, team_id: str, user_id: str) -> bool:
+        """Test-only membership probe. NOT on the port — production reads the
+        roster it already has rather than asking a second time."""
+        return (team_id, user_id) in self.members
+
+    async def _retire(self, enterprise_id: str, team_id: str) -> bool:
+        """Private: the port has no ``delete_team``; ``leave_team`` owns it."""
         team = await self.get_team(enterprise_id, team_id)
         if team is None:
             return False
@@ -194,10 +201,18 @@ class FakeTeamRepository:
         del self.members[(team_id, user_id)]
         if others:
             return LeaveOutcome.LEFT
-        await self.delete_team(enterprise_id, team_id)
+        await self._retire(enterprise_id, team_id)
         now = _now()
         for invitation_id, row in list(self.invitations.items()):
-            if row.team_id == team_id and row.status == TeamInvitationStatus.PENDING:
+            if row.team_id != team_id or row.status != TeamInvitationStatus.PENDING:
+                continue
+            if row.is_expired(now):
+                # Ended by the clock, not by the leaver. Stamping it `revoked`
+                # would record a withdrawal nobody performed.
+                self.invitations[invitation_id] = row.model_copy(
+                    update={"status": TeamInvitationStatus.EXPIRED}
+                )
+            else:
                 self.invitations[invitation_id] = row.model_copy(
                     update={
                         "status": TeamInvitationStatus.REVOKED,
@@ -208,14 +223,18 @@ class FakeTeamRepository:
         return LeaveOutcome.LEFT_AND_RETIRED
 
     async def add_member(
-        self, team_id: str, user_id: str, team_role: Optional[str] = None
+        self,
+        enterprise_id: str,
+        team_id: str,
+        user_id: str,
+        team_role: Optional[str] = None,
     ) -> bool:
         if self.fail_next_add_member:
             self.fail_next_add_member = False
             return False
-        team = self.teams.get(team_id)
+        team = await self.get_team(enterprise_id, team_id)
         anchor = self.account_enterprise.get(user_id)
-        if team is None or team.deleted_at is not None or anchor is None:
+        if team is None or anchor is None:
             return False
         if team.enterprise_id != anchor:
             return False
@@ -227,30 +246,34 @@ class FakeTeamRepository:
         )
         return True
 
-    async def remove_member(self, team_id: str, user_id: str) -> bool:
-        return self.members.pop((team_id, user_id), None) is not None
-
     async def list_team_members(
         self, enterprise_id: str, team_id: str
     ) -> List[TeamMember]:
-        team = self.teams.get(team_id)
-        if team is None or team.enterprise_id != enterprise_id:
+        # ``deleted_at IS NULL`` too: production joins through ``teams`` and a
+        # retired team yields no roster there. Omitting it made this double MORE
+        # permissive than the thing it stands for, which is the one property
+        # these doubles are not allowed to have.
+        if await self.get_team(enterprise_id, team_id) is None:
             return []
         return [member for (tid, _), member in self.members.items() if tid == team_id]
-
-    async def is_team_member(self, team_id: str, user_id: str) -> bool:
-        return (team_id, user_id) in self.members
 
     # -- invitations -------------------------------------------------------- #
 
     async def create_invitation(self, invitation: TeamInvitation) -> TeamInvitation:
+        """The partial unique index, and the recovery production performs.
+
+        Asserting "there is no clash" instead would have been a stricter double
+        AND a useless one: the whole point of the constraint is that a clash IS
+        reachable, and the repository's job is to recover from it by handing
+        back the live offer. A double that forbade the case left that recovery
+        with no unit coverage at all — which is how the dialect bug in the
+        recovery survived a green suite.
+        """
         clash = await self.find_pending_invitation(
             invitation.enterprise_id, invitation.team_id, invitation.email
         )
-        assert clash is None, (
-            "the partial unique index admits one PENDING offer per address per "
-            "team; this write would have made two"
-        )
+        if clash is not None and clash.invitation_id != invitation.invitation_id:
+            return clash
         self.invitations[invitation.invitation_id] = invitation
         return invitation
 
@@ -298,15 +321,36 @@ class FakeTeamRepository:
             )
         ]
 
-    async def mark_invitation_accepted(
-        self, invitation_id: str, user_id: str, at: datetime
-    ) -> bool:
+    async def accept_invitation(
+        self,
+        enterprise_id: str,
+        invitation_id: str,
+        user_id: str,
+        team_role: str,
+        at: datetime,
+    ):
+        """Both rows, or neither — the invariant, modelled.
+
+        ``fail_next_accept_stamp`` simulates the offer being answered inside the
+        transaction. Production rolls back there; so does this, which is why the
+        membership assertion in the revoke-race test means something.
+        """
+        row = self.invitations.get(invitation_id)
+        if row is None or row.enterprise_id != enterprise_id:
+            return AcceptOutcome.ABSENT, None
         if self.fail_next_accept_stamp:
             self.fail_next_accept_stamp = False
-            return False
-        row = self.invitations.get(invitation_id)
-        if row is None or row.status != TeamInvitationStatus.PENDING:
-            return False
+            return AcceptOutcome.NOT_PENDING, None
+        if row.status != TeamInvitationStatus.PENDING:
+            return AcceptOutcome.NOT_PENDING, None
+        team = await self.get_team(enterprise_id, row.team_id)
+        if team is None:
+            return AcceptOutcome.ABSENT, None
+        if self.account_enterprise.get(user_id) != team.enterprise_id:
+            return AcceptOutcome.ABSENT, None
+        if self.fail_next_add_member:
+            self.fail_next_add_member = False
+            return AcceptOutcome.ABSENT, None
         self.invitations[invitation_id] = row.model_copy(
             update={
                 "status": TeamInvitationStatus.ACCEPTED,
@@ -314,13 +358,21 @@ class FakeTeamRepository:
                 "accepted_at": at,
             }
         )
-        return True
+        self.members[(row.team_id, user_id)] = TeamMember(
+            user_id=user_id,
+            team_id=row.team_id,
+            team_role=team_role,
+            joined_at=at,
+        )
+        return AcceptOutcome.ACCEPTED, team
 
     async def mark_invitation_revoked(
-        self, invitation_id: str, by_user_id: str, at: datetime
+        self, enterprise_id: str, invitation_id: str, by_user_id: str, at: datetime
     ) -> bool:
         row = self.invitations.get(invitation_id)
-        if row is None or row.status != TeamInvitationStatus.PENDING:
+        if row is None or row.enterprise_id != enterprise_id:
+            return False
+        if row.status != TeamInvitationStatus.PENDING:
             return False
         self.invitations[invitation_id] = row.model_copy(
             update={
@@ -331,17 +383,20 @@ class FakeTeamRepository:
         )
         return True
 
-    async def expire_invitations(self, invitation_ids) -> int:
-        expired = 0
+    async def expire_invitations(self, enterprise_id: str, invitation_ids):
+        """Returns the ids it MOVED, like the RETURNING clause it stands for."""
+        moved = []
         for invitation_id in invitation_ids:
             row = self.invitations.get(invitation_id)
-            if row is None or row.status != TeamInvitationStatus.PENDING:
+            if row is None or row.enterprise_id != enterprise_id:
+                continue
+            if row.status != TeamInvitationStatus.PENDING:
                 continue
             self.invitations[invitation_id] = row.model_copy(
                 update={"status": TeamInvitationStatus.EXPIRED}
             )
-            expired += 1
-        return expired
+            moved.append(invitation_id)
+        return moved
 
     async def resolve_invitations_for_account(
         self, enterprise_id: str, email: str, user_id: str
@@ -868,7 +923,7 @@ async def test_rule_6_accepting_an_expired_invitation_is_gone_and_stamps_the_row
     assert teams.invitations[invitation.invitation_id].status == (
         TeamInvitationStatus.EXPIRED
     )
-    assert not await teams.is_team_member(team.team_id, BOB.user_id)
+    assert not teams.has_member(team.team_id, BOB.user_id)
 
 
 async def test_rule_6_an_expired_invitation_is_stamped_and_hidden_on_read():
@@ -919,7 +974,7 @@ async def test_rule_6_only_the_invitee_may_accept():
             email=MALLORY.email,
         )
 
-    assert not await teams.is_team_member(team.team_id, MALLORY.user_id)
+    assert not teams.has_member(team.team_id, MALLORY.user_id)
 
 
 async def test_rule_6_an_invitation_in_another_enterprise_cannot_be_accepted():
@@ -1003,7 +1058,7 @@ async def test_accepting_creates_the_membership_and_nothing_before_it_does():
         actor_user_id=ALICE.user_id,
         email=BOB.email,
     )
-    assert not await teams.is_team_member(team.team_id, BOB.user_id)
+    assert not teams.has_member(team.team_id, BOB.user_id)
 
     joined = await service.accept_invitation(
         enterprise_id=ACME,
@@ -1013,7 +1068,7 @@ async def test_accepting_creates_the_membership_and_nothing_before_it_does():
     )
 
     assert joined.team_id == team.team_id
-    assert await teams.is_team_member(team.team_id, BOB.user_id)
+    assert teams.has_member(team.team_id, BOB.user_id)
     row = teams.invitations[invitation.invitation_id]
     assert row.status == TeamInvitationStatus.ACCEPTED
     assert row.accepted_at is not None
@@ -1039,7 +1094,7 @@ async def test_declining_records_who_declined_and_grants_nothing():
     row = teams.invitations[invitation.invitation_id]
     assert row.status == TeamInvitationStatus.REVOKED
     assert row.revoked_by == BOB.user_id
-    assert not await teams.is_team_member(team.team_id, BOB.user_id)
+    assert not teams.has_member(team.team_id, BOB.user_id)
 
 
 async def test_an_answered_invitation_cannot_be_answered_again():
@@ -1215,7 +1270,7 @@ async def test_the_last_admin_cannot_leave_while_other_members_remain():
 
     assert caught.value.status_code == 409
     assert caught.value.reason == REASON_LAST_ADMIN_CANNOT_LEAVE
-    assert await teams.is_team_member(team.team_id, ALICE.user_id)
+    assert teams.has_member(team.team_id, ALICE.user_id)
 
 
 async def test_a_plain_member_may_always_leave():
@@ -1239,7 +1294,7 @@ async def test_a_plain_member_may_always_leave():
         enterprise_id=ACME, team_id=team.team_id, user_id=BOB.user_id
     )
 
-    assert not await teams.is_team_member(team.team_id, BOB.user_id)
+    assert not teams.has_member(team.team_id, BOB.user_id)
     assert await teams.get_team(ACME, team.team_id) is not None
 
 
@@ -1259,13 +1314,13 @@ async def test_the_second_admin_frees_the_first_to_leave():
         user_id=BOB.user_id,
         email=BOB.email,
     )
-    await teams.add_member(team.team_id, BOB.user_id, TEAM_ROLE_ADMIN)
+    await teams.add_member(ACME, team.team_id, BOB.user_id, TEAM_ROLE_ADMIN)
 
     await service.leave_team(
         enterprise_id=ACME, team_id=team.team_id, user_id=ALICE.user_id
     )
 
-    assert not await teams.is_team_member(team.team_id, ALICE.user_id)
+    assert not teams.has_member(team.team_id, ALICE.user_id)
     assert await teams.get_team(ACME, team.team_id) is not None
 
 
@@ -1278,7 +1333,7 @@ async def test_the_sole_member_leaving_soft_deletes_the_team():
         enterprise_id=ACME, team_id=team.team_id, user_id=ALICE.user_id
     )
 
-    assert not await teams.is_team_member(team.team_id, ALICE.user_id)
+    assert not teams.has_member(team.team_id, ALICE.user_id)
     assert await teams.get_team(ACME, team.team_id) is None
     assert teams.teams[team.team_id].deleted_at is not None
 
