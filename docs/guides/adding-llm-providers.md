@@ -492,7 +492,6 @@ PROVIDER_SCHEMA = {
     "together": {
         "api_key_var": "TOGETHER_API_KEY",
         "model_var": "TOGETHER_MODEL",
-        "base_url_var": "TOGETHER_API_BASE",
         "default_base_url": "https://api.together.xyz/v1",
         "default_model": "meta-llama/Llama-2-70b-chat-hf",
         "provider_class": OpenAIProvider,  # Reuse existing OpenAI class
@@ -505,7 +504,6 @@ PROVIDER_SCHEMA = {
     "cohere": {
         "api_key_var": "COHERE_API_KEY",
         "model_var": "COHERE_MODEL",
-        "base_url_var": "COHERE_API_BASE",
         "default_base_url": "https://api.cohere.ai/v1",
         "default_model": "command-r-plus",
         "provider_class": CohereProvider,  # New custom class needed
@@ -718,7 +716,6 @@ PROVIDER_SCHEMA = {
     "cohere": {
         "api_key_var": "COHERE_API_KEY",
         "model_var": "COHERE_MODEL",
-        "base_url_var": "COHERE_API_BASE",
         "default_base_url": "https://api.cohere.ai/v1",
         "default_model": "command-r-plus",
         "provider_class": CohereProvider,  # Custom class implementing ILLMProvider
@@ -771,13 +768,22 @@ __all__ = [
 |-------|----------|-------------|---------|
 | `api_key_var` | No | Environment variable for API key | `"ANTHROPIC_API_KEY"` |
 | `model_var` | Yes | Environment variable for model name | `"ANTHROPIC_MODEL"` |
-| `base_url_var` | No | Environment variable for custom base URL | `"ANTHROPIC_API_BASE"` |
 | `default_base_url` | Yes | Default API base URL | `"https://api.anthropic.com/v1"` |
 | `default_model` | Yes | Default model if not specified | `"claude-3-opus"` |
 | `provider_class` | Yes | Python class to handle requests | `AnthropicProvider` |
 | `max_retries` | Yes | Number of retry attempts | `3` |
 | `timeout` | Yes | Request timeout in seconds | `30` |
 | `confidence_score` | Yes | Default confidence for responses | `0.85` |
+
+A `*_var` field NAMES THE ENVIRONMENT VARIABLE THE SETTINGS LAYER ACTUALLY
+CONSUMES, or it does not exist. Nothing resolves configuration *through* these
+fields — `_create_provider_config` reads each provider's own settings field
+directly — so a wrong value never surfaces as a bug, it just misinforms the
+next reader. `base_url_var` was removed in #1358 for exactly that: no reader
+anywhere, and for `local` it advertised `LOCAL_LLM_BASE_URL` while the code
+read `LOCAL_LLM_URL`. Configure a custom base URL through the provider's
+settings field (`OPENAI_API_BASE`, `LOCAL_LLM_URL`, …); `default_base_url`
+above is the schema key that IS read.
 
 **Timeout Configuration**: timeouts resolve in three layers, most-specific-wins:
 

@@ -277,7 +277,7 @@ Models below are each provider's default first; the full picker list lives in
 - **OpenAI**: `gpt-5.6-luna`, `gpt-5.4-mini`
 - **Anthropic**: `claude-sonnet-4-6`, `claude-opus-4-6`, `claude-haiku-4-5-20251001`
 - **Fireworks AI**: `deepseek-v4-flash`, `deepseek-v3`
-- **Groq**: `llama-3.3-70b-versatile`, `llama-3.1-8b-instant`
+- **Groq**: `llama-3.3-70b-versatile`, `llama-3.1-8b-instant`, `openai/gpt-oss-20b`, `openai/gpt-oss-120b` (the two `gpt-oss` models are Groq's only ones that enforce a schema natively — pick one of them if Groq is your `CHAT_PROVIDER`)
 - **Cohere**: `command-r-plus`, `command-r`
 - **HuggingFace**: open-source models (no tool calling — not recommended for the investigation role)
 - **OpenRouter**: multi-provider access

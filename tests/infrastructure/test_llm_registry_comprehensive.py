@@ -73,7 +73,6 @@ def clean_llm_environment(monkeypatch):
         "OPENROUTER_API_BASE",
         "LOCAL_LLM_URL",
         "LOCAL_LLM_MODEL",
-        "LOCAL_LLM_BASE_URL",
         "COHERE_API_KEY",
         "COHERE_MODEL",
         "COHERE_API_BASE",
@@ -255,10 +254,14 @@ class TestProviderConfiguration:
     def test_provider_schema_completeness(self):
         """Test that all providers in schema have required fields."""
         # Core required fields for all providers
+        # NOTE: "base_url_var" is deliberately absent (#1358). It had no reader
+        # anywhere in the repo — the construction path reads each provider's
+        # own settings field (llm_settings.openai_base_url, …) — and for
+        # "local" it named LOCAL_LLM_BASE_URL while the code reads
+        # LOCAL_LLM_URL. "default_base_url" below is the key that IS read.
         required_fields = [
             "api_key_var",
             "model_var",
-            "base_url_var",
             "default_base_url",
             "default_model",
             "provider_class",
@@ -1469,3 +1472,144 @@ class TestErrorHandlingAndEdgeCases:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.unit
+class TestSelectedModelPriced:
+    """`get_provider_status()['selected_model_priced']` — the #1359 observable.
+
+    The question the issue asks alongside the two table gaps is whether
+    anything should fail LOUDLY when a *configured* chat model is unpriced,
+    rather than only counting it. The answer implemented here is: loudly, but
+    not fatally, and at configuration time.
+
+    Not fatally, because pricing is a self-declared estimate (see the
+    pricing module docstring), remediable without a code change via
+    LLM_PRICING_OVERRIDES, and an unpriced model yields a correct
+    investigation with an under-reported dollar axis — not a wrong answer.
+    The repo's one boot-refusing gate (validate_investigation_tooling) exists
+    because a tool-incapable model produces WRONG investigations; that
+    severity does not transfer. Coupling availability to a rate row would take
+    a deployment down the day a provider ships a model.
+
+    But at configuration time, because the unpriced counter is per-CALL: it
+    cannot fire until traffic has already been billed, and an fm-sre-ab run is
+    only declared VOID after spending its budget. The resolved model is known
+    before a token is spent.
+
+    This covers the surface the picker invariants cannot reach: a model pinned
+    via {PROVIDER}_MODEL is in no available_models list and is no
+    default_model, which is exactly how claude-opus-5 went unpriced unnoticed.
+    """
+
+    @staticmethod
+    def _registry_with(model, provider_name="anthropic", task_models=()):
+        """A registry whose single provider has already resolved `model`.
+
+        ``task_models`` mirrors what ``_create_provider_config`` builds for a
+        deployment that sets {PROVIDER}_CLASSIFIER_MODEL / _SYNTHESIS_MODEL /
+        _DA_MODEL: ``models = [base] + task_models``.
+        """
+        models = ([model] if model else []) + list(task_models)
+        registry = ProviderRegistry(settings=MagicMock())
+        provider = Mock(spec=BaseLLMProvider)
+        provider.is_available.return_value = True
+        provider.get_supported_models.return_value = models
+        provider.config = ProviderConfig(
+            name=provider_name,
+            api_key="test-key",
+            base_url="https://example.invalid",
+            models=models,
+            default_model=model,
+            confidence_score=0.85,
+        )
+        registry._providers = {provider_name: provider}
+        registry._fallback_chain = [provider_name]
+        registry._initialized = True
+        return registry
+
+    def test_priced_model_reports_true(self):
+        status = self._registry_with("claude-opus-5").get_provider_status()
+        assert status["anthropic"]["selected_model_priced"] is True
+
+    def test_unpriced_pin_reports_false(self):
+        # A model an operator pinned by hand that no rate row matches. This is
+        # the case no picker invariant can see.
+        status = self._registry_with("claude-opus-99-unreleased").get_provider_status()
+        assert status["anthropic"]["selected_model_priced"] is False
+        # Loud, not fatal: the rest of the status is still reported.
+        assert status["anthropic"]["selected_model"] == "claude-opus-99-unreleased"
+        assert status["anthropic"]["available"] is True
+
+    def test_unresolved_model_reports_none_not_false(self):
+        """No model resolved is "nothing to say", not "unpriced".
+
+        Collapsing it to False would light the warning on every provider that
+        merely has no model yet, and an alarm that is always on is not read.
+        """
+        status = self._registry_with(None).get_provider_status()
+        assert status["anthropic"]["selected_model"] is None
+        assert status["anthropic"]["selected_model_priced"] is None
+
+    def test_groq_gpt_oss_pin_is_priced(self):
+        # The gpt-oss ids carry an "openai/" prefix, so this also exercises
+        # the substring match the pricing keys rely on.
+        status = self._registry_with(
+            "openai/gpt-oss-120b", provider_name="groq"
+        ).get_provider_status()
+        assert status["groq"]["selected_model_priced"] is True
+
+    def test_zero_cost_provider_is_priced_not_unpriced(self):
+        """Self-hosted is KNOWN-free, which is priced, not unknown.
+
+        lookup_rates short-circuits local/huggingface to a zero rate, so these
+        must not be reported as cost-blind — there is no under-reporting to
+        warn about.
+        """
+        status = self._registry_with(
+            "whatever-the-user-pulled", provider_name="local"
+        ).get_provider_status()
+        assert status["local"]["selected_model_priced"] is True
+
+    def test_unpriced_per_task_model_makes_the_flag_false(self):
+        """A per-task pin is exactly the case this flag exists for.
+
+        `_create_provider_config` folds {PROVIDER}_CLASSIFIER_MODEL /
+        _SYNTHESIS_MODEL / _DA_MODEL into config.models[1:] so
+        `get_effective_model` will accept them — the provider really does call
+        them. They are hand-pins in no `available_models` list, so no picker
+        invariant sees them. Keying the flag off models[0] alone reported True
+        while every classifier and synthesis call billed as $0.
+        """
+        registry = self._registry_with(
+            "claude-opus-5",
+            task_models=["claude-nonexistent-classifier"],
+        )
+        status = registry.get_provider_status()
+
+        assert status["anthropic"]["selected_model"] == "claude-opus-5"
+        assert status["anthropic"]["selected_model_priced"] is False
+
+    def test_flag_stays_true_when_every_task_model_is_priced(self):
+        """ "Any unpriced" must not degenerate into "always False".
+
+        A guard that fires on every provider carrying more than one model
+        would be as useless as one that never fires.
+        """
+        registry = self._registry_with(
+            "claude-opus-5",
+            task_models=["claude-haiku-4-5-20251001", "claude-sonnet-4-6"],
+        )
+        status = registry.get_provider_status()
+
+        assert status["anthropic"]["selected_model_priced"] is True
+
+    def test_unpriced_base_model_is_still_caught_with_task_models_present(self):
+        # The base model is models[0]; adding task models must not let it slip.
+        registry = self._registry_with(
+            "claude-opus-99-unreleased",
+            task_models=["claude-sonnet-4-6"],
+        )
+        status = registry.get_provider_status()
+
+        assert status["anthropic"]["selected_model_priced"] is False
