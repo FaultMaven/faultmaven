@@ -30,6 +30,40 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
+# 3.2.0 — MINOR. Two amendments to the team-consent surface 3.1.0 published,
+# found by review of #1365 after it merged.
+#
+#   * `InvitationResponse` gains `revoked_by` and `revoked_at`, both nullable.
+#     They are what makes 3.1.0's own design claim checkable from outside:
+#     `status` is `revoked` whether the team admin withdrew the offer or the
+#     invitee declined it, and comparing `revoked_by` against `invited_by` is
+#     the whole of the difference. A field the server writes and no client can
+#     read is a record nobody keeps. New nullable fields on a response-only
+#     schema: a client that ignores them renders exactly what it renders today.
+#
+#   * `TeamCreateRequest.name` narrows from `maxLength: 255` to `200`, which is
+#     `teams.name`'s width exactly.
+#
+# The narrowing is the half that needs the argument, because tightening a
+# request field is normally where a client breaks. It cannot break one here, on
+# the 2.2.0 precedent: **no name between 201 and 255 characters has ever been
+# accepted**. `teams.name` is `VARCHAR(200)`, so PostgreSQL refused every one of
+# them with `StringDataRightTruncation` — an unhandled 500. A caller that sent
+# one was already outside the supported contract and getting undefined
+# behaviour; what changes is that it now gets a 422 naming the field. Nothing
+# that worked stops working, and the surface the clients generate against gets
+# narrower rather than differently shaped.
+#
+# One behaviour change ships with them and is NOT a schema change, so it is
+# recorded here rather than shown by the diff: accepting, declining or revoking
+# an invitation that has passed `expires_at` now answers **410
+# `invitation_expired`** consistently. 3.1.0 answered 410 or 409
+# `invitation_not_pending` depending on whether anything had listed the row
+# first, and recorded an elapsed offer as `revoked` — a withdrawal nobody
+# performed. Both statuses were already published for these operations, so a
+# client's error handling is unchanged; what changes is that it is now
+# deterministic.
+#
 # 3.1.0 — MINOR. Teams form by consent (ADR-017 D4). Nine operations are added
 # and nothing existing is touched, so every current client survives the change
 # unchanged — which is what makes this the minor bump rather than the major one
@@ -54,17 +88,6 @@ asked to accept, and it belongs to a person.
 # `TeamMemberResponse`, plus the two request bodies `TeamCreateRequest` and
 # `InvitationCreateRequest`. `TeamResponse` is unchanged — it still carries
 # `enterprise_id` and no organization, exactly as 3.0.0 published it.
-#
-# `InvitationResponse` carries `revoked_by` and `revoked_at` (both nullable).
-# They are what makes the design claim checkable from outside: `status` is
-# `revoked` whether the team admin withdrew the offer or the invitee declined
-# it, and comparing `revoked_by` against `invited_by` is the whole of the
-# difference. A field the server writes and no client can read is a record
-# nobody keeps.
-#
-# `TeamCreateRequest.name` caps at 200, which is `teams.name`'s width exactly.
-# A wider request field would accept nothing more — it would only move the
-# refusal from a 422 naming the field to a 500 out of PostgreSQL.
 #
 # **A refusal on this surface carries a machine-readable reason.** A 403, 404,
 # 409 or 410 from these routes answers
@@ -306,4 +329,4 @@ asked to accept, and it belongs to a person.
 # cannot tell two contracts apart is not doing its job. The first act of the
 # version is therefore to give the contract on main an identity distinct from
 # the 1.0.0 the clients are written against.
-API_CONTRACT_VERSION = "3.1.0"
+API_CONTRACT_VERSION = "3.2.0"
