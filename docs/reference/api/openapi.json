@@ -5481,6 +5481,74 @@
         "title": "SolutionVerificationData",
         "type": "object"
       },
+      "Source": {
+        "description": "Represents a single piece of citable evidence to build user trust.",
+        "properties": {
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata"
+          },
+          "type": {
+            "$ref": "#/components/schemas/SourceType"
+          },
+          "verification_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verification Reason"
+          },
+          "verification_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "verified",
+                  "community",
+                  "experimental"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verification Status"
+          }
+        },
+        "required": [
+          "type",
+          "content"
+        ],
+        "title": "Source",
+        "type": "object"
+      },
       "SourceFileReference": {
         "description": "Reference to source file that evidence was derived from.",
         "properties": {
@@ -5504,6 +5572,19 @@
         ],
         "title": "SourceFileReference",
         "type": "object"
+      },
+      "SourceType": {
+        "description": "Defines the origin of a piece of evidence.",
+        "enum": [
+          "knowledge_base",
+          "log_file",
+          "web_search",
+          "documentation",
+          "previous_analysis",
+          "user_provided"
+        ],
+        "title": "SourceType",
+        "type": "string"
       },
       "SuggestedActionResponse": {
         "description": "A follow-up suggestion returned with agent responses.",
@@ -5920,6 +6001,14 @@
               }
             ],
             "description": "Progress transparency state. Present when investigation has stalled and agent is surfacing milestone dependencies."
+          },
+          "sources": {
+            "description": "Knowledge the engine put in front of the model for this turn: the runbooks the KB pre-fetch admitted (the PUSH channel, governed by KB_PREFETCH_ENABLED). Each entry carries the matched excerpt as `content`, the retrieval score as `confidence`, and the runbook's `document_id`/`title` under `metadata` so a client can link to it. Empty when nothing was pre-fetched \u2014 including when the push is disabled. Runbooks the model fetched itself via the kb_qa tool are NOT represented: that tool returns a formatted answer string, so per-turn identity is not available at the tool boundary.",
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Sources",
+            "type": "array"
           },
           "suggested_actions": {
             "items": {
@@ -6516,7 +6605,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "3.2.0"
+    "version": "3.3.0"
   },
   "openapi": "3.1.0",
   "paths": {

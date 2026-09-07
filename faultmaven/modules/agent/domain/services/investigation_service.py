@@ -24,6 +24,7 @@ from faultmaven.core.investigation.case_telemetry import (
     emit_case_turn,
 )
 from faultmaven.core.investigation.intent_resolver import IntentResolver
+from faultmaven.core.investigation.kb_push import visible_kb_context
 from faultmaven.core.investigation.milestone_engine import (
     MilestoneEngine,
     score_progress,
@@ -65,7 +66,7 @@ from faultmaven.infrastructure.protection.tenant_turn_cap import (
     TenantTurnCapError,
     billing_subject_for,
 )
-from faultmaven.models.api import DataType
+from faultmaven.models.api import DataType, Source, SourceType
 from faultmaven.models.api_models import (
     AttachmentResult,
     IntentType,
@@ -234,6 +235,59 @@ _DATA_TYPE_TO_SOURCE_TYPE: dict[DataType, EvidenceSourceType] = {
     DataType.VISUAL_EVIDENCE: EvidenceSourceType.IMAGE,
     DataType.UNANALYZABLE: EvidenceSourceType.TEXT,
 }
+
+
+def _kb_context_sources(case: Any) -> list[Source]:
+    """Render the case's pre-fetched runbooks as citable ``Source`` entries.
+
+    ``Source`` already existed and was simply never constructed anywhere, which
+    is why the Copilot's citation components were unreachable code (fm#1361).
+    Its four FIELD NAMES match that client's ``Source`` interface — ``type``,
+    ``content``, ``confidence``, ``metadata`` — but the ``type`` VALUE domains
+    only overlap on ``knowledge_base``: the backend enum also admits
+    ``log_file``, ``web_search``, ``documentation``, ``previous_analysis`` and
+    ``user_provided``, none of which are members of the client's union. Only
+    ``knowledge_base`` is emitted here, so nothing is broken today, but the
+    published contract now licenses five values the one known client would
+    reject — see the 3.3.0 entry in ``api/contract_version.py``.
+
+    Gated on the push (fm#1360): with ``KB_PREFETCH_ENABLED=false`` this
+    returns ``[]`` even for a case still carrying context persisted while the
+    push was on. Citing a runbook the model was never shown is a worse failure
+    than showing none — it tells the user, and anyone measuring retrieval, that
+    knowledge informed an answer it could not have informed.
+
+    ``content`` carries the matched EXCERPT rather than the title: the card
+    shows a content preview and reads the title from ``metadata``, and a title
+    repeated in both places tells the reader nothing about why the runbook
+    matched. ``confidence`` is the retrieval score, on the same cosine scale
+    the pre-fetch floors with.
+
+    Defensive about entry shape because ``kb_context`` round-trips through a
+    JSON blob: a row written by an older build is a plain dict of whatever it
+    happened to hold, and a citation list must never be the thing that fails a
+    turn that otherwise succeeded.
+    """
+    sources: list[Source] = []
+    for entry in visible_kb_context(case):
+        metadata = {
+            "document_id": entry.get("parent_document_id"),
+            "title": entry.get("title"),
+            # Which pre-fetch fired — "symptom" (the problem statement) or
+            # "root_cause" (remediation). A reader measuring retrieval quality
+            # needs to know which query produced the hit.
+            "trigger": entry.get("trigger"),
+        }
+        score = entry.get("score")
+        sources.append(
+            Source(
+                type=SourceType.KNOWLEDGE_BASE,
+                content=str(entry.get("summary") or entry.get("title") or ""),
+                confidence=float(score) if isinstance(score, (int, float)) else None,
+                metadata=metadata,
+            )
+        )
+    return sources
 
 
 def _infer_source_type(data_type: DataType) -> EvidenceSourceType:
@@ -2093,6 +2147,17 @@ class InvestigationService:
                     updated_case.root_cause_conclusion, _grade
                 )
 
+            # Which runbooks informed this turn (fm#1361). The citation
+            # components in the Copilot read ``item.sources`` and have been
+            # unreachable code because nothing ever assigned it: the backend
+            # held the identity on ``case.kb_context`` and dropped it on the
+            # way out.
+            #
+            # Read from ``updated_case``, not the pre-turn case: both pre-fetch
+            # triggers fire during response application, so this turn's hits
+            # exist only on the post-turn object.
+            turn_sources = _kb_context_sources(updated_case)
+
             response = TurnResponse(
                 agent_response=agent_response_text,
                 turn_number=updated_case.current_turn,
@@ -2131,6 +2196,7 @@ class InvestigationService:
                 progress_transparency=self._build_progress_transparency(
                     turn_meta, updated_case
                 ),
+                sources=turn_sources,
                 cause_assurance=turn_cause_assurance,
                 cause_overclaim=turn_cause_overclaim,
             )

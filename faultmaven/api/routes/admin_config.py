@@ -458,6 +458,27 @@ def _rate_limiting_installed(app) -> bool:
     )
 
 
+def _kb_prefetch_is_effective(app, settings) -> bool:
+    """Does the KB PUSH actually happen on this process? (fm#1360)
+
+    Two conditions, and the second is the one a settings read cannot see.
+    ``KB_PREFETCH_ENABLED`` is the policy; a composed knowledge service is the
+    capability. ``MilestoneEngine._prefetch_kb_context`` returns immediately on
+    ``not self.knowledge_service``, and since #899 the container returns
+    ``None`` rather than a fabricating stub — so a self-hosted process with no
+    knowledge base pushes nothing however the flag is set, and reporting the
+    flag alone would tell that operator the opposite of what is happening.
+
+    The engine's collaborator and ``app.state.knowledge_service`` are the same
+    object from the same container call (``container.get_knowledge_service()``
+    is assigned to both in the composition root), so this reads the running
+    process rather than a proxy for it.
+    """
+    if not getattr(settings.knowledge, "kb_prefetch_enabled", False):
+        return False
+    return getattr(getattr(app, "state", None), "knowledge_service", None) is not None
+
+
 def _suggestion_store_is_durable(app) -> bool:
     """Is the composed knowledge-suggestion store durable and worker-shared?
 
@@ -703,6 +724,33 @@ async def get_env_config_status(
                     "Set ENABLE_WEB_SEARCH=true with either TAVILY_API_KEY, or "
                     "WEB_SEARCH_API_KEY together with WEB_SEARCH_ENGINE_ID for "
                     "Google CSE"
+                ),
+            ),
+            # The KB PUSH channel (fm#1360). Reported for the same reason the
+            # consent skip below is: what an operator sees when it is off is
+            # nothing — the model still answers, still cites runbooks it
+            # fetched with kb_qa, and the only difference is a block missing
+            # from a prompt nobody reads. "Off" and "on but retrieval matched
+            # nothing" are indistinguishable from the outside, and the
+            # per-turn telemetry cannot separate them either (both report
+            # kb_prefetch_hits=0) — which is exactly why the deployment-level
+            # fact belongs here.
+            #
+            # ``enabled`` is the runtime effect, not the knob (#1234): it
+            # reports False on a process that has the flag set but no composed
+            # knowledge service, which is a state the operator cannot read off
+            # their own configuration.
+            "kb_prefetch": FeatureStatus(
+                enabled=_kb_prefetch_is_effective(request.app, settings),
+                description=(
+                    "Matched runbooks are pushed into the investigation prompt "
+                    "at case transitions (the kb_qa tool is unaffected and "
+                    "stays available to the model either way)"
+                ),
+                config_hint=(
+                    "Set KB_PREFETCH_ENABLED=true|false. False with the "
+                    "flag set means no knowledge service was composed for "
+                    "this process — the KB is unavailable on both channels"
                 ),
             ),
             "llm_tracing": FeatureStatus(

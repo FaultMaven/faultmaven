@@ -1100,7 +1100,21 @@ transition itself.
 # =============================================================================
 # INVESTIGATING TEMPLATE (Adaptive)
 # =============================================================================
-
+#
+# ``{kb_results}`` — the KB PUSH channel's slot (fm#1360). It renders
+# ``<knowledge_context>``: the runbooks ``_prefetch_kb_context`` matched at a
+# case transition. Until this slot existed the block was assembled by
+# ``context_builder``, charged against the section budget, and then dropped on
+# the floor, because no template referenced the key — so the push had never
+# reached an investigation prompt.
+#
+# It sits HERE, not in ``INQUIRY_TEMPLATE``. It used to be there and was
+# removed in April 2026 as "always empty", which was a correct observation
+# about a real defect elsewhere: both pre-fetch triggers fire during response
+# application, and the symptom trigger fires on the very turn the case LEAVES
+# inquiry. An INQUIRY prompt is therefore built before any pre-fetch has ever
+# run for that case, and putting the slot back there would restore an
+# always-empty block rather than fix anything.
 INVESTIGATION_BASE = (
     """You are FaultMaven, the Lead Investigator for this case.
 
@@ -1129,6 +1143,8 @@ STATE: INVESTIGATING
 {investigation_journal}
 
 {working_conclusion}
+
+{kb_results}
 
 {pending_action}
 
