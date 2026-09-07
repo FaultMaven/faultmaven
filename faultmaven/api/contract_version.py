@@ -47,6 +47,22 @@ asked to accept, and it belongs to a person.
 # `SourceType`'s other members are published because the enum is, not because
 # a turn can currently return them.
 #
+# ⚠ **`SourceType`'s value domain does not match the Copilot's `Source.type`
+# union**, and publishing the enum is what makes that a contract question
+# rather than an internal detail. The FIELD NAMES agree; the values overlap on
+# exactly one member of six:
+#
+#     published here : documentation, knowledge_base, log_file,
+#                      previous_analysis, user_provided, web_search
+#     copilot union  : external_api, knowledge_base, log_analysis,
+#                      previous_case, system_metrics, user_input
+#
+# Only `knowledge_base` is emitted, so no client breaks today — but this
+# document now licenses five values that client's union rejects, and a future
+# emitter choosing one would break it without changing this contract again.
+# The reconciliation is a two-repo decision and is deliberately NOT made here;
+# until it is, a producer on this surface may emit `knowledge_base` only.
+#
 # The list is empty whenever the KB pre-fetch admitted nothing, which includes
 # every deployment that sets `KB_PREFETCH_ENABLED=false` (fm#1360). A client
 # must therefore treat absence as "no citation to show", never as an error or

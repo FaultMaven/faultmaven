@@ -43,6 +43,7 @@ from faultmaven.core.investigation.evidence_need_surfacing import (
     is_ask_exhausted,
     select_surfaced_causal_needs,
 )
+from faultmaven.core.investigation.kb_push import visible_kb_context
 from faultmaven.core.investigation.prompts.fence import (
     PromptFence,
     delimiter_overhead_chars,
@@ -129,25 +130,6 @@ STATE_SUMMARY_MAX_HYPOTHESES = 10
 STATE_SUMMARY_DIGEST_CHARS = 180
 # Max chars per KB solution in context (prevents verbose runbooks from consuming budget)
 KB_MAX_SOLUTION_CHARS = 800
-
-
-def _kb_prefetch_enabled() -> bool:
-    """Is the KB PUSH channel enabled for this deployment? (``KB_PREFETCH_ENABLED``)
-
-    Imported locally and guarded like every other settings read in this module:
-    helpers here are imported by tests that never build a settings object.
-
-    Falls back to ``True`` — the shipped default — when settings cannot be read.
-    The fallback direction matters: this gate decides whether a block is
-    REMOVED from the prompt, so an unreadable configuration must leave the
-    prompt as it was rather than silently strip retrieved knowledge out of it.
-    """
-    try:
-        from faultmaven.config.settings import get_settings
-
-        return bool(get_settings().knowledge.kb_prefetch_enabled)
-    except Exception:  # noqa: BLE001 - settings absent in some test contexts
-        return True
 
 
 # Min structural-index length for an uploaded file to count as a searchable
@@ -3854,9 +3836,13 @@ def build_investigation_context(
     # push. It is ``None`` at the only production call site today, so the block
     # below is the pre-fetch and nothing else — but scoping the gate to the
     # field it names keeps that true if a caller ever starts passing results.
+    #
+    # Read through ``visible_kb_context`` rather than off the case: the same
+    # gate has to hold for the turn response's ``sources`` and the ``case_turn``
+    # telemetry, and three copies of one predicate is how two of them ended up
+    # without it.
     all_kb_results = list(kb_results or [])
-    if case.kb_context and _kb_prefetch_enabled():
-        all_kb_results.extend(case.kb_context)
+    all_kb_results.extend(visible_kb_context(case))
 
     kb_str = ""
     if all_kb_results:

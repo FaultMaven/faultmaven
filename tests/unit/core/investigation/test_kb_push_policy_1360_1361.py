@@ -386,6 +386,57 @@ class TestCaseTurnTelemetryCarriesRetrieval:
         clean = _sanitize({"kb_runbook_ids": [f"rb_{i}" for i in range(100)]})
         assert len(clean["kb_runbook_ids"]) == _MAX_SEQUENCE_LEN
 
+    def test_the_push_being_off_reports_zero_even_on_a_case_carrying_context(
+        self, push
+    ):
+        """The hole the first version of this PR shipped.
+
+        Only the prompt was gated. This reader took ``case.kb_context``
+        straight off the case, so a deployment with the push disabled rendered
+        no ``<knowledge_context>`` block and then reported
+        ``kb_prefetch_hits=2`` — the telemetry that exists to make the push's
+        cost/benefit measurable said it was active while it was off.
+
+        The case here is the one that actually occurs: context persisted while
+        the push was ON, still on the row after it was turned off. The
+        pre-fetch's own clearing branch never runs for it — that function is
+        edge-triggered at two case transitions, and this case is past both.
+        """
+        push(False)
+        event = build_case_turn_event(_case(TWO_HITS), path=TurnPath.LLM)
+        assert event["kb_prefetch_hits"] == 0
+        assert event["kb_runbook_ids"] == []
+        assert event["kb_prefetch_top_score"] == 0.0
+
+    def test_the_push_being_on_still_reports_the_hits(self, push):
+        """Positive control for the test above: the gate must not be a
+        permanent zero."""
+        push(True)
+        event = build_case_turn_event(_case(TWO_HITS), path=TurnPath.LLM)
+        assert event["kb_prefetch_hits"] == 2
+        assert event["kb_runbook_ids"] == [RUNBOOK_ID, "rb_kafka_lag"]
+
+    def test_hits_may_exceed_ids_and_the_inequality_is_the_contract(self, push):
+        """An entry retrieval could not attribute to a parent document.
+
+        The producer writes ``parent_document_id: None`` whenever the search
+        result carried none, so this shape is reachable. ``hits`` counts what
+        the model was shown; the id list counts what can be cited. Collapsing
+        them would either understate the prompt surface or hide that retrieval
+        is returning unattributable chunks. The invariant a consumer may rely
+        on is the inequality, and it is pinned here so a later "cleanup" that
+        equalises them has to argue with this test.
+        """
+        push(True)
+        unattributable = [
+            dict(TWO_HITS[0], parent_document_id=None),
+            dict(TWO_HITS[1]),
+        ]
+        event = build_case_turn_event(_case(unattributable), path=TurnPath.LLM)
+        assert event["kb_prefetch_hits"] == 2
+        assert event["kb_runbook_ids"] == ["rb_kafka_lag"]
+        assert len(event["kb_runbook_ids"]) <= event["kb_prefetch_hits"]
+
     def test_a_string_is_not_treated_as_a_sequence(self):
         """``str`` is a Sequence. If the branch tested for Sequence rather than
         list/tuple, every token-shaped string field in the event would come out
@@ -394,6 +445,78 @@ class TestCaseTurnTelemetryCarriesRetrieval:
 
         clean = _sanitize({"case_state": "investigating"})
         assert clean["case_state"] == "investigating"
+
+
+class TestTheOffStateIsCoherentAcrossEveryConsumer:
+    """``KB_PREFETCH_ENABLED=false`` must mean the same thing everywhere.
+
+    ``case.kb_context`` has three readers — the prompt, the turn response's
+    ``sources`` and the ``case_turn`` telemetry — and the first version of
+    fm#1360 gated one of them. This is the whole-turn assertion, so a fourth
+    reader added later without the gate fails HERE rather than in production.
+    """
+
+    def test_no_consumer_sees_a_runbook_when_the_push_is_off(self, push):
+        from faultmaven.modules.agent.domain.services.investigation_service import (
+            _kb_context_sources,
+        )
+
+        push(False)
+        case = _case(TWO_HITS)  # exactly what repository.get() returns
+        prompt = get_prompt_for_case(
+            case, "the volume filled again", provider_name="openai", model_name="gpt-4o"
+        )
+        event = build_case_turn_event(case, path=TurnPath.LLM)
+
+        assert "the volume filled again" in prompt, "positive control"
+        assert "<knowledge_context>" not in prompt
+        assert RUNBOOK_ID not in prompt
+        assert _kb_context_sources(case) == []
+        assert event["kb_prefetch_hits"] == 0
+        assert event["kb_runbook_ids"] == []
+
+    def test_every_consumer_sees_the_runbooks_when_the_push_is_on(self, push):
+        """The converse, so the test above cannot pass by everything being
+        permanently empty."""
+        from faultmaven.modules.agent.domain.services.investigation_service import (
+            _kb_context_sources,
+        )
+
+        push(True)
+        case = _case(TWO_HITS)
+        prompt = get_prompt_for_case(
+            case, "the volume filled again", provider_name="openai", model_name="gpt-4o"
+        )
+        event = build_case_turn_event(case, path=TurnPath.LLM)
+
+        assert "<knowledge_context>" in prompt
+        assert RUNBOOK_TITLE in prompt
+        assert len(_kb_context_sources(case)) == 2
+        assert event["kb_prefetch_hits"] == 2
+
+    def test_the_shared_helper_is_what_every_consumer_reads(self, push):
+        """Pins the mechanism, not just the outcome.
+
+        The three readers agree because they call one function. A reader that
+        reimplemented the predicate would pass the outcome tests above today
+        and drift the first time the predicate changes.
+        """
+        import inspect
+
+        from faultmaven.core.investigation import case_telemetry
+        from faultmaven.core.investigation.prompts import context_builder
+        from faultmaven.modules.agent.domain.services import investigation_service
+
+        for module, func in (
+            (context_builder, "build_investigation_context"),
+            (case_telemetry, "_kb_retrieval"),
+            (investigation_service, "_kb_context_sources"),
+        ):
+            src = inspect.getsource(getattr(module, func))
+            assert "visible_kb_context(" in src, (
+                f"{module.__name__}.{func} does not read the push through the "
+                "shared gate"
+            )
 
 
 class TestTheTurnResponseCitesItsSources:
@@ -450,6 +573,30 @@ class TestTheTurnResponseCitesItsSources:
         assert wire["sources"][0]["metadata"]["document_id"] == RUNBOOK_ID
         assert wire["sources"][0]["metadata"]["title"] == RUNBOOK_TITLE
         assert wire["sources"][0]["content"] == RUNBOOK_EXCERPT
+
+    def test_no_sources_are_cited_when_the_push_is_off(self, push):
+        """A citation for a runbook the model was never shown is worse than no
+        citation: it tells the user, and anyone measuring retrieval quality,
+        that knowledge informed an answer it could not have informed.
+
+        The case carries context persisted while the push was ON — the state
+        the pre-fetch's edge-triggered clearing branch never reaches.
+        """
+        from faultmaven.modules.agent.domain.services.investigation_service import (
+            _kb_context_sources,
+        )
+
+        push(False)
+        assert _kb_context_sources(_case(TWO_HITS)) == []
+
+    def test_sources_are_cited_when_the_push_is_on(self, push):
+        """Positive control: the gate is not a permanent empty list."""
+        from faultmaven.modules.agent.domain.services.investigation_service import (
+            _kb_context_sources,
+        )
+
+        push(True)
+        assert len(_kb_context_sources(_case(TWO_HITS))) == 2
 
     def test_the_field_defaults_to_empty_rather_than_missing(self):
         """Every existing caller builds a ``TurnResponse`` without it."""

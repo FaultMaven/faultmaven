@@ -93,6 +93,8 @@ import re
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Mapping
 
+from faultmaven.core.investigation.kb_push import visible_kb_context
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from faultmaven.modules.case.domain.models import Case
 
@@ -564,20 +566,36 @@ def _kb_retrieval(case: "Case") -> dict[str, Any]:
     knowledge?" was not answerable from stored data — it could only be
     reconstructed by re-running the case.
 
-    Reads ``case.kb_context``, which is the pre-fetch's own output: the
-    admitted hits, already floored and already sliced to
-    ``KB_CONTEXT_MAX_ENTRIES``. When the push is disabled
-    (``KB_PREFETCH_ENABLED=false``) the pre-fetch clears the field, so this
-    reports zero hits — the same reading a case that searched and matched
-    nothing produces. Whether the push is enabled at all is deployment
-    configuration, reported by ``GET /admin/config/status``, not per turn.
+    Reads the pre-fetch's own output: the admitted hits, already floored and
+    already sliced to ``KB_CONTEXT_MAX_ENTRIES``.
+
+    Read through ``visible_kb_context``, so a deployment with
+    ``KB_PREFETCH_ENABLED=false`` reports zero hits even on a case still
+    carrying context persisted while the push was on. Gating at the reader
+    rather than trusting the pre-fetch to have cleared the field is load
+    bearing: the pre-fetch is edge-triggered (two call sites, both at case
+    transitions), so a case past both edges never re-enters it. A stream that
+    reported the push active while it was off would be worse than no stream —
+    it is the measurement the push's cost/benefit decision rests on. Whether
+    the push is enabled at all is deployment configuration, reported by
+    ``GET /admin/config/status``, not per turn.
 
     ``kb_prefetch_top_score`` is the max rather than the mean because the
     question it answers is "did retrieval find anything genuinely close?", and
     a mean over a fixed-size slice answers a different one — three mediocre
     hits and one excellent hit beside two poor ones average alike.
+
+    **``kb_prefetch_hits`` and ``len(kb_runbook_ids)`` can differ, on purpose.**
+    ``hits`` counts what was PUT IN FRONT OF THE MODEL; the id list carries only
+    entries retrieval could attribute to a parent document, and the producer
+    writes ``parent_document_id: None`` whenever the search result had none
+    (``milestone_engine``). Collapsing them would either understate the prompt
+    surface or hide that retrieval is returning unattributable chunks — which is
+    itself a defect worth seeing. The invariant a consumer may rely on is
+    ``len(kb_runbook_ids) <= kb_prefetch_hits``, and the difference is the count
+    of pushed runbooks that cannot be cited.
     """
-    entries = getattr(case, "kb_context", None) or []
+    entries = visible_kb_context(case)
     scores = []
     for entry in entries:
         try:
