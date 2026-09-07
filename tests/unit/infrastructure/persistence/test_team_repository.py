@@ -129,7 +129,7 @@ async def test_list_all_user_team_ids_excludes_soft_deleted_teams(repo):
 
     assert await repo.list_all_user_team_ids("user-1") == ["t1"]
 
-    await repo.delete_team("t1")
+    await repo.delete_team(ENT_A, "t1")
 
     assert await repo.list_all_user_team_ids("user-1") == []
 
@@ -186,7 +186,7 @@ async def test_list_user_teams_excludes_non_member_and_soft_deleted(repo):
 
     assert [t.team_id for t in await repo.list_user_teams("user-1")] == ["t1"]
 
-    await repo.delete_team("t1")
+    await repo.delete_team(ENT_A, "t1")
 
     assert await repo.list_user_teams("user-1") == []
 
@@ -209,7 +209,7 @@ async def test_list_user_teams_empty_when_no_memberships(repo):
 async def test_create_and_get_team_roundtrip(repo):
     await repo.create_team(make_team("t1", enterprise_id=ENT_A, name="Team One"))
 
-    got = await repo.get_team("t1")
+    got = await repo.get_team(ENT_A, "t1")
 
     assert got is not None
     assert got.team_id == "t1"
@@ -219,13 +219,48 @@ async def test_create_and_get_team_roundtrip(repo):
 
 @pytest.mark.asyncio
 @pytest.mark.unit
+async def test_the_team_reads_are_scoped_by_the_enterprise_they_are_given(repo):
+    """A10: the tenant predicate is a parameter, and it is actually applied.
+
+    The signature change alone proves only that a caller cannot *forget* the
+    enterprise — it does not prove the value is used. SQLite has no RLS, so if
+    the predicate were dropped from the WHERE clause every one of these would
+    answer with ENT_A's rows and nothing on this dialect would notice. That is
+    exactly the gap the parameter exists to close: RLS covers the deployed path,
+    and this covers the two that RLS does not (SQLite, and any owner-role
+    connection).
+
+    Every team-addressed read is checked, not a representative one: they are
+    five separate WHERE clauses, and a predicate can go missing from any of
+    them independently.
+    """
+    await repo.create_team(make_team("t1", enterprise_id=ENT_A, name="Alpha"))
+    await repo.add_member("t1", "user-1")
+
+    assert await repo.get_team(ENT_B, "t1") is None
+    assert await repo.get_team_with_members(ENT_B, "t1") == (None, [])
+    assert await repo.get_team_names(ENT_B, ["t1"]) == {}
+    assert await repo.list_team_members(ENT_B, "t1") == []
+    assert await repo.delete_team(ENT_B, "t1") is False
+
+    # The control, on the same rows: every one of those answers for ENT_A, so
+    # the Nones above are the predicate and not a broken fixture.
+    assert await repo.get_team(ENT_A, "t1") is not None
+    assert (await repo.get_team_with_members(ENT_A, "t1"))[0] is not None
+    assert await repo.get_team_names(ENT_A, ["t1"]) == {"t1": "Alpha"}
+    assert len(await repo.list_team_members(ENT_A, "t1")) == 1
+    assert await repo.delete_team(ENT_A, "t1") is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
 async def test_get_team_returns_none_for_missing_or_deleted(repo):
-    assert await repo.get_team("nope") is None
+    assert await repo.get_team(ENT_A, "nope") is None
 
     await repo.create_team(make_team("t1"))
-    await repo.delete_team("t1")
+    await repo.delete_team(ENT_A, "t1")
 
-    assert await repo.get_team("t1") is None
+    assert await repo.get_team(ENT_A, "t1") is None
 
 
 @pytest.mark.asyncio
@@ -236,7 +271,7 @@ async def test_add_member_is_idempotent_upsert(repo):
     await repo.add_member("t1", "user-1", team_role="member")
     await repo.add_member("t1", "user-1", team_role="lead")
 
-    members = await repo.list_team_members("t1")
+    members = await repo.list_team_members(ENT_A, "t1")
 
     assert len(members) == 1
     assert members[0].user_id == "user-1"

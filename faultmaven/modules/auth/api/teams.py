@@ -237,7 +237,7 @@ def team_context_dependency(reason: str):
     ``/teams``, ``single_tenant_has_no_invitations`` on ``/invitations``.
     """
 
-    async def resolve(
+    async def resolve_team_context(
         request: Request,
         current_user: UserDTO = Depends(require_authentication),
     ) -> TeamContext:
@@ -248,7 +248,7 @@ def team_context_dependency(reason: str):
             user=current_user,
         )
 
-    return resolve
+    return resolve_team_context
 
 
 #: The dependency every route under ``/teams`` except ``GET /teams`` declares.
