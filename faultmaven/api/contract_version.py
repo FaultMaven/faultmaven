@@ -30,6 +30,65 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
+# 3.1.0 — MINOR. Teams form by consent (ADR-017 D4). Nine operations are added
+# and nothing existing is touched, so every current client survives the change
+# unchanged — which is what makes this the minor bump rather than the major one
+# 3.0.0 was:
+#
+#   * `POST /teams` — any authenticated account creates a team in its own
+#     enterprise and is that team's admin;
+#   * `GET /teams/{team_id}/members` — the roster, readable by its members;
+#   * `DELETE /teams/{team_id}/members/me` — leave; 409 when the leaver is the
+#     only admin and other members remain, and the sole member leaving
+#     soft-deletes the team;
+#   * `POST /teams/{team_id}/invitations`, `GET /teams/{team_id}/invitations`,
+#     `DELETE /teams/{team_id}/invitations/{invitation_id}` — the team admin's
+#     half: offer an address a place, see what became of every offer, withdraw
+#     one;
+#   * `GET /invitations`, `POST /invitations/{invitation_id}/accept`,
+#     `DELETE /invitations/{invitation_id}` — the invitee's half: the offers
+#     addressed to me, accept (which is the only thing on this API that creates
+#     a team membership), decline.
+#
+# Two response schemas join `components`, `InvitationResponse` and
+# `TeamMemberResponse`, plus the two request bodies `TeamCreateRequest` and
+# `InvitationCreateRequest`. `TeamResponse` is unchanged — it still carries
+# `enterprise_id` and no organization, exactly as 3.0.0 published it.
+#
+# **A refusal on this surface carries a machine-readable reason.** A 403, 404,
+# 409 or 410 from these routes answers
+# `{"error", "detail", "status_code", "reason"}` — the same envelope
+# `ConflictError` already emits with `conflict_reason`, with the slug in
+# `reason`. `detail` stays the human sentence a client renders. A client has to
+# distinguish "you are already a member" from "that address cannot join a team
+# in this enterprise" to say anything useful, and parsing prose for that is how
+# a UI ends up wrong in a language it was not written in. The slugs are
+# `enterprise_is_personal`,
+# `address_outside_enterprise_domain`, `already_a_member`, `not_a_team_admin`,
+# `not_found`, `invitation_expired`, `invitation_not_pending`,
+# `last_admin_cannot_leave`, `single_tenant_has_no_teams` and
+# `single_tenant_has_no_invitations`.
+#
+# Two of those slugs are deliberately ONE answer to two questions.
+# `address_outside_enterprise_domain` is returned both for an address on
+# another domain and for an address whose account is anchored to another
+# enterprise, at the same status and with the same message, because telling
+# them apart would answer "does an account exist at this address?" to anybody
+# who can create a team — which is everybody. A client must not try to infer
+# the difference; there is none to infer.
+#
+# The routes are published in every deployment and are the same shape in all of
+# them, but a single-tenant deployment answers 403 with
+# `single_tenant_has_no_teams` / `single_tenant_has_no_invitations`: it has one
+# enterprise, one default team and one account (ADR-017 D8), so there is nobody
+# to invite. Publishing them unconditionally is what keeps this document one
+# contract rather than a function of a deployment's `TENANT_PROVIDER`;
+# `GET /api/v1/meta/capabilities` already reports `teamSharing` so a client can
+# hide the UI rather than discover the 403.
+#
+# `GET /teams` is unchanged in shape and in behaviour, including its empty list
+# in standalone.
+#
 # 3.0.0 — MAJOR. The tenant a client reads off a row is the **enterprise**, not
 # the organization (ADR-017). Ten schemas move, and SIX of them REMOVE a
 # required field, which is why this is a major bump rather than the minor one a
@@ -229,4 +288,4 @@ asked to accept, and it belongs to a person.
 # cannot tell two contracts apart is not doing its job. The first act of the
 # version is therefore to give the contract on main an identity distinct from
 # the 1.0.0 the clients are written against.
-API_CONTRACT_VERSION = "3.0.0"
+API_CONTRACT_VERSION = "3.1.0"

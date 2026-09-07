@@ -434,15 +434,63 @@ CREATE TABLE team_invitations (
     invited_user_id VARCHAR(36) REFERENCES users(user_id) ON DELETE SET NULL,  -- the account the address resolved to, once it has one
     invited_by VARCHAR(36) REFERENCES users(user_id) ON DELETE SET NULL,
     status VARCHAR(20) NOT NULL DEFAULT 'pending',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ,   -- created_at + TEAM_INVITATION_TTL_DAYS (default 14)
+    accepted_at TIMESTAMPTZ,
+    revoked_by VARCHAR(36) REFERENCES users(user_id) ON DELETE SET NULL,  -- who ended it: the inviter withdrew, or the invitee declined
+    revoked_at TIMESTAMPTZ,
+
+    CONSTRAINT team_invitations_status_check
+        CHECK (status IN ('pending', 'accepted', 'revoked', 'expired')),
+    CONSTRAINT team_invitations_email_not_empty CHECK (LENGTH(TRIM(email)) > 0)
 );
 
 CREATE INDEX ix_team_invitations_enterprise_id ON team_invitations(enterprise_id);
 CREATE INDEX ix_team_invitations_team_id ON team_invitations(team_id);
 CREATE INDEX ix_team_invitations_status ON team_invitations(status);
+CREATE INDEX ix_team_invitations_email ON team_invitations(email);
+
+-- Tier 2 (partial index; SQLite gets the same shape via sqlite_where).
+-- One LIVE offer per address per team, so re-inviting is idempotent and two
+-- concurrent invites cannot leave two offers of which accepting one strands
+-- the other. Partial, so the accepted/revoked/expired history is kept in full.
+CREATE UNIQUE INDEX ix_team_invitations_pending_unique
+    ON team_invitations(team_id, email) WHERE status = 'pending';
 
 COMMENT ON TABLE team_invitations IS 'RLS-tenanted: an invitation is exactly the sort of row the isolation wall exists to keep on one side of';
 ```
+
+**Status is a lifecycle, and `revoked` has two doors.** `pending → accepted`
+(the invitee consented; `accepted_at` is stamped and a `team_members` row is
+written in the same operation), `pending → revoked` (the offer is off the table
+— `revoked_by` says whether the *inviter* withdrew it or the *invitee* declined
+it, which is the only place that difference survives), `pending → expired`. A
+fifth status value for "declined" would have said what `revoked_by` already
+says while widening the CHECK every reader parses.
+
+**Expiry is lazy.** Nothing sweeps this table. A row keeps `status = 'pending'`
+past its `expires_at`, and the read or the accept that first notices is the one
+that stamps it `expired` — so the stored status and what a caller is told never
+disagree, without a job in between. `expires_at` is stamped from
+`TEAM_INVITATION_TTL_DAYS` at creation and read off the row afterwards, so
+lowering the setting affects only invitations issued after the change.
+
+**`invited_user_id` is nullable because an address may precede its account.**
+An offer to an address with no account is created unresolved; the SSO sign-up
+path stamps the account id on every unresolved pending offer for that address
+**in the enterprise the account just anchored to**
+(`SSOLoginService._resolve_pending_invitations` → `ITeamRepository.resolve_invitations_for_account`,
+one idempotent UPDATE keyed on `invited_user_id IS NULL`). An address that signs
+up into a *different* enterprise matches nothing and leaves the offer pending
+until it expires — nothing crosses an enterprise line (ADR-017 D2).
+
+**Who may be invited is decided by DOMAIN, not by lookup** (ADR-017 D3 + D4), so
+the write path never enumerates accounts. An enterprise whose `domain` is NULL
+(a personal enterprise) can invite nobody; an address whose domain is not the
+enterprise's is refused; an address on the enterprise's own domain whose account
+is anchored *elsewhere* is refused with the same status and the same body as one
+that could never join. The rule and its refusals live in
+`modules/auth/domain/services/team_service.py`.
 
 #### Table: team_members
 

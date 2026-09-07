@@ -3179,6 +3179,118 @@
         "title": "InvestigationStage",
         "type": "string"
       },
+      "InvitationCreateRequest": {
+        "description": "The address being offered a place on the team.",
+        "properties": {
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "title": "InvitationCreateRequest",
+        "type": "object"
+      },
+      "InvitationResponse": {
+        "description": "An offer to join a team, and what became of it.\n\n``invited_user_id`` is ``None`` while the address has no account in this\nenterprise. That is a legitimate steady state, not a pending write: an\naddress with no account can be invited, and the offer resolves if and when\nthat address signs up **into this enterprise** (ADR-017 D4). One that signs\nup elsewhere never resolves, and the offer expires where it was issued.",
+        "properties": {
+          "accepted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepted At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "enterprise_id": {
+            "title": "Enterprise Id",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "invitation_id": {
+            "title": "Invitation Id",
+            "type": "string"
+          },
+          "invited_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invited By"
+          },
+          "invited_user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invited User Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "team_id": {
+            "title": "Team Id",
+            "type": "string"
+          },
+          "team_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Name"
+          }
+        },
+        "required": [
+          "invitation_id",
+          "team_id",
+          "enterprise_id",
+          "email",
+          "status",
+          "created_at"
+        ],
+        "title": "InvitationResponse",
+        "type": "object"
+      },
       "KnowledgeBaseDocument": {
         "description": "Response model for knowledge base document operations.",
         "properties": {
@@ -5459,6 +5571,70 @@
         "title": "SuggestedActionResponse",
         "type": "object"
       },
+      "TeamCreateRequest": {
+        "description": "What it takes to create a team: a name, and optionally a description.",
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "TeamCreateRequest",
+        "type": "object"
+      },
+      "TeamMemberResponse": {
+        "description": "One row of a team's roster.",
+        "properties": {
+          "joined_at": {
+            "format": "date-time",
+            "title": "Joined At",
+            "type": "string"
+          },
+          "team_id": {
+            "title": "Team Id",
+            "type": "string"
+          },
+          "team_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Role"
+          },
+          "user_id": {
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "team_id",
+          "joined_at"
+        ],
+        "title": "TeamMemberResponse",
+        "type": "object"
+      },
       "TeamResponse": {
         "description": "A team the caller belongs to.",
         "properties": {
@@ -6328,7 +6504,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "3.0.0"
+    "version": "3.1.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -11219,6 +11395,130 @@
         ]
       }
     },
+    "/api/v1/invitations": {
+      "get": {
+        "description": "The live offers addressed to the caller.\n\nAddressed two ways, because an offer may predate the account: by\n``invited_user_id`` once it has resolved, and by the caller's own address\nwhile it has not \u2014 which is how somebody invited before they signed up sees\nthe invitation waiting for them on their first visit.\n\nPending only. An offer past its deadline is stamped ``expired`` on the way\nthrough and left out, so the list is what a person can actually act on.",
+        "operationId": "list_my_invitations_api_v1_invitations_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/InvitationResponse"
+                  },
+                  "title": "Response List My Invitations Api V1 Invitations Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Invitations Addressed To Me",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/v1/invitations/{invitation_id}": {
+      "delete": {
+        "description": "Refuse an offer.\n\nRecorded rather than deleted: the team admin's list is the record of who was\noffered a place and what they said, and a row that vanished would read as an\noffer never made.",
+        "operationId": "decline_invitation_api_v1_invitations__invitation_id__delete",
+        "parameters": [
+          {
+            "description": "Invitation ID",
+            "in": "path",
+            "name": "invitation_id",
+            "required": true,
+            "schema": {
+              "description": "Invitation ID",
+              "title": "Invitation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Decline An Invitation",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/v1/invitations/{invitation_id}/accept": {
+      "post": {
+        "description": "Consent: join the team this invitation names.\n\nThe only way a membership is created on this surface. An admin cannot add a\nmember; they can only offer.\n\n410 when the offer has run out \u2014 distinct from the 404 an offer that was\nnever yours gets, because the caller was entitled to that invitation and is\nentitled to know it lapsed rather than to be told it never existed.",
+        "operationId": "accept_invitation_api_v1_invitations__invitation_id__accept_post",
+        "parameters": [
+          {
+            "description": "Invitation ID",
+            "in": "path",
+            "name": "invitation_id",
+            "required": true,
+            "schema": {
+              "description": "Invitation ID",
+              "title": "Invitation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Accept An Invitation",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
     "/api/v1/knowledge/analytics/search": {
       "get": {
         "description": "Get search analytics and insights.\n\nRequires authentication, for the same reason as ``/stats``.",
@@ -13922,7 +14222,7 @@
     },
     "/api/v1/teams": {
       "get": {
-        "description": "List the teams the authenticated user belongs to.\n\nRead-only; the dashboard uses it to resolve team ids to names (case share\nbadges) and to populate the share-to-team picker. Returns an empty list in\nstandalone, where team sharing is unwired (``team_service is None``).",
+        "description": "List the teams the authenticated user belongs to.\n\nRead-only; the dashboard uses it to resolve team ids to names (case share\nbadges) and to populate the share-to-team picker. Returns an empty list in\nstandalone, where team sharing is unwired (``team_service is None``) \u2014 an\nempty list, not the 403 the management routes answer, because \"which teams\nam I in?\" has a true and useful answer there and it is \"none\".",
         "operationId": "list_my_teams_api_v1_teams_get",
         "responses": {
           "200": {
@@ -13946,6 +14246,314 @@
           }
         ],
         "summary": "List My Teams",
+        "tags": [
+          "teams"
+        ]
+      },
+      "post": {
+        "description": "Create a team in the caller's enterprise, with the caller as its admin.\n\nAny authenticated account may do this (ADR-017 D4) \u2014 there is no role to\nhold and nothing to be granted. The team is parented by the enterprise the\nrequest is bound to and references no organization, so it may later span\ncost centres.",
+        "operationId": "create_team_api_v1_teams_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeamCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create A Team",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/v1/teams/{team_id}/invitations": {
+      "get": {
+        "description": "Every offer this team has issued, and what became of it. Admin only.\n\nNot filtered by status: the record of who was offered a place, and whether\nthey accepted, declined, were withdrawn or ran out of time, is the thing an\nadmin needs. Offers past their deadline are reported \u2014 and stamped \u2014\n``expired`` here, which is what keeps lazy expiry indistinguishable from a\nswept table at every surface a person sees.",
+        "operationId": "list_team_invitations_api_v1_teams__team_id__invitations_get",
+        "parameters": [
+          {
+            "description": "Team ID",
+            "in": "path",
+            "name": "team_id",
+            "required": true,
+            "schema": {
+              "description": "Team ID",
+              "title": "Team Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/InvitationResponse"
+                  },
+                  "title": "Response List Team Invitations Api V1 Teams  Team Id  Invitations Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List A Team's Invitations",
+        "tags": [
+          "teams"
+        ]
+      },
+      "post": {
+        "description": "Offer an address a place on the team. Team admin only.\n\nThe rule is by **domain**, so nothing here enumerates accounts (ADR-017 D3):\nan address is refused for being outside the enterprise's domain before any\naccount is looked up, and an address whose account is anchored to another\nenterprise is refused with exactly the same status and body as one that has\nno account at all.\n\nIdempotent: inviting an address that already has a live offer on this team\nreturns that offer rather than minting a second one.",
+        "operationId": "create_team_invitation_api_v1_teams__team_id__invitations_post",
+        "parameters": [
+          {
+            "description": "Team ID",
+            "in": "path",
+            "name": "team_id",
+            "required": true,
+            "schema": {
+              "description": "Team ID",
+              "title": "Team Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvitationCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Invite An Address To A Team",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/v1/teams/{team_id}/invitations/{invitation_id}": {
+      "delete": {
+        "description": "Withdraw an offer. Team admin only.\n\nIdempotent by the same UPDATE predicate the accept uses: withdrawing an\noffer that was already answered changes nothing and still answers 204, so a\nclient retrying a lost response does not have to distinguish the two.",
+        "operationId": "revoke_team_invitation_api_v1_teams__team_id__invitations__invitation_id__delete",
+        "parameters": [
+          {
+            "description": "Team ID",
+            "in": "path",
+            "name": "team_id",
+            "required": true,
+            "schema": {
+              "description": "Team ID",
+              "title": "Team Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Invitation ID",
+            "in": "path",
+            "name": "invitation_id",
+            "required": true,
+            "schema": {
+              "description": "Invitation ID",
+              "title": "Invitation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Revoke A Team Invitation",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/v1/teams/{team_id}/members": {
+      "get": {
+        "description": "The roster, readable by any member of the team.\n\nA team the caller is not in is 404, whether it is in their enterprise or\nnot: who is on a team is exactly what a team shares, so it is readable by\nthe people who agreed to share it and by nobody else.",
+        "operationId": "list_team_members_api_v1_teams__team_id__members_get",
+        "parameters": [
+          {
+            "description": "Team ID",
+            "in": "path",
+            "name": "team_id",
+            "required": true,
+            "schema": {
+              "description": "Team ID",
+              "title": "Team Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TeamMemberResponse"
+                  },
+                  "title": "Response List Team Members Api V1 Teams  Team Id  Members Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Team Members",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/v1/teams/{team_id}/members/me": {
+      "delete": {
+        "description": "Leave a team. The last member out takes the team with them.\n\n``/members/me`` rather than ``/members/{user_id}``: consent forms a team and\nonly the member's own withdrawal unforms their part of it. There is no\n\"remove somebody else\" on this surface at all.\n\nRefused (409) when the leaver is the team's only admin and other members\nremain \u2014 those members would be left sharing into a team nobody can\nadminister. The sole member of a team strands nobody, so their leaving\nsoft-deletes it.",
+        "operationId": "leave_team_api_v1_teams__team_id__members_me_delete",
+        "parameters": [
+          {
+            "description": "Team ID",
+            "in": "path",
+            "name": "team_id",
+            "required": true,
+            "schema": {
+              "description": "Team ID",
+              "title": "Team Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Leave A Team",
         "tags": [
           "teams"
         ]

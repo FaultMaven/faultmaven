@@ -227,6 +227,42 @@ The three parts each close a different way of losing the predicate:
   nothing. The ENTERPRISE, since ADR-017: matching the organization would confine
   a team to one cost centre, which is exactly what D4 undoes.
 
+**How a team's audience is formed: by consent** (ADR-017 D4). The allowlist above
+is only as trustworthy as the membership it resolves, so the surface that writes
+that membership is part of this contract rather than a separate feature:
+
+- **Any authenticated account may create a team** (`POST /teams`) and is its team
+  admin. Creating one grants nothing over anybody else — a team of one sees what
+  its one member already saw — so no role gates it.
+- **A membership is written by exactly one call: the invitee's own accept**
+  (`POST /invitations/{id}/accept`). A team admin offers
+  (`POST /teams/{id}/invitations`); a pending offer grants nothing, and there is
+  no "add a member" on the API at all. That is what keeps a stranger from pulling
+  a colleague into a team's view without a word.
+- **Who may be offered a place is decided by DOMAIN**, before any account is
+  looked up, so the invitation endpoint is not an account-existence oracle for
+  the enterprise's domain. A personal enterprise (`enterprises.domain IS NULL`)
+  can invite nobody; an address off the enterprise's domain is refused; and an
+  address on the enterprise's own domain whose account is anchored elsewhere is
+  refused with the **same status and the same body** as one that could never
+  join. Distinguishing those two would answer "who works here?" to anybody who
+  can create a team, which is everybody.
+- **Leaving is the member's own act** (`DELETE /teams/{id}/members/me`) and there
+  is no way to remove somebody else. It is refused (409) when the leaver is the
+  team's only admin and other members remain; the sole member leaving
+  soft-deletes the team, which drops it out of every share-to-team picker.
+- **The refusals carry a reason slug.** These routes answer
+  `{"error", "detail", "status_code", "reason"}` — the `ConflictError` envelope —
+  because a client must tell `already_a_member` from
+  `address_outside_enterprise_domain` without parsing prose. The 404s keep the
+  read shape below: an id in another enterprise is absent, never forbidden.
+
+The rule lives in `modules/auth/domain/services/team_service.py`, the routes in
+`modules/auth/api/teams.py` and `modules/auth/api/invitations.py`, and every row
+of the domain rule is pinned by
+`tests/unit/modules/auth/services/test_team_invitations.py` plus the
+two-enterprise probe's consent flow.
+
 **404, not 403.** A refusal that distinguishes "you may not see this" from "this
 does not exist" is an existence oracle: it confirms an id, and with it the shape
 of another tenant's data. Out-of-tenant and absent therefore share one status and

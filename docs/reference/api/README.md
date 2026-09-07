@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 3.0.0
+**Version:** 3.1.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -2796,6 +2796,89 @@ Retrieve detailed information about an uploaded file including all evidence deri
 
 ---
 
+### `/api/v1/invitations`
+
+#### GET
+
+**List Invitations Addressed To Me**
+
+The live offers addressed to the caller.
+
+Addressed two ways, because an offer may predate the account: by
+``invited_user_id`` once it has resolved, and by the caller's own address
+while it has not — which is how somebody invited before they signed up sees
+the invitation waiting for them on their first visit.
+
+Pending only. An offer past its deadline is stamped ``expired`` on the way
+through and left out, so the list is what a person can actually act on.
+
+**Tags:** `teams`
+
+**Auth:** `HTTPBearer`
+
+**Responses:**
+
+- `200` — Successful Response (array of [`InvitationResponse`](#invitationresponse))
+
+---
+
+### `/api/v1/invitations/{invitation_id}`
+
+#### DELETE
+
+**Decline An Invitation**
+
+Refuse an offer.
+
+Recorded rather than deleted: the team admin's list is the record of who was
+offered a place and what they said, and a row that vanished would read as an
+offer never made.
+
+**Tags:** `teams`
+
+**Auth:** `HTTPBearer`
+
+**Parameters:**
+
+- `invitation_id` (path, required) — Invitation ID
+
+**Responses:**
+
+- `204` — Successful Response
+- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+
+---
+
+### `/api/v1/invitations/{invitation_id}/accept`
+
+#### POST
+
+**Accept An Invitation**
+
+Consent: join the team this invitation names.
+
+The only way a membership is created on this surface. An admin cannot add a
+member; they can only offer.
+
+410 when the offer has run out — distinct from the 404 an offer that was
+never yours gets, because the caller was entitled to that invitation and is
+entitled to know it lapsed rather than to be told it never existed.
+
+**Tags:** `teams`
+
+**Auth:** `HTTPBearer`
+
+**Parameters:**
+
+- `invitation_id` (path, required) — Invitation ID
+
+**Responses:**
+
+- `200` — Successful Response ([`TeamResponse`](#teamresponse))
+- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+
+---
+
 ### `/api/v1/knowledge/analytics/search`
 
 #### GET
@@ -4413,7 +4496,9 @@ List the teams the authenticated user belongs to.
 
 Read-only; the dashboard uses it to resolve team ids to names (case share
 badges) and to populate the share-to-team picker. Returns an empty list in
-standalone, where team sharing is unwired (``team_service is None``).
+standalone, where team sharing is unwired (``team_service is None``) — an
+empty list, not the 403 the management routes answer, because "which teams
+am I in?" has a true and useful answer there and it is "none".
 
 **Tags:** `teams`
 
@@ -4422,6 +4507,182 @@ standalone, where team sharing is unwired (``team_service is None``).
 **Responses:**
 
 - `200` — Successful Response (array of [`TeamResponse`](#teamresponse))
+
+---
+
+#### POST
+
+**Create A Team**
+
+Create a team in the caller's enterprise, with the caller as its admin.
+
+Any authenticated account may do this (ADR-017 D4) — there is no role to
+hold and nothing to be granted. The team is parented by the enterprise the
+request is bound to and references no organization, so it may later span
+cost centres.
+
+**Tags:** `teams`
+
+**Auth:** `HTTPBearer`
+
+**Request body** (required):
+
+- `application/json` — [`TeamCreateRequest`](#teamcreaterequest)
+
+**Responses:**
+
+- `201` — Successful Response ([`TeamResponse`](#teamresponse))
+- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+
+---
+
+### `/api/v1/teams/{team_id}/invitations`
+
+#### GET
+
+**List A Team's Invitations**
+
+Every offer this team has issued, and what became of it. Admin only.
+
+Not filtered by status: the record of who was offered a place, and whether
+they accepted, declined, were withdrawn or ran out of time, is the thing an
+admin needs. Offers past their deadline are reported — and stamped —
+``expired`` here, which is what keeps lazy expiry indistinguishable from a
+swept table at every surface a person sees.
+
+**Tags:** `teams`
+
+**Auth:** `HTTPBearer`
+
+**Parameters:**
+
+- `team_id` (path, required) — Team ID
+
+**Responses:**
+
+- `200` — Successful Response (array of [`InvitationResponse`](#invitationresponse))
+- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+
+---
+
+#### POST
+
+**Invite An Address To A Team**
+
+Offer an address a place on the team. Team admin only.
+
+The rule is by **domain**, so nothing here enumerates accounts (ADR-017 D3):
+an address is refused for being outside the enterprise's domain before any
+account is looked up, and an address whose account is anchored to another
+enterprise is refused with exactly the same status and body as one that has
+no account at all.
+
+Idempotent: inviting an address that already has a live offer on this team
+returns that offer rather than minting a second one.
+
+**Tags:** `teams`
+
+**Auth:** `HTTPBearer`
+
+**Parameters:**
+
+- `team_id` (path, required) — Team ID
+
+**Request body** (required):
+
+- `application/json` — [`InvitationCreateRequest`](#invitationcreaterequest)
+
+**Responses:**
+
+- `201` — Successful Response ([`InvitationResponse`](#invitationresponse))
+- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+
+---
+
+### `/api/v1/teams/{team_id}/invitations/{invitation_id}`
+
+#### DELETE
+
+**Revoke A Team Invitation**
+
+Withdraw an offer. Team admin only.
+
+Idempotent by the same UPDATE predicate the accept uses: withdrawing an
+offer that was already answered changes nothing and still answers 204, so a
+client retrying a lost response does not have to distinguish the two.
+
+**Tags:** `teams`
+
+**Auth:** `HTTPBearer`
+
+**Parameters:**
+
+- `team_id` (path, required) — Team ID
+- `invitation_id` (path, required) — Invitation ID
+
+**Responses:**
+
+- `204` — Successful Response
+- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+
+---
+
+### `/api/v1/teams/{team_id}/members`
+
+#### GET
+
+**List Team Members**
+
+The roster, readable by any member of the team.
+
+A team the caller is not in is 404, whether it is in their enterprise or
+not: who is on a team is exactly what a team shares, so it is readable by
+the people who agreed to share it and by nobody else.
+
+**Tags:** `teams`
+
+**Auth:** `HTTPBearer`
+
+**Parameters:**
+
+- `team_id` (path, required) — Team ID
+
+**Responses:**
+
+- `200` — Successful Response (array of [`TeamMemberResponse`](#teammemberresponse))
+- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+
+---
+
+### `/api/v1/teams/{team_id}/members/me`
+
+#### DELETE
+
+**Leave A Team**
+
+Leave a team. The last member out takes the team with them.
+
+``/members/me`` rather than ``/members/{user_id}``: consent forms a team and
+only the member's own withdrawal unforms their part of it. There is no
+"remove somebody else" on this surface at all.
+
+Refused (409) when the leaver is the team's only admin and other members
+remain — those members would be left sharing into a team nobody can
+administer. The sole member of a team strands nobody, so their leaving
+soft-deletes it.
+
+**Tags:** `teams`
+
+**Auth:** `HTTPBearer`
+
+**Parameters:**
+
+- `team_id` (path, required) — Team ID
+
+**Responses:**
+
+- `204` — Successful Response
+- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -5591,6 +5852,42 @@ investigation continues. TREATMENT follows solution acceptance.
 
 ---
 
+### InvitationCreateRequest
+
+The address being offered a place on the team.
+
+**Properties:**
+
+- `email` (string, required)
+
+---
+
+### InvitationResponse
+
+An offer to join a team, and what became of it.
+
+``invited_user_id`` is ``None`` while the address has no account in this
+enterprise. That is a legitimate steady state, not a pending write: an
+address with no account can be invited, and the offer resolves if and when
+that address signs up **into this enterprise** (ADR-017 D4). One that signs
+up elsewhere never resolves, and the offer expires where it was issued.
+
+**Properties:**
+
+- `accepted_at` (object, optional)
+- `created_at` (string, required)
+- `email` (string, required)
+- `enterprise_id` (string, required)
+- `expires_at` (object, optional)
+- `invitation_id` (string, required)
+- `invited_by` (object, optional)
+- `invited_user_id` (object, optional)
+- `status` (string, required)
+- `team_id` (string, required)
+- `team_name` (object, optional)
+
+---
+
 ### KnowledgeBaseDocument
 
 Response model for knowledge base document operations.
@@ -6340,6 +6637,30 @@ A follow-up suggestion returned with agent responses.
 - `label` (string, required)
 - `payload` (object, optional)
 - `type` (string, required)
+
+---
+
+### TeamCreateRequest
+
+What it takes to create a team: a name, and optionally a description.
+
+**Properties:**
+
+- `description` (object, optional)
+- `name` (string, required)
+
+---
+
+### TeamMemberResponse
+
+One row of a team's roster.
+
+**Properties:**
+
+- `joined_at` (string, required)
+- `team_id` (string, required)
+- `team_role` (object, optional)
+- `user_id` (string, required)
 
 ---
 
