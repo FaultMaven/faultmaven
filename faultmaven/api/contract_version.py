@@ -55,6 +55,17 @@ asked to accept, and it belongs to a person.
 # `InvitationCreateRequest`. `TeamResponse` is unchanged — it still carries
 # `enterprise_id` and no organization, exactly as 3.0.0 published it.
 #
+# `InvitationResponse` carries `revoked_by` and `revoked_at` (both nullable).
+# They are what makes the design claim checkable from outside: `status` is
+# `revoked` whether the team admin withdrew the offer or the invitee declined
+# it, and comparing `revoked_by` against `invited_by` is the whole of the
+# difference. A field the server writes and no client can read is a record
+# nobody keeps.
+#
+# `TeamCreateRequest.name` caps at 200, which is `teams.name`'s width exactly.
+# A wider request field would accept nothing more — it would only move the
+# refusal from a 422 naming the field to a 500 out of PostgreSQL.
+#
 # **A refusal on this surface carries a machine-readable reason.** A 403, 404,
 # 409 or 410 from these routes answers
 # `{"error", "detail", "status_code", "reason"}` — the same envelope
@@ -65,9 +76,16 @@ asked to accept, and it belongs to a person.
 # a UI ends up wrong in a language it was not written in. The slugs are
 # `enterprise_is_personal`,
 # `address_outside_enterprise_domain`, `already_a_member`, `not_a_team_admin`,
-# `not_found`, `invitation_expired`, `invitation_not_pending`,
+# `team_name_taken`, `invitation_expired`, `invitation_not_pending`,
 # `last_admin_cannot_leave`, `single_tenant_has_no_teams` and
 # `single_tenant_has_no_invitations`.
+#
+# **A 404 on this surface carries no `reason` at all**, and that is deliberate
+# rather than an omission. The read shape ADR-017 D2 requires — an id in
+# another enterprise is *absent*, never *forbidden* — has nothing to tell
+# apart, so those answer the house `NotFoundError` envelope
+# (`{"error", "detail", "status_code"}`) like every other 404 in the API. A
+# client must not branch on a reason there; there is none.
 #
 # Two of those slugs are deliberately ONE answer to two questions.
 # `address_outside_enterprise_domain` is returned both for an address on

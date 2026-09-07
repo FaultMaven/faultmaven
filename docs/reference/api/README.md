@@ -2812,6 +2812,12 @@ the invitation waiting for them on their first visit.
 Pending only. An offer past its deadline is stamped ``expired`` on the way
 through and left out, so the list is what a person can actually act on.
 
+The team names are resolved in **one** query for the whole page. The invitee
+is not a member yet, so ``GET /teams`` cannot tell them what they are being
+invited to; without the names the list is a column of opaque ids, and
+fetching them one row at a time made the cost of opening a mailbox linear in
+how many offers were in it.
+
 **Tags:** `teams`
 
 **Auth:** `HTTPBearer`
@@ -2832,7 +2838,8 @@ Refuse an offer.
 
 Recorded rather than deleted: the team admin's list is the record of who was
 offered a place and what they said, and a row that vanished would read as an
-offer never made.
+offer never made. An offer that had already run out answers 410 and is
+recorded as ``expired``, not as a decline nobody made.
 
 **Tags:** `teams`
 
@@ -4521,6 +4528,10 @@ hold and nothing to be granted. The team is parented by the enterprise the
 request is bound to and references no organization, so it may later span
 cost centres.
 
+409 when a live team in the enterprise already has that name. A retired team
+does not hold its name: the uniqueness rule is partial on
+``deleted_at IS NULL``.
+
 **Tags:** `teams`
 
 **Auth:** `HTTPBearer`
@@ -4578,7 +4589,8 @@ enterprise is refused with exactly the same status and body as one that has
 no account at all.
 
 Idempotent: inviting an address that already has a live offer on this team
-returns that offer rather than minting a second one.
+returns that offer rather than minting a second one — including when a
+concurrent invite won the race.
 
 **Tags:** `teams`
 
@@ -4607,9 +4619,9 @@ returns that offer rather than minting a second one.
 
 Withdraw an offer. Team admin only.
 
-Idempotent by the same UPDATE predicate the accept uses: withdrawing an
-offer that was already answered changes nothing and still answers 204, so a
-client retrying a lost response does not have to distinguish the two.
+410 for an offer that has already run out: ``revoked_by`` is the record of
+who ended it, and writing a withdrawal nobody performed would put a decision
+in the record that no person made.
 
 **Tags:** `teams`
 
@@ -4669,7 +4681,7 @@ only the member's own withdrawal unforms their part of it. There is no
 Refused (409) when the leaver is the team's only admin and other members
 remain — those members would be left sharing into a team nobody can
 administer. The sole member of a team strands nobody, so their leaving
-soft-deletes it.
+retires it, and its pending invitations are revoked with it.
 
 **Tags:** `teams`
 
@@ -5882,6 +5894,8 @@ up elsewhere never resolves, and the offer expires where it was issued.
 - `invitation_id` (string, required)
 - `invited_by` (object, optional)
 - `invited_user_id` (object, optional)
+- `revoked_at` (object, optional)
+- `revoked_by` (object, optional)
 - `status` (string, required)
 - `team_id` (string, required)
 - `team_name` (object, optional)
@@ -6643,6 +6657,12 @@ A follow-up suggestion returned with agent responses.
 ### TeamCreateRequest
 
 What it takes to create a team: a name, and optionally a description.
+
+``max_length`` matches ``teams.name``'s ``VARCHAR(200)`` exactly. A wider
+request field does not accept more — it defers the refusal to PostgreSQL,
+which answers ``StringDataRightTruncation`` and a 500 where a 422 naming the
+field belongs. (``description`` is ``TEXT``; the cap here is a request-size
+bound, not a column one.)
 
 **Properties:**
 

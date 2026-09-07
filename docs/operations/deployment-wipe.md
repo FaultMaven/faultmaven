@@ -20,6 +20,37 @@ if the data has any value.
 
 ---
 
+## ⚠️ The baseline migration is amended in place until the cutover
+
+**Any database already stamped at `a1e0c17bd001` must be dropped and re-created,
+not upgraded.**
+
+There is exactly one migration — `001_enterprise_baseline` — and while the
+ADR-017 campaign is in flight it is edited **in place** rather than appended to.
+That is the campaign's own rule (ADR-017, "No data migration, no compatibility
+layer"): the schema is rebuilt clean, no deployment holds data worth keeping,
+and this wipe is how the live one gets there.
+
+The consequence an operator has to know: a database that ran the baseline
+*before* an amendment landed carries the revision id `a1e0c17bd001` and will
+never receive the change, because Alembic sees itself as up to date. `alembic
+upgrade head` is a no-op and reports success. The failure then shows up at
+runtime as a missing column or a missing constraint — for the team-consent
+amendment, every invitation read raises on `team_invitations.revoked_by`.
+
+So, for any environment that is not being wiped anyway:
+
+```bash
+# NOT `alembic upgrade head` — it will do nothing and say it worked.
+dropdb faultmaven && createdb faultmaven
+alembic upgrade head
+```
+
+CI is unaffected: it always builds from an empty database. This note retires
+when the campaign ends and the baseline is frozen.
+
+---
+
 ## The surfaces
 
 A wipe that covers only the database is not a wipe. Five surfaces hold state,

@@ -421,6 +421,21 @@ CREATE INDEX idx_teams_enterprise_id ON teams(enterprise_id);
 COMMENT ON TABLE teams IS 'Sharing units (consent-formed), parented by their enterprise — may span organizations';
 ```
 
+**`teams_enterprise_name_unique` is a PARTIAL unique index**, not a constraint:
+`(enterprise_id, name) WHERE deleted_at IS NULL`. A team's designed end is its
+sole member leaving (ADR-017 D4), which soft-deletes it — and under a total
+constraint the retired team would hold its name against the enterprise for ever,
+answering a 500 to anyone who tried to reuse it. The DDL above shows the
+constraint form the ORM declared before fm#1365; the live shape is:
+
+```sql
+CREATE UNIQUE INDEX teams_enterprise_name_unique
+    ON teams(enterprise_id, name) WHERE deleted_at IS NULL;
+```
+
+A duplicate live name is a **409** with reason `team_name_taken`, raised from the
+repository as a typed error rather than allowed to escape as an `IntegrityError`.
+
 #### Table: team_invitations
 
 An offer to join a team, and the consent record that answers it (ADR-017 D4). A team admin invites an address; the invitee accepts. A pending invitation grants nothing. The address need not have an account yet — the invitation resolves when that address signs up **and lands in the same enterprise**, which is why `invited_user_id` is nullable and `email` is not.
@@ -459,6 +474,17 @@ CREATE UNIQUE INDEX ix_team_invitations_pending_unique
 
 COMMENT ON TABLE team_invitations IS 'RLS-tenanted: an invitation is exactly the sort of row the isolation wall exists to keep on one side of';
 ```
+
+**An elapsed offer is `expired`, never `revoked`.** Accepting, declining or
+withdrawing one answers **410** and stamps `expired`: `revoked_by` is the record
+of who ended the offer, and writing a withdrawal nobody performed would put a
+decision in the record that no person made. Every verb reads the row through one
+settling reader, so they cannot disagree about it whatever order they arrive in.
+
+**Retiring a team ends its offers.** When the sole member of a team leaves, the
+same transaction that soft-deletes the team revokes its pending invitations — an
+offer to a team nobody can see can be neither accepted (the team is gone) nor
+declined (declining writes against it).
 
 **Status is a lifecycle, and `revoked` has two doors.** `pending → accepted`
 (the invitee consented; `accepted_at` is stamped and a `team_members` row is

@@ -249,13 +249,27 @@ that membership is part of this contract rather than a separate feature:
   can create a team, which is everybody.
 - **Leaving is the member's own act** (`DELETE /teams/{id}/members/me`) and there
   is no way to remove somebody else. It is refused (409) when the leaver is the
-  team's only admin and other members remain; the sole member leaving
-  soft-deletes the team, which drops it out of every share-to-team picker.
-- **The refusals carry a reason slug.** These routes answer
-  `{"error", "detail", "status_code", "reason"}` — the `ConflictError` envelope —
-  because a client must tell `already_a_member` from
-  `address_outside_enterprise_domain` without parsing prose. The 404s keep the
-  read shape below: an id in another enterprise is absent, never forbidden.
+  team's only admin and other members remain; the sole member leaving retires
+  the team, which drops it out of every share-to-team picker and revokes its
+  pending invitations in the same transaction. Both rules are decided **inside**
+  that transaction, under a row lock on the team: the last-admin check is a read
+  of the roster followed by a write to it, so deciding it outside the lock lets
+  two admins leaving at the same instant each see the other and both go —
+  leaving a member in a team no route can ever administer, because there is no
+  promote endpoint.
+- **The refusals carry a reason slug — except the 404s.** The 403/409/410 family
+  answers `{"error", "detail", "status_code", "reason"}`, the `ConflictError`
+  envelope, because a client must tell `already_a_member` from
+  `address_outside_enterprise_domain` without parsing prose. A 404 carries no
+  reason at all and uses the house `NotFoundError` envelope: the read shape below
+  exists precisely because there is nothing to tell apart, and a reason there
+  would be one more thing that could differ between "absent" and "not yours".
+- **The address key is `strip().lower()`, matching `func.lower(users.email)`.**
+  Not `casefold`, though that is the stronger Unicode comparison: the key has to
+  match the index the account lookup uses. Where the two differ (`MAẞE@` lowers
+  to `maße@`, folds to `masse@`) a folded key misses the account — and the miss
+  silently skips *both* rules that depend on finding one, the anchored-elsewhere
+  refusal and the already-a-member check.
 
 The rule lives in `modules/auth/domain/services/team_service.py`, the routes in
 `modules/auth/api/teams.py` and `modules/auth/api/invitations.py`, and every row

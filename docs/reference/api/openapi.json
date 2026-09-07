@@ -3260,6 +3260,29 @@
             ],
             "title": "Invited User Id"
           },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          },
+          "revoked_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked By"
+          },
           "status": {
             "title": "Status",
             "type": "string"
@@ -5572,7 +5595,7 @@
         "type": "object"
       },
       "TeamCreateRequest": {
-        "description": "What it takes to create a team: a name, and optionally a description.",
+        "description": "What it takes to create a team: a name, and optionally a description.\n\n``max_length`` matches ``teams.name``'s ``VARCHAR(200)`` exactly. A wider\nrequest field does not accept more \u2014 it defers the refusal to PostgreSQL,\nwhich answers ``StringDataRightTruncation`` and a 500 where a 422 naming the\nfield belongs. (``description`` is ``TEXT``; the cap here is a request-size\nbound, not a column one.)",
         "properties": {
           "description": {
             "anyOf": [
@@ -5587,7 +5610,7 @@
             "title": "Description"
           },
           "name": {
-            "maxLength": 255,
+            "maxLength": 200,
             "minLength": 1,
             "title": "Name",
             "type": "string"
@@ -11397,7 +11420,7 @@
     },
     "/api/v1/invitations": {
       "get": {
-        "description": "The live offers addressed to the caller.\n\nAddressed two ways, because an offer may predate the account: by\n``invited_user_id`` once it has resolved, and by the caller's own address\nwhile it has not \u2014 which is how somebody invited before they signed up sees\nthe invitation waiting for them on their first visit.\n\nPending only. An offer past its deadline is stamped ``expired`` on the way\nthrough and left out, so the list is what a person can actually act on.",
+        "description": "The live offers addressed to the caller.\n\nAddressed two ways, because an offer may predate the account: by\n``invited_user_id`` once it has resolved, and by the caller's own address\nwhile it has not \u2014 which is how somebody invited before they signed up sees\nthe invitation waiting for them on their first visit.\n\nPending only. An offer past its deadline is stamped ``expired`` on the way\nthrough and left out, so the list is what a person can actually act on.\n\nThe team names are resolved in **one** query for the whole page. The invitee\nis not a member yet, so ``GET /teams`` cannot tell them what they are being\ninvited to; without the names the list is a column of opaque ids, and\nfetching them one row at a time made the cost of opening a mailbox linear in\nhow many offers were in it.",
         "operationId": "list_my_invitations_api_v1_invitations_get",
         "responses": {
           "200": {
@@ -11428,7 +11451,7 @@
     },
     "/api/v1/invitations/{invitation_id}": {
       "delete": {
-        "description": "Refuse an offer.\n\nRecorded rather than deleted: the team admin's list is the record of who was\noffered a place and what they said, and a row that vanished would read as an\noffer never made.",
+        "description": "Refuse an offer.\n\nRecorded rather than deleted: the team admin's list is the record of who was\noffered a place and what they said, and a row that vanished would read as an\noffer never made. An offer that had already run out answers 410 and is\nrecorded as ``expired``, not as a decline nobody made.",
         "operationId": "decline_invitation_api_v1_invitations__invitation_id__delete",
         "parameters": [
           {
@@ -14251,7 +14274,7 @@
         ]
       },
       "post": {
-        "description": "Create a team in the caller's enterprise, with the caller as its admin.\n\nAny authenticated account may do this (ADR-017 D4) \u2014 there is no role to\nhold and nothing to be granted. The team is parented by the enterprise the\nrequest is bound to and references no organization, so it may later span\ncost centres.",
+        "description": "Create a team in the caller's enterprise, with the caller as its admin.\n\nAny authenticated account may do this (ADR-017 D4) \u2014 there is no role to\nhold and nothing to be granted. The team is parented by the enterprise the\nrequest is bound to and references no organization, so it may later span\ncost centres.\n\n409 when a live team in the enterprise already has that name. A retired team\ndoes not hold its name: the uniqueness rule is partial on\n``deleted_at IS NULL``.",
         "operationId": "create_team_api_v1_teams_post",
         "requestBody": {
           "content": {
@@ -14350,7 +14373,7 @@
         ]
       },
       "post": {
-        "description": "Offer an address a place on the team. Team admin only.\n\nThe rule is by **domain**, so nothing here enumerates accounts (ADR-017 D3):\nan address is refused for being outside the enterprise's domain before any\naccount is looked up, and an address whose account is anchored to another\nenterprise is refused with exactly the same status and body as one that has\nno account at all.\n\nIdempotent: inviting an address that already has a live offer on this team\nreturns that offer rather than minting a second one.",
+        "description": "Offer an address a place on the team. Team admin only.\n\nThe rule is by **domain**, so nothing here enumerates accounts (ADR-017 D3):\nan address is refused for being outside the enterprise's domain before any\naccount is looked up, and an address whose account is anchored to another\nenterprise is refused with exactly the same status and body as one that has\nno account at all.\n\nIdempotent: inviting an address that already has a live offer on this team\nreturns that offer rather than minting a second one \u2014 including when a\nconcurrent invite won the race.",
         "operationId": "create_team_invitation_api_v1_teams__team_id__invitations_post",
         "parameters": [
           {
@@ -14410,7 +14433,7 @@
     },
     "/api/v1/teams/{team_id}/invitations/{invitation_id}": {
       "delete": {
-        "description": "Withdraw an offer. Team admin only.\n\nIdempotent by the same UPDATE predicate the accept uses: withdrawing an\noffer that was already answered changes nothing and still answers 204, so a\nclient retrying a lost response does not have to distinguish the two.",
+        "description": "Withdraw an offer. Team admin only.\n\n410 for an offer that has already run out: ``revoked_by`` is the record of\nwho ended it, and writing a withdrawal nobody performed would put a decision\nin the record that no person made.",
         "operationId": "revoke_team_invitation_api_v1_teams__team_id__invitations__invitation_id__delete",
         "parameters": [
           {
@@ -14518,7 +14541,7 @@
     },
     "/api/v1/teams/{team_id}/members/me": {
       "delete": {
-        "description": "Leave a team. The last member out takes the team with them.\n\n``/members/me`` rather than ``/members/{user_id}``: consent forms a team and\nonly the member's own withdrawal unforms their part of it. There is no\n\"remove somebody else\" on this surface at all.\n\nRefused (409) when the leaver is the team's only admin and other members\nremain \u2014 those members would be left sharing into a team nobody can\nadminister. The sole member of a team strands nobody, so their leaving\nsoft-deletes it.",
+        "description": "Leave a team. The last member out takes the team with them.\n\n``/members/me`` rather than ``/members/{user_id}``: consent forms a team and\nonly the member's own withdrawal unforms their part of it. There is no\n\"remove somebody else\" on this surface at all.\n\nRefused (409) when the leaver is the team's only admin and other members\nremain \u2014 those members would be left sharing into a team nobody can\nadminister. The sole member of a team strands nobody, so their leaving\nretires it, and its pending invitations are revoked with it.",
         "operationId": "leave_team_api_v1_teams__team_id__members_me_delete",
         "parameters": [
           {
