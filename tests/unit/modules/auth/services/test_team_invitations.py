@@ -1225,3 +1225,87 @@ async def test_invitations_refuse_rather_than_guess_when_the_repositories_are_ab
 
     assert caught.value.status_code == 404
     assert teams.invitations == {}
+
+
+# =============================================================================
+# The sign-up hook's placement (ADR-017 D4, rule 4)
+# =============================================================================
+#
+# Rule 4's whole point is an invitation issued to an address that has NO account
+# yet, resolving on that address's first sign-in. These two tests are about
+# WHERE the hook hangs off the login, because the first version of it hung off
+# the anchor *write* — and a JIT-provisioned account is created already carrying
+# ``enterprise_id``, so on the one login rule 4 exists for, there is no anchor
+# write and the hook never ran. Nothing else failed: the offer simply sat
+# unresolved until it expired.
+#
+# Driven through ``SSOLoginService._ensure_enterprise_anchor`` rather than
+# through ``TeamService``, because the defect was not in the rule — it was in
+# which branch of the login the rule was reached from.
+
+
+class _FakeEnterprise:
+    def __init__(self, enterprise_id: str):
+        self.enterprise_id = enterprise_id
+
+
+async def test_the_signup_hook_runs_when_the_account_is_already_anchored():
+    """The first login of a JIT-provisioned account writes no anchor.
+
+    ``_provision_user`` stamps ``enterprise_id`` at creation, so by the time the
+    anchor step runs the account already matches and there is nothing to move.
+    That is the login an invitation issued before the account existed is waiting
+    for, so the hook must run there or rule 4 is dead code.
+    """
+    from faultmaven.modules.auth.domain.services.sso_login_service import (
+        SSOLoginService,
+    )
+
+    teams = FakeTeamRepository({})
+    service = SSOLoginService.__new__(SSOLoginService)
+    service._teams = teams
+    user = FakeAccount("user-newhire", "NewHire@Acme.com", ACME)
+    now = _now()
+    teams.invitations["inv-1"] = TeamInvitation(
+        invitation_id="inv-1",
+        enterprise_id=ACME,
+        team_id="team-1",
+        email="newhire@acme.com",
+        invited_user_id=None,
+        status=TeamInvitationStatus.PENDING,
+        created_at=now,
+        expires_at=now + timedelta(days=14),
+    )
+
+    admitted = await service._ensure_enterprise_anchor(user, _FakeEnterprise(ACME))
+
+    assert admitted is True
+    assert teams.invitations["inv-1"].invited_user_id == "user-newhire", (
+        "the sign-up hook did not run on a login that wrote no anchor — which "
+        "is every first login of a JIT-provisioned account, and the only login "
+        "rule 4 exists for"
+    )
+
+
+async def test_a_failed_invitation_resolution_never_costs_the_login():
+    """An unwired or erroring team feature must not sign somebody out.
+
+    Resolving an invitation is not a precondition of having an account: the
+    offer stays pending and the next sign-in tries again.
+    """
+    from faultmaven.modules.auth.domain.services.sso_login_service import (
+        SSOLoginService,
+    )
+
+    class Exploding:
+        async def resolve_invitations_for_account(self, *_args):
+            raise RuntimeError("the invitations table is on fire")
+
+    service = SSOLoginService.__new__(SSOLoginService)
+    service._teams = Exploding()
+
+    admitted = await service._ensure_enterprise_anchor(
+        FakeAccount("user-alice", "alice@acme.com", ACME), _FakeEnterprise(ACME)
+    )
+
+    assert admitted is True

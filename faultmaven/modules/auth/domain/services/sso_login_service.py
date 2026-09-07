@@ -1221,20 +1221,31 @@ class SSOLoginService:
         drift.
         """
         user_enterprise = getattr(user, "enterprise_id", None)
-        if user_enterprise == enterprise.enterprise_id:
-            return True
+        if user_enterprise != enterprise.enterprise_id:
+            # The account belongs to a different enterprise. Moving an account
+            # between enterprises is a deliberate operator action, never an
+            # implicit consequence of an IdP claim — with exactly one exception,
+            # inside ``_anchor_account_to``.
+            if not await self._anchor_account_to(user, enterprise):
+                logger.warning(
+                    "sso_login_rejected",
+                    reason="enterprise_mismatch",
+                    user_id=user.user_id,
+                )
+                return False
 
-        # The account belongs to a different enterprise. Moving an account
-        # between enterprises is a deliberate operator action, never an implicit
-        # consequence of an IdP claim — with exactly one exception, inside
-        # ``_anchor_account_to``.
-        if not await self._anchor_account_to(user, enterprise):
-            logger.warning(
-                "sso_login_rejected",
-                reason="enterprise_mismatch",
-                user_id=user.user_id,
-            )
-            return False
+        # Outside the branch above, and that placement is the whole of whether
+        # ADR-017 D4's rule 4 works at all. A JIT-provisioned account is CREATED
+        # carrying ``enterprise_id`` (see ``_provision_user``), so on the very
+        # first login the anchor already matches and the branch above does
+        # nothing — which is exactly the login an invitation issued before the
+        # account existed is waiting for. Hanging the hook off the anchor WRITE
+        # would have made it unreachable on the only path that needs it, and
+        # silently: the offer would sit unresolved until it expired.
+        #
+        # Running it on every login is also what makes an invitation issued
+        # AFTER the account existed resolve, and the statement is idempotent, so
+        # the repeat costs one UPDATE matching nothing.
         await self._resolve_pending_invitations(user, enterprise)
         return True
 
@@ -1244,13 +1255,13 @@ class SSOLoginService:
         ADR-017 D4's other half: a team admin may invite an address that has no
         account yet, and the offer resolves when that address signs up **and
         lands in the same enterprise**. This is where "and lands in the same
-        enterprise" is decided — it runs immediately after the anchor write, so
-        the enterprise it passes is the one the account is now in, and the
-        repository's own predicate confines the UPDATE to offers issued there.
-        An address that signs up into a *different* enterprise reaches this with
-        that enterprise's id, matches nothing, and leaves the original offer
-        pending until it expires. That is the design, not a gap: nothing crosses
-        an enterprise line (D2).
+        enterprise" is decided — the caller has just established that the
+        account is anchored to ``enterprise``, so the id passed here is the one
+        the account is now in, and the repository's own predicate confines the
+        UPDATE to offers issued there. An address that signs up into a
+        *different* enterprise reaches this with that enterprise's id, matches
+        nothing, and leaves the original offer pending until it expires. That is
+        the design, not a gap: nothing crosses an enterprise line (D2).
 
         **Not in the anchor's transaction, deliberately.** The anchor is written
         through the sessionless repositories, each of which owns its session, so
@@ -1258,13 +1269,15 @@ class SSOLoginService:
         this path a session handle that no other collaborator on it has. What
         makes that safe is that the statement is idempotent — it touches only
         rows whose ``invited_user_id`` is still NULL — so a failure between the
-        two writes heals on the account's next sign-in rather than leaving the
+        two heals on the account's next sign-in rather than leaving the
         invitation permanently unresolvable.
 
-        Runs for JIT-provisioned and returning accounts alike, and for the same
-        reason ``_ensure_enterprise_anchor`` does: an invitation issued while
-        somebody was away must resolve on the sign-in after it, not only on a
-        first one that will never happen again.
+        Runs on every admitted login, not only on one that moved the anchor.
+        That is not belt-and-braces: a JIT-provisioned account is created
+        already carrying ``enterprise_id``, so the login rule 4 exists for —
+        the first one, by an address somebody invited before it had an account
+        — writes no anchor at all. It also covers an invitation issued while
+        somebody was away, which must resolve on the sign-in after it.
 
         Never fails the login. A team feature that is unwired, or a statement
         that errors, must not cost somebody their session — the offer stays

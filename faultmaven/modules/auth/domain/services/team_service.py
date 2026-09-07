@@ -511,7 +511,10 @@ class TeamService:
     ) -> int:
         """The sign-up hook: name this account on the offers waiting for it.
 
-        Called once the account's enterprise anchor is written (ADR-017 D3). An
+        Called on every admitted SSO login, once the account is established as
+        anchored to ``enterprise_id`` (ADR-017 D3) — not only on one that moved
+        the anchor, because a JIT-provisioned account is created already
+        carrying its enterprise and so writes no anchor on the first login. An
         invitation issued to an address with no account resolves here — and only
         when the address lands in the enterprise that issued it, which the
         repository's own predicate enforces. Idempotent: it touches only rows
