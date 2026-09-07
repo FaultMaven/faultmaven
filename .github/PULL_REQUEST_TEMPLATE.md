@@ -55,10 +55,10 @@ INSTRUCTIONS:
 <details>
 <summary><b>🧪 Testing</b> (expand if new code added)</summary>
 
-- [ ] New code has unit tests (maintain 40%+ coverage)
+- [ ] New code has unit tests, and overall coverage does not decrease
 - [ ] Critical paths have integration tests
 - [ ] Edge cases and error paths tested
-- [ ] Tests follow [Testing Standards](../docs/standards/TESTING_STANDARDS.md)
+- [ ] Tests follow [Testing Standards](https://github.com/FaultMaven/faultmaven/blob/main/docs/development/testing/standards.md)
 
 </details>
 
