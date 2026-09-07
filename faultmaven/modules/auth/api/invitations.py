@@ -17,29 +17,25 @@ and the id is the whole of what an accept needs.
 
 **Expiry is lazy.** Nothing sweeps the table: an offer past its deadline keeps
 ``status='pending'`` in the database until a read or an accept notices, and the
-one that notices is the one that stamps it. So this list never shows an offer
-that has run out, and accepting one answers 410 rather than joining a team on
-the strength of a fortnight-old invitation.
+one that notices is the one that stamps it. Every verb here settles it through
+the same reader, so accepting, declining and listing agree about an elapsed
+offer whatever order they happen in — 410, not "no longer open".
 """
 
 import logging
 from typing import List
 
-from fastapi import APIRouter, Depends, Path, Request, status
+from fastapi import APIRouter, Depends, Path, status
 
-from faultmaven.api.v1.auth_dependencies import (
-    require_actor_enterprise,
-    require_authentication,
-)
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.modules.auth.api.teams import (
-    REASON_NO_INVITATIONS,
     InvitationResponse,
+    TeamContext,
     TeamResponse,
+    _team_response,
     invitation_response,
-    require_team_service,
+    require_invitation_context,
 )
-from faultmaven.modules.auth.contracts import UserDTO
 
 router = APIRouter(prefix="/invitations", tags=["teams"])
 logger = logging.getLogger(__name__)
@@ -52,8 +48,7 @@ logger = logging.getLogger(__name__)
 )
 @trace("api_list_my_invitations")
 async def list_my_invitations(
-    request: Request,
-    current_user: UserDTO = Depends(require_authentication),
+    context: TeamContext = Depends(require_invitation_context),
 ) -> List[InvitationResponse]:
     """The live offers addressed to the caller.
 
@@ -64,25 +59,26 @@ async def list_my_invitations(
 
     Pending only. An offer past its deadline is stamped ``expired`` on the way
     through and left out, so the list is what a person can actually act on.
-    """
-    team_service = require_team_service(request, REASON_NO_INVITATIONS)
-    enterprise_id = require_actor_enterprise(current_user)
-    invitations = await team_service.list_my_invitations(
-        enterprise_id=enterprise_id,
-        user_id=current_user.user_id,
-        email=current_user.email,
-    )
 
-    # The team's name, resolved per offer. The invitee is not a member yet, so
-    # ``GET /teams`` cannot tell them what they are being invited to; without
-    # this the list is a column of opaque ids. The lookup is enterprise-scoped
-    # by RLS and by the service's own predicate, so it can only ever name a team
-    # in the caller's own enterprise.
-    rendered = []
-    for invitation in invitations:
-        team_name = await team_service.get_team_name(invitation.team_id)
-        rendered.append(invitation_response(invitation, team_name=team_name))
-    return rendered
+    The team names are resolved in **one** query for the whole page. The invitee
+    is not a member yet, so ``GET /teams`` cannot tell them what they are being
+    invited to; without the names the list is a column of opaque ids, and
+    fetching them one row at a time made the cost of opening a mailbox linear in
+    how many offers were in it.
+    """
+    invitations = await context.service.list_my_invitations(
+        enterprise_id=context.enterprise_id,
+        user_id=context.user.user_id,
+        email=context.user.email,
+    )
+    names = await context.service.name_teams(
+        enterprise_id=context.enterprise_id,
+        team_ids=[invitation.team_id for invitation in invitations],
+    )
+    return [
+        invitation_response(invitation, team_name=names.get(invitation.team_id))
+        for invitation in invitations
+    ]
 
 
 @router.post(
@@ -92,9 +88,8 @@ async def list_my_invitations(
 )
 @trace("api_accept_invitation")
 async def accept_invitation(
-    request: Request,
     invitation_id: str = Path(..., description="Invitation ID"),
-    current_user: UserDTO = Depends(require_authentication),
+    context: TeamContext = Depends(require_invitation_context),
 ) -> TeamResponse:
     """Consent: join the team this invitation names.
 
@@ -105,19 +100,13 @@ async def accept_invitation(
     never yours gets, because the caller was entitled to that invitation and is
     entitled to know it lapsed rather than to be told it never existed.
     """
-    team_service = require_team_service(request, REASON_NO_INVITATIONS)
-    enterprise_id = require_actor_enterprise(current_user)
-    team = await team_service.accept_invitation(
-        enterprise_id=enterprise_id,
+    team = await context.service.accept_invitation(
+        enterprise_id=context.enterprise_id,
         invitation_id=invitation_id,
-        user=current_user,
+        user_id=context.user.user_id,
+        email=context.user.email,
     )
-    return TeamResponse(
-        team_id=team.team_id,
-        name=team.name,
-        description=team.description,
-        enterprise_id=team.enterprise_id,
-    )
+    return _team_response(team)
 
 
 @router.delete(
@@ -127,20 +116,19 @@ async def accept_invitation(
 )
 @trace("api_decline_invitation")
 async def decline_invitation(
-    request: Request,
     invitation_id: str = Path(..., description="Invitation ID"),
-    current_user: UserDTO = Depends(require_authentication),
+    context: TeamContext = Depends(require_invitation_context),
 ) -> None:
     """Refuse an offer.
 
     Recorded rather than deleted: the team admin's list is the record of who was
     offered a place and what they said, and a row that vanished would read as an
-    offer never made.
+    offer never made. An offer that had already run out answers 410 and is
+    recorded as ``expired``, not as a decline nobody made.
     """
-    team_service = require_team_service(request, REASON_NO_INVITATIONS)
-    enterprise_id = require_actor_enterprise(current_user)
-    await team_service.decline_invitation(
-        enterprise_id=enterprise_id,
+    await context.service.decline_invitation(
+        enterprise_id=context.enterprise_id,
         invitation_id=invitation_id,
-        user=current_user,
+        user_id=context.user.user_id,
+        email=context.user.email,
     )

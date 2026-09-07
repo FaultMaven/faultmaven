@@ -32,8 +32,9 @@ deployment's ``TENANT_PROVIDER``.
 """
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, Path, Request, status
 from pydantic import BaseModel, EmailStr, Field, field_validator
@@ -70,9 +71,16 @@ class TeamResponse(BaseModel):
 
 
 class TeamCreateRequest(BaseModel):
-    """What it takes to create a team: a name, and optionally a description."""
+    """What it takes to create a team: a name, and optionally a description.
 
-    name: str = Field(min_length=1, max_length=255)
+    ``max_length`` matches ``teams.name``'s ``VARCHAR(200)`` exactly. A wider
+    request field does not accept more — it defers the refusal to PostgreSQL,
+    which answers ``StringDataRightTruncation`` and a 500 where a 422 naming the
+    field belongs. (``description`` is ``TEXT``; the cap here is a request-size
+    bound, not a column one.)
+    """
+
+    name: str = Field(min_length=1, max_length=200)
     description: Optional[str] = Field(default=None, max_length=2000)
 
     @field_validator("name", mode="after")
@@ -133,6 +141,13 @@ class InvitationResponse(BaseModel):
     created_at: datetime
     expires_at: Optional[datetime] = None
     accepted_at: Optional[datetime] = None
+    #: Who ended the offer, and when. Published because the design claim —
+    #: "the row tells a decline from a withdrawal apart" — is only true if a
+    #: client can see it: ``status`` is ``revoked`` either way, and comparing
+    #: ``revoked_by`` against ``invited_by`` is the whole of the difference.
+    #: Both are ``None`` until the offer is ended.
+    revoked_by: Optional[str] = None
+    revoked_at: Optional[datetime] = None
 
 
 def _team_response(team) -> TeamResponse:
@@ -158,7 +173,27 @@ def invitation_response(invitation, team_name: Optional[str] = None):
         created_at=invitation.created_at,
         expires_at=invitation.expires_at,
         accepted_at=invitation.accepted_at,
+        revoked_by=invitation.revoked_by,
+        revoked_at=invitation.revoked_at,
     )
+
+
+@dataclass(frozen=True)
+class TeamContext:
+    """Everything a consent route needs before it can do anything.
+
+    The wired service, the enterprise the request is bound to, and who is
+    asking. Resolved once, as a dependency, rather than as a two-line preamble
+    repeated in nine handlers: a preamble is something a tenth route can
+    forget, and forgetting it here means either a 500 in standalone (the
+    service is ``None``) or an unscoped query (no enterprise predicate). As a
+    dependency it is structural — a handler that does not declare it has no
+    service to call.
+    """
+
+    service: Any
+    enterprise_id: str
+    user: UserDTO
 
 
 def require_team_service(request: Request, reason: str = REASON_NO_TEAMS):
@@ -170,6 +205,11 @@ def require_team_service(request: Request, reason: str = REASON_NO_TEAMS):
     the KB inventory route and ``GET /meta/capabilities`` already read. Using it
     here too means there is one fact, read in one way, rather than a second
     ``TENANT_PROVIDER`` test that could disagree with it.
+
+    It is also what a **failed wiring** looks like: ``TeamService`` refuses to
+    construct without its repositories, so a composition failure leaves this
+    ``None`` and the surface says "not available here" rather than answering
+    404 for every team in the deployment.
 
     Raises the domain refusal rather than an ``HTTPException`` for the reason
     every other refusal on this surface does: the reason slug has to reach the
@@ -187,6 +227,37 @@ def require_team_service(request: Request, reason: str = REASON_NO_TEAMS):
             status_code=status.HTTP_403_FORBIDDEN,
         )
     return team_service
+
+
+def team_context_dependency(reason: str):
+    """Build the router-wide dependency, carrying the right refusal slug.
+
+    Two slugs, because they answer two different questions and a client may
+    want to hide two different pieces of UI: ``single_tenant_has_no_teams`` on
+    ``/teams``, ``single_tenant_has_no_invitations`` on ``/invitations``.
+    """
+
+    async def resolve(
+        request: Request,
+        current_user: UserDTO = Depends(require_authentication),
+    ) -> TeamContext:
+        service = require_team_service(request, reason)
+        return TeamContext(
+            service=service,
+            enterprise_id=require_actor_enterprise(current_user),
+            user=current_user,
+        )
+
+    return resolve
+
+
+#: The dependency every route under ``/teams`` except ``GET /teams`` declares.
+require_team_context = team_context_dependency(REASON_NO_TEAMS)
+
+#: The same, for the invitation routes — on both routers, since the team admin's
+#: half of the consent lives under ``/teams`` and the invitee's under
+#: ``/invitations``, and both are the same feature to a client hiding UI.
+require_invitation_context = team_context_dependency(REASON_NO_INVITATIONS)
 
 
 @router.get("", response_model=List[TeamResponse], summary="List My Teams")
@@ -218,9 +289,8 @@ async def list_my_teams(
 )
 @trace("api_create_team")
 async def create_team(
-    request: Request,
     body: TeamCreateRequest,
-    current_user: UserDTO = Depends(require_authentication),
+    context: TeamContext = Depends(require_team_context),
 ) -> TeamResponse:
     """Create a team in the caller's enterprise, with the caller as its admin.
 
@@ -228,12 +298,14 @@ async def create_team(
     hold and nothing to be granted. The team is parented by the enterprise the
     request is bound to and references no organization, so it may later span
     cost centres.
+
+    409 when a live team in the enterprise already has that name. A retired team
+    does not hold its name: the uniqueness rule is partial on
+    ``deleted_at IS NULL``.
     """
-    team_service = require_team_service(request)
-    enterprise_id = require_actor_enterprise(current_user)
-    team = await team_service.create_team(
-        enterprise_id=enterprise_id,
-        creator_user_id=current_user.user_id,
+    team = await context.service.create_team(
+        enterprise_id=context.enterprise_id,
+        creator_user_id=context.user.user_id,
         name=body.name,
         description=body.description,
     )
@@ -247,9 +319,8 @@ async def create_team(
 )
 @trace("api_list_team_members")
 async def list_team_members(
-    request: Request,
     team_id: str = Path(..., description="Team ID"),
-    current_user: UserDTO = Depends(require_authentication),
+    context: TeamContext = Depends(require_team_context),
 ) -> List[TeamMemberResponse]:
     """The roster, readable by any member of the team.
 
@@ -257,12 +328,10 @@ async def list_team_members(
     not: who is on a team is exactly what a team shares, so it is readable by
     the people who agreed to share it and by nobody else.
     """
-    team_service = require_team_service(request)
-    enterprise_id = require_actor_enterprise(current_user)
-    members = await team_service.list_members(
-        enterprise_id=enterprise_id,
+    members = await context.service.list_members(
+        enterprise_id=context.enterprise_id,
         team_id=team_id,
-        user_id=current_user.user_id,
+        user_id=context.user.user_id,
     )
     return [
         TeamMemberResponse(
@@ -282,9 +351,8 @@ async def list_team_members(
 )
 @trace("api_leave_team")
 async def leave_team(
-    request: Request,
     team_id: str = Path(..., description="Team ID"),
-    current_user: UserDTO = Depends(require_authentication),
+    context: TeamContext = Depends(require_team_context),
 ) -> None:
     """Leave a team. The last member out takes the team with them.
 
@@ -295,14 +363,12 @@ async def leave_team(
     Refused (409) when the leaver is the team's only admin and other members
     remain — those members would be left sharing into a team nobody can
     administer. The sole member of a team strands nobody, so their leaving
-    soft-deletes it.
+    retires it, and its pending invitations are revoked with it.
     """
-    team_service = require_team_service(request)
-    enterprise_id = require_actor_enterprise(current_user)
-    await team_service.leave_team(
-        enterprise_id=enterprise_id,
+    await context.service.leave_team(
+        enterprise_id=context.enterprise_id,
         team_id=team_id,
-        user_id=current_user.user_id,
+        user_id=context.user.user_id,
     )
 
 
@@ -314,10 +380,9 @@ async def leave_team(
 )
 @trace("api_create_team_invitation")
 async def create_team_invitation(
-    request: Request,
     body: InvitationCreateRequest,
     team_id: str = Path(..., description="Team ID"),
-    current_user: UserDTO = Depends(require_authentication),
+    context: TeamContext = Depends(require_invitation_context),
 ) -> InvitationResponse:
     """Offer an address a place on the team. Team admin only.
 
@@ -328,14 +393,13 @@ async def create_team_invitation(
     no account at all.
 
     Idempotent: inviting an address that already has a live offer on this team
-    returns that offer rather than minting a second one.
+    returns that offer rather than minting a second one — including when a
+    concurrent invite won the race.
     """
-    team_service = require_team_service(request, REASON_NO_INVITATIONS)
-    enterprise_id = require_actor_enterprise(current_user)
-    invitation = await team_service.invite(
-        enterprise_id=enterprise_id,
+    invitation = await context.service.invite(
+        enterprise_id=context.enterprise_id,
         team_id=team_id,
-        actor_user_id=current_user.user_id,
+        actor_user_id=context.user.user_id,
         email=str(body.email),
     )
     return invitation_response(invitation)
@@ -348,9 +412,8 @@ async def create_team_invitation(
 )
 @trace("api_list_team_invitations")
 async def list_team_invitations(
-    request: Request,
     team_id: str = Path(..., description="Team ID"),
-    current_user: UserDTO = Depends(require_authentication),
+    context: TeamContext = Depends(require_invitation_context),
 ) -> List[InvitationResponse]:
     """Every offer this team has issued, and what became of it. Admin only.
 
@@ -360,12 +423,10 @@ async def list_team_invitations(
     ``expired`` here, which is what keeps lazy expiry indistinguishable from a
     swept table at every surface a person sees.
     """
-    team_service = require_team_service(request, REASON_NO_INVITATIONS)
-    enterprise_id = require_actor_enterprise(current_user)
-    invitations = await team_service.list_team_invitations(
-        enterprise_id=enterprise_id,
+    invitations = await context.service.list_team_invitations(
+        enterprise_id=context.enterprise_id,
         team_id=team_id,
-        user_id=current_user.user_id,
+        user_id=context.user.user_id,
     )
     return [invitation_response(invitation) for invitation in invitations]
 
@@ -377,22 +438,19 @@ async def list_team_invitations(
 )
 @trace("api_revoke_team_invitation")
 async def revoke_team_invitation(
-    request: Request,
     team_id: str = Path(..., description="Team ID"),
     invitation_id: str = Path(..., description="Invitation ID"),
-    current_user: UserDTO = Depends(require_authentication),
+    context: TeamContext = Depends(require_invitation_context),
 ) -> None:
     """Withdraw an offer. Team admin only.
 
-    Idempotent by the same UPDATE predicate the accept uses: withdrawing an
-    offer that was already answered changes nothing and still answers 204, so a
-    client retrying a lost response does not have to distinguish the two.
+    410 for an offer that has already run out: ``revoked_by`` is the record of
+    who ended it, and writing a withdrawal nobody performed would put a decision
+    in the record that no person made.
     """
-    team_service = require_team_service(request, REASON_NO_INVITATIONS)
-    enterprise_id = require_actor_enterprise(current_user)
-    await team_service.revoke_invitation(
-        enterprise_id=enterprise_id,
+    await context.service.revoke_invitation(
+        enterprise_id=context.enterprise_id,
         team_id=team_id,
         invitation_id=invitation_id,
-        actor_user_id=current_user.user_id,
+        actor_user_id=context.user.user_id,
     )
