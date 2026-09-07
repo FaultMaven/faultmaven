@@ -741,7 +741,20 @@ class TeamModel(Base):
     deleted_at = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
-        UniqueConstraint("enterprise_id", "name", name="teams_enterprise_name_unique"),
+        # Unique among LIVE teams only, the same rule ``enterprises.slug`` and
+        # ``enterprises.domain`` follow. A full constraint let a soft-deleted
+        # team hold its name hostage for ever: ``leave_team``'s sole-member
+        # soft-delete retires a team by design, and nobody could then create
+        # another with that name — a 500 from an unhandled unique violation,
+        # for a name the enterprise can no longer see.
+        Index(
+            "teams_enterprise_name_unique",
+            "enterprise_id",
+            "name",
+            unique=True,
+            sqlite_where=text("deleted_at IS NULL"),
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
         CheckConstraint("LENGTH(TRIM(name)) > 0", name="teams_name_not_empty"),
     )
 

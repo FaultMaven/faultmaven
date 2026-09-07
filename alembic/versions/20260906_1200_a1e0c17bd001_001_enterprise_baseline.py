@@ -1134,12 +1134,21 @@ def upgrade() -> None:
             ["enterprise_id"], ["enterprises.enterprise_id"], ondelete="CASCADE"
         ),
         sa.PrimaryKeyConstraint("team_id"),
-        sa.UniqueConstraint(
-            "enterprise_id", "name", name="teams_enterprise_name_unique"
-        ),
     )
     op.create_index(
         op.f("ix_teams_enterprise_id"), "teams", ["enterprise_id"], unique=False
+    )
+    # Unique among LIVE teams only, the same rule enterprises.slug follows. A
+    # full constraint let a soft-deleted team hold its name hostage for ever:
+    # the sole member of a team leaving retires it by design (ADR-017 D4), and
+    # nobody could then create another team with that name.
+    op.create_index(
+        "teams_enterprise_name_unique",
+        "teams",
+        ["enterprise_id", "name"],
+        unique=True,
+        sqlite_where=sa.text("deleted_at IS NULL"),
+        postgresql_where=sa.text("deleted_at IS NULL"),
     )
     op.create_table(
         "turn_usage",
@@ -3971,6 +3980,7 @@ def downgrade() -> None:
     op.drop_index("ix_users_email", table_name="users")
     op.drop_table("users")
     op.drop_table("turn_usage")
+    op.drop_index("teams_enterprise_name_unique", table_name="teams")
     op.drop_index(op.f("ix_teams_enterprise_id"), table_name="teams")
     op.drop_table("teams")
     op.drop_index(
