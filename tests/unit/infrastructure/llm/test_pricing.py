@@ -333,3 +333,139 @@ class TestPricingOverrides:
                     value = getattr(rates, bucket)
                     assert isinstance(value, int | float), (provider, model, bucket)
                     assert value >= 0.0, (provider, model, bucket)
+
+
+@pytest.mark.unit
+class TestVersionedModelKeys:
+    """Substring keys must not silently bill a NEWER model at an OLDER rate.
+
+    The lookup is longest-substring-match, which is version-BLIND: a key
+    written for one generation keeps matching (or stops matching) later ones
+    by accident of spelling. Two distinct failures follow, and only one of
+    them is visible:
+
+    * the key stops matching  -> the model is unpriced, cost 0.0 with
+      priced=False, which the metering layer counts on the unpriced counter.
+      Honest under-reporting; this is the module's designed failure.
+    * the key still matches at a stale rate -> the model is priced WRONGLY,
+      and nothing anywhere says so. Strictly worse.
+
+    #1359 hit the first (claude-opus-5) and, next to it, the second
+    (claude-opus-4-6 billed at the original Opus 4 rate). Its first cut then
+    reproduced the second failure on the generations it did not key: 4-5,
+    4-7 and 4-8 kept billing at $90 per 1M in+out against a real $30.
+    """
+
+    # Every Opus generation that repriced to $5 in / $25 out (4.5 onward).
+    REPRICED_OPUS = [
+        "claude-opus-4-5",
+        "claude-opus-4-6",
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+        "claude-opus-5",
+    ]
+    # Ids the ORIGINAL $15 / $75 rate is still correct for.
+    ORIGINAL_OPUS = [
+        "claude-opus-4",
+        "claude-opus-4-1",
+        "claude-opus-4-20250514",
+    ]
+
+    @pytest.mark.parametrize("model", REPRICED_OPUS)
+    def test_repriced_opus_generations_are_not_billed_at_the_old_rate(self, model):
+        # The generic "claude-opus-4" key carries the ORIGINAL $15/$75. Every
+        # generation from 4.5 on must beat it (or, for opus-5, be reachable at
+        # all -- "claude-opus-4" is not a substring of "claude-opus-5").
+        rates = lookup_rates("anthropic", model)
+        assert rates is not None, f"{model} must resolve to a rate"
+        assert rates.input == pytest.approx(5.0), model
+        assert rates.output == pytest.approx(25.0), model
+
+    @pytest.mark.parametrize("model", ORIGINAL_OPUS)
+    def test_original_opus_keeps_its_own_rate(self, model):
+        # The generic key is not wrong, only version-blind: it stays correct
+        # for the ids it was written for. Longest-match is what lets both
+        # coexist, so deleting it would UNPRICE these rather than fix them.
+        rates = lookup_rates("anthropic", model)
+        assert rates is not None, model
+        assert rates.input == pytest.approx(15.0), model
+        assert rates.output == pytest.approx(75.0), model
+
+    @pytest.mark.parametrize("model", REPRICED_OPUS)
+    def test_dated_snapshots_resolve_through_the_substring_loop(self, model):
+        """A dated id is the case that actually exercises longest-match.
+
+        An exact key short-circuits before the substring scan, so asserting on
+        the bare id proves nothing about matching. A dated snapshot has no
+        exact key, so it must be resolved by the loop -- and for the 4-x ids
+        the loop has a genuine contest to settle, since BOTH "claude-opus-4"
+        ($15/$75) and "claude-opus-4-N" ($5/$25) are substrings of it. Under
+        first-match-wins with the built-in dict order the generic key is
+        reached first and these come back at $15/$75.
+        """
+        dated = f"{model}-20260401"
+        rates = lookup_rates("anthropic", dated)
+        assert rates is not None, dated
+        assert rates.input == pytest.approx(5.0), dated
+        assert rates.output == pytest.approx(25.0), dated
+
+    def test_haiku_key_is_versioned_and_priced_at_the_published_rate(self):
+        # The bare "claude-haiku" key this replaced was fully version-blind
+        # and carried $0.80/$4.00, under-reporting the shipped picker model.
+        rates = lookup_rates("anthropic", "claude-haiku-4-5-20251001")
+        assert rates is not None
+        assert (rates.input, rates.output) == pytest.approx((1.0, 5.0))
+
+    def test_a_future_haiku_generation_reads_as_unpriced_not_stale(self):
+        """The trade this module makes: visibly wrong beats quietly wrong.
+
+        A bare "claude-haiku" key would hand the 4.5 rate to every later
+        generation with priced=True, which no counter can see. Unpriced is
+        the designed, visible failure instead.
+        """
+        assert lookup_rates("anthropic", "claude-haiku-5") is None
+
+    def test_openrouter_routes_opus_at_the_same_published_rate(self):
+        # Same model, same rate, different path to it -- pricing only the
+        # direct path would leave an Opus 5 deployment reporting $0 purely
+        # for reaching Anthropic through the gateway.
+        for model in ("anthropic/claude-opus-5", "anthropic/claude-opus-4-6"):
+            rates = lookup_rates("openrouter", model)
+            assert rates is not None, model
+            assert (rates.input, rates.output) == pytest.approx((5.0, 25.0)), model
+
+
+@pytest.mark.unit
+class TestGroqStrictModelPricing:
+    """Groq's gpt-oss models — its only STRICT structured-output models.
+
+    They are in the dashboard picker (registry.PROVIDER_SCHEMA), so
+    test_provider_schema_invariants::test_every_offered_model_is_priced
+    already requires a rate to exist. These pin the VALUES and the
+    non-collision, which that test cannot see.
+    """
+
+    def test_gpt_oss_models_are_priced_through_the_openai_prefix(self):
+        # The picker and GROQ_MODEL both use the "openai/"-prefixed id; the
+        # keys are the bare names, matched by substring like the claude-* keys.
+        rates_20b = lookup_rates("groq", "openai/gpt-oss-20b")
+        rates_120b = lookup_rates("groq", "openai/gpt-oss-120b")
+        assert rates_20b is not None and rates_120b is not None
+        assert (rates_20b.input, rates_20b.output) == pytest.approx((0.075, 0.30))
+        assert (rates_120b.input, rates_120b.output) == pytest.approx((0.15, 0.60))
+
+    def test_20b_and_120b_do_not_collide(self):
+        # "gpt-oss-20b" must not be read out of "gpt-oss-120b" (it is not a
+        # substring — "oss-120b" vs "oss-20b" — but that is a spelling
+        # accident worth pinning, since a collision would bill the 120b model
+        # at the 20b rate with no signal).
+        assert lookup_rates("groq", "openai/gpt-oss-120b") != lookup_rates(
+            "groq", "openai/gpt-oss-20b"
+        )
+
+    def test_llama_models_keep_their_rates(self):
+        # The two pre-existing groq rows must be untouched by the additions.
+        rates = lookup_rates("groq", "llama-3.3-70b-versatile")
+        assert (rates.input, rates.output) == pytest.approx((0.59, 0.79))
+        rates = lookup_rates("groq", "llama-3.1-8b-instant")
+        assert (rates.input, rates.output) == pytest.approx((0.05, 0.08))

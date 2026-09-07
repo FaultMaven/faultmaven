@@ -115,11 +115,32 @@ class ProviderState:
 # {PROVIDER}_MODEL stays legal — it just reports as unpriced, which is the
 # module's designed, visible failure. Pinned by
 # tests/unit/infrastructure/llm/test_provider_schema_invariants.py.
+#
+# A ``*_var`` key NAMES THE ENVIRONMENT VARIABLE THE SETTINGS LAYER ACTUALLY
+# CONSUMES for that provider, or it does not exist.
+#
+# None of these keys is a resolution path — the construction path below reads
+# each provider's own settings field directly (``llm_settings.openai_model``,
+# ``llm_settings.local_url``, …). Having no reader is therefore the NORMAL
+# state here and is not by itself grounds for deletion: ``model_var`` has no
+# reader either and is kept, because every value it carries is the variable
+# the settings layer really consumes. What these keys are is documentation,
+# and the only way documentation fails is by being WRONG.
+#
+# ``base_url_var`` was wrong. For ``local`` it advertised
+# ``LOCAL_LLM_BASE_URL`` while the code reads ``LOCAL_LLM_URL`` — a name
+# nothing in the settings layer consumes — and with no reader anywhere there
+# was no failing call to expose it. Since nothing depended on it, #1358
+# deleted it from all nine entries rather than repairing one value, the same
+# call #936 made for the shadowed ``chroma_persist_directory``. The two
+# ``*_var`` keys that remain are held to the invariant by
+# tests/unit/infrastructure/llm/test_provider_schema_invariants.py, which sets
+# each one and asserts some LLMSettings field actually moves — a check
+# ``model_var`` passes and ``base_url_var``'s ``local`` entry did not.
 PROVIDER_SCHEMA = {
     "fireworks": {
         "api_key_var": "FIREWORKS_API_KEY",
         "model_var": "FIREWORKS_MODEL",
-        "base_url_var": "FIREWORKS_API_BASE",
         "default_base_url": "https://api.fireworks.ai/inference/v1",
         "default_model": "accounts/fireworks/models/deepseek-v4-flash",
         "available_models": [
@@ -132,7 +153,6 @@ PROVIDER_SCHEMA = {
     "openai": {
         "api_key_var": "OPENAI_API_KEY",
         "model_var": "OPENAI_MODEL",
-        "base_url_var": "OPENAI_API_BASE",
         "default_base_url": "https://api.openai.com/v1",
         "default_model": "gpt-5.6-luna",
         "available_models": [
@@ -145,7 +165,6 @@ PROVIDER_SCHEMA = {
     "local": {
         "api_key_var": None,  # No API key needed
         "model_var": "LOCAL_LLM_MODEL",
-        "base_url_var": "LOCAL_LLM_BASE_URL",
         "default_base_url": "http://localhost:5000",
         "default_model": "llama2-7b",
         "available_models": [],  # Dynamic — depends on what the user has pulled
@@ -157,7 +176,6 @@ PROVIDER_SCHEMA = {
     "gemini": {
         "api_key_var": "GEMINI_API_KEY",
         "model_var": "GEMINI_MODEL",
-        "base_url_var": "GEMINI_API_BASE",
         "default_base_url": "https://generativelanguage.googleapis.com/v1beta",
         "default_model": "gemini-3.7-flash",
         "available_models": [
@@ -171,7 +189,6 @@ PROVIDER_SCHEMA = {
     "huggingface": {
         "api_key_var": "HUGGINGFACE_API_KEY",
         "model_var": "HUGGINGFACE_MODEL",
-        "base_url_var": "HUGGINGFACE_API_URL",
         "default_base_url": "https://api-inference.huggingface.co/models",
         "default_model": "mistralai/Mistral-Large-Instruct-2411",
         "available_models": [
@@ -184,7 +201,6 @@ PROVIDER_SCHEMA = {
     "openrouter": {
         "api_key_var": "OPENROUTER_API_KEY",
         "model_var": "OPENROUTER_MODEL",
-        "base_url_var": "OPENROUTER_API_BASE",
         "default_base_url": "https://openrouter.ai/api/v1",
         "default_model": "anthropic/claude-sonnet-4-6",
         "available_models": [],  # Dynamic — depends on OpenRouter's catalog
@@ -196,7 +212,6 @@ PROVIDER_SCHEMA = {
     "anthropic": {
         "api_key_var": "ANTHROPIC_API_KEY",
         "model_var": "ANTHROPIC_MODEL",
-        "base_url_var": "ANTHROPIC_API_BASE",
         "default_base_url": "https://api.anthropic.com/v1",
         "default_model": "claude-sonnet-4-6",
         "available_models": [
@@ -210,12 +225,20 @@ PROVIDER_SCHEMA = {
     "groq": {
         "api_key_var": "GROQ_API_KEY",
         "model_var": "GROQ_MODEL",
-        "base_url_var": "GROQ_API_BASE",
         "default_base_url": "https://api.groq.com/openai/v1",
         "default_model": "llama-3.3-70b-versatile",
+        # The two gpt-oss entries are Groq's ONLY models with STRICT
+        # structured-output enforcement (see GroqProvider.
+        # get_structured_output_capability); every Llama model here is
+        # BEST_EFFORT, which degrades primary CHAT because the engine drives
+        # state from schema-constrained responses. Offering only the
+        # BEST_EFFORT models meant the one Groq configuration suitable for
+        # CHAT_PROVIDER was the one an operator could not pick.
         "available_models": [
             "llama-3.3-70b-versatile",
             "llama-3.1-8b-instant",
+            "openai/gpt-oss-20b",
+            "openai/gpt-oss-120b",
         ],
         "provider_class": GroqProvider,
         "confidence_score": 0.88,
@@ -223,7 +246,6 @@ PROVIDER_SCHEMA = {
     "cohere": {
         "api_key_var": "COHERE_API_KEY",
         "model_var": "COHERE_MODEL",
-        "base_url_var": "COHERE_API_BASE",
         "default_base_url": "https://api.cohere.ai/v2",
         "default_model": "command-r-plus",
         "available_models": [
@@ -362,6 +384,9 @@ class ProviderRegistry:
         # Operator reasoning-effort default — only the OpenAI branch sets it;
         # None elsewhere (= shape-based defaults, identical requests).
         reasoning_effort = None
+        # Operator tool-calling declaration — only the local branch sets it
+        # (#1356); None elsewhere (= the provider's own capability rule).
+        tool_calling = None
 
         # Settings is required - use settings-based configuration
         llm_settings = self.settings.llm
@@ -387,6 +412,7 @@ class ProviderRegistry:
             api_key = None  # Local doesn't need API key
             model = llm_settings.local_model
             base_url = llm_settings.local_url
+            tool_calling = getattr(llm_settings, "local_tool_calling", None)
         elif provider_name == "anthropic":
             api_key = (
                 llm_settings.anthropic_api_key.get_secret_value()
@@ -508,6 +534,7 @@ class ProviderRegistry:
             thinking_mode=thinking_mode,
             thinking_budget_tokens=thinking_budget_tokens,
             reasoning_effort=reasoning_effort,
+            tool_calling=tool_calling,
         )
 
     def _initialize_provider(self, name: str, config: ProviderConfig):
@@ -967,6 +994,8 @@ class ProviderRegistry:
 
     def get_provider_status(self) -> Dict[str, Dict[str, any]]:
         """Get status information for all providers"""
+        from faultmaven.infrastructure.llm.pricing import lookup_rates
+
         self._ensure_initialized()
         status = {}
 
@@ -981,6 +1010,54 @@ class ProviderRegistry:
                 "models": provider.get_supported_models(),
                 "selected_model": selected,
                 "available_models": available,
+                # Will this provider's calls report a dollar cost, or $0?
+                # (#1359)
+                #
+                # Computed HERE, beside the model resolution, rather than by
+                # the admin route that renders it: the answer is a property of
+                # the resolved model, so deriving it anywhere else means a
+                # second resolution path that can disagree with the model
+                # actually called. (The API layer also must not import
+                # infrastructure — tests/unit/architecture asserts that.)
+                #
+                # An unpriced model is deliberately NOT fatal. Pricing is a
+                # self-declared estimate, remediable at runtime via
+                # LLM_PRICING_OVERRIDES, and it costs an under-reported dollar
+                # axis — not a wrong investigation. Refusing to boot on a
+                # missing rate row would take a deployment down the day a
+                # provider ships a model, which is exactly when an operator
+                # pins a new one. What was missing is that the unpriced
+                # Prometheus counter is per-CALL, so it cannot fire until
+                # traffic has already been billed; this is knowable before a
+                # token is spent.
+                #
+                # None (not False) when nothing is resolved: "nothing to say"
+                # is not "unpriced", and an alarm that is always on is not read.
+                #
+                # Derived over EVERY model in provider.config.models, not just
+                # the selected one, and False if ANY of them is unpriced.
+                # `_create_provider_config` folds the per-task pins
+                # ({PROVIDER}_CLASSIFIER_MODEL, _SYNTHESIS_MODEL, _DA_MODEL —
+                # documented in .env.example) into models[1:] so
+                # `get_effective_model` will accept them, which means a
+                # provider really does call all of them. A per-task pin is a
+                # hand-pin in no `available_models` list, so it is exactly the
+                # case this flag exists for; keying it off models[0] alone
+                # reported True while every classifier and synthesis call
+                # billed as $0. "Any unpriced" rather than "all priced" is the
+                # honest reading: the flag answers "will this provider's spend
+                # be under-reported?", and one unpriced role is enough for
+                # that to be yes.
+                "selected_model_priced": (
+                    all(
+                        lookup_rates(name, m) is not None
+                        for m in provider.config.models
+                    )
+                    if provider.config.models
+                    else (
+                        lookup_rates(name, selected) is not None if selected else None
+                    )
+                ),
                 "confidence_score": provider.config.confidence_score,
                 "in_fallback_chain": name in self._fallback_chain,
             }

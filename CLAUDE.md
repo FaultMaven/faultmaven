@@ -303,7 +303,7 @@ modules/auth/
 | HuggingFace | `HUGGINGFACE_API_KEY` | Mistral-Large-Instruct-2411 | BEST_EFFORT | Open models — NOT recommended (no tool calling) |
 | Cohere | `COHERE_API_KEY` | command-r-plus | BEST_EFFORT | Enterprise RAG (json_object only; not schema-enforced) |
 | OpenRouter | `OPENROUTER_API_KEY` | anthropic/claude-sonnet-4-6 | depends on routed model | Multi-model gateway (STRICT for `openai/*`, else FUNCTION_CALLING) |
-| Local (Ollama/vLLM) | `LOCAL_LLM_URL` | llama3.2, etc. | FUNCTION_CALLING (functionary/hermes on OpenAI-compatible transport only), else BEST_EFFORT | Private & offline; Ollama `/api/generate` transport can't return tool_calls |
+| Local (Ollama/vLLM) | `LOCAL_LLM_URL` | llama3.2, etc. | FUNCTION_CALLING (functionary/hermes on OpenAI-compatible transport only), else BEST_EFFORT | Private & offline. **The URL path picks the protocol** — bare host or `/v1` = OpenAI-compatible, `/api` = Ollama native — and one predicate (`resolve_local_transport`) decides both that dispatch and the capability answer, so they cannot disagree. Tool calling follows: assumed on the OpenAI-compatible path, impossible on `/api/generate` for any model. Never keyed on the hostname (#1356), so `http://ollama:11434/v1` is capable. `LOCAL_LLM_TOOL_CALLING=false` declares a stack built without tool support |
 
 **Structured-output enforcement matters.** The investigation engine drives state
 from large schema-constrained LLM responses. **STRICT** providers enforce the
@@ -379,11 +379,15 @@ to plain 3.x calls as well, and `INFERENCE` *lifts* it on structured calls —
 but only when the same call also declares an output floor, without which the
 provider refuses the lift and warns. (On the 3.7+ surface `INFERENCE` also
 lifts the all-shape default on plain calls, floor or no floor — plain-call
-starvation is non-fatal.) So "3.x structured calls are capped" holds
-for every structured call shipped today. Exactly four call sites declare an
-intent (see below) and all declare `EXTRACTION`, which asks for *less*
-reasoning and can never lift the cap — and both are plain calls in any case,
-so no structured call ships with an intent at all.
+starvation is non-fatal.) So "3.x structured calls are capped" is the
+default, not an invariant: **five call sites declare an intent** (see below),
+four of them `EXTRACTION` — the direction that asks for *less* reasoning,
+which can never lift a cap — and one `INFERENCE` on a **structured** call,
+the tool-less single-shot diagnostic turn (fm#1116), which lifts the cap
+deliberately and declares `TOOLLESS_INFERENCE_OUTPUT_FLOOR` to buy the lift.
+Reasoning here is **routed**, not suppressed: the provider's minimum where the
+model is transforming supplied context, its default where the model is
+reasoning over candidates.
 
 **Every response carries a normalised stop reason.** `LLMResponse.stop_reason`
 (`STOP | MAX_TOKENS | CONTENT_FILTER | TOOL_CALLS | UNKNOWN`, with a derived
@@ -453,14 +457,19 @@ opt-in to degraded/offline mode; `/health` then reports `degraded`). The per-tur
 runtime fallback in `milestone_engine` still covers transient tool failures on an
 otherwise-capable model. Capability is per-provider/model via
 `supports_tool_calling()` (HuggingFace: always False; Fireworks: a denylist for
-models that accept tools but time out on forced `tool_choice=required`).
+models that accept tools but time out on forced `tool_choice=required`; Local:
+derived from the transport the URL path names, and overridable by the operator
+— a self-hosted endpoint has no catalogue to key a denylist on, and its
+capability is a property of the serving stack rather than of the model's or the
+host's name).
 
 **A caller can declare what a call needs from reasoning, and the minimum
 output it can use.** Two optional, per-call-site knobs on `LLMRouter.route()`
-(#1118 / #1117). Both default to absent, and where a call site passes neither
-the shape-based provider defaults above are what runs. **Four call sites ship
-declaring them**, all `EXTRACTION` — the direction that asks for *less*
-reasoning, so neither lifts a starvation guard:
+(#1118 / #1117) — and, since `milestone_engine` binds a concrete provider
+rather than routing, on the provider `generate()` signatures underneath it.
+Both default to absent, and where a call site passes neither the shape-based
+provider defaults above are what runs. **Five call sites ship declaring
+them**, four `EXTRACTION` and one `INFERENCE`:
 
 | Call site | Declares |
 |-----------|----------|
@@ -468,12 +477,31 @@ reasoning, so neither lifts a starvation guard:
 | `modules/agent/tools/document_qa_tool.py` (KB/doc answer synthesis) | `reasoning_intent=EXTRACTION` |
 | `modules/agent/domain/services/out_of_band.py` (out-of-band triage, #1329) | `reasoning_intent=EXTRACTION`, `min_output_tokens=TRIAGE_MIN_OUTPUT_TOKENS` |
 | `modules/agent/domain/services/out_of_band.py` (out-of-band answer, #1329) | `reasoning_intent=EXTRACTION` |
+| `core/investigation/milestone_engine.py` (tool-less single-shot diagnostic turn, fm#1116) | `reasoning_intent=INFERENCE`, `min_output_tokens=TOOLLESS_INFERENCE_OUTPUT_FLOOR` |
 
-Both are grounded transformations of supplied context rather than reasoning
-over candidates. `document_qa_tool` declares the intent specifically so its
-cap is tier-independent: the shape default caps thinking only on the 3.7+
-surface, so on the shipped `gemini-3.5-flash-lite` synthesis pin that plain
-call would otherwise run uncapped.
+The four `EXTRACTION` sites are grounded transformations of supplied context
+rather than reasoning over candidates, so they ask for *less* and can never
+lift a starvation guard. `document_qa_tool` declares the intent specifically
+so its cap is tier-independent: the shape default caps thinking only on the
+3.7+ surface, so on the shipped `gemini-3.5-flash-lite` synthesis pin that
+plain call would otherwise run uncapped.
+
+The `INFERENCE` site is the one call that asks for *more*, and it is a
+**structured** call. fm#1116: a turn with nothing to search takes a single-shot
+structured path instead of the tool loop, because gpt-5.x must pin
+`reasoning_effort: "none"` whenever function tools are attached — so a turn
+that runs the loop reasons at zero even though it has no tool to use, and
+diagnosis is reasoning over candidate causes, not extraction.
+`TOOLLESS_INFERENCE_OUTPUT_FLOOR` (2048) is what buys the lift: the Gemini
+provider refuses to lift a structured call's cap unless a floor is declared,
+and 2048 sits above every completion body measured on the replayed turn while
+staying well under `STRUCTURED_OUTPUT_MAX_TOKENS`, so it forbids a starvable
+partition without ever raising the cap. Note where the floor is and is not
+enforced: this path reaches the provider **directly**, so the router's own
+enforcement (pre-call budget bump, post-call `LLMOutputFloorError`) does not
+run on it — a body cut anyway is caught by the structured-output truncation
+ladder instead. On this path the floor's job is to authorise the lift, not to
+police the result.
 
 The knobs themselves:
 

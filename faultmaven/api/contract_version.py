@@ -30,8 +30,21 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
-# 3.2.0 — MINOR. Two amendments to the team-consent surface 3.1.0 published,
+# 3.4.0 — MINOR. Two amendments to the team-consent surface 3.1.0 published,
 # found by review of #1365 after it merged.
+#
+# Numbered 3.4.0 for a reason that has nothing to do with what it publishes.
+# Two versions were taken while this sat in review: #1369 took 3.2.0 (below),
+# and #1370 takes 3.3.0 and merges first. Two different contracts must never
+# share a version — a number that cannot tell two contracts apart is not doing
+# its job, which is the whole reason 2.0.0 exists — so this moves rather than
+# collides, and the entries stay separate. They describe unrelated surfaces,
+# and merging them would lose which client has to adopt what.
+#
+# **3.3.0 is deliberately absent from this file right now.** It belongs to
+# #1370, which has not merged yet; its entry arrives with it. A gap here is the
+# honest record of two changes in flight, and inventing a placeholder to fill
+# it would put a version in the changelog that nothing published.
 #
 #   * `InvitationResponse` gains `revoked_by` and `revoked_at`, both nullable.
 #     They are what makes 3.1.0's own design claim checkable from outside:
@@ -63,6 +76,47 @@ asked to accept, and it belongs to a person.
 # performed. Both statuses were already published for these operations, so a
 # client's error handling is unchanged; what changes is that it is now
 # deterministic.
+#
+# 3.2.0 — MINOR. `LLMProviderDetail` gains an optional, nullable
+# `selected_model_priced` (#1359): whether the model this provider will
+# actually call has a rate in the cost table. `false` means that provider's
+# calls report $0 spend; `null` means no model is resolved yet, which is
+# "nothing to say" rather than "unpriced" — an alarm that is always on is not
+# read, so an uninitialised provider must not report `false`.
+#
+# It exists because the unpriced signal was otherwise per-CALL. A model an
+# operator pins via `{PROVIDER}_MODEL` is in no `available_models` list and is
+# no `default_model`, so the build-time invariants cannot see it, and the
+# `llm_unpriced_calls` counter cannot fire until traffic has already been
+# billed. This is the same fact, known from the resolved model before a token
+# is spent, on the surface an operator reads when choosing one
+# (`GET /api/v1/admin/llm/config`). It is deliberately reported rather than
+# enforced: pricing is a self-declared estimate, remediable at runtime via
+# `LLM_PRICING_OVERRIDES`, and an unpriced model still yields a correct
+# investigation — refusing to serve on a missing rate row would take a
+# deployment down the day a provider ships a model.
+#
+# MINOR rather than MAJOR because it is a new optional field on a
+# response-only schema reached by one operator endpoint. No request shape
+# changes, nothing is removed, and no existing field changes meaning — a
+# client that ignores it renders exactly what it renders today. Optional
+# rather than required, unlike 2.5.0 and 2.1.0, because the server genuinely
+# has nothing to send for a provider it has not initialised.
+#
+# No client can break on it, verified by reading all three. The Dashboard
+# declares the shape by hand as `LLMProvider` in `src/types/llm.ts` — a
+# compile-time TypeScript interface it does not validate against, so an extra
+# JSON key is inert — and additionally carries the schema in the generated
+# `src/types/api.generated.ts`, where a regeneration only widens a response
+# type. The Slack agent's `LLMProviderDetail` lives in the generated
+# `faultmaven/api_generated.py` and is referenced nowhere outside it; pydantic
+# ignores unknown fields besides. The Copilot carries it in the generated
+# `packages/copilot-ui/types/api.generated.ts` and nowhere else — same
+# widening-only story as the Dashboard's generated copy. (An earlier draft of
+# this entry said the Copilot did not reference the schema at all. That was
+# false and came from grepping only `faultmaven-copilot/src`, which is not
+# where that client keeps its generated types; the MINOR call is unchanged,
+# but it now rests on having actually read the file.)
 #
 # 3.1.0 — MINOR. Teams form by consent (ADR-017 D4). Nine operations are added
 # and nothing existing is touched, so every current client survives the change
@@ -329,4 +383,4 @@ asked to accept, and it belongs to a person.
 # cannot tell two contracts apart is not doing its job. The first act of the
 # version is therefore to give the contract on main an identity distinct from
 # the 1.0.0 the clients are written against.
-API_CONTRACT_VERSION = "3.2.0"
+API_CONTRACT_VERSION = "3.4.0"

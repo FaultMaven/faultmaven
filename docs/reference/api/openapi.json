@@ -3761,6 +3761,18 @@
             "description": "Currently active model for this provider",
             "title": "Selected Model"
           },
+          "selected_model_priced": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Whether selected_model has a rate in the cost table. False means this provider's calls report $0 spend. None when no model is resolved yet (provider not initialized).",
+            "title": "Selected Model Priced"
+          },
           "state": {
             "default": "not_configured",
             "description": "Provider lifecycle state: not_configured, configured, or active",
@@ -6527,7 +6539,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "3.2.0"
+    "version": "3.4.0"
   },
   "openapi": "3.1.0",
   "paths": {
