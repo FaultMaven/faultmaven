@@ -540,11 +540,19 @@ def create_team_service(
 
     ``enterprise_repository`` is what the invitation rule needs beyond the team
     tables: the domain an address must match is ``enterprises.domain`` (ADR-017
-    D3). It is optional here so the resolver still builds without it — the KB
-    read paths never touch it — and the service refuses invitations rather than
-    guessing when it is absent. The user repository is built here rather than
-    passed: it is sessionless and stateless, and the multi-tenant provider
-    implies a persistent database, so there is nothing to select between.
+    D3). It is **required**, and its absence returns ``None`` here rather than a
+    half-wired service. Every factory in this module answers ``None`` on
+    failure, so "the enterprise repository could not be built" is a reachable
+    state; a ``TeamService`` built without it answered 404 for every team in the
+    deployment — a wiring failure wearing the shape of "you asked for a row that
+    does not exist", which is the one answer nobody investigates. ``None`` here
+    is the honest failure: ``team_service is None`` is already the
+    deployment-wide "team collaboration is not available" signal, and the
+    surface answers its own 403 saying so.
+
+    The user repository is built here rather than passed: it is sessionless and
+    stateless, and the multi-tenant provider implies a persistent database, so
+    there is nothing to select between.
     """
     if team_repository is None or tenant_provider is None:
         return None
@@ -553,6 +561,14 @@ def create_team_service(
 
     if isinstance(tenant_provider, SingleTenantProvider):
         logger.debug("TeamService skipped (single-tenant; team collaboration inert)")
+        return None
+
+    if enterprise_repository is None:
+        logger.error(
+            "TeamService skipped: no enterprise repository. Team collaboration "
+            "will report itself unavailable rather than refuse every team as "
+            "though it did not exist."
+        )
         return None
 
     from faultmaven.infrastructure.persistence.user_repository import (
@@ -1005,6 +1021,7 @@ def create_sso_login_service(
     redis_client: Any,
     token_generator: Any,
     session_service: Any,
+    team_service: Any | None = None,
 ) -> Any | None:
     """Create the SSO login orchestration service, or None when SSO is off.
 
@@ -1041,9 +1058,6 @@ def create_sso_login_service(
     from faultmaven.infrastructure.persistence.sessionless_enterprise_repository import (
         SessionlessEnterpriseRepository,
     )
-    from faultmaven.infrastructure.persistence.sessionless_team_repository import (
-        SessionlessTeamRepository,
-    )
     from faultmaven.infrastructure.persistence.user_repository import (
         SessionlessUserRepository,
     )
@@ -1079,10 +1093,11 @@ def create_sso_login_service(
         # consults it only on the no-IdP-organization branch and only when
         # SSO_JIT_PERSONAL_TENANT_ENABLED is on, which it is not by default.
         personal_enterprise_repository=SessionlessSSOPersonalEnterpriseRepository(),
-        # Team invitations (ADR-017 D4). Wired unconditionally: an offer issued
-        # to an address with no account resolves on that address's first
-        # sign-in, and SSO is the only sign-up path there is.
-        team_repository=SessionlessTeamRepository(),
+        # Team invitations (ADR-017 D4): an offer issued to an address with no
+        # account resolves on that address's first sign-in, and SSO is the only
+        # sign-up path there is. ``None`` in standalone, where the service is
+        # unwired and there is nobody to have invited anybody.
+        team_service=team_service,
     )
     logger.info("✅ SSO login service initialized")
     return service
@@ -1406,6 +1421,10 @@ def register_services(container: BaseDIContainer) -> None:
             redis_client=redis_client,
             token_generator=container.get_service("jwt_token_generator"),
             session_service=session_service,
+            # The consent side of ADR-017 D4 reaches the login path here, and
+            # only here: the sign-up hook resolves the offers waiting for the
+            # address that just signed in.
+            team_service=team_service,
         )
         if sso_login_service:
             container._register_service("sso_login_service", sso_login_service)

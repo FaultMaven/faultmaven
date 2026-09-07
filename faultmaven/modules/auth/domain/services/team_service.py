@@ -38,12 +38,17 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, List, Optional
 
+from faultmaven.exceptions import NotFoundError
+from faultmaven.infrastructure.persistence.user_repository import UserRepository
 from faultmaven.models.interfaces_user import (
+    IEnterpriseRepository,
     ITeamRepository,
+    LeaveOutcome,
     Team,
     TeamInvitation,
     TeamInvitationStatus,
     TeamMember,
+    TeamNameTakenError,
 )
 from faultmaven.modules.auth.domain.personal_tenant import email_domain
 from faultmaven.modules.auth.exceptions import TeamOperationRefused
@@ -65,7 +70,7 @@ REASON_ENTERPRISE_IS_PERSONAL = "enterprise_is_personal"
 REASON_ADDRESS_OUTSIDE_DOMAIN = "address_outside_enterprise_domain"
 REASON_ALREADY_A_MEMBER = "already_a_member"
 REASON_NOT_A_TEAM_ADMIN = "not_a_team_admin"
-REASON_NOT_FOUND = "not_found"
+REASON_TEAM_NAME_TAKEN = "team_name_taken"
 REASON_INVITATION_EXPIRED = "invitation_expired"
 REASON_INVITATION_NOT_PENDING = "invitation_not_pending"
 REASON_LAST_ADMIN_CANNOT_LEAVE = "last_admin_cannot_leave"
@@ -78,27 +83,42 @@ _NOT_FOUND_MESSAGE = "Not found."
 
 
 def normalize_invitation_email(email: Optional[str]) -> str:
-    """The one spelling an address is stored and compared as.
+    """The one spelling an address is stored and compared as: ``strip().lower()``.
 
-    Case-folded rather than lowercased: ``str.casefold`` is the comparison the
-    Unicode standard defines for caseless matching, and an address reaching here
-    is IdP-verified but not necessarily ASCII. Lowercasing would leave two
-    spellings of one address as two invitations — one of which nobody could ever
-    accept, because the sign-up hook matches on exactly one of them.
+    **Lower-cased, not case-folded, and that is a correctness requirement rather
+    than a style choice.** ``casefold`` is the stronger Unicode comparison and
+    would be the better key in isolation — but the key has to match the index
+    the account lookup uses, and that is ``func.lower(users.email)``
+    (``PostgreSQLUserRepository.get_by_email``; ``jwt_token_generator``
+    documents ``.lower()`` as the deployment's convention). For any address
+    where the two differ — ``MAẞE@`` lowers to ``maße@`` and folds to
+    ``masse@`` — a case-folded key misses the account, and the miss is silent
+    and security-relevant: rule 3's "anchored to another enterprise → refuse"
+    and the already-a-member check both depend on finding that account, and
+    both are skipped when the lookup returns nothing.
 
     Module-level, and imported by the sign-up hook in ``sso_login_service``
     rather than re-implemented there: the invite writes the key and the sign-up
     matches on it, so a second copy of this rule is a class of invitation that
     silently never resolves.
     """
-    return (email or "").strip().casefold()
+    return (email or "").strip().lower()
 
 
-def _not_found() -> TeamOperationRefused:
-    """The read shape for anything the caller may not see (ADR-017 D2)."""
-    return TeamOperationRefused(
-        reason=REASON_NOT_FOUND, message=_NOT_FOUND_MESSAGE, status_code=404
-    )
+def _not_found() -> NotFoundError:
+    """The read shape for anything the caller may not see (ADR-017 D2).
+
+    ``NotFoundError``, not a team-local 404: the house already has one
+    not-found envelope and one handler for it, and a second with its own title
+    map is a second thing to keep in step for no gain. Deliberately raised with
+    the message form only — passing ``resource_type``/``resource_id`` would put
+    the very id back in the body that answering 404 is meant to withhold.
+
+    ``TeamOperationRefused`` is then exactly what its name says: a refusal the
+    caller is entitled to *understand*, which is the 403/409/410 family. A 404
+    is the one answer on this surface that must carry no reason at all.
+    """
+    return NotFoundError(message=_NOT_FOUND_MESSAGE)
 
 
 def _now() -> datetime:
@@ -111,24 +131,46 @@ class TeamService:
     def __init__(
         self,
         team_repository: ITeamRepository,
-        enterprise_repository: Optional[Any] = None,
-        user_repository: Optional[Any] = None,
+        enterprise_repository: IEnterpriseRepository,
+        user_repository: UserRepository,
         invitation_ttl_days: Optional[int] = None,
     ):
-        """Wire the service.
+        """Wire the service. All three repositories are REQUIRED.
 
-        ``enterprise_repository`` and ``user_repository`` are optional because
-        the resolution half — the only half standalone and the KB read paths
-        use — needs neither. The consent half needs both (the enterprise for its
-        ``domain``, the accounts to resolve an address), and refuses rather than
-        guesses when either is missing: an unwired dependency must not silently
-        become "no account exists", which on the invitation path is a *decision*
-        rather than an absence.
+        They used to be optional, on the reasoning that the resolution half (the
+        KB read scope) needs only the team repository. That reasoning was
+        right about the resolution half and wrong about the consequence: the
+        composition root builds every repository with a ``try/except`` that
+        answers ``None``, so a transient failure to construct the enterprise
+        repository produced a service that looked wired, passed every
+        capability check, and answered **404 for every team in the deployment**
+        — a wiring failure wearing the shape of "you asked for a row that does
+        not exist", which is the one answer nobody investigates.
+
+        Refusing to construct is the honest failure: ``create_team_service``
+        then returns ``None``, ``team_service is None`` is already the
+        deployment-wide "team collaboration is not available here" signal, and
+        the surface answers its own 403 saying so.
 
         ``invitation_ttl_days`` overrides the configured TTL; it exists for the
         tests, which must be able to mint an expired invitation without waiting
         two weeks.
         """
+        if team_repository is None:
+            raise ValueError("TeamService requires a team repository")
+        if enterprise_repository is None:
+            raise ValueError(
+                "TeamService requires an enterprise repository: the invitation "
+                "rule is decided from enterprises.domain (ADR-017 D3), and "
+                "without it every invitation would be refused as though the "
+                "enterprise were personal"
+            )
+        if user_repository is None:
+            raise ValueError(
+                "TeamService requires a user repository: without it an address "
+                "with an account is indistinguishable from one without, and "
+                "rule 3's anchored-elsewhere refusal cannot be made"
+            )
         self._team_repository = team_repository
         self._enterprises = enterprise_repository
         self._users = user_repository
@@ -172,12 +214,16 @@ class TeamService:
         Creating one grants the creator nothing over anybody else — a team with
         one member sees what that member already saw.
 
-        The creator's membership is written second and is not optional: a team
-        whose creator is not in it would be a team nobody can administer, and
-        (since every other read here is gated on membership) one nobody can
-        even see. ``add_member`` refuses a member from another enterprise, so a
-        creator whose anchor does not match the team it just created leaves no
-        half-formed team behind — the team is deleted and the call refuses.
+        The team and the creator's membership are **one transaction**. Writing
+        them separately and compensating with a delete is not the same thing:
+        the compensation can itself fail, and until it runs the enterprise holds
+        a team nobody is in — invisible to every read here, all of which are
+        gated on membership, while still holding its name against the unique
+        index.
+
+        A name a live team in this enterprise already carries is a 409, not a
+        500. The index is partial on ``deleted_at IS NULL``, so a retired team
+        does not hold its name for ever.
         """
         now = _now()
         team = Team(
@@ -188,18 +234,23 @@ class TeamService:
             created_at=now,
             updated_at=now,
         )
-        created = await self._team_repository.create_team(team)
-        added = await self._team_repository.add_member(
-            created.team_id, creator_user_id, TEAM_ROLE_ADMIN
-        )
-        if not added:
-            # The anchors did not match, or one of them did not resolve. Undo
-            # rather than leave a team no account can reach.
-            await self._team_repository.delete_team(created.team_id)
+        try:
+            created = await self._team_repository.create_team_with_admin(
+                team, creator_user_id, TEAM_ROLE_ADMIN
+            )
+        except TeamNameTakenError as error:
+            raise TeamOperationRefused(
+                reason=REASON_TEAM_NAME_TAKEN,
+                message="A team in this enterprise already has that name.",
+                status_code=409,
+            ) from error
+        if created is None:
+            # The creator is anchored to another enterprise, or the account does
+            # not resolve. Nothing was written.
             logger.warning(
-                "Refusing team creation: %s could not be made a member of the "
-                "team it created",
+                "Refusing team creation: %s cannot be a member of a team in %s",
                 creator_user_id,
+                enterprise_id,
             )
             raise _not_found()
         logger.info(
@@ -215,64 +266,48 @@ class TeamService:
     ) -> Team:
         """The team, iff it is in ``enterprise_id`` and ``user_id`` is in it.
 
-        Every other team-addressed operation starts here, so the 404 shape is
-        stated once: a team in another enterprise, a team that does not exist,
-        and a team the caller is simply not in are one answer.
+        The 404 shape, stated once: a team in another enterprise, a team that
+        does not exist, and a team the caller is simply not in are one answer.
         """
-        team = await self._team_repository.get_team(team_id)
-        if team is None or team.enterprise_id != enterprise_id:
-            raise _not_found()
-        if not await self._team_repository.is_team_member(team_id, user_id):
-            raise _not_found()
+        team, _ = await self._team_and_roster(
+            enterprise_id=enterprise_id, team_id=team_id, user_id=user_id
+        )
         return team
 
     async def list_members(
         self, *, enterprise_id: str, team_id: str, user_id: str
     ) -> List[TeamMember]:
         """The roster, readable by any member of the team."""
-        await self.get_team_for_member(
+        _, roster = await self._team_and_roster(
             enterprise_id=enterprise_id, team_id=team_id, user_id=user_id
         )
-        return await self._team_repository.list_team_members(team_id)
-
-    async def get_team_name(self, team_id: str) -> Optional[str]:
-        """The team's display name, or ``None`` when it cannot be read.
-
-        A name is not access. This exists for the invitee's own list, where the
-        caller is *not* a member — so ``get_team_for_member`` cannot serve it —
-        and is called only for invitations already established as addressed to
-        that caller. The read is still enterprise-scoped by RLS, so it can name
-        no team outside the caller's own enterprise.
-        """
-        team = await self._team_repository.get_team(team_id)
-        return team.name if team else None
+        return roster
 
     async def leave_team(
         self, *, enterprise_id: str, team_id: str, user_id: str
     ) -> None:
-        """Leave a team; the last member out soft-deletes it.
+        """Leave a team; the last member out takes the team with them.
 
         Two rules, and they are the same rule seen from either end of a team's
         life. A team must never be left without an admin **while other members
         remain** — those members would keep sharing into a team nobody can
-        administer, invite to, or wind up. But the sole member of a team is not
-        stranding anybody by leaving, and a team with no members at all is not a
-        sharing unit; it is soft-deleted, which also drops it out of every
-        share-to-team picker.
+        administer, invite to, or wind up, and no route can repair it because
+        there is no promote endpoint. The sole member of a team strands nobody
+        by leaving, so the team is retired instead.
+
+        Both are decided **inside one transaction in the repository**, holding a
+        lock on the team row. Deciding them here would be a read-then-write, and
+        two admins leaving at the same instant would each see the other and both
+        go. The repository also revokes the retired team's pending invitations
+        in that transaction: an offer to a team nobody can see can be neither
+        accepted nor declined.
         """
-        await self.get_team_for_member(
-            enterprise_id=enterprise_id, team_id=team_id, user_id=user_id
+        outcome = await self._team_repository.leave_team(
+            enterprise_id, team_id, user_id, TEAM_ROLE_ADMIN
         )
-        members = await self._team_repository.list_team_members(team_id)
-        others = [member for member in members if member.user_id != user_id]
-        leaver_is_admin = any(
-            member.user_id == user_id and member.team_role == TEAM_ROLE_ADMIN
-            for member in members
-        )
-        other_admins = [
-            member for member in others if member.team_role == TEAM_ROLE_ADMIN
-        ]
-        if others and leaver_is_admin and not other_admins:
+        if outcome is LeaveOutcome.ABSENT:
+            raise _not_found()
+        if outcome is LeaveOutcome.LAST_ADMIN:
             raise TeamOperationRefused(
                 reason=REASON_LAST_ADMIN_CANNOT_LEAVE,
                 message=(
@@ -281,10 +316,8 @@ class TeamService:
                 ),
                 status_code=409,
             )
-        await self._team_repository.remove_member(team_id, user_id)
-        if not others:
-            await self._team_repository.delete_team(team_id)
-            logger.info("Team %s soft-deleted: its last member left", team_id)
+        if outcome is LeaveOutcome.LEFT_AND_RETIRED:
+            logger.info("Team %s retired: its last member left", team_id)
 
     # -- invitations: the consent (D3 + D4) --------------------------------- #
 
@@ -314,18 +347,12 @@ class TeamService:
            into this enterprise; if it signs up elsewhere it stays pending until
            it expires, and never resolves.
         5. Already a member → 409. A pending offer for the same address on the
-           same team → that offer is returned, not a second row.
+           same team → that offer is returned, not a second row — including when
+           a concurrent invite won the race, which the repository settles.
         """
         team = await self._require_team_admin(
             enterprise_id=enterprise_id, team_id=team_id, user_id=actor_user_id
         )
-        if self._enterprises is None or self._users is None:
-            # Not "no account exists" — an unwired dependency is an absence of
-            # evidence, and on this path that must never be read as evidence of
-            # absence. See __init__.
-            logger.error("Team invitations unavailable: repositories unwired")
-            raise _not_found()
-
         address = self._normalize_email(email)
 
         enterprise = await self._enterprises.get_enterprise(enterprise_id)
@@ -340,7 +367,7 @@ class TeamService:
                 status_code=403,
             )
 
-        if email_domain(address) != enterprise_domain.casefold():
+        if email_domain(address) != enterprise_domain.lower():
             raise self._outside_domain()
 
         account = await self._users.get_by_email(address)
@@ -357,9 +384,15 @@ class TeamService:
                     status_code=409,
                 )
 
-        existing = await self._team_repository.find_pending_invitation(team_id, address)
-        if existing is not None and not existing.is_expired(_now()):
-            return existing
+        existing = await self._team_repository.find_pending_invitation(
+            enterprise_id, team_id, address
+        )
+        if existing is not None:
+            settled = await self._settle_expiry(existing)
+            if settled.status == TeamInvitationStatus.PENDING:
+                return settled
+            # The live offer had run out and has just been stamped ``expired``,
+            # which frees the partial unique index for its replacement below.
 
         now = _now()
         invitation = TeamInvitation(
@@ -373,11 +406,6 @@ class TeamService:
             created_at=now,
             expires_at=now + timedelta(days=self._ttl_days()),
         )
-        if existing is not None:
-            # The live offer had run out. Expire it before minting its
-            # replacement: the partial unique index admits one PENDING row per
-            # address per team, and an expired-but-unstamped row still counts.
-            await self._team_repository.mark_invitation_expired(existing.invitation_id)
         return await self._team_repository.create_invitation(invitation)
 
     async def list_team_invitations(
@@ -385,15 +413,18 @@ class TeamService:
     ) -> List[TeamInvitation]:
         """Every invitation issued for a team, for its admin.
 
-        Expiry is applied on the way out (and stamped on the row), so an admin
-        reading the list sees offers that have run out as ``expired`` rather
-        than as still-live ones a lazy scheme has not got round to.
+        Expiry is applied on the way out (and stamped on the rows, in one
+        statement), so an admin reading the list sees offers that have run out
+        as ``expired`` rather than as still-live ones a lazy scheme has not got
+        round to.
         """
         await self._require_team_admin(
             enterprise_id=enterprise_id, team_id=team_id, user_id=user_id
         )
-        invitations = await self._team_repository.list_team_invitations(team_id)
-        return [await self._settle_expiry(item) for item in invitations]
+        invitations = await self._team_repository.list_team_invitations(
+            enterprise_id, team_id
+        )
+        return await self._settle_all(invitations)
 
     async def revoke_invitation(
         self,
@@ -403,15 +434,20 @@ class TeamService:
         invitation_id: str,
         actor_user_id: str,
     ) -> None:
-        """Withdraw an offer, as the team's admin."""
+        """Withdraw an offer, as the team's admin.
+
+        An offer that has already run out answers 410 and is stamped
+        ``expired``, not ``revoked``: ``revoked_by`` is the record of who ended
+        it, and writing a withdrawal nobody performed puts a decision in the
+        record that no person made.
+        """
         await self._require_team_admin(
             enterprise_id=enterprise_id, team_id=team_id, user_id=actor_user_id
         )
-        invitation = await self._team_repository.get_invitation(
-            enterprise_id, invitation_id
-        )
-        if invitation is None or invitation.team_id != team_id:
+        invitation = await self._read_invitation(enterprise_id, invitation_id)
+        if invitation.team_id != team_id:
             raise _not_found()
+        self._require_open(invitation)
         await self._team_repository.mark_invitation_revoked(
             invitation_id, actor_user_id, _now()
         )
@@ -423,87 +459,103 @@ class TeamService:
 
         Addressed two ways because an invitation may predate the account: by
         ``invited_user_id`` once it resolved, and by address while it has not.
-        Only the ones still live are returned — an offer that has run out is
-        stamped ``expired`` here and dropped, which is what makes the lazy
-        scheme indistinguishable from a swept one at every surface a person
-        sees.
+        Only the ones still live are returned — offers that have run out are
+        stamped ``expired`` here, in one statement, and dropped, which is what
+        makes the lazy scheme indistinguishable from a swept one at every
+        surface a person sees.
         """
         address = self._normalize_email(email)
         invitations = await self._team_repository.list_invitations_for_invitee(
             enterprise_id, user_id, address
         )
-        live: List[TeamInvitation] = []
-        for invitation in invitations:
-            settled = await self._settle_expiry(invitation)
-            if settled.status == TeamInvitationStatus.PENDING:
-                live.append(settled)
-        return live
+        settled = await self._settle_all(invitations)
+        return [
+            invitation
+            for invitation in settled
+            if invitation.status == TeamInvitationStatus.PENDING
+        ]
+
+    async def name_teams(self, *, enterprise_id: str, team_ids: List[str]) -> dict:
+        """``{team_id: name}`` for live teams of this enterprise. One query.
+
+        Serves the invitee's own list, where the caller is *not* a member of the
+        teams being named — so the membership-gated reads cannot answer it — and
+        is called only for invitations already established as addressed to that
+        caller. A name is not access; the enterprise predicate is still applied,
+        so it can name no team outside the caller's own.
+        """
+        return await self._team_repository.get_team_names(enterprise_id, team_ids)
 
     async def accept_invitation(
-        self, *, enterprise_id: str, invitation_id: str, user: Any
+        self, *, enterprise_id: str, invitation_id: str, user_id: str, email: str
     ) -> Team:
         """Consent: become a member of the team this invitation names.
 
         The consent that forms the team (D4). Membership is created here and
         nowhere else on this surface — a pending invitation grants nothing, and
         an admin cannot add a member directly.
+
+        **The membership is written before the offer is stamped**, and the order
+        is the whole of whether a partial failure is recoverable. Stamping first
+        spends a one-shot token: if the membership then fails — the team was
+        retired between the read and the write, the invitee's anchor moved after
+        the token was minted — the row reads ``accepted`` with no membership and
+        every retry answers 409, because the only thing that could have
+        authorised the retry is the row just spent. Writing the membership first
+        fails the other way: ``add_member`` is an idempotent upsert, so a
+        failure after it leaves the offer pending and the retry both re-writes
+        the same membership row and completes the stamp.
         """
-        invitation = await self._invitation_addressed_to(
-            enterprise_id=enterprise_id, invitation_id=invitation_id, user=user
+        invitation = await self._read_invitation(enterprise_id, invitation_id)
+        self._require_addressed_to(invitation, user_id=user_id, email=email)
+        self._require_open(invitation)
+
+        team = await self._team_repository.get_team(enterprise_id, invitation.team_id)
+        if team is None:
+            raise _not_found()
+
+        added = await self._team_repository.add_member(
+            invitation.team_id, user_id, TEAM_ROLE_MEMBER
         )
-        if invitation.is_expired(_now()):
-            await self._team_repository.mark_invitation_expired(invitation_id)
-            raise TeamOperationRefused(
-                reason=REASON_INVITATION_EXPIRED,
-                message="This invitation has expired.",
-                status_code=410,
+        if not added:
+            # ``add_member`` refuses a member anchored to another enterprise.
+            # Nothing has been consumed, so the offer stays answerable.
+            logger.warning(
+                "Membership refused for %s on invitation %s; the offer is " "unchanged",
+                user_id,
+                invitation_id,
             )
-        team = await self._team_repository.get_team(invitation.team_id)
-        if team is None or team.enterprise_id != enterprise_id:
             raise _not_found()
 
         accepted = await self._team_repository.mark_invitation_accepted(
-            invitation_id, user.user_id, _now()
+            invitation_id, user_id, _now()
         )
         if not accepted:
-            # Somebody answered it between the read and the write. The status is
-            # whatever they made it; either way this call did not accept it.
+            # Somebody answered it between the read and the stamp. The
+            # membership upsert above is idempotent, so nothing is left
+            # half-done either way; this call simply did not accept it.
             raise TeamOperationRefused(
                 reason=REASON_INVITATION_NOT_PENDING,
                 message="This invitation is no longer open.",
                 status_code=409,
             )
-        added = await self._team_repository.add_member(
-            invitation.team_id, user.user_id, TEAM_ROLE_MEMBER
-        )
-        if not added:
-            # ``add_member`` refuses a member anchored to another enterprise.
-            # Reaching here means the invitation and the account disagree about
-            # the enterprise, which the invite rule should have made impossible
-            # — refuse in the read shape rather than report a half-done accept.
-            logger.warning(
-                "Invitation %s accepted but membership refused for %s",
-                invitation_id,
-                user.user_id,
-            )
-            raise _not_found()
         logger.info(
             "Invitation %s accepted: %s joined team %s",
             invitation_id,
-            user.user_id,
+            user_id,
             invitation.team_id,
         )
         return team
 
     async def decline_invitation(
-        self, *, enterprise_id: str, invitation_id: str, user: Any
+        self, *, enterprise_id: str, invitation_id: str, user_id: str, email: str
     ) -> None:
         """Refuse an offer. Recorded, so the admin can see it was answered."""
-        invitation = await self._invitation_addressed_to(
-            enterprise_id=enterprise_id, invitation_id=invitation_id, user=user
-        )
+        invitation = await self._read_invitation(enterprise_id, invitation_id)
+        self._require_addressed_to(invitation, user_id=user_id, email=email)
+        self._require_open(invitation)
         await self._team_repository.mark_invitation_revoked(
-            invitation.invitation_id, user.user_id, _now()
+            invitation.invitation_id, user_id, _now()
         )
 
     async def resolve_invitations_for_account(
@@ -519,9 +571,17 @@ class TeamService:
         when the address lands in the enterprise that issued it, which the
         repository's own predicate enforces. Idempotent: it touches only rows
         whose ``invited_user_id`` is still NULL.
+
+        Short-circuits for an enterprise with no domain. A personal enterprise
+        refuses every invitation at send time (rule 1), so it can hold none —
+        and this runs on the hot login path, where a guaranteed-empty write
+        transaction is a cost with no possible result.
         """
         address = self._normalize_email(email)
         if not address:
+            return 0
+        enterprise = await self._enterprises.get_enterprise(enterprise_id)
+        if not getattr(enterprise, "domain", None):
             return 0
         return await self._team_repository.resolve_invitations_for_account(
             enterprise_id, address, user_id
@@ -544,7 +604,7 @@ class TeamService:
 
     @staticmethod
     def _normalize_email(email: Optional[str]) -> str:
-        """Case-fold and trim an address. The stored and compared form."""
+        """Trim and lower-case an address. The stored and compared form."""
         return normalize_invitation_email(email)
 
     @staticmethod
@@ -566,6 +626,25 @@ class TeamService:
             status_code=403,
         )
 
+    async def _team_and_roster(
+        self, *, enterprise_id: str, team_id: str, user_id: str
+    ) -> tuple[Team, List[TeamMember]]:
+        """The team and its roster, iff the caller is in it. One read.
+
+        Every team-addressed operation needs both facts, and asking for them
+        separately meant three sessions to answer one question — team, then "am
+        I a member?", then the roster, of which the last already contains the
+        answer to the second.
+        """
+        team, roster = await self._team_repository.get_team_with_members(
+            enterprise_id, team_id
+        )
+        if team is None:
+            raise _not_found()
+        if not any(member.user_id == user_id for member in roster):
+            raise _not_found()
+        return team, roster
+
     async def _require_team_admin(
         self, *, enterprise_id: str, team_id: str, user_id: str
     ) -> Team:
@@ -576,13 +655,12 @@ class TeamService:
         nothing. A member without the role is told they lack it (403), which
         reveals nothing they do not already know: they can see the team.
         """
-        team = await self.get_team_for_member(
+        team, roster = await self._team_and_roster(
             enterprise_id=enterprise_id, team_id=team_id, user_id=user_id
         )
-        members = await self._team_repository.list_team_members(team_id)
         if not any(
             member.user_id == user_id and member.team_role == TEAM_ROLE_ADMIN
-            for member in members
+            for member in roster
         ):
             raise TeamOperationRefused(
                 reason=REASON_NOT_A_TEAM_ADMIN,
@@ -591,10 +669,30 @@ class TeamService:
             )
         return team
 
-    async def _invitation_addressed_to(
-        self, *, enterprise_id: str, invitation_id: str, user: Any
+    async def _read_invitation(
+        self, enterprise_id: str, invitation_id: str
     ) -> TeamInvitation:
-        """The invitation, iff it is addressed to ``user`` and still open.
+        """The one way an invitation is read, expiry already settled.
+
+        Every verb went through its own combination of "read the row" and
+        "notice it elapsed", and they disagreed: decline and revoke looked only
+        at the stored status, so an elapsed offer was recorded as *revoked* — a
+        withdrawal nobody performed — and accept answered 410 or 409 depending
+        on whether anything had listed the row first. Settling here means the
+        row every caller holds is already the row the database now has.
+        """
+        invitation = await self._team_repository.get_invitation(
+            enterprise_id, invitation_id
+        )
+        if invitation is None:
+            raise _not_found()
+        return await self._settle_expiry(invitation)
+
+    @staticmethod
+    def _require_addressed_to(
+        invitation: TeamInvitation, *, user_id: str, email: str
+    ) -> None:
+        """Refuse anything not addressed to this caller, in the read shape.
 
         "Addressed to me" is two tests, matching the two ways an invitation can
         name someone: by ``invited_user_id`` once it has resolved, and by
@@ -603,35 +701,67 @@ class TeamService:
         nothing — is one 404, because a 403 would confirm the id exists and let
         an invitation id be probed for.
         """
-        invitation = await self._team_repository.get_invitation(
-            enterprise_id, invitation_id
-        )
-        if invitation is None:
-            raise _not_found()
         if invitation.invited_user_id is not None:
-            if invitation.invited_user_id != user.user_id:
+            if invitation.invited_user_id != user_id:
                 raise _not_found()
-        elif invitation.email != self._normalize_email(getattr(user, "email", None)):
+        elif invitation.email != normalize_invitation_email(email):
             raise _not_found()
+
+    @staticmethod
+    def _require_open(invitation: TeamInvitation) -> None:
+        """Refuse an offer that is no longer answerable, saying which way.
+
+        ``expired`` is its own answer (410) rather than folded into "no longer
+        open" (409): the caller was entitled to that invitation and is entitled
+        to know it lapsed, which is a different fact from somebody else having
+        answered it.
+        """
+        if invitation.status == TeamInvitationStatus.EXPIRED:
+            raise TeamOperationRefused(
+                reason=REASON_INVITATION_EXPIRED,
+                message="This invitation has expired.",
+                status_code=410,
+            )
         if invitation.status != TeamInvitationStatus.PENDING:
             raise TeamOperationRefused(
                 reason=REASON_INVITATION_NOT_PENDING,
                 message="This invitation is no longer open.",
                 status_code=409,
             )
-        return invitation
+
+    async def _settle_all(
+        self, invitations: List[TeamInvitation]
+    ) -> List[TeamInvitation]:
+        """Stamp every elapsed row in a batch, in ONE statement, and return it so.
+
+        Lazy expiry's obligation is that whoever reads a row past its deadline
+        settles it. Doing that one commit per row made reading a stale mailbox
+        cost a transaction per stale offer; the ids are collected and written
+        together instead.
+        """
+        now = _now()
+        elapsed = [
+            invitation
+            for invitation in invitations
+            if invitation.status == TeamInvitationStatus.PENDING
+            and invitation.is_expired(now)
+        ]
+        if not elapsed:
+            return list(invitations)
+        await self._team_repository.expire_invitations(
+            [invitation.invitation_id for invitation in elapsed]
+        )
+        stamped = {invitation.invitation_id for invitation in elapsed}
+        return [
+            (
+                invitation.model_copy(update={"status": TeamInvitationStatus.EXPIRED})
+                if invitation.invitation_id in stamped
+                else invitation
+            )
+            for invitation in invitations
+        ]
 
     async def _settle_expiry(self, invitation: TeamInvitation) -> TeamInvitation:
-        """Stamp a pending-but-elapsed invitation ``expired``, and return it so.
-
-        Lazy expiry's one obligation: whoever reads a row past its deadline is
-        the one that settles it, so the stored status and what the reader is
-        told never disagree.
-        """
-        if (
-            invitation.status != TeamInvitationStatus.PENDING
-            or not invitation.is_expired(_now())
-        ):
-            return invitation
-        await self._team_repository.mark_invitation_expired(invitation.invitation_id)
-        return invitation.model_copy(update={"status": TeamInvitationStatus.EXPIRED})
+        """The single-row form of :meth:`_settle_all`."""
+        settled = await self._settle_all([invitation])
+        return settled[0]

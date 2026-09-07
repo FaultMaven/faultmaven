@@ -101,9 +101,6 @@ from faultmaven.modules.auth.domain.personal_tenant import (
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     capture_state_read_at,
 )
-from faultmaven.modules.auth.domain.services.team_service import (
-    normalize_invitation_email,
-)
 from faultmaven.modules.auth.exceptions import (
     SSOAuthenticationError,
     SSOProvisioningError,
@@ -328,7 +325,7 @@ class SSOLoginService:
         org_mapping_repository: Any | None = None,
         enterprise_repository: Any | None = None,
         personal_enterprise_repository: Any | None = None,
-        team_repository: Any | None = None,
+        team_service: Any | None = None,
     ) -> None:
         self._provider = identity_provider
         self._store = ephemeral_store
@@ -350,13 +347,22 @@ class SSOLoginService:
         # no-IdP-organization branch and only with the switch on; its absence
         # fails that branch closed rather than silently skipping the decision.
         self._personal_enterprises = personal_enterprise_repository
-        # Team invitations (ADR-017 D4). Consulted once, immediately after the
-        # enterprise anchor is written, to name this account on the offers that
-        # were waiting for its address. Optional, and its absence is NOT a
-        # failure: resolving an invitation is not a precondition of signing in,
-        # and refusing a login because a team feature is unwired would be the
-        # wrong direction entirely.
-        self._teams = team_repository
+        # Team invitations (ADR-017 D4). Consulted once per admitted login, to
+        # name this account on the offers that were waiting for its address.
+        #
+        # The SERVICE, not the repository: the rule for what an address key
+        # looks like, and the short-circuit for an enterprise that can hold no
+        # invitations, belong to the domain and existed there already. Reaching
+        # past it to the repository meant a second copy of the normalization —
+        # and a second copy of that rule is a class of invitation that silently
+        # never resolves, because the invite writes one spelling and the sign-up
+        # matches on another.
+        #
+        # ``None`` in standalone (team collaboration is unwired there), and its
+        # absence is NOT a failure: resolving an invitation is not a
+        # precondition of signing in, and refusing a login because a team
+        # feature is unwired would be the wrong direction entirely.
+        self._teams = team_service
 
     # -- leg 1: browser -> IdP ---------------------------------------------- #
 
@@ -1263,6 +1269,12 @@ class SSOLoginService:
         nothing, and leaves the original offer pending until it expires. That is
         the design, not a gap: nothing crosses an enterprise line (D2).
 
+        Delegated whole to ``TeamService``: the address key, the enterprise
+        short-circuit (an enterprise with no domain can hold no invitations, so
+        the hot login path opens no guaranteed-empty write transaction) and the
+        idempotence all live there, beside the rule that writes the rows this
+        reads.
+
         **Not in the anchor's transaction, deliberately.** The anchor is written
         through the sessionless repositories, each of which owns its session, so
         there is no transaction here to join; wrapping both would mean giving
@@ -1285,12 +1297,11 @@ class SSOLoginService:
         """
         if self._teams is None:
             return
-        email = normalize_invitation_email(getattr(user, "email", None))
-        if not email:
-            return
         try:
             resolved = await self._teams.resolve_invitations_for_account(
-                enterprise.enterprise_id, email, user.user_id
+                enterprise_id=enterprise.enterprise_id,
+                email=getattr(user, "email", None) or "",
+                user_id=user.user_id,
             )
         except Exception:
             logger.exception("sso_invitation_resolution_failed", user_id=user.user_id)
