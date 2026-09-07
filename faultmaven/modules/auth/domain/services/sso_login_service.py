@@ -101,6 +101,9 @@ from faultmaven.modules.auth.domain.personal_tenant import (
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     capture_state_read_at,
 )
+from faultmaven.modules.auth.domain.services.team_service import (
+    normalize_invitation_email,
+)
 from faultmaven.modules.auth.exceptions import (
     SSOAuthenticationError,
     SSOProvisioningError,
@@ -325,6 +328,7 @@ class SSOLoginService:
         org_mapping_repository: Any | None = None,
         enterprise_repository: Any | None = None,
         personal_enterprise_repository: Any | None = None,
+        team_repository: Any | None = None,
     ) -> None:
         self._provider = identity_provider
         self._store = ephemeral_store
@@ -346,6 +350,13 @@ class SSOLoginService:
         # no-IdP-organization branch and only with the switch on; its absence
         # fails that branch closed rather than silently skipping the decision.
         self._personal_enterprises = personal_enterprise_repository
+        # Team invitations (ADR-017 D4). Consulted once, immediately after the
+        # enterprise anchor is written, to name this account on the offers that
+        # were waiting for its address. Optional, and its absence is NOT a
+        # failure: resolving an invitation is not a precondition of signing in,
+        # and refusing a login because a team feature is unwired would be the
+        # wrong direction entirely.
+        self._teams = team_repository
 
     # -- leg 1: browser -> IdP ---------------------------------------------- #
 
@@ -1224,7 +1235,59 @@ class SSOLoginService:
                 user_id=user.user_id,
             )
             return False
+        await self._resolve_pending_invitations(user, enterprise)
         return True
+
+    async def _resolve_pending_invitations(self, user: Any, enterprise: Any) -> None:
+        """Name this account on the team invitations waiting for its address.
+
+        ADR-017 D4's other half: a team admin may invite an address that has no
+        account yet, and the offer resolves when that address signs up **and
+        lands in the same enterprise**. This is where "and lands in the same
+        enterprise" is decided — it runs immediately after the anchor write, so
+        the enterprise it passes is the one the account is now in, and the
+        repository's own predicate confines the UPDATE to offers issued there.
+        An address that signs up into a *different* enterprise reaches this with
+        that enterprise's id, matches nothing, and leaves the original offer
+        pending until it expires. That is the design, not a gap: nothing crosses
+        an enterprise line (D2).
+
+        **Not in the anchor's transaction, deliberately.** The anchor is written
+        through the sessionless repositories, each of which owns its session, so
+        there is no transaction here to join; wrapping both would mean giving
+        this path a session handle that no other collaborator on it has. What
+        makes that safe is that the statement is idempotent — it touches only
+        rows whose ``invited_user_id`` is still NULL — so a failure between the
+        two writes heals on the account's next sign-in rather than leaving the
+        invitation permanently unresolvable.
+
+        Runs for JIT-provisioned and returning accounts alike, and for the same
+        reason ``_ensure_enterprise_anchor`` does: an invitation issued while
+        somebody was away must resolve on the sign-in after it, not only on a
+        first one that will never happen again.
+
+        Never fails the login. A team feature that is unwired, or a statement
+        that errors, must not cost somebody their session — the offer stays
+        pending and the next sign-in tries again.
+        """
+        if self._teams is None:
+            return
+        email = normalize_invitation_email(getattr(user, "email", None))
+        if not email:
+            return
+        try:
+            resolved = await self._teams.resolve_invitations_for_account(
+                enterprise.enterprise_id, email, user.user_id
+            )
+        except Exception:
+            logger.exception("sso_invitation_resolution_failed", user_id=user.user_id)
+            return
+        if resolved:
+            logger.info(
+                "sso_invitations_resolved",
+                user_id=user.user_id,
+                count=resolved,
+            )
 
     # -- leg 3: dashboard -> session ---------------------------------------- #
 

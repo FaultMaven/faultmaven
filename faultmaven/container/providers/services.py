@@ -525,18 +525,26 @@ def create_team_repository() -> Any | None:
 def create_team_service(
     tenant_provider: Any | None,
     team_repository: Any | None,
+    enterprise_repository: Any | None = None,
 ) -> Any | None:
-    """Create the team service (KB team-scope resolution), or None.
+    """Create the team service (teams, invitations, KB scope), or None.
 
-    Gated on multi-tenant mode (ADR-013): team collaboration is a Cloud feature,
-    so the resolver is wired only when the tenant provider is multi-tenant.
-    Standalone (single-tenant) leaves ``team_service`` unwired — the two
-    consumers (agent retrieval + KB inventory route) then skip team resolution
-    and KB scope collapses to ``personal ∪ global``.
+    Gated on multi-tenant mode (ADR-013 / ADR-017 D8): teams form by consent,
+    and a standalone deployment has one enterprise, one default team and one
+    account — there is nobody to invite. Standalone therefore leaves
+    ``team_service`` unwired, which is the single signal every consumer reads:
+    agent retrieval and the KB inventory route skip team resolution (KB scope
+    collapses to ``personal ∪ global``), ``GET /teams`` answers an empty list,
+    ``GET /meta/capabilities`` reports team sharing off, and the team-management
+    and invitation routes refuse with a reason slug.
 
-    In Standalone (single-tenant) deployments this returns None; the resolver is
-    live only under the multi-tenant provider (Cloud). The resolver itself is
-    exercised directly by unit tests.
+    ``enterprise_repository`` is what the invitation rule needs beyond the team
+    tables: the domain an address must match is ``enterprises.domain`` (ADR-017
+    D3). It is optional here so the resolver still builds without it — the KB
+    read paths never touch it — and the service refuses invitations rather than
+    guessing when it is absent. The user repository is built here rather than
+    passed: it is sessionless and stateless, and the multi-tenant provider
+    implies a persistent database, so there is nothing to select between.
     """
     if team_repository is None or tenant_provider is None:
         return None
@@ -547,10 +555,17 @@ def create_team_service(
         logger.debug("TeamService skipped (single-tenant; team collaboration inert)")
         return None
 
+    from faultmaven.infrastructure.persistence.user_repository import (
+        SessionlessUserRepository,
+    )
     from faultmaven.modules.auth.domain.services.team_service import TeamService
 
     logger.debug("TeamService initialized (multi-tenant)")
-    return TeamService(team_repository)
+    return TeamService(
+        team_repository,
+        enterprise_repository=enterprise_repository,
+        user_repository=SessionlessUserRepository(),
+    )
 
 
 def create_share_repository() -> Any | None:
@@ -1026,6 +1041,9 @@ def create_sso_login_service(
     from faultmaven.infrastructure.persistence.sessionless_enterprise_repository import (
         SessionlessEnterpriseRepository,
     )
+    from faultmaven.infrastructure.persistence.sessionless_team_repository import (
+        SessionlessTeamRepository,
+    )
     from faultmaven.infrastructure.persistence.user_repository import (
         SessionlessUserRepository,
     )
@@ -1061,6 +1079,10 @@ def create_sso_login_service(
         # consults it only on the no-IdP-organization branch and only when
         # SSO_JIT_PERSONAL_TENANT_ENABLED is on, which it is not by default.
         personal_enterprise_repository=SessionlessSSOPersonalEnterpriseRepository(),
+        # Team invitations (ADR-017 D4). Wired unconditionally: an offer issued
+        # to an address with no account resolves on that address's first
+        # sign-in, and SSO is the only sign-up path there is.
+        team_repository=SessionlessTeamRepository(),
     )
     logger.info("✅ SSO login service initialized")
     return service
@@ -1271,7 +1293,9 @@ def register_services(container: BaseDIContainer) -> None:
 
     # Team Service (KB team-scope resolution). Gated on multi-tenant mode —
     # None in standalone (team collaboration is a Cloud feature).
-    team_service = create_team_service(tenant_provider, team_repository)
+    team_service = create_team_service(
+        tenant_provider, team_repository, enterprise_repository
+    )
     container.team_service = team_service
     if team_service:
         container._register_service("team_service", team_service)
