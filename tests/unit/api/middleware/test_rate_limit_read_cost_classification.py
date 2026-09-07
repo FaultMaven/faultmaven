@@ -60,6 +60,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.security]
 MOUNTS = (
     ("/api/v1", "faultmaven.modules.auth.api.auth"),
     ("/api/v1", "faultmaven.modules.auth.api.oauth"),
+    ("/api/v1", "faultmaven.modules.auth.api.invitations"),
     ("/api/v1", "faultmaven.modules.auth.api.session"),
     ("/api/v1", "faultmaven.modules.auth.api.sso"),
     ("/api/v1", "faultmaven.modules.auth.api.teams"),

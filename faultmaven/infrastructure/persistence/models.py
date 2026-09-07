@@ -792,6 +792,16 @@ class TeamInvitationModel(Base):
     )
     expires_at = Column(DateTime(timezone=True), nullable=True)
     accepted_at = Column(DateTime(timezone=True), nullable=True)
+    #: Who ended the offer, and when. One pair for both endings, because
+    #: ``status='revoked'`` is reached from two directions — the team admin
+    #: withdrawing the offer and the invitee declining it — and the row is the
+    #: only place that difference survives. Comparing ``revoked_by`` against
+    #: ``invited_by`` is what tells the two apart; a second status value would
+    #: have said the same thing while widening the CHECK every reader parses.
+    revoked_by = Column(
+        String(36), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True
+    )
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         CheckConstraint(
@@ -802,6 +812,20 @@ class TeamInvitationModel(Base):
             "LENGTH(TRIM(email)) > 0", name="team_invitations_email_not_empty"
         ),
         Index("ix_team_invitations_email", "email"),
+        # One PENDING offer per address per team, enforced by the database
+        # rather than by the read-then-write in the repository: re-inviting is
+        # idempotent, and two concurrent invites of the same address would
+        # otherwise leave two live offers, of which accepting one leaves the
+        # other pending forever. Partial, so the accepted/revoked/expired
+        # history of an address on a team is kept in full.
+        Index(
+            "ix_team_invitations_pending_unique",
+            "team_id",
+            "email",
+            unique=True,
+            sqlite_where=text("status = 'pending'"),
+            postgresql_where=text("status = 'pending'"),
+        ),
     )
 
 

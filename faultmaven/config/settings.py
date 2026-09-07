@@ -1706,6 +1706,32 @@ class AuthSettings(BaseSettings):
     #
     # This is NOT the per-tenant LLM usage cap (ADR-016 D5.3), which bounds what
     # a tenant may spend and ships separately.
+    # How long an offer to join a team stays live (ADR-017 D4, open item 2).
+    #
+    # Bounded rather than indefinite because a pending invitation is an offer
+    # that may never be answered: an address with no account yet can be
+    # invited, and if that address signs up into a DIFFERENT enterprise the
+    # invitation can never resolve — nothing crosses an enterprise line. A row
+    # that stays pending forever is a standing offer nobody can see or
+    # withdraw, and the invitee's own list is the only place it surfaces.
+    #
+    # Enforced LAZILY: nothing sweeps the table, so an expired row keeps
+    # ``status='pending'`` until the read or the accept that first notices, and
+    # the expiry is computed from ``expires_at`` on the row rather than from
+    # this setting. Lowering the value therefore does not retro-expire
+    # invitations already issued — each carries the deadline it was minted with.
+    team_invitation_ttl_days: int = Field(
+        default=14,
+        ge=1,
+        le=365,
+        validation_alias="TEAM_INVITATION_TTL_DAYS",
+        description=(
+            "How many days an unanswered team invitation stays live "
+            "(ADR-017 D4). Stamped on the row at creation; changing it "
+            "affects only invitations issued afterwards."
+        ),
+    )
+
     sso_jit_personal_tenant_max_per_hour: int = Field(
         default=20,
         ge=1,

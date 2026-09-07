@@ -31,7 +31,7 @@ tenancy providers implement/consume these interfaces and models.
 """
 
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
@@ -244,6 +244,78 @@ class TeamMember(BaseModel):
     team_id: str
     team_role: Optional[str] = None  # 'lead', 'member', or custom
     joined_at: datetime
+
+
+class TeamInvitationStatus(str, Enum):
+    """The four states an offer to join a team can be in.
+
+    Mirrors the DB ``team_invitations_status_check`` CHECK at the domain layer.
+    Same rule, two layers — neither bypassable independently.
+
+    ``REVOKED`` is reached from two directions: the team admin withdrawing the
+    offer and the invitee declining it. They are one *state* — the offer is off
+    the table and grants nothing — and the row tells them apart by whether
+    ``revoked_by`` is the inviter or the invitee. A fifth value would have said
+    the same thing while widening the CHECK every reader parses.
+    """
+
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REVOKED = "revoked"
+    EXPIRED = "expired"
+
+
+class TeamInvitation(BaseModel):
+    """An offer to join a team, and the consent record that answers it (D4).
+
+    A pending invitation grants **nothing**: it is the thing that keeps a
+    stranger from pulling a colleague into a team's view without a word
+    (ADR-017 D4). Membership is created only by the invitee's own accept.
+
+    ``email`` is always present and always case-folded; ``invited_user_id`` is
+    the account that address resolved to and is ``None`` until it has one. An
+    address with no account yet can be invited, and the invitation resolves
+    when that address signs up **and lands in the same enterprise** (D4). An
+    address that signs up into a different enterprise never resolves — the
+    invitation stays pending until it expires, because nothing crosses an
+    enterprise line (D2).
+    """
+
+    invitation_id: str
+    enterprise_id: str
+    team_id: str
+    #: Case-folded by every writer. The comparison is exact: an address is a
+    #: key here, and two spellings of one address must not be two invitations.
+    email: str
+    invited_user_id: Optional[str] = None
+    invited_by: Optional[str] = None
+    status: TeamInvitationStatus = TeamInvitationStatus.PENDING
+    created_at: datetime
+    expires_at: Optional[datetime] = None
+    accepted_at: Optional[datetime] = None
+    revoked_by: Optional[str] = None
+    revoked_at: Optional[datetime] = None
+
+    def is_expired(self, now: datetime) -> bool:
+        """Whether this offer has run out, judged at ``now``.
+
+        Expiry is **lazy**: no sweeper walks the table, so a row can carry
+        ``status='pending'`` past its ``expires_at`` and it is the read and the
+        accept that notice. Reading it from the row rather than from a stored
+        status is what makes the two agree without a job in between.
+
+        An invitation with no ``expires_at`` never expires. That is not the
+        shape the API mints — every invitation it creates carries one — but a
+        row written by an older path or by hand must not be read as expired the
+        instant it is seen.
+        """
+        if self.expires_at is None:
+            return False
+        deadline = self.expires_at
+        if deadline.tzinfo is None:
+            # SQLite hands back naive datetimes; the rule is UTC either way.
+            deadline = deadline.replace(tzinfo=timezone.utc)
+        return deadline <= now
 
 
 class Role(BaseModel):
@@ -674,6 +746,188 @@ class ITeamRepository(ABC):
         Returns:
             List of team_id strings (empty when the user has no memberships —
             the standalone/self-hosted case, where team collaboration is inert).
+        """
+        pass
+
+    # -- invitations: the consent that forms a team (ADR-017 D4) ------------ #
+    #
+    # On this interface rather than on an ``ITeamInvitationRepository`` of its
+    # own because team *membership* already lives here: an invitation is the
+    # consent record for exactly the membership ``add_member`` writes, the two
+    # are written by one service through one sessionless wrapper, and an accept
+    # touches both in sequence. Splitting them would put a single decision
+    # behind two ports for no boundary either side needs.
+
+    @abstractmethod
+    async def create_invitation(self, invitation: TeamInvitation) -> TeamInvitation:
+        """Persist a new invitation.
+
+        The caller has already decided the invitation is legitimate (the domain
+        rule in ``TeamService.invite``); this only writes it. ``email`` must
+        arrive case-folded.
+
+        Args:
+            invitation: The invitation to store
+
+        Returns:
+            The stored invitation
+        """
+        pass
+
+    @abstractmethod
+    async def get_invitation(
+        self, enterprise_id: str, invitation_id: str
+    ) -> Optional[TeamInvitation]:
+        """Get one invitation, scoped to an enterprise.
+
+        The ``enterprise_id`` predicate is explicit rather than left to RLS for
+        the reason ``add_member`` compares anchors in Python: this is the read
+        that decides whether a caller may act on an id they supplied, and it
+        must hold on SQLite (which has no RLS) exactly as it holds under the
+        limited ``faultmaven_app`` role.
+
+        Args:
+            enterprise_id: The enterprise the caller is bound to
+            invitation_id: Invitation identifier
+
+        Returns:
+            The invitation, or None when it does not exist in that enterprise
+            (the two are deliberately indistinguishable — see ADR-017 D2)
+        """
+        pass
+
+    @abstractmethod
+    async def find_pending_invitation(
+        self, team_id: str, email: str
+    ) -> Optional[TeamInvitation]:
+        """The live offer for ``email`` on ``team_id``, if there is one.
+
+        Backs the idempotent re-invite: inviting an address that already has a
+        pending offer returns that offer instead of minting a second row.
+
+        Args:
+            team_id: Team identifier
+            email: Case-folded address
+
+        Returns:
+            The pending invitation, or None
+        """
+        pass
+
+    @abstractmethod
+    async def list_team_invitations(self, team_id: str) -> List[TeamInvitation]:
+        """Every invitation ever issued for a team, newest first.
+
+        Not filtered by status: the team admin's view is the record of who was
+        offered a place and what became of the offer.
+
+        Args:
+            team_id: Team identifier
+
+        Returns:
+            List of invitations (empty when none)
+        """
+        pass
+
+    @abstractmethod
+    async def list_invitations_for_invitee(
+        self, enterprise_id: str, user_id: str, email: str
+    ) -> List[TeamInvitation]:
+        """The PENDING invitations addressed to one account.
+
+        Addressed two ways, because an invitation may predate the account:
+        by ``invited_user_id`` once it resolved, and by ``email`` while it has
+        not. Both arms are confined to ``enterprise_id`` — an invitation is
+        answerable only by an account inside the enterprise that issued it.
+
+        Args:
+            enterprise_id: The enterprise the caller is bound to
+            user_id: The caller's account id
+            email: The caller's case-folded address
+
+        Returns:
+            Pending invitations, newest first (empty when none)
+        """
+        pass
+
+    @abstractmethod
+    async def mark_invitation_accepted(
+        self, invitation_id: str, user_id: str, at: datetime
+    ) -> bool:
+        """Stamp an invitation accepted, but only if it is still pending.
+
+        The pending predicate is part of the UPDATE, not a check the caller
+        makes first: two accepts of one invitation must not both succeed, and a
+        read-then-write leaves exactly that window open.
+
+        Args:
+            invitation_id: Invitation identifier
+            user_id: The accepting account, stamped as ``invited_user_id``
+            at: Acceptance timestamp
+
+        Returns:
+            True when this call was the one that accepted it
+        """
+        pass
+
+    @abstractmethod
+    async def mark_invitation_revoked(
+        self, invitation_id: str, by_user_id: str, at: datetime
+    ) -> bool:
+        """Stamp an invitation revoked, but only if it is still pending.
+
+        One method for both endings — the admin withdrawing the offer and the
+        invitee declining it. ``by_user_id`` is what tells them apart later.
+
+        Args:
+            invitation_id: Invitation identifier
+            by_user_id: Who ended it
+            at: Timestamp
+
+        Returns:
+            True when this call was the one that ended it
+        """
+        pass
+
+    @abstractmethod
+    async def mark_invitation_expired(self, invitation_id: str) -> bool:
+        """Stamp a pending invitation expired.
+
+        Expiry is lazy — there is no sweeper — so this is called by the read or
+        the accept that first notices ``expires_at`` has passed. Idempotent: a
+        row already expired is not pending and the UPDATE matches nothing.
+
+        Args:
+            invitation_id: Invitation identifier
+
+        Returns:
+            True when this call was the one that expired it
+        """
+        pass
+
+    @abstractmethod
+    async def resolve_invitations_for_account(
+        self, enterprise_id: str, email: str, user_id: str
+    ) -> int:
+        """Stamp ``user_id`` on every unresolved pending invitation for ``email``.
+
+        The sign-up hook (ADR-017 D4, open item 2). An invitation may be issued
+        to an address with no account; it resolves when that address signs up
+        **and lands in this enterprise**. Confined to ``enterprise_id`` for that
+        reason: an address that signs up somewhere else must leave the offer
+        unresolved, to expire where it was issued.
+
+        Idempotent by construction — it only touches rows whose
+        ``invited_user_id`` is still NULL — so a login that runs it twice, or a
+        retry after a failure, changes nothing the first run did not.
+
+        Args:
+            enterprise_id: The enterprise the account just anchored to
+            email: The account's case-folded address
+            user_id: The account id to stamp
+
+        Returns:
+            How many invitations were resolved (0 is the ordinary answer)
         """
         pass
 

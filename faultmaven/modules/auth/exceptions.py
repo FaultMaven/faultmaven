@@ -161,3 +161,26 @@ class OrganizationError(AuthException):
             message,
             details={"organization_id": organization_id, "error_code": error_code},
         )
+
+
+class TeamOperationRefused(AuthException):
+    """A team or invitation operation the caller may not perform (ADR-017 D4).
+
+    Carries the HTTP status the API answers with and a **reason slug** — a
+    stable, machine-readable name for the rule that refused, so a client can
+    tell "you are already a member" from "that address is not in your
+    enterprise" without parsing prose.
+
+    The slug is the whole of what a refusal discloses, and two of the rules
+    deliberately share one. An address on another domain and an address that
+    exists but is anchored to a different enterprise both answer
+    ``address_outside_enterprise_domain`` at the same status: distinguishing
+    them would turn the invitation endpoint into an account-existence oracle
+    for the domain, which is exactly what D3's domain rule exists to avoid
+    (nothing here enumerates accounts).
+    """
+
+    def __init__(self, reason: str, message: str, status_code: int = 403):
+        self.reason = reason
+        self.status_code = status_code
+        super().__init__(message, details={"reason": reason})

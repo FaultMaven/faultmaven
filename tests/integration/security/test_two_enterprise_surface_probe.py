@@ -1053,7 +1053,16 @@ def _wire_services(app, chroma) -> None:
 
     case_repository = SessionlessCaseRepository()
     share_repository = SessionlessShareRepository()
-    team_service = TeamService(SessionlessTeamRepository())
+    # The consent half of the service needs two more repositories than the KB
+    # read scope does: the enterprise for its ``domain`` (the invitation rule is
+    # by domain, ADR-017 D3) and the accounts, to resolve an address. Wired here
+    # for the same reason everything else in this fixture is real — an invite
+    # decided by a double would prove nothing about the deployed rule.
+    team_service = TeamService(
+        SessionlessTeamRepository(),
+        enterprise_repository=SessionlessEnterpriseRepository(),
+        user_repository=SessionlessUserRepository(),
+    )
     organization_repository = SessionlessOrganizationRepository()
     sanitizer = DataSanitizer(settings=settings)
     tracer = OpikTracer(settings=settings)
@@ -1690,6 +1699,10 @@ async def _teardown_rows(engine, *, enterprises, users, case_ids, conversion_ids
                 {"e": enterprise_id},
             )
             for table in (
+                # Before ``teams``: an invitation is FK'd to its team, and this
+                # teardown deletes explicitly rather than leaning on the
+                # cascade (see the docstring).
+                "team_invitations",
                 "resource_shares",
                 "knowledge_items",
                 "teams",
@@ -1766,6 +1779,26 @@ async def _wall_world(probe_app, arm: str):
                 "WHERE user_id IN (:a, :b, :c)"
             ),
             {"a": user_a, "b": user_b, "c": operator_a},
+        )
+        # E_A claims the domain every seeded address is on; E_B claims nothing.
+        # That asymmetry is the point, and it is what makes the invitation rule
+        # testable here at all (ADR-017 D3): an enterprise with a NULL domain is
+        # an island and can invite nobody, so without this A's team admin could
+        # not issue a single offer. It also sets up the sharper case — B's
+        # address is on E_A's OWN domain while B's account is anchored to E_B,
+        # which is rule 3's "anchored elsewhere" arm and must answer exactly
+        # what an address on a foreign domain answers.
+        #
+        # Stamped on ``enterprise_a`` alone: ``enterprises.domain`` is unique
+        # among live rows, and in the ``same_enterprise_no_team`` arm the two
+        # ids are the same row, so a second UPDATE would be either a no-op or a
+        # unique violation depending on the arm.
+        await session.execute(
+            text(
+                "UPDATE enterprises SET domain = 'example.com' "
+                "WHERE enterprise_id = :e"
+            ),
+            {"e": enterprise_a},
         )
         await session.commit()
 
@@ -2028,6 +2061,17 @@ async def shared_world(probe_app):
             ),
             {"a": user_a, "b": user_b},
         )
+        # The enterprise claims the domain both accounts are on. Without it the
+        # enterprise is an island (``domain IS NULL``, ADR-017 D3) and no
+        # invitation can be issued in it at all — so the consent flow below
+        # would refuse for the right reason and prove nothing about consent.
+        await session.execute(
+            text(
+                "UPDATE enterprises SET domain = 'example.com' "
+                "WHERE enterprise_id = :e"
+            ),
+            {"e": enterprise},
+        )
         await session.commit()
 
     team_shared = f"team_t_{uuid.uuid4().hex[:8]}"
@@ -2156,6 +2200,8 @@ async def shared_world(probe_app):
                 org_y=org_y,
                 user_a=user_a,
                 user_b=user_b,
+                email_a=f"{user_a}@example.com",
+                email_b=f"{user_b}@example.com",
                 team_shared=team_shared,
                 team_a_own=team_a_own,
                 team_b_own=team_b_own,
@@ -4370,6 +4416,7 @@ TENANT_SCOPED_PATH_PARAMS = frozenset(
         "evidence_id",
         "file_id",
         "grant_id",
+        "invitation_id",
         "report_id",
         "session_id",
         "suggestion_id",
@@ -4709,6 +4756,42 @@ SURFACE_INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
         "the case half resolves through the same allowlist the probed case "
         "list uses; the session half is Redis (see GET /api/v1/sessions).",
     ),
+    # --- teams and the consent that forms them (ADR-017 D4) -----------------
+    #
+    # ``POST /api/v1/teams`` and ``GET /api/v1/invitations`` are absent from
+    # this table for the same reason ``GET /api/v1/teams`` is: neither takes a
+    # tenant-addressed identifier in its path, body or query — both are scoped
+    # entirely by the caller's own token — so the classifier does not derive
+    # them and an entry here would fail the stale half of the inventory test.
+    # Both ARE probed, by the two consent tests named below.
+    ("GET", "/api/v1/teams/{team_id}/members"): (
+        _PROBED,
+        "roster; the wall test reads it as the other enterprise",
+    ),
+    ("DELETE", "/api/v1/teams/{team_id}/members/me"): (
+        _PROBED,
+        "leave; the wall test aims it at the other enterprise's team",
+    ),
+    ("POST", "/api/v1/teams/{team_id}/invitations"): (
+        _PROBED,
+        "the domain rule, both refusals, and the consent flow's own invite",
+    ),
+    ("GET", "/api/v1/teams/{team_id}/invitations"): (
+        _PROBED,
+        "the admin's list, read across the wall",
+    ),
+    ("DELETE", "/api/v1/teams/{team_id}/invitations/{invitation_id}"): (
+        _PROBED,
+        "revoke, aimed across the wall",
+    ),
+    ("POST", "/api/v1/invitations/{invitation_id}/accept"): (
+        _PROBED,
+        "the forged accept: a valid token, another enterprise's invitation id",
+    ),
+    ("DELETE", "/api/v1/invitations/{invitation_id}"): (
+        _PROBED,
+        "decline, aimed at another enterprise's invitation",
+    ),
     # --- development-only ---------------------------------------------------
     ("GET", "/debug/cases/{case_id}/causal-graph"): (
         _PROBED,
@@ -4867,6 +4950,372 @@ def test_the_search_injection_names_only_real_request_fields():
         "CaseSearchRequest declares tenant-shaped fields the injection cases do "
         f"not send, so nothing shows whether they select: {uninjected}"
     )
+
+
+# =============================================================================
+# Teams form by consent (ADR-017 D4)
+# =============================================================================
+#
+# The consent flow is the one place on this API where a *new* audience is
+# created, so it is the one place a mistake widens the wall rather than merely
+# leaking through it. Two claims are tested here and they are different:
+#
+# * inside one enterprise, consent WORKS and is what carries the share — the
+#   positive control, without which every refusal below is satisfiable by a
+#   feature that never functions;
+# * across the enterprise wall, nothing on this surface crosses — every one of
+#   the seven id-addressed operations, aimed at the other enterprise's rows.
+
+
+async def test_a_team_forms_by_consent_and_carries_a_share(shared_world):
+    """A creates T, invites B, B accepts, A shares — and only then does B see it.
+
+    The whole of D4 in one sequence, and the ordering is the assertion. B's
+    ability to read the case is checked at three moments: before the invitation,
+    while the invitation is pending, and after the accept. The middle one is the
+    load-bearing check — "a pending invitation grants nothing" is the sentence
+    the consent model rests on, and a route that created the membership at
+    invite time would still pass a test that only looked at the ends.
+
+    The case shared is the PRIVATE one, which every other test in this arm proves
+    B cannot see. So the final read is not "a share works" but "the share A just
+    consented to is exactly what changed", measured against the same row.
+    """
+    world = shared_world
+
+    created = await as_owner(
+        world,
+        "POST",
+        "/api/v1/teams",
+        json={"name": f"consent-{_RUN}", "description": "formed by consent"},
+    )
+    assert created.status_code == 201, f"A cannot create a team: {created.text[:300]}"
+    team_id = created.json()["team_id"]
+    assert created.json()["enterprise_id"] == world.enterprise_id, (
+        "a created team is parented by the enterprise the request is bound to; "
+        f"got {created.json()}"
+    )
+    assert "organization_id" not in _keys(created.json()), (
+        "a team names no organization — it may span them (ADR-017 D4): "
+        f"{created.text[:300]}"
+    )
+
+    before = await as_teammate(world, "GET", f"/api/v1/teams/{team_id}/members")
+    assert before.status_code == 404, (
+        "a non-member could read the roster before being invited "
+        f"({before.status_code}); a team is visible to the people in it"
+    )
+
+    invited = await as_owner(
+        world,
+        "POST",
+        f"/api/v1/teams/{team_id}/invitations",
+        json={"email": world.email_b},
+    )
+    assert invited.status_code == 201, f"A cannot invite B: {invited.text[:300]}"
+    invitation = invited.json()
+    invitation_id = invitation["invitation_id"]
+    assert invitation["status"] == "pending"
+    assert invitation["invited_user_id"] == world.user_b, (
+        "the address resolved to an account in this enterprise, so the "
+        f"invitation should name it: {invitation}"
+    )
+
+    pending = await as_teammate(world, "GET", f"/api/v1/teams/{team_id}/members")
+    assert pending.status_code == 404, (
+        "a PENDING invitation admitted B to the team; consent is the accept, "
+        "and an offer must grant nothing"
+    )
+
+    listed = await as_teammate(world, "GET", "/api/v1/invitations")
+    assert listed.status_code == 200, listed.text[:300]
+    assert invitation_id in _ids(
+        listed.json(), "invitation_id"
+    ), f"B cannot see the invitation addressed to them: {listed.text[:400]}"
+    assert team_id in _ids(listed.json(), "team_id")
+
+    accepted = await as_teammate(
+        world, "POST", f"/api/v1/invitations/{invitation_id}/accept"
+    )
+    assert accepted.status_code == 200, f"B cannot accept: {accepted.text[:300]}"
+    assert accepted.json()["team_id"] == team_id
+
+    roster = await as_teammate(world, "GET", f"/api/v1/teams/{team_id}/members")
+    assert roster.status_code == 200, roster.text[:300]
+    assert _ids(roster.json(), "user_id") == {world.user_a, world.user_b}
+
+    # The offer is answered, so it is gone from B's list — not still on offer.
+    after = await as_teammate(world, "GET", "/api/v1/invitations")
+    assert invitation_id not in _ids(after.json(), "invitation_id")
+
+    # A's private case: invisible now, and visible only because A consents next.
+    hidden = await as_teammate(
+        world, "GET", f"/api/v1/cases/{world.private_case.case_id}"
+    )
+    assert hidden.status_code == 404
+    assert_no_private_content(hidden, "GET /api/v1/cases/<private> (pre-share)")
+
+    shared = await as_owner(
+        world,
+        "POST",
+        f"/api/v1/cases/{world.private_case.case_id}/team-shares",
+        json={"team_id": team_id},
+    )
+    assert shared.status_code == 201, f"A cannot share to T: {shared.text[:300]}"
+
+    visible = await as_teammate(
+        world, "GET", f"/api/v1/cases/{world.private_case.case_id}"
+    )
+    assert visible.status_code == 200, (
+        "the share to the team B just joined did not make the case readable: "
+        f"{visible.text[:300]}"
+    )
+    assert PRIVATE_TITLE in visible.text
+
+
+async def test_a_declined_invitation_creates_no_membership(shared_world):
+    """Consent has two answers, and the second one is also a decision.
+
+    Recorded rather than deleted — the admin's list is the record of who was
+    offered a place and what they said — and it must not be re-answerable, or a
+    "no" could be walked back by whoever holds the id.
+    """
+    world = shared_world
+    created = await as_owner(
+        world, "POST", "/api/v1/teams", json={"name": f"declined-{_RUN}"}
+    )
+    team_id = created.json()["team_id"]
+    invited = await as_owner(
+        world,
+        "POST",
+        f"/api/v1/teams/{team_id}/invitations",
+        json={"email": world.email_b},
+    )
+    invitation_id = invited.json()["invitation_id"]
+
+    declined = await as_teammate(
+        world, "DELETE", f"/api/v1/invitations/{invitation_id}"
+    )
+    assert declined.status_code == 204, declined.text[:300]
+
+    roster = await as_teammate(world, "GET", f"/api/v1/teams/{team_id}/members")
+    assert roster.status_code == 404, "a decline created a membership"
+
+    retry = await as_teammate(
+        world, "POST", f"/api/v1/invitations/{invitation_id}/accept"
+    )
+    assert (
+        retry.status_code in REFUSED
+    ), f"a declined invitation was accepted afterwards ({retry.status_code})"
+
+    # The admin sees the answer. Checked through the API rather than the row,
+    # because the point is that the record reaches the person who made the offer.
+    admin_view = await as_owner(world, "GET", f"/api/v1/teams/{team_id}/invitations")
+    assert admin_view.status_code == 200, admin_view.text[:300]
+    statuses = {row["invitation_id"]: row["status"] for row in admin_view.json()}
+    assert statuses[invitation_id] == "revoked"
+
+
+async def test_the_sole_member_of_a_team_takes_it_with_them(shared_world):
+    """Leaving, and the two rules that are one rule.
+
+    A team of one strands nobody, so its last member leaving soft-deletes it —
+    and the proof is that the team stops appearing in ``GET /teams``, which is
+    what feeds every share-to-team picker. A team with other members must keep
+    an admin, so the same call is refused there.
+    """
+    world = shared_world
+    solo = (
+        await as_owner(world, "POST", "/api/v1/teams", json={"name": f"solo-{_RUN}"})
+    ).json()["team_id"]
+    shared_team = (
+        await as_owner(world, "POST", "/api/v1/teams", json={"name": f"joint-{_RUN}"})
+    ).json()["team_id"]
+    invitation_id = (
+        await as_owner(
+            world,
+            "POST",
+            f"/api/v1/teams/{shared_team}/invitations",
+            json={"email": world.email_b},
+        )
+    ).json()["invitation_id"]
+    accepted = await as_teammate(
+        world, "POST", f"/api/v1/invitations/{invitation_id}/accept"
+    )
+    assert accepted.status_code == 200, accepted.text[:300]
+
+    listed = await as_owner(world, "GET", "/api/v1/teams")
+    assert {solo, shared_team} <= _ids(
+        listed.json(), "team_id"
+    ), f"control: A is not in the teams A just created: {listed.text[:400]}"
+
+    stuck = await as_owner(world, "DELETE", f"/api/v1/teams/{shared_team}/members/me")
+    assert stuck.status_code == 409, (
+        "the only admin left a team with other members still in it "
+        f"({stuck.status_code}): {stuck.text[:300]}"
+    )
+    assert stuck.json()["reason"] == "last_admin_cannot_leave"
+
+    gone = await as_owner(world, "DELETE", f"/api/v1/teams/{solo}/members/me")
+    assert gone.status_code == 204, gone.text[:300]
+
+    after = await as_owner(world, "GET", "/api/v1/teams")
+    assert solo not in _ids(after.json(), "team_id"), (
+        "the emptied team is still listed, so it is still in every "
+        "share-to-team picker"
+    )
+    assert shared_team in _ids(after.json(), "team_id"), (
+        "control: the team A could not leave vanished too, so the deletion "
+        "above is not attributable to the leave"
+    )
+
+
+async def test_an_address_outside_the_enterprises_domain_can_never_be_invited(
+    shared_world,
+):
+    """Rule 2, live. Nobody outside the domain can be offered a place.
+
+    An address on another domain gets its own enterprise at sign-up (a company
+    domain) or a private one (a consumer domain), so it can never land here —
+    and the invitation is therefore refused at send time rather than created and
+    left to fail later.
+    """
+    world = shared_world
+    team_id = (
+        await as_owner(world, "POST", "/api/v1/teams", json={"name": f"domain-{_RUN}"})
+    ).json()["team_id"]
+
+    refused_invite = await as_owner(
+        world,
+        "POST",
+        f"/api/v1/teams/{team_id}/invitations",
+        json={"email": f"outsider-{_RUN}@not-this-enterprise.com"},
+    )
+
+    assert refused_invite.status_code == 403, refused_invite.text[:300]
+    assert refused_invite.json()["reason"] == ("address_outside_enterprise_domain")
+
+    admin_view = await as_owner(world, "GET", f"/api/v1/teams/{team_id}/invitations")
+    assert admin_view.json() == [], (
+        "the refused invitation was written anyway; a route that answers 403 "
+        f"and writes is the bug worth catching: {admin_view.text[:300]}"
+    )
+
+
+async def test_the_consent_surface_does_not_cross_the_enterprise_wall(wall_world):
+    """Every id-addressed operation on the consent surface, aimed across E_A/E_B.
+
+    A owns the team and the invitation here (both are created through the API,
+    so A is genuinely their admin); B holds a valid token for E_B. Each call is
+    the one A can make, made by B, and each must answer 404 — the read shape, so
+    the id itself is not confirmed to name anything.
+
+    The positive control runs first and on the same rows: if A cannot perform
+    these calls either, every refusal below is attributable to a broken route
+    rather than to the wall.
+    """
+    world = wall_world
+
+    created = await as_a(world, "POST", "/api/v1/teams", json={"name": f"wall-{_RUN}"})
+    assert created.status_code == 201, f"control: {created.text[:300]}"
+    team_id = created.json()["team_id"]
+    invited = await as_a(
+        world,
+        "POST",
+        f"/api/v1/teams/{team_id}/invitations",
+        json={"email": f"newhire-{_RUN}@example.com"},
+    )
+    assert invited.status_code == 201, f"control: {invited.text[:300]}"
+    invitation_id = invited.json()["invitation_id"]
+
+    control = await as_a(world, "GET", f"/api/v1/teams/{team_id}/members")
+    assert (
+        control.status_code == 200
+    ), f"control: A cannot read A's own roster: {control.text[:300]}"
+    control_list = await as_a(world, "GET", f"/api/v1/teams/{team_id}/invitations")
+    assert control_list.status_code == 200 and invitation_id in _ids(
+        control_list.json(), "invitation_id"
+    ), f"control: A cannot list A's own invitations: {control_list.text[:300]}"
+
+    for method, path in (
+        ("GET", f"/api/v1/teams/{team_id}/members"),
+        ("GET", f"/api/v1/teams/{team_id}/invitations"),
+        ("DELETE", f"/api/v1/teams/{team_id}/members/me"),
+        ("DELETE", f"/api/v1/teams/{team_id}/invitations/{invitation_id}"),
+        ("POST", f"/api/v1/invitations/{invitation_id}/accept"),
+        ("DELETE", f"/api/v1/invitations/{invitation_id}"),
+    ):
+        response = await as_b(world, method, path)
+        assert response.status_code == 404, (
+            f"{method} {path} answered {response.status_code} to the other "
+            f"enterprise; it must be indistinguishable from an absent id: "
+            f"{response.text[:300]}"
+        )
+
+    # Nothing leaked into B's own view of the world, and nothing was written.
+    b_invitations = await as_b(world, "GET", "/api/v1/invitations")
+    assert b_invitations.status_code == 200
+    assert invitation_id not in b_invitations.text
+    b_teams = await as_b(world, "GET", "/api/v1/teams")
+    assert team_id not in b_teams.text
+
+    after = await as_a(world, "GET", f"/api/v1/teams/{team_id}/invitations")
+    assert [row["status"] for row in after.json()] == ["pending"], (
+        "a refused call still changed the invitation's state: " f"{after.text[:300]}"
+    )
+    roster = await as_a(world, "GET", f"/api/v1/teams/{team_id}/members")
+    assert _ids(roster.json(), "user_id") == {
+        world.a.user_id
+    }, f"a refused call still changed the roster: {roster.text[:300]}"
+
+
+async def test_an_account_anchored_elsewhere_is_refused_exactly_as_a_stranger_is(
+    wall_world,
+):
+    """Rule 3's second half, and the leak it exists to close.
+
+    B's address is on E_A's OWN domain — the seeded users all are — while B's
+    account is anchored to E_B. So the only thing separating "invite B" from
+    "invite an address on a foreign domain" is a fact about where somebody's
+    account lives, and the two answers must be byte-identical. If they diverge,
+    ``POST /teams/{id}/invitations`` becomes an account-existence oracle for the
+    enterprise's domain, available to anybody who can create a team — which is
+    everybody.
+
+    Compared as whole response bodies rather than by reason slug: a message that
+    named the account would leak exactly as loudly as a different slug.
+    """
+    world = wall_world
+    team_id = (
+        await as_a(world, "POST", "/api/v1/teams", json={"name": f"oracle-{_RUN}"})
+    ).json()["team_id"]
+
+    elsewhere = await as_a(
+        world,
+        "POST",
+        f"/api/v1/teams/{team_id}/invitations",
+        json={"email": f"{world.b.user_id}@example.com"},
+    )
+    stranger = await as_a(
+        world,
+        "POST",
+        f"/api/v1/teams/{team_id}/invitations",
+        json={"email": f"nobody-{_RUN}@another-company.com"},
+    )
+
+    assert elsewhere.status_code == 403, elsewhere.text[:300]
+    assert stranger.status_code == elsewhere.status_code
+    assert stranger.json() == elsewhere.json(), (
+        "an address whose account is anchored to another enterprise is "
+        "distinguishable from one that could never join: "
+        f"{elsewhere.text[:200]} vs {stranger.text[:200]}"
+    )
+    assert elsewhere.json()["reason"] == ("address_outside_enterprise_domain")
+    assert world.b.user_id not in elsewhere.text
+
+    # And no row was written for either, so a later sign-up cannot resolve one.
+    listed = await as_a(world, "GET", f"/api/v1/teams/{team_id}/invitations")
+    assert listed.json() == [], listed.text[:300]
 
 
 #: The id prefixes every world builds its rows under. Kept beside the residue

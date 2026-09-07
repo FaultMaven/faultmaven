@@ -59,6 +59,7 @@ from faultmaven.exceptions import (
     walk_cause_chain,
 )
 from faultmaven.models.exceptions import OAuthProtocolError
+from faultmaven.modules.auth.exceptions import TeamOperationRefused
 from faultmaven.utils.serialization import to_json_safe
 
 logger = logging.getLogger(__name__)
@@ -492,6 +493,60 @@ async def conflict_exception_handler(
     return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=body)
 
 
+async def team_operation_refused_handler(
+    request: Request,
+    exc: TeamOperationRefused,
+) -> JSONResponse:
+    """Handle TeamOperationRefused (ADR-017 D4).
+
+    The team-and-invitation surface refuses at four different statuses — 403,
+    404, 409 and 410 — for reasons a client has to tell apart to say anything
+    useful: "you are already a member" and "that address cannot join a team in
+    this enterprise" are the same status in some designs and are never the same
+    message. So the exception carries the status it means AND a **reason slug**,
+    and the slug is surfaced as its own field, exactly as ``ConflictError``
+    surfaces ``conflict_reason``. Clients branch on ``reason``; ``detail`` is
+    for a person.
+
+    A handler rather than an ``HTTPException`` raised at the route, because
+    ``http_exception_handler`` flattens a dict ``detail`` down to its human
+    message — deliberately, since clients render ``detail`` verbatim — and the
+    slug would not survive the trip.
+
+    ``error`` is derived from the status rather than from the slug: it is the
+    HTTP reason phrase every other handler here emits, and duplicating the slug
+    into it would invite a client to read the wrong one of the two.
+    """
+    logger.warning(
+        "Team operation refused: %s %s - %s (%s)",
+        request.method,
+        request.url.path,
+        exc.reason,
+        exc.status_code,
+    )
+
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": _TEAM_REFUSAL_TITLES.get(exc.status_code, "Refused"),
+            "detail": str(exc),
+            "status_code": exc.status_code,
+            "reason": exc.reason,
+        },
+    )
+
+
+#: The reason phrase for each status ``TeamOperationRefused`` can carry. A map
+#: rather than ``http.HTTPStatus(...).phrase`` so an unexpected status is a
+#: default rather than a ``ValueError`` raised inside an exception handler.
+_TEAM_REFUSAL_TITLES = {
+    status.HTTP_403_FORBIDDEN: "Forbidden",
+    status.HTTP_404_NOT_FOUND: "Not Found",
+    status.HTTP_409_CONFLICT: "Conflict",
+    status.HTTP_410_GONE: "Gone",
+}
+
+
 async def service_error_handler(
     request: Request,
     exc: ServiceError,
@@ -662,6 +717,7 @@ def get_exception_handlers() -> dict[Type[Exception], Callable]:
         AuthorizationError: authorization_exception_handler,
         ValidationException: validation_exception_handler,
         ConflictError: conflict_exception_handler,
+        TeamOperationRefused: team_operation_refused_handler,
         ServiceError: service_error_handler,
         OAuthProtocolError: oauth_protocol_error_handler,
     }

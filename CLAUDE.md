@@ -238,7 +238,8 @@ modules/auth/
 │   ├── auth.py                     # Login, register, token refresh
 │   ├── oauth.py                    # OAuth 2.0 flow with PKCE
 │   ├── session.py                  # Session management
-│   ├── teams.py                    # GET /teams — list the caller's teams (read-only)
+│   ├── teams.py                    # /teams — list, create, roster, invite, revoke, leave
+│   ├── invitations.py              # /invitations — the invitee's half: list, accept, decline
 │   └── rate_limiting.py            # Auth-specific rate limiting
 ├── domain/
 │   ├── models/                     # User, Session, RBAC, Organization models
@@ -249,7 +250,7 @@ modules/auth/
 │       ├── jwt_token_generator.py  # RS256/HS256 token generation
 │       ├── user_service.py         # User CRUD operations
 │       ├── organization_service.py # Organization management
-│       └── team_service.py         # Team management
+│       └── team_service.py         # Teams: create, the invitation rule, accept, leave
 └── infrastructure/
     ├── repositories/               # User, session, OAuth code, team, org repositories
     ├── stores/                     # Redis session stores (FakeRedis for local), token revocation
@@ -899,7 +900,7 @@ alembic downgrade -1
 
 ### Key Tables (4 domains)
 
-**User domain:** `users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `user_audit_log`, `oauth_authorization_codes`
+**User domain:** `users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `team_invitations`, `user_audit_log`, `oauth_authorization_codes`
 
 **Case domain:** `cases`, `case_messages`, `case_actions`, `case_tags`, `case_checkpoints`, `case_entities`, `evidence`, `hypotheses`, `hypothesis_evidence`, `solutions`, `uploaded_files`, `investigation_sessions`, `reports`, `conversion_jobs`, `conversion_drafts`
 
@@ -907,7 +908,7 @@ alembic downgrade -1
 
 **Knowledge domain (case-adjacent):** `knowledge_items`, `knowledge_suggestions`
 
-**Tenancy (ADR-017 — supersedes ADR-013's "Organization is the hard-isolation boundary"):** three tiers answer three separate questions. `enterprises` **isolates** — PostgreSQL RLS keys on `enterprise_id`, denormalized NOT NULL onto every tenant-scoped table (`users.enterprise_id` included) and re-keyed via the `app.current_enterprise_id` session GUC (`app.current_org_id` no longer exists). `organizations` **bills** — `organizations.enterprise_id` NOT NULL FK, but `organization_id` on data rows is nullable billing attribution (`ON DELETE SET NULL`) stamped from the actor's organization at write time and never a visibility predicate; org roles (`admin`/`member`/`viewer`) stay the organization's *management* vocabulary and gate no data. `teams` **share** — parented by `teams.enterprise_id` (there is no `teams.organization_id`), so one team may span organizations of the same enterprise; membership requires the same enterprise. Standalone seeds one enterprise (`STANDALONE_ENTERPRISE_ID`, `…0002`) and one default team, and **no organization row** (`STANDALONE_ORG_ID` is deleted from `constants.py`). Sign-up (`SSO_JIT_PERSONAL_TENANT_ENABLED`, still OFF by default) derives the email domain: a `PERSONAL_EMAIL_DOMAINS` match yields a private enterprise per account; any other domain yields, or joins, that domain's enterprise (`enterprises.domain`) — a sign-up creates NO organization and NO team. `sso_org_mappings` now maps an IdP organization to an **enterprise** (not an organization); `sso_personal_orgs` is deleted, replaced by `sso_personal_enterprises` (keyed on `(provider, subject)` — a subject handle is unique only within an IdP). Account kinds are exactly `individual` and `service` (`users.account_kind`) — a team is a group of accounts, never an account, and the vocabulary that called one a team is retired. Which integration a service account serves is the separate `users.service_channel` column (e.g. `'slack'`).
+**Tenancy (ADR-017 — supersedes ADR-013's "Organization is the hard-isolation boundary"):** three tiers answer three separate questions. `enterprises` **isolates** — PostgreSQL RLS keys on `enterprise_id`, denormalized NOT NULL onto every tenant-scoped table (`users.enterprise_id` included) and re-keyed via the `app.current_enterprise_id` session GUC (`app.current_org_id` no longer exists). `organizations` **bills** — `organizations.enterprise_id` NOT NULL FK, but `organization_id` on data rows is nullable billing attribution (`ON DELETE SET NULL`) stamped from the actor's organization at write time and never a visibility predicate; org roles (`admin`/`member`/`viewer`) stay the organization's *management* vocabulary and gate no data. `teams` **share** — parented by `teams.enterprise_id` (there is no `teams.organization_id`), so one team may span organizations of the same enterprise; membership requires the same enterprise. A team **forms by consent** (ADR-017 D4): any account may create one and is its team admin, the admin offers an address a place in `team_invitations`, and the invitee's own accept is the only call that writes a `team_members` row — a pending invitation grants nothing. Who may be offered a place is decided **by email domain**, before any account lookup, so the invitation endpoint is not an account-existence oracle: a personal enterprise (`domain IS NULL`) invites nobody, an address off the enterprise's domain is refused, and an address on its own domain whose account is anchored to another enterprise is refused with the *same* status and body. An offer to an address with no account is created unresolved and is stamped with the account id by the SSO sign-up path when — and only when — that address lands in the issuing enterprise; expiry is lazy (`TEAM_INVITATION_TTL_DAYS`, default 14; no sweeper). Standalone seeds one enterprise (`STANDALONE_ENTERPRISE_ID`, `…0002`) and one default team, and **no organization row** (`STANDALONE_ORG_ID` is deleted from `constants.py`). Sign-up (`SSO_JIT_PERSONAL_TENANT_ENABLED`, still OFF by default) derives the email domain: a `PERSONAL_EMAIL_DOMAINS` match yields a private enterprise per account; any other domain yields, or joins, that domain's enterprise (`enterprises.domain`) — a sign-up creates NO organization and NO team. `sso_org_mappings` now maps an IdP organization to an **enterprise** (not an organization); `sso_personal_orgs` is deleted, replaced by `sso_personal_enterprises` (keyed on `(provider, subject)` — a subject handle is unique only within an IdP). Account kinds are exactly `individual` and `service` (`users.account_kind`) — a team is a group of accounts, never an account, and the vocabulary that called one a team is retired. Which integration a service account serves is the separate `users.service_channel` column (e.g. `'slack'`).
 
 **Sharing:** `resource_shares` — polymorphic `(resource_type, resource_id, scope_type, scope_id)` association (ADR-013 §D4, unchanged by ADR-017 — teams still share by consent, just parented by the enterprise now). Single source of truth for team visibility of runbooks/cases/drafts; replaced the nullable `team_id` columns on `cases`/`knowledge_items`/`conversion_jobs`. v1 `scope_type=team`; `organization` reserved (D4a). Retrieval resolves it to a visible-id allowlist in SQL; ChromaDB metadata never carries team state.
 
@@ -1014,7 +1015,16 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | OAuth | `POST /auth/oauth/token` | OAuth token exchange. **Takes RFC 6749 §3.2 form encoding *or* JSON**, and answers errors as RFC 6749 §5.2 objects (`{"error", "error_description"}`), not `{"detail"}` — so a rejected grant is a **400** `invalid_grant`, not a 401. Same for `POST /auth/oauth/revoke` (RFC 7009). Both routes take a raw `Request` and validate by hand, because FastAPI cannot declare two body encodings on one signature; that is also why their OpenAPI `requestBody` is written out in `openapi_extra` and why they document a 400 where every other operation documents a 422 (#1150) |
 | Cases | `POST /cases/{case_id}/turns` | Submit a turn (multipart: query, files, pasted content) — how raw data enters a case. **One file max** per turn (`maxItems: 1`); `pasted_content` is a separate field and does not count toward it, so a turn may carry one file *and* a paste. An **empty turn** (no query, no file, no paste — a bare `@FaultMaven` in Slack) is accepted and answered with a state-aware orientation, as are whole-message greetings and "help"; that intent is server-minted, a client-sent `greeting` is re-derived from the text (contract 2.8.0) |
 | Reports | `GET/POST /reports` | Terminal summaries (auto-generated) |
-| Teams | `GET /teams` | List the caller's teams (read-only; names for share badges + share-to-team picker). Team *management* is the Cloud-composed admin module. |
+| Teams | `GET /teams` | List the caller's teams (names for share badges + share-to-team picker) |
+| Teams | `POST /teams` | Create a team in the caller's enterprise; the creator is its team admin (ADR-017 D4 — any account may) |
+| Teams | `GET /teams/{team_id}/members` | The roster, readable by the team's members |
+| Teams | `DELETE /teams/{team_id}/members/me` | Leave; 409 for the last admin while others remain, and the sole member leaving soft-deletes the team |
+| Teams | `POST /teams/{team_id}/invitations` | Offer an address a place (team admin). Decided **by domain** so nothing enumerates accounts: a personal enterprise invites nobody, an address off the enterprise's domain is refused, and an address on it whose account is anchored elsewhere is refused **identically** |
+| Teams | `GET /teams/{team_id}/invitations` | Every offer this team has issued and what became of it (team admin) |
+| Teams | `DELETE /teams/{team_id}/invitations/{invitation_id}` | Withdraw an offer (team admin) |
+| Invitations | `GET /invitations` | The live offers addressed to me — by `invited_user_id`, or by my address while the offer predates my account |
+| Invitations | `POST /invitations/{invitation_id}/accept` | Consent. **The only call that creates a team membership**; 410 once the offer has expired |
+| Invitations | `DELETE /invitations/{invitation_id}` | Decline; recorded, so the admin sees the answer |
 | Sessions | `GET /sessions` | Session management |
 | Admin | `GET /admin/users` | List the operator's own organization's users — platform-admin only. Confined to the caller's tenant (#1318), `total` included |
 | Admin | `GET /admin/users/{id}` | User details — platform-admin only; a user of another organization answers the same 404 an absent id does |

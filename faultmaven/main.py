@@ -218,6 +218,7 @@ from .infrastructure.observability.tracing import init_opik_tracing
 # Import API routes from modules
 # All routes now in modules following vertical slice architecture
 from .modules.auth.api.auth import router as auth_router
+from .modules.auth.api.invitations import router as invitations_router
 from .modules.auth.api.oauth import router as oauth_router
 from .modules.auth.api.session import router as session_router
 from .modules.auth.api.teams import router as teams_router
@@ -1542,6 +1543,14 @@ logger.info("✅ Auth endpoints added")
 
 app.include_router(teams_router, prefix="/api/v1")
 logger.info("✅ Team endpoints added")
+
+# The invitee's half of team consent (ADR-017 D4). Mounted unconditionally, like
+# the team router above: under TENANT_PROVIDER=single ``team_service`` is unwired
+# and every route here refuses with a reason slug, so the published contract
+# stays one document describing every deployment rather than a function of a
+# deployment's tenancy mode.
+app.include_router(invitations_router, prefix="/api/v1")
+logger.info("✅ Team invitation endpoints added")
 
 app.include_router(case_router, prefix="/api/v1")
 logger.info("✅ Case endpoints added")
