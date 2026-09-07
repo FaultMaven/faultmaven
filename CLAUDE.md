@@ -303,7 +303,7 @@ modules/auth/
 | HuggingFace | `HUGGINGFACE_API_KEY` | Mistral-Large-Instruct-2411 | BEST_EFFORT | Open models — NOT recommended (no tool calling) |
 | Cohere | `COHERE_API_KEY` | command-r-plus | BEST_EFFORT | Enterprise RAG (json_object only; not schema-enforced) |
 | OpenRouter | `OPENROUTER_API_KEY` | anthropic/claude-sonnet-4-6 | depends on routed model | Multi-model gateway (STRICT for `openai/*`, else FUNCTION_CALLING) |
-| Local (Ollama/vLLM) | `LOCAL_LLM_URL` | llama3.2, etc. | FUNCTION_CALLING (functionary/hermes on OpenAI-compatible transport only), else BEST_EFFORT | Private & offline; Ollama `/api/generate` transport can't return tool_calls |
+| Local (Ollama/vLLM) | `LOCAL_LLM_URL` | llama3.2, etc. | FUNCTION_CALLING (functionary/hermes on OpenAI-compatible transport only), else BEST_EFFORT | Private & offline. **Tool calling follows the transport, not the model name** (#1356): assumed on the OpenAI-compatible `/v1/chat/completions` path, impossible on Ollama `/api/generate` (no `tool_calls` in that protocol, for any model). `LOCAL_LLM_TOOL_CALLING=false` declares a stack built without tool support |
 
 **Structured-output enforcement matters.** The investigation engine drives state
 from large schema-constrained LLM responses. **STRICT** providers enforce the
@@ -453,7 +453,10 @@ opt-in to degraded/offline mode; `/health` then reports `degraded`). The per-tur
 runtime fallback in `milestone_engine` still covers transient tool failures on an
 otherwise-capable model. Capability is per-provider/model via
 `supports_tool_calling()` (HuggingFace: always False; Fireworks: a denylist for
-models that accept tools but time out on forced `tool_choice=required`).
+models that accept tools but time out on forced `tool_choice=required`; Local:
+derived from the transport and overridable by the operator — a self-hosted
+endpoint has no catalogue to key a denylist on, and its capability is a
+property of the serving stack rather than of the model name).
 
 **A caller can declare what a call needs from reasoning, and the minimum
 output it can use.** Two optional, per-call-site knobs on `LLMRouter.route()`

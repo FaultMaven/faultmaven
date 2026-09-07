@@ -297,13 +297,34 @@ def validate_investigation_tooling(settings: "Settings", registry: Any) -> None:
     if cap.tool_capable:
         return
 
-    remedy = (
-        "Use a tool-capable CHAT_PROVIDER (anthropic, openai, gemini) — or set "
-        "DA_PROVIDER to override just the investigation provider — or set "
-        "ALLOW_TOOLLESS_INVESTIGATION=true to run in degraded mode "
-        "(no search_file/deep_analysis; responses limited to structural-index "
-        "summaries)."
-    )
+    # The remedy is provider-shaped: a self-hosted endpoint is the operator's
+    # own infrastructure, so "adopt a cloud vendor" is not a remedy there — it
+    # is an instruction to abandon the deployment model FaultMaven advertises
+    # as supported (#1356). A `local` provider can only reach this gate two
+    # ways now, and both have a fix on the operator's side of the wire.
+    if cap.provider == "local":
+        remedy = (
+            "For a self-hosted endpoint the fix is on your side of the wire: "
+            "serve the model over an OpenAI-compatible endpoint that has tool "
+            "support enabled (vLLM with --enable-auto-tool-choice, llama.cpp "
+            "with a tool-capable chat template, Ollama's /v1 API) and point "
+            "LOCAL_LLM_URL at it — Ollama's /api/generate transport has no "
+            "tool_calls in its response, so no model can do tool calling over "
+            "it — and clear LOCAL_LLM_TOOL_CALLING if you set it to false. "
+            "Failing that, set DA_PROVIDER to route just the investigation "
+            "calls to a tool-capable provider, or set "
+            "ALLOW_TOOLLESS_INVESTIGATION=true to run in degraded mode "
+            "(no search_file/deep_analysis; responses limited to "
+            "structural-index summaries)."
+        )
+    else:
+        remedy = (
+            "Use a tool-capable CHAT_PROVIDER (anthropic, openai, gemini) — or "
+            "set DA_PROVIDER to override just the investigation provider — or "
+            "set ALLOW_TOOLLESS_INVESTIGATION=true to run in degraded mode "
+            "(no search_file/deep_analysis; responses limited to "
+            "structural-index summaries)."
+        )
 
     if settings.llm.allow_toolless_investigation:
         # Knowing opt-in — boot, but loudly, and /health will report degraded.

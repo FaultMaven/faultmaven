@@ -57,23 +57,82 @@ class LocalProvider(BaseLLMProvider):
         base = (self.config.base_url or "").lower()
         return "ollama" not in base and "ollama" not in effective_model.lower()
 
-    def supports_tool_calling(self, model: Optional[str] = None) -> bool:
-        """Check if the local model supports tool calling.
+    # --- Tool calling ------------------------------------------------------
+    #
+    # A model's tool-calling capability is a property of the ENDPOINT serving
+    # it, not of its name (#1356). For a self-hosted endpoint exactly two such
+    # properties are knowable from configuration, and this rule uses both:
+    #
+    # 1. The TRANSPORT. ``generate()`` dispatches to Ollama's ``/api/generate``
+    #    whenever "ollama" appears in the base URL or the model name. That
+    #    protocol has no ``tool_calls`` field at all, so NO model can do tool
+    #    calling over it — a protocol-level fact, not a model-level one.
+    #    Everything else reaches ``/v1/chat/completions``, the transport that
+    #    does carry them. (The raw llama.cpp ``/completion`` fallback is
+    #    entered only when that path answers 404 at runtime; a tool call that
+    #    then fails is Layer 2's job — ``ToolCallingUnsupportedError``.)
+    # 2. The OPERATOR'S DECLARATION (``LOCAL_LLM_TOOL_CALLING`` →
+    #    ``ProviderConfig.tool_calling``). Only the person who built the serving
+    #    stack knows whether it was started with tool support (vLLM
+    #    ``--enable-auto-tool-choice``, a llama.cpp build with a tool-capable
+    #    chat template, …).
+    #
+    # So the OpenAI-compatible transport defaults to CAPABLE — the same default
+    # ``BaseLLMProvider`` gives every other OpenAI-compatible provider — and the
+    # operator narrows it when their stack cannot. Until #1356 the rule was
+    # instead "the model name contains functionary or hermes", which refused to
+    # boot on gpt-oss, Qwen, Mistral or Llama 3.3 served over vLLM with full
+    # native tool calling, and told the self-hoster to adopt a cloud vendor.
+    #
+    # Why a declaration rather than the two alternatives:
+    #
+    # * A DENYLIST (the ``FireworksProvider._TOOL_CALLING_DENYLIST`` pattern)
+    #   is keyed on a model id that names ONE serving stack, because Fireworks
+    #   hosts the catalogue: ``…/minimax-m2p7`` is the same deployment for
+    #   every user, so its incompatibility reproduces for every user. Self-
+    #   hosting has no catalogue — ``qwen3-32b`` does tools under vLLM and does
+    #   not under a llama.cpp build with no chat template — so a shipped
+    #   denylist would be the same name-substring inference this fix removes,
+    #   merely inverted, and could never be right for every operator. The
+    #   declaration IS that denylist, re-keyed to the only identifier that
+    #   distinguishes local endpoints: the deployment's own configuration.
+    # * A STARTUP PROBE asks the right question but cannot answer it at boot. A
+    #   local server routinely starts alongside or after the API, so "not up
+    #   yet" is indistinguishable from "not capable" and the gate would fail
+    #   closed on a transient — the reported symptom again, from a new cause.
+    #   It would also put a live LLM call behind ``/health`` (which calls the
+    #   same resolver, documented pure) and force an infrastructure import into
+    #   the config-layer gate.
 
-        Only functionary and hermes models have native function calling support,
-        AND only over the OpenAI-compatible transport — the Ollama
-        ``/api/generate`` path cannot return ``tool_calls`` regardless of model.
-        Other local models (plain llama.cpp, etc.) do not support the tools API.
+    def supports_tool_calling(self, model: Optional[str] = None) -> bool:
+        """Whether this local endpoint can do tool calling for *model*.
+
+        The rule and the reasoning behind it are in the note above. In short:
+        the Ollama ``/api/generate`` transport is never capable and no
+        declaration can make it so — the protocol has nowhere to put a tool
+        call — and the OpenAI-compatible transport is capable unless the
+        operator declares otherwise.
         """
         effective_model = self.get_effective_model(model)
-        model_lower = effective_model.lower()
+        declared = getattr(self.config, "tool_calling", None)
 
-        if ("functionary" in model_lower or "hermes" in model_lower) and (
-            self._uses_openai_compatible_transport(effective_model)
-        ):
-            return True
+        if not self._uses_openai_compatible_transport(effective_model):
+            if declared:
+                self.logger.warning(
+                    "LOCAL_LLM_TOOL_CALLING=true is not honoured for %r: this "
+                    "configuration routes to Ollama's /api/generate, whose "
+                    "response has no tool_calls field, so tool calling is "
+                    "impossible there for every model. Point LOCAL_LLM_URL at "
+                    "an OpenAI-compatible endpoint (Ollama serves one under "
+                    "/v1) to use tools.",
+                    effective_model,
+                )
+            return False
 
-        return False
+        if declared is not None:
+            return bool(declared)
+
+        return True
 
     def get_structured_output_capability(
         self, model: Optional[str] = None
@@ -81,14 +140,22 @@ class LocalProvider(BaseLLMProvider):
         """
         Determine structured output capability for local models.
 
-        Local models have varying structured output support:
-        - FUNCTION_CALLING: functionary/hermes models served over the
-          OpenAI-compatible transport (native function calling)
-        - BEST_EFFORT: all other local models (prompt-based JSON generation),
-          INCLUDING functionary/hermes on the Ollama transport — that path
-          can't return ``tool_calls``, so claiming FUNCTION_CALLING there would
-          make the engine request a forced tool call the transport silently
-          can't satisfy.
+        - FUNCTION_CALLING: a functionary/hermes model on an endpoint that can
+          actually carry tool calls (see ``supports_tool_calling``).
+        - BEST_EFFORT: everything else (prompt-based JSON generation).
+
+        The model-name signal stays on THIS axis, where the boot gate's defect
+        does not apply. Here the name is a PROMOTION above the safe default
+        rather than a refusal: an unrecognised but capable model gets
+        BEST_EFFORT, which works. Promoting every local model to
+        FUNCTION_CALLING would instead change the schema path of every existing
+        local deployment on no evidence — the engine would begin forcing a tool
+        call for its response schema where prompt-requested JSON serves today.
+
+        It is subordinate to ``supports_tool_calling`` so the two axes cannot
+        contradict each other: an endpoint whose transport or operator says it
+        cannot carry tool calls is BEST_EFFORT even when the model is named
+        ``hermes``.
 
         Args:
             model: Model name to check (uses default if None)
@@ -96,16 +163,14 @@ class LocalProvider(BaseLLMProvider):
         Returns:
             StructuredOutputCapability: FUNCTION_CALLING or BEST_EFFORT
         """
-        effective_model = self.get_effective_model(model)
-        model_lower = effective_model.lower()
+        model_lower = self.get_effective_model(model).lower()
 
-        # Native function calling — only on the OpenAI-compatible transport.
-        if ("functionary" in model_lower or "hermes" in model_lower) and (
-            self._uses_openai_compatible_transport(effective_model)
+        if self.supports_tool_calling(model) and (
+            "functionary" in model_lower or "hermes" in model_lower
         ):
             return StructuredOutputCapability.FUNCTION_CALLING
 
-        # All other local models / transports use BEST_EFFORT (prompt-based)
+        # Everything else uses BEST_EFFORT (prompt-based JSON generation)
         return StructuredOutputCapability.BEST_EFFORT
 
     async def generate(
