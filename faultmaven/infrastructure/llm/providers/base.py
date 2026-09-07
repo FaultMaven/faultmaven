@@ -144,9 +144,12 @@ class ReasoningIntent(str, Enum):
 
     # Reasoning over candidates (hypothesis generation, causal analysis).
     # Reasoning is welcome — translate to the provider's default/moderate
-    # reasoning where the model allows it. NOTE: no production call site
-    # declares this yet; whether any call SHOULD reason is #1116's experiment
-    # to answer. This member exists so that experiment is expressible.
+    # reasoning where the model allows it. Declared by the tool-less
+    # single-shot diagnostic call (fm#1116, ``milestone_engine``), which is
+    # what #1116's experiment answered: a turn with nothing to search reasons
+    # at zero on the tool loop, and diagnosis is reasoning over candidates.
+    # It is the one shipped site that asks for MORE reasoning, so it must also
+    # declare ``min_output_tokens`` — the router refuses the pair otherwise.
     INFERENCE = "inference"
 
     @classmethod
