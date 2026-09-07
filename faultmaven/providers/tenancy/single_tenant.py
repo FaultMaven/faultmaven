@@ -26,8 +26,7 @@ from faultmaven.models.interfaces_user import (
     ITeamRepository,
     Team,
 )
-from faultmaven.modules.auth.domain.models.user import User
-from faultmaven.providers.tenancy.base import TenantProvider
+from faultmaven.providers.tenancy.base import TenantProvider, TenantUser
 
 # Re-exported for callers that import the module-level symbol.
 DEFAULT_ENTERPRISE_ID = STANDALONE_ENTERPRISE_ID
@@ -82,7 +81,7 @@ class SingleTenantProvider(TenantProvider):
         self._default_team: Optional[Team] = None
 
     async def get_current_enterprise(
-        self, current_user: User, enterprise_id: Optional[str] = None
+        self, current_user: TenantUser, enterprise_id: Optional[str] = None
     ) -> Enterprise:
         """Always returns the default enterprise (ignores ``enterprise_id``).
 

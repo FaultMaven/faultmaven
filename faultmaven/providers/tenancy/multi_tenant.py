@@ -23,8 +23,7 @@ from typing import Optional
 
 from faultmaven.exceptions import NotFoundError, ValidationException
 from faultmaven.models.interfaces_user import Enterprise, IEnterpriseRepository
-from faultmaven.modules.auth.domain.models.user import User
-from faultmaven.providers.tenancy.base import TenantProvider
+from faultmaven.providers.tenancy.base import TenantProvider, TenantUser
 
 
 class MultiTenantProvider(TenantProvider):
@@ -54,7 +53,7 @@ class MultiTenantProvider(TenantProvider):
         self.enterprise_repository = enterprise_repository
 
     async def get_current_enterprise(
-        self, current_user: User, enterprise_id: Optional[str] = None
+        self, current_user: TenantUser, enterprise_id: Optional[str] = None
     ) -> Enterprise:
         """Resolve the bound enterprise to its row, refusing an absent one.
 
