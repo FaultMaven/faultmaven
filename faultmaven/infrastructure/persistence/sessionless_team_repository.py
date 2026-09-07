@@ -5,13 +5,19 @@ get_db_session(), following the same pattern as SessionlessOrganizationRepositor
 This removes the need for a long-lived db_session in the DI container.
 """
 
+from datetime import datetime
 from typing import List, Optional
 
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.infrastructure.persistence.team_repository import (
     PostgreSQLTeamRepository,
 )
-from faultmaven.models.interfaces_user import ITeamRepository, Team, TeamMember
+from faultmaven.models.interfaces_user import (
+    ITeamRepository,
+    Team,
+    TeamInvitation,
+    TeamMember,
+)
 
 
 class SessionlessTeamRepository(ITeamRepository):
@@ -87,3 +93,75 @@ class SessionlessTeamRepository(ITeamRepository):
         async with get_db_session() as session:
             repo = PostgreSQLTeamRepository(session)
             return await repo.list_all_user_team_ids(user_id)
+
+    # -- invitations (ADR-017 D4) ------------------------------------------- #
+
+    async def create_invitation(self, invitation: TeamInvitation) -> TeamInvitation:
+        """Persist a new invitation."""
+        async with get_db_session() as session:
+            repo = PostgreSQLTeamRepository(session)
+            return await repo.create_invitation(invitation)
+
+    async def get_invitation(
+        self, enterprise_id: str, invitation_id: str
+    ) -> Optional[TeamInvitation]:
+        """Get one invitation, scoped to an enterprise."""
+        async with get_db_session() as session:
+            repo = PostgreSQLTeamRepository(session)
+            return await repo.get_invitation(enterprise_id, invitation_id)
+
+    async def find_pending_invitation(
+        self, team_id: str, email: str
+    ) -> Optional[TeamInvitation]:
+        """The live offer for an address on a team, if there is one."""
+        async with get_db_session() as session:
+            repo = PostgreSQLTeamRepository(session)
+            return await repo.find_pending_invitation(team_id, email)
+
+    async def list_team_invitations(self, team_id: str) -> List[TeamInvitation]:
+        """Every invitation ever issued for a team, newest first."""
+        async with get_db_session() as session:
+            repo = PostgreSQLTeamRepository(session)
+            return await repo.list_team_invitations(team_id)
+
+    async def list_invitations_for_invitee(
+        self, enterprise_id: str, user_id: str, email: str
+    ) -> List[TeamInvitation]:
+        """The pending invitations addressed to one account."""
+        async with get_db_session() as session:
+            repo = PostgreSQLTeamRepository(session)
+            return await repo.list_invitations_for_invitee(
+                enterprise_id, user_id, email
+            )
+
+    async def mark_invitation_accepted(
+        self, invitation_id: str, user_id: str, at: datetime
+    ) -> bool:
+        """Stamp an invitation accepted, but only if it is still pending."""
+        async with get_db_session() as session:
+            repo = PostgreSQLTeamRepository(session)
+            return await repo.mark_invitation_accepted(invitation_id, user_id, at)
+
+    async def mark_invitation_revoked(
+        self, invitation_id: str, by_user_id: str, at: datetime
+    ) -> bool:
+        """Stamp an invitation revoked, but only if it is still pending."""
+        async with get_db_session() as session:
+            repo = PostgreSQLTeamRepository(session)
+            return await repo.mark_invitation_revoked(invitation_id, by_user_id, at)
+
+    async def mark_invitation_expired(self, invitation_id: str) -> bool:
+        """Stamp a pending invitation expired (lazy, on read or accept)."""
+        async with get_db_session() as session:
+            repo = PostgreSQLTeamRepository(session)
+            return await repo.mark_invitation_expired(invitation_id)
+
+    async def resolve_invitations_for_account(
+        self, enterprise_id: str, email: str, user_id: str
+    ) -> int:
+        """Stamp an account on every unresolved pending invitation for its address."""
+        async with get_db_session() as session:
+            repo = PostgreSQLTeamRepository(session)
+            return await repo.resolve_invitations_for_account(
+                enterprise_id, email, user_id
+            )

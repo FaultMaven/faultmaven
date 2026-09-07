@@ -20,17 +20,42 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.infrastructure.persistence.db_compat import dialect_insert
 from faultmaven.infrastructure.persistence.models import (
+    TeamInvitationModel,
     TeamMemberModel,
     TeamModel,
 )
-from faultmaven.models.interfaces_user import ITeamRepository, Team, TeamMember
+from faultmaven.models.interfaces_user import (
+    ITeamRepository,
+    Team,
+    TeamInvitation,
+    TeamInvitationStatus,
+    TeamMember,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _invitation_to_domain(model: TeamInvitationModel) -> TeamInvitation:
+    """Convert an invitation row to its domain object."""
+    return TeamInvitation(
+        invitation_id=model.invitation_id,
+        enterprise_id=model.enterprise_id,
+        team_id=model.team_id,
+        email=model.email,
+        invited_user_id=model.invited_user_id,
+        invited_by=model.invited_by,
+        status=TeamInvitationStatus(model.status),
+        created_at=model.created_at,
+        expires_at=model.expires_at,
+        accepted_at=model.accepted_at,
+        revoked_by=model.revoked_by,
+        revoked_at=model.revoked_at,
+    )
 
 
 def _model_to_domain(model: TeamModel) -> Team:
@@ -280,3 +305,169 @@ class PostgreSQLTeamRepository(ITeamRepository):
         )
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
+
+    # -- invitations: the consent that forms a team (ADR-017 D4) ------------ #
+
+    async def create_invitation(self, invitation: TeamInvitation) -> TeamInvitation:
+        """Persist a new invitation."""
+        model = TeamInvitationModel(
+            invitation_id=invitation.invitation_id,
+            enterprise_id=invitation.enterprise_id,
+            team_id=invitation.team_id,
+            email=invitation.email,
+            invited_user_id=invitation.invited_user_id,
+            invited_by=invitation.invited_by,
+            status=invitation.status.value,
+            created_at=invitation.created_at,
+            expires_at=invitation.expires_at,
+        )
+        self.db.add(model)
+        await self.db.commit()
+        logger.info(
+            "Created team invitation %s for team %s",
+            invitation.invitation_id,
+            invitation.team_id,
+        )
+        return invitation
+
+    async def get_invitation(
+        self, enterprise_id: str, invitation_id: str
+    ) -> Optional[TeamInvitation]:
+        """Get one invitation, scoped to an enterprise."""
+        stmt = select(TeamInvitationModel).where(
+            TeamInvitationModel.invitation_id == invitation_id,
+            TeamInvitationModel.enterprise_id == enterprise_id,
+        )
+        result = await self.db.execute(stmt)
+        model = result.scalar_one_or_none()
+        return _invitation_to_domain(model) if model else None
+
+    async def find_pending_invitation(
+        self, team_id: str, email: str
+    ) -> Optional[TeamInvitation]:
+        """The live offer for ``email`` on ``team_id``, if there is one."""
+        stmt = select(TeamInvitationModel).where(
+            TeamInvitationModel.team_id == team_id,
+            TeamInvitationModel.email == email,
+            TeamInvitationModel.status == TeamInvitationStatus.PENDING.value,
+        )
+        result = await self.db.execute(stmt)
+        model = result.scalars().first()
+        return _invitation_to_domain(model) if model else None
+
+    async def list_team_invitations(self, team_id: str) -> List[TeamInvitation]:
+        """Every invitation ever issued for a team, newest first."""
+        stmt = (
+            select(TeamInvitationModel)
+            .where(TeamInvitationModel.team_id == team_id)
+            .order_by(TeamInvitationModel.created_at.desc())
+        )
+        result = await self.db.execute(stmt)
+        return [_invitation_to_domain(m) for m in result.scalars().all()]
+
+    async def list_invitations_for_invitee(
+        self, enterprise_id: str, user_id: str, email: str
+    ) -> List[TeamInvitation]:
+        """The PENDING invitations addressed to one account."""
+        stmt = (
+            select(TeamInvitationModel)
+            .where(
+                TeamInvitationModel.enterprise_id == enterprise_id,
+                TeamInvitationModel.status == TeamInvitationStatus.PENDING.value,
+                or_(
+                    TeamInvitationModel.invited_user_id == user_id,
+                    and_(
+                        TeamInvitationModel.invited_user_id.is_(None),
+                        TeamInvitationModel.email == email,
+                    ),
+                ),
+            )
+            .order_by(TeamInvitationModel.created_at.desc())
+        )
+        result = await self.db.execute(stmt)
+        return [_invitation_to_domain(m) for m in result.scalars().all()]
+
+    async def mark_invitation_accepted(
+        self, invitation_id: str, user_id: str, at: datetime
+    ) -> bool:
+        """Stamp an invitation accepted, but only if it is still pending."""
+        stmt = (
+            update(TeamInvitationModel)
+            .where(
+                TeamInvitationModel.invitation_id == invitation_id,
+                TeamInvitationModel.status == TeamInvitationStatus.PENDING.value,
+            )
+            .values(
+                status=TeamInvitationStatus.ACCEPTED.value,
+                invited_user_id=user_id,
+                accepted_at=at,
+            )
+        )
+        result = await self.db.execute(stmt)
+        await self.db.commit()
+        return result.rowcount > 0
+
+    async def mark_invitation_revoked(
+        self, invitation_id: str, by_user_id: str, at: datetime
+    ) -> bool:
+        """Stamp an invitation revoked, but only if it is still pending."""
+        stmt = (
+            update(TeamInvitationModel)
+            .where(
+                TeamInvitationModel.invitation_id == invitation_id,
+                TeamInvitationModel.status == TeamInvitationStatus.PENDING.value,
+            )
+            .values(
+                status=TeamInvitationStatus.REVOKED.value,
+                revoked_by=by_user_id,
+                revoked_at=at,
+            )
+        )
+        result = await self.db.execute(stmt)
+        await self.db.commit()
+        return result.rowcount > 0
+
+    async def mark_invitation_expired(self, invitation_id: str) -> bool:
+        """Stamp a pending invitation expired (lazy, on read or accept)."""
+        stmt = (
+            update(TeamInvitationModel)
+            .where(
+                TeamInvitationModel.invitation_id == invitation_id,
+                TeamInvitationModel.status == TeamInvitationStatus.PENDING.value,
+            )
+            .values(status=TeamInvitationStatus.EXPIRED.value)
+        )
+        result = await self.db.execute(stmt)
+        await self.db.commit()
+        return result.rowcount > 0
+
+    async def resolve_invitations_for_account(
+        self, enterprise_id: str, email: str, user_id: str
+    ) -> int:
+        """Stamp ``user_id`` on every unresolved pending invitation for ``email``.
+
+        One statement, and idempotent by its own predicate: it matches only rows
+        whose ``invited_user_id`` is still NULL, so running it twice resolves
+        nothing the first run did not. The enterprise predicate is what makes
+        "an address that signs up elsewhere never resolves" true rather than
+        merely intended.
+        """
+        stmt = (
+            update(TeamInvitationModel)
+            .where(
+                TeamInvitationModel.enterprise_id == enterprise_id,
+                TeamInvitationModel.email == email,
+                TeamInvitationModel.invited_user_id.is_(None),
+                TeamInvitationModel.status == TeamInvitationStatus.PENDING.value,
+            )
+            .values(invited_user_id=user_id)
+        )
+        result = await self.db.execute(stmt)
+        await self.db.commit()
+        if result.rowcount:
+            logger.info(
+                "Resolved %s pending team invitation(s) to account %s",
+                result.rowcount,
+                user_id,
+            )
+        return int(result.rowcount or 0)

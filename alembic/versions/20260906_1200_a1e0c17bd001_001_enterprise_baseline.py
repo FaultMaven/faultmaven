@@ -1351,6 +1351,11 @@ def upgrade() -> None:
         ),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("accepted_at", sa.DateTime(timezone=True), nullable=True),
+        # Who ended the offer, and when. ``status='revoked'`` is reached from
+        # two directions — the admin withdrawing it and the invitee declining
+        # it — and this pair is the only place that difference survives.
+        sa.Column("revoked_by", sa.String(length=36), nullable=True),
+        sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
         sa.CheckConstraint(
             "status IN ('pending', 'accepted', 'revoked', 'expired')",
             name="team_invitations_status_check",
@@ -1365,11 +1370,22 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(
             ["invited_user_id"], ["users.user_id"], ondelete="SET NULL"
         ),
+        sa.ForeignKeyConstraint(["revoked_by"], ["users.user_id"], ondelete="SET NULL"),
         sa.ForeignKeyConstraint(["team_id"], ["teams.team_id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("invitation_id"),
     )
     op.create_index(
         "ix_team_invitations_email", "team_invitations", ["email"], unique=False
+    )
+    # One PENDING offer per address per team. Partial, so the accepted/revoked/
+    # expired history of an address on a team is kept in full.
+    op.create_index(
+        "ix_team_invitations_pending_unique",
+        "team_invitations",
+        ["team_id", "email"],
+        unique=True,
+        sqlite_where=sa.text("status = 'pending'"),
+        postgresql_where=sa.text("status = 'pending'"),
     )
     op.create_index(
         op.f("ix_team_invitations_enterprise_id"),
@@ -3934,6 +3950,7 @@ def downgrade() -> None:
     op.drop_index(
         op.f("ix_team_invitations_enterprise_id"), table_name="team_invitations"
     )
+    op.drop_index("ix_team_invitations_pending_unique", table_name="team_invitations")
     op.drop_index("ix_team_invitations_email", table_name="team_invitations")
     op.drop_table("team_invitations")
     op.drop_index(
