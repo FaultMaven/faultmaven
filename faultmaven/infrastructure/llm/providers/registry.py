@@ -117,18 +117,26 @@ class ProviderState:
 # tests/unit/infrastructure/llm/test_provider_schema_invariants.py.
 #
 # A ``*_var`` key NAMES THE ENVIRONMENT VARIABLE THE SETTINGS LAYER ACTUALLY
-# CONSUMES for that provider, or it does not exist. There is no reader that
-# resolves configuration *through* these keys — the construction path below
-# reads each provider's own settings field directly (``llm_settings.
-# openai_model``, ``llm_settings.local_url``, …) — so a wrong value is not a
-# bug that surfaces, it is documentation that silently lies. That is exactly
-# what ``base_url_var`` became: unread by anything, and for ``local`` it named
-# ``LOCAL_LLM_BASE_URL`` while the code read ``LOCAL_LLM_URL``. It was deleted
-# from all nine entries in #1358 rather than given a reader, the same call
-# #936 made for the shadowed ``chroma_persist_directory``. The two ``*_var``
-# keys that remain are held to the invariant by
+# CONSUMES for that provider, or it does not exist.
+#
+# None of these keys is a resolution path — the construction path below reads
+# each provider's own settings field directly (``llm_settings.openai_model``,
+# ``llm_settings.local_url``, …). Having no reader is therefore the NORMAL
+# state here and is not by itself grounds for deletion: ``model_var`` has no
+# reader either and is kept, because every value it carries is the variable
+# the settings layer really consumes. What these keys are is documentation,
+# and the only way documentation fails is by being WRONG.
+#
+# ``base_url_var`` was wrong. For ``local`` it advertised
+# ``LOCAL_LLM_BASE_URL`` while the code reads ``LOCAL_LLM_URL`` — a name
+# nothing in the settings layer consumes — and with no reader anywhere there
+# was no failing call to expose it. Since nothing depended on it, #1358
+# deleted it from all nine entries rather than repairing one value, the same
+# call #936 made for the shadowed ``chroma_persist_directory``. The two
+# ``*_var`` keys that remain are held to the invariant by
 # tests/unit/infrastructure/llm/test_provider_schema_invariants.py, which sets
-# each one and asserts some LLMSettings field actually moves.
+# each one and asserts some LLMSettings field actually moves — a check
+# ``model_var`` passes and ``base_url_var``'s ``local`` entry did not.
 PROVIDER_SCHEMA = {
     "fireworks": {
         "api_key_var": "FIREWORKS_API_KEY",
@@ -1020,8 +1028,30 @@ class ProviderRegistry:
                 #
                 # None (not False) when nothing is resolved: "nothing to say"
                 # is not "unpriced", and an alarm that is always on is not read.
+                #
+                # Derived over EVERY model in provider.config.models, not just
+                # the selected one, and False if ANY of them is unpriced.
+                # `_create_provider_config` folds the per-task pins
+                # ({PROVIDER}_CLASSIFIER_MODEL, _SYNTHESIS_MODEL, _DA_MODEL —
+                # documented in .env.example) into models[1:] so
+                # `get_effective_model` will accept them, which means a
+                # provider really does call all of them. A per-task pin is a
+                # hand-pin in no `available_models` list, so it is exactly the
+                # case this flag exists for; keying it off models[0] alone
+                # reported True while every classifier and synthesis call
+                # billed as $0. "Any unpriced" rather than "all priced" is the
+                # honest reading: the flag answers "will this provider's spend
+                # be under-reported?", and one unpriced role is enough for
+                # that to be yes.
                 "selected_model_priced": (
-                    lookup_rates(name, selected) is not None if selected else None
+                    all(
+                        lookup_rates(name, m) is not None
+                        for m in provider.config.models
+                    )
+                    if provider.config.models
+                    else (
+                        lookup_rates(name, selected) is not None if selected else None
+                    )
                 ),
                 "confidence_score": provider.config.confidence_score,
                 "in_fallback_chain": name in self._fallback_chain,

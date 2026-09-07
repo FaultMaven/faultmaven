@@ -1503,17 +1503,23 @@ class TestSelectedModelPriced:
     """
 
     @staticmethod
-    def _registry_with(model, provider_name="anthropic"):
-        """A registry whose single provider has already resolved `model`."""
+    def _registry_with(model, provider_name="anthropic", task_models=()):
+        """A registry whose single provider has already resolved `model`.
+
+        ``task_models`` mirrors what ``_create_provider_config`` builds for a
+        deployment that sets {PROVIDER}_CLASSIFIER_MODEL / _SYNTHESIS_MODEL /
+        _DA_MODEL: ``models = [base] + task_models``.
+        """
+        models = ([model] if model else []) + list(task_models)
         registry = ProviderRegistry(settings=MagicMock())
         provider = Mock(spec=BaseLLMProvider)
         provider.is_available.return_value = True
-        provider.get_supported_models.return_value = [model] if model else []
+        provider.get_supported_models.return_value = models
         provider.config = ProviderConfig(
             name=provider_name,
             api_key="test-key",
             base_url="https://example.invalid",
-            models=[model] if model else [],
+            models=models,
             default_model=model,
             confidence_score=0.85,
         )
@@ -1564,3 +1570,46 @@ class TestSelectedModelPriced:
             "whatever-the-user-pulled", provider_name="local"
         ).get_provider_status()
         assert status["local"]["selected_model_priced"] is True
+
+    def test_unpriced_per_task_model_makes_the_flag_false(self):
+        """A per-task pin is exactly the case this flag exists for.
+
+        `_create_provider_config` folds {PROVIDER}_CLASSIFIER_MODEL /
+        _SYNTHESIS_MODEL / _DA_MODEL into config.models[1:] so
+        `get_effective_model` will accept them — the provider really does call
+        them. They are hand-pins in no `available_models` list, so no picker
+        invariant sees them. Keying the flag off models[0] alone reported True
+        while every classifier and synthesis call billed as $0.
+        """
+        registry = self._registry_with(
+            "claude-opus-5",
+            task_models=["claude-nonexistent-classifier"],
+        )
+        status = registry.get_provider_status()
+
+        assert status["anthropic"]["selected_model"] == "claude-opus-5"
+        assert status["anthropic"]["selected_model_priced"] is False
+
+    def test_flag_stays_true_when_every_task_model_is_priced(self):
+        """ "Any unpriced" must not degenerate into "always False".
+
+        A guard that fires on every provider carrying more than one model
+        would be as useless as one that never fires.
+        """
+        registry = self._registry_with(
+            "claude-opus-5",
+            task_models=["claude-haiku-4-5-20251001", "claude-sonnet-4-6"],
+        )
+        status = registry.get_provider_status()
+
+        assert status["anthropic"]["selected_model_priced"] is True
+
+    def test_unpriced_base_model_is_still_caught_with_task_models_present(self):
+        # The base model is models[0]; adding task models must not let it slip.
+        registry = self._registry_with(
+            "claude-opus-99-unreleased",
+            task_models=["claude-sonnet-4-6"],
+        )
+        status = registry.get_provider_status()
+
+        assert status["anthropic"]["selected_model_priced"] is False

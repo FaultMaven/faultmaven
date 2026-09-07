@@ -351,43 +351,88 @@ class TestVersionedModelKeys:
       and nothing anywhere says so. Strictly worse.
 
     #1359 hit the first (claude-opus-5) and, next to it, the second
-    (claude-opus-4-6 billed at the original Opus 4 rate).
+    (claude-opus-4-6 billed at the original Opus 4 rate). Its first cut then
+    reproduced the second failure on the generations it did not key: 4-5,
+    4-7 and 4-8 kept billing at $90 per 1M in+out against a real $30.
     """
 
-    def test_claude_opus_5_is_priced(self):
-        # The generic "claude-opus-4" key cannot reach Opus 5 — it is not a
-        # substring of "claude-opus-5" — so before #1359 this returned None.
-        rates = lookup_rates("anthropic", "claude-opus-5")
-        assert rates is not None, "claude-opus-5 must resolve to a rate"
-        assert rates.input == pytest.approx(5.0)
-        assert rates.output == pytest.approx(25.0)
+    # Every Opus generation that repriced to $5 in / $25 out (4.5 onward).
+    REPRICED_OPUS = [
+        "claude-opus-4-5",
+        "claude-opus-4-6",
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+        "claude-opus-5",
+    ]
+    # Ids the ORIGINAL $15 / $75 rate is still correct for.
+    ORIGINAL_OPUS = [
+        "claude-opus-4",
+        "claude-opus-4-1",
+        "claude-opus-4-20250514",
+    ]
 
-    def test_claude_opus_4_6_is_not_billed_at_the_original_opus_4_rate(self):
-        # Opus repriced to $5/$25 at 4.5 and held there. The generic
-        # "claude-opus-4" key still carries the ORIGINAL $15/$75, so without a
-        # more specific key the model the dashboard picker offers for Opus was
-        # over-reported 3x — invisibly, since it stayed priced=True.
-        rates = lookup_rates("anthropic", "claude-opus-4-6")
-        assert rates is not None
-        assert rates.input == pytest.approx(5.0)
-        assert rates.output == pytest.approx(25.0)
+    @pytest.mark.parametrize("model", REPRICED_OPUS)
+    def test_repriced_opus_generations_are_not_billed_at_the_old_rate(self, model):
+        # The generic "claude-opus-4" key carries the ORIGINAL $15/$75. Every
+        # generation from 4.5 on must beat it (or, for opus-5, be reachable at
+        # all -- "claude-opus-4" is not a substring of "claude-opus-5").
+        rates = lookup_rates("anthropic", model)
+        assert rates is not None, f"{model} must resolve to a rate"
+        assert rates.input == pytest.approx(5.0), model
+        assert rates.output == pytest.approx(25.0), model
 
-    def test_original_opus_4_keeps_its_own_rate(self):
+    @pytest.mark.parametrize("model", ORIGINAL_OPUS)
+    def test_original_opus_keeps_its_own_rate(self, model):
         # The generic key is not wrong, only version-blind: it stays correct
         # for the ids it was written for. Longest-match is what lets both
         # coexist, so deleting it would UNPRICE these rather than fix them.
-        for model in ("claude-opus-4", "claude-opus-4-1", "claude-opus-4-20250514"):
-            rates = lookup_rates("anthropic", model)
-            assert rates is not None, model
-            assert rates.input == pytest.approx(15.0), model
-            assert rates.output == pytest.approx(75.0), model
+        rates = lookup_rates("anthropic", model)
+        assert rates is not None, model
+        assert rates.input == pytest.approx(15.0), model
+        assert rates.output == pytest.approx(75.0), model
 
-    def test_opus_5_beats_the_generic_key_via_longest_match(self):
-        # Guards the ordering property the fix relies on, not just the values:
-        # a future "claude-opus-5-1" must resolve to the Opus 5 row.
-        assert lookup_rates("anthropic", "claude-opus-5-1") == lookup_rates(
-            "anthropic", "claude-opus-5"
-        )
+    @pytest.mark.parametrize("model", REPRICED_OPUS)
+    def test_dated_snapshots_resolve_through_the_substring_loop(self, model):
+        """A dated id is the case that actually exercises longest-match.
+
+        An exact key short-circuits before the substring scan, so asserting on
+        the bare id proves nothing about matching. A dated snapshot has no
+        exact key, so it must be resolved by the loop -- and for the 4-x ids
+        the loop has a genuine contest to settle, since BOTH "claude-opus-4"
+        ($15/$75) and "claude-opus-4-N" ($5/$25) are substrings of it. Under
+        first-match-wins with the built-in dict order the generic key is
+        reached first and these come back at $15/$75.
+        """
+        dated = f"{model}-20260401"
+        rates = lookup_rates("anthropic", dated)
+        assert rates is not None, dated
+        assert rates.input == pytest.approx(5.0), dated
+        assert rates.output == pytest.approx(25.0), dated
+
+    def test_haiku_key_is_versioned_and_priced_at_the_published_rate(self):
+        # The bare "claude-haiku" key this replaced was fully version-blind
+        # and carried $0.80/$4.00, under-reporting the shipped picker model.
+        rates = lookup_rates("anthropic", "claude-haiku-4-5-20251001")
+        assert rates is not None
+        assert (rates.input, rates.output) == pytest.approx((1.0, 5.0))
+
+    def test_a_future_haiku_generation_reads_as_unpriced_not_stale(self):
+        """The trade this module makes: visibly wrong beats quietly wrong.
+
+        A bare "claude-haiku" key would hand the 4.5 rate to every later
+        generation with priced=True, which no counter can see. Unpriced is
+        the designed, visible failure instead.
+        """
+        assert lookup_rates("anthropic", "claude-haiku-5") is None
+
+    def test_openrouter_routes_opus_at_the_same_published_rate(self):
+        # Same model, same rate, different path to it -- pricing only the
+        # direct path would leave an Opus 5 deployment reporting $0 purely
+        # for reaching Anthropic through the gateway.
+        for model in ("anthropic/claude-opus-5", "anthropic/claude-opus-4-6"):
+            rates = lookup_rates("openrouter", model)
+            assert rates is not None, model
+            assert (rates.input, rates.output) == pytest.approx((5.0, 25.0)), model
 
 
 @pytest.mark.unit

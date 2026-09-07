@@ -56,15 +56,20 @@ asked to accept, and it belongs to a person.
 # rather than required, unlike 2.5.0 and 2.1.0, because the server genuinely
 # has nothing to send for a provider it has not initialised.
 #
-# No client can break on it, verified by reading them. The Dashboard declares
-# the shape by hand as `LLMProvider` in `src/types/llm.ts` — a compile-time
-# TypeScript interface it does not validate against, so an extra JSON key is
-# inert — and additionally carries the schema in the generated
+# No client can break on it, verified by reading all three. The Dashboard
+# declares the shape by hand as `LLMProvider` in `src/types/llm.ts` — a
+# compile-time TypeScript interface it does not validate against, so an extra
+# JSON key is inert — and additionally carries the schema in the generated
 # `src/types/api.generated.ts`, where a regeneration only widens a response
 # type. The Slack agent's `LLMProviderDetail` lives in the generated
 # `faultmaven/api_generated.py` and is referenced nowhere outside it; pydantic
-# ignores unknown fields besides. The Copilot does not reference the schema at
-# all.
+# ignores unknown fields besides. The Copilot carries it in the generated
+# `packages/copilot-ui/types/api.generated.ts` and nowhere else — same
+# widening-only story as the Dashboard's generated copy. (An earlier draft of
+# this entry said the Copilot did not reference the schema at all. That was
+# false and came from grepping only `faultmaven-copilot/src`, which is not
+# where that client keeps its generated types; the MINOR call is unchanged,
+# but it now rests on having actually read the file.)
 #
 # 3.1.0 — MINOR. Teams form by consent (ADR-017 D4). Nine operations are added
 # and nothing existing is touched, so every current client survives the change

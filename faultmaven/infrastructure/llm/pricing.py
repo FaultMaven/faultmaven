@@ -58,28 +58,52 @@ class TokenRates:
 # "anthropic/claude-sonnet-4-6" (OpenRouter) or a dated snapshot suffix.
 # Anthropic prompt-cache: write ~1.25x input (5-min TTL), read ~0.1x input.
 # OpenAI-family cached input is ~0.5x input; write is not separately billed.
+#
+# A key that names no version is a TRAP, because the failure it produces is
+# the invisible one: it keeps matching the next generation and bills it at the
+# old rate, staying priced=True and so never reaching the unpriced counter.
+# Prefer a versioned key and let an unknown generation read as unpriced.
+# Known version-blind keys REMAINING after #1359, deliberately left because
+# nothing in PROVIDER_SCHEMA offers a model that would be mis-keyed by them
+# today: fireworks "deepseek" (a genuine catch-all beside the specific
+# deepseek-v3/v4-flash rows) and cohere "command-r-plus"/"command-r" (which
+# would capture a future dated or re-priced Command R). Price them
+# specifically the moment either provider ships a generation at a new rate.
 DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
     "anthropic": {
         # Sonnet tier: $3 input / $15 output per 1M, cache write ~1.25x, read ~0.1x.
         "claude-sonnet-4-5": TokenRates(3.0, 15.0, 0.30, 3.75),
         "claude-sonnet-4-6": TokenRates(3.0, 15.0, 0.30, 3.75),
-        # Opus tier. The generic "claude-opus-4" key is the ORIGINAL Opus 4 /
-        # 4.1 rate ($15 in / $75 out) and stays correct for those ids; the two
-        # specific keys below win by longest-match for the generations that
-        # repriced. Keeping all three is what makes the substring scheme safe
-        # here — a version-blind key does not merely go stale, it silently
-        # bills a NEWER model at an OLDER rate, and unlike an unpriced model
-        # that failure never reaches the unpriced counter.
+        # Opus tier. A version-blind key here fails in TWO directions, and only
+        # one of them is visible: it can stop matching (unpriced, cost 0.0,
+        # counted on the unpriced counter — the module's designed failure), or
+        # it can KEEP matching at a stale rate, which stays priced=True and so
+        # reaches no counter at all. The second is strictly worse, and it is
+        # what "claude-opus-4" alone was doing.
+        #
+        # Opus 4 and 4.1 were $15 in / $75 out. Opus repriced to $5 / $25 at
+        # 4.5 and has held there through 4.6, 4.7, 4.8 and Opus 5. So the
+        # generic key stays — it is still correct for the ids it was written
+        # for — and EVERY repriced generation gets its own longer key, which
+        # wins by longest-match. Keying only some of them is what the first
+        # cut of #1359 did: 4-6 was fixed while 4-5/4-7/4-8 kept billing at
+        # $90 per 1M in+out against a real $30, with the new
+        # selected_model_priced observable reporting True over it.
         "claude-opus-4": TokenRates(15.0, 75.0, 1.50, 18.75),
-        # claude-opus-4-6 is what the dashboard picker offers for Opus, and it
-        # was matching the generic key above — a 3x over-report. Opus repriced
-        # to $5 in / $25 out at 4.5 and has held there through 4.6/4.7/4.8.
+        "claude-opus-4-5": TokenRates(5.0, 25.0, 0.50, 6.25),
         "claude-opus-4-6": TokenRates(5.0, 25.0, 0.50, 6.25),
-        # Opus 5 ($5 in / $25 out) — the generation the generic key cannot
-        # reach at all, since "claude-opus-4" is not a substring of
-        # "claude-opus-5" (#1359).
+        "claude-opus-4-7": TokenRates(5.0, 25.0, 0.50, 6.25),
+        "claude-opus-4-8": TokenRates(5.0, 25.0, 0.50, 6.25),
         "claude-opus-5": TokenRates(5.0, 25.0, 0.50, 6.25),
-        "claude-haiku": TokenRates(0.80, 4.0, 0.08, 1.0),
+        # Haiku 4.5 is $1 in / $5 out. The key is VERSIONED for the same
+        # reason the Opus keys are: the bare "claude-haiku" it replaces was
+        # fully version-blind, so it silently under-reported the shipped
+        # picker model (claude-haiku-4-5-20251001) at $0.80/$4.00 and would
+        # have handed the same stale rate to every future Haiku generation.
+        # Dropping the bare key means a future claude-haiku-5 reads as
+        # UNPRICED until someone adds it — visibly wrong instead of quietly
+        # wrong, which is the trade this module exists to make.
+        "claude-haiku-4-5": TokenRates(1.0, 5.0, 0.10, 1.25),
     },
     "openai": {
         # gpt-5.6-luna is FaultMaven's default OpenAI model. SHORT-CONTEXT
@@ -150,9 +174,16 @@ DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
         "command-r": TokenRates(0.15, 0.60, 0.0, 0.0),
     },
     "openrouter": {
-        # OpenRouter passes provider rates through; keep the common routed models.
+        # OpenRouter passes provider rates through; keep the common routed
+        # models. The Opus rows mirror the anthropic table above: routing
+        # "anthropic/claude-opus-5" through OpenRouter is the same model at
+        # the same published rate, and pricing it only on the direct path
+        # would have left goal (b) of #1359 half-met — an Opus 5 deployment
+        # reporting $0 purely because it reaches Anthropic via the gateway.
         "claude-sonnet-4-5": TokenRates(3.0, 15.0, 0.30, 3.75),
         "claude-sonnet-4-6": TokenRates(3.0, 15.0, 0.30, 3.75),
+        "claude-opus-4-6": TokenRates(5.0, 25.0, 0.50, 6.25),
+        "claude-opus-5": TokenRates(5.0, 25.0, 0.50, 6.25),
     },
 }
 
