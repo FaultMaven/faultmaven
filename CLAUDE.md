@@ -203,13 +203,15 @@ authoritative contract list and which are active, run `lint-imports`:
 | 4 | Knowledge module layer boundaries | Active |
 | 5 | Case module layer boundaries | Active |
 | 6 | Auth module layer boundaries | Active |
-| 7 | Agent module layer boundaries | Disabled (TODO) |
+| 7 | Agent module layer boundaries | Active |
 | 8 | Evidence module layer boundaries | Active |
 | 9 | Report module layer boundaries | Active |
 | 10 | Other modules use auth contracts only | Active |
 | 11 | No direct database access to auth tables | Active |
 | 12 | Domain Services use Case contracts, not infrastructure | Active |
-| 13 | Other modules use Case contracts for shared models | Disabled |
+| 13 | Other modules use Case contracts for shared models | Active |
+| 14 | Preprocessing module uses Case contracts only | Active |
+| 15 | Providers do not reach into module internals | Active |
 
 **Run architecture checks:**
 ```bash
