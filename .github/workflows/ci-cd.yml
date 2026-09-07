@@ -198,7 +198,7 @@ jobs:
 
       - name: Check Coverage Threshold
         run: |
-          coverage report --fail-under=45
+          coverage report --fail-under=50
 
       - name: Upload Standalone Coverage
         uses: codecov/codecov-action@v6
@@ -339,7 +339,7 @@ jobs:
 
       - name: Check Coverage Threshold
         run: |
-          coverage report --fail-under=45
+          coverage report --fail-under=50
 
       - name: Upload Cloud Coverage
         uses: codecov/codecov-action@v6
