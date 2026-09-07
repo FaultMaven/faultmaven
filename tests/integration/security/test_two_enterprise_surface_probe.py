@@ -187,6 +187,17 @@ confinement)                                        enterprises_user``,
 ``users.enterprise_id`` when the claim is absent    enterprise_claim_is_refused``
 (the binder's refusal of a claim-less token)        in both arms — the fallback
                                                     ADR-017 forbids by name.
+``require_case_access`` resolves every session      1: ``test_a_share_grants_
+method through the READ allowlist                   read_not_write_on_the_
+(``owner_only=False``, the router-level gate's      derived_surfaces``. The
+choice of resolver by request method)               teammate's PATCH answers
+                                                    **200** and rewrites the
+                                                    OWNER's ``session_goal`` to
+                                                    PWNED. One row, not two: the
+                                                    sibling battery above names
+                                                    only the case row itself,
+                                                    which this gate does not
+                                                    guard.
 ==================================================  ============================
 """
 
@@ -4085,12 +4096,29 @@ async def test_a_share_grants_read_not_write(shared_world):
     for label, response in (
         ("PUT /cases/{id}", update),
         ("POST /cases/{id}/close", close),
+        ("DELETE /cases/{id}", delete),
         ("PUT /reports/{id}", edit_report),
     ):
         assert response.status_code in REFUSED, (
             f"{label}: a teammate with READ access mutated the owner's case "
             f"({response.status_code}): {response.text[:300]}"
         )
+        assert_no_private_content(response, label)
+
+    # DELETE is in the loop above now, and it is specifically **403**. The route
+    # used to discard the service's refusal and answer 204 — "deleted" about a
+    # row that is still there — so the row check below passed while the caller
+    # was told the opposite. 403 rather than 404 because a teammate demonstrably
+    # CAN see this case: every read in this arm succeeds for them, so 404 would
+    # be a lie they can detect, and the honest answer is that seeing is not
+    # owning. (A case the caller cannot see stays 204: indistinguishable from
+    # already-gone, which is the refusal shape every other read on this surface
+    # uses.)
+    assert delete.status_code == 403, (
+        "a teammate's DELETE of a case they can READ answered "
+        f"{delete.status_code}; it must refuse, and refuse as 403 — 204 would "
+        f"report a deletion that did not happen: {delete.text[:300]}"
+    )
 
     async with world.superuser_engine.begin() as conn:
         case_row = (
@@ -4112,6 +4140,198 @@ async def test_a_share_grants_read_not_write(shared_world):
     assert case_row[0] == SHARED_TITLE, "a refused PUT renamed the owner's case"
     assert case_row[1] == "inquiry", "a refused close moved the owner's case"
     assert SHARED in report_title, "a refused PUT rewrote the owner's report"
+
+
+async def test_a_share_grants_read_not_write_on_the_derived_surfaces(shared_world):
+    """The other half of the battery: everything that hangs OFF the case.
+
+    A share is read visibility (ADR-017 D4), and the surfaces above are the ones
+    that name the case row itself. These name something derived from it — an
+    investigation session, the case's report set, a knowledge suggestion — and
+    every one of them was reachable to a teammate, because the gate they
+    resolved through was the READ allowlist:
+
+    * the session routes are gated by one router-level dependency, which asked
+      for ``owner ∪ shared`` on every method; the only predicate left downstream
+      is ``case.enterprise_id``, and in this arm both parties carry it;
+    * report **regeneration** flips ``is_current`` across the owner's reports;
+    * ``POST /reports/generate`` mints report rows against the owner's case;
+    * **extraction** mints a knowledge suggestion out of the owner's transcript
+      and evidence, attributed to whoever asked.
+
+    Asserted against the ROWS, not the responses. The refusals here are 404 and
+    the OWNER's own call against an absent session is also 404 — correctly
+    indistinguishable — so a status code alone cannot tell "refused" from
+    "reached the route and did nothing". Only the rows can.
+    """
+    world = shared_world
+    case_id = world.shared_case.case_id
+    report_id = world.shared_case.report_id
+
+    async def _rows():
+        async with world.superuser_engine.begin() as conn:
+            sessions = (
+                await conn.execute(
+                    text(
+                        "SELECT session_id, state, session_goal "
+                        "FROM investigation_sessions WHERE case_id = :c "
+                        "ORDER BY session_id"
+                    ),
+                    {"c": case_id},
+                )
+            ).all()
+            suggestions = (
+                await conn.execute(
+                    text(
+                        "SELECT count(*) FROM knowledge_suggestions WHERE case_id = :c"
+                    ),
+                    {"c": case_id},
+                )
+            ).scalar()
+            report = (
+                await conn.execute(
+                    text(
+                        "SELECT is_current, version, title FROM reports "
+                        "WHERE report_id = :r"
+                    ),
+                    {"r": report_id},
+                )
+            ).first()
+        return sessions, suggestions, report
+
+    # The OWNER opens a session. Control, and the thing the teammate's calls
+    # address: a battery aimed at a session id that names nothing would be
+    # refused for having no target rather than for who asked.
+    opened = await as_owner(
+        world,
+        "POST",
+        f"/api/v1/cases/{case_id}/sessions",
+        json={"session_goal": SHARED},
+    )
+    assert opened.status_code == 201, (
+        "control: the owner cannot open a session on their own case, so every "
+        f"refusal below is unattributable: {opened.text[:300]}"
+    )
+    session_id = opened.json()["session_id"]
+
+    before_sessions, before_suggestions, before_report = await _rows()
+    assert len(before_sessions) == 1 and before_suggestions == 0
+
+    attacks = (
+        ("POST /cases/{id}/sessions", "POST", f"/api/v1/cases/{case_id}/sessions", {}),
+        (
+            "PATCH /cases/{id}/sessions/{sid}",
+            "PATCH",
+            f"/api/v1/cases/{case_id}/sessions/{session_id}",
+            {"session_goal": "PWNED"},
+        ),
+        (
+            "POST .../sessions/{sid}/pause",
+            "POST",
+            f"/api/v1/cases/{case_id}/sessions/{session_id}/pause",
+            {},
+        ),
+        (
+            "POST .../sessions/{sid}/resume",
+            "POST",
+            f"/api/v1/cases/{case_id}/sessions/{session_id}/resume",
+            {},
+        ),
+        (
+            "POST .../sessions/{sid}/complete",
+            "POST",
+            f"/api/v1/cases/{case_id}/sessions/{session_id}/complete",
+            {"findings_summary": "PWNED"},
+        ),
+        (
+            "POST /cases/{id}/reports",
+            "POST",
+            f"/api/v1/cases/{case_id}/reports",
+            {"report_types": ["closure_summary"]},
+        ),
+        (
+            "POST /reports/generate",
+            "POST",
+            f"/api/v1/reports/generate?case_id={case_id}",
+            {"report_types": ["closure_summary"]},
+        ),
+        (
+            "POST /cases/{id}/extract-knowledge",
+            "POST",
+            f"/api/v1/cases/{case_id}/extract-knowledge",
+            {},
+        ),
+    )
+
+    for label, method, path, body in attacks:
+        response = await as_teammate(world, method, path, json=body)
+        assert response.status_code in REFUSED, (
+            f"{label}: a teammate with READ access reached a surface derived "
+            f"from the owner's case ({response.status_code}): "
+            f"{response.text[:300]}"
+        )
+        assert_no_private_content(response, label)
+
+    after_sessions, after_suggestions, after_report = await _rows()
+    assert after_sessions == before_sessions, (
+        "a refused session call changed the owner's sessions — a new row, a "
+        f"moved state, or a rewritten goal: {before_sessions} -> {after_sessions}"
+    )
+    assert after_sessions[0][1] == "active", "a refused pause/complete moved it"
+    assert after_sessions[0][2] == SHARED, "a refused PATCH rewrote the goal"
+    assert after_suggestions == 0, (
+        "a refused extraction minted a knowledge suggestion from the owner's "
+        "transcript and evidence"
+    )
+    assert after_report == before_report, (
+        "a refused regeneration moved the owner's report set — is_current, the "
+        f"version, or the title: {before_report} -> {after_report}"
+    )
+
+    # The controls, where a control is meaningful. The owner's PATCH is the
+    # sharpest: same session, same body, same instant — only the caller differs.
+    patched = await as_owner(
+        world,
+        "PATCH",
+        f"/api/v1/cases/{case_id}/sessions/{session_id}",
+        json={"session_goal": f"{SHARED}-owner-edit"},
+    )
+    assert patched.status_code == 200, (
+        "control: the owner cannot patch their OWN session, so the teammate's "
+        f"404 is not attributable to ownership: {patched.text[:300]}"
+    )
+
+    # Regeneration's control is a DIFFERENT refusal, which is the point: the
+    # owner reaches the state check (the case is not terminal) where the
+    # teammate never resolves the case at all. Two refusals, and only one of
+    # them tells the caller anything about the case.
+    owner_regenerate = await as_owner(
+        world,
+        "POST",
+        f"/api/v1/cases/{case_id}/reports",
+        json={"report_types": ["closure_summary"]},
+    )
+    assert owner_regenerate.status_code == 400, (
+        "control: the owner's own regeneration no longer reaches the state "
+        f"check, so the teammate's 404 distinguishes nothing: "
+        f"{owner_regenerate.text[:300]}"
+    )
+
+    # And extraction, which WRITES: the count moving 0 -> 1 on the owner's call
+    # is what makes "the teammate wrote none" a measurement rather than an
+    # absence that could have come from a broken route.
+    owner_extract = await as_owner(
+        world, "POST", f"/api/v1/cases/{case_id}/extract-knowledge", json={}
+    )
+    assert owner_extract.status_code == 201, (
+        "control: the owner cannot extract knowledge from their own case, so "
+        f"the teammate's refusal proves nothing: {owner_extract.text[:300]}"
+    )
+    _, suggestions_after_owner, _ = await _rows()
+    assert suggestions_after_owner == 1, (
+        "control: the owner's extraction wrote no suggestion, so the zero "
+        "asserted above is not evidence about the teammate"
+    )
 
 
 # =============================================================================
