@@ -69,18 +69,35 @@ def test_the_migration_chain_declares_revisions_we_can_detect() -> None:
     Without this, an empty ``_known_revisions()`` would make the guard below
     pass vacuously for every possible CLAUDE.md — the failure mode #1246 is
     itself an instance of.
+
+    The threshold is 1, not the chain length it once was: ADR-017 collapsed the
+    chain to a single baseline, and a count that encoded "there are dozens"
+    would fail on the collapse rather than on the thing it guards.
     """
     revisions = _known_revisions()
-    assert len(revisions) > 30, f"expected the full chain, found {len(revisions)}"
+    assert revisions, "the detector parsed no revision ids at all"
 
 
 @pytest.mark.unit
 @pytest.mark.architecture
 def test_the_detector_would_catch_a_pinned_revision() -> None:
-    """Positive control: a document that DOES pin one is reported."""
-    a_real_revision = sorted(_pinnable_revisions())[0]
-    synthetic = f"Current head: `{a_real_revision}`.\n"
-    assert _pinned_in(synthetic) == {a_real_revision}
+    """Positive control: a document that DOES pin one is reported.
+
+    Stated as a property over a *supplied* pinnable set rather than over the
+    chain's own, because the chain is currently one baseline — every revision
+    in it is a root, so ``_pinnable_revisions()`` is legitimately empty and an
+    instance drawn from it would only prove the chain's shape. What has to hold
+    is the detector's mechanics: a document naming a pinnable revision is
+    reported, and one naming an exempt root is not.
+    """
+    pinnable = "aaaaaaaaaaaa"
+    exempt = sorted(_root_revisions())[0]
+
+    def _pinned(text: str, candidates: set[str]) -> set[str]:
+        return {rev for rev in candidates if rev in text}
+
+    assert _pinned(f"Current head: `{pinnable}`.\n", {pinnable}) == {pinnable}
+    assert _pinned(f"Baseline (revision {exempt}).\n", _pinnable_revisions()) == set()
 
 
 def _pinned_in(text: str) -> set[str]:

@@ -65,7 +65,15 @@ class DatabaseUserStore:
         self.username_pattern = re.compile(r"^([^@]+@[^@]+\.[^@]+|[a-zA-Z0-9._-]+)$")
 
     def _user_to_devuser(self, user: User) -> DevUser:
-        """Convert User (repository model) to DevUser (auth model)"""
+        """Convert User (repository model) to DevUser (auth model).
+
+        ``enterprise_id`` is carried across because it is the account's
+        persisted isolation anchor and the source of the token's ``enterprise_id``
+        claim (ADR-017 D3/D9). Dropping it here would leave
+        ``DevUser.__post_init__`` to stamp the Standalone sentinel, which under
+        ``multi`` mints an empty claim and a dead credential — fail-closed, but
+        for the wrong reason and on every login.
+        """
         return DevUser(
             user_id=user.user_id,
             username=user.username,
@@ -75,7 +83,9 @@ class DatabaseUserStore:
             is_dev_user=True,
             is_active=user.is_active,
             roles=user.roles if user.roles else ["user"],
+            enterprise_id=user.enterprise_id,
             account_kind=user.account_kind,
+            service_channel=user.service_channel,
         )
 
     async def get_user(self, user_id: str) -> Optional[DevUser]:
@@ -178,6 +188,9 @@ class DatabaseUserStore:
         email: str = None,
         display_name: str = None,
         account_kind: str = "individual",
+        service_channel: str = None,
+        *,
+        enterprise_id: str,
     ) -> DevUser:
         """Create new development user
 
@@ -185,9 +198,20 @@ class DatabaseUserStore:
             username: Unique username
             email: User email address (optional, auto-generated if not provided)
             display_name: Human-readable display name (optional, auto-generated if not provided)
-            account_kind: ADR-012 account kind — 'individual' (human) or 'slack'
-                (service account). Set at creation so a service account is never
-                briefly persisted as an individual.
+            account_kind: ADR-017 D6 account kind — 'individual' (a human) or
+                'service' (an agent acting for an integration). Set at creation
+                so a service account is never briefly persisted as an individual.
+            service_channel: Which integration a 'service' account serves
+                ('slack'), or None for a human. Set at creation for the same
+                reason: it is what decides the derived ``cases.source``.
+            enterprise_id: The enterprise this account is anchored to (ADR-017
+                D3) — keyword-only and REQUIRED, with no default. A default here
+                would be the #1143 trap: every caller that stayed quiet would
+                get the Standalone sentinel, which under ``multi`` is not a
+                tenant, so the account's next refresh mints an empty isolation
+                claim and every request it makes afterwards is refused. Callers
+                that genuinely mean "this deployment's one enterprise" say so by
+                passing the binding.
 
         Returns:
             Created DevUser
@@ -244,6 +268,7 @@ class DatabaseUserStore:
             # Create User model for repository
             user = User(
                 user_id=user_id,
+                enterprise_id=enterprise_id,
                 username=username,
                 email=email,
                 display_name=display_name,
@@ -263,6 +288,7 @@ class DatabaseUserStore:
                 deleted_at=None,
                 roles=["user"],
                 account_kind=account_kind,
+                service_channel=service_channel,
             )
 
             # Save via repository (upsert behavior - handles both insert and update)
@@ -311,6 +337,7 @@ class DatabaseUserStore:
             existing_user.is_active = user.is_active
             existing_user.roles = user.roles if user.roles else ["user"]
             existing_user.account_kind = user.account_kind
+            existing_user.service_channel = user.service_channel
             existing_user.updated_at = datetime.now(timezone.utc)
 
             saved_user = await self.user_repository.update(existing_user)
@@ -369,29 +396,31 @@ class DatabaseUserStore:
         self,
         limit: int = 100,
         offset: int = 0,
-        user_ids: Optional[Collection[str]] = None,
+        enterprise_id: Optional[str] = None,
     ) -> List[DevUser]:
-        """List users with pagination, optionally restricted to an id allowlist
+        """List users with pagination, optionally confined to one enterprise
 
         Args:
             limit: Maximum number of users to return
             offset: Pagination offset
-            user_ids: The only users the caller may see, or ``None`` for no
-                restriction. The operator surface resolves it from
-                ``organization_members`` (``api/operator_user_scope``, #1318)
-                and passes it here rather than filtering the returned page: the
-                page is deployment-wide, so a tenant's users could fall outside
-                it, and one row elsewhere that fails hydration empties this
-                listing for every caller (the ``except`` below returns ``[]``).
+            enterprise_id: The tenant the listing is confined to, or ``None`` for
+                no restriction — which is only ever the single-tenant answer.
+                The operator surface confines by it
+                (``api/operator_user_scope``, #1318) and passes it here rather
+                than filtering the returned page: the page is deployment-wide, so
+                a tenant's users could fall outside it, and one row elsewhere
+                that fails hydration empties this listing for every caller (the
+                ``except`` below returns ``[]``). It used to be a materialised
+                set of account ids, which is a full roster scan to express one
+                indexed comparison.
 
         Returns:
             List of DevUser objects
         """
         try:
-            # `is not None`, not truthiness: an empty allowlist selects nothing.
-            if user_ids is not None:
+            if enterprise_id is not None:
                 users, _ = await self.user_repository.list_users(
-                    limit=limit, offset=offset, user_ids=user_ids
+                    limit=limit, offset=offset, enterprise_id=enterprise_id
                 )
             else:
                 users, _ = await self.user_repository.list(limit=limit, offset=offset)
@@ -400,13 +429,23 @@ class DatabaseUserStore:
             logger.error(f"Failed to list users: {e}")
             return []
 
-    async def count_users(self) -> int:
-        """Get total number of users
+    async def count_users(self, enterprise_id: Optional[str] = None) -> int:
+        """Get total number of users, optionally confined to one enterprise
+
+        Args:
+            enterprise_id: The tenant to count, or ``None`` for the deployment.
 
         Returns:
-            Total user count
+            Total user count. ``0`` on failure, which the confined caller reads
+            as "nothing to show" rather than as the deployment's population —
+            the direction that cannot disclose another tenant's size.
         """
         try:
+            if enterprise_id is not None:
+                _, total = await self.user_repository.list_users(
+                    limit=1, offset=0, enterprise_id=enterprise_id
+                )
+                return total
             _, total = await self.user_repository.list(limit=1, offset=0)
             return total
         except Exception as e:

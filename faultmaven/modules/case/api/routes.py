@@ -46,7 +46,7 @@ from faultmaven.api.exception_handlers import (
 from faultmaven.api.v1.auth_dependencies import (
     get_current_user_id,
     get_current_user_optional,
-    require_actor_organization,
+    require_actor_enterprise,
     require_authentication,
 )
 from faultmaven.api.v1.dependencies import (
@@ -61,6 +61,7 @@ from faultmaven.api.v1.dependencies import (
     get_session_service,
     get_suggestion_service,
 )
+from faultmaven.config.tenant_context import get_current_enterprise_id
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.core.investigation.turn_budget import bind_turn_deadline
 from faultmaven.exceptions import (
@@ -852,7 +853,12 @@ async def delete_case(
     the case and all associated data are permanently removed.
 
     The operation is idempotent - subsequent requests will return
-    204 No Content even if the case has already been deleted.
+    204 No Content even if the case has already been deleted, and so does a
+    request naming a case the caller cannot see.
+
+    Only the OWNER may delete. A teammate who can read the case through a team
+    share is refused with 403 (ADR-017 D4: a share is read visibility, not
+    ownership).
 
     Returns 204 No Content on success.
     """
@@ -860,13 +866,36 @@ async def delete_case(
     correlation_id = str(uuid.uuid4())
 
     try:
-        # Proceed to hard delete via service if supported; otherwise emulate success
-        # DELETE is idempotent - always returns 204 No Content regardless of whether case existed
-        await case_service.hard_delete_case(case_id, current_user.user_id)
-        # Service layer handles the deletion and cascade behavior
-        # Idempotent: No error even if case doesn't exist
+        # DELETE stays idempotent for a case the caller cannot see: the service
+        # answers True there, and 204 is indistinguishable from "already gone",
+        # which is the same refusal shape every other read on this surface uses.
+        #
+        # It answers **False** for exactly one situation — a case the caller CAN
+        # see (a team share) but does not OWN. That is not an absence and must
+        # not be reported as one: the caller demonstrably knows the case exists,
+        # so 404 would be a lie they can detect, and 204 would be a lie about
+        # what happened. The route used to discard this boolean and answer 204
+        # to both, which said "deleted" about a row that is still there.
+        deleted = await case_service.hard_delete_case(case_id, current_user.user_id)
+        if not deleted:
+            logger.warning(
+                f"Refused delete of case {case_id}: caller is not the owner",
+                extra={"correlation_id": correlation_id},
+            )
+            error_response = ErrorResponse(
+                schema_version="3.1.0",
+                error=ErrorDetail(
+                    code="FORBIDDEN",
+                    message="Only the owner of a case may delete it.",
+                ),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=error_response.model_dump(),
+                headers={"x-correlation-id": correlation_id},
+            )
 
-        # Success response with correlation header (always 204 for idempotent behavior)
+        # Success response with correlation header
         return Response(
             status_code=status.HTTP_204_NO_CONTENT,
             headers={"x-correlation-id": correlation_id},
@@ -916,32 +945,38 @@ async def delete_case(
         )
 
 
-async def _di_get_creator_account_kind(
+async def _di_get_creator_service_channel(
     raw_request: Request,
     current_user: UserDTO = Depends(require_authentication),
-) -> str:
-    """Resolve the creating user's ``account_kind`` (ADR-012) for source stamping.
+) -> Optional[str]:
+    """Resolve the creating account's ``service_channel`` for source stamping.
 
-    Best-effort: falls back to ``'individual'`` if the user service is
-    unavailable or the lookup fails, so case creation never depends on it.
+    The **channel**, not the kind (ADR-017 D6): there are exactly two kinds of
+    account — a human and a service — and which integration a service account
+    serves is a separate attribute, so a second integration is a new value here
+    rather than a third account kind. Reading the kind would answer 'service'
+    for every integration and could no longer say which one.
+
+    Best-effort: falls back to ``None`` if the user service is unavailable or
+    the lookup fails, so case creation never depends on it.
     """
     user_service = getattr(raw_request.app.state, "user_service", None)
     if user_service is None:
-        return "individual"
+        return None
     try:
         user = await user_service.get_user(current_user.user_id)
-        return getattr(user, "account_kind", "individual") if user else "individual"
+        return getattr(user, "service_channel", None) if user else None
     except Exception as e:
         # Don't fail case creation on this — but do NOT swallow silently: a
         # Slack case mislabeled 'copilot' (source is immutable) is otherwise
         # undetectable.
         logger.warning(
-            "Could not resolve account_kind for user %s; case source will "
+            "Could not resolve service_channel for user %s; case source will "
             "default to 'copilot': %s",
             getattr(current_user, "user_id", "?"),
             e,
         )
-        return "individual"
+        return None
 
 
 @router.post("", response_model=CaseSummary, status_code=status.HTTP_201_CREATED)
@@ -952,7 +987,7 @@ async def create_case(
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     session_service: ISessionService = Depends(_di_get_session_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
-    creator_account_kind: str = Depends(_di_get_creator_account_kind),
+    creator_service_channel: Optional[str] = Depends(_di_get_creator_service_channel),
 ) -> CaseSummary:
     """
     Create a new troubleshooting case (v2.0 milestone-based)
@@ -989,10 +1024,11 @@ async def create_case(
                     headers={"x-correlation-id": correlation_id},
                 )
 
-        # Create case using new model. Origin (ADR-012) is derived from the
-        # creator's account kind: a Slack service account → 'slack', otherwise
-        # 'copilot'. Server-derived, not client-provided (not spoofable).
-        source = "slack" if creator_account_kind == "slack" else "copilot"
+        # Create case using new model. Origin is derived from the creating
+        # account's SERVICE CHANNEL (ADR-017 D6): a service account serving
+        # Slack → 'slack', otherwise 'copilot'. Server-derived, not
+        # client-provided (not spoofable).
+        source = "slack" if creator_service_channel == "slack" else "copilot"
         case_entity = await case_service.create_case(
             title=request.title,  # Pass None to trigger auto-generation in service
             description=request.description,
@@ -2125,11 +2161,11 @@ async def _auto_title_case_if_default(
       read against.
 
     The tenant needs no explicit re-binding here *because* of that placement: the
-    global ``bind_request_org_context`` dependency has already bound this
-    request's org in this task. Moving this off the request would silently break
-    that — ``get_current_org_id`` is total, answering the Standalone org for an
-    unbound context rather than failing, so a detached task would not raise, it
-    would quietly address the wrong tenant.
+    global ``bind_request_enterprise_context`` dependency has already bound this
+    request's enterprise in this task. Moving this off the request would silently
+    break that — ``get_current_enterprise_id`` is total, answering the Standalone
+    enterprise for an unbound context rather than failing, so a detached task
+    would not raise, it would quietly address the wrong tenant.
 
     Cost is bounded by construction: it returns immediately unless the title is
     still the placeholder, so a case is named at most once, and a case too thin to
@@ -3520,11 +3556,18 @@ async def get_report_recommendations(
             share_repository=getattr(request.app.state, "share_repository", None),
         )
 
-        # Get intelligent recommendations, scoped to the requester
+        # Get intelligent recommendations, scoped to the requester.
+        #
+        # The tenant term here is the ENTERPRISE the request is bound to, not the
+        # caller's organization claim. The team arm matches the share row's own
+        # ``enterprise_id`` (ADR-017 D1/D4), so feeding it an organization made
+        # the arm empty in every configuration — absent in standalone and for a
+        # cloud account in no organization, and a billing id where present — and
+        # a runbook shared to a common team stopped counting as a duplicate.
         recommendations = await recommendation_service.get_available_report_types(
             case=case,
             requester_user_id=current_user.user_id,
-            requester_organization_id=getattr(current_user, "organization_id", None),
+            requester_enterprise_id=get_current_enterprise_id(),
         )
 
         logger.info(
@@ -3603,7 +3646,13 @@ async def generate_case_reports(
     case_service = check_case_service_available(case_service)
 
     try:
-        case = await case_service.get_case(case_id, current_user.user_id)
+        # ``owner_only``: regeneration flips ``is_current`` across the case's
+        # reports, so it is a WRITE on rows a read share never covered (ADR-017
+        # D4). Inside one enterprise nothing else separates a teammate from the
+        # owner, so this flag is the whole of the boundary here.
+        case = await case_service.get_case(
+            case_id, current_user.user_id, owner_only=True
+        )
         if not case:
             raise HTTPException(status_code=404, detail="Case not found")
 
@@ -4408,8 +4457,13 @@ async def extract_knowledge_from_case(
     from faultmaven.utils.serialization import to_json_compatible
 
     try:
-        # Verify case exists and user has access
-        case = await case_service.get_case(case_id, current_user.user_id)
+        # Verify case exists and the caller OWNS it. Extraction mints a
+        # knowledge suggestion out of the case's transcript and evidence and
+        # attributes it to the extractor, so it is a write on the owner's
+        # material: a read share does not authorise it (ADR-017 D4).
+        case = await case_service.get_case(
+            case_id, current_user.user_id, owner_only=True
+        )
         if not case:
             raise HTTPException(status_code=404, detail="Case not found")
 
@@ -4440,31 +4494,31 @@ async def extract_knowledge_from_case(
         # were wrong with that, and the store change turns the second from
         # cosmetic into fatal:
         #
-        # 1. The suggestion has to be stamped with the SAME organization the
-        #    review routes scope by, or the reviewer never sees it. Every
-        #    suggestion route — list, get, update, approve, reject, remediate —
-        #    resolves its predicate with ``require_actor_organization``, so
-        #    that is the value the write side owes them. The case's own org is
-        #    the same value on the success path (the case was just fetched
-        #    through the caller's own scoped read), which is exactly why
-        #    reading it off the case was never the SOURCE of the answer.
-        # 2. ``"default"`` is not an organization id. It was a silent
-        #    placeholder while the store was a dict keyed by nothing;
-        #    ``knowledge_suggestions.organization_id`` is a NOT NULL FK to
-        #    ``organizations`` with ``PRAGMA foreign_keys=ON``, so the same
-        #    fallback now fails the INSERT outright — and under PostgreSQL RLS
-        #    it would fail the policy's WITH CHECK as well, because the value
-        #    would not match the session's ``app.current_org_id``.
+        # 1. The suggestion has to be stamped with the SAME tenant the review
+        #    routes scope by, or the reviewer never sees it. Every suggestion
+        #    route — list, get, update, approve, reject, remediate — resolves
+        #    its predicate with ``require_actor_enterprise``, so that is the
+        #    value the write side owes them. The case's own enterprise is the
+        #    same value on the success path (the case was just fetched through
+        #    the caller's own scoped read), which is exactly why reading it off
+        #    the case was never the SOURCE of the answer.
+        # 2. ``"default"`` is not a tenant id. It was a silent placeholder while
+        #    the store was a dict keyed by nothing;
+        #    ``knowledge_suggestions.enterprise_id`` is a NOT NULL FK to
+        #    ``enterprises`` with ``PRAGMA foreign_keys=ON``, so the same
+        #    fallback fails the INSERT outright — and under PostgreSQL RLS it
+        #    would fail the policy's WITH CHECK as well, because the value would
+        #    not match the session's ``app.current_enterprise_id``.
         #
-        # ``require_actor_organization`` refuses with 403 rather than handing
-        # back a value to degrade with, which is the right answer: a request
-        # that owns no tenant has nowhere to put the extraction.
-        organization_id = require_actor_organization(current_user)
+        # ``require_actor_enterprise`` refuses with 403 rather than handing back
+        # a value to degrade with, which is the right answer: a request that
+        # owns no tenant has nowhere to put the extraction.
+        enterprise_id = require_actor_enterprise(current_user)
 
         # Extract knowledge
         suggestion = await suggestion_service.extract_knowledge_from_case(
             case_id=case_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             extracted_by=current_user.user_id,
             include_messages=include_messages,
             include_evidence=include_evidence,

@@ -51,7 +51,7 @@ class OperatorAccessAudit:
     action: OperatorAction
     created_at: datetime
     # None = the access spanned all tenants (a cross-tenant list).
-    target_organization_id: Optional[str] = None
+    target_enterprise_id: Optional[str] = None
     # None = the access was not scoped to a single case.
     target_case_id: Optional[str] = None
     # Break-glass provenance (#815); None for ambient access.
@@ -71,7 +71,7 @@ class IOperatorAuditRepository(ABC):
         operator_user_id: Optional[str],
         action: OperatorAction,
         operator_username: Optional[str] = None,
-        target_organization_id: Optional[str] = None,
+        target_enterprise_id: Optional[str] = None,
         target_case_id: Optional[str] = None,
         reason: Optional[str] = None,
         grant_id: Optional[str] = None,
@@ -92,7 +92,7 @@ class IOperatorAuditRepository(ABC):
     async def list_access(
         self,
         operator_user_id: Optional[str] = None,
-        target_organization_id: Optional[str] = None,
+        target_enterprise_id: Optional[str] = None,
         target_case_id: Optional[str] = None,
         action: Optional[OperatorAction] = None,
         grant_id: Optional[str] = None,

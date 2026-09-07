@@ -119,7 +119,7 @@ def _confirmed_case():
     case = Case(
         case_id="case_000000000097",
         user_id="u",
-        organization_id="o",
+        enterprise_id="o",
         title="t",
         description="d",
         state=CaseState.INVESTIGATING,

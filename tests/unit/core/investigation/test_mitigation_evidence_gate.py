@@ -43,7 +43,7 @@ def _make_case() -> Case:
     inquiry state needed — the gate is over `case.evidence` only."""
     return Case(
         user_id="u1",
-        organization_id="o1",
+        enterprise_id="o1",
         title="Test",
         description="Pods are crashing",
     )

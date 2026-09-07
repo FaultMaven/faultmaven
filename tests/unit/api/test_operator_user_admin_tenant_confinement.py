@@ -31,6 +31,7 @@ Resolution". Companion policy: ``faultmaven/api/operator_user_scope.py``.
 
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -48,13 +49,12 @@ from faultmaven.api.v1.auth_dependencies import (
 from faultmaven.api.v1.auth_dependencies import (
     require_platform_admin as require_platform_admin_dev,
 )
-from faultmaven.models.interfaces_user import OrganizationMember
 from faultmaven.modules.auth.api.auth import router as auth_router
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser, DevUser
 from faultmaven.providers.tenancy.factory import BUILTIN_MULTI, BUILTIN_SINGLE
 
-ORG_A = "org-alpha-11111111"
-ORG_B = "org-beta-22222222"
+ENTERPRISE_A = "org-alpha-11111111"
+ENTERPRISE_B = "org-beta-22222222"
 
 OPERATOR_A = "user-operator-a"
 MEMBER_A = "user-member-a"
@@ -65,8 +65,8 @@ ABSENT = "user-nobody-at-all"
 #: ``MEMBER_B`` — same shape of account, same roles, same activity — so a 404 can
 #: only have come from the tenant predicate and not from some other guard.
 MEMBERSHIP = {
-    ORG_A: [OPERATOR_A, MEMBER_A],
-    ORG_B: [MEMBER_B],
+    ENTERPRISE_A: [OPERATOR_A, MEMBER_A],
+    ENTERPRISE_B: [MEMBER_B],
 }
 
 
@@ -108,40 +108,37 @@ def _SINGLE():
 # =============================================================================
 
 
-class FakeOrganizations:
-    """Just enough ``IOrganizationRepository`` for the predicate to resolve.
+class FakeAccounts:
+    """Just enough of the user repository for the predicate to resolve.
 
-    Not a ``Mock``: the predicate's whole content is *which* organization it
-    asks about, and a Mock answers the same thing however it is called — so a
-    predicate that passed the wrong org would still look confined here.
+    Not a ``Mock``: the predicate's whole content is *which* enterprise it asks
+    about, and a Mock answers the same thing however it is called — so a
+    predicate that passed the wrong tenant would still look confined here.
+
+    The confinement key is ``users.enterprise_id`` (ADR-017 D3), not an
+    ``organization_members`` row: the organization is a billing target and
+    confining an operator by it would confine them by who pays.
     """
 
     def __init__(self, membership: dict[str, list[str]]):
         self._membership = membership
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[str] = []
 
-    async def get_member_role(self, organization_id: str, user_id: str):
-        self.calls.append((organization_id, user_id))
-        if user_id in self._membership.get(organization_id, []):
-            return "role-org-admin"
+    async def get(self, user_id: str):
+        for enterprise_id, members in self._membership.items():
+            if user_id in members:
+                return SimpleNamespace(user_id=user_id, enterprise_id=enterprise_id)
         return None
 
-    async def list_organization_members(self, organization_id: str):
-        return [
-            OrganizationMember(
-                user_id=user_id,
-                organization_id=organization_id,
-                role_id="role-org-admin",
-                joined_at=datetime.now(timezone.utc),
-            )
-            for user_id in self._membership.get(organization_id, [])
-        ]
+    async def list_enterprise_member_ids(self, enterprise_id: str) -> frozenset:
+        self.calls.append(enterprise_id)
+        return frozenset(self._membership.get(enterprise_id, []))
 
 
 class _UserStore:
     """Just enough user store for the two listing routes and the delete path.
 
-    Honours ``user_ids`` for real. That matters: the fix pushes the allowlist
+    Honours ``enterprise_id`` for real. That matters: the fix pushes the tenant
     into the store call rather than filtering the returned page, and an
     ``AsyncMock`` would return the same three users whatever it was handed — so
     a route that dropped the argument would still look confined here. The calls
@@ -152,19 +149,22 @@ class _UserStore:
     def __init__(self, users):
         self._users = users
         self.list_calls: list = []
+        self.count_calls: list = []
         self.deleted: list[str] = []
 
-    async def list_users(self, limit: int = 100, offset: int = 0, user_ids=None):
-        self.list_calls.append(user_ids)
+    def _confined(self, enterprise_id):
         rows = list(self._users.values())
-        # `is not None`, not truthiness — an empty allowlist selects nothing.
-        if user_ids is not None:
-            allowed = set(user_ids)
-            rows = [row for row in rows if row.user_id in allowed]
-        return rows[offset : offset + limit]
+        if enterprise_id is not None:
+            rows = [row for row in rows if row.enterprise_id == enterprise_id]
+        return rows
 
-    async def count_users(self) -> int:
-        return len(self._users)
+    async def list_users(self, limit: int = 100, offset: int = 0, enterprise_id=None):
+        self.list_calls.append(enterprise_id)
+        return self._confined(enterprise_id)[offset : offset + limit]
+
+    async def count_users(self, enterprise_id=None) -> int:
+        self.count_calls.append(enterprise_id)
+        return len(self._confined(enterprise_id))
 
     async def get_user(self, user_id: str):
         return self._users.get(user_id)
@@ -177,8 +177,14 @@ class _UserStore:
         return True
 
 
-def _repository_user(user_id: str, organization_id: str):
-    """A ``user_repository.User``-shaped row, as the service layer returns it."""
+def _repository_user(user_id: str, enterprise_id: str):
+    """A ``user_repository.User``-shaped row, as the service layer returns it.
+
+    The tenant is the ENTERPRISE, which is what the confinement predicate reads
+    (``users.enterprise_id``). It used to be stamped on ``organization_id``,
+    which the repository never filtered on — so the row carried the value under
+    a name nothing consulted.
+    """
     from faultmaven.infrastructure.persistence.user_repository import User
 
     return User(
@@ -190,11 +196,11 @@ def _repository_user(user_id: str, organization_id: str):
         is_active=True,
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
-        organization_id=organization_id,
+        enterprise_id=enterprise_id,
     )
 
 
-def _dev_user(user_id: str, organization_id: str) -> DevUser:
+def _dev_user(user_id: str, enterprise_id: str) -> DevUser:
     return DevUser(
         user_id=user_id,
         username=user_id,
@@ -202,21 +208,25 @@ def _dev_user(user_id: str, organization_id: str) -> DevUser:
         display_name=user_id,
         created_at=datetime.now(timezone.utc),
         roles=["user"],
-        organization_id=organization_id,
+        enterprise_id=enterprise_id,
     )
 
 
-def _operator(organization_id: str | None = ORG_A) -> AuthenticatedUser:
+def _operator(enterprise_id: str | None = ENTERPRISE_A) -> AuthenticatedUser:
     return AuthenticatedUser(
         user_id=OPERATOR_A,
-        organization_id=organization_id,
+        enterprise_id=enterprise_id,
+        # Deliberately in an organization, and a different one from the tenant:
+        # if the confinement had stayed keyed on billing, this operator would
+        # be confined to nothing the test asserts about.
+        organization_id="org-billing",
         email=f"{OPERATOR_A}@example.com",
         roles=["user", "platform_admin"],
         permissions=[],
     )
 
 
-def _operator_dev(organization_id: str | None = ORG_A) -> DevUser:
+def _operator_dev(enterprise_id: str | None = ENTERPRISE_A) -> DevUser:
     return DevUser(
         user_id=OPERATOR_A,
         username=OPERATOR_A,
@@ -224,26 +234,27 @@ def _operator_dev(organization_id: str | None = ORG_A) -> DevUser:
         display_name=OPERATOR_A,
         created_at=datetime.now(timezone.utc),
         roles=["user", "platform_admin"],
-        organization_id=organization_id,
+        enterprise_id=enterprise_id,
+        organization_id="org-billing",
     )
 
 
 class _World:
-    def __init__(self, client, user_service, user_store, auth_service, organizations):
+    def __init__(self, client, user_service, user_store, auth_service, accounts):
         self.client = client
         self.user_service = user_service
         self.user_store = user_store
         self.auth_service = auth_service
-        self.organizations = organizations
+        self.accounts = accounts
 
 
 @pytest.fixture
 def world():
-    """Both operator user-administration routers, over one fake membership store."""
+    """Both operator user-administration routers, over one fake account store."""
     users = {
-        OPERATOR_A: _repository_user(OPERATOR_A, ORG_A),
-        MEMBER_A: _repository_user(MEMBER_A, ORG_A),
-        MEMBER_B: _repository_user(MEMBER_B, ORG_B),
+        OPERATOR_A: _repository_user(OPERATOR_A, ENTERPRISE_A),
+        MEMBER_A: _repository_user(MEMBER_A, ENTERPRISE_A),
+        MEMBER_B: _repository_user(MEMBER_B, ENTERPRISE_B),
     }
 
     user_service = AsyncMock()
@@ -272,16 +283,20 @@ def world():
 
     user_store = _UserStore(
         {
-            OPERATOR_A: _dev_user(OPERATOR_A, ORG_A),
-            MEMBER_A: _dev_user(MEMBER_A, ORG_A),
-            MEMBER_B: _dev_user(MEMBER_B, ORG_B),
+            OPERATOR_A: _dev_user(OPERATOR_A, ENTERPRISE_A),
+            MEMBER_A: _dev_user(MEMBER_A, ENTERPRISE_A),
+            MEMBER_B: _dev_user(MEMBER_B, ENTERPRISE_B),
         }
     )
 
     auth_service = AsyncMock()
     auth_service.revoke_user_tokens = AsyncMock(return_value=datetime.now(timezone.utc))
 
-    organizations = FakeOrganizations(MEMBERSHIP)
+    accounts = FakeAccounts(MEMBERSHIP)
+    # The scope resolves the account store through ``user_store``, which is
+    # where the composition root puts it — asking the app for it in the same
+    # shape the route does, rather than injecting the predicate directly.
+    user_store.user_repository = accounts
 
     app = FastAPI()
     app.include_router(admin_router)
@@ -292,11 +307,8 @@ def world():
     app.state.user_service = user_service
     app.state.user_store = user_store
     app.state.auth_service = auth_service
-    app.state.organization_repository = organizations
 
-    return _World(
-        TestClient(app), user_service, user_store, auth_service, organizations
-    )
+    return _World(TestClient(app), user_service, user_store, auth_service, accounts)
 
 
 # =============================================================================
@@ -392,7 +404,7 @@ def test_no_operation_reaches_another_tenants_user(world):
             response = _call(world.client, method, path, body)
 
             assert response.status_code == 404, (
-                f"{name}: an operator bound to {ORG_A} reached {ORG_B}'s user "
+                f"{name}: an operator bound to {ENTERPRISE_A} reached {ENTERPRISE_B}'s user "
                 f"({response.status_code}): {response.text[:300]}"
             )
             if mutator is not None:
@@ -437,7 +449,7 @@ def test_no_body_names_the_other_tenants_user(world):
         for name, method, path, body, _ in _operations(MEMBER_B, MEMBER_B):
             response = _call(world.client, method, path, body)
             assert f"{MEMBER_B}@example.com" not in response.text, name
-            assert ORG_B not in response.text, name
+            assert ENTERPRISE_B not in response.text, name
 
 
 @pytest.mark.unit
@@ -456,15 +468,18 @@ def test_the_auth_listing_neither_names_nor_counts_another_tenant(world):
     assert listing.status_code == 200, listing.text[:300]
     body = listing.json()
 
-    assert {user["user_id"] for user in body["users"]} == set(MEMBERSHIP[ORG_A])
-    assert body["total"] == len(MEMBERSHIP[ORG_A]), body
+    assert {user["user_id"] for user in body["users"]} == set(MEMBERSHIP[ENTERPRISE_A])
+    assert body["total"] == len(MEMBERSHIP[ENTERPRISE_A]), body
     assert body["truncated"] is False, body
     assert MEMBER_B not in listing.text
 
-    # The allowlist reached the STORE, so the window it paginates is the
-    # tenant's. Post-filtering a deployment-wide page would satisfy the row
-    # assertions above while leaving a tenant's users able to fall outside it.
-    assert world.user_store.list_calls == [frozenset(MEMBERSHIP[ORG_A])]
+    # The tenant reached the STORE, so the window it paginates is the tenant's.
+    # Post-filtering a deployment-wide page would satisfy the row assertions
+    # above while leaving a tenant's users able to fall outside it. It is the
+    # enterprise ID, not a materialised roster: the roster form cost a full scan
+    # of the tenant's accounts per page to express one indexed comparison.
+    assert world.user_store.list_calls == [ENTERPRISE_A]
+    assert world.user_store.count_calls == [ENTERPRISE_A]
 
 
 @pytest.mark.unit
@@ -482,7 +497,7 @@ def test_the_admin_listing_passes_the_predicate_to_the_service(world):
 
     assert listing.status_code == 200, listing.text[:300]
     kwargs = world.user_service.list_users.await_args.kwargs
-    assert kwargs["restrict_to_user_ids"] == frozenset(MEMBERSHIP[ORG_A])
+    assert kwargs["enterprise_id"] == ENTERPRISE_A
 
 
 @pytest.mark.unit
@@ -499,39 +514,37 @@ async def test_the_service_applies_the_allowlist_before_paginating():
     from faultmaven.modules.auth.domain.services.user_service import UserService
 
     repository = InMemoryUserRepository()
-    for user_id, organization_id in (
-        (OPERATOR_A, ORG_A),
-        (MEMBER_A, ORG_A),
-        (MEMBER_B, ORG_B),
+    for user_id, enterprise_id in (
+        (OPERATOR_A, ENTERPRISE_A),
+        (MEMBER_A, ENTERPRISE_A),
+        (MEMBER_B, ENTERPRISE_B),
     ):
-        await repository.create(_repository_user(user_id, organization_id))
+        await repository.create(_repository_user(user_id, enterprise_id))
 
     service = UserService(user_repo=repository, auth_service=AsyncMock())
 
-    users, total = await service.list_users(
-        restrict_to_user_ids=frozenset(MEMBERSHIP[ORG_A])
-    )
-    assert {user.user_id for user in users} == set(MEMBERSHIP[ORG_A])
-    assert total == len(MEMBERSHIP[ORG_A])
+    users, total = await service.list_users(enterprise_id=ENTERPRISE_A)
+    assert {user.user_id for user in users} == set(MEMBERSHIP[ENTERPRISE_A])
+    assert total == len(MEMBERSHIP[ENTERPRISE_A])
 
     # The repository applies it too, and answers the same way on its own. That
     # is the half that keeps one tenant's unreadable row out of another
     # tenant's listing: the rows are never loaded.
-    rows, repo_total = await repository.list_users(
-        user_ids=frozenset(MEMBERSHIP[ORG_A])
-    )
-    assert {row.user_id for row in rows} == set(MEMBERSHIP[ORG_A])
-    assert repo_total == len(MEMBERSHIP[ORG_A])
-    assert await repository.list_users(user_ids=frozenset()) == ([], 0)
+    rows, repo_total = await repository.list_users(enterprise_id=ENTERPRISE_A)
+    assert {row.user_id for row in rows} == set(MEMBERSHIP[ENTERPRISE_A])
+    assert repo_total == len(MEMBERSHIP[ENTERPRISE_A])
 
-    # An EMPTY allowlist returns nothing. Read as "no restriction" it would
-    # return the deployment, which is the fail-open inversion of the predicate.
-    users, total = await service.list_users(restrict_to_user_ids=frozenset())
+    # An enterprise with no accounts returns nothing. It is a real id that
+    # matches nothing, which is not the same shape as "no restriction" and
+    # cannot be confused with it — the confusion the materialised-roster form
+    # had to guard against with an `is not None` check.
+    assert await repository.list_users(enterprise_id="ent_nobody") == ([], 0)
+    users, total = await service.list_users(enterprise_id="ent_nobody")
     assert users == []
     assert total == 0
 
     # And `None` still means unconfined, for the single-tenant caller.
-    _, total = await service.list_users(restrict_to_user_ids=None)
+    _, total = await service.list_users(enterprise_id=None)
     assert total == 3
 
 
@@ -542,7 +555,7 @@ def test_the_predicate_asks_about_the_operators_own_organization(world):
     with _MULTI():
         world.client.get(f"/api/v1/admin/users/{MEMBER_B}")
 
-    assert world.organizations.calls == [(ORG_A, MEMBER_B)]
+    assert world.accounts.calls == []
 
 
 # =============================================================================
@@ -589,10 +602,8 @@ def test_single_tenant_administration_consults_no_membership_row(world):
 
         listing = world.client.get("/api/v1/admin/users")
 
-    assert world.organizations.calls == []
-    assert (
-        world.user_service.list_users.await_args.kwargs["restrict_to_user_ids"] is None
-    )
+    assert world.accounts.calls == []
+    assert world.user_service.list_users.await_args.kwargs["enterprise_id"] is None
     assert listing.status_code == 200
 
 
@@ -607,15 +618,15 @@ def test_an_operator_carrying_no_organization_is_refused(world):
     """403, and the same 403 for every id — so it is not an oracle either.
 
     Holding the deployment-wide role does not exempt a caller from acting inside
-    the organization their request is bound to; ``require_actor_organization``
+    the organization their request is bound to; ``require_actor_enterprise``
     refuses rather than handing back ``None`` for the route to degrade into an
     unscoped query.
     """
     world.client.app.dependency_overrides[require_platform_admin_authenticated] = (
-        lambda: _operator(organization_id=None)
+        lambda: _operator(enterprise_id=None)
     )
     world.client.app.dependency_overrides[require_platform_admin_dev] = (
-        lambda: _operator_dev(organization_id=None)
+        lambda: _operator_dev(enterprise_id=None)
     )
 
     with _MULTI():
@@ -633,19 +644,29 @@ def test_an_operator_carrying_no_organization_is_refused(world):
 
 @pytest.mark.unit
 @pytest.mark.security
-def test_a_missing_membership_store_refuses_rather_than_serving_unconfined(world):
+def test_a_missing_account_store_refuses_rather_than_serving_unconfined(world):
     """503, not a pass.
 
     Without the store there is no way to establish that the target is the
     operator's to administer, and "serve it anyway" is the exact failure the
-    predicate was added for.
+    predicate was added for. Sharper than before, because ``users`` is outside
+    RLS: there is no policy underneath this predicate to catch the miss.
     """
-    del world.client.app.state.organization_repository
+    world.user_store.user_repository = None
 
     with _MULTI():
         response = world.client.get(f"/api/v1/admin/users/{MEMBER_B}")
         listing = world.client.get("/api/v1/admin/users")
 
     assert response.status_code == 503, response.text[:300]
-    assert listing.status_code == 503, listing.text[:300]
+
+    # The LISTING is a different case, and it stopped needing the store: the
+    # confinement is now the enterprise off the request handed down as a query
+    # predicate, so nothing about it depends on being able to read a roster.
+    # It is still confined — that is what the sibling cases above assert — so
+    # refusing it here would be refusing a request the predicate fully covers.
+    assert listing.status_code == 200, listing.text[:300]
+    assert (
+        world.user_service.list_users.await_args.kwargs["enterprise_id"] == ENTERPRISE_A
+    )
     world.user_service.get_user_with_metadata.assert_not_awaited()

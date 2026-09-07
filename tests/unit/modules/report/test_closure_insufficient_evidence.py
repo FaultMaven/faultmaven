@@ -32,7 +32,7 @@ def _closed_insufficient_case() -> Case:
     case = Case(
         case_id="case_ce0000000001",
         user_id="user_x",
-        organization_id="org_x",
+        enterprise_id="org_x",
         title="Intermittent 500s on checkout",
         description="Sporadic 500s, no reproducible pattern.",
         state=CaseState.CLOSED,

@@ -13,7 +13,7 @@ D8/D9 splits what an operator can see into two categories:
 
 | Category | Contents | Standalone | Cloud |
 |----------|----------|------------|-------|
-| **Metadata** | case id, organization, team, state, timestamps, counts | ambient | ambient |
+| **Metadata** | case id, enterprise, organization, team, state, timestamps, counts | ambient | ambient |
 | **Content** | title, description, transcript, evidence | audited, not gated | **break-glass** |
 
 Title is content, not metadata: it is user free-text, so it leaks whatever the
@@ -32,7 +32,7 @@ A **grant** is one operator's time-boxed license to read one case's content.
 
 ```http
 POST /api/v1/admin/grants
-{ "case_id": "...", "organization_id": "...", "reason": "...", "ttl_minutes": 60 }
+{ "case_id": "...", "enterprise_id": "...", "reason": "...", "ttl_minutes": 60 }
 → 201 { "grant_id": "...", "approval_state": "auto_approved", "is_live": true,
         "expires_at": "...", "revoked_at": null, ... }
 ```
@@ -121,34 +121,35 @@ This is also what makes the Standalone operator's All Cases view openable
 
 ## Multi-tenancy: rebind, do not bypass
 
-Under `TENANT_PROVIDER=multi` the target case belongs to another organization, so
+Under `TENANT_PROVIDER=multi` the target case belongs to another enterprise, so
 PostgreSQL RLS hides it from the operator's session. The obvious fixes are all
 bad: a `BYPASSRLS` engine in the web process is bounded only by call-site
 discipline and can read every tenant's transcripts, and the offline maintenance
 role is a jobs runner, not a request path.
 
 Neither is necessary. RLS scopes each transaction from
-`app.current_org_id`, which the engine's `begin` listener reads from a contextvar
-that `bind_request_org_context` sets per request. So the elevated read does not
-need to escape the policy — it needs to be **bound somewhere else**:
+`app.current_enterprise_id`, which the engine's `begin` listener reads from a
+contextvar that `bind_request_enterprise_context` sets per request. So the
+elevated read does not need to escape the policy — it needs to be **bound
+somewhere else**:
 
 ```text
-grant validated → set_current_org_id(grant.target_organization_id) → read
+grant validated → set_current_enterprise_id(grant.target_enterprise_id) → read
 ```
 
 The session stays RLS-enforcing throughout. It never sees more than one
-organization; it sees a *different* one, named by a grant row, for the duration
+enterprise; it sees a *different* one, named by a grant row, for the duration
 of one handler that performs one read. The bound is structural rather than
 procedural, which is the property the `BYPASSRLS` options lack.
 
 The rebind is applied **only** under `multi`. Under `single` every row carries
-the Standalone org, so rebinding to anything else would make the read return
-nothing.
+the Standalone enterprise, so rebinding to anything else would make the read
+return nothing.
 
 ### The grant is not validated against the case
 
 Creating a grant does not check that the case exists or that it belongs to the
-named organization. This is deliberate, and it is the more secure choice:
+named enterprise. This is deliberate, and it is the more secure choice:
 
 - Under `multi` such a check **cannot** work — RLS hides the very row it would
   read — so validating would behave differently per tenancy, which is exactly the
@@ -156,14 +157,14 @@ named organization. This is deliberate, and it is the more secure choice:
 - A validating endpoint is an existence oracle. An operator could probe whether a
   case id exists in a tenant they hold no grant for, which is metadata disclosure
   through the grant API.
-- A wrong `(case_id, organization_id)` pair **fails closed on its own**: rebinding
-  to the named org and reading the named case returns nothing, and the operator
-  gets a 404. The mistake costs an audit row and a failed request, and discloses
-  nothing.
+- A wrong `(case_id, enterprise_id)` pair **fails closed on its own**: rebinding
+  to the named enterprise and reading the named case returns nothing, and the
+  operator gets a 404. The mistake costs an audit row and a failed request, and
+  discloses nothing.
 
-The corollary matters as much as the rule: because the grant's organization is
+The corollary matters as much as the rule: because the grant's enterprise is
 an operator's unverified assertion, it is **not** what the audit trail records.
-The trail is stamped with the organization the read actually ran under. Under
+The trail is stamped with the enterprise the read actually ran under. Under
 `multi` those coincide — the rebind has already made the claim load-bearing, so
 a false one returns no rows — but under `single` nothing exercises the claim, and
 recording it would let the audited party choose which tenant their own immutable
@@ -188,16 +189,16 @@ separately.
 
 **User administration is deliberately outside this model, not pending inside
 it.** The operator user routes (`/api/v1/admin/users*` and the two
-`/api/v1/auth/users*`) are confined to the operator's own organization by a
+`/api/v1/auth/users*`) are confined to the operator's own tenant by a
 tenant predicate and have no cross-tenant path at all (#1318,
 `docs/architecture/security/rbac.md` → "User Administration"). A grant cannot
 serve them as it stands: `target_case_id` is `NOT NULL`, the lookup keys on it,
-and the rebind derives the tenant from the case's organization — so reaching a
-*user* would mean minting a grant whose stated justification names an unrelated
-case, and writing that into an append-only trail. Making the case id optional
-would be a second grant model wearing this one's schema. Extending break-glass
-to user administration is a design change with its own target type, and is
-tracked on #1318 rather than approximated here.
+and the rebind derives the RLS scope from the request's own `target_enterprise_id`
+— so reaching a *user* would mean minting a grant whose stated justification
+names an unrelated case, and writing that into an append-only trail. Making the
+case id optional would be a second grant model wearing this one's schema.
+Extending break-glass to user administration is a design change with its own
+target type, and is tracked on #1318 rather than approximated here.
 
 ## Immutability
 

@@ -53,7 +53,7 @@ def _make_case(**overrides) -> Case:
         "title": "Case-260101-1",
         "description": "",
         "user_id": "user_123",
-        "organization_id": "org_test123",
+        "enterprise_id": "org_test123",
         "state": CaseState.INQUIRY,
     }
     defaults.update(overrides)

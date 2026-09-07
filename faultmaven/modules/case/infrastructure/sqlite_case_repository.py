@@ -32,7 +32,6 @@ from uuid import uuid4
 from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.config.constants import STANDALONE_ORG_ID
 from faultmaven.modules.case.contracts import (
     ActionAttempt,
     Case,
@@ -202,19 +201,26 @@ class SQLiteCaseRepository(CaseRepository):
 
             case.disposition_eligibility = derive_disposition_eligibility(case)
 
+            # Two columns, two meanings (ADR-017 D1/D2): the enterprise
+            # isolates and every child row inherits it from its case; the
+            # organization is nullable billing attribution beside it.
+            enterprise_id = case.enterprise_id
             organization_id = case.organization_id
             await self._upsert_case_record(case)
             # evidence.source_file_id is a real FK to uploaded_files.file_id,
             # so files must exist before any evidence row that references them.
             await self._upsert_uploaded_files(
-                case.case_id, case.uploaded_files, organization_id
+                case.case_id, case.uploaded_files, enterprise_id, organization_id
             )
-            await self._upsert_evidence(case.case_id, case.evidence, organization_id)
+            await self._upsert_evidence(
+                case.case_id, case.evidence, enterprise_id, organization_id
+            )
             # Needs and the fulfillment junction must run AFTER evidence
             # so the junction FK to evidence.evidence_id is satisfied.
             await self._upsert_evidence_needs(
                 case.case_id,
                 case.evidence_needs,
+                enterprise_id,
                 organization_id,
                 case.current_turn,
             )
@@ -222,10 +228,10 @@ class SQLiteCaseRepository(CaseRepository):
             # and solutions.node_id FK causal_nodes; causal_node_evidence FKs
             # evidence (already upserted). Nodes before edges (edges FK nodes).
             await self._upsert_causal_nodes(
-                case.case_id, case.causal_nodes, organization_id
+                case.case_id, case.causal_nodes, enterprise_id, organization_id
             )
             await self._upsert_causal_edges(
-                case.case_id, case.causal_edges, organization_id
+                case.case_id, case.causal_edges, enterprise_id, organization_id
             )
             await self._reconcile_causal_graph(
                 case.case_id,
@@ -233,14 +239,18 @@ class SQLiteCaseRepository(CaseRepository):
                 {e.edge_id for e in case.causal_edges},
             )
             await self._upsert_hypotheses(
-                case.case_id, case.hypotheses, organization_id
+                case.case_id, case.hypotheses, enterprise_id, organization_id
             )
-            await self._upsert_solutions(case.case_id, case.solutions, organization_id)
-            await self._upsert_messages(case.case_id, case.messages, organization_id)
+            await self._upsert_solutions(
+                case.case_id, case.solutions, enterprise_id, organization_id
+            )
+            await self._upsert_messages(
+                case.case_id, case.messages, enterprise_id, organization_id
+            )
 
             if case.action_history:
                 await self._append_case_actions(
-                    case.case_id, case.action_history, organization_id
+                    case.case_id, case.action_history, enterprise_id, organization_id
                 )
 
             await self.db.commit()
@@ -1205,7 +1215,7 @@ class SQLiteCaseRepository(CaseRepository):
     async def list(
         self,
         user_id: str | None = None,
-        organization_id: str | None = None,
+        enterprise_id: str | None = None,
         state: CaseState | None = None,
         limit: int = 50,
         offset: int = 0,
@@ -1241,7 +1251,7 @@ class SQLiteCaseRepository(CaseRepository):
             # No per-query org filter: standalone is single-tenant (one implicit
             # org), and multi-tenant isolation is enforced by in-core PostgreSQL
             # RLS (ADR-010, migration 018), not by per-query repository filters.
-            # The organization_id param is retained for interface symmetry with
+            # The enterprise_id param is retained for interface symmetry with
             # the write-path signatures; it does not scope reads.
 
             if state:
@@ -1533,7 +1543,8 @@ class SQLiteCaseRepository(CaseRepository):
         crossed evidence_ids between cases would otherwise silently
         corrupt the registry.
 
-        ``organization_id`` is NOT NULL on case_entities; we derive it
+        ``enterprise_id`` is NOT NULL on case_entities (``organization_id``
+        beside it is nullable billing attribution); we derive both
         from the parent case row in the INSERT so callers don't have to
         thread it through.
         """
@@ -1551,10 +1562,11 @@ class SQLiteCaseRepository(CaseRepository):
 
             insert_q = text("""
                 INSERT INTO case_entities (
-                    case_id, organization_id, entity_type, entity_value, evidence_id,
+                    case_id, enterprise_id, organization_id, entity_type, entity_value, evidence_id,
                     mention_count, in_error_context, first_seen_ts
                 ) VALUES (
                     :case_id,
+                    (SELECT enterprise_id FROM cases WHERE case_id = :case_id),
                     (SELECT organization_id FROM cases WHERE case_id = :case_id),
                     :entity_type, :entity_value, :evidence_id,
                     :mention_count, :in_error_context, :first_seen_ts
@@ -1707,7 +1719,7 @@ class SQLiteCaseRepository(CaseRepository):
         self,
         query: str,
         user_id: str | None = None,
-        organization_id: str | None = None,
+        enterprise_id: str | None = None,
         limit: int = 20,
         shared_case_ids: builtins.list[str] | None = None,
         restrict_case_ids: builtins.list[str] | None = None,
@@ -1737,7 +1749,7 @@ class SQLiteCaseRepository(CaseRepository):
             # No per-query org filter: standalone is single-tenant (one implicit
             # org), and multi-tenant isolation is enforced by in-core PostgreSQL
             # RLS (ADR-010, migration 018), not by per-query repository filters.
-            # The organization_id param is retained for interface symmetry with
+            # The enterprise_id param is retained for interface symmetry with
             # the write-path signatures; it does not scope reads.
 
             where_sql = "WHERE " + " AND ".join(where_clauses)
@@ -1774,7 +1786,8 @@ class SQLiteCaseRepository(CaseRepository):
         """Add message to case_messages table.
 
         Returns False (not raise) if the parent case doesn't exist —
-        organization_id is NOT NULL on case_messages and is derived
+        enterprise_id is NOT NULL on case_messages (organization_id beside it is
+        nullable billing attribution) and both are derived
         via subquery from the parent case row, so a missing case
         would otherwise surface as an IntegrityError. Pre-checking
         keeps the contract: True on success, False on missing case,
@@ -1786,7 +1799,7 @@ class SQLiteCaseRepository(CaseRepository):
         try:
             # Pre-check the case exists to keep the (case_id missing → False)
             # contract; the INSERT below would otherwise hit
-            # NOT NULL on case_messages.organization_id.
+            # NOT NULL on case_messages.enterprise_id.
             probe = await self.db.execute(
                 text("SELECT 1 FROM cases WHERE case_id = :case_id"),
                 {"case_id": case_id},
@@ -1798,11 +1811,15 @@ class SQLiteCaseRepository(CaseRepository):
             created_at = message_dict.get("created_at") or datetime.now(UTC)
 
             # SQLite-compatible: no ::jsonb type cast
-            # organization_id derived from the parent case (already verified
-            # to exist by the probe above).
-            query = text(f"""
-                INSERT INTO case_messages (message_id, case_id, organization_id, turn_number, role, content, author_id, created_at, token_count, metadata)
-                VALUES (:message_id, :case_id, (SELECT COALESCE(organization_id, '{STANDALONE_ORG_ID}') FROM cases WHERE case_id = :case_id), :turn_number, :role, :content, :author_id, :created_at, :token_count, :metadata)
+            # Both tenancy columns derived from the parent case (already
+            # verified to exist by the probe above), so a message can never land
+            # in a different enterprise from the case it belongs to.
+            query = text("""
+                INSERT INTO case_messages (message_id, case_id, enterprise_id, organization_id, turn_number, role, content, author_id, created_at, token_count, metadata)
+                VALUES (:message_id, :case_id,
+                        (SELECT enterprise_id FROM cases WHERE case_id = :case_id),
+                        (SELECT organization_id FROM cases WHERE case_id = :case_id),
+                        :turn_number, :role, :content, :author_id, :created_at, :token_count, :metadata)
             """)
 
             await self.db.execute(
@@ -1837,11 +1854,12 @@ class SQLiteCaseRepository(CaseRepository):
         try:
             query = text(f"""
                 INSERT INTO case_checkpoints (
-                    checkpoint_id, case_id, organization_id, turn_number, case_snapshot,
+                    checkpoint_id, case_id, enterprise_id, organization_id, turn_number, case_snapshot,
                     snapshot_hash, trigger, created_at, metadata
                 ) VALUES (
                     :checkpoint_id, :case_id,
-                    (SELECT COALESCE(organization_id, '{STANDALONE_ORG_ID}') FROM cases WHERE case_id = :case_id),
+                    (SELECT enterprise_id FROM cases WHERE case_id = :case_id),
+                    (SELECT organization_id FROM cases WHERE case_id = :case_id),
                     :turn_number, :case_snapshot,
                     :snapshot_hash, :trigger, :created_at, :metadata
                 )
@@ -2187,7 +2205,11 @@ class SQLiteCaseRepository(CaseRepository):
             ) from e
 
     async def add_uploaded_file(
-        self, case_id: str, uploaded_file: UploadedFile, organization_id: str
+        self,
+        case_id: str,
+        uploaded_file: UploadedFile,
+        enterprise_id: str,
+        organization_id: Optional[str],
     ) -> None:
         """Commit ONE uploaded_file row on its own, outside the aggregate save.
 
@@ -2202,7 +2224,9 @@ class SQLiteCaseRepository(CaseRepository):
         row rather than removing it.
         """
         try:
-            await self._upsert_uploaded_files(case_id, [uploaded_file], organization_id)
+            await self._upsert_uploaded_files(
+                case_id, [uploaded_file], enterprise_id, organization_id
+            )
             await self.db.commit()
         except Exception as e:
             await self.db.rollback()
@@ -2334,6 +2358,7 @@ class SQLiteCaseRepository(CaseRepository):
         update_query = text("""
             UPDATE cases SET
                 user_id = :user_id,
+                enterprise_id = :enterprise_id,
                 organization_id = :organization_id,
                 title = :title,
                 description = :description,
@@ -2383,7 +2408,7 @@ class SQLiteCaseRepository(CaseRepository):
             # New case — INSERT with version = 1.
             insert_query = text("""
                 INSERT INTO cases (
-                    case_id, user_id, organization_id, title, description,
+                    case_id, user_id, enterprise_id, organization_id, title, description,
                     state, source, investigation_strategy, current_turn,
                     turns_without_progress, created_at, updated_at,
                     closure_reason, last_activity_at, resolved_at, closed_at,
@@ -2393,7 +2418,7 @@ class SQLiteCaseRepository(CaseRepository):
                     escalation_state, documentation, progress, metadata,
                     version
                 ) VALUES (
-                    :case_id, :user_id, :organization_id, :title, :description,
+                    :case_id, :user_id, :enterprise_id, :organization_id, :title, :description,
                     :state, :source, :investigation_strategy, :current_turn,
                     :turns_without_progress, :created_at, :updated_at,
                     :closure_reason, :last_activity_at, :resolved_at, :closed_at,
@@ -2433,6 +2458,7 @@ class SQLiteCaseRepository(CaseRepository):
         return {
             "case_id": case.case_id,
             "user_id": case.user_id,
+            "enterprise_id": case.enterprise_id,
             "organization_id": case.organization_id,
             "title": case.title,
             "description": case.description or "",
@@ -2523,7 +2549,11 @@ class SQLiteCaseRepository(CaseRepository):
         }
 
     async def _upsert_evidence(
-        self, case_id: str, evidence_list: builtins.list[Evidence], organization_id: str
+        self,
+        case_id: str,
+        evidence_list: builtins.list[Evidence],
+        enterprise_id: str,
+        organization_id: Optional[str],
     ) -> None:
         """Upsert evidence records.
 
@@ -2544,7 +2574,7 @@ class SQLiteCaseRepository(CaseRepository):
         for evidence in evidence_list:
             query = text("""
                 INSERT INTO evidence (
-                    evidence_id, case_id, organization_id, source_file_id,
+                    evidence_id, case_id, enterprise_id, organization_id, source_file_id,
                     category, source_type,
                     summary, extract,
                     primary_purpose, analysis, processing_mode, advances_milestones,
@@ -2553,7 +2583,7 @@ class SQLiteCaseRepository(CaseRepository):
                     coverage_start_ts, coverage_end_ts, coverage_source,
                     metadata, created_at, updated_at
                 ) VALUES (
-                    :evidence_id, :case_id, :organization_id, :source_file_id,
+                    :evidence_id, :case_id, :enterprise_id, :organization_id, :source_file_id,
                     :category, :source_type,
                     :summary, :extract,
                     :primary_purpose, :analysis, :processing_mode, :advances_milestones,
@@ -2591,6 +2621,7 @@ class SQLiteCaseRepository(CaseRepository):
                 {
                     "evidence_id": evidence.evidence_id,
                     "case_id": case_id,
+                    "enterprise_id": enterprise_id,
                     "organization_id": organization_id,
                     "source_file_id": evidence.source_file_id,
                     "category": evidence.category.value,
@@ -2633,7 +2664,8 @@ class SQLiteCaseRepository(CaseRepository):
         self,
         case_id: str,
         needs_list: builtins.list[EvidenceNeed],
-        organization_id: str,
+        enterprise_id: str,
+        organization_id: Optional[str],
         current_turn: int,
     ) -> None:
         """Upsert evidence-need records + their fulfillment junction rows.
@@ -2656,7 +2688,7 @@ class SQLiteCaseRepository(CaseRepository):
         for need in needs_list:
             query = text("""
                 INSERT INTO evidence_needs (
-                    need_id, case_id, organization_id,
+                    need_id, case_id, enterprise_id, organization_id,
                     purpose, request_text, rationale,
                     priority, state,
                     motivating_hypothesis_ids,
@@ -2664,7 +2696,7 @@ class SQLiteCaseRepository(CaseRepository):
                     created_at_turn, created_at, updated_at,
                     obtainability, surfaced_turns, engine_inferred
                 ) VALUES (
-                    :need_id, :case_id, :organization_id,
+                    :need_id, :case_id, :enterprise_id, :organization_id,
                     :purpose, :request_text, :rationale,
                     :priority, :state,
                     :motivating_hypothesis_ids,
@@ -2692,6 +2724,7 @@ class SQLiteCaseRepository(CaseRepository):
                 {
                     "need_id": need.need_id,
                     "case_id": case_id,
+                    "enterprise_id": enterprise_id,
                     "organization_id": organization_id,
                     "purpose": need.purpose.value,
                     "request_text": need.request_text,
@@ -2715,9 +2748,9 @@ class SQLiteCaseRepository(CaseRepository):
             if need.fulfilling_evidence_ids:
                 junction_query = text("""
                     INSERT OR IGNORE INTO evidence_need_fulfillment (
-                        need_id, evidence_id, organization_id, linked_at_turn
+                        need_id, evidence_id, enterprise_id, organization_id, linked_at_turn
                     ) VALUES (
-                        :need_id, :evidence_id, :organization_id, :linked_at_turn
+                        :need_id, :evidence_id, :enterprise_id, :organization_id, :linked_at_turn
                     )
                 """)
                 for evidence_id in need.fulfilling_evidence_ids:
@@ -2726,13 +2759,18 @@ class SQLiteCaseRepository(CaseRepository):
                         {
                             "need_id": need.need_id,
                             "evidence_id": evidence_id,
+                            "enterprise_id": enterprise_id,
                             "organization_id": organization_id,
                             "linked_at_turn": current_turn,
                         },
                     )
 
     async def _upsert_hypotheses(
-        self, case_id: str, hypotheses_dict: dict[str, Hypothesis], organization_id: str
+        self,
+        case_id: str,
+        hypotheses_dict: dict[str, Hypothesis],
+        enterprise_id: str,
+        organization_id: Optional[str],
     ) -> None:
         """Upsert hypotheses records.
 
@@ -2748,7 +2786,7 @@ class SQLiteCaseRepository(CaseRepository):
         for hypothesis_id, hypothesis in hypotheses_dict.items():
             query = text("""
                 INSERT INTO hypotheses (
-                    hypothesis_id, case_id, organization_id, statement, state,
+                    hypothesis_id, case_id, enterprise_id, organization_id, statement, state,
                     likelihood, initial_likelihood,
                     root_node_id, path,
                     generated_at_turn, last_updated_turn, last_progress_at_turn,
@@ -2758,7 +2796,7 @@ class SQLiteCaseRepository(CaseRepository):
                     tested_at, concluded_at, proposed_at, updated_at, metadata,
                     created_by, updated_by
                 ) VALUES (
-                    :hypothesis_id, :case_id, :organization_id, :statement, :state,
+                    :hypothesis_id, :case_id, :enterprise_id, :organization_id, :statement, :state,
                     :likelihood, :initial_likelihood,
                     :root_node_id, :path,
                     :generated_at_turn, :last_updated_turn, :last_progress_at_turn,
@@ -2790,6 +2828,7 @@ class SQLiteCaseRepository(CaseRepository):
                 {
                     "hypothesis_id": hypothesis_id,
                     "case_id": case_id,
+                    "enterprise_id": enterprise_id,
                     "organization_id": organization_id,
                     "statement": hypothesis.statement,
                     "state": hypothesis.state.value,
@@ -2818,14 +2857,18 @@ class SQLiteCaseRepository(CaseRepository):
             )
 
             await self._upsert_hypothesis_evidence(
-                hypothesis_id, hypothesis.evidence_links, organization_id
+                hypothesis_id,
+                hypothesis.evidence_links,
+                enterprise_id,
+                organization_id,
             )
 
     async def _upsert_hypothesis_evidence(
         self,
         hypothesis_id: str,
         links: builtins.list[HypothesisEvidenceLink],
-        organization_id: str,
+        enterprise_id: str,
+        organization_id: Optional[str],
     ) -> None:
         """Upsert rows on the ``hypothesis_evidence`` junction table.
 
@@ -2840,11 +2883,11 @@ class SQLiteCaseRepository(CaseRepository):
             return
         query = text("""
             INSERT INTO hypothesis_evidence (
-                hypothesis_id, evidence_id, organization_id,
+                hypothesis_id, evidence_id, enterprise_id, organization_id,
                 relationship_type, confidence, linked_at_turn,
                 linked_by, created_at
             ) VALUES (
-                :hypothesis_id, :evidence_id, :organization_id,
+                :hypothesis_id, :evidence_id, :enterprise_id, :organization_id,
                 :relationship_type, :confidence, :linked_at_turn,
                 :linked_by, :created_at
             )
@@ -2862,6 +2905,7 @@ class SQLiteCaseRepository(CaseRepository):
                 {
                     "hypothesis_id": hypothesis_id,
                     "evidence_id": link.evidence_id,
+                    "enterprise_id": enterprise_id,
                     "organization_id": organization_id,
                     "relationship_type": relationship,
                     "confidence": link.stance_confidence,
@@ -2876,21 +2920,25 @@ class SQLiteCaseRepository(CaseRepository):
             )
 
     async def _upsert_causal_nodes(
-        self, case_id: str, nodes_dict: dict[str, CausalNode], organization_id: str
+        self,
+        case_id: str,
+        nodes_dict: dict[str, CausalNode],
+        enterprise_id: str,
+        organization_id: Optional[str],
     ) -> None:
         """Upsert causal-graph nodes; node-scoped evidence follows into the
         causal_node_evidence junction. Additive + idempotent on node_id."""
         for node_id, node in nodes_dict.items():
             query = text("""
                 INSERT INTO causal_nodes (
-                    node_id, case_id, organization_id, statement,
+                    node_id, case_id, enterprise_id, organization_id, statement,
                     node_type, node_state, validation_method, belief,
                     signature_consistent, actionable, category, state_epoch,
                     generated_at_turn, last_updated_turn, last_progress_at_turn,
                     iterations_without_progress, refutation_reason, rationale,
                     metadata, proposed_at, updated_at
                 ) VALUES (
-                    :node_id, :case_id, :organization_id, :statement,
+                    :node_id, :case_id, :enterprise_id, :organization_id, :statement,
                     :node_type, :node_state, :validation_method, :belief,
                     :signature_consistent, :actionable, :category, :state_epoch,
                     :generated_at_turn, :last_updated_turn, :last_progress_at_turn,
@@ -2920,6 +2968,7 @@ class SQLiteCaseRepository(CaseRepository):
                 {
                     "node_id": node_id,
                     "case_id": case_id,
+                    "enterprise_id": enterprise_id,
                     "organization_id": organization_id,
                     "statement": node.statement,
                     "node_type": node.node_type.value,
@@ -2942,14 +2991,15 @@ class SQLiteCaseRepository(CaseRepository):
                 },
             )
             await self._upsert_node_evidence(
-                node_id, node.evidence_links, organization_id
+                node_id, node.evidence_links, enterprise_id, organization_id
             )
 
     async def _upsert_node_evidence(
         self,
         node_id: str,
         links: builtins.list[NodeEvidenceLink],
-        organization_id: str,
+        enterprise_id: str,
+        organization_id: Optional[str],
     ) -> None:
         """Upsert rows on the causal_node_evidence junction. Composite PK
         (node_id, evidence_id) makes it idempotent; stance is stored verbatim
@@ -2958,11 +3008,11 @@ class SQLiteCaseRepository(CaseRepository):
             return
         query = text("""
             INSERT INTO causal_node_evidence (
-                node_id, evidence_id, organization_id, stance,
+                node_id, evidence_id, enterprise_id, organization_id, stance,
                 stance_confidence, reasoning, linked_at_turn,
                 created_at
             ) VALUES (
-                :node_id, :evidence_id, :organization_id, :stance,
+                :node_id, :evidence_id, :enterprise_id, :organization_id, :stance,
                 :stance_confidence, :reasoning, :linked_at_turn,
                 :created_at
             )
@@ -2978,6 +3028,7 @@ class SQLiteCaseRepository(CaseRepository):
                 {
                     "node_id": node_id,
                     "evidence_id": link.evidence_id,
+                    "enterprise_id": enterprise_id,
                     "organization_id": organization_id,
                     "stance": link.stance.value,
                     "stance_confidence": link.stance_confidence,
@@ -3024,18 +3075,19 @@ class SQLiteCaseRepository(CaseRepository):
         self,
         case_id: str,
         edges: builtins.list[CausalEdge],
-        organization_id: str,
+        enterprise_id: str,
+        organization_id: Optional[str],
     ) -> None:
         """Upsert causal-graph edges. Additive + idempotent on edge_id."""
         if not edges:
             return
         query = text("""
             INSERT INTO causal_edges (
-                edge_id, case_id, organization_id,
+                edge_id, case_id, enterprise_id, organization_id,
                 cause_node_id, effect_node_id, and_group, reasoning,
                 created_at_turn, created_at
             ) VALUES (
-                :edge_id, :case_id, :organization_id,
+                :edge_id, :case_id, :enterprise_id, :organization_id,
                 :cause_node_id, :effect_node_id, :and_group, :reasoning,
                 :created_at_turn, :created_at
             )
@@ -3049,6 +3101,7 @@ class SQLiteCaseRepository(CaseRepository):
                 {
                     "edge_id": edge.edge_id,
                     "case_id": case_id,
+                    "enterprise_id": enterprise_id,
                     "organization_id": organization_id,
                     "cause_node_id": edge.cause_node_id,
                     "effect_node_id": edge.effect_node_id,
@@ -3063,7 +3116,8 @@ class SQLiteCaseRepository(CaseRepository):
         self,
         case_id: str,
         solutions_list: builtins.list[Solution],
-        organization_id: str,
+        enterprise_id: str,
+        organization_id: Optional[str],
     ) -> None:
         """Upsert solutions records (SQLite-compatible).
 
@@ -3083,7 +3137,7 @@ class SQLiteCaseRepository(CaseRepository):
 
             query = text("""
                 INSERT INTO solutions (
-                    solution_id, case_id, organization_id, solution_type, title,
+                    solution_id, case_id, enterprise_id, organization_id, solution_type, title,
                     node_id, quadrant,
                     immediate_action, longterm_fix, implementation_steps, commands, risks,
                     description, state,
@@ -3092,7 +3146,7 @@ class SQLiteCaseRepository(CaseRepository):
                     verification_result, verified_at,
                     proposed_at, applied_at, updated_at, metadata
                 ) VALUES (
-                    :solution_id, :case_id, :organization_id, :solution_type, :title,
+                    :solution_id, :case_id, :enterprise_id, :organization_id, :solution_type, :title,
                     :node_id, :quadrant,
                     :immediate_action, :longterm_fix, :implementation_steps, :commands, :risks,
                     :description, :state,
@@ -3130,6 +3184,7 @@ class SQLiteCaseRepository(CaseRepository):
                 {
                     "solution_id": solution.solution_id,
                     "case_id": case_id,
+                    "enterprise_id": enterprise_id,
                     "organization_id": organization_id,
                     "solution_type": solution.solution_type.value,
                     "title": solution.title,
@@ -3185,7 +3240,8 @@ class SQLiteCaseRepository(CaseRepository):
         self,
         case_id: str,
         files_list: builtins.list[UploadedFile],
-        organization_id: str,
+        enterprise_id: str,
+        organization_id: Optional[str],
     ) -> None:
         """Upsert ``uploaded_files`` records.
 
@@ -3199,7 +3255,7 @@ class SQLiteCaseRepository(CaseRepository):
         for file in files_list:
             query = text("""
                 INSERT INTO uploaded_files (
-                    file_id, case_id, organization_id, uploaded_by,
+                    file_id, case_id, enterprise_id, organization_id, uploaded_by,
                     filename, size_bytes, content_type, content_hash,
                     storage_ref, upload_source,
                     uploaded_at_turn, uploaded_at,
@@ -3207,7 +3263,7 @@ class SQLiteCaseRepository(CaseRepository):
                     summary, structural_index, data_type,
                     coverage_start_ts, coverage_end_ts, coverage_source
                 ) VALUES (
-                    :file_id, :case_id, :organization_id, :uploaded_by,
+                    :file_id, :case_id, :enterprise_id, :organization_id, :uploaded_by,
                     :filename, :size_bytes, :content_type, :content_hash,
                     :storage_ref, :upload_source,
                     :uploaded_at_turn, :uploaded_at,
@@ -3241,6 +3297,7 @@ class SQLiteCaseRepository(CaseRepository):
                 {
                     "file_id": file.file_id,
                     "case_id": case_id,
+                    "enterprise_id": enterprise_id,
                     "organization_id": organization_id,
                     "uploaded_by": file.uploaded_by,
                     "filename": file.filename,
@@ -3262,7 +3319,11 @@ class SQLiteCaseRepository(CaseRepository):
             )
 
     async def _upsert_messages(
-        self, case_id: str, messages_list: builtins.list[dict], organization_id: str
+        self,
+        case_id: str,
+        messages_list: builtins.list[dict],
+        enterprise_id: str,
+        organization_id: Optional[str],
     ) -> None:
         """Upsert case messages (SQLite-compatible).
 
@@ -3286,9 +3347,9 @@ class SQLiteCaseRepository(CaseRepository):
 
             query = text("""
                 INSERT INTO case_messages (
-                    message_id, case_id, organization_id, turn_number, role, content, author_id, created_at, token_count, metadata
+                    message_id, case_id, enterprise_id, organization_id, turn_number, role, content, author_id, created_at, token_count, metadata
                 ) VALUES (
-                    :message_id, :case_id, :organization_id, :turn_number, :role, :content, :author_id, :created_at, :token_count, :metadata
+                    :message_id, :case_id, :enterprise_id, :organization_id, :turn_number, :role, :content, :author_id, :created_at, :token_count, :metadata
                 )
                 ON CONFLICT (message_id) DO UPDATE SET
                     turn_number = EXCLUDED.turn_number,
@@ -3311,6 +3372,7 @@ class SQLiteCaseRepository(CaseRepository):
                 {
                     "message_id": msg.get("message_id"),
                     "case_id": case_id,
+                    "enterprise_id": enterprise_id,
                     "organization_id": organization_id,
                     "turn_number": msg.get("turn_number", idx),
                     "role": msg.get("role", "user"),
@@ -3323,7 +3385,11 @@ class SQLiteCaseRepository(CaseRepository):
             )
 
     async def _append_case_actions(
-        self, case_id: str, transitions: builtins.list[CaseAction], organization_id: str
+        self,
+        case_id: str,
+        transitions: builtins.list[CaseAction],
+        enterprise_id: str,
+        organization_id: Optional[str],
     ) -> None:
         """Append only newly-added case actions (append-only audit trail).
 
@@ -3349,10 +3415,10 @@ class SQLiteCaseRepository(CaseRepository):
         for transition in new_transitions:
             query = text("""
                 INSERT INTO case_actions (
-                    case_id, organization_id, from_state, to_state, reason,
+                    case_id, enterprise_id, organization_id, from_state, to_state, reason,
                     triggered_by, transitioned_at, metadata
                 ) VALUES (
-                    :case_id, :organization_id, :from_state, :to_state, :reason,
+                    :case_id, :enterprise_id, :organization_id, :from_state, :to_state, :reason,
                     :triggered_by, :transitioned_at, :metadata
                 )
             """)
@@ -3361,6 +3427,7 @@ class SQLiteCaseRepository(CaseRepository):
                 query,
                 {
                     "case_id": case_id,
+                    "enterprise_id": enterprise_id,
                     "organization_id": organization_id,
                     "from_state": (
                         transition.from_state.value if transition.from_state else None
@@ -3473,7 +3540,8 @@ class SQLiteCaseRepository(CaseRepository):
         case_data = {
             "case_id": row.case_id,
             "user_id": row.user_id,
-            "organization_id": row.organization_id,  # NOT NULL in DB
+            "enterprise_id": row.enterprise_id,  # NOT NULL in DB
+            "organization_id": row.organization_id,  # nullable billing
             "source": getattr(row, "source", "copilot"),
             "title": row.title,
             "state": CaseState(row.state),
@@ -3587,17 +3655,19 @@ class SQLiteCaseRepository(CaseRepository):
             json.dumps(report.metadata.model_dump()) if report.metadata else "{}"
         )
 
-        # ``organization_id`` is NOT NULL FK CASCADE on reports; derive
+        # ``enterprise_id`` is NOT NULL FK CASCADE on reports (organization_id
+        # beside it is nullable billing attribution); derive both
         # it from the parent case via subquery so callers don't have to
         # thread it through.
         insert_query = text("""
             INSERT INTO reports (
-                report_id, case_id, organization_id, report_type, version, is_current,
+                report_id, case_id, enterprise_id, organization_id, report_type, version, is_current,
                 linked_to_closure, title, content, format,
                 generation_status, generation_time_ms, metadata,
                 generated_at, updated_at, generated_by
             ) VALUES (
                 :report_id, :case_id,
+                (SELECT enterprise_id FROM cases WHERE case_id = :case_id),
                 (SELECT organization_id FROM cases WHERE case_id = :case_id),
                 :report_type, :version, :is_current,
                 :linked_to_closure, :title, :content, :format,

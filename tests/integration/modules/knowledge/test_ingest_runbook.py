@@ -55,8 +55,13 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 # Fixtures
 # =============================================================================
 
-DEFAULT_ORG_ID = "00000000-0000-0000-0000-000000000001"
+#: The ISOLATION key every row here is stamped with (ADR-017 D1).
 DEFAULT_ENTERPRISE_ID = "00000000-0000-0000-0000-000000000002"
+
+#: BILLING attribution (ADR-017 D2), and a distinct id on purpose: an
+#: organization is not an enterprise, and a test that gives both the same value
+#: cannot tell which one a write actually used.
+BILLING_ORG_ID = "00000000-0000-0000-0000-000000000001"
 
 
 @pytest.fixture(scope="function")
@@ -73,9 +78,24 @@ async def session_factory(engine):
     return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
+@pytest.fixture(autouse=True)
+def bound_billing_organization():
+    """Bind an actor organization for the whole module.
+
+    ``ingest_runbook`` reads billing attribution from this binding rather than
+    from a parameter (fm#1353 review, A19), so a global-tier assertion that the
+    column is NULL only says something when there IS an organization to drop.
+    """
+    from faultmaven.config.tenant_context import set_current_billing_organization_id
+
+    set_current_billing_organization_id(BILLING_ORG_ID)
+    yield
+    set_current_billing_organization_id(None)
+
+
 @pytest.fixture(scope="function")
 async def seeded_session_factory(session_factory):
-    """Seed default enterprise + org so knowledge_items.organization_id FK is satisfied."""
+    """Seed the enterprise (the NOT NULL isolation FK) and a billing org."""
     async with session_factory() as session:
         session.add(
             EnterpriseModel(
@@ -86,7 +106,7 @@ async def seeded_session_factory(session_factory):
         )
         session.add(
             OrganizationModel(
-                organization_id=DEFAULT_ORG_ID,
+                organization_id=BILLING_ORG_ID,
                 enterprise_id=DEFAULT_ENTERPRISE_ID,
                 name="Default Org",
                 slug="default-org",
@@ -142,7 +162,7 @@ class TestIngestRunbookDualWrite:
             document_id=item_id,
             title="Redis OOM",
             content="# Redis OOM\n\nIncrease maxmemory.",
-            organization_id=DEFAULT_ORG_ID,
+            enterprise_id=DEFAULT_ENTERPRISE_ID,
             scope="global",
             owner_id="user-1",
             verified_by="user-1",
@@ -162,9 +182,19 @@ class TestIngestRunbookDualWrite:
             assert row is not None
             assert row.title == "Redis OOM"
             assert row.scope == "global"
-            # Global rows are the org-free platform tier (#770): the passed
-            # organization_id applies only to org-owned scopes.
+            # A GLOBAL row is the organization-free platform tier (#770,
+            # ``knowledge_items_global_org_check``): the actor's billing
+            # organization — BOUND by the fixture above, and stamped on every
+            # other tier — is FORCED to NULL here.
+            #
+            # This is load-bearing now, in both halves. ``ingest_runbook`` reads
+            # the organization from the request binding rather than from a
+            # parameter no caller ever supplied (fm#1353 review, A19), and
+            # ``DatabaseKnowledgeItemRepository.create`` maps it onto the ORM
+            # model — so a row that kept it would read the bound value here
+            # rather than NULL-for-every-tier.
             assert row.organization_id is None
+            assert row.enterprise_id == DEFAULT_ENTERPRISE_ID
             assert row.item_type == KnowledgeItemType.RUNBOOK.value
             assert row.verification_level == int(VerificationLevel.COMMUNITY)
             assert row.verified_by == "user-1"
@@ -182,7 +212,7 @@ class TestIngestRunbookDualWrite:
             document_id=item_id,
             title="Unverified",
             content="raw content",
-            organization_id=DEFAULT_ORG_ID,
+            enterprise_id=DEFAULT_ENTERPRISE_ID,
             scope="personal",
             owner_id="user-2",
             verified_by=None,
@@ -215,7 +245,7 @@ class TestIngestRunbookDualWrite:
                 document_id=item_id,
                 title="Doomed embed",
                 content="content",
-                organization_id=DEFAULT_ORG_ID,
+                enterprise_id=DEFAULT_ENTERPRISE_ID,
                 scope="global",
                 verified_by="user-3",
             )
@@ -246,7 +276,7 @@ class TestIngestRunbookDualWrite:
                 document_id=item_id,
                 title="Empty result",
                 content="content",
-                organization_id=DEFAULT_ORG_ID,
+                enterprise_id=DEFAULT_ENTERPRISE_ID,
                 scope="global",
                 verified_by="user-4",
             )
@@ -276,7 +306,7 @@ class TestIngestRunbookDualWrite:
             document_id=item_id,
             title="Original",
             content="c",
-            organization_id=DEFAULT_ORG_ID,
+            enterprise_id=DEFAULT_ENTERPRISE_ID,
             scope="global",
         )
         first_chroma_count = service._index_document_in_vector_store.await_count
@@ -289,7 +319,7 @@ class TestIngestRunbookDualWrite:
                 document_id=item_id,
                 title="Duplicate",
                 content="c2",
-                organization_id=DEFAULT_ORG_ID,
+                enterprise_id=DEFAULT_ENTERPRISE_ID,
                 scope="global",
             )
 

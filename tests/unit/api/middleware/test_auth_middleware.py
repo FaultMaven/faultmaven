@@ -53,7 +53,7 @@ def sample_user() -> AuthenticatedUser:
     """Create sample authenticated user."""
     return AuthenticatedUser(
         user_id="user-123",
-        organization_id="org-456",
+        enterprise_id="org-456",
         email="test@example.com",
         roles=["admin", "platform_admin"],
         permissions=[
@@ -72,7 +72,7 @@ def member_user() -> AuthenticatedUser:
     """Create sample member user (limited permissions)."""
     return AuthenticatedUser(
         user_id="user-456",
-        organization_id="org-456",
+        enterprise_id="org-456",
         email="member@example.com",
         roles=["member"],
         permissions=[
@@ -89,7 +89,7 @@ def viewer_user() -> AuthenticatedUser:
     """Create sample viewer user (read-only)."""
     return AuthenticatedUser(
         user_id="user-789",
-        organization_id="org-456",
+        enterprise_id="org-456",
         email="viewer@example.com",
         roles=["viewer"],
         permissions=[
@@ -175,7 +175,7 @@ class TestGetCurrentUser:
 
         assert user == sample_user
         assert user.user_id == "user-123"
-        assert user.organization_id == "org-456"
+        assert user.enterprise_id == "org-456"
 
     @pytest.mark.asyncio
     async def test_raises_401_on_missing_token(self, mock_auth_service):
@@ -562,7 +562,7 @@ class TestRequirePlatformAdmin:
         """
         org_admin = AuthenticatedUser(
             user_id="user-org-admin",
-            organization_id="org-456",
+            enterprise_id="org-456",
             email="orgadmin@example.com",
             roles=["user", "admin"],
             permissions=["cases:read", "cases:write"],
@@ -641,7 +641,7 @@ class TestAuthenticatedUserModel:
         d = sample_user.to_dict()
 
         assert d["user_id"] == "user-123"
-        assert d["organization_id"] == "org-456"
+        assert d["enterprise_id"] == "org-456"
         assert d["email"] == "test@example.com"
         assert d["roles"] == ["admin", "platform_admin"]
         assert "cases:read" in d["permissions"]

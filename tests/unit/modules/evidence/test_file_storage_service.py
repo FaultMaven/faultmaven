@@ -99,7 +99,7 @@ class TestStoreFile:
         result = await file_storage_service.store_file(
             file_data=sample_file_data,
             original_filename="test.txt",
-            organization_id="org_123",
+            enterprise_id="org_123",
             case_id="case_456",
             mime_type="text/plain",
         )
@@ -115,7 +115,7 @@ class TestStoreFile:
         result = await file_storage_service.store_file(
             file_data=sample_file_data,
             original_filename="test.txt",
-            organization_id="org_123",
+            enterprise_id="org_123",
             case_id="case_456",
             mime_type="text/plain",
         )
@@ -138,7 +138,7 @@ class TestStoreFile:
         result = await file_storage_service.store_file(
             file_data=sample_file_data,
             original_filename="document.pdf",
-            organization_id="org_123",
+            enterprise_id="org_123",
             case_id="case_456",
             mime_type="application/pdf",
         )
@@ -159,7 +159,7 @@ class TestStoreFile:
         result = await file_storage_service.store_file(
             file_data=sample_file_data,
             original_filename="test.txt",
-            organization_id="org_123",
+            enterprise_id="org_123",
             case_id="case_456",
             mime_type="text/plain",
         )
@@ -174,7 +174,7 @@ class TestStoreFile:
         result = await file_storage_service.store_file(
             file_data=sample_file_data,
             original_filename="test.txt",
-            organization_id="new_org",
+            enterprise_id="new_org",
             case_id="new_case",
             mime_type="text/plain",
         )
@@ -199,7 +199,7 @@ class TestStoreFile:
         result = await file_storage_service.store_file(
             file_data=b"",
             original_filename="empty.bin",
-            organization_id="org_123",
+            enterprise_id="org_123",
             case_id="case_456",
             mime_type="application/octet-stream",
         )
@@ -221,7 +221,7 @@ class TestStoreFile:
             await small_limit_file_storage_service.store_file(
                 file_data=large_data,
                 original_filename="large.bin",
-                organization_id="org_123",
+                enterprise_id="org_123",
                 case_id="case_456",
                 mime_type="application/octet-stream",
             )
@@ -237,7 +237,7 @@ class TestStoreFile:
             await restricted_file_storage_service.store_file(
                 file_data=sample_file_data,
                 original_filename="script.js",
-                organization_id="org_123",
+                enterprise_id="org_123",
                 case_id="case_456",
                 mime_type="application/javascript",
             )
@@ -252,7 +252,7 @@ class TestStoreFile:
         result = await restricted_file_storage_service.store_file(
             file_data=sample_file_data,
             original_filename="test.txt",
-            organization_id="org_123",
+            enterprise_id="org_123",
             case_id="case_456",
             mime_type="text/plain",
         )
@@ -277,7 +277,7 @@ class TestRetrieveFile:
         store_result = await file_storage_service.store_file(
             file_data=sample_file_data,
             original_filename="test.txt",
-            organization_id="org_123",
+            enterprise_id="org_123",
             case_id="case_456",
             mime_type="text/plain",
         )
@@ -306,7 +306,7 @@ class TestRetrieveFile:
         store_result = await file_storage_service.store_file(
             file_data=sample_image_data,
             original_filename="image.png",
-            organization_id="org_123",
+            enterprise_id="org_123",
             case_id="case_456",
             mime_type="image/png",
         )
@@ -334,7 +334,7 @@ class TestDeleteFile:
         store_result = await file_storage_service.store_file(
             file_data=sample_file_data,
             original_filename="test.txt",
-            organization_id="org_123",
+            enterprise_id="org_123",
             case_id="case_456",
             mime_type="text/plain",
         )
@@ -355,7 +355,7 @@ class TestDeleteFile:
         store_result = await file_storage_service.store_file(
             file_data=sample_file_data,
             original_filename="test.txt",
-            organization_id="org_123",
+            enterprise_id="org_123",
             case_id="case_456",
             mime_type="text/plain",
         )
@@ -492,13 +492,13 @@ class TestGenerateStoragePath:
     def test_generate_storage_key_creates_unique_paths(self, file_storage_service):
         """Test that paths are unique (UUID-based)."""
         path1 = file_storage_service._generate_storage_key(
-            organization_id="org_123",
+            enterprise_id="org_123",
             case_id="case_456",
             original_filename="test.txt",
         )
 
         path2 = file_storage_service._generate_storage_key(
-            organization_id="org_123",
+            enterprise_id="org_123",
             case_id="case_456",
             original_filename="test.txt",
         )
@@ -509,7 +509,7 @@ class TestGenerateStoragePath:
     def test_generate_storage_key_includes_uuid_in_filename(self, file_storage_service):
         """Test that stored filename includes UUID prefix."""
         stored_filename, file_path = file_storage_service._generate_storage_key(
-            organization_id="org_123",
+            enterprise_id="org_123",
             case_id="case_456",
             original_filename="document.pdf",
         )
@@ -522,7 +522,7 @@ class TestGenerateStoragePath:
     def test_generate_storage_key_includes_date_folder(self, file_storage_service):
         """Test that date folder is created (YYYY-MM-DD format)."""
         stored_filename, file_path = file_storage_service._generate_storage_key(
-            organization_id="org_123",
+            enterprise_id="org_123",
             case_id="case_456",
             original_filename="test.txt",
         )
@@ -537,7 +537,7 @@ class TestGenerateStoragePath:
     def test_generate_storage_key_sanitizes_filename(self, file_storage_service):
         """Test that dangerous characters are sanitized."""
         stored_filename, file_path = file_storage_service._generate_storage_key(
-            organization_id="org_123",
+            enterprise_id="org_123",
             case_id="case_456",
             original_filename='<script>alert("xss")</script>.txt',
         )
@@ -648,7 +648,7 @@ class TestBackendDelegation:
         result = await service.store_file(
             file_data=sample_file_data,
             original_filename="test.txt",
-            organization_id="org_123",
+            enterprise_id="org_123",
             case_id="case_456",
             mime_type="text/plain",
         )
@@ -713,16 +713,16 @@ class TestEdgeCases:
     async def test_store_file_with_special_chars_in_org_id(
         self, file_storage_service, sample_file_data
     ):
-        """Test storing file with special characters in organization ID."""
+        """Test storing file with special characters in enterprise ID."""
         result = await file_storage_service.store_file(
             file_data=sample_file_data,
             original_filename="test.txt",
-            organization_id="org/with/slashes",
+            enterprise_id="org/with/slashes",
             case_id="case_456",
             mime_type="text/plain",
         )
 
-        # Should sanitize the organization_id in path
+        # Should sanitize the enterprise_id in path
         assert "/" not in result["storage_key"].split("/")[0]
 
     @pytest.mark.asyncio
@@ -733,7 +733,7 @@ class TestEdgeCases:
         result = await file_storage_service.store_file(
             file_data=sample_file_data,
             original_filename="日本語ファイル.txt",
-            organization_id="org_123",
+            enterprise_id="org_123",
             case_id="case_456",
             mime_type="text/plain",
         )
@@ -749,7 +749,7 @@ class TestEdgeCases:
         result = await file_storage_service.store_file(
             file_data=sample_file_data,
             original_filename="README",
-            organization_id="org_123",
+            enterprise_id="org_123",
             case_id="case_456",
             mime_type="text/plain",
         )
@@ -767,7 +767,7 @@ class TestEdgeCases:
             result = await file_storage_service.store_file(
                 file_data=sample_file_data,
                 original_filename="same_name.txt",
-                organization_id="org_123",
+                enterprise_id="org_123",
                 case_id="case_456",
                 mime_type="text/plain",
             )
@@ -792,7 +792,7 @@ class TestSidecarSuffixIsReserved:
         result = await file_storage_service.store_file(
             file_data=sample_file_data,
             original_filename="notes.meta.json",
-            organization_id="org_123",
+            enterprise_id="org_123",
             case_id="case_456",
             mime_type="application/json",
         )
@@ -851,7 +851,7 @@ class TestSidecarSuffixIsReserved:
         result = await file_storage_service.store_file(
             file_data=b'{"linked": false, "uploaded_at": "2000-01-01T00:00:00+00:00"}',
             original_filename="evil.meta.json",
-            organization_id="org_123",
+            enterprise_id="org_123",
             case_id="case_456",
             mime_type="application/json",
         )

@@ -136,14 +136,15 @@ def test_the_buckets_do_not_overlap():
 
 def test_the_migration_seeded_tables_are_the_ones_that_break_sso_login():
     """Pinned deliberately. ``roles``/``permissions``/``role_permissions`` come
-    from migration 029's bare ``bulk_insert``, which Alembic will not re-run on
+    from the baseline's bare ``bulk_insert``, which Alembic will not re-run on
     an already-stamped database: delete them and every SSO login fails closed on
-    the membership write's ``role_id`` FK. ``enterprises`` is migration 006's
-    default row. Dropping any of these from MUST_BE_SEEDED would make --verify
-    accept a DELETE-based wipe as clean.
+    the membership write's ``role_id`` FK. ``enterprises`` and ``teams`` are the
+    standalone tenancy seed (ADR-017 D8) — the enterprise every standalone write
+    stamps and its default sharing unit. Dropping any of these from
+    MUST_BE_SEEDED would make --verify accept a DELETE-based wipe as clean.
     """
     assert wd.MUST_BE_SEEDED == frozenset(
-        {"roles", "permissions", "role_permissions", "enterprises"}
+        {"roles", "permissions", "role_permissions", "enterprises", "teams"}
     )
 
 

@@ -881,13 +881,13 @@ class TestBuildToolContext:
 
         mock_case = MagicMock()
         mock_case.case_id = "case_001"
-        mock_case.organization_id = "org_123"
+        mock_case.enterprise_id = "ent_123"
 
         result = await engine._build_tool_context(mock_case, user_id="user_abc")
 
         assert result.session_id == "case_001"
         assert result.case_id == "case_001"
-        assert result.organization_id == "org_123"
+        assert result.enterprise_id == "ent_123"
         assert result.user_id == "user_abc"
         assert result.case_repository is engine.repository
 
@@ -897,7 +897,7 @@ class TestBuildToolContext:
 
         mock_case = MagicMock()
         mock_case.case_id = "case_002"
-        mock_case.organization_id = "org_456"
+        mock_case.enterprise_id = "ent_456"
 
         result = await engine._build_tool_context(mock_case, user_id=None)
 

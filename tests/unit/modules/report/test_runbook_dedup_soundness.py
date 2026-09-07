@@ -91,7 +91,7 @@ async def test_recommendation_issues_a_real_embedding_under_the_requesters_scope
         await service.get_available_report_types(
             case=_case(),
             requester_user_id="user-1",
-            requester_organization_id="org-1",
+            requester_enterprise_id="org-1",
         )
 
     kwargs = kb.search_runbooks.await_args.kwargs

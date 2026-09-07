@@ -156,6 +156,7 @@ async def _resolve_user(user_store, identifier: str):
 
 async def remove_org_member(
     *,
+    enterprise_id: str,
     organization_id: str,
     user_identifier: str,
     dry_run: bool,
@@ -164,7 +165,7 @@ async def remove_org_member(
     """Run the paired removal. Returns the process exit code."""
     from sqlalchemy.exc import DBAPIError
 
-    from faultmaven.config.tenant_context import set_current_org_id
+    from faultmaven.cli._tenant import EnterpriseRefused, bind_and_load_enterprise
     from faultmaven.container import container
     from faultmaven.exceptions import UserLookupFailed
     from faultmaven.infrastructure.persistence.organization_repository import (
@@ -207,10 +208,21 @@ async def remove_org_member(
         print(f"\n❌ Refusing to remove the membership: {unusable}.")
         return 1
 
-    # RLS (migration 018) scopes organizations and organization_members by
-    # `app.current_org_id`. Bind it to the target org so the lookups and the
-    # DELETE below run under the pod's own application role.
-    set_current_org_id(organization_id)
+    # RLS scopes organizations and organization_members by
+    # `app.current_enterprise_id` (ADR-017 D1), so the ENTERPRISE has to be
+    # bound before anything is read — an organization id alone resolves nothing
+    # under the pod's own application role. It is a required argument rather
+    # than derived from the organization row for exactly that reason: deriving
+    # it would need the read the binding is a precondition of. The shared helper
+    # also refuses a sentinel or a retired enterprise, which this command
+    # checked not at all: it went straight to the organization, so a mistyped
+    # enterprise reported "no organization" and sent the operator hunting for
+    # the wrong thing.
+    try:
+        await bind_and_load_enterprise(enterprise_id)
+    except EnterpriseRefused as exc:
+        print(f"\n❌ {exc}")
+        return 1
 
     orgs = SessionlessOrganizationRepository()
     organization = await orgs.get_organization(organization_id)
@@ -274,7 +286,12 @@ async def remove_org_member(
             print(
                 f"\n❌ {user.username} is not a member of this organization, so "
                 "there is nothing to remove.\n"
-                "   Refusing rather than revoking: this is what a mistyped "
+                "   This is the ORDINARY state of an account nobody pays for: a "
+                "sign-in establishes the enterprise anchor and no organization "
+                "membership at all (ADR-017 D5/D9), so an account that was never "
+                "assigned to a subscription has none to remove. It is still "
+                "anchored, and still sees everything it saw before.\n"
+                "   Refusing rather than revoking: this is also what a mistyped "
                 "--organization-id looks like, and revoking anyway would end every "
                 "session of a user in some other tenant.\n"
                 "   Check the organization id and the user before doing anything "
@@ -304,7 +321,9 @@ async def remove_org_member(
         organization_repository=orgs, auth_service=auth_service
     )
     try:
-        result = await service.remove_member(organization_id, user.user_id)
+        result = await service.remove_member(
+            organization_id, user.user_id, enterprise_id
+        )
     except MembershipRemovalMisscoped as exc:
         print(f"\n❌ {exc}")
         return 1
@@ -373,6 +392,14 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
+        "--enterprise-id",
+        required=True,
+        help=(
+            "Enterprise the organization belongs to — the tenant every read and "
+            "write below is RLS-scoped by (an id, not a slug)"
+        ),
+    )
+    parser.add_argument(
         "--organization-id",
         required=True,
         help="Organization id to remove the user from (an id, not a slug)",
@@ -413,6 +440,7 @@ def main() -> None:
     sys.exit(
         asyncio.run(
             remove_org_member(
+                enterprise_id=args.enterprise_id,
                 organization_id=args.organization_id,
                 user_identifier=args.user,
                 dry_run=args.dry_run,

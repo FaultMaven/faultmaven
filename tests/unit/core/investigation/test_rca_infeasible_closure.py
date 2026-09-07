@@ -70,7 +70,7 @@ def _make_case(
         title="Test Case",
         state=CaseState.INVESTIGATING,
         user_id="user_123",
-        organization_id="org_123",
+        enterprise_id="org_123",
         description="Test description",
         problem_verification=pv,
         progress=InvestigationProgress(mitigation=mitigation),

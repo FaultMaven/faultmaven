@@ -42,7 +42,7 @@ def _resolved_case_with(conclusion: RootCauseConclusion) -> Case:
     case = Case(
         case_id="case_000000001097",
         user_id="u",
-        organization_id="o",
+        enterprise_id="o",
         title="checkout-api became unavailable after release",
         description="checkout-api crash-looping after v2.14.0",
         state=CaseState.INVESTIGATING,

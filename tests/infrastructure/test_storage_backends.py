@@ -165,7 +165,7 @@ class TestFilesystemStorageBackend:
     async def test_generate_upload_url_format(self, filesystem_backend):
         """Test upload URL has correct format for filesystem backend."""
         url = await filesystem_backend.generate_upload_url(
-            key="org123/case456/error.log",
+            key="ent123/case456/error.log",
             content_type="text/plain",
         )
 
@@ -180,7 +180,7 @@ class TestFilesystemStorageBackend:
     ):
         """Test download URL has correct format for filesystem backend."""
         # First store a file
-        key = "org123/case456/error.log"
+        key = "ent123/case456/error.log"
         await filesystem_backend.store_file(key, b"test content")
 
         url = await filesystem_backend.generate_download_url(
@@ -469,7 +469,7 @@ class TestFilesystemPathContainment:
     async def test_ordinary_nested_key_round_trips(self, temp_storage_dir):
         """The shape ``_generate_storage_key`` actually mints."""
         backend = self._backend(temp_storage_dir)
-        key = "org_abc/case_123/2026-08-29/deadbeef1234_app.log"
+        key = "ent_abc/case_123/2026-08-29/deadbeef1234_app.log"
 
         stored = await backend.store_file(key, b"log line", content_type="text/plain")
 
@@ -484,7 +484,7 @@ class TestFilesystemPathContainment:
     async def test_sidecar_suffix_key_round_trips(self, temp_storage_dir):
         """``{storage_key}.sidecar.json`` — the orphan-tracking companion."""
         backend = self._backend(temp_storage_dir)
-        key = "org_abc/case_123/blob.bin.sidecar.json"
+        key = "ent_abc/case_123/blob.bin.sidecar.json"
 
         await backend.store_file(key, b"{}")
 
@@ -959,7 +959,7 @@ class TestStorageIntegration:
                     result = await service.store_file(
                         file_data=b"kernel panic at 03:14",
                         original_filename="error.log",
-                        organization_id="org123",
+                        enterprise_id="ent123",
                         case_id="case456",
                         mime_type="text/plain",
                     )
@@ -1016,7 +1016,7 @@ class TestStorageIntegration:
         assert isinstance(filesystem_backend, IFileStorageBackend)
 
         # Simulate evidence upload flow
-        key = "evidence/org123/case456/error.log"
+        key = "evidence/ent123/case456/error.log"
         content = b"Error log content here"
         content_type = "text/plain"
 

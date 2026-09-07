@@ -165,9 +165,10 @@ class OAuthServiceImpl(IOAuthService):
         Args:
             user_id: Authenticated user's ID from Dashboard session
             request: OAuth authorization request (includes PKCE challenge)
-            organization_id: Organization the authorizing session is bound to
-                (#872). The caller passes the org the request was scoped to by
-                ``bind_request_org_context``; see the note on the stored DTO.
+            organization_id: The BILLING organization of the authorizing
+                session (#872), or ``None``. The caller passes the actor's own
+                organization; see the note on the stored DTO for why it travels
+                with the code rather than being read at redemption.
 
         Returns:
             Authorization code (short-lived, single-use, 10 minutes)
@@ -203,13 +204,15 @@ class OAuthServiceImpl(IOAuthService):
 
         # Store authorization code with PKCE challenge.
         #
-        # The organization travels with the code (#872). This endpoint runs under
-        # an authenticated dashboard session, so its org has already been verified
-        # and bound by ``bind_request_org_context``; the token exchange that
-        # redeems this code is unauthenticated and the user row it loads carries
-        # no organization at all. Without carrying it here there is nothing left
-        # to mint from, and every copilot session under multi-tenant would mint an
-        # empty claim and then be refused on its first API call.
+        # The BILLING organization travels with the code (#872). This endpoint
+        # runs under an authenticated session that knows the actor's
+        # organization; the token exchange that redeems the code is
+        # unauthenticated and the user row it loads carries no organization at
+        # all (membership lives in ``organization_members``). Without carrying it
+        # here there is nothing left to mint the billing claim from.
+        #
+        # The ISOLATION claim does not travel: it is minted at redemption from
+        # ``users.enterprise_id``, which the loaded row does carry (ADR-017 D9).
         code_data = OAuthCodeDTO(
             code=code,
             user_id=user_id,
@@ -470,20 +473,17 @@ class OAuthServiceImpl(IOAuthService):
                 error_code="USER_INACTIVE",
             )
 
-        # Re-attach the organization captured when the code was issued (#872),
-        # the same shape ``refresh_access_token`` below uses for the rotation leg
-        # and ``sso_login_service.exchange`` uses for the SSO leg. The repository
-        # model has no organization column, so the object returned above carries
-        # either nothing or the Standalone sentinel that ``DevUser.__post_init__``
-        # stamps on every user the store loads — neither of which is this user's
-        # tenant. Under single-tenant the captured value is the sentinel and
-        # ``resolve_organization_claim`` would restore it anyway, so this is a
-        # no-op there. ``setattr`` because the repository may return its own model
-        # or a ``DevUser`` dataclass.
+        # Re-attach the BILLING organization captured when the code was issued
+        # (#872), the same shape ``refresh_access_token`` below uses for the
+        # rotation leg and ``sso_login_service.exchange`` uses for the SSO leg.
+        # The repository model has no organization column, so the object returned
+        # above carries none. ``setattr`` because the repository may return its
+        # own model or a ``DevUser`` dataclass.
         #
         # Both generators put ``organization_id`` in the access *and* refresh
         # payloads, so attaching it once here carries the claim through the whole
-        # chain: the first access token, and every rotation after it.
+        # chain: the first access token, and every rotation after it. The
+        # enterprise claim needs no such carrying — it is minted from the row.
         setattr(user, "organization_id", code_data.organization_id or None)
 
         # Claim the code — atomically, and only now.
@@ -667,40 +667,39 @@ class OAuthServiceImpl(IOAuthService):
                 error_code="USER_INACTIVE",
             )
 
-        # Re-attach the validated refresh token's organization claim before
-        # minting, exactly as POST /auth/refresh step 2b does (#869 M5, extended
-        # to this path by #873). Under multi-tenant it is the token chain that
-        # carries tenancy — the user repository's model has no organization
-        # column — so without this the D10 service credential (and any client
-        # that rotates through the oauth refresh grant) would mint an org-less
-        # pair on its first rotation and then be refused at
-        # bind_request_org_context on every request. setattr because the
-        # repository may return either its own model or a DevUser dataclass
-        # (whose __post_init__ stamps the Standalone sentinel); under
-        # single-tenant resolve_organization_claim restores the sentinel anyway,
-        # so this is a no-op there.
+        # Re-attach the validated refresh token's BILLING organization claim
+        # before minting, exactly as POST /auth/refresh step 2b does (#869 M5,
+        # extended to this path by #873). The user repository's model has no
+        # organization column, so it is the token chain that carries who pays;
+        # without this the D10 service credential (and any client that rotates
+        # through the oauth refresh grant) would lose its billing context on the
+        # first rotation. setattr because the repository may return either its
+        # own model or a DevUser dataclass.
+        #
+        # The ISOLATION claim is minted from ``users.enterprise_id`` rather than
+        # re-attached (ADR-017 D9) — see the same step in POST /auth/refresh.
         setattr(user, "organization_id", payload.get("organization_id") or None)
 
-        # The tenant the chain carries must still be usable (#1045 D8 R5). Same
-        # reasoning as POST /auth/refresh step 2c: nothing else on this path
-        # reads the organization row, so a retired tenant's refresh chain would
+        # The tenant the chain lives inside must still be usable (#1045 D8 R5).
+        # Same reasoning as POST /auth/refresh step 2c: nothing else on this path
+        # reads the enterprise row, so a retired tenant's refresh chain would
         # keep rotating forever.
-        from faultmaven.infrastructure.persistence.organization_liveness import (
-            organization_id_is_usable,
+        from faultmaven.infrastructure.persistence.enterprise_liveness import (
+            enterprise_id_is_usable,
         )
 
-        if not await organization_id_is_usable(getattr(user, "organization_id", None)):
+        if not await enterprise_id_is_usable(getattr(user, "enterprise_id", None)):
             logger.warning(
-                "OAuth token refresh failed: organization unavailable",
+                "OAuth token refresh failed: enterprise unavailable",
                 extra={
                     "user_id": user_id,
                     "client_id": client_id,
-                    "error": "ORGANIZATION_UNAVAILABLE",
+                    "error": "ENTERPRISE_UNAVAILABLE",
                 },
             )
             raise InvalidGrantError(
-                "Organization is no longer available",
-                error_code="ORGANIZATION_UNAVAILABLE",
+                "Enterprise is no longer available",
+                error_code="ENTERPRISE_UNAVAILABLE",
             )
 
         # Generate new access token

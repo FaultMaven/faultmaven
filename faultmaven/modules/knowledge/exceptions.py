@@ -157,15 +157,15 @@ class KnowledgeBaseAccessError(KnowledgeException):
         self,
         message: str = "Access denied",
         knowledge_base_id: Optional[str] = None,
-        organization_id: Optional[str] = None,
+        enterprise_id: Optional[str] = None,
     ):
         self.knowledge_base_id = knowledge_base_id
-        self.organization_id = organization_id
+        self.enterprise_id = enterprise_id
         super().__init__(
             message,
             details={
                 "knowledge_base_id": knowledge_base_id,
-                "organization_id": organization_id,
+                "enterprise_id": enterprise_id,
             },
         )
 

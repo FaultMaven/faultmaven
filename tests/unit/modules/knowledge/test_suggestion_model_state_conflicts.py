@@ -37,7 +37,7 @@ def _make_suggestion(
 ) -> KnowledgeSuggestion:
     return KnowledgeSuggestion(
         suggestion_id=suggestion_id,
-        organization_id="org_001",
+        enterprise_id="org_001",
         case_id="case_001",
         status=status,
         suggested_title="Test",

@@ -95,7 +95,12 @@ class CaseSummary(BaseModel):
     resolved_at: Optional[datetime]
     closed_at: Optional[datetime]
     user_id: str
-    organization_id: str
+    #: Isolation (ADR-017 D1). Every read that returned this row was scoped by
+    #: it, so a client can key its own caches on it.
+    enterprise_id: str
+    #: Billing attribution (ADR-017 D2), or ``None`` when nobody pays for the
+    #: account that owns the case. Never a visibility input.
+    organization_id: Optional[str] = None
     source: str = "copilot"  # Case origin (ADR-012): copilot | slack | api
     closure_reason: Optional[str]
 
@@ -140,6 +145,7 @@ class CaseSummary(BaseModel):
             resolved_at=case.resolved_at,
             closed_at=case.closed_at,
             user_id=case.user_id,
+            enterprise_id=case.enterprise_id,
             organization_id=case.organization_id,
             source=getattr(case, "source", "copilot"),
             closure_reason=case.closure_reason,
@@ -168,7 +174,12 @@ class CaseDetail(BaseModel):
     closed_at: Optional[datetime]
 
     user_id: str
-    organization_id: str
+    #: Isolation (ADR-017 D1). Every read that returned this row was scoped by
+    #: it, so a client can key its own caches on it.
+    enterprise_id: str
+    #: Billing attribution (ADR-017 D2), or ``None`` when nobody pays for the
+    #: account that owns the case. Never a visibility input.
+    organization_id: Optional[str] = None
     source: str = "copilot"  # Case origin (ADR-012): copilot | slack | api
     closure_reason: Optional[str]
 
@@ -215,6 +226,7 @@ class CaseDetail(BaseModel):
             resolved_at=case.resolved_at,
             closed_at=case.closed_at,
             user_id=case.user_id,
+            enterprise_id=case.enterprise_id,
             organization_id=case.organization_id,
             source=getattr(case, "source", "copilot"),
             closure_reason=case.closure_reason,
@@ -303,7 +315,7 @@ class OperatorAccessAuditEntry(BaseModel):
     operator_username: Optional[str] = None
     action: str
     # None = the access spanned all tenants (a cross-tenant list).
-    target_organization_id: Optional[str] = None
+    target_enterprise_id: Optional[str] = None
     # None = the access was not scoped to a single case.
     target_case_id: Optional[str] = None
     # Break-glass provenance; None for ambient access.
@@ -383,7 +395,12 @@ class AdminCaseMetadata(BaseModel):
     resolved_at: Optional[datetime]
     closed_at: Optional[datetime]
     user_id: str
-    organization_id: str
+    #: Isolation (ADR-017 D1). Every read that returned this row was scoped by
+    #: it, so a client can key its own caches on it.
+    enterprise_id: str
+    #: Billing attribution (ADR-017 D2), or ``None`` when nobody pays for the
+    #: account that owns the case. Never a visibility input.
+    organization_id: Optional[str] = None
     source: str = "copilot"  # Case origin (ADR-012): copilot | slack | api
     closure_reason: Optional[str]
 
@@ -415,6 +432,7 @@ class AdminCaseMetadata(BaseModel):
             resolved_at=summary.resolved_at,
             closed_at=summary.closed_at,
             user_id=summary.user_id,
+            enterprise_id=summary.enterprise_id,
             organization_id=summary.organization_id,
             source=summary.source,
             closure_reason=summary.closure_reason,
@@ -503,10 +521,10 @@ class BreakGlassGrantRequest(BaseModel):
         max_length=MAX_IDENTIFIER_LENGTH,
         description="The single case this grant covers",
     )
-    organization_id: str = Field(
+    enterprise_id: str = Field(
         min_length=1,
         max_length=MAX_IDENTIFIER_LENGTH,
-        description="Organization owning the case; the RLS scope the read rebinds to",
+        description="Enterprise owning the case; the RLS scope the read rebinds to",
     )
     reason: str = Field(
         min_length=MIN_GRANT_REASON_LENGTH,
@@ -546,7 +564,7 @@ class BreakGlassGrant(BaseModel):
     operator_user_id: str
     operator_username: Optional[str] = None
     target_case_id: str
-    target_organization_id: str
+    target_enterprise_id: str
     reason: str
     created_at: datetime
     expires_at: datetime
@@ -564,7 +582,7 @@ class BreakGlassGrant(BaseModel):
             operator_user_id=grant.operator_user_id,
             operator_username=grant.operator_username,
             target_case_id=grant.target_case_id,
-            target_organization_id=grant.target_organization_id,
+            target_enterprise_id=grant.target_enterprise_id,
             reason=grant.reason,
             created_at=grant.created_at,
             expires_at=grant.expires_at,

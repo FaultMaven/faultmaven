@@ -54,7 +54,7 @@ class CaseResponse(BaseModel):
     """Response model for a case."""
 
     case_id: str
-    organization_id: str
+    enterprise_id: str
     reporter_user_id: str
     title: str
     description: str
@@ -103,7 +103,7 @@ class CaseResponse(BaseModel):
 
         return cls(
             case_id=case.case_id,
-            organization_id=case.organization_id,
+            enterprise_id=case.enterprise_id,
             reporter_user_id=case.user_id,
             title=case.title,
             description=case.description,
@@ -155,7 +155,7 @@ class InvestigationSessionResponse(BaseModel):
     session_id: str
     case_id: str
     user_id: str
-    organization_id: str
+    enterprise_id: str
     state: SessionState
     started_at: datetime
     ended_at: Optional[datetime] = None
@@ -185,7 +185,7 @@ class InvestigationSessionResponse(BaseModel):
             session_id=session.session_id,
             case_id=session.case_id,
             user_id=session.user_id,
-            organization_id=session.organization_id,
+            enterprise_id=session.enterprise_id,
             state=session.state,
             started_at=session.started_at,
             ended_at=session.ended_at,
@@ -275,7 +275,7 @@ class AdminUserListItem(BaseModel):
     """User list item for admin endpoints (with full info)."""
 
     user_id: str
-    organization_id: str
+    enterprise_id: str
     email: str
     full_name: str
     roles: List[str]
@@ -301,7 +301,7 @@ class UserDetailResponse(BaseModel):
     """Detailed user information (admin only)."""
 
     user_id: str
-    organization_id: str
+    enterprise_id: str
     email: str
     full_name: str
     roles: List[str]
@@ -523,17 +523,19 @@ class PersonalTenantLimitsStatus(BaseModel):
     sso_jit_personal_tenant_max_per_hour: int = Field(
         description=(
             "SSO_JIT_PERSONAL_TENANT_MAX_PER_HOUR — the ceiling on NEW personal "
-            "tenants provisioned per rolling hour, deployment-wide. It bounds "
-            "provisioning only; tenants that already exist sign in regardless."
+            "enterprises provisioned per rolling hour, deployment-wide. It "
+            "bounds provisioning only; tenants that already exist sign in "
+            "regardless."
         )
     )
     tenant_daily_turn_cap: int = Field(
         description=(
-            "TENANT_DAILY_TURN_CAP — investigation turns a PERSONAL tenant may "
-            "take per UTC day before further turns are refused with 429. The "
-            "deployment DEFAULT only: a company organization is uncapped, a "
-            "single-tenant deployment is never capped, and a per-organization "
-            "override set with fm-set-turn-cap beats this value."
+            "TENANT_DAILY_TURN_CAP — investigation turns an account in NO "
+            "organization may take per UTC day before further turns are "
+            "refused with 429. The deployment DEFAULT only: an organization is "
+            "uncapped, a single-tenant deployment is never capped, and a "
+            "per-organization override set with fm-set-turn-cap beats this "
+            "value."
         )
     )
 

@@ -17,7 +17,7 @@ def context():
     return ToolContext(
         session_id="sess_1",
         case_id="case_123",
-        organization_id="org_1",
+        enterprise_id="org_1",
         user_id="user_42",
         shared_kb_ids=["kb_shared_1", "kb_shared_2"],
     )
@@ -69,7 +69,7 @@ class TestKBToolAdapter:
         context = ToolContext(
             session_id="sess_1",
             case_id="case_123",
-            organization_id="org_1",
+            enterprise_id="org_1",
             user_id="user_42",
             kb_context_metadata={"service": "payment-api"},
         )

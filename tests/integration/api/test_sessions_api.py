@@ -33,7 +33,7 @@ def mock_user():
     """Create a mock authenticated user for testing."""
     return AuthenticatedUser(
         user_id="user_789",
-        organization_id="org_456",
+        enterprise_id="ent_456",
         email="test@example.com",
         roles=["admin"],
         permissions=["sessions:read", "sessions:write", "sessions:execute"],
@@ -47,7 +47,7 @@ def mock_session():
     mock.session_id = "session_123abc"
     mock.case_id = "case_456def"
     mock.user_id = "user_789"
-    mock.organization_id = "org_456"
+    mock.enterprise_id = "ent_456"
     mock.state = SessionState.ACTIVE
     mock.started_at = datetime.now(timezone.utc)
     mock.ended_at = None
@@ -74,19 +74,30 @@ def mock_session_service():
 def mock_case_service(mock_user):
     """A case service that grants the authenticated user access to their case.
 
-    Session routes are gated on the parent case (#1044): the caller must own the
-    case or have it shared to one of their teams, not merely share an
-    organization with its owner. Every test below acts as the case's owner, so
-    this returns a case for them and ``None`` for anyone else — the same two
-    meanings ``CaseService.get_case`` collapses in production.
+    Session routes are gated on the parent case (#1044): on a READ the caller
+    must own the case or have it shared to one of their teams, and on a WRITE
+    they must OWN it (ADR-017 D4 — a share is read visibility, not ownership).
+    Every test below acts as the case's owner, so this returns a case for them
+    and ``None`` for anyone else — the same two meanings ``CaseService.get_case``
+    collapses in production.
+
+    ``owner_only`` is accepted and HONOURED rather than swallowed: the gate now
+    chooses the resolver from the request method, and a double that ignored the
+    flag would let a route which asked for the wrong one still look correct here.
+    Every caller in this module is the owner, so both arms answer the same — what
+    the parameter has to do is exist.
     """
     case = MagicMock()
     case.case_id = "case_456def"
     case.user_id = mock_user.user_id
-    case.organization_id = mock_user.organization_id
+    case.enterprise_id = mock_user.enterprise_id
 
-    async def get_case(case_id, user_id=None):
-        return case if user_id == mock_user.user_id else None
+    async def get_case(case_id, user_id=None, *, owner_only=False):
+        if user_id != mock_user.user_id:
+            return None
+        if owner_only and case.user_id != user_id:
+            return None
+        return case
 
     service = AsyncMock()
     service.get_case = AsyncMock(side_effect=get_case)
@@ -666,11 +677,11 @@ class TestSessionAuthorization:
     """Tests for session authorization."""
 
     def test_create_session_forbidden(self, client, mock_session_service, headers):
-        """Test session creation with wrong organization."""
+        """Test session creation from another enterprise."""
         from faultmaven.exceptions import AuthorizationError
 
         mock_session_service.create_session.side_effect = AuthorizationError(
-            "Case not accessible by organization"
+            "Case not accessible by enterprise"
         )
 
         response = client.post(
@@ -682,7 +693,7 @@ class TestSessionAuthorization:
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
     def test_get_session_forbidden(self, client, mock_session_service, headers):
-        """Test session retrieval with wrong organization."""
+        """Test session retrieval from another enterprise."""
         mock_session_service.get_session.return_value = (
             None  # Unauthorized returns None
         )
@@ -695,7 +706,7 @@ class TestSessionAuthorization:
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
     def test_list_sessions_forbidden(self, client, mock_session_service, headers):
-        """Test session list with wrong organization."""
+        """Test session list from another enterprise."""
         from faultmaven.exceptions import AuthorizationError
 
         mock_session_service.list_sessions.side_effect = AuthorizationError(
@@ -711,15 +722,17 @@ class TestSessionAuthorization:
 
 
 @pytest.mark.security
-class TestSameOrganizationStrangerIsDenied:
-    """A second user in the same organization gets 404 on every route (#1044).
+class TestSameEnterpriseStrangerIsDenied:
+    """A second user in the same enterprise gets 404 on every route (#1044).
 
-    The session service authorizes on ``case.organization_id`` alone, so before
+    The session service authorizes on ``case.enterprise_id`` alone, so before
     the case gate a colleague could read another member's ``session_goal``,
     ``findings_summary`` and token spend, and pause, resume, update or complete
-    their sessions. The mocked session service below is deliberately permissive —
-    it returns the victim's session to anyone who asks — so these assertions can
-    only pass because the request is stopped before it.
+    their sessions. Sharing an enterprise is exactly what ADR-017 D2 says grants
+    nothing — isolation is the wall, consent is the team — so this is the case
+    the gate has to stop. The mocked session service below is deliberately
+    permissive — it returns the victim's session to anyone who asks — so these
+    assertions can only pass because the request is stopped before it.
     """
 
     @pytest.fixture
@@ -740,7 +753,7 @@ class TestSameOrganizationStrangerIsDenied:
 
         stranger = AuthenticatedUser(
             user_id="user_stranger",
-            organization_id=mock_user.organization_id,  # same org as the owner
+            enterprise_id=mock_user.enterprise_id,  # same enterprise as the owner
             email="stranger@example.com",
             roles=["user"],
             permissions=["sessions:read", "sessions:write", "sessions:execute"],

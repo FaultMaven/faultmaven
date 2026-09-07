@@ -203,7 +203,7 @@ class UserService(BaseService):
         self,
         *,
         user_id: str,
-        organization_id: str,
+        enterprise_id: str,
         admin_user_id: str,
         event_type: Any,
         role: str,
@@ -213,9 +213,9 @@ class UserService(BaseService):
 
         Org-scoped role changes belong here rather than in
         ``operator_access_audit``: they are tenant-bounded, and
-        ``organization_id`` is the caller's own org, which the tenant middleware
-        has already bound for this request — so the row satisfies the RLS
-        policy's implicit WITH CHECK (migration 018 declares only ``USING``,
+        ``enterprise_id`` is the caller's own enterprise, which the tenant
+        middleware has already bound for this request — so the row satisfies the
+        RLS policy's implicit WITH CHECK (the policy declares only ``USING``,
         which PostgreSQL then applies to INSERT as well). Deployment-scoped
         ``platform_admin`` grants cannot use this table for exactly that reason
         and are recorded by the operator-role CLIs instead.
@@ -243,7 +243,7 @@ class UserService(BaseService):
                 event_category=AuditCategory.AUTHORIZATION,
                 resource_type="user",
                 resource_id=user_id,
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
                 details={
                     "role": role,
                     "changed_by": admin_user_id,
@@ -777,7 +777,7 @@ class UserService(BaseService):
     async def deactivate_user_admin(
         self,
         user_id: str,
-        organization_id: str,
+        enterprise_id: str,
         admin_user_id: str,
     ) -> RepositoryUser:
         """Deactivate user account (admin-only, soft delete)."""
@@ -813,7 +813,7 @@ class UserService(BaseService):
     async def activate_user_admin(
         self,
         user_id: str,
-        organization_id: str,
+        enterprise_id: str,
         admin_user_id: str,
     ) -> RepositoryUser:
         """Reactivate user account (admin-only)."""
@@ -853,43 +853,44 @@ class UserService(BaseService):
 
     async def list_users(
         self,
-        organization_id: Optional[str] = None,
+        enterprise_id: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
         is_active: Optional[bool] = None,
         role: Optional[str] = None,
         search: Optional[str] = None,
-        restrict_to_user_ids: Optional[Collection[str]] = None,
     ) -> Tuple[List[RepositoryUser], int]:
         """List users with pagination and optional filtering.
 
         Args:
-            organization_id: Organization context for scoping (not yet enforced in in-memory repo)
-            limit: Maximum results
-            offset: Pagination offset
-            is_active: Filter by active status
-            role: Filter by role (admin, member, viewer) - TASK-019
-            search: Search by email or name (case-insensitive) - TASK-019
-            restrict_to_user_ids: The only users the caller may see, or ``None``
-                for no restriction. This is the tenant predicate the operator
-                surface resolves from ``organization_members``
-                (``api/operator_user_scope``, #1318). It goes down to the
+            enterprise_id: The tenant the listing is confined to, or ``None``
+                for no restriction — which is only ever the single-tenant
+                answer, because the deployment IS the tenant there. This is the
+                predicate the operator surface confines by
+                (``api/operator_user_scope``, #1318), and it goes down to the
                 repository as a QUERY predicate rather than being applied to the
                 page this method fetches: the 1000-row window below is
                 deployment-wide, so a tenant's users could fall outside it, and
                 loading every tenant's rows to project one out of them makes
                 ``total`` a deployment-wide count and couples this listing to
                 rows the caller may not see — one that fails hydration takes it
-                down for everyone. An empty collection returns nothing rather
-                than everything. ``organization_id`` above remains a context
-                label the repository does not filter on; passing it does not
-                confine anything, which is why the confined caller passes this.
+                down for everyone.
+
+                It used to be a materialised set of account ids beside a
+                ``enterprise_id`` the repository ignored: the scope read every
+                member id of the enterprise to build an ``IN (...)``, per page.
+                One indexed comparison says the same thing.
+            limit: Maximum results
+            offset: Pagination offset
+            is_active: Filter by active status
+            role: Filter by role (admin, member, viewer) - TASK-019
+            search: Search by email or name (case-insensitive) - TASK-019
 
         Returns:
             Tuple of (users, total_count)
         """
-        # Get base users list from repository. The allowlist goes DOWN as a
-        # query predicate rather than being applied only here: the 1000-row
+        # Get base users list from repository. The tenant predicate goes DOWN as
+        # a query predicate rather than being applied only here: the 1000-row
         # window is deployment-wide, so post-filtering would leave `total`
         # counting other tenants and would couple this listing to their rows —
         # one row that fails hydration takes every operator's listing with it.
@@ -897,14 +898,14 @@ class UserService(BaseService):
             limit=1000,  # Get all for filtering
             offset=0,
             is_active=is_active,
-            user_ids=restrict_to_user_ids,
+            enterprise_id=enterprise_id,
         )
 
         # Apply additional filters (TASK-019). The tenant predicate is NOT
         # re-applied here: the repository answered it, and a second copy of the
         # rule would be one that could drift from the query without any test
-        # able to tell them apart (see `restrict_to_user_ids` above for why the
-        # query is where it has to live).
+        # able to tell them apart (see `enterprise_id` above for why the query
+        # is where it has to live).
         filtered_users = []
         for user in users:
             # Ensure is_active filtering even if repository doesn't apply it
@@ -953,7 +954,7 @@ class UserService(BaseService):
         - metadata.login_count (if tracked)
         - metadata.failed_login_attempts (if tracked)
 
-        No ``organization_id``. This service reads ``users``, which carries no
+        No tenant argument. This service reads ``users``, which carries no
         organization column — affiliation lives in ``organization_members`` —
         so it cannot answer that question, and used to return the literal
         ``"org-default"`` instead. The caller that HAS resolved a tenant stamps
@@ -1000,7 +1001,7 @@ class UserService(BaseService):
         self,
         user_id: str,
         role: str,
-        organization_id: str,
+        enterprise_id: str,
         admin_user_id: str,
     ) -> RepositoryUser:
         """Assign an organization-scoped role to a user (TASK-019).
@@ -1015,7 +1016,7 @@ class UserService(BaseService):
         Args:
             user_id: Target user ID
             role: Org-scoped role to assign (admin, member, viewer)
-            organization_id: Organization context for authorization (required)
+            enterprise_id: Enterprise context for authorization (required)
             admin_user_id: Admin performing the action (cannot be same as user_id)
 
         Returns:
@@ -1075,7 +1076,7 @@ class UserService(BaseService):
 
         await self._audit_role_change(
             user_id=user_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             admin_user_id=admin_user_id,
             event_type=AuditEventType.ROLE_ASSIGNED,
             role=role,
@@ -1087,7 +1088,7 @@ class UserService(BaseService):
         self,
         user_id: str,
         role: str,
-        organization_id: str,
+        enterprise_id: str,
         admin_user_id: str,
     ) -> RepositoryUser:
         """Remove an organization-scoped role from a user (TASK-019).
@@ -1102,7 +1103,7 @@ class UserService(BaseService):
         Args:
             user_id: Target user ID
             role: Org-scoped role to remove (admin, member)
-            organization_id: Organization context for authorization (required)
+            enterprise_id: Enterprise context for authorization (required)
             admin_user_id: Admin performing the action (cannot be same as user_id)
 
         Returns:
@@ -1162,7 +1163,7 @@ class UserService(BaseService):
 
         await self._audit_role_change(
             user_id=user_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             admin_user_id=admin_user_id,
             event_type=AuditEventType.ROLE_REMOVED,
             role=role,

@@ -19,7 +19,10 @@ from fastapi import HTTPException, status
 from starlette.requests import Request
 
 from faultmaven.config.settings import get_settings
-from faultmaven.config.tenant_context import get_current_org_id, set_current_org_id
+from faultmaven.config.tenant_context import (
+    get_current_enterprise_id,
+    set_current_enterprise_id,
+)
 from faultmaven.models.api_models import (
     MAX_IDENTIFIER_LENGTH,
     BreakGlassGrantRequest,
@@ -83,6 +86,37 @@ def validate_identifier(value: str, field_name: str) -> str:
     return value
 
 
+def refuse_retired_filter(retired: dict, replacement: str) -> None:
+    """422 if any retired query-filter name was sent. Raises, or returns None.
+
+    ADR-017 renamed two filters on the operator surfaces
+    (``/admin/grants?organization_id`` → ``enterprise_id``,
+    ``/admin/audit/operator-access?target_organization_id`` →
+    ``target_enterprise_id``). FastAPI drops an undeclared query parameter
+    silently, so a client still sending the old name would get a **200 with
+    every row in it** — an unfiltered answer presented as a filtered one, with
+    nothing in the response saying the filter was not applied.
+
+    On break-glass surfaces that is leak-shaped: the caller asked "who reached
+    THAT tenant's data" and is handed every tenant's. A 422 naming the
+    replacement is the honest answer. It is not a compatibility arm — nothing is
+    ever served under the old name; the parameter is declared solely so it can be
+    refused, and it is kept out of the published schema.
+    """
+    sent = sorted(name for name, value in retired.items() if value is not None)
+    if not sent:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail=(
+            f"{', '.join(sent)} is no longer a filter on this endpoint; the "
+            f"tenant a row belongs to is the enterprise (ADR-017). Use "
+            f"'{replacement}'. Ignoring it would return every row as though the "
+            "filter had been applied."
+        ),
+    )
+
+
 @dataclass(frozen=True)
 class OperatorContentAccess:
     """How an operator content read was authorised.
@@ -95,27 +129,27 @@ class OperatorContentAccess:
     grant: Optional[OperatorAccessGrant] = None
 
     @property
-    def target_organization_id(self) -> str:
-        """The organization this access is **attributed to** in the audit trail.
+    def target_enterprise_id(self) -> str:
+        """The enterprise this access is **attributed to** in the audit trail.
 
-        Deliberately not "whatever the grant claims". ``target_organization_id``
+        Deliberately not "whatever the grant claims". ``target_enterprise_id``
         on a grant is written by the operator and is never validated against the
         case (see ``build_grant`` for why that is right for *authorization*) — so
         using it for *attribution* would let the audited party choose which
         tenant their own immutable audit row names. That is the misattribution an
-        append-only trail exists to prevent, and migration 036's triggers make it
+        append-only trail exists to prevent, and the append-only triggers make it
         uncorrectable.
 
         The claim is only trustworthy where something else has already forced it
-        to be true. Under ``multi``, ``bind_grant_org_scope`` has rebound RLS to
-        that organization before the read, so a false claim yields no rows and
-        404s — the grant's org is then a fact about the request, not an
-        assertion about it. Everywhere else the bound org is what the read
-        actually ran under, and that is what gets recorded.
+        to be true. Under ``multi``, ``bind_grant_enterprise_scope`` has rebound
+        RLS to that enterprise before the read, so a false claim yields no rows
+        and 404s — the grant's enterprise is then a fact about the request, not
+        an assertion about it. Everywhere else the bound enterprise is what the
+        read actually ran under, and that is what gets recorded.
         """
         if self.grant is not None and requested_tenant_provider() == BUILTIN_MULTI:
-            return self.grant.target_organization_id
-        return get_current_org_id()
+            return self.grant.target_enterprise_id
+        return get_current_enterprise_id()
 
 
 async def authorize_content_read(
@@ -162,16 +196,16 @@ async def authorize_content_read(
     return OperatorContentAccess(access="break_glass", grant=grant)
 
 
-def bind_grant_org_scope(access: OperatorContentAccess) -> None:
-    """Re-scope this request's RLS binding to the granted organization.
+def bind_grant_enterprise_scope(access: OperatorContentAccess) -> None:
+    """Re-scope this request's RLS binding to the granted enterprise.
 
     The elevated read does not escape row-level security — it is bound
     *somewhere else*. The session stays RLS-enforcing and still sees exactly one
-    organization; which one is named by a grant row rather than by call-site
+    enterprise; which one is named by a grant row rather than by call-site
     discipline, which is the property a ``BYPASSRLS`` connection could not offer.
 
     Applied only under ``TENANT_PROVIDER=multi``. Under ``single`` every row
-    carries the Standalone organization, so rebinding to anything else would
+    carries the Standalone enterprise, so rebinding to anything else would
     make the read return nothing.
 
     Rebinding here works because the grant lookup and audit write that precede
@@ -184,7 +218,7 @@ def bind_grant_org_scope(access: OperatorContentAccess) -> None:
         return
     if requested_tenant_provider() != BUILTIN_MULTI:
         return
-    set_current_org_id(access.grant.target_organization_id)
+    set_current_enterprise_id(access.grant.target_enterprise_id)
 
 
 def build_grant(
@@ -195,11 +229,11 @@ def build_grant(
     """Mint a grant from a validated request.
 
     Deliberately does **not** verify that the case exists or belongs to the
-    named organization. Under ``multi`` such a check cannot work — RLS hides the
+    named enterprise. Under ``multi`` such a check cannot work — RLS hides the
     very row it would read — so it would behave differently per tenancy; and a
     validating endpoint is an existence oracle for other tenants' case ids. A
     wrong pair fails closed by itself: the later read rebinds to the named
-    organization, finds nothing, and 404s.
+    enterprise, finds nothing, and 404s.
     """
     now = datetime.now(timezone.utc)
     return OperatorAccessGrant(
@@ -207,7 +241,7 @@ def build_grant(
         operator_user_id=operator.user_id,
         operator_username=operator.email,
         target_case_id=payload.case_id,
-        target_organization_id=payload.organization_id,
+        target_enterprise_id=payload.enterprise_id,
         reason=payload.reason,
         created_at=now,
         expires_at=now + timedelta(minutes=payload.ttl_minutes),

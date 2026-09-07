@@ -36,6 +36,10 @@ from faultmaven.modules.auth.domain.services.organization_membership_service imp
 pytestmark = pytest.mark.unit
 
 ORG_ID = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+#: The tenant every read and write is RLS-scoped by (ADR-017 D1). Required on
+#: the command line rather than derived from the organization row, because the
+#: read that would supply it is itself gated on the binding.
+ENTERPRISE_ID = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
 USER_ID = "225bae2f-f459-4a54-9c08-2da5c2b3a961"
 REVOKED_AT = datetime(2026, 8, 12, 9, 30, tzinfo=timezone.utc)
 
@@ -93,11 +97,26 @@ def wiring(monkeypatch):
         ),
     )
 
+    # The ENTERPRISE the command binds before it reads anything. It used to bind
+    # without checking, and go straight to the organization — so a mistyped
+    # enterprise reported "no organization" and sent the operator hunting for
+    # the wrong thing. The shared helper checks it, which means this fixture has
+    # to supply one that resolves.
+    enterprises = AsyncMock()
+    enterprises.get_enterprise.return_value = SimpleNamespace(
+        enterprise_id=ENTERPRISE_ID, name="Acme", deleted_at=None
+    )
+
     monkeypatch.setattr("faultmaven.container.container", container)
     monkeypatch.setattr(
         "faultmaven.infrastructure.persistence.sessionless_organization_repository"
         ".SessionlessOrganizationRepository",
         lambda: orgs,
+    )
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.persistence.sessionless_enterprise_repository"
+        ".SessionlessEnterpriseRepository",
+        lambda: enterprises,
     )
     return SimpleNamespace(
         orgs=orgs,
@@ -105,6 +124,7 @@ def wiring(monkeypatch):
         auth_service=auth_service,
         container=container,
         revocation_store=revocation_store,
+        enterprises=enterprises,
     )
 
 
@@ -117,7 +137,15 @@ def test_refusing_without_yes_exits_1_before_connecting(capsys):
     """Neither --yes nor --dry-run: refuse ahead of container init."""
     with pytest.raises(SystemExit) as exc:
         _run_main(
-            ["fm-remove-org-member", "--organization-id", ORG_ID, "--user", "alice"]
+            [
+                "fm-remove-org-member",
+                "--enterprise-id",
+                ENTERPRISE_ID,
+                "--organization-id",
+                ORG_ID,
+                "--user",
+                "alice",
+            ]
         )
 
     assert exc.value.code == 1
@@ -158,6 +186,8 @@ def test_dry_run_with_yes_is_a_usage_error(capsys):
         _run_main(
             [
                 "fm-remove-org-member",
+                "--enterprise-id",
+                ENTERPRISE_ID,
                 "--organization-id",
                 ORG_ID,
                 "--user",
@@ -183,7 +213,10 @@ async def test_refuses_when_the_revocation_store_is_process_local(wiring, capsys
     )
 
     code = await remove_org_member.remove_org_member(
-        organization_id=ORG_ID, user_identifier="alice", dry_run=False
+        enterprise_id=ENTERPRISE_ID,
+        organization_id=ORG_ID,
+        user_identifier="alice",
+        dry_run=False,
     )
 
     assert code == 1
@@ -197,7 +230,10 @@ async def test_refuses_when_the_revocation_store_has_no_client(wiring, capsys):
     wiring.container.get_service = lambda name: SimpleNamespace(redis=None)
 
     code = await remove_org_member.remove_org_member(
-        organization_id=ORG_ID, user_identifier="alice", dry_run=False
+        enterprise_id=ENTERPRISE_ID,
+        organization_id=ORG_ID,
+        user_identifier="alice",
+        dry_run=False,
     )
 
     assert code == 1
@@ -211,7 +247,10 @@ async def test_unrecognised_store_shape_is_not_refused(wiring):
     wiring.container.get_service = lambda name: SimpleNamespace()  # no `.redis`
 
     code = await remove_org_member.remove_org_member(
-        organization_id=ORG_ID, user_identifier="alice", dry_run=False
+        enterprise_id=ENTERPRISE_ID,
+        organization_id=ORG_ID,
+        user_identifier="alice",
+        dry_run=False,
     )
 
     assert code == 0
@@ -223,7 +262,10 @@ async def test_refuses_when_nothing_can_revoke(wiring, capsys):
     wiring.container.get_auth_service = lambda: None
 
     code = await remove_org_member.remove_org_member(
-        organization_id=ORG_ID, user_identifier="alice", dry_run=False
+        enterprise_id=ENTERPRISE_ID,
+        organization_id=ORG_ID,
+        user_identifier="alice",
+        dry_run=False,
     )
 
     assert code == 1
@@ -239,7 +281,10 @@ async def test_refuses_when_nothing_can_revoke(wiring, capsys):
 async def test_removal_goes_through_the_paired_service(wiring, capsys):
     """Both writes land, and the operator is told the revocation instant."""
     code = await remove_org_member.remove_org_member(
-        organization_id=ORG_ID, user_identifier="alice", dry_run=False
+        enterprise_id=ENTERPRISE_ID,
+        organization_id=ORG_ID,
+        user_identifier="alice",
+        dry_run=False,
     )
 
     assert code == 0
@@ -250,26 +295,34 @@ async def test_removal_goes_through_the_paired_service(wiring, capsys):
     assert REVOKED_AT.isoformat() in out
 
 
-async def test_tenant_context_is_bound_to_the_target_org(wiring, monkeypatch):
-    """RLS (migration 018) scopes both tables by ``app.current_org_id``.
+async def test_tenant_context_is_bound_to_the_target_enterprise(wiring, monkeypatch):
+    """RLS scopes both tables by ``app.current_enterprise_id`` (ADR-017 D1).
 
-    Without this the lookups and the DELETE run against whatever org the context
-    defaulted to — the Standalone sentinel — and silently affect nothing.
+    The ENTERPRISE, not the organization: two organizations of one enterprise
+    are equally reachable from one binding, so binding the organization would
+    scope nothing. Without this the lookups and the DELETE run against whatever
+    the context defaulted to — the Standalone sentinel — and silently affect
+    nothing.
     """
     bound: list[str] = []
-    real_set = tenant_context.set_current_org_id
+    real_set = tenant_context.set_current_enterprise_id
 
-    def _record(org_id):
-        bound.append(org_id)
-        real_set(org_id)
+    def _record(enterprise_id):
+        bound.append(enterprise_id)
+        real_set(enterprise_id)
 
-    monkeypatch.setattr("faultmaven.config.tenant_context.set_current_org_id", _record)
-
-    code = await remove_org_member.remove_org_member(
-        organization_id=ORG_ID, user_identifier="alice", dry_run=False
+    monkeypatch.setattr(
+        "faultmaven.config.tenant_context.set_current_enterprise_id", _record
     )
 
-    assert bound == [ORG_ID]
+    code = await remove_org_member.remove_org_member(
+        enterprise_id=ENTERPRISE_ID,
+        organization_id=ORG_ID,
+        user_identifier="alice",
+        dry_run=False,
+    )
+
+    assert bound == [ENTERPRISE_ID]
     # It must also be bound *before* the write, or the service refuses.
     assert code == 0
     wiring.orgs.remove_member.assert_awaited_once_with(ORG_ID, USER_ID)
@@ -277,7 +330,10 @@ async def test_tenant_context_is_bound_to_the_target_org(wiring, monkeypatch):
 
 async def test_dry_run_writes_nothing(wiring, capsys):
     code = await remove_org_member.remove_org_member(
-        organization_id=ORG_ID, user_identifier="alice", dry_run=True
+        enterprise_id=ENTERPRISE_ID,
+        organization_id=ORG_ID,
+        user_identifier="alice",
+        dry_run=True,
     )
 
     assert code == 0
@@ -297,7 +353,10 @@ async def test_a_non_member_is_refused_not_revoked(wiring, capsys):
     wiring.orgs.get_member_role.return_value = None
 
     code = await remove_org_member.remove_org_member(
-        organization_id=ORG_ID, user_identifier="alice", dry_run=False
+        enterprise_id=ENTERPRISE_ID,
+        organization_id=ORG_ID,
+        user_identifier="alice",
+        dry_run=False,
     )
 
     assert code == 1
@@ -316,6 +375,7 @@ async def test_finish_interrupted_revokes_a_non_member(wiring, capsys):
     wiring.orgs.remove_member.return_value = False
 
     code = await remove_org_member.remove_org_member(
+        enterprise_id=ENTERPRISE_ID,
         organization_id=ORG_ID,
         user_identifier="alice",
         dry_run=False,
@@ -332,7 +392,10 @@ async def test_failed_revocation_reports_the_half_state(wiring, capsys):
     wiring.auth_service.revoke_user_tokens.side_effect = RuntimeError("redis is gone")
 
     code = await remove_org_member.remove_org_member(
-        organization_id=ORG_ID, user_identifier="alice", dry_run=False
+        enterprise_id=ENTERPRISE_ID,
+        organization_id=ORG_ID,
+        user_identifier="alice",
+        dry_run=False,
     )
 
     assert code == remove_org_member.EXIT_REVOCATION_INCOMPLETE == 3
@@ -351,7 +414,10 @@ async def test_a_delete_that_matches_nothing_is_not_reported_as_success(wiring, 
     wiring.orgs.remove_member.return_value = False
 
     code = await remove_org_member.remove_org_member(
-        organization_id=ORG_ID, user_identifier="alice", dry_run=False
+        enterprise_id=ENTERPRISE_ID,
+        organization_id=ORG_ID,
+        user_identifier="alice",
+        dry_run=False,
     )
 
     assert code == remove_org_member.EXIT_MEMBERSHIP_NOT_REMOVED == 4
@@ -369,7 +435,10 @@ async def test_unknown_organization_is_refused(wiring, capsys):
     wiring.orgs.get_organization.return_value = None
 
     code = await remove_org_member.remove_org_member(
-        organization_id=ORG_ID, user_identifier="alice", dry_run=False
+        enterprise_id=ENTERPRISE_ID,
+        organization_id=ORG_ID,
+        user_identifier="alice",
+        dry_run=False,
     )
 
     assert code == 1
@@ -386,7 +455,10 @@ async def test_user_resolves_by_email_then_by_id(wiring):
     )
 
     code = await remove_org_member.remove_org_member(
-        organization_id=ORG_ID, user_identifier="alice@acme.example", dry_run=False
+        enterprise_id=ENTERPRISE_ID,
+        organization_id=ORG_ID,
+        user_identifier="alice@acme.example",
+        dry_run=False,
     )
 
     assert code == 0
@@ -400,7 +472,10 @@ async def test_unknown_user_is_refused(wiring, capsys):
     wiring.user_store.get_user.return_value = None
 
     code = await remove_org_member.remove_org_member(
-        organization_id=ORG_ID, user_identifier="nobody", dry_run=False
+        enterprise_id=ENTERPRISE_ID,
+        organization_id=ORG_ID,
+        user_identifier="nobody",
+        dry_run=False,
     )
 
     assert code == 1
@@ -440,7 +515,10 @@ async def test_a_failed_lookup_is_refused_as_a_failure_not_as_absence(
     )
 
     code = await remove_org_member.remove_org_member(
-        organization_id=ORG_ID, user_identifier="alice", dry_run=False
+        enterprise_id=ENTERPRISE_ID,
+        organization_id=ORG_ID,
+        user_identifier="alice",
+        dry_run=False,
     )
 
     assert code == 1
@@ -467,7 +545,10 @@ async def test_a_failed_first_lookup_does_not_fall_through_to_the_others(
     )
 
     await remove_org_member.remove_org_member(
-        organization_id=ORG_ID, user_identifier="alice", dry_run=False
+        enterprise_id=ENTERPRISE_ID,
+        organization_id=ORG_ID,
+        user_identifier="alice",
+        dry_run=False,
     )
 
     wiring.user_store.get_user_by_email.assert_not_awaited()
@@ -513,7 +594,10 @@ async def test_last_admin_refusal_is_reported_not_raised(wiring, capsys):
     wiring.orgs.remove_member.side_effect = _db_error("23514", LAST_ADMIN_CONSTRAINT)
 
     code = await remove_org_member.remove_org_member(
-        organization_id=ORG_ID, user_identifier="alice", dry_run=False
+        enterprise_id=ENTERPRISE_ID,
+        organization_id=ORG_ID,
+        user_identifier="alice",
+        dry_run=False,
     )
 
     assert code == 1
@@ -537,7 +621,10 @@ async def test_last_admin_refusal_revokes_nothing(wiring):
     wiring.orgs.remove_member.side_effect = _db_error("23514", LAST_ADMIN_CONSTRAINT)
 
     await remove_org_member.remove_org_member(
-        organization_id=ORG_ID, user_identifier="alice", dry_run=False
+        enterprise_id=ENTERPRISE_ID,
+        organization_id=ORG_ID,
+        user_identifier="alice",
+        dry_run=False,
     )
 
     wiring.auth_service.revoke_user_tokens.assert_not_awaited()
@@ -556,7 +643,10 @@ async def test_an_unrelated_database_error_is_not_reported_as_last_admin(wiring)
 
     with pytest.raises(DBAPIError):
         await remove_org_member.remove_org_member(
-            organization_id=ORG_ID, user_identifier="alice", dry_run=False
+            enterprise_id=ENTERPRISE_ID,
+            organization_id=ORG_ID,
+            user_identifier="alice",
+            dry_run=False,
         )
 
     wiring.auth_service.revoke_user_tokens.assert_not_awaited()

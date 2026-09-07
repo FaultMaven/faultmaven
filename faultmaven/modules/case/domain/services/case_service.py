@@ -21,7 +21,11 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from faultmaven.config.tenant_context import get_current_org_id, get_current_tenant_id
+from faultmaven.config.tenant_context import (
+    get_current_billing_organization_id,
+    get_current_enterprise_id,
+    get_current_tenant_id,
+)
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.api_models import (
@@ -182,20 +186,29 @@ class CaseService(ICaseService):
                 if len(title) > 200:
                     raise ValidationException("Case title cannot exceed 200 characters")
 
-            # Stamp the case with the request's resolved organization. The
-            # request->org middleware (api/middleware/tenant_scope.py) binds this
-            # once per request: the Standalone org in single-tenant mode, or the
-            # caller's verified JWT org in multi-tenant mode. It is the same value
-            # RLS scopes every query to, so the write stamp and the read-isolation
-            # boundary can never diverge.
-            resolved_org_id = get_current_org_id()
+            # Two stamps, two meanings (ADR-017 D1/D2).
+            #
+            # ``enterprise_id`` is ISOLATION. The request->tenant middleware
+            # (api/middleware/tenant_scope.py) binds it once per request: the
+            # Standalone enterprise in single-tenant mode, or the caller's
+            # verified ``enterprise_id`` claim in multi-tenant mode. It is the
+            # same value RLS scopes every query to, so the write stamp and the
+            # read-isolation boundary can never diverge.
+            #
+            # ``organization_id`` is BILLING, and is ``None`` whenever nobody
+            # pays for this account — the ordinary answer in standalone and for
+            # a cloud account in no organization. It decides nothing about
+            # visibility, which is why it is read from a different binding.
+            resolved_enterprise_id = get_current_enterprise_id()
+            resolved_organization_id = get_current_billing_organization_id()
 
             # Create new case using milestone-based model
             case = Case(
                 title=title,
                 description=description.strip() if description else "",
                 user_id=owner_id.strip(),
-                organization_id=resolved_org_id,  # Deployment-agnostic org resolution
+                enterprise_id=resolved_enterprise_id,
+                organization_id=resolved_organization_id,
                 source=source if source in ("copilot", "slack", "api") else "copilot",
             )
 
@@ -247,7 +260,7 @@ class CaseService(ICaseService):
 
     @trace("case_service_get_case")
     async def get_case(
-        self, case_id: str, user_id: Optional[str] = None
+        self, case_id: str, user_id: Optional[str] = None, *, owner_only: bool = False
     ) -> Optional[Case]:
         """
         Get a case with optional access control
@@ -255,6 +268,12 @@ class CaseService(ICaseService):
         Args:
             case_id: Case identifier
             user_id: Optional user ID for access control
+            owner_only: Resolve through OWNERSHIP alone, ignoring team shares.
+                A share is read visibility, not ownership (ADR-013 §D4 /
+                ADR-017 D4): a teammate may see the case and must not be able
+                to rewrite, close or delete it, nor withdraw the owner's
+                consent. Every mutating caller passes ``True``; every read
+                passes the default.
 
         Returns:
             Case object if found and accessible, None otherwise
@@ -267,13 +286,23 @@ class CaseService(ICaseService):
             if not case:
                 return None
 
-            # Access control: the requester must OWN the case or have it SHARED
-            # to one of their teams (owned ∪ shared-to-my-teams, ADR-013 §D4) —
-            # the single-case gate transitively guarding reports, exports,
-            # analytics, and messages. The shared arm is inert until case shares
-            # exist (U10); in standalone it always resolves empty (owner-only).
+            # Access control: the requester must OWN the case or — on a READ —
+            # have it SHARED to one of their teams (owned ∪ shared-to-my-teams,
+            # ADR-013 §D4), the single-case gate transitively guarding reports,
+            # exports, analytics and messages.
+            #
+            # ``owner_only`` drops the shared arm. It exists because the two
+            # questions are genuinely different and were previously answered by
+            # one gate: a teammate B who can legitimately READ A's shared case
+            # could then PUT, close and DELETE it, because the mutation paths
+            # resolved the case through this same allowlist. Inside one
+            # enterprise there is nothing else standing between them — the
+            # tenant admits both rows — so this flag is the whole of the
+            # ownership boundary.
             if user_id and case.user_id != user_id:
-                shared_case_ids = await self._resolve_shared_case_ids(user_id)
+                shared_case_ids = (
+                    [] if owner_only else await self._resolve_shared_case_ids(user_id)
+                )
                 if case_id not in shared_case_ids:
                     logger.warning(
                         f"User {user_id} denied access to case {case_id} (owner: {case.user_id})"
@@ -332,7 +361,9 @@ class CaseService(ICaseService):
             # repository.get(), which skips the access check. We enforce
             # the check once up front; no privilege escalation window
             # exists because the user_id doesn't change between attempts.
-            existing = await self.get_case(case_id, user_id)
+            # ``owner_only``: a share grants read visibility, not the right to
+            # rewrite the row or move its state (ADR-017 D4).
+            existing = await self.get_case(case_id, user_id, owner_only=True)
             if not existing:
                 return False
 
@@ -888,21 +919,23 @@ class CaseService(ICaseService):
         works, so a share-lookup failure narrows visibility (fail-closed) rather
         than leaking.
 
-        The org comes from the request-bound tenant context — the same value the
-        case write path stamps and RLS scopes to — so a share row stamped with a
-        foreign tenant is not an allowlist entry here.
+        The enterprise comes from the request-bound tenant context — the same
+        value the case write path stamps and RLS scopes to — so a share row
+        stamped with a foreign tenant is not an allowlist entry here. Under
+        ADR-017 that match is the ENTERPRISE, which is exactly what lets one
+        team span two organizations (D4).
 
-        Read via ``get_current_tenant_id``, not ``get_current_org_id``: the
-        latter is total (the contextvar defaults to the Standalone sentinel), so
-        a guard behind it can never fire, and under ``TENANT_PROVIDER=multi`` an
-        execution context that never bound a tenant would silently pass the
-        sentinel as the SQL predicate. **Deliberate choice of degrade over
-        raise**: this arm already collapses to owner-only on every other
-        failure, and narrowing an allowlist is fail-closed, so a tenantless
-        context loses the shared-cases arm rather than failing the whole
-        listing. The refusing counterpart, for paths that must not degrade, is
-        ``api/v1/auth_dependencies.require_actor_organization``; both decide
-        through the same ``usable_tenant_id`` predicate.
+        Read via ``get_current_tenant_id``, not ``get_current_enterprise_id``:
+        the latter is total (the contextvar defaults to the Standalone
+        sentinel), so a guard behind it can never fire, and under
+        ``TENANT_PROVIDER=multi`` an execution context that never bound a tenant
+        would silently pass the sentinel as the SQL predicate. **Deliberate
+        choice of degrade over raise**: this arm already collapses to owner-only
+        on every other failure, and narrowing an allowlist is fail-closed, so a
+        tenantless context loses the shared-cases arm rather than failing the
+        whole listing. The refusing counterpart, for paths that must not
+        degrade, is ``api/v1/auth_dependencies.require_actor_enterprise``; both
+        decide through the same ``usable_tenant_id`` predicate.
         """
         if not self.share_repository:
             return []
@@ -910,8 +943,8 @@ class CaseService(ICaseService):
             team_ids = await self._resolve_user_team_ids(user_id)
         if not team_ids:
             return []
-        organization_id = get_current_tenant_id()
-        if not organization_id:
+        enterprise_id = get_current_tenant_id()
+        if not enterprise_id:
             logger.warning(
                 "Case share allowlist collapsed to owner-only: execution context "
                 "carries no usable tenant (user=%s)",
@@ -923,7 +956,7 @@ class CaseService(ICaseService):
                 resource_type="case",
                 scope_type="team",
                 scope_ids=team_ids,
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
             )
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Failed to resolve shared case ids for {user_id}: {e}")
@@ -934,7 +967,8 @@ class CaseService(ICaseService):
         *,
         case_id: str,
         team_id: str,
-        organization_id: str,
+        enterprise_id: str,
+        organization_id: Optional[str],
         created_by: Optional[str] = None,
     ) -> None:
         """Record a team share for a case (idempotent) — the write counterpart of
@@ -942,11 +976,14 @@ class CaseService(ICaseService):
         (ADR-013 §D4), mirroring the KB write path
         (``KnowledgeService._create_team_share``).
 
-        No-ops when no share repository is wired. Cross-org sharing is
+        No-ops when no share repository is wired. Cross-ENTERPRISE sharing is
         structurally impossible: the share carries the case's own
-        ``organization_id`` and the read allowlist only ever resolves teams the
-        requester belongs to (within their RLS-isolated org), so a share to a
-        foreign team is unreachable; RLS is the backstop.
+        ``enterprise_id`` and the read allowlist only ever resolves teams the
+        requester belongs to (within their RLS-isolated enterprise), so a share
+        to a foreign team is unreachable; RLS is the backstop.
+        ``organization_id`` rides along as billing attribution and constrains
+        nothing — which is precisely what lets a team span two organizations
+        (ADR-017 D4).
         """
         if not self.share_repository:
             return
@@ -955,6 +992,7 @@ class CaseService(ICaseService):
             resource_id=case_id,
             scope_type="team",
             scope_id=team_id,
+            enterprise_id=enterprise_id,
             organization_id=organization_id,
             created_by=created_by,
         )
@@ -995,6 +1033,7 @@ class CaseService(ICaseService):
                 await self._share_case_with_team(
                     case_id=case.case_id,
                     team_id=team_id,
+                    enterprise_id=case.enterprise_id,
                     organization_id=case.organization_id,
                     created_by=case.user_id,
                 )
@@ -1799,8 +1838,8 @@ class CaseService(ICaseService):
             team_ids = await self._resolve_user_team_ids(user_id)
         if team_id not in team_ids:
             return []
-        organization_id = get_current_tenant_id()
-        if not organization_id:
+        enterprise_id = get_current_tenant_id()
+        if not enterprise_id:
             logger.warning(
                 "Team-filter facet resolved empty: execution context carries no "
                 "usable tenant (user=%s, team=%s)",
@@ -1812,7 +1851,7 @@ class CaseService(ICaseService):
             resource_type="case",
             scope_type="team",
             scope_ids=[team_id],
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
         )
 
     @trace("case_service_share_case_with_team")
@@ -1822,12 +1861,13 @@ class CaseService(ICaseService):
         """Share a case with a Team (ADR-013 §D4), user-initiated.
 
         Only the case owner may share, and only with a Team they belong to. The
-        membership check is what keeps the share within the case's org: it
-        resolves through the RLS-tenanted ``teams`` table (via the shared
-        ``is_team_member`` predicate), so under the owner's org RLS context
-        membership contains only teams in that org — a foreign-org team is
-        never a member and is rejected here, not merely masked at read time. The
-        share row then carries the case's own ``organization_id``. Idempotent
+        membership check is what keeps the share within the case's enterprise:
+        it resolves through the RLS-tenanted ``teams`` table (via the shared
+        ``is_team_member`` predicate), so under the owner's enterprise RLS
+        context membership contains only teams in that enterprise — a team from
+        another enterprise is never a member and is rejected here, not merely
+        masked at read time. The share row then carries the case's own
+        ``enterprise_id``. Idempotent
         (re-sharing is a no-op).
 
         Raises:
@@ -1850,6 +1890,7 @@ class CaseService(ICaseService):
         await self._share_case_with_team(
             case_id=case_id,
             team_id=team_id,
+            enterprise_id=case.enterprise_id,
             organization_id=case.organization_id,
             created_by=actor_user_id,
         )

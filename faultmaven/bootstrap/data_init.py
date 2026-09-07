@@ -26,6 +26,7 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
+from faultmaven.config.tenant_context import get_current_enterprise_id
 from faultmaven.modules.auth.contracts import PLATFORM_ADMIN_ROLE_SET
 
 logger = logging.getLogger(__name__)
@@ -416,6 +417,9 @@ async def _create_admin_user(user_store: Any) -> Any:
         username=DEFAULT_ADMIN_USERNAME,
         email=DEFAULT_ADMIN_EMAIL,
         display_name=DEFAULT_ADMIN_DISPLAY_NAME,
+        # The default admin exists only in a standalone deployment, whose one
+        # enterprise is what the unbound context already answers.
+        enterprise_id=get_current_enterprise_id(),
     )
     logger.info(
         f"Default admin account created: {user.username} ({user.email})\n"

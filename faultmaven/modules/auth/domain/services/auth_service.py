@@ -4,7 +4,7 @@ Purpose: Verify, revoke and read JWTs on the request path.
 
 This service does **not** mint tokens. It used to carry a second, independent
 signing surface that took a subject id and an ``organization_id`` string and
-signed them verbatim — bypassing ``resolve_organization_claim``, the org-claim
+signed them verbatim — bypassing ``resolve_enterprise_claim``, the tenancy-claim
 guard every real mint funnels through (#850). That surface reached no route and
 was removed in #853; ``IJWTTokenGenerator`` (``jwt_token_generator``) is the one
 mint path.

@@ -77,7 +77,7 @@ def _make_case() -> Case:
     return Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="user_alpha",
-        organization_id="org_alpha",
+        enterprise_id="org_alpha",
         title="Test case",
         state=CaseState.INQUIRY,
     )
@@ -540,7 +540,7 @@ class TestRepositoryRoundTrip:
         case = Case(
             case_id=f"case_{uuid4().hex[:12]}",
             user_id="user_alpha",
-            organization_id="org_alpha",
+            enterprise_id="org_alpha",
             title="API outage",
             description="API outage with database errors",
             state=CaseState.INVESTIGATING,

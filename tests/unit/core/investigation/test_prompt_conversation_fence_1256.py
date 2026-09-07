@@ -134,7 +134,7 @@ def _case(messages=None, current_turn=2) -> Case:
         title="Checkout crash-looping",
         description="Pods restart every 40s since the 10:40 deploy",
         user_id="user_123",
-        organization_id="org_123",
+        enterprise_id="org_123",
         state=CaseState.INVESTIGATING,
         current_stage=InvestigationStage.DIAGNOSIS,
         inquiry=InquiryData(

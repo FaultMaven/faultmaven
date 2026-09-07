@@ -51,6 +51,7 @@ from faultmaven.infrastructure.persistence.organization_repository import (
 from faultmaven.models.rbac import ROLE_PERMISSIONS, Permission, Role
 from faultmaven.models.rbac_seed import SYSTEM_ROLE_IDS
 
+ENTERPRISE = "ent-1"
 ORG = "org-1"
 USER = "user-1"
 OUTSIDER = "user-2"
@@ -116,7 +117,13 @@ def repo(seeded):
 async def _join(session, user_id: str, role: Role) -> None:
     session.add(
         OrganizationMemberModel(
-            user_id=user_id, organization_id=ORG, role_id=SYSTEM_ROLE_IDS[role]
+            user_id=user_id,
+            organization_id=ORG,
+            # The roster row's own tenant (ADR-017): organization_members is
+            # RLS-tenanted on the ENTERPRISE, and the column is NOT NULL, so a
+            # row seeded without it never reaches the permission lookup at all.
+            enterprise_id=ENTERPRISE,
+            role_id=SYSTEM_ROLE_IDS[role],
         )
     )
     await session.commit()

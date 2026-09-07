@@ -1,91 +1,59 @@
-"""Standalone single-tenant identity constants + org-isolation-removal guards.
+"""The standalone identity constants, and what is deliberately NOT among them.
 
-ADR-010: standalone is single-tenant. The implicit org/enterprise identity
-lives in one place (``faultmaven.config.constants``), and case repositories do
-NOT enforce tenant isolation with per-query ``WHERE organization_id`` filters —
-multi-tenant isolation is in-core PostgreSQL RLS (migration 018). These tests
-pin both facts so neither silently regresses.
+Under ADR-017 D8 a standalone deployment is one seeded ENTERPRISE and one seeded
+team, and **no organization**: an organization is a billing target created by
+payment (D5), and nobody is billed for a self-hosted install. So the
+organization sentinel is gone from ``config.constants``, and its absence is the
+assertion — a constant that came back would be a billing subject under every
+standalone deployment that the rest of the campaign assumes is not there.
 """
-
-import inspect
 
 import pytest
 
 from faultmaven.config import constants
+from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
 
 @pytest.mark.unit
 class TestStandaloneConstants:
-    def test_org_and_enterprise_ids_are_the_canonical_uuids(self):
-        assert constants.STANDALONE_ORG_ID == "00000000-0000-0000-0000-000000000001"
+    def test_the_enterprise_sentinel_is_pinned(self):
+        """The value is load-bearing: RLS's global-write arm compares to it."""
         assert (
             constants.STANDALONE_ENTERPRISE_ID == "00000000-0000-0000-0000-000000000002"
         )
+        assert constants.STANDALONE_ENTERPRISE_SLUG == "default"
 
-    def test_single_tenant_provider_sources_identity_from_constants(self):
-        from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
+    def test_the_team_sentinel_is_pinned(self):
+        assert constants.STANDALONE_TEAM_ID == "00000000-0000-0000-0000-000000000003"
 
-        assert SingleTenantProvider.DEFAULT_ORG_ID == constants.STANDALONE_ORG_ID
-        assert SingleTenantProvider.DEFAULT_ORG_SLUG == constants.STANDALONE_ORG_SLUG
-        assert SingleTenantProvider.DEFAULT_ORG_NAME == constants.STANDALONE_ORG_NAME
+    def test_the_provider_reads_the_constants_rather_than_its_own_copy(self):
         assert (
             SingleTenantProvider.DEFAULT_ENTERPRISE_ID
             == constants.STANDALONE_ENTERPRISE_ID
         )
-
-    def test_session_context_default_org_uses_the_constant(self):
-        from faultmaven.models.common import SessionContext
-
-        ctx = SessionContext(session_id="s", user_id="u")
-        assert ctx.organization_id == constants.STANDALONE_ORG_ID
-
-    def test_no_residual_magic_org_uuid_in_case_repositories(self):
-        # The default-org literal must come from the constant, never be
-        # re-hardcoded inline in repository SQL.
-        from faultmaven.modules.case.infrastructure import (
-            postgresql_hybrid_case_repository,
-            sqlite_case_repository,
+        assert (
+            SingleTenantProvider.DEFAULT_ENTERPRISE_SLUG
+            == constants.STANDALONE_ENTERPRISE_SLUG
         )
+        assert SingleTenantProvider.DEFAULT_TEAM_ID == constants.STANDALONE_TEAM_ID
 
-        for module in (sqlite_case_repository, postgresql_hybrid_case_repository):
-            src = inspect.getsource(module)
-            assert "'00000000-0000-0000-0000-000000000001'" not in src, (
-                f"{module.__name__} re-hardcodes the default org UUID; "
-                "reference config.constants.STANDALONE_ORG_ID instead"
-            )
+    @pytest.mark.security
+    @pytest.mark.parametrize(
+        "retired",
+        ["STANDALONE_ORG_ID", "STANDALONE_ORG_SLUG", "STANDALONE_ORG_NAME"],
+    )
+    def test_the_organization_sentinel_is_gone(self, retired):
+        """Deleted, not deprecated (the owner's rule for this campaign).
 
+        The one place in the suite that names the retired constants, and it
+        names them only to prove they are absent.
+        """
+        assert not hasattr(constants, retired)
 
-@pytest.mark.unit
-class TestOrgIsolationNotEnforcedPerQuery:
-    """Case reads must not be scoped by a per-query org filter (ADR-010)."""
-
-    def test_repositories_have_no_org_read_filter(self):
-        from faultmaven.modules.case.infrastructure import (
-            case_repository,
-            postgresql_hybrid_case_repository,
-            sqlite_case_repository,
+    @pytest.mark.security
+    def test_the_module_stays_dependency_free(self):
+        """Importable from every layer, so it cannot create an import cycle."""
+        source = (
+            __import__("pathlib").Path(constants.__file__).read_text()  # noqa: PTH123
         )
-
-        # Match the read-filter form specifically — a where-clause append — so
-        # the UPDATE ... SET organization_id = :organization_id (a write) does
-        # not trip the guard.
-        for module in (
-            sqlite_case_repository,
-            postgresql_hybrid_case_repository,
-        ):
-            src = inspect.getsource(module)
-            assert (
-                'where_clauses.append("organization_id = :organization_id")' not in src
-            ), (
-                f"{module.__name__} reintroduced a per-query org read filter; "
-                "tenant isolation belongs in PostgreSQL RLS, not per-query filters (ADR-010)"
-            )
-            assert (
-                'where_clauses.append("c.organization_id = :organization_id")'
-                not in src
-            )
-
-        # In-memory base repo: no list-comprehension / guard org filter either.
-        base_src = inspect.getsource(case_repository)
-        assert "c.organization_id == organization_id" not in base_src
-        assert "case.organization_id != organization_id" not in base_src
+        assert "import" not in source.split('"""')[2]

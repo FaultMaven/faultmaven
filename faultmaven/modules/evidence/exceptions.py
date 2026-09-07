@@ -104,13 +104,13 @@ class EvidenceAccessError(EvidenceException):
         self,
         message: str = "Access denied",
         evidence_id: Optional[str] = None,
-        organization_id: Optional[str] = None,
+        enterprise_id: Optional[str] = None,
     ):
         self.evidence_id = evidence_id
-        self.organization_id = organization_id
+        self.enterprise_id = enterprise_id
         super().__init__(
             message,
-            details={"evidence_id": evidence_id, "organization_id": organization_id},
+            details={"evidence_id": evidence_id, "enterprise_id": enterprise_id},
         )
 
 

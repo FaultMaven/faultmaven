@@ -49,7 +49,7 @@ class OperatorAccessGrant:
     grant_id: str
     operator_user_id: str
     target_case_id: str
-    target_organization_id: str
+    target_enterprise_id: str
     reason: str
     created_at: datetime
     expires_at: datetime
@@ -113,7 +113,7 @@ class IOperatorGrantRepository(ABC):
         self,
         operator_user_id: Optional[str] = None,
         target_case_id: Optional[str] = None,
-        target_organization_id: Optional[str] = None,
+        target_enterprise_id: Optional[str] = None,
         live_only: bool = False,
         limit: int = 100,
         offset: int = 0,

@@ -52,7 +52,7 @@ class CaseStateError(CaseException):
 class CaseAccessError(CaseException):
     """Raised when access to a case is denied.
 
-    This exception is raised when a user/organization does not
+    This exception is raised when a user/enterprise does not
     have permission to access or modify a case.
     """
 
@@ -60,17 +60,17 @@ class CaseAccessError(CaseException):
         self,
         message: str = "Access denied",
         case_id: Optional[str] = None,
-        organization_id: Optional[str] = None,
+        enterprise_id: Optional[str] = None,
         required_permission: Optional[str] = None,
     ):
         self.case_id = case_id
-        self.organization_id = organization_id
+        self.enterprise_id = enterprise_id
         self.required_permission = required_permission
         super().__init__(
             message,
             details={
                 "case_id": case_id,
-                "organization_id": organization_id,
+                "enterprise_id": enterprise_id,
                 "required_permission": required_permission,
             },
         )

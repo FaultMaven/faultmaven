@@ -99,7 +99,7 @@ def sample_user_data() -> Dict[str, Any]:
     """Sample user data for token generation."""
     return {
         "user_id": "user-123",
-        "organization_id": "org-456",
+        "enterprise_id": "ent-456",
         "email": "test@example.com",
         "roles": ["admin"],
     }
@@ -118,7 +118,7 @@ class TestTokenVerification:
         token = forge_access_token(
             auth_service,
             user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
+            enterprise_id=sample_user_data["enterprise_id"],
             email=sample_user_data["email"],
             roles=sample_user_data["roles"],
         )
@@ -133,7 +133,7 @@ class TestTokenVerification:
         token = forge_refresh_token(
             auth_service,
             user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
+            enterprise_id=sample_user_data["enterprise_id"],
         )
 
         claims = auth_service.verify_token(token, token_type="refresh")
@@ -235,7 +235,7 @@ class TestTokenVerification:
         token = forge_refresh_token(
             auth_service,
             user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
+            enterprise_id=sample_user_data["enterprise_id"],
         )
 
         # Try to verify as access token
@@ -250,7 +250,7 @@ class TestTokenVerification:
         token = forge_refresh_token(
             auth_service,
             user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
+            enterprise_id=sample_user_data["enterprise_id"],
         )
 
         # Try to verify as access token
@@ -303,7 +303,7 @@ class TestTokenVerificationWithRevocation:
         token = forge_access_token(
             auth_service_with_store,
             user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
+            enterprise_id=sample_user_data["enterprise_id"],
             email=sample_user_data["email"],
             roles=sample_user_data["roles"],
         )
@@ -323,7 +323,7 @@ class TestTokenVerificationWithRevocation:
         token = forge_access_token(
             auth_service_with_store,
             user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
+            enterprise_id=sample_user_data["enterprise_id"],
             email=sample_user_data["email"],
             roles=sample_user_data["roles"],
         )
@@ -347,7 +347,7 @@ class TestTokenVerificationWithRevocation:
         token = forge_access_token(
             auth_service_with_store,
             user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
+            enterprise_id=sample_user_data["enterprise_id"],
             email=sample_user_data["email"],
             roles=sample_user_data["roles"],
         )
@@ -404,7 +404,7 @@ class TestTokenRevocation:
         token = forge_access_token(
             auth_service_with_store,
             user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
+            enterprise_id=sample_user_data["enterprise_id"],
             email=sample_user_data["email"],
             roles=sample_user_data["roles"],
         )
@@ -427,7 +427,7 @@ class TestTokenRevocation:
         token1 = forge_access_token(
             auth_service_with_store,
             user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
+            enterprise_id=sample_user_data["enterprise_id"],
             email=sample_user_data["email"],
             roles=sample_user_data["roles"],
         )
@@ -435,7 +435,7 @@ class TestTokenRevocation:
         token2 = forge_access_token(
             auth_service_with_store,
             user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
+            enterprise_id=sample_user_data["enterprise_id"],
             email=sample_user_data["email"],
             roles=sample_user_data["roles"],
         )
@@ -487,7 +487,7 @@ class TestExtractUser:
         token = forge_access_token(
             auth_service,
             user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
+            enterprise_id=sample_user_data["enterprise_id"],
             email=sample_user_data["email"],
             roles=sample_user_data["roles"],
         )
@@ -496,7 +496,6 @@ class TestExtractUser:
 
         assert isinstance(user, AuthenticatedUser)
         assert user.user_id == sample_user_data["user_id"]
-        assert user.organization_id == sample_user_data["organization_id"]
         assert user.email == sample_user_data["email"]
         assert user.roles == sample_user_data["roles"]
 
@@ -505,7 +504,7 @@ class TestExtractUser:
         token = forge_access_token(
             auth_service,
             user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
+            enterprise_id=sample_user_data["enterprise_id"],
             email=sample_user_data["email"],
             roles=sample_user_data["roles"],
         )
@@ -523,7 +522,7 @@ class TestExtractUser:
         token = forge_access_token(
             auth_service_with_store,
             user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
+            enterprise_id=sample_user_data["enterprise_id"],
             email=sample_user_data["email"],
             roles=sample_user_data["roles"],
         )
@@ -550,7 +549,7 @@ class TestEdgeCases:
         token = forge_access_token(
             auth_service,
             user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
+            enterprise_id=sample_user_data["enterprise_id"],
             email=sample_user_data["email"],
             roles=[],
         )
@@ -563,7 +562,7 @@ class TestEdgeCases:
         token = forge_access_token(
             auth_service,
             user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
+            enterprise_id=sample_user_data["enterprise_id"],
             email="test+tag@example.com",
             roles=sample_user_data["roles"],
         )
@@ -576,7 +575,7 @@ class TestEdgeCases:
         token = forge_access_token(
             auth_service,
             user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
+            enterprise_id=sample_user_data["enterprise_id"],
             email="тест@example.com",
             roles=sample_user_data["roles"],
         )
@@ -589,7 +588,7 @@ class TestEdgeCases:
         token = forge_access_token(
             auth_service,
             user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
+            enterprise_id=sample_user_data["enterprise_id"],
             email=sample_user_data["email"],
             roles=["admin", "member", "viewer"],
         )
@@ -869,7 +868,7 @@ class TestKeyLoading:
             token = forge_access_token(
                 service,
                 user_id="user-123",
-                organization_id="org-456",
+                enterprise_id="ent-456",
                 email="test@example.com",
                 roles=["admin"],
             )
@@ -878,7 +877,7 @@ class TestKeyLoading:
             claims = service.verify_token(token, token_type="access")
 
             assert claims["sub"] == "user-123"
-            assert claims["organization_id"] == "org-456"
+            assert claims["enterprise_id"] == "ent-456"
             assert claims["email"] == "test@example.com"
 
 
@@ -1029,7 +1028,7 @@ class TestAlgorithmSelection:
             token = forge_access_token(
                 service,
                 user_id="user-123",
-                organization_id="org-456",
+                enterprise_id="ent-456",
                 email="test@example.com",
                 roles=["admin"],
             )
@@ -1092,7 +1091,7 @@ class TestAlgorithmSelection:
             token = forge_access_token(
                 service,
                 user_id="user-123",
-                organization_id="org-456",
+                enterprise_id="ent-456",
                 email="test@example.com",
                 roles=["admin"],
             )

@@ -5,10 +5,10 @@ Tenancy lives in the core, config-selected by ``TENANT_PROVIDER``:
 - ``single`` — the built-in Standalone default (single-tenant).
 - ``multi``  — the in-core multi-tenant provider (Cloud). Requires
   ``DEPLOYMENT_MODE=cloud``: its isolation is PostgreSQL row-level security
-  (migration 018) scoped by the per-request organization binding, and the cloud
-  coherence checks (PostgreSQL, OAuth/RS256, Redis) are what guarantee that
-  stack. The factory fails **closed** on ``multi`` outside cloud — here, so the
-  gate-less jobs/CLI path is covered too, not only the startup coherence gate.
+  scoped by the per-request **enterprise** binding, and the cloud coherence
+  checks (PostgreSQL, OAuth/RS256, Redis) are what guarantee that stack. The
+  factory fails **closed** on ``multi`` outside cloud — here, so the gate-less
+  jobs/CLI path is covered too, not only the startup coherence gate.
 
 An unrecognized provider name also fails **closed** rather than silently
 downgrading to single-tenant (which would blend access modes).
@@ -20,7 +20,6 @@ from typing import Optional
 from faultmaven.config.settings import get_settings
 from faultmaven.models.interfaces_user import (
     IEnterpriseRepository,
-    IOrganizationRepository,
     ITeamRepository,
 )
 from faultmaven.providers.tenancy.base import TenantProvider
@@ -38,7 +37,7 @@ BUILTIN_MULTI = "multi"
 MULTI_REQUIRES_CLOUD_MSG = (
     "TENANT_PROVIDER='multi' requires DEPLOYMENT_MODE=cloud: multi-tenant "
     "isolation is PostgreSQL row-level security scoped by the per-request "
-    "organization binding, and the cloud stack (PostgreSQL, OAuth/RS256, Redis) "
+    "enterprise binding, and the cloud stack (PostgreSQL, OAuth/RS256, Redis) "
     "is what provides it. Set DEPLOYMENT_MODE=cloud, or use "
     "TENANT_PROVIDER=single."
 )
@@ -65,17 +64,15 @@ def requested_tenant_provider() -> str:
 
 
 def create_tenant_provider(
-    organization_repository: IOrganizationRepository,
     enterprise_repository: Optional[IEnterpriseRepository] = None,
     team_repository: Optional[ITeamRepository] = None,
 ) -> TenantProvider:
     """Build the configured tenant provider (``single`` or ``multi``).
 
     Args:
-        organization_repository: Organization repository for persistence.
-        enterprise_repository: Enterprise repository, used by the single-tenant
-            default for its default-enterprise bootstrap. The multi-tenant
-            provider does not use it.
+        enterprise_repository: Enterprise repository. The single-tenant default
+            uses it for its default-enterprise bootstrap; the multi-tenant
+            provider resolves the request's tenant through it.
         team_repository: Team repository, used by the single-tenant default to
             seed the default team row. The multi-tenant provider does not use it.
 
@@ -92,7 +89,6 @@ def create_tenant_provider(
     if requested == BUILTIN_SINGLE:
         logger.info("Tenant provider: built-in 'single' (single-tenant)")
         return SingleTenantProvider(
-            organization_repository=organization_repository,
             enterprise_repository=enterprise_repository,
             team_repository=team_repository,
         )
@@ -102,7 +98,7 @@ def create_tenant_provider(
             logger.critical(MULTI_REQUIRES_CLOUD_MSG)
             raise TenancyConfigurationError(MULTI_REQUIRES_CLOUD_MSG)
         logger.info("Tenant provider: built-in 'multi' (multi-tenant)")
-        return MultiTenantProvider(organization_repository=organization_repository)
+        return MultiTenantProvider(enterprise_repository=enterprise_repository)
 
     msg = (
         f"TENANT_PROVIDER='{requested}' is not a recognized provider "

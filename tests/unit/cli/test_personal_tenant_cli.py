@@ -1,4 +1,4 @@
-"""``fm-personal-tenant`` guards, plan and idempotency (#1045 D8).
+"""``fm-personal-tenant`` guards, plan and idempotency (#1045 D8, ADR-017 D3).
 
 The command's damage is not a bad UPDATE — it is a *correct* retirement aimed at
 the wrong tenant, or one that reports success for a step it did not run. So what
@@ -8,8 +8,8 @@ everything an operator reads off the output:
 * **a dry run writes nothing, on either side** — no row changes, not one
   mutating provider call;
 * **the order**, which is the whole resumability argument: fence first, tokens
-  revoked immediately after, the binding before the provider calls, the provider
-  organization before the mapping that records its id, the anchor last;
+  revoked immediately after, the retirement stamped before the provider calls,
+  the provider organization before the mapping that records its id;
 * **the provider organization is the one this tenant's mapping names.** A
   re-run aimed at a retired predecessor must not delete the live successor's;
 * **idempotency and resumability** — a second run is a no-op, and a run
@@ -17,6 +17,14 @@ everything an operator reads off the output:
 * **the blast radius** — a second personal tenant present throughout comes out
   byte-identical;
 * **the data that survives** — cases and knowledge items are still there.
+
+What ADR-017 changed, and why the shape of these tests moved with it: the tenant
+is the **enterprise**, a personal tenant owns no organization and no team at
+all, and ``users.enterprise_id`` is NOT NULL — so a retirement can no longer
+release an account by clearing its anchor. It stamps ``retired_at`` and
+``retirement_state`` on the subject binding and **keeps the row**, because that
+recorded value is what the next sign-in reads, and the account stays anchored to
+the enterprise the retirement fenced.
 
 Against a real SQLite database built from the ORM metadata, with the session
 factories patched rather than ``DATABASE_URL`` reset: the whole suite runs in one
@@ -41,7 +49,7 @@ from faultmaven.modules.auth.contracts import (
     RETIREMENT_POLICY_REFUSE,
 )
 from faultmaven.modules.auth.domain.personal_tenant import (
-    personal_org_slug,
+    personal_enterprise_slug,
     personal_tenant_key,
 )
 from faultmaven.modules.auth.exceptions import SSOProvisioningError
@@ -63,15 +71,12 @@ PROVIDER = "workos"
 SUBJECT_A = "user_01AAAA"
 SUBJECT_B = "user_01BBBB"
 KEY_A = personal_tenant_key(PROVIDER, SUBJECT_A)
-SLUG_A = personal_org_slug(KEY_A)
-SLUG_B = personal_org_slug(personal_tenant_key(PROVIDER, SUBJECT_B))
+SLUG_A = personal_enterprise_slug(KEY_A)
+SLUG_B = personal_enterprise_slug(personal_tenant_key(PROVIDER, SUBJECT_B))
 
 ENT_A = "11111111-1111-1111-1111-111111111111"
-ORG_A = "22222222-2222-2222-2222-222222222222"
 ENT_B = "33333333-3333-3333-3333-333333333333"
-ORG_B = "44444444-4444-4444-4444-444444444444"
 ENT_CO = "55555555-5555-5555-5555-555555555555"
-ORG_CO = "66666666-6666-6666-6666-666666666666"
 
 USER_A = "aaaaaaaa-0000-0000-0000-000000000001"
 USER_B = "bbbbbbbb-0000-0000-0000-000000000002"
@@ -92,10 +97,10 @@ def sqlite_role_preflight(monkeypatch):
     any process where ``DATABASE_URL`` names a real PostgreSQL these unit tests
     connected to it: a pooled asyncpg connection made in one test's event loop,
     handed to the next test's loop, and "attached to a different loop" /
-    "Event loop is closed" for 17 of the 42 cases here. No CI lane combines the
-    two — Test PostgreSQL Integration selects ``-m postgres``, which deselects
-    this module — so the coupling was invisible to CI and appeared only when
-    somebody ran the suites together locally.
+    "Event loop is closed". No CI lane combines the two — Test PostgreSQL
+    Integration selects ``-m postgres``, which deselects this module — so the
+    coupling was invisible to CI and appeared only when somebody ran the suites
+    together locally.
 
     The knob is not the fix. Whether a unit test reaches a database must not
     depend on what the environment happens to hold, so the preflight is
@@ -122,7 +127,13 @@ def sqlite_role_preflight(monkeypatch):
 
 @pytest_asyncio.fixture
 async def db(tmp_path, monkeypatch):
-    """Two personal tenants and one company tenant, in a real database."""
+    """Two personal tenants and one company tenant, in a real database.
+
+    The personal tenants own **no organization and no team** — that is what a
+    sign-up creates under ADR-017 D5/D4, and seeding rows the product no longer
+    writes would let a retirement pass by leaving them alone. The company tenant
+    is the re-anchor destination and carries its operator-provisioned mapping.
+    """
     url = f"sqlite+aiosqlite:///{tmp_path / 'retire.db'}"
 
     from faultmaven.infrastructure.persistence.models import Base
@@ -143,51 +154,38 @@ async def db(tmp_path, monkeypatch):
                 ),
                 {"e": ent, "s": slug, "n": name},
             )
-        for org, ent, slug, name in (
-            (ORG_A, ENT_A, SLUG_A, "Personal"),
-            (ORG_B, ENT_B, SLUG_B, "Personal"),
-            (ORG_CO, ENT_CO, "acme", "Acme"),
-        ):
-            await conn.execute(
-                text(
-                    "INSERT INTO organizations "
-                    "(organization_id, enterprise_id, name, slug, is_active) "
-                    "VALUES (:o, :e, :n, :s, 1)"
-                ),
-                {"o": org, "e": ent, "s": slug, "n": name},
-            )
-            await conn.execute(
-                text(
-                    "INSERT INTO teams (team_id, organization_id, name) "
-                    "VALUES (:t, :o, 'Default')"
-                ),
-                {"t": f"team-{org[:8]}", "o": org},
-            )
-        for idp_org, org in (
-            (IDP_ORG_A, ORG_A),
-            (IDP_ORG_B, ORG_B),
-            (IDP_ORG_CO, ORG_CO),
+        # Only the company has a team: a team is formed by consent (D4).
+        await conn.execute(
+            text(
+                "INSERT INTO teams (team_id, enterprise_id, name) "
+                "VALUES (:t, :e, 'Default')"
+            ),
+            {"t": f"team-{ENT_CO[:8]}", "e": ENT_CO},
+        )
+        for idp_org, ent in (
+            (IDP_ORG_A, ENT_A),
+            (IDP_ORG_B, ENT_B),
+            (IDP_ORG_CO, ENT_CO),
         ):
             await conn.execute(
                 text(
                     "INSERT INTO sso_org_mappings "
-                    "(provider, provider_org_id, organization_id) "
-                    "VALUES ('workos', :p, :o)"
+                    "(provider, provider_org_id, enterprise_id) "
+                    "VALUES ('workos', :p, :e)"
                 ),
-                {"p": idp_org, "o": org},
+                {"p": idp_org, "e": ent},
             )
-        for subject, org, ent, idp_org in (
-            (SUBJECT_A, ORG_A, ENT_A, IDP_ORG_A),
-            (SUBJECT_B, ORG_B, ENT_B, IDP_ORG_B),
+        for subject, ent, idp_org in (
+            (SUBJECT_A, ENT_A, IDP_ORG_A),
+            (SUBJECT_B, ENT_B, IDP_ORG_B),
         ):
             await conn.execute(
                 text(
-                    "INSERT INTO sso_personal_orgs (provider, provider_user_id, "
-                    " organization_id, provider_org_id, enterprise_id, "
-                    " membership_confirmed) "
-                    "VALUES ('workos', :s, :o, :p, :e, 1)"
+                    "INSERT INTO sso_personal_enterprises (subject, provider, "
+                    " provider_org_id, enterprise_id, membership_confirmed) "
+                    "VALUES (:s, 'workos', :p, :e, 1)"
                 ),
-                {"s": subject, "o": org, "p": idp_org, "e": ent},
+                {"s": subject, "p": idp_org, "e": ent},
             )
         for user, ent, subject, name in (
             (USER_A, ENT_A, SUBJECT_A, "sam"),
@@ -203,34 +201,26 @@ async def db(tmp_path, monkeypatch):
                     "u": user,
                     "e": ent,
                     "n": name,
-                    "m": f"{name}@personal.example",
+                    "m": f"{name}@gmail.com",
                     "s": subject,
                 },
             )
-        for user, org in ((USER_A, ORG_A), (USER_B, ORG_B)):
+        for case_id, ent in (("case_a", ENT_A), ("case_b", ENT_B)):
             await conn.execute(
                 text(
-                    "INSERT INTO organization_members "
-                    "(user_id, organization_id, role_id) VALUES (:u, :o, 'member')"
+                    "INSERT INTO cases (case_id, enterprise_id, title) "
+                    "VALUES (:c, :e, 'disk full')"
                 ),
-                {"u": user, "o": org},
+                {"c": case_id, "e": ent},
             )
-        for case_id, org in (("case_a", ORG_A), ("case_b", ORG_B)):
-            await conn.execute(
-                text(
-                    "INSERT INTO cases (case_id, organization_id, title) "
-                    "VALUES (:c, :o, 'disk full')"
-                ),
-                {"c": case_id, "o": org},
-            )
-        for item, org in (("kb_a", ORG_A), ("kb_b", ORG_B)):
+        for item, ent in (("kb_a", ENT_A), ("kb_b", ENT_B)):
             await conn.execute(
                 text(
                     "INSERT INTO knowledge_items "
-                    "(item_id, organization_id, title, content, item_type, scope) "
-                    "VALUES (:i, :o, 'runbook', 'body', 'runbook', 'personal')"
+                    "(item_id, enterprise_id, title, content, item_type, scope) "
+                    "VALUES (:i, :e, 'runbook', 'body', 'runbook', 'personal')"
                 ),
-                {"i": item, "o": org},
+                {"i": item, "e": ent},
             )
     await engine.dispose()
 
@@ -251,7 +241,7 @@ async def db(tmp_path, monkeypatch):
 
     for target in (
         "faultmaven.infrastructure.persistence.database.get_db_session",
-        "faultmaven.infrastructure.persistence.sessionless_organization_repository"
+        "faultmaven.infrastructure.persistence.sessionless_enterprise_repository"
         ".get_db_session",
         "faultmaven.infrastructure.persistence.account_anchor.get_db_session",
         "faultmaven.cli.personal_tenant.get_db_session",
@@ -273,32 +263,27 @@ async def _exec(engine, sql, params):
         await conn.execute(text(sql), params)
 
 
-async def _snapshot(engine, org: str, ent: str) -> dict:
+async def _snapshot(engine, ent: str) -> dict:
     """Everything about one tenant a retirement could possibly move."""
     return {
-        "organization": await _rows(
-            engine,
-            "SELECT organization_id, enterprise_id, name, slug, is_active, "
-            "deleted_at FROM organizations WHERE organization_id = :o",
-            {"o": org},
-        ),
         "enterprise": await _rows(
             engine,
-            "SELECT enterprise_id, name, slug, deleted_at, "
-            "personal_tenant_retirement FROM enterprises WHERE enterprise_id = :e",
+            "SELECT enterprise_id, name, slug, deleted_at "
+            "FROM enterprises WHERE enterprise_id = :e",
             {"e": ent},
         ),
         "mapping": await _rows(
             engine,
-            "SELECT provider, provider_org_id, organization_id "
-            "FROM sso_org_mappings WHERE organization_id = :o",
-            {"o": org},
+            "SELECT provider, provider_org_id, enterprise_id "
+            "FROM sso_org_mappings WHERE enterprise_id = :e",
+            {"e": ent},
         ),
         "binding": await _rows(
             engine,
-            "SELECT provider, provider_user_id, organization_id, enterprise_id, "
-            "provider_org_id FROM sso_personal_orgs WHERE organization_id = :o",
-            {"o": org},
+            "SELECT provider, subject, enterprise_id, provider_org_id, "
+            "retired_at, retirement_state "
+            "FROM sso_personal_enterprises WHERE enterprise_id = :e",
+            {"e": ent},
         ),
         "users": await _rows(
             engine,
@@ -306,27 +291,21 @@ async def _snapshot(engine, org: str, ent: str) -> dict:
             "WHERE enterprise_id = :e",
             {"e": ent},
         ),
-        "members": await _rows(
-            engine,
-            "SELECT user_id, organization_id, role_id FROM organization_members "
-            "WHERE organization_id = :o",
-            {"o": org},
-        ),
         "cases": await _rows(
             engine,
-            "SELECT case_id, title FROM cases WHERE organization_id = :o",
-            {"o": org},
+            "SELECT case_id, title FROM cases WHERE enterprise_id = :e",
+            {"e": ent},
         ),
         "knowledge": await _rows(
             engine,
             "SELECT item_id, title, content FROM knowledge_items "
-            "WHERE organization_id = :o",
-            {"o": org},
+            "WHERE enterprise_id = :e",
+            {"e": ent},
         ),
         "teams": await _rows(
             engine,
-            "SELECT team_id, name FROM teams WHERE organization_id = :o",
-            {"o": org},
+            "SELECT team_id, name FROM teams WHERE enterprise_id = :e",
+            {"e": ent},
         ),
     }
 
@@ -334,7 +313,7 @@ async def _snapshot(engine, org: str, ent: str) -> dict:
 async def _retire(engine, idp=None, revoker=None, **kwargs):
     defaults = dict(
         subject=SUBJECT_A,
-        organization_id=None,
+        enterprise_id=None,
         next_login="refuse",
         apply=True,
         idp=idp if idp is not None else RecordingIdP([IDP_ORG_A, IDP_ORG_B]),
@@ -352,8 +331,8 @@ async def _retire(engine, idp=None, revoker=None, **kwargs):
 async def test_a_dry_run_changes_no_row_and_makes_no_provider_call(db, capsys):
     """Both halves. A dry run that only avoided the database could still delete
     a provider organization, which is the irreversible half."""
-    before_a = await _snapshot(db, ORG_A, ENT_A)
-    before_b = await _snapshot(db, ORG_B, ENT_B)
+    before_a = await _snapshot(db, ENT_A)
+    before_b = await _snapshot(db, ENT_B)
     idp = RecordingIdP([IDP_ORG_A, IDP_ORG_B])
     revoker = RecordingRevoker()
 
@@ -362,8 +341,8 @@ async def test_a_dry_run_changes_no_row_and_makes_no_provider_call(db, capsys):
     assert code == 0
     assert idp.calls == []
     assert revoker.revoked == []
-    assert await _snapshot(db, ORG_A, ENT_A) == before_a
-    assert await _snapshot(db, ORG_B, ENT_B) == before_b
+    assert await _snapshot(db, ENT_A) == before_a
+    assert await _snapshot(db, ENT_B) == before_b
     out = capsys.readouterr().out
     assert "Would apply:" in out and "nothing was written" in out
 
@@ -395,6 +374,8 @@ async def test_the_dry_run_lists_exactly_what_the_apply_run_then_does(db, capsys
 
 @pytest.mark.parametrize("policy", ["refuse", "fresh-tenant"])
 async def test_the_plan_is_the_documented_order(db, monkeypatch, policy):
+    """Identical under both policies: what ``--next-login`` decides is the value
+    step 3 records, not which steps run."""
     applied: list[str] = []
     original = cli._apply
 
@@ -405,23 +386,22 @@ async def test_the_plan_is_the_documented_order(db, monkeypatch, policy):
     monkeypatch.setattr(cli, "_apply", _recording_apply)
     assert await _retire(db, next_login=policy) == 0
 
-    expected = [
-        "organization_soft_deleted",
+    assert applied == [
+        "enterprise_soft_deleted",
         "tokens_revoked",
-        "binding_deleted",
+        "retirement_recorded",
         "idp_organization_deleted",
         "mapping_deleted",
-        "enterprise_retired",
     ]
-    if policy == "fresh-tenant":
-        expected.append("anchor_cleared")
-    assert applied == expected
     # The fence is first, so no login can enter a tenant being taken apart.
-    assert applied[0] == "organization_soft_deleted"
-    # The binding goes BEFORE the provider calls: while it exists a login can
-    # ask the provider to finish a membership, re-creating by its deterministic
+    assert applied[0] == "enterprise_soft_deleted"
+    # The retirement is stamped BEFORE the provider calls: stamping is what
+    # makes the binding stop being live, and while it is live a login can ask
+    # the provider to finish a membership, re-creating by its deterministic
     # external id the organization the next step deletes.
-    assert applied.index("binding_deleted") < applied.index("idp_organization_deleted")
+    assert applied.index("retirement_recorded") < applied.index(
+        "idp_organization_deleted"
+    )
     # The provider organization goes BEFORE the mapping that records its id —
     # both because the id has to still be readable, and because the derived
     # external id is only free for a later tenant once it is gone.
@@ -442,18 +422,19 @@ async def test_the_idp_organization_is_addressed_by_the_recorded_id(db):
 async def test_a_rerun_on_a_retired_predecessor_spares_the_live_successor(db):
     """The defect this addressing exists to prevent.
 
-    Retire, let the subject provision again (the successor takes the same
-    derived slug and a NEW provider organization), then re-run the retirement
-    against the **predecessor**. A teardown addressed by the subject-derived
-    external id would delete the successor's organization and report success.
+    Retire, let the subject provision again — which under ADR-017 **re-points
+    the one subject row** onto a new enterprise, taking the same derived slug
+    and a new provider organization — then re-run the retirement against the
+    **predecessor**. A teardown addressed by the subject-derived external id
+    would delete the successor's organization and report success.
     """
     idp = RecordingIdP([IDP_ORG_A, "org_01SUCCESSOR"])
     assert await _retire(db, idp, next_login="fresh-tenant") == 0
     idp.calls.clear()
 
     # The successor: same subject, same derived slug (legal — the uniqueness
-    # indexes are partial on deleted_at IS NULL), a new provider organization.
-    successor_org = "77777777-7777-7777-7777-777777777777"
+    # index is partial on deleted_at IS NULL), a new provider organization, and
+    # the SAME binding row moved onto it.
     successor_ent = "88888888-8888-8888-8888-888888888888"
     await _exec(
         db,
@@ -462,34 +443,23 @@ async def test_a_rerun_on_a_retired_predecessor_spares_the_live_successor(db):
     )
     await _exec(
         db,
-        "INSERT INTO organizations (organization_id, enterprise_id, name, slug, "
-        "is_active) VALUES (:o, :e, 'Personal', :s, 1)",
-        {"o": successor_org, "e": successor_ent, "s": SLUG_A},
+        "INSERT INTO sso_org_mappings (provider, provider_org_id, enterprise_id) "
+        "VALUES ('workos', :p, :e)",
+        {"p": "org_01SUCCESSOR", "e": successor_ent},
     )
     await _exec(
         db,
-        "INSERT INTO sso_org_mappings (provider, provider_org_id, organization_id) "
-        "VALUES ('workos', :p, :o)",
-        {"p": "org_01SUCCESSOR", "o": successor_org},
-    )
-    await _exec(
-        db,
-        "INSERT INTO sso_personal_orgs (provider, provider_user_id, organization_id, "
-        "provider_org_id, enterprise_id, membership_confirmed) "
-        "VALUES ('workos', :s, :o, :p, :e, 1)",
-        {
-            "s": SUBJECT_A,
-            "o": successor_org,
-            "p": "org_01SUCCESSOR",
-            "e": successor_ent,
-        },
+        "UPDATE sso_personal_enterprises SET enterprise_id = :e, "
+        "provider_org_id = :p, retired_at = NULL, retirement_state = NULL "
+        "WHERE subject = :s",
+        {"s": SUBJECT_A, "p": "org_01SUCCESSOR", "e": successor_ent},
     )
 
     # Re-run against the predecessor, by id — the only way a retired tenant is
-    # addressable — with the policy it was retired under, so nothing is
-    # outstanding and the run is a genuine no-op.
+    # addressable — with the policy it was retired under. Nothing about the
+    # predecessor is outstanding, so the run is a genuine no-op.
     code = await _retire(
-        db, idp, subject=None, organization_id=ORG_A, next_login="fresh-tenant"
+        db, idp, subject=None, enterprise_id=ENT_A, next_login="fresh-tenant"
     )
 
     assert code == cli.EXIT_NOTHING_TO_DO
@@ -498,8 +468,8 @@ async def test_a_rerun_on_a_retired_predecessor_spares_the_live_successor(db):
     assert (
         await _rows(
             db,
-            "SELECT provider_org_id FROM sso_org_mappings WHERE organization_id = :o",
-            {"o": successor_org},
+            "SELECT provider_org_id FROM sso_org_mappings WHERE enterprise_id = :e",
+            {"e": successor_ent},
         )
     )[0].provider_org_id == "org_01SUCCESSOR"
 
@@ -512,28 +482,40 @@ async def test_a_rerun_on_a_retired_predecessor_spares_the_live_successor(db):
 async def test_running_it_twice_leaves_the_same_state_and_says_nothing_to_do(db):
     idp = RecordingIdP([IDP_ORG_A, IDP_ORG_B])
     assert await _retire(db, idp) == 0
-    after_first = await _snapshot(db, ORG_A, ENT_A)
+    after_first = await _snapshot(db, ENT_A)
 
-    assert await _retire(db, idp, subject=None, organization_id=ORG_A) == (
+    assert await _retire(db, idp, subject=None, enterprise_id=ENT_A) == (
         cli.EXIT_NOTHING_TO_DO
     )
 
-    assert await _snapshot(db, ORG_A, ENT_A) == after_first
+    assert await _snapshot(db, ENT_A) == after_first
     assert idp.calls == [IDP_ORG_A]
 
 
 async def test_a_rerun_does_not_restamp_the_retirement(db):
-    """The bug a freshly-built marker had: every run moved the timestamp."""
+    """The bug a freshly-built marker had: every run moved the timestamp.
+
+    Both stamps, because there are two now — the fence on the enterprise and
+    the retirement on the binding — and either drifting would rewrite when an
+    operator's decision was made.
+    """
     assert await _retire(db) == 0
-    stamped = (
+    fenced = (
         await _rows(
             db,
             "SELECT deleted_at FROM enterprises WHERE enterprise_id = :e",
             {"e": ENT_A},
         )
     )[0].deleted_at
+    recorded = (
+        await _rows(
+            db,
+            "SELECT retired_at FROM sso_personal_enterprises WHERE subject = :s",
+            {"s": SUBJECT_A},
+        )
+    )[0].retired_at
 
-    assert await _retire(db, subject=None, organization_id=ORG_A) == (
+    assert await _retire(db, subject=None, enterprise_id=ENT_A) == (
         cli.EXIT_NOTHING_TO_DO
     )
 
@@ -543,19 +525,24 @@ async def test_a_rerun_does_not_restamp_the_retirement(db):
             "SELECT deleted_at FROM enterprises WHERE enterprise_id = :e",
             {"e": ENT_A},
         )
-    )[0].deleted_at == stamped
+    )[0].deleted_at == fenced
+    assert (
+        await _rows(
+            db,
+            "SELECT retired_at FROM sso_personal_enterprises WHERE subject = :s",
+            {"s": SUBJECT_A},
+        )
+    )[0].retired_at == recorded
 
 
 @pytest.mark.parametrize(
     "fail_at",
     [
-        "organization_soft_deleted",
+        "enterprise_soft_deleted",
         "tokens_revoked",
-        "binding_deleted",
+        "retirement_recorded",
         "idp_organization_deleted",
         "mapping_deleted",
-        "enterprise_retired",
-        "anchor_cleared",
     ],
 )
 async def test_an_interruption_at_any_step_is_finished_by_re_running(
@@ -585,36 +572,36 @@ async def test_an_interruption_at_any_step_is_finished_by_re_running(
     monkeypatch.setattr(cli, "_retirement_steps", original_steps)
 
     # Never a success for a step it did not complete.
-    if fail_at == "organization_soft_deleted":
+    if fail_at == "enterprise_soft_deleted":
         assert interrupted == cli.EXIT_REFUSED
     else:
         assert interrupted == cli.EXIT_INCOMPLETE
-    # And it prints the address a resumed run needs, because the binding it was
-    # found by may already be gone.
-    assert f"--organization-id {ORG_A}" in capsys.readouterr().out
+    # And it prints the address a resumed run needs, because the subject the
+    # tenant was found by no longer addresses a live binding.
+    assert f"--enterprise-id {ENT_A}" in capsys.readouterr().out
 
     # Re-running by ID — the only address a part-retired tenant has — finishes it.
     assert (
         await _retire(
-            db, idp, subject=None, organization_id=ORG_A, next_login="fresh-tenant"
+            db, idp, subject=None, enterprise_id=ENT_A, next_login="fresh-tenant"
         )
         == 0
     )
 
-    state = await _snapshot(db, ORG_A, ENT_A)
-    assert state["binding"] == []
+    state = await _snapshot(db, ENT_A)
     assert state["mapping"] == []
-    assert state["organization"][0].deleted_at is not None
-    assert state["organization"][0].is_active in (0, False)
-    # No renames: the retired tenant keeps the derived slug.
-    assert state["organization"][0].slug == SLUG_A
     assert state["enterprise"][0].deleted_at is not None
-    assert state["enterprise"][0].personal_tenant_retirement == (
-        RETIREMENT_POLICY_FRESH_TENANT
-    )
-    assert state["users"] == []  # released
+    # No renames: the retired tenant keeps the derived slug.
+    assert state["enterprise"][0].slug == SLUG_A
+    # The binding SURVIVES, carrying the operator's decision.
+    assert len(state["binding"]) == 1
+    assert state["binding"][0].retired_at is not None
+    assert state["binding"][0].retirement_state == RETIREMENT_POLICY_FRESH_TENANT
+    # The account stays anchored: NOT NULL leaves no "released" absence, and
+    # the recorded policy is what releases the next sign-in instead.
+    assert [row.user_id for row in state["users"]] == [USER_A]
     assert IDP_ORG_A not in idp.present
-    assert (await _snapshot(db, ORG_B, ENT_B))["binding"] != []
+    assert (await _snapshot(db, ENT_B))["binding"] != []
 
 
 async def test_a_provider_failure_reports_incomplete_rather_than_done(db, capsys):
@@ -625,13 +612,9 @@ async def test_a_provider_failure_reports_incomplete_rather_than_done(db, capsys
     assert code == cli.EXIT_INCOMPLETE
     out = capsys.readouterr().out
     assert "Retired." not in out
-    rows = await _rows(
-        db,
-        "SELECT deleted_at, personal_tenant_retirement FROM enterprises "
-        "WHERE enterprise_id = :e",
-        {"e": ENT_A},
-    )
-    assert rows[0].personal_tenant_retirement is None
+    # The mapping survives, so the recorded provider id is still readable by
+    # the run that finishes this one.
+    assert (await _snapshot(db, ENT_A))["mapping"] != []
 
 
 # =============================================================================
@@ -640,35 +623,70 @@ async def test_a_provider_failure_reports_incomplete_rather_than_done(db, capsys
 
 
 @pytest.mark.parametrize(
-    "flag,policy,anchor_after",
+    "flag,policy",
     [
-        ("refuse", RETIREMENT_POLICY_REFUSE, ENT_A),
-        ("fresh-tenant", RETIREMENT_POLICY_FRESH_TENANT, None),
+        ("refuse", RETIREMENT_POLICY_REFUSE),
+        ("fresh-tenant", RETIREMENT_POLICY_FRESH_TENANT),
     ],
 )
-async def test_the_flag_decides_the_policy_and_the_anchor(
-    db, flag, policy, anchor_after
-):
-    """Typed columns, not a marker: the policy on the enterprise, and whether
-    the account is anchored at all."""
+async def test_the_flag_decides_the_recorded_policy(db, flag, policy):
+    """Typed columns, not a marker — and a **positive** value in both cases.
+
+    The account stays anchored to the fenced enterprise whichever policy is
+    chosen (``users.enterprise_id`` is NOT NULL under ADR-017 D3), so the
+    difference between the two is entirely this column. An absence could be
+    produced by a half-finished retirement; this cannot.
+    """
     assert await _retire(db, next_login=flag) == 0
 
     enterprise = (
         await _rows(
             db,
-            "SELECT deleted_at, personal_tenant_retirement FROM enterprises "
-            "WHERE enterprise_id = :e",
+            "SELECT deleted_at FROM enterprises WHERE enterprise_id = :e",
             {"e": ENT_A},
         )
     )[0]
     assert enterprise.deleted_at is not None
-    assert enterprise.personal_tenant_retirement == policy
+    binding = (
+        await _rows(
+            db,
+            "SELECT retired_at, retirement_state, enterprise_id "
+            "FROM sso_personal_enterprises WHERE subject = :s",
+            {"s": SUBJECT_A},
+        )
+    )[0]
+    assert binding.retired_at is not None
+    assert binding.retirement_state == policy
+    assert binding.enterprise_id == ENT_A
     user = (
         await _rows(
             db, "SELECT enterprise_id FROM users WHERE user_id = :u", {"u": USER_A}
         )
     )[0]
-    assert user.enterprise_id == anchor_after
+    assert user.enterprise_id == ENT_A
+
+
+async def test_changing_the_policy_on_a_retired_tenant_is_a_real_write(db):
+    """The operator's remedy for "I chose the wrong flag".
+
+    A re-run with the OTHER policy must not report "nothing to do" — that is
+    exactly the state in which an operator believes a subject can start over and
+    the login goes on refusing them.
+    """
+    assert await _retire(db, next_login="refuse") == 0
+
+    assert (
+        await _retire(db, subject=None, enterprise_id=ENT_A, next_login="fresh-tenant")
+        == 0
+    )
+
+    assert (
+        await _rows(
+            db,
+            "SELECT retirement_state FROM sso_personal_enterprises WHERE subject = :s",
+            {"s": SUBJECT_A},
+        )
+    )[0].retirement_state == RETIREMENT_POLICY_FRESH_TENANT
 
 
 async def test_the_subjects_tokens_are_revoked(db):
@@ -694,25 +712,25 @@ def test_the_parser_defaults_next_login_to_refuse():
 # =============================================================================
 
 
-async def test_a_company_organization_is_refused(db, capsys):
-    before = await _snapshot(db, ORG_CO, ENT_CO)
+async def test_a_company_enterprise_is_refused(db, capsys):
+    before = await _snapshot(db, ENT_CO)
 
-    code = await _retire(db, subject=None, organization_id=ORG_CO)
+    code = await _retire(db, subject=None, enterprise_id=ENT_CO)
 
     assert code == cli.EXIT_REFUSED
-    assert await _snapshot(db, ORG_CO, ENT_CO) == before
+    assert await _snapshot(db, ENT_CO) == before
     assert "not a personal tenant" in capsys.readouterr().out
 
 
-async def test_a_subject_and_organization_that_disagree_are_refused(db, capsys):
-    before = await _snapshot(db, ORG_B, ENT_B)
+async def test_a_subject_and_enterprise_that_disagree_are_refused(db, capsys):
+    before = await _snapshot(db, ENT_B)
     idp = RecordingIdP([IDP_ORG_A, IDP_ORG_B])
 
-    code = await _retire(db, idp, subject=SUBJECT_A, organization_id=ORG_B)
+    code = await _retire(db, idp, subject=SUBJECT_A, enterprise_id=ENT_B)
 
     assert code == cli.EXIT_REFUSED
     assert idp.calls == []
-    assert await _snapshot(db, ORG_B, ENT_B) == before
+    assert await _snapshot(db, ENT_B) == before
     assert "cross-check" in capsys.readouterr().out
 
 
@@ -725,11 +743,11 @@ async def test_an_unknown_subject_is_refused_not_reported_as_nothing_to_do(db, c
     assert "No live personal tenant" in capsys.readouterr().out
 
 
-async def test_an_unknown_organization_id_is_refused(db, capsys):
-    code = await _retire(db, subject=None, organization_id="does-not-exist")
+async def test_an_unknown_enterprise_id_is_refused(db, capsys):
+    code = await _retire(db, subject=None, enterprise_id="does-not-exist")
 
     assert code == cli.EXIT_REFUSED
-    assert "No organization" in capsys.readouterr().out
+    assert "No enterprise" in capsys.readouterr().out
 
 
 async def test_an_empty_subject_is_refused_not_a_traceback(db, capsys):
@@ -740,41 +758,29 @@ async def test_an_empty_subject_is_refused_not_a_traceback(db, capsys):
     assert "--subject was given but is empty" in capsys.readouterr().out
 
 
-async def test_a_missing_enterprise_row_is_its_own_outcome(db, capsys):
-    """Distinct from "no such tenant": the remedies have nothing in common."""
-    await _exec(db, "DELETE FROM enterprises WHERE enterprise_id = :e", {"e": ENT_A})
-
-    code = await _retire(db, subject=None, organization_id=ORG_A)
-
-    assert code == cli.EXIT_REFUSED
-    out = capsys.readouterr().out
-    assert "which does not exist" in out
-    assert "broken row, not an absent tenant" in out
-
-
 # =============================================================================
 # Blast radius and survival
 # =============================================================================
 
 
 async def test_the_other_personal_tenant_is_untouched(db):
-    before = await _snapshot(db, ORG_B, ENT_B)
+    before = await _snapshot(db, ENT_B)
 
     assert await _retire(db, next_login="fresh-tenant") == 0
 
-    assert await _snapshot(db, ORG_B, ENT_B) == before
+    assert await _snapshot(db, ENT_B) == before
 
 
 async def test_cases_and_knowledge_of_the_retired_tenant_still_exist(db):
-    before = await _snapshot(db, ORG_A, ENT_A)
+    before = await _snapshot(db, ENT_A)
 
     assert await _retire(db) == 0
 
-    after = await _snapshot(db, ORG_A, ENT_A)
+    after = await _snapshot(db, ENT_A)
     assert after["cases"] == before["cases"] != []
     assert after["knowledge"] == before["knowledge"] != []
-    assert after["organization"] != []
-    assert after["members"] == before["members"]
+    assert after["enterprise"] != []
+    assert after["users"] == before["users"] != []
 
 
 # =============================================================================
@@ -782,10 +788,14 @@ async def test_cases_and_knowledge_of_the_retired_tenant_still_exist(db):
 # =============================================================================
 
 
-async def test_re_anchor_moves_the_account_grants_membership_and_retires_the_binding(
-    db,
-):
-    code = await cli.reanchor(subject=SUBJECT_A, organization_id=ORG_CO, apply=True)
+async def test_re_anchor_moves_the_account_and_deletes_the_binding(db):
+    """The anchor is the whole of what "belongs to this company" means (D3).
+
+    No membership row is written: an organization is a billing target created
+    by payment (D5), so this command must not invent one — doing so would bill
+    a cost centre for an account nobody added to it.
+    """
+    code = await cli.reanchor(subject=SUBJECT_A, enterprise_id=ENT_CO, apply=True)
 
     assert code == 0
     user = (
@@ -795,34 +805,27 @@ async def test_re_anchor_moves_the_account_grants_membership_and_retires_the_bin
     )[0]
     assert user.enterprise_id == ENT_CO
     assert (
-        len(
-            await _rows(
-                db,
-                "SELECT role_id FROM organization_members WHERE organization_id = :o "
-                "AND user_id = :u",
-                {"o": ORG_CO, "u": USER_A},
-            )
-        )
-        == 1
-    )
-    assert (
         await _rows(
             db,
-            "SELECT 1 FROM sso_personal_orgs WHERE provider_user_id = :s",
+            "SELECT 1 FROM sso_personal_enterprises WHERE subject = :s",
             {"s": SUBJECT_A},
         )
         == []
     )
-    assert (await _snapshot(db, ORG_A, ENT_A))["cases"] != []
+    assert (
+        await _rows(
+            db, "SELECT 1 FROM organization_members WHERE user_id = :u", {"u": USER_A}
+        )
+        == []
+    )
+    assert (await _snapshot(db, ENT_A))["cases"] != []
 
 
 async def test_re_anchor_moves_a_retired_subject(db):
     """R6, from the operator side: a retirement must not strand somebody."""
     assert await _retire(db, next_login="refuse") == 0
 
-    assert (
-        await cli.reanchor(subject=SUBJECT_A, organization_id=ORG_CO, apply=True) == 0
-    )
+    assert await cli.reanchor(subject=SUBJECT_A, enterprise_id=ENT_CO, apply=True) == 0
 
     assert (
         await _rows(
@@ -832,15 +835,13 @@ async def test_re_anchor_moves_a_retired_subject(db):
 
 
 async def test_re_anchor_is_idempotent(db):
-    assert (
-        await cli.reanchor(subject=SUBJECT_A, organization_id=ORG_CO, apply=True) == 0
-    )
+    assert await cli.reanchor(subject=SUBJECT_A, enterprise_id=ENT_CO, apply=True) == 0
     before = await _rows(
         db, "SELECT user_id, enterprise_id FROM users WHERE user_id = :u", {"u": USER_A}
     )
 
     assert (
-        await cli.reanchor(subject=SUBJECT_A, organization_id=ORG_CO, apply=True)
+        await cli.reanchor(subject=SUBJECT_A, enterprise_id=ENT_CO, apply=True)
         == cli.EXIT_NOTHING_TO_DO
     )
 
@@ -855,37 +856,35 @@ async def test_re_anchor_is_idempotent(db):
 
 
 async def test_re_anchor_dry_run_writes_nothing(db):
-    before = await _snapshot(db, ORG_A, ENT_A)
-    before_co = await _snapshot(db, ORG_CO, ENT_CO)
+    before = await _snapshot(db, ENT_A)
+    before_co = await _snapshot(db, ENT_CO)
 
-    assert (
-        await cli.reanchor(subject=SUBJECT_A, organization_id=ORG_CO, apply=False) == 0
-    )
+    assert await cli.reanchor(subject=SUBJECT_A, enterprise_id=ENT_CO, apply=False) == 0
 
-    assert await _snapshot(db, ORG_A, ENT_A) == before
-    assert await _snapshot(db, ORG_CO, ENT_CO) == before_co
+    assert await _snapshot(db, ENT_A) == before
+    assert await _snapshot(db, ENT_CO) == before_co
 
 
 async def test_re_anchor_refuses_an_unmapped_target(db, capsys):
     await _exec(
-        db, "DELETE FROM sso_org_mappings WHERE organization_id = :o", {"o": ORG_CO}
+        db, "DELETE FROM sso_org_mappings WHERE enterprise_id = :e", {"e": ENT_CO}
     )
-    before = await _snapshot(db, ORG_A, ENT_A)
+    before = await _snapshot(db, ENT_A)
 
-    code = await cli.reanchor(subject=SUBJECT_A, organization_id=ORG_CO, apply=True)
+    code = await cli.reanchor(subject=SUBJECT_A, enterprise_id=ENT_CO, apply=True)
 
     assert code == cli.EXIT_REFUSED
-    assert await _snapshot(db, ORG_A, ENT_A) == before
+    assert await _snapshot(db, ENT_A) == before
     assert "no workos mapping" in capsys.readouterr().out
 
 
 async def test_re_anchor_refuses_a_personal_target(db, capsys):
-    before = await _snapshot(db, ORG_B, ENT_B)
+    before = await _snapshot(db, ENT_B)
 
-    code = await cli.reanchor(subject=SUBJECT_A, organization_id=ORG_B, apply=True)
+    code = await cli.reanchor(subject=SUBJECT_A, enterprise_id=ENT_B, apply=True)
 
     assert code == cli.EXIT_REFUSED
-    assert await _snapshot(db, ORG_B, ENT_B) == before
+    assert await _snapshot(db, ENT_B) == before
     assert "itself a personal tenant" in capsys.readouterr().out
 
 
@@ -897,12 +896,12 @@ async def test_re_anchor_refuses_an_anchor_that_is_not_the_accounts_own(db, caps
         "UPDATE users SET enterprise_id = :e WHERE user_id = :u",
         {"e": ENT_B, "u": USER_A},
     )
-    before = await _snapshot(db, ORG_B, ENT_B)
+    before = await _snapshot(db, ENT_B)
 
-    code = await cli.reanchor(subject=SUBJECT_A, organization_id=ORG_CO, apply=True)
+    code = await cli.reanchor(subject=SUBJECT_A, enterprise_id=ENT_CO, apply=True)
 
     assert code == cli.EXIT_REFUSED
-    assert await _snapshot(db, ORG_B, ENT_B) == before
+    assert await _snapshot(db, ENT_B) == before
     assert "neither absent" in capsys.readouterr().out
 
 
@@ -911,7 +910,7 @@ async def test_re_anchor_refuses_a_deactivated_account(db, capsys):
     member anybody wanted."""
     await _exec(db, "UPDATE users SET is_active = 0 WHERE user_id = :u", {"u": USER_A})
 
-    code = await cli.reanchor(subject=SUBJECT_A, organization_id=ORG_CO, apply=True)
+    code = await cli.reanchor(subject=SUBJECT_A, enterprise_id=ENT_CO, apply=True)
 
     assert code == cli.EXIT_REFUSED
     assert "may not hold credentials" in capsys.readouterr().out
@@ -987,7 +986,12 @@ def test_unconfigured_sso_is_refused(monkeypatch):
     reason="workos is a cloud-only dependency (requirements/cloud.txt)",
 )
 async def test_the_command_drives_the_real_adapter_against_the_real_sdk(db):
-    """End to end through the shipped adapter, with the SDK autospecced."""
+    """End to end through the shipped adapter, with the SDK autospecced.
+
+    The adapter's method names are the IdP's own vocabulary, not FaultMaven's:
+    ADR-017 D9 keeps the IdP *organization* beside the FaultMaven enterprise, so
+    this is also what catches a rename of one leaking into the other.
+    """
     from tests.unit.modules.auth.test_sso_personal_org_provider import (
         _page,
         build_provider,

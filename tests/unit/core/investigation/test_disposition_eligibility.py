@@ -62,7 +62,7 @@ def _make_inquiry_case() -> Case:
         title="Eligibility test",
         state=CaseState.INQUIRY,
         user_id="user_test",
-        organization_id="org_test",
+        enterprise_id="org_test",
         description="",
         inquiry=InquiryData(),
     )
@@ -74,7 +74,7 @@ def _make_investigating_case() -> Case:
         title="Eligibility test (investigating)",
         state=CaseState.INVESTIGATING,
         user_id="user_test",
-        organization_id="org_test",
+        enterprise_id="org_test",
         description="Test problem",
         inquiry=InquiryData(
             problem_statement_confirmed=True,

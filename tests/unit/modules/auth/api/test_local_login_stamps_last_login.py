@@ -44,6 +44,7 @@ from unittest.mock import patch
 import pytest
 from fastapi import HTTPException
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.settings import AuthMode
 from faultmaven.exceptions import NotFoundError
 from faultmaven.infrastructure.auth.database_user_store import DatabaseUserStore
@@ -89,9 +90,13 @@ class _RecordingUserStore:
         return None
 
     async def create_user(
-        self, username: str, email=None, display_name=None
+        self, username: str, email=None, display_name=None, *, enterprise_id
     ) -> DevUser:
+        # Keyword-only and required, like the real stores: local registration
+        # anchors the account to the enterprise the request is bound to, which
+        # in a standalone deployment is the seeded one.
         self._user = _dev_user()
+        self._user.enterprise_id = enterprise_id
         return self._user
 
     async def record_login(self, user_id: str) -> None:
@@ -390,6 +395,10 @@ async def test_touch_last_login_suppresses_the_updated_at_onupdate():
                     username=USERNAME,
                     email="operator@local.faultmaven",
                     display_name="Operator",
+                    # Every account is anchored (ADR-017 D3), and the write path
+                    # refuses to invent one — a ``None`` here is a caller that
+                    # did not resolve a tenant.
+                    enterprise_id=STANDALONE_ENTERPRISE_ID,
                     created_at=created,
                     updated_at=created,
                     last_login_at=None,

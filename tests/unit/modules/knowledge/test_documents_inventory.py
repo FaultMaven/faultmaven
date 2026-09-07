@@ -45,7 +45,8 @@ def _mk_item(
     *,
     scope=KnowledgeScope.GLOBAL,
     owner_id=None,
-    org="org-1",
+    enterprise="ent-1",
+    org=None,
     title="Runbook",
     is_published=True,
     item_type=KnowledgeItemType.RUNBOOK,
@@ -53,8 +54,10 @@ def _mk_item(
 ):
     return KnowledgeItem(
         item_id=item_id,
-        # Global rows are the org-free platform tier (#770); only org-owned
-        # scopes (personal/team) carry an organization_id.
+        # Isolation is not optional for any tier (ADR-017 D1): GLOBAL is the
+        # ORGANIZATION-free platform tier (#770), and it still lives in an
+        # enterprise. Only the organization goes away.
+        enterprise_id=enterprise,
         organization_id=None if scope == KnowledgeScope.GLOBAL else org,
         title=title,
         content="# body\nsteps",
@@ -139,8 +142,8 @@ class TestListForInventoryRBAC:
     async def test_global_visible_to_everyone(self):
         repo = await self._repo_with([_mk_item(BUILTIN_ID)])
         # anonymous (no user_id), and an arbitrary user — both see global
-        anon = await repo.list_for_inventory("org-1")
-        someone = await repo.list_for_inventory("org-1", user_id="user-x")
+        anon = await repo.list_for_inventory("ent-1")
+        someone = await repo.list_for_inventory("ent-1", user_id="user-x")
         assert [i.item_id for i in anon] == [BUILTIN_ID]
         assert [i.item_id for i in someone] == [BUILTIN_ID]
 
@@ -148,9 +151,9 @@ class TestListForInventoryRBAC:
         repo = await self._repo_with(
             [_mk_item("p1", scope=KnowledgeScope.PERSONAL, owner_id="user-1")]
         )
-        owner = await repo.list_for_inventory("org-1", user_id="user-1")
-        other = await repo.list_for_inventory("org-1", user_id="user-2")
-        anon = await repo.list_for_inventory("org-1")
+        owner = await repo.list_for_inventory("ent-1", user_id="user-1")
+        other = await repo.list_for_inventory("ent-1", user_id="user-2")
+        anon = await repo.list_for_inventory("ent-1")
         assert [i.item_id for i in owner] == ["p1"]
         assert other == []
         assert anon == []
@@ -164,10 +167,10 @@ class TestListForInventoryRBAC:
             [_mk_item("t1", scope=KnowledgeScope.TEAM, owner_id="user-1")]
         )
         owner = await repo.list_for_inventory(
-            "org-1", user_id="user-1", team_ids=["team-A"]
+            "ent-1", user_id="user-1", team_ids=["team-A"]
         )
         other = await repo.list_for_inventory(
-            "org-1", user_id="user-2", team_ids=["team-A"]
+            "ent-1", user_id="user-2", team_ids=["team-A"]
         )
         assert [i.item_id for i in owner] == ["t1"]
         assert other == []
@@ -179,7 +182,7 @@ class TestListForInventoryRBAC:
                 _mk_item("hidden", is_published=False),
             ]
         )
-        got = await repo.list_for_inventory("org-1", user_id="u")
+        got = await repo.list_for_inventory("ent-1", user_id="u")
         assert [i.item_id for i in got] == [BUILTIN_ID]
 
     async def test_item_type_filter(self):
@@ -190,10 +193,10 @@ class TestListForInventoryRBAC:
             ]
         )
         runbooks = await repo.list_for_inventory(
-            "org-1", item_type=KnowledgeItemType.RUNBOOK
+            "ent-1", item_type=KnowledgeItemType.RUNBOOK
         )
         assert [i.item_id for i in runbooks] == [BUILTIN_ID]
-        all_items = await repo.list_for_inventory("org-1")
+        all_items = await repo.list_for_inventory("ent-1")
         assert {i.item_id for i in all_items} == {BUILTIN_ID, "faq-1"}
 
     async def test_org_isolation_on_org_owned_tiers(self):
@@ -203,21 +206,27 @@ class TestListForInventoryRBAC:
         repo = await self._repo_with(
             [
                 _mk_item(
-                    "mine", scope=KnowledgeScope.PERSONAL, owner_id="u", org="org-1"
+                    "mine",
+                    scope=KnowledgeScope.PERSONAL,
+                    owner_id="u",
+                    enterprise="ent-1",
                 ),
                 _mk_item(
-                    "theirs", scope=KnowledgeScope.PERSONAL, owner_id="u", org="org-2"
+                    "theirs",
+                    scope=KnowledgeScope.PERSONAL,
+                    owner_id="u",
+                    enterprise="ent-2",
                 ),
             ]
         )
-        got = await repo.list_for_inventory("org-1", user_id="u")
+        got = await repo.list_for_inventory("ent-1", user_id="u")
         assert [i.item_id for i in got] == ["mine"]
 
     async def test_global_platform_tier_visible_across_orgs(self):
         # Global rows are the org-free platform corpus (#770): visible to a
         # caller from ANY org, on the SQL inventory path as well as vector.
         repo = await self._repo_with([_mk_item(BUILTIN_ID)])
-        got = await repo.list_for_inventory("org-2", user_id="someone-else")
+        got = await repo.list_for_inventory("ent-2", user_id="someone-else")
         assert [i.item_id for i in got] == [BUILTIN_ID]
 
 
@@ -261,13 +270,6 @@ async def inventory_service():
                 "VALUES ('ent-1', 'Default', 'default')"
             )
         )
-        await conn.execute(
-            text(
-                "INSERT INTO organizations "
-                "(organization_id, enterprise_id, name, slug) "
-                "VALUES ('org-1', 'ent-1', 'Org', 'org')"
-            )
-        )
         for uid in ("user-1", "user-2"):
             await conn.execute(
                 text(
@@ -304,7 +306,7 @@ class TestInventoryServiceDB:
         await svc._seed_item(_mk_item(BUILTIN_ID, title="OpenSSH Auth Failures"))
 
         result = await svc.list_documents(
-            user=SimpleNamespace(user_id=None, organization_id="org-1"),
+            user=SimpleNamespace(user_id=None, enterprise_id="ent-1"),
             team_ids=[],
         )
 
@@ -330,11 +332,11 @@ class TestInventoryServiceDB:
         )
 
         owner = await svc.list_documents(
-            user=SimpleNamespace(user_id="user-1", organization_id="org-1"),
+            user=SimpleNamespace(user_id="user-1", enterprise_id="ent-1"),
             team_ids=[],
         )
         other = await svc.list_documents(
-            user=SimpleNamespace(user_id="user-2", organization_id="org-1"),
+            user=SimpleNamespace(user_id="user-2", enterprise_id="ent-1"),
             team_ids=[],
         )
 
@@ -361,16 +363,16 @@ class TestInventoryServiceDB:
                 resource_id="t-1",
                 scope_type="team",
                 scope_id="team-A",
-                organization_id="org-1",
+                enterprise_id="ent-1",
                 created_by="user-1",
             )
 
         member = await svc.list_documents(
-            user=SimpleNamespace(user_id="user-2", organization_id="org-1"),
+            user=SimpleNamespace(user_id="user-2", enterprise_id="ent-1"),
             team_ids=["team-A"],
         )
         nonmember = await svc.list_documents(
-            user=SimpleNamespace(user_id="user-2", organization_id="org-1"),
+            user=SimpleNamespace(user_id="user-2", enterprise_id="ent-1"),
             team_ids=["team-B"],
         )
         assert "t-1" in {d["document_id"] for d in member["documents"]}

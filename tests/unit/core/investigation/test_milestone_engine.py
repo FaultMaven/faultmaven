@@ -73,7 +73,7 @@ def base_case():
         title="Test Case",
         state=CaseState.INVESTIGATING,
         user_id="user_123",
-        organization_id="org_123",
+        enterprise_id="org_123",
         description="Test description",
         problem_verification=ProblemVerification(
             symptom_statement="Test symptom",
@@ -375,7 +375,7 @@ class TestMilestoneEngine:
             title="Inquiry",
             state=CaseState.INQUIRY,
             user_id="user_123",
-            organization_id="org_123",
+            enterprise_id="org_123",
             description="",
         )
 
@@ -768,7 +768,7 @@ class TestMilestoneEngine:
             title="Test Inquiry Close",
             state=CaseState.INQUIRY,
             user_id="user_123",
-            organization_id="org_123",
+            enterprise_id="org_123",
             description="Test description",
             problem_verification=ProblemVerification(
                 symptom_statement="Test symptom",
@@ -902,7 +902,7 @@ class TestMilestoneEngine:
             title="Test Inquiry to Investigating",
             state=CaseState.INQUIRY,
             user_id="user_123",
-            organization_id="org_123",
+            enterprise_id="org_123",
             description="Test description",
         )
         inquiry_case.inquiry.proposed_problem_statement = "Test symptom"
@@ -975,7 +975,7 @@ class TestMilestoneEngine:
             title="API issue",
             state=CaseState.INQUIRY,
             user_id="user_123",
-            organization_id="org_123",
+            enterprise_id="org_123",
             description="",
         )
         # No proposed_problem_statement set — agent hasn't formulated one yet
@@ -1294,7 +1294,7 @@ class TestInquiryConfirmation:
             title="Test INQUIRY stuck",
             state=CaseState.INQUIRY,
             user_id="user_123",
-            organization_id="org_123",
+            enterprise_id="org_123",
             description="",
         )
         case.inquiry.proposed_problem_statement = "API returning 503 errors"
@@ -1331,7 +1331,7 @@ class TestInquiryConfirmation:
             title="Test no statement",
             state=CaseState.INQUIRY,
             user_id="user_123",
-            organization_id="org_123",
+            enterprise_id="org_123",
             description="",
         )
         # No proposed_problem_statement set
@@ -1373,7 +1373,7 @@ class TestInquiryConfirmation:
             title="Gate1 replace",
             state=CaseState.INQUIRY,
             user_id="user_123",
-            organization_id="org_123",
+            enterprise_id="org_123",
             description="",
         )
         case.inquiry.proposed_problem_statement = "API returning 503 errors"
@@ -1429,7 +1429,7 @@ class TestInquiryConfirmation:
             title="Test LLM priority",
             state=CaseState.INQUIRY,
             user_id="user_123",
-            organization_id="org_123",
+            enterprise_id="org_123",
             description="",
         )
         case.inquiry.proposed_problem_statement = "Database connection drops"
@@ -1472,7 +1472,7 @@ class TestReadinessAssessments:
     def _make_case(self, **overrides):
         defaults = {
             "user_id": "user_123",
-            "organization_id": "org_123",
+            "enterprise_id": "org_123",
             "title": "Test Case",
             "description": "Database queries timing out",
             "state": CaseState.INVESTIGATING,
@@ -1982,7 +1982,7 @@ class TestRunbookSuggestion:
 
         case = Case(
             user_id="u1",
-            organization_id="o1",
+            enterprise_id="o1",
             title="Pool timeout issue",
             description="DB queries timing out",
             state=CaseState.INVESTIGATING,
@@ -2047,7 +2047,7 @@ class TestRunbookSuggestion:
 
         case = Case(
             user_id="u1",
-            organization_id="o1",
+            enterprise_id="o1",
             title="Pool timeout issue",
             description="DB queries timing out",
             state=CaseState.INVESTIGATING,
@@ -2112,7 +2112,7 @@ class TestRunbookSuggestion:
 
         case = Case(
             user_id="u1",
-            organization_id="o1",
+            enterprise_id="o1",
             title="Mystery issue",
             description="Something is wrong",
             state=CaseState.INVESTIGATING,
@@ -2157,7 +2157,7 @@ class TestRunbookSuggestion:
 
         case = Case(
             user_id="u1",
-            organization_id="o1",
+            enterprise_id="o1",
             title="Pool timeout issue",
             description="DB queries timing out",
             state=CaseState.INVESTIGATING,
@@ -2216,7 +2216,7 @@ class TestContradictingIntentCancelsPendingTransition:
             title="Test Case",
             state=CaseState.INQUIRY,
             user_id="user_123",
-            organization_id="org_123",
+            enterprise_id="org_123",
             description="Test",
             inquiry=InquiryData(
                 thread_id="thread_123",
@@ -2277,7 +2277,7 @@ class TestContradictingIntentCancelsPendingTransition:
             title="Test Case",
             state=CaseState.INVESTIGATING,
             user_id="user_123",
-            organization_id="org_123",
+            enterprise_id="org_123",
             description="Test",
             problem_verification=ProblemVerification(
                 symptom_statement="Test symptom",
@@ -2432,7 +2432,7 @@ class TestTerminalTransitionPendingActionCleanup:
             title="Test Case",
             state=CaseState.INVESTIGATING,
             user_id="user_123",
-            organization_id="org_123",
+            enterprise_id="org_123",
             description="Test description",
             problem_verification=ProblemVerification(
                 symptom_statement="Test symptom",
@@ -2547,7 +2547,7 @@ class TestNeedsInfoFollowupProposesClose:
             title="Test Case",
             state=CaseState.INVESTIGATING,
             user_id="user_123",
-            organization_id="org_123",
+            enterprise_id="org_123",
             description="Test",
             problem_verification=ProblemVerification(
                 symptom_statement="Issue ongoing",

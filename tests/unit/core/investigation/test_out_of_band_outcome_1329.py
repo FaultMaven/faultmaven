@@ -47,7 +47,7 @@ def _case(*turns):
         title="OOM",
         description="d",
         user_id="u",
-        organization_id="o",
+        enterprise_id="o",
         # INQUIRY: neither property under test reads the state, and INVESTIGATING
         # would need a confirmed problem statement the test does not care about.
         state=CaseState.INQUIRY,

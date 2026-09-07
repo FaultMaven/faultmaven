@@ -211,7 +211,7 @@ The three parts each close a different way of losing the predicate:
   (`KnowledgeService.get_document`, `SuggestionService.get_suggestion`) used by
   ingestion, extraction and the write-policy check, and an *actor-facing* scoped
   load (`get_document_visible`, `get_suggestion_visible`) that every route uses.
-  The scoped form takes a required `organization_id` and returns nothing for an
+  The scoped form takes a required `enterprise_id` and returns nothing for an
   absent id and for an out-of-tenant id alike, so no caller can tell them apart.
 - **By similarity.** A vector query names no id, so the metadata predicate is
   the only isolation there is. `RunbookKnowledgeBase.search_runbooks` requires
@@ -223,29 +223,30 @@ The three parts each close a different way of losing the predicate:
 - **By allowlist.** Team visibility resolves to a set of ids in SQL
   (`resource_shares`). Both directions of that resolution — the inventory
   clause's share sub-select and `IShareRepository.list_resource_ids` — match the
-  share row's own `organization_id`, so a row stamped with a foreign tenant
-  grants nothing.
+  share row's own `enterprise_id`, so a row stamped with a foreign tenant grants
+  nothing. The ENTERPRISE, since ADR-017: matching the organization would confine
+  a team to one cost centre, which is exactly what D4 undoes.
 
 **404, not 403.** A refusal that distinguishes "you may not see this" from "this
 does not exist" is an existence oracle: it confirms an id, and with it the shape
 of another tenant's data. Out-of-tenant and absent therefore share one status and
 one message on every id-addressed route.
 
-**403 only for a caller with no tenant at all.** `require_actor_organization`
-resolves the actor's organization and refuses (403) rather than returning `None`
+**403 only for a caller with no tenant at all.** `require_actor_enterprise`
+resolves the actor's enterprise and refuses (403) rather than returning `None`
 for a caller to degrade into an unscoped query. That refusal does not depend on
 the requested id, so it is not an oracle. Under `TENANT_PROVIDER=multi` the
-Standalone sentinel is refused too: there it identifies the deployment, not an
-organization — the same rule the request front door applies in
+Standalone sentinel is refused too: there it identifies the deployment, not a
+tenant — the same rule the request front door applies in
 `api/middleware/tenant_scope.py`. Enforcing it in both places keeps the guarantee
 independent of which dependencies a given router mounts.
 
 **One predicate, two enforcement styles.** "Is this a usable tenant?" is decided
 in exactly one place — `config.tenant_context.usable_tenant_id`, which answers
-`None` for an absent org and for the Standalone sentinel under
+`None` for an absent enterprise and for the Standalone sentinel under
 `TENANT_PROVIDER=multi`. Every site that needs the answer calls it; none carries
-its own copy of the test. Two of them **refuse**: `bind_request_org_context` at
-the request front door and `require_actor_organization` at the route, both 403
+its own copy of the test. Two of them **refuse**: `bind_request_enterprise_context`
+at the request front door and `require_actor_enterprise` at the route, both 403
 with `UNSCOPED_REQUEST_MSG`. The rest **degrade** — the case read allowlist
 (`CaseService._resolve_shared_case_ids`, `_resolve_team_filter_case_ids`), the KB
 team arm (`resolve_shared_kb_ids`), the agent's shared-KB arm, and both
@@ -256,19 +257,25 @@ answers, so the listing narrows rather than breaks. What none of them may do is
 *query with the sentinel as the predicate*.
 
 The degrading sites matter because the value they receive is not trustworthy on
-its own: `CaseService.create_case` stamps `Case.organization_id` from the *total*
-`get_current_org_id`, so a case written from a context that never bound a tenant
-carries the sentinel — and `organization_id` is `str`/`min_length=1`, so that is
-a perfectly valid row. Every reader that turns it into a predicate resolves it
+its own: `CaseService.create_case` stamps `Case.enterprise_id` from the *total*
+`get_current_enterprise_id`, so a case written from a context that never bound a
+tenant carries the sentinel — and `enterprise_id` is a non-empty string, so that
+is a perfectly valid row. Every reader that turns it into a predicate resolves it
 through `usable_tenant_id` first.
 
-That distinction is why the contextvar has two readers. `get_current_org_id` is
-total — its default *is* the sentinel — so it can never be the subject of a
-fail-closed guard; `if not get_current_org_id()` is unreachable code. Anywhere
-the value becomes a query predicate, read `get_current_tenant_id`, which applies
-`usable_tenant_id` first. An execution context that never bound a tenant (a
-background task that did not inherit the request context) reads as the sentinel,
-and under multi the sentinel is not a tenant.
+That distinction is why the contextvar has two readers. `get_current_enterprise_id`
+is total — its default *is* the sentinel — so it can never be the subject of a
+fail-closed guard; `if not get_current_enterprise_id()` is unreachable code.
+Anywhere the value becomes a query predicate, read `get_current_tenant_id`, which
+applies `usable_tenant_id` first. An execution context that never bound a tenant
+(a background task that did not inherit the request context) reads as the
+sentinel, and under multi the sentinel is not a tenant.
+
+The **organization** is not part of any of this. It is billing attribution
+(ADR-017 D2), carried in its own contextvar, stamped on rows by writers, and read
+by nothing that decides visibility. `get_current_billing_organization_id` answers
+`None` whenever nobody pays for the account, which is an ordinary state and never
+a refusal.
 
 *Rejected alternative: scoping the trusted load itself — it backs the write-policy
 check and internal ingestion, neither of which has an actor to scope by.*

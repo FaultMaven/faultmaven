@@ -111,6 +111,7 @@ def _validating_case() -> Case:
     case = Case(
         case_id="case_000000000001",
         user_id="u",
+        enterprise_id="e",
         organization_id="o",
         title="t",
         description="d",

@@ -22,6 +22,7 @@ from faultmaven.api.middleware.auth import require_platform_admin
 from faultmaven.api.operator_grants import (
     build_grant,
     get_operator_grant_repository,
+    refuse_retired_filter,
     resolved_deployment_mode,
     validate_identifier,
 )
@@ -79,7 +80,7 @@ async def create_grant(
             "grant_id": grant.grant_id,
             "operator_user_id": current_user.user_id,
             "target_case_id": grant.target_case_id,
-            "target_organization_id": grant.target_organization_id,
+            "target_enterprise_id": grant.target_enterprise_id,
             "expires_at": grant.expires_at.isoformat(),
         },
     )
@@ -94,8 +95,16 @@ async def list_grants(
         None, description="Filter by the operator holding the grant"
     ),
     case_id: Optional[str] = Query(None, description="Filter by the case granted"),
+    enterprise_id: Optional[str] = Query(
+        None, description="Filter by the enterprise whose case was granted"
+    ),
     organization_id: Optional[str] = Query(
-        None, description="Filter by the organization whose case was granted"
+        None,
+        include_in_schema=False,
+        description=(
+            "Retired (ADR-017). Declared only so it can be REFUSED: undeclared, "
+            "it would be dropped and the caller handed every grant."
+        ),
     ),
     live_only: bool = Query(
         False, description="Only grants that authorise a read right now"
@@ -112,10 +121,12 @@ async def list_grants(
     a window — so reading them needs no grant of its own, the same reasoning
     that lets the audit trail be read in Cloud.
     """
+    refuse_retired_filter({"organization_id": organization_id}, "enterprise_id")
+
     grants, total = await grant_repo.list_grants(
         operator_user_id=operator_user_id,
         target_case_id=case_id,
-        target_organization_id=organization_id,
+        target_enterprise_id=enterprise_id,
         live_only=live_only,
         limit=limit,
         offset=offset,

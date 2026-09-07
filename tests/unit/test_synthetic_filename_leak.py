@@ -128,7 +128,7 @@ def _case(files: list[UploadedFile], evidence: list[Evidence], turn: int = 1) ->
         title="Test Case",
         description="Test description",
         user_id="user_123",
-        organization_id="org_123",
+        enterprise_id="org_123",
         state=CaseState.INVESTIGATING,
         inquiry=InquiryData(
             problem_statement_confirmed=True,
@@ -841,7 +841,7 @@ async def test_uploaded_at_turn_is_immutable_across_a_deduped_reupload():
     row = _pasted_file(turn=3).model_copy(update={"content_hash": "a" * 64})
     case = Case(
         case_id="case_aabb11223344",
-        organization_id="org_123",
+        enterprise_id="org_123",
         title="t",
         description="d",
         state=CaseState.INQUIRY,
@@ -880,7 +880,7 @@ async def test_uploaded_at_turn_is_immutable_across_a_deduped_reupload():
         async with factory() as session:
             repo = SQLiteCaseRepository(session)
             await repo._upsert_uploaded_files(
-                case.case_id, case.uploaded_files, "org_123"
+                case.case_id, case.uploaded_files, "ent_123", None
             )
             persisted = (
                 await session.execute(

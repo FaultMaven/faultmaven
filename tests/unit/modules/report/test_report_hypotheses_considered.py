@@ -34,7 +34,7 @@ def _case_with(*hypotheses: Hypothesis) -> Case:
     case = Case(
         case_id="case_aa0000000003",
         user_id="user_x",
-        organization_id="org_x",
+        enterprise_id="org_x",
         title="Checkout OOMKills",
         description="checkout-api is OOM-killed since v2.14.0.",
         state=CaseState.INVESTIGATING,

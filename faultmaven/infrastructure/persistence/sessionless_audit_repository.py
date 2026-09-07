@@ -36,6 +36,7 @@ class SessionlessAuditRepository(IAuditRepository):
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
         session_id: Optional[str] = None,
+        enterprise_id: Optional[str] = None,
         organization_id: Optional[str] = None,
         success: bool = True,
     ) -> bool:
@@ -52,6 +53,7 @@ class SessionlessAuditRepository(IAuditRepository):
                 ip_address=ip_address,
                 user_agent=user_agent,
                 session_id=session_id,
+                enterprise_id=enterprise_id,
                 organization_id=organization_id,
                 success=success,
             )
@@ -64,10 +66,10 @@ class SessionlessAuditRepository(IAuditRepository):
             repo = PostgreSQLAuditRepository(session)
             return await repo.get_user_audit_log(user_id, limit, offset)
 
-    async def get_organization_audit_log(
-        self, organization_id: str, limit: int = 100, offset: int = 0
+    async def get_enterprise_audit_log(
+        self, enterprise_id: str, limit: int = 100, offset: int = 0
     ) -> List[UserAuditLog]:
-        """Get audit log entries for an organization."""
+        """Get audit log entries for an enterprise."""
         async with get_db_session() as session:
             repo = PostgreSQLAuditRepository(session)
-            return await repo.get_organization_audit_log(organization_id, limit, offset)
+            return await repo.get_enterprise_audit_log(enterprise_id, limit, offset)

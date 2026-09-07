@@ -95,7 +95,7 @@ class ReportRecommendationService:
         case: Case,
         *,
         requester_user_id: str,
-        requester_organization_id: Optional[str] = None,
+        requester_enterprise_id: Optional[str] = None,
     ) -> ReportRecommendation:
         """
         Determine which report types to offer for case, for one requester.
@@ -108,9 +108,13 @@ class ReportRecommendationService:
             case: Case object with investigation context
             requester_user_id: The authenticated caller. The similarity search
                 is scoped to what THIS principal can read.
-            requester_organization_id: The caller's tenant claim; consumed only
-                by the team arm (``resolve_shared_kb_ids`` collapses the
-                Standalone sentinel under multi-tenant itself).
+            requester_enterprise_id: The ENTERPRISE the request is bound to;
+                consumed only by the team arm, which matches the share row's own
+                ``enterprise_id`` (ADR-017 D1/D4 — that match is what lets a team
+                span organizations). The ORGANIZATION is a billing fact and is
+                never a visibility predicate, so it must not appear here.
+                ``resolve_shared_kb_ids`` collapses the Standalone sentinel under
+                multi-tenant itself.
 
         Returns:
             ReportRecommendation with available types and runbook suggestion
@@ -138,7 +142,7 @@ class ReportRecommendationService:
         existing_runbooks = await self._find_similar_runbooks(
             case,
             requester_user_id=requester_user_id,
-            requester_organization_id=requester_organization_id,
+            requester_enterprise_id=requester_enterprise_id,
         )
 
         # Generate runbook recommendation based on similarity
@@ -172,7 +176,7 @@ class ReportRecommendationService:
         return recommendation
 
     async def _resolve_requester_scope(
-        self, requester_user_id: str, requester_organization_id: Optional[str]
+        self, requester_user_id: str, requester_enterprise_id: Optional[str]
     ) -> dict:
         """Resolve the requester's KB read scope for the similarity search.
 
@@ -193,7 +197,7 @@ class ReportRecommendationService:
                     requester_user_id
                 )
             shared_ids = await resolve_shared_kb_ids(
-                self._share_repository, team_ids, requester_organization_id
+                self._share_repository, team_ids, requester_enterprise_id
             )
         except Exception as e:
             logger.warning(
@@ -213,7 +217,7 @@ class ReportRecommendationService:
         case: Case,
         *,
         requester_user_id: str,
-        requester_organization_id: Optional[str],
+        requester_enterprise_id: Optional[str],
     ) -> List[RunbookMatch]:
         """
         Find existing runbooks similar to current case, within the requester's
@@ -225,7 +229,7 @@ class ReportRecommendationService:
             List of similar runbooks sorted by similarity score (descending)
         """
         scope_filter = await self._resolve_requester_scope(
-            requester_user_id, requester_organization_id
+            requester_user_id, requester_enterprise_id
         )
 
         # No try/except around this. Every failure mode here — an unavailable

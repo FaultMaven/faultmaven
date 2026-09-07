@@ -61,7 +61,7 @@ def _grant(grant_id: str, **overrides) -> OperatorAccessGrant:
         grant_id=grant_id,
         operator_user_id=OPERATOR,
         target_case_id=CASE_ID,
-        target_organization_id=ORG,
+        target_enterprise_id=ORG,
         reason="customer reports the investigation is stuck; ticket SUP-4821",
         created_at=now,
         expires_at=now + timedelta(minutes=60),
@@ -247,12 +247,12 @@ class TestListing:
         await _store(session_factory, _grant("g-here"))
         await _store(
             session_factory,
-            _grant("g-elsewhere", target_organization_id="org-other"),
+            _grant("g-elsewhere", target_enterprise_id="org-other"),
         )
 
         async with session_factory() as session:
             found, total = await OperatorGrantRepository(session).list_grants(
-                target_organization_id=ORG
+                target_enterprise_id=ORG
             )
 
         assert total == 1

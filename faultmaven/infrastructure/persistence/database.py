@@ -187,30 +187,34 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
         # Re-apply the RLS tenant scope on EVERY transaction begin. The scope is
         # transaction-local (set_config(..., is_local=true)), so setting it once
         # per session would leave any query after a mid-session commit unscoped
-        # (a non-superuser role would then read zero rows). The org comes from the
-        # request/task contextvar (defaults to the Standalone org). PostgreSQL only
-        # — this branch is PG.
+        # (a non-superuser role would then read zero rows). The enterprise — the
+        # isolation boundary under ADR-017 — comes from the request/task
+        # contextvar (defaults to the Standalone enterprise). PostgreSQL only —
+        # this branch is PG.
         #
         # ORDERING INVARIANT — bind the tenant BEFORE the transaction's first
         # statement. This listener samples the contextvar once, at BEGIN. A
-        # set_current_org_id() call after that reaches no further: the GUC keeps
-        # whatever was bound at BEGIN for the rest of the transaction, and there
-        # is no error to notice, so the caller reads and writes under the stale
-        # scope believing it rebound. What makes this safe in practice is that
-        # the repositories are sessionless — one get_db_session(), and so one
-        # transaction, per operation — which puts almost every rebind between
+        # set_current_enterprise_id() call after that reaches no further: the GUC
+        # keeps whatever was bound at BEGIN for the rest of the transaction, and
+        # there is no error to notice, so the caller reads and writes under the
+        # stale scope believing it rebound. What makes this safe in practice is
+        # that the repositories are sessionless — one get_db_session(), and so
+        # one transaction, per operation — which puts almost every rebind between
         # transactions rather than inside one. Code that holds a single session
         # across several steps (the fm-* provisioning CLIs) does not get that
         # for free and must bind first or not at all; #935 was this bug.
         @event.listens_for(_engine.sync_engine, "begin")
         def _scope_tenant_per_transaction(conn):
             from faultmaven.config.tenant_context import (
-                get_current_org_id,
+                get_current_enterprise_id,
             )
 
             conn.execute(
-                text("SELECT set_config('app.current_org_id', :org_id, true)"),
-                {"org_id": get_current_org_id()},
+                text(
+                    "SELECT set_config('app.current_enterprise_id', "
+                    ":enterprise_id, true)"
+                ),
+                {"enterprise_id": get_current_enterprise_id()},
             )
 
     return _engine

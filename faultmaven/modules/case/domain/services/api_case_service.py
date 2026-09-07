@@ -7,7 +7,7 @@ and domain repositories. It handles:
 - Business logic and validation
 - Transaction coordination across multiple repositories
 - Error translation (domain errors → service exceptions)
-- Authorization checks (organization ownership)
+- Authorization checks (enterprise ownership)
 - Audit logging
 
 Architecture:
@@ -53,7 +53,7 @@ class APICaseService(BaseService):
     """Service for API case management operations.
 
     This service provides a clean API layer for case management with:
-    - Organization-level authorization on all operations
+    - Enterprise-level authorization on all operations
     - Service-level exception translation
     - Unified logging and error handling
     - Transaction coordination across repositories
@@ -63,7 +63,7 @@ class APICaseService(BaseService):
         case_repo: Case repository for case persistence
         session_repo: Investigation session repository
         evidence_repo: Evidence artifact repository
-        tenant_provider: Provider for deployment-neutral organization context
+        tenant_provider: Provider for deployment-neutral enterprise context
     """
 
     def __init__(
@@ -77,7 +77,7 @@ class APICaseService(BaseService):
         Args:
             case_repo: Case repository (handles evidence and agent executions - migrated from separate repositories)
             session_repo: Investigation session repository
-            tenant_provider: Provider for deployment-neutral organization context (TASK-023)
+            tenant_provider: Provider for deployment-neutral enterprise context (TASK-023)
         """
         super().__init__("api_case_service")
         self.case_repo = case_repo
@@ -91,7 +91,7 @@ class APICaseService(BaseService):
     async def create_case(
         self,
         user_id: str,
-        organization_id: Optional[str] = None,
+        enterprise_id: Optional[str] = None,
         title: str = "",
         description: str = "",
         severity: Optional[CaseSeverity] = None,
@@ -101,12 +101,12 @@ class APICaseService(BaseService):
         """Create a new case.
 
         Deployment-neutral implementation using TenantProvider (TASK-023):
-        - Single-tenant: organization_id ignored, uses default organization
-        - Multi-tenant: organization_id required, validates membership
+        - Single-tenant: enterprise_id ignored, uses the default enterprise
+        - Multi-tenant: enterprise_id required, validates membership
 
         Args:
             user_id: User creating the case
-            organization_id: Organization ID (optional for single-tenant, required for multi-tenant)
+            enterprise_id: Enterprise ID (optional for single-tenant, required for multi-tenant)
             title: Case title
             description: Case description
             severity: Case severity level
@@ -120,24 +120,24 @@ class APICaseService(BaseService):
             ValidationException: If inputs invalid
             ServiceError: If creation fails
         """
-        # Resolve organization context using TenantProvider (deployment-neutral)
-        resolved_org_id = organization_id
+        # Resolve enterprise context using TenantProvider (deployment-neutral)
+        resolved_enterprise_id = enterprise_id
         if self.tenant_provider and current_user:
             try:
-                organization = await self.tenant_provider.get_current_organization(
-                    current_user=current_user, organization_id=organization_id
+                enterprise = await self.tenant_provider.get_current_enterprise(
+                    current_user=current_user, enterprise_id=enterprise_id
                 )
-                resolved_org_id = organization.organization_id
+                resolved_enterprise_id = enterprise.enterprise_id
             except Exception as e:
                 self.log_error("tenant_provider_resolution", e, user_id=user_id)
-                # Fall back to provided organization_id if TenantProvider fails
-                if not organization_id:
+                # Fall back to provided enterprise_id if TenantProvider fails
+                if not enterprise_id:
                     raise
 
         self.log_operation(
             "create_case",
             user_id=user_id,
-            organization_id=resolved_org_id,
+            enterprise_id=resolved_enterprise_id,
             title=title,
             severity=severity.value if severity else None,
         )
@@ -152,15 +152,15 @@ class APICaseService(BaseService):
         if not user_id or not user_id.strip():
             raise ValidationException("user_id: User ID is required")
 
-        if not resolved_org_id or not resolved_org_id.strip():
-            raise ValidationException("organization_id: Organization ID is required")
+        if not resolved_enterprise_id or not resolved_enterprise_id.strip():
+            raise ValidationException("enterprise_id: Enterprise ID is required")
 
         try:
             # Create case with milestone-based model
             case = Case(
                 case_id=f"case_{uuid4().hex[:12]}",
                 user_id=user_id.strip(),
-                organization_id=resolved_org_id.strip(),
+                enterprise_id=resolved_enterprise_id.strip(),
                 title=title.strip(),
                 description=description.strip() if description else "",
                 state=CaseState.INQUIRY,
@@ -178,7 +178,7 @@ class APICaseService(BaseService):
                 "create_case_success",
                 case_id=saved_case.case_id,
                 user_id=user_id,
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
             )
 
             return saved_case
@@ -187,25 +187,25 @@ class APICaseService(BaseService):
             raise
         except Exception as e:
             self.log_error(
-                "create_case", e, user_id=user_id, organization_id=organization_id
+                "create_case", e, user_id=user_id, enterprise_id=enterprise_id
             )
             raise ServiceError(f"Failed to create case: {e}")
 
     async def get_case(
         self,
         case_id: str,
-        organization_id: str,
+        enterprise_id: str,
     ) -> Optional[Case]:
-        """Get case by ID with organization check.
+        """Get case by ID with enterprise check.
 
         Args:
             case_id: Case ID to retrieve
-            organization_id: Organization for authorization check
+            enterprise_id: Enterprise for authorization check
 
         Returns:
             Case if found and authorized, None otherwise
         """
-        self.log_operation("get_case", case_id=case_id, organization_id=organization_id)
+        self.log_operation("get_case", case_id=case_id, enterprise_id=enterprise_id)
 
         if not case_id or not case_id.strip():
             return None
@@ -216,35 +216,33 @@ class APICaseService(BaseService):
             if not case:
                 return None
 
-            # Authorization check - organization must own the case
-            if case.organization_id != organization_id:
+            # Authorization check - enterprise must own the case
+            if case.enterprise_id != enterprise_id:
                 self.log_operation(
                     "get_case_unauthorized",
                     case_id=case_id,
-                    organization_id=organization_id,
-                    case_org_id=case.organization_id,
+                    enterprise_id=enterprise_id,
+                    case_enterprise_id=case.enterprise_id,
                 )
                 return None
 
             return case
 
         except Exception as e:
-            self.log_error(
-                "get_case", e, case_id=case_id, organization_id=organization_id
-            )
+            self.log_error("get_case", e, case_id=case_id, enterprise_id=enterprise_id)
             return None
 
     async def update_case(
         self,
         case_id: str,
-        organization_id: str,
+        enterprise_id: str,
         updates: Dict[str, Any],
     ) -> Case:
         """Update case with authorization check.
 
         Args:
             case_id: Case ID to update
-            organization_id: Organization for authorization check
+            enterprise_id: Enterprise for authorization check
             updates: Fields to update (title, description, severity, status, etc.)
 
         Returns:
@@ -252,13 +250,13 @@ class APICaseService(BaseService):
 
         Raises:
             NotFoundError: If case not found
-            AuthorizationError: If organization doesn't own case
+            AuthorizationError: If enterprise doesn't own case
             ValidationException: If updates invalid
         """
         self.log_operation(
             "update_case",
             case_id=case_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             update_fields=list(updates.keys()) if updates else [],
         )
 
@@ -278,9 +276,9 @@ class APICaseService(BaseService):
                 raise NotFoundError("Case", case_id)
 
             # Authorization check
-            if case.organization_id != organization_id:
+            if case.enterprise_id != enterprise_id:
                 raise AuthorizationError(
-                    f"Case {case_id} not accessible by organization {organization_id}"
+                    f"Case {case_id} not accessible by enterprise {enterprise_id}"
                 )
 
             # Validate and apply updates
@@ -353,7 +351,7 @@ class APICaseService(BaseService):
             self.log_operation(
                 "update_case_success",
                 case_id=case_id,
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
             )
 
             return saved_case
@@ -362,14 +360,14 @@ class APICaseService(BaseService):
             raise
         except Exception as e:
             self.log_error(
-                "update_case", e, case_id=case_id, organization_id=organization_id
+                "update_case", e, case_id=case_id, enterprise_id=enterprise_id
             )
             raise ServiceError(f"Failed to update case: {e}")
 
     async def delete_case(
         self,
         case_id: str,
-        organization_id: str,
+        enterprise_id: str,
     ) -> bool:
         """Delete case with authorization check.
 
@@ -381,17 +379,15 @@ class APICaseService(BaseService):
 
         Args:
             case_id: Case ID to delete
-            organization_id: Organization for authorization check
+            enterprise_id: Enterprise for authorization check
 
         Returns:
             True if deleted, False if not found
 
         Raises:
-            AuthorizationError: If organization doesn't own case
+            AuthorizationError: If enterprise doesn't own case
         """
-        self.log_operation(
-            "delete_case", case_id=case_id, organization_id=organization_id
-        )
+        self.log_operation("delete_case", case_id=case_id, enterprise_id=enterprise_id)
 
         if not case_id or not case_id.strip():
             return False
@@ -404,9 +400,9 @@ class APICaseService(BaseService):
                 return False
 
             # Authorization check
-            if case.organization_id != organization_id:
+            if case.enterprise_id != enterprise_id:
                 raise AuthorizationError(
-                    f"Case {case_id} not accessible by organization {organization_id}"
+                    f"Case {case_id} not accessible by enterprise {enterprise_id}"
                 )
 
             # Delete the case (CASCADE will handle related entities via database)
@@ -416,7 +412,7 @@ class APICaseService(BaseService):
                 self.log_operation(
                     "delete_case_success",
                     case_id=case_id,
-                    organization_id=organization_id,
+                    enterprise_id=enterprise_id,
                 )
 
             return deleted
@@ -425,7 +421,7 @@ class APICaseService(BaseService):
             raise
         except Exception as e:
             self.log_error(
-                "delete_case", e, case_id=case_id, organization_id=organization_id
+                "delete_case", e, case_id=case_id, enterprise_id=enterprise_id
             )
             return False
 
@@ -435,7 +431,7 @@ class APICaseService(BaseService):
 
     async def list_cases(
         self,
-        organization_id: Optional[str] = None,
+        enterprise_id: Optional[str] = None,
         user_id: Optional[str] = None,
         state: Optional[CaseState] = None,
         severity: Optional[CaseSeverity] = None,
@@ -444,14 +440,14 @@ class APICaseService(BaseService):
         offset: int = 0,
         current_user: Optional[Any] = None,
     ) -> List[Case]:
-        """List cases for organization with filters.
+        """List cases for enterprise with filters.
 
         Deployment-neutral implementation using TenantProvider (TASK-023):
-        - Single-tenant: organization_id ignored, lists all cases in default org
-        - Multi-tenant: organization_id required, lists cases with membership check
+        - Single-tenant: enterprise_id ignored, lists all cases in default org
+        - Multi-tenant: enterprise_id required, lists cases with membership check
 
         Args:
-            organization_id: Organization ID (optional for single-tenant, required for multi-tenant)
+            enterprise_id: Enterprise ID (optional for single-tenant, required for multi-tenant)
             user_id: Optional filter by reporter
             state: Optional filter by status
             severity: Optional filter by severity
@@ -463,23 +459,23 @@ class APICaseService(BaseService):
         Returns:
             List of cases
         """
-        # Resolve organization context using TenantProvider (deployment-neutral)
-        resolved_org_id = organization_id
+        # Resolve enterprise context using TenantProvider (deployment-neutral)
+        resolved_enterprise_id = enterprise_id
         if self.tenant_provider and current_user:
             try:
-                organization = await self.tenant_provider.get_current_organization(
-                    current_user=current_user, organization_id=organization_id
+                enterprise = await self.tenant_provider.get_current_enterprise(
+                    current_user=current_user, enterprise_id=enterprise_id
                 )
-                resolved_org_id = organization.organization_id
+                resolved_enterprise_id = enterprise.enterprise_id
             except Exception as e:
                 self.log_error("tenant_provider_resolution", e)
-                # Fall back to provided organization_id if TenantProvider fails
-                if not organization_id:
+                # Fall back to provided enterprise_id if TenantProvider fails
+                if not enterprise_id:
                     raise
 
         self.log_operation(
             "list_cases",
-            organization_id=resolved_org_id,
+            enterprise_id=resolved_enterprise_id,
             user_id=user_id,
             state=state.value if state else None,
             severity=severity.value if severity else None,
@@ -488,13 +484,13 @@ class APICaseService(BaseService):
             offset=offset,
         )
 
-        if not resolved_org_id:
+        if not resolved_enterprise_id:
             return []
 
         try:
             # Get cases from repository
             cases, total = await self.case_repo.list(
-                organization_id=resolved_org_id,
+                enterprise_id=resolved_enterprise_id,
                 user_id=user_id,
                 state=state,
                 limit=limit,
@@ -516,7 +512,7 @@ class APICaseService(BaseService):
 
             self.log_operation(
                 "list_cases_result",
-                organization_id=resolved_org_id,
+                enterprise_id=resolved_enterprise_id,
                 count=len(cases),
                 total=total,
             )
@@ -524,13 +520,13 @@ class APICaseService(BaseService):
             return cases
 
         except Exception as e:
-            self.log_error("list_cases", e, organization_id=resolved_org_id)
+            self.log_error("list_cases", e, enterprise_id=resolved_enterprise_id)
             return []
 
     async def get_case_with_details(
         self,
         case_id: str,
-        organization_id: str,
+        enterprise_id: str,
         include_sessions: bool = True,
         include_evidence: bool = True,
     ) -> Optional[Dict[str, Any]]:
@@ -538,7 +534,7 @@ class APICaseService(BaseService):
 
         Args:
             case_id: Case ID
-            organization_id: Organization for authorization
+            enterprise_id: Enterprise for authorization
             include_sessions: Include investigation sessions
             include_evidence: Include evidence artifacts
 
@@ -548,13 +544,13 @@ class APICaseService(BaseService):
         self.log_operation(
             "get_case_with_details",
             case_id=case_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             include_sessions=include_sessions,
             include_evidence=include_evidence,
         )
 
         # Get the case first
-        case = await self.get_case(case_id, organization_id)
+        case = await self.get_case(case_id, enterprise_id)
         if not case:
             return None
 
@@ -585,7 +581,7 @@ class APICaseService(BaseService):
                 "get_case_with_details",
                 e,
                 case_id=case_id,
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
             )
             return None
 
@@ -596,14 +592,14 @@ class APICaseService(BaseService):
     async def assign_case(
         self,
         case_id: str,
-        organization_id: str,
+        enterprise_id: str,
         assigned_to: str,
     ) -> Case:
         """Assign case to user.
 
         Args:
             case_id: Case ID
-            organization_id: Organization for authorization
+            enterprise_id: Enterprise for authorization
             assigned_to: User ID to assign to
 
         Returns:
@@ -611,12 +607,12 @@ class APICaseService(BaseService):
 
         Raises:
             NotFoundError: If case not found
-            AuthorizationError: If organization doesn't own case
+            AuthorizationError: If enterprise doesn't own case
         """
         self.log_operation(
             "assign_case",
             case_id=case_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             assigned_to=assigned_to,
         )
 
@@ -624,7 +620,7 @@ class APICaseService(BaseService):
             raise ValidationException("assigned_to: Assignee user ID is required")
 
         # Get case with authorization check
-        case = await self.get_case(case_id, organization_id)
+        case = await self.get_case(case_id, enterprise_id)
         if not case:
             raise NotFoundError("Case", case_id)
 
@@ -650,7 +646,7 @@ class APICaseService(BaseService):
     async def close_case(
         self,
         case_id: str,
-        organization_id: str,
+        enterprise_id: str,
     ) -> Case:
         """Mark case as RESOLVED (terminal).
 
@@ -661,24 +657,24 @@ class APICaseService(BaseService):
 
         Args:
             case_id: Case ID
-            organization_id: Organization for authorization
+            enterprise_id: Enterprise for authorization
 
         Returns:
             Updated case with state=RESOLVED
 
         Raises:
             NotFoundError: If case not found
-            AuthorizationError: If organization doesn't own case
+            AuthorizationError: If enterprise doesn't own case
             ConflictError: If case already closed
         """
         self.log_operation(
             "close_case",
             case_id=case_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
         )
 
         # Get case with authorization check
-        case = await self.get_case(case_id, organization_id)
+        case = await self.get_case(case_id, enterprise_id)
         if not case:
             raise NotFoundError("Case", case_id)
 
@@ -746,9 +742,9 @@ class APICaseService(BaseService):
 
     async def get_case_statistics(
         self,
-        organization_id: str,
+        enterprise_id: str,
     ) -> Dict[str, Any]:
-        """Get case statistics for organization.
+        """Get case statistics for enterprise.
 
         Returns:
             Statistics including:
@@ -758,12 +754,12 @@ class APICaseService(BaseService):
             - avg_resolution_time
             - unassigned_count
         """
-        self.log_operation("get_case_statistics", organization_id=organization_id)
+        self.log_operation("get_case_statistics", enterprise_id=enterprise_id)
 
         try:
-            # Get all cases for organization
+            # Get all cases for enterprise
             cases, total = await self.case_repo.list(
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
                 limit=10000,  # Get all cases for statistics
                 offset=0,
             )
@@ -813,20 +809,20 @@ class APICaseService(BaseService):
                     else 0
                 ),
                 "unassigned_count": unassigned_count,
-                "organization_id": organization_id,
+                "enterprise_id": enterprise_id,
                 "computed_at": datetime.now(timezone.utc).isoformat(),
             }
 
             self.log_operation(
                 "get_case_statistics_success",
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
                 total_cases=total,
             )
 
             return statistics
 
         except Exception as e:
-            self.log_error("get_case_statistics", e, organization_id=organization_id)
+            self.log_error("get_case_statistics", e, enterprise_id=enterprise_id)
             return {
                 "total_cases": 0,
                 "by_status": {},
@@ -834,7 +830,7 @@ class APICaseService(BaseService):
                 "avg_resolution_time_seconds": 0,
                 "avg_resolution_time_hours": 0,
                 "unassigned_count": 0,
-                "organization_id": organization_id,
+                "enterprise_id": enterprise_id,
                 "error": str(e),
             }
 
@@ -844,14 +840,14 @@ class APICaseService(BaseService):
 
     async def search_cases(
         self,
-        organization_id: str,
+        enterprise_id: str,
         query: str,
         limit: int = 20,
     ) -> List[Case]:
-        """Search cases within organization.
+        """Search cases within enterprise.
 
         Args:
-            organization_id: Organization to search within
+            enterprise_id: Enterprise to search within
             query: Search query text
             limit: Maximum results
 
@@ -860,7 +856,7 @@ class APICaseService(BaseService):
         """
         self.log_operation(
             "search_cases",
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             query=query[:50] if query else None,  # Truncate for logging
             limit=limit,
         )
@@ -871,18 +867,18 @@ class APICaseService(BaseService):
         try:
             cases, total = await self.case_repo.search(
                 query=query,
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
                 limit=limit,
             )
 
             self.log_operation(
                 "search_cases_result",
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
                 count=len(cases),
             )
 
             return cases
 
         except Exception as e:
-            self.log_error("search_cases", e, organization_id=organization_id)
+            self.log_error("search_cases", e, enterprise_id=enterprise_id)
             return []

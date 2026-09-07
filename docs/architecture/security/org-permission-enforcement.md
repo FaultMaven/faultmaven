@@ -3,7 +3,9 @@
 **Status:** Phase 0 landed (#1163) — the machinery exists and **enforces
 nothing**. Phases 1–3 are design. Tracked by [#1040](https://github.com/FaultMaven/faultmaven/issues/1040).
 **Supersedes the "tracked in #706" pointers** in [rbac.md](rbac.md), [iam-design.md](iam-design.md) and `infrastructure/persistence/user_repository.py`.
-**Related:** ADR-012 D9 (operator vs org-admin axes), ADR-006 (`TENANT_PROVIDER=multi` seam), #706 (PR #1039, which settled the role *source* question), #874 / #1042 (membership and role writes must revoke), dash#35 (role-naming reconciliation).
+**Related:** ADR-012 D9 (operator vs org-admin axes), ADR-006 (`TENANT_PROVIDER=multi` seam), #706 (PR #1039, which settled the role *source* question), #874 / #1042 (membership and role writes must revoke), dash#35 (role-naming reconciliation), **ADR-017** (the enterprise isolates, the organization bills — see the open question this raises for Phases 2–3, below).
+
+> **Open question raised by ADR-017.** This document's staged rollout (Phase 2/3) enforces `Permission` values including `cases:read` / `cases:write` / `cases:delete` gated by **organization** role — i.e. it eventually turns org membership into a data-access gate. ADR-017 D2/D5 is explicit that organization roles are the organization's *management* vocabulary and "no longer gate data visibility, which they never should have" — isolation is the enterprise's job (RLS on `enterprise_id`), and sharing is the team's (consent, `resource_shares`). Nothing here is enforced yet (Phase 0 only), so no live behavior contradicts ADR-017 today, but the `ROLE_PERMISSIONS` map in `faultmaven/models/rbac.py` still grants case-level `Permission` values by org role, unchanged by this campaign. Reconciling the two — most plausibly, confining Phases 2–3 to `org:manage_users` / `org:manage_settings` and dropping the case/session/evidence permissions from the org axis — is an open decision for whoever resumes #1040, not settled by this document.
 
 ---
 

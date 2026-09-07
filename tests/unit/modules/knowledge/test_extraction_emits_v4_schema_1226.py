@@ -149,7 +149,7 @@ def _service(provider=None, **kwargs) -> SuggestionService:
 
 async def _extract(svc: SuggestionService) -> KnowledgeSuggestion:
     return await svc.extract_knowledge_from_case(
-        case_id=CASE_ID, organization_id=ORG, extracted_by="user_extractor"
+        case_id=CASE_ID, enterprise_id=ORG, extracted_by="user_extractor"
     )
 
 
@@ -288,7 +288,7 @@ class TestThePromptAsksForV4:
         svc = _service(ScriptedProvider(valid_runbook()))
         suggestion = await svc.extract_knowledge_from_case(
             case_id=CASE_ID,
-            organization_id=ORG,
+            enterprise_id=ORG,
             extracted_by="user_extractor",
             title_suggestion="A Title The Reviewer Chose",
         )
@@ -466,7 +466,7 @@ class TestTheReviewerSeesWhyItWouldBeRefused:
         svc = _service()
         fresh = KnowledgeSuggestion(
             suggestion_id="sug_unevaluated",
-            organization_id=ORG,
+            enterprise_id=ORG,
             case_id=CASE_ID,
             pii_scan_status=PIIScanStatus.CLEAN,
         )
@@ -485,7 +485,7 @@ class TestTheReviewerSeesWhyItWouldBeRefused:
         edited = await svc.update_suggestion(
             suggestion_id=suggestion.suggestion_id,
             content=valid_runbook(),
-            organization_id=ORG,
+            enterprise_id=ORG,
         )
 
         assert edited.validation_passed is True
@@ -500,7 +500,7 @@ class TestTheReviewerSeesWhyItWouldBeRefused:
         edited = await svc.update_suggestion(
             suggestion_id=suggestion.suggestion_id,
             content=valid_runbook().replace("## Sources", "## Not Sources"),
-            organization_id=ORG,
+            enterprise_id=ORG,
         )
 
         assert edited.validation_passed is False
@@ -611,7 +611,7 @@ class TestRedactionKeepsTheDraftPublishable:
         )
         suggestion = await svc.extract_knowledge_from_case(
             case_id=CASE_ID,
-            organization_id=ORG,
+            enterprise_id=ORG,
             extracted_by="user_extractor",
             title_suggestion=title,
         )
@@ -726,7 +726,7 @@ class TestTheVerdictTracksEveryContentMutation:
         await svc.approve_suggestion(
             suggestion_id=suggestion.suggestion_id,
             reviewed_by="user-admin",
-            organization_id=ORG,
+            enterprise_id=ORG,
         )
 
         # Read the suggestion back out of the store rather than inspecting the

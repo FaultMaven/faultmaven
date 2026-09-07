@@ -189,7 +189,7 @@ class TestDeferredImplementationClose:
         # ``description`` is required before INVESTIGATING (Case validator) —
         # one of the real constraints the SimpleNamespace stand-in hid.
         case = Case(
-            organization_id="org_test",
+            enterprise_id="org_test",
             title="deferred fix",
             description="Cross-account AssumeRole fails for the data-processor pods.",
         )
@@ -207,7 +207,7 @@ class TestDeferredImplementationClose:
             # The old fixture set state alone and RAISED, which is why this
             # parameter was dead and the is_terminal guard untested.
             case = Case(
-                organization_id="org_test",
+                enterprise_id="org_test",
                 title="deferred fix",
                 description=case.description,
                 state=CaseState.CLOSED,

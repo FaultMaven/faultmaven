@@ -1,18 +1,18 @@
 """``faultmaven.cli.provision_sso_org`` refuses to bind the wrong tenants (#869).
 
-The script resolves an organization by ``(enterprise, slug)`` and the enterprise
-itself by slug, so a new customer whose slug collides with an existing one
-resolves onto the EXISTING tenant. That is legitimate when an operator means it
-(a second IdP organization for the same customer) and a data-isolation incident
-when they do not — the new customer's users would land in someone else's tenant
-and see their cases.
+The script resolves the enterprise by slug, so a new customer whose slug
+collides with an existing one resolves onto the EXISTING tenant. Under ADR-017
+D1 that tenant is the isolation boundary, so the mistake is a data-isolation
+incident: the new customer's accounts land inside somebody else's wall and
+become eligible for its teams. It is legitimate only when an operator means it
+and says so with ``--enterprise-id``.
 
 ``_ensure_mapping`` is the last gate before that becomes durable, so it checks
 *both* directions of the 1:1 relation and refuses rather than writing:
 
-* the IdP org already points at a different organization (``RemapRefused``);
-* the organization is already claimed by a different IdP org
-  (``OrgAlreadyClaimed``) — the case the ``UNIQUE (provider, organization_id)``
+* the IdP org already points at a different enterprise (``RemapRefused``);
+* the enterprise is already claimed by a different IdP org
+  (``OrgAlreadyClaimed``) — the case the ``UNIQUE (provider, enterprise_id)``
   constraint would otherwise surface as a raw ``IntegrityError``.
 
 Exercised against a real in-memory SQLite engine built from the ORM metadata,
@@ -38,6 +38,7 @@ from faultmaven.infrastructure.persistence.models import (
 pytestmark = pytest.mark.unit
 
 ENTERPRISE_ID = "33333333-3333-3333-3333-333333333333"
+OTHER_ENTERPRISE_ID = "77777777-7777-7777-7777-777777777777"
 ORG_A = "22222222-2222-2222-2222-222222222222"
 ORG_B = "55555555-5555-5555-5555-555555555555"
 
@@ -59,15 +60,19 @@ async def engine():
 async def session(engine):
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as s:
-        s.add(
-            EnterpriseModel(
-                enterprise_id=ENTERPRISE_ID,
-                name="Acme",
-                slug="acme",
-                created_at=_now(),
-                updated_at=_now(),
+        for enterprise_id, slug in (
+            (ENTERPRISE_ID, "acme"),
+            (OTHER_ENTERPRISE_ID, "globex"),
+        ):
+            s.add(
+                EnterpriseModel(
+                    enterprise_id=enterprise_id,
+                    name=slug.title(),
+                    slug=slug,
+                    created_at=_now(),
+                    updated_at=_now(),
+                )
             )
-        )
         for org_id, slug in ((ORG_A, "acme-a"), (ORG_B, "acme-b")):
             s.add(
                 OrganizationModel(
@@ -84,12 +89,12 @@ async def session(engine):
         yield s
 
 
-async def _seed_mapping(session, provider_org_id, organization_id):
+async def _seed_mapping(session, provider_org_id, enterprise_id):
     session.add(
         SSOOrgMappingModel(
             provider="workos",
             provider_org_id=provider_org_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             created_at=_now(),
             updated_at=_now(),
         )
@@ -102,7 +107,7 @@ async def _mapping_rows(session):
 
     result = await session.execute(select(SSOOrgMappingModel))
     return [
-        (row.provider, row.provider_org_id, row.organization_id)
+        (row.provider, row.provider_org_id, row.enterprise_id)
         for row in result.scalars().all()
     ]
 
@@ -112,31 +117,34 @@ async def _mapping_rows(session):
 # =============================================================================
 
 
-async def test_refuses_to_bind_an_org_already_claimed_by_another_idp_org(session):
+async def test_refuses_to_bind_an_enterprise_already_claimed_by_another_idp_org(
+    session,
+):
     """The slug-collision alarm: this tenant already belongs to someone else's
-    IdP organization, so binding a second one would pool two customers."""
-    await _seed_mapping(session, "org_INCUMBENT", ORG_A)
+    IdP organization, so binding a second one would pool two customers inside
+    one isolation boundary."""
+    await _seed_mapping(session, "org_INCUMBENT", ENTERPRISE_ID)
 
     with pytest.raises(provision_sso_org.OrgAlreadyClaimed) as exc:
         await provision_sso_org._ensure_mapping(
-            session, provider_org_id="org_NEWCOMER", organization_id=ORG_A
+            session, provider_org_id="org_NEWCOMER", enterprise_id=ENTERPRISE_ID
         )
 
-    assert exc.value.organization_id == ORG_A
+    assert exc.value.enterprise_id == ENTERPRISE_ID
     assert exc.value.claimed_by == "org_INCUMBENT"
     assert exc.value.requested_by == "org_NEWCOMER"
 
 
 async def test_the_reverse_claim_refusal_writes_nothing(session):
     """A refusal must not leave a partial binding behind."""
-    await _seed_mapping(session, "org_INCUMBENT", ORG_A)
+    await _seed_mapping(session, "org_INCUMBENT", ENTERPRISE_ID)
 
     with pytest.raises(provision_sso_org.OrgAlreadyClaimed):
         await provision_sso_org._ensure_mapping(
-            session, provider_org_id="org_NEWCOMER", organization_id=ORG_A
+            session, provider_org_id="org_NEWCOMER", enterprise_id=ENTERPRISE_ID
         )
 
-    assert await _mapping_rows(session) == [("workos", "org_INCUMBENT", ORG_A)]
+    assert await _mapping_rows(session) == [("workos", "org_INCUMBENT", ENTERPRISE_ID)]
 
 
 async def test_the_refusal_replaces_a_raw_integrity_error(session):
@@ -144,11 +152,11 @@ async def test_the_refusal_replaces_a_raw_integrity_error(session):
     as an unhandled traceback. Pin that it is now a typed refusal."""
     from sqlalchemy.exc import IntegrityError
 
-    await _seed_mapping(session, "org_INCUMBENT", ORG_A)
+    await _seed_mapping(session, "org_INCUMBENT", ENTERPRISE_ID)
 
     with pytest.raises(provision_sso_org.OrgAlreadyClaimed) as exc:
         await provision_sso_org._ensure_mapping(
-            session, provider_org_id="org_NEWCOMER", organization_id=ORG_A
+            session, provider_org_id="org_NEWCOMER", enterprise_id=ENTERPRISE_ID
         )
 
     assert not isinstance(exc.value, IntegrityError)
@@ -159,18 +167,18 @@ async def test_the_refusal_replaces_a_raw_integrity_error(session):
 # =============================================================================
 
 
-async def test_refuses_to_repoint_an_idp_org_at_a_different_organization(session):
-    await _seed_mapping(session, "org_01H", ORG_A)
+async def test_refuses_to_repoint_an_idp_org_at_a_different_enterprise(session):
+    await _seed_mapping(session, "org_01H", ENTERPRISE_ID)
 
     with pytest.raises(provision_sso_org.RemapRefused) as exc:
         await provision_sso_org._ensure_mapping(
-            session, provider_org_id="org_01H", organization_id=ORG_B
+            session, provider_org_id="org_01H", enterprise_id=OTHER_ENTERPRISE_ID
         )
 
     assert exc.value.provider_org_id == "org_01H"
-    assert exc.value.mapped_to == ORG_A
-    assert exc.value.requested == ORG_B
-    assert await _mapping_rows(session) == [("workos", "org_01H", ORG_A)]
+    assert exc.value.mapped_to == ENTERPRISE_ID
+    assert exc.value.requested == OTHER_ENTERPRISE_ID
+    assert await _mapping_rows(session) == [("workos", "org_01H", ENTERPRISE_ID)]
 
 
 # =============================================================================
@@ -180,36 +188,43 @@ async def test_refuses_to_repoint_an_idp_org_at_a_different_organization(session
 
 async def test_creates_the_mapping_when_neither_side_is_bound(session):
     created = await provision_sso_org._ensure_mapping(
-        session, provider_org_id="org_01H", organization_id=ORG_A
+        session, provider_org_id="org_01H", enterprise_id=ENTERPRISE_ID
     )
 
     assert created is True
-    assert await _mapping_rows(session) == [("workos", "org_01H", ORG_A)]
+    assert await _mapping_rows(session) == [("workos", "org_01H", ENTERPRISE_ID)]
 
 
 async def test_re_running_the_same_binding_is_a_quiet_no_op(session):
-    """Idempotence: same IdP org, same organization, nothing written, no raise."""
-    await _seed_mapping(session, "org_01H", ORG_A)
+    """Idempotence: same IdP org, same enterprise, nothing written, no raise."""
+    await _seed_mapping(session, "org_01H", ENTERPRISE_ID)
 
     created = await provision_sso_org._ensure_mapping(
-        session, provider_org_id="org_01H", organization_id=ORG_A
+        session, provider_org_id="org_01H", enterprise_id=ENTERPRISE_ID
     )
 
     assert created is False
-    assert await _mapping_rows(session) == [("workos", "org_01H", ORG_A)]
+    assert await _mapping_rows(session) == [("workos", "org_01H", ENTERPRISE_ID)]
 
 
-async def test_a_second_organization_may_be_bound_to_its_own_idp_org(session):
-    """The refusals are per-pair — an unrelated tenant is unaffected."""
-    await _seed_mapping(session, "org_01H", ORG_A)
+async def test_a_second_enterprise_may_be_bound_to_its_own_idp_org(session):
+    """The refusals are per-pair — an unrelated tenant is unaffected.
+
+    The positive control for the two refusals above: without it they would also
+    hold if ``_ensure_mapping`` refused every second row for any reason.
+    """
+    await _seed_mapping(session, "org_01H", ENTERPRISE_ID)
 
     created = await provision_sso_org._ensure_mapping(
-        session, provider_org_id="org_01J", organization_id=ORG_B
+        session, provider_org_id="org_01J", enterprise_id=OTHER_ENTERPRISE_ID
     )
 
     assert created is True
     assert sorted(await _mapping_rows(session)) == sorted(
-        [("workos", "org_01H", ORG_A), ("workos", "org_01J", ORG_B)]
+        [
+            ("workos", "org_01H", ENTERPRISE_ID),
+            ("workos", "org_01J", OTHER_ENTERPRISE_ID),
+        ]
     )
 
 
@@ -269,21 +284,24 @@ async def test_an_existing_enterprise_slug_resolves_rather_than_creating(session
 
 async def test_a_new_enterprise_slug_creates_one(session):
     enterprise, created = await provision_sso_org._get_or_create_enterprise(
-        session, enterprise_id=None, name="Globex", slug="globex"
+        session, enterprise_id=None, name="Initech", slug="initech"
     )
 
     assert created is True
-    assert enterprise.enterprise_id != ENTERPRISE_ID
+    assert enterprise.enterprise_id not in (ENTERPRISE_ID, OTHER_ENTERPRISE_ID)
 
 
 async def test_the_default_team_is_created_once_then_resolved(session):
+    """One default team per ENTERPRISE (ADR-017 D4): a team belongs to the
+    isolation boundary, not to a billing group."""
     team, created = await provision_sso_org._get_or_create_default_team(
-        session, organization_id=ORG_A
+        session, enterprise_id=ENTERPRISE_ID
     )
     assert created is True
+    assert team.enterprise_id == ENTERPRISE_ID
 
     again, created_again = await provision_sso_org._get_or_create_default_team(
-        session, organization_id=ORG_A
+        session, enterprise_id=ENTERPRISE_ID
     )
     assert created_again is False
     assert again.team_id == team.team_id
@@ -425,35 +443,52 @@ def provision_against(monkeypatch, session):
     return provision_sso_org.provision
 
 
-async def test_binding_a_new_idp_org_onto_an_existing_tenant_warns(
+async def test_binding_a_new_idp_org_onto_an_enterprise_matched_by_slug_warns(
     provision_against, capsys
 ):
     """The slug collision this whole module exists to catch: --slug resolves onto
-    a tenant somebody else already owns, and its cases come with it.
+    an enterprise somebody else already owns.
 
-    Paired with the test below — same enterprise, and only the slug differs
-    between "you are about to join someone else's tenant" and "you just made
-    your own"."""
+    Under ADR-017 D1 that enterprise is the isolation boundary, so the new
+    customer's accounts land inside somebody else's wall and become eligible for
+    its teams. Paired with the two tests below — the same enterprise, and only
+    how the operator named it decides between "you are about to join someone
+    else's tenant" and "you said so".
+    """
     ok = await provision_against(
         name="Not Acme",
-        slug="acme-a",
+        slug="acme",
         workos_org_id="org_NEW",
-        enterprise_id=ENTERPRISE_ID,
+        enterprise_id=None,
     )
 
     assert ok is True
     out = capsys.readouterr().out
     assert "REUSING AN EXISTING TENANT" in out
-    assert ORG_A in out
+    assert ENTERPRISE_ID in out
 
 
-async def test_a_new_org_under_an_existing_enterprise_does_not_warn(
-    provision_against, capsys
-):
+async def test_an_empty_enterprise_id_still_warns(provision_against, capsys):
+    """``--enterprise-id ""`` — an unset shell variable in the documented kubectl
+    recipe. ``_get_or_create_enterprise`` tests truthiness, so it takes the slug
+    path; the warning must read it the same way rather than as a named parent."""
+    ok = await provision_against(
+        name="Acme Reseller", slug="acme", workos_org_id="org_RES2", enterprise_id=""
+    )
+
+    assert ok is True
+    assert "REUSING AN EXISTING TENANT" in capsys.readouterr().out
+
+
+async def test_a_named_enterprise_does_not_warn(provision_against, capsys):
     """The documented --enterprise-id recipe (a second organization for the same
-    customer). The organization is the isolation boundary and this run created
-    it, so there is no reuse to confirm — warning here would tell the operator
-    that a tenant they just made is somebody else's."""
+    customer). The operator named the isolation boundary, which is the whole of
+    what the alarm exists to make them confirm — warning here would cry wolf on
+    the script's own documented usage.
+
+    The positive control for the two tests above: the same existing enterprise,
+    the same new IdP binding, and only the naming differs.
+    """
     ok = await provision_against(
         name="Acme EU",
         slug="acme-eu",
@@ -462,43 +497,20 @@ async def test_a_new_org_under_an_existing_enterprise_does_not_warn(
     )
 
     assert ok is True
-    out = capsys.readouterr().out
-    assert "REUSING AN EXISTING TENANT" not in out
-    # Named explicitly, so the parent is the operator's stated intent.
-    assert "UNDER AN EXISTING ENTERPRISE" not in out
+    assert "⚠️" not in capsys.readouterr().out
 
 
-async def test_an_enterprise_matched_by_slug_warns_about_the_parent(
-    provision_against, capsys
-):
-    """The other half of the collision: --slug matches an existing *enterprise*,
-    so a new customer is silently parented under an existing one. No isolation
-    breach — the organization is new — but an account under the wrong enterprise
-    fails login closed and needs a manual migration to move."""
+async def test_a_brand_new_enterprise_does_not_warn(provision_against, capsys):
+    """Nothing was reused, so there is nothing to confirm."""
     ok = await provision_against(
-        name="Acme Reseller", slug="acme", workos_org_id="org_RES", enterprise_id=None
+        name="Fresh Co",
+        slug="fresh-co",
+        workos_org_id="org_FRESHCO",
+        enterprise_id=None,
     )
 
     assert ok is True
-    out = capsys.readouterr().out
-    assert "UNDER AN EXISTING ENTERPRISE" in out
-    assert ENTERPRISE_ID in out
-    # The tenant itself is new, so the louder alarm must stay silent.
-    assert "REUSING AN EXISTING TENANT" not in out
-
-
-async def test_an_empty_enterprise_id_still_warns_about_the_parent(
-    provision_against, capsys
-):
-    """`--enterprise-id ""` — an unset shell variable in the documented kubectl
-    recipe. `_get_or_create_enterprise` tests truthiness, so it takes the slug
-    path; the warning must read it the same way rather than as a named parent."""
-    ok = await provision_against(
-        name="Acme Reseller", slug="acme", workos_org_id="org_RES2", enterprise_id=""
-    )
-
-    assert ok is True
-    assert "UNDER AN EXISTING ENTERPRISE" in capsys.readouterr().out
+    assert "⚠️" not in capsys.readouterr().out
 
 
 async def test_a_refusal_leaves_no_half_provisioned_tenant(
@@ -511,7 +523,7 @@ async def test_a_refusal_leaves_no_half_provisioned_tenant(
     next run's slug lookup dangerous."""
     from sqlalchemy import select
 
-    await _seed_mapping(session, "org_TAKEN", ORG_B)
+    await _seed_mapping(session, "org_TAKEN", OTHER_ENTERPRISE_ID)
 
     ok = await provision_against(
         name="Brand New",
@@ -522,8 +534,7 @@ async def test_a_refusal_leaves_no_half_provisioned_tenant(
 
     assert ok is False
     assert (
-        "already mapped to a different FaultMaven organization"
-        in capsys.readouterr().out
+        "already mapped to a different FaultMaven enterprise" in capsys.readouterr().out
     )
     # The enterprise/organization/team this run got as far as creating are gone.
     survivors = (
@@ -536,7 +547,9 @@ async def test_a_refusal_leaves_no_half_provisioned_tenant(
         .all()
     )
     assert survivors == []
-    assert await _mapping_rows(session) == [("workos", "org_TAKEN", ORG_B)]
+    assert await _mapping_rows(session) == [
+        ("workos", "org_TAKEN", OTHER_ENTERPRISE_ID)
+    ]
 
 
 async def test_an_idempotent_re_run_stays_quiet(provision_against, capsys):

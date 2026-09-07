@@ -1,12 +1,12 @@
 # FaultMaven Case Storage Design - Performant Production Standard
 
-**Version**: 4.1
+**Version**: 5.0
 **Status**: Authoritative Standard
-**Last Updated**: 2026-05-10
+**Last Updated**: 2026-09-06
 
-> **Scope**: This document reflects the live schema as of migration `c5d6e7f8a9b0` (033, current head). All DDL below matches the SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/models.py`. When this doc disagrees with the ORM, the ORM is the source of truth.
+> **Scope**: This document reflects the live schema as of the single baseline migration `a1e0c17bd001` (`001_enterprise_baseline`, current head). All DDL below matches the SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/models.py`. When this doc disagrees with the ORM, the ORM is the source of truth.
 
-> **NOTE on `organization_id` placement**: All tenanted case-domain tables carry `organization_id NOT NULL FK` for RLS policy enforcement in PostgreSQL and direct repository-layer filtering in both dialects. The per-table DDL below reflects this placement on every tenanted table.
+> **NOTE on `enterprise_id` / `organization_id` placement (ADR-017)**: Three tiers answer three separate questions. Every tenanted case-domain table carries `enterprise_id NOT NULL FK` — the isolation boundary, and the key every PostgreSQL RLS policy reads — denormalized directly onto the row so RLS never has to join through `cases`. The same tables also carry `organization_id`, but that column is **nullable billing attribution** (`ON DELETE SET NULL`), stamped from the actor's organization at write time and never read as a visibility predicate. The per-table DDL below reflects this placement on every tenanted table.
 
 ---
 
@@ -32,13 +32,13 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 
 ## Implementation Status
 
-**Current State** (as of 2026-05-11):
+**Current State**:
 
 | Component | Status | Location |
 | --- | --- | --- |
 | ✅ Design | Approved | This document |
-| ✅ ORM Models | Complete | `faultmaven/infrastructure/persistence/models.py` (32 tables) |
-| ✅ Migration Chain | Complete | `alembic/versions/` — head revision `c5d6e7f8a9b0` (033) |
+| ✅ ORM Models | Complete | `faultmaven/infrastructure/persistence/models.py` |
+| ✅ Migration | Complete | `alembic/versions/` — single baseline `a1e0c17bd001` (`001_enterprise_baseline`), current head |
 | ✅ PostgreSQL Repository | Complete | `postgresql_hybrid_case_repository.py` |
 | ✅ SQLite Repository | Complete | `sqlite_case_repository.py` |
 | ✅ SQLite Integration Tests | Complete | Tests passing with real SQLite database |
@@ -46,37 +46,7 @@ For the complete policy on dialect tiering, the per-table deployment matrix, and
 | ⏳ Performance Validation | Pending | Benchmarks needed |
 | ⏳ Production Deploy | Pending | PostgreSQL not yet deployed to K8s |
 
-**Migration Chain** (linear; current head is `c5d6e7f8a9b0`):
-
-| # | Revision | Description |
-| --- | --- | --- |
-| 001 | `c4689af8aa3f` | Clean baseline — creates all 32 tables and RBAC seed data |
-| 002 | `00eab5e0d387` | `evidence`: restore `summary`, rename `content` → `extract` (nullable for Path 2) |
-| 003 | `a3957258f451` | `users.enterprise_id` and `organizations.enterprise_id` relaxed to nullable (transitional) |
-| 004 | `f7bbadb43e4c` | `uploaded_files`: drop `preprocessing_summary` column |
-| 005 | `24a5adc58c77` | `cases`: relax description CHECK to `status IN ('inquiry','closed') OR LENGTH(TRIM(description)) > 0` |
-| 006 | `be112b702fd4` | Enterprise tier bootstrap: seed default enterprise, backfill, tighten `enterprise_id` to NOT NULL |
-| 007 | `05b6eaf5baad` | Drop `users_password_or_sso` CHECK constraint to permit passwordless dev-login |
-| 008 | `317a8c329673` | `case_actions`: add `triggered_by VARCHAR(50) NOT NULL` (drop existing rows, no backfill) |
-| 009 | `4b7e2f9d3a18` | Evidence/Solution coherence: `evidence` adds `primary_purpose`, `analysis`, `processing_mode`, `advances_milestones`, `collected_by`; `solutions` drops dead `created_by`/`updated_by`, renames `implemented_at`→`applied_at` and `verification_timestamp`→`verified_at`, adds `proposed_by`, `applied_by`, `verification_method`, `verification_evidence_id` (FK), `effectiveness` |
-| 010 | `0b5e8c4f7d29` | Strict evidence-model redesign: collapse the dual evidence-creation paths. `uploaded_files` adds `summary`, `structural_index`, `data_type`, `coverage_start_ts`, `coverage_end_ts` (preprocessing artifacts move here from the auto-DOCUMENT Evidence rows). `evidence` drops `form` column and adds `evidence_source_invariant` CHECK: `source_file_id IS NOT NULL OR source_type = 'user_description'` — every Evidence row has a known source. All existing evidence rows are dropped (pre-production; their `extract` carried structural-index dumps incompatible with the new claim-anchored semantics). Pydantic ``EvidenceCategory`` collapses to 4 values (drops `CONTEXTUAL_EVIDENCE` and `REJECTED`); ``EvidenceSourceType`` gains `USER_DESCRIPTION` (the chat-quote case). |
-| 011–014 | … | (rows omitted — see alembic/versions for evidence-needs and related migrations) |
-| 015 | `f015a7b2c3d4` | Rename case-lifecycle `status`→`state`: `cases`/`hypotheses`/`solutions`/`evidence_needs`/`investigation_sessions` columns + CHECK constraints + indexes; `case_actions.from_status`/`to_status`→`from_state`/`to_state`. Projection columns (`agent_executions.status`, `reports.generation_status`, etc.) intentionally keep `status`. |
-| 016 | `0a1b2c3d4e5f` | Investigation-flow redesign: drop the `cases.path_selection` column (the `InvestigationPath` / `PathSelection` fork is removed). The unified opportunistic flow stores the new assessment variables (`cause_state`, `solution_state`, `solution_feasible`) and the `stabilization` record inside the existing `progress` JSON — no new columns. |
-| 017–021 | … | (rows omitted — see alembic/versions: config-override source/category (017), RLS tenant isolation (018), causal-graph chain model (019), node-evidence provenance (020), evidence-need obtainability (021)) |
-| 022 | `d3e4f5a6b7c8` | PostgreSQL type-divergence fixes (forward ALTERs; PG-only, no-op on SQLite): `uploaded_files.coverage_start_ts`/`coverage_end_ts` → `TIMESTAMPTZ` (were naive `TIMESTAMP` from 010; the model is `DateTime(timezone=True)` and the app binds tz-aware datetimes, which asyncpg's naive codec rejected); `evidence.advances_milestones` → `VARCHAR(50)[]` (was `TEXT` from 009; the model's `TagsArray` binds a Python list on PG). Both were invisible on SQLite (loosely typed) and 500'd only on real PostgreSQL. |
-| 023 | `f5a6b7c8d9e0` | Enrol the causal-graph tables (`causal_nodes`, `causal_edges`, `causal_node_evidence`) in RLS tenant isolation — they carry `organization_id` but were added after migration 018 and never enrolled. Applies the identical `<table>_tenant_isolation` policy. PostgreSQL-only. |
-| 024 | `e6f7a8b9c0d1` | Drop `causal_node_evidence.provenance` and its value CHECK (`causal_node_evidence_provenance_check`, from migration 020). The column served the retired runbook-cause-matcher grounding arm (#658); node grounding now reads the backing datum's `CAUSAL_EVIDENCE` category only. |
-| 025 | `a7b8c9d0e1f2` | `users.account_kind` + derived `cases.source` (ADR-012 two-account model). |
-| 026 | `b8c9d0e1f2a3` | Rename the `enterprise` plan-tier collision to `business` (Wave 2/U5). |
-| 027 | `c9d0e1f2a3b4` | Drop the orphaned `organization` KB visibility scope from `knowledge_items`/`conversion_jobs` scope CHECKs (canonical 3-tier `personal`/`team`/`global`, ADR-013). |
-| 028 | `d0e1f2a3b4c5` | **Polymorphic `resource_shares` table** (`resource_type, resource_id, scope_type, scope_id`; `organization_id` denormalized + RLS `resource_shares_tenant_isolation` policy, PG-only) replacing the nullable `team_id` columns on `cases`/`knowledge_items`/`conversion_jobs` (dropped). Team visibility is now a share row + SQL-resolved visible-id allowlist (ADR-013 §D4 / ADR-011 D3). No backfill — the columns never had a live writer. v1 `scope_type=team`; `organization` reserved (D4a). |
-| 029–032 | … | (rows omitted — see alembic/versions: RBAC role/permission seed (029), `team_members` RLS subquery policy (030), drop the never-written `oauth_revoked_tokens` table (031, #767), `user_audit_log` `success`/`session_id` for the SSO JIT audit trail (032, ADR-015)) |
-| 033 | `c5d6e7f8a9b0` | **Global-KB platform tier (#770)**: `knowledge_items.organization_id` becomes nullable with CHECK `knowledge_items_global_org_check` — `(scope='global') ⟺ (organization_id IS NULL)`, making a tenant-org-owned global row unrepresentable; existing global rows normalized to NULL. The single FOR ALL RLS policy is replaced by four per-command policies (PG-only): `FOR SELECT` grants every tenant the `scope='global'` read exemption; INSERT/UPDATE/DELETE keep the own-org arm and allow global writes only from single-tenant sentinel sessions (`app.current_org_id` = standalone org — the bootstrap/admin path in standalone and cloud+single), never from tenant-bound sessions. Under multi, global content is seeded exclusively by the audited `kb_seed` maintenance job (BYPASSRLS role). |
-| 034–036 | … | (rows omitted — see alembic/versions: conversion live-case uniqueness (034), durable append-only `operator_access_audit` (035), `operator_access_grants` break-glass over Cloud tenant case content (036)) |
-| 037 | `a9b0c1d2e3f4` | **Per-turn authorship**: `case_messages.author_id VARCHAR(36) NULL` (ADR-013 §D4 as amended / ADR-011 D5). The domain model and both API schemas already carried the field and the service already stamped it; only the table and the SQL writers were missing it, so every turn was persisted unattributed. Team sharing made that a real loss — the shared-case read gate admits team members to the write endpoints, so the case owner is no longer the only possible author. Deliberately **not** a foreign key (matching `operator_access_audit.operator_user_id`, not `cases.user_id`): attribution must outlive the account it describes, and `ON DELETE SET NULL` would erase precisely the record ADR-011 D5 calls un-backfillable. No backfill — a pre-existing row's author is genuinely unknown. Both upserts `COALESCE(case_messages.author_id, EXCLUDED.author_id)`, so authorship is write-once but still fillable. |
-| 038 | `b0c1d2e3f4a5` | **SSO organization mapping (#869)**: new table `sso_org_mappings` — `provider` + `provider_org_id` (PK) → `organization_id` (FK → `organizations`, CASCADE), plus `UNIQUE (provider, organization_id)` so the relation is 1:1 per provider. Resolves an IdP organization to the FaultMaven tenant a multi-tenant SSO login lands in. Deliberately **not** enrolled in the migration-018 tenant-isolation policy: the SSO callback that reads it is unauthenticated, so no tenant is bound — binding one is what this lookup decides — and under RLS every tenanted table is invisible there. A row carries only an identifier equivalence, no tenant data. Rejected alternative: mapping columns on `organizations` (unreadable pre-bind; would drag an owner-role read into the auth path). See `docs/architecture/security/sso-org-mapping.md`. |
-| 039 | `d2e3f4a5b6c7` | **OAuth-PKCE tenant carry (#872)**: `oauth_authorization_codes.organization_id VARCHAR(36) NULL`. The copilot's token exchange (`POST /auth/oauth/token`) is unauthenticated by construction — it presents a code and a PKCE verifier, not a bearer token — and the `users` row it mints from carries no organization, because tenancy lives in the token chain rather than the user table. The authorization code is therefore the only carrier between the *authenticated* authorize request and the *unauthenticated* exchange; without it every copilot session under `TENANT_PROVIDER=multi` minted an empty claim and was refused at `bind_request_org_context`, the same shape #869 fixed for the SSO leg and #873 for the OAuth refresh leg. **Nullable** — a code predating the column carries none, and an absent value must stay representable so the exchange mints an unusable claim rather than a guessed one; no backfill, these rows expire in ten minutes. Under single-tenant the column holds the Standalone sentinel, which `resolve_organization_claim` would supply regardless. Deliberately **not** a foreign key and **not** enrolled in the migration-018 tenant-isolation policy, for migration 038's reason: the only reader runs before a tenant is bound, so a policy would hide the row from it. Only the Redis and in-memory repositories are wired; the column keeps the ORM implementation of `IOAuthCodeRepository` able to honour the same contract. |
+**Migration**: `alembic/versions/` holds exactly one migration, `001_enterprise_baseline` (revision `a1e0c17bd001`, no parent). It creates the whole schema in one `CREATE` — cases, evidence, hypotheses and every other case-domain table, with `enterprise_id NOT NULL` as the isolation key on each and RLS policies keyed on `app.current_enterprise_id` (ADR-017: the enterprise isolates, the organization bills, the team shares). This replaces the earlier 001–053 chain outright rather than extending it: moving the isolation key one tier up touches every tenant-scoped table and every RLS policy, so a stacked migration would only have restated the chain with a dual-key period in the middle, and the owner's rule for the campaign was pre-user, no-backward-compatibility (`fm-wipe-deployment --wipe` + re-provision on this baseline for any existing deployment). The prior chain's per-migration history (evidence's `summary`/`extract` split, the case-lifecycle `status`→`state` rename, the causal-graph chain model, the polymorphic `resource_shares` table, per-turn authorship, the SSO organization mapping, and so on) is preserved in git history and in `faultmaven-doc-internal`'s ADR-017 campaign notes, not as a live migration table here — every one of those changes is now simply *how the schema is*, expressed directly in the tables below.
 
 **Active Implementations**:
 
@@ -376,15 +346,13 @@ High-Cardinality Tables (10):
 ├── case_entities         -- Cross-artifact entity index
 └── reports               -- Generated case-summary documents (resolution/closure)
 
-Agent Execution Cascade (3):
-├── investigation_sessions  -- Per-investigation agent context (case-owned)
-├── agent_executions        -- Per-turn agent run metadata
-└── agent_tool_calls        -- Tool-call log
+Investigation context (1):
+└── investigation_sessions  -- Per-investigation session (case-owned)
 ```
 
-The full live table count across user + case + knowledge + config domains is **37** — see `er-diagram.md` for the authoritative enumeration.
+The full live table count across user + case + knowledge + config domains is **41** — see `er-diagram.md` for the authoritative enumeration.
 
-Tables historically present and removed by the redesign (`evidence_artifacts`, `standalone_evidence`, `agent_tool_calls` v1, `sessions`) are documented in the appendix at the end of this file.
+Tables historically present and removed (`evidence_artifacts`, `standalone_evidence`, `agent_executions`, `agent_tool_calls`, `sessions`) are documented in the appendix at the end of this file.
 
 ### 4.2 cases (Main Table)
 
@@ -404,7 +372,11 @@ CREATE TABLE cases (
     -- Identity
     -- ============================================================
     case_id VARCHAR(36) PRIMARY KEY,
-    organization_id VARCHAR(36) NOT NULL REFERENCES organizations(organization_id) ON DELETE CASCADE,
+    -- Isolation (ADR-017 D1) — RLS key, denormalized onto every tenant-scoped table.
+    enterprise_id VARCHAR(36) NOT NULL REFERENCES enterprises(enterprise_id) ON DELETE CASCADE,
+    -- Billing attribution (ADR-017 D2/D5) — nullable, never a visibility predicate.
+    -- ON DELETE SET NULL: losing a cost centre must not destroy the case it paid for.
+    organization_id VARCHAR(36) REFERENCES organizations(organization_id) ON DELETE SET NULL,
     -- team_id column DROPPED in migration 028 (d0e1f2a3b4c5). Team visibility is
     -- now carried by the polymorphic `resource_shares` table, not a column here.
     user_id VARCHAR(36) REFERENCES users(user_id) ON DELETE SET NULL,
@@ -475,6 +447,7 @@ CREATE TABLE cases (
 );
 
 -- Tier 1 indexes (both dialects)
+CREATE INDEX ix_cases_enterprise_id ON cases(enterprise_id);
 CREATE INDEX ix_cases_organization_id ON cases(organization_id);
 CREATE INDEX ix_cases_team_id ON cases(team_id);
 CREATE INDEX ix_cases_user_id ON cases(user_id);
@@ -546,7 +519,8 @@ The single-table evidence model with `case_id NOT NULL` FK is the live shape. Ev
 ```sql
 CREATE TABLE evidence (
     evidence_id         VARCHAR(36) PRIMARY KEY,
-    organization_id     VARCHAR(36) NOT NULL REFERENCES organizations(organization_id) ON DELETE CASCADE,
+    enterprise_id       VARCHAR(36) NOT NULL REFERENCES enterprises(enterprise_id) ON DELETE CASCADE,
+    organization_id     VARCHAR(36) REFERENCES organizations(organization_id) ON DELETE SET NULL,
     case_id             VARCHAR(36) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
     source_file_id      VARCHAR(36) REFERENCES uploaded_files(file_id) ON DELETE SET NULL,
 
@@ -615,6 +589,7 @@ CREATE TABLE evidence (
 
 -- Tier 1 indexes (both dialects)
 CREATE INDEX ix_evidence_case_id ON evidence(case_id);
+CREATE INDEX ix_evidence_enterprise_id ON evidence(enterprise_id);
 CREATE INDEX ix_evidence_organization_id ON evidence(organization_id);
 CREATE INDEX ix_evidence_source_file_id ON evidence(source_file_id);
 CREATE INDEX ix_evidence_category ON evidence(category);
@@ -700,7 +675,8 @@ Hypotheses for root-cause analysis. Evidence linkage is a separate junction tabl
 ```sql
 CREATE TABLE hypotheses (
     hypothesis_id VARCHAR(36) PRIMARY KEY,
-    organization_id VARCHAR(36) NOT NULL REFERENCES organizations(organization_id) ON DELETE CASCADE,
+    enterprise_id VARCHAR(36) NOT NULL REFERENCES enterprises(enterprise_id) ON DELETE CASCADE,
+    organization_id VARCHAR(36) REFERENCES organizations(organization_id) ON DELETE SET NULL,
     case_id VARCHAR(36) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
 
     -- Causal-graph chain model (migration 019). A hypothesis is a causal CHAIN:
@@ -746,6 +722,7 @@ CREATE TABLE hypotheses (
 );
 
 CREATE INDEX ix_hypotheses_case_id ON hypotheses(case_id);
+CREATE INDEX ix_hypotheses_enterprise_id ON hypotheses(enterprise_id);
 CREATE INDEX ix_hypotheses_organization_id ON hypotheses(organization_id);
 CREATE INDEX ix_hypotheses_state ON hypotheses(state);
 CREATE INDEX ix_hypotheses_category ON hypotheses(category);
@@ -762,7 +739,8 @@ Replaces the historical `hypotheses.evidence_links` JSON blob. Each row asserts 
 CREATE TABLE hypothesis_evidence (
     hypothesis_id VARCHAR(36) NOT NULL REFERENCES hypotheses(hypothesis_id) ON DELETE CASCADE,
     evidence_id VARCHAR(36) NOT NULL REFERENCES evidence(evidence_id) ON DELETE CASCADE,
-    organization_id VARCHAR(36) NOT NULL REFERENCES organizations(organization_id) ON DELETE CASCADE,
+    enterprise_id VARCHAR(36) NOT NULL REFERENCES enterprises(enterprise_id) ON DELETE CASCADE,
+    organization_id VARCHAR(36) REFERENCES organizations(organization_id) ON DELETE SET NULL,
     relationship_type VARCHAR(30) NOT NULL,         -- supports | refutes | related
     confidence NUMERIC(3, 2),                       -- 0..1 when set
     linked_at_turn INTEGER,
@@ -777,6 +755,7 @@ CREATE TABLE hypothesis_evidence (
         CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1))
 );
 
+CREATE INDEX ix_hypothesis_evidence_enterprise_id ON hypothesis_evidence(enterprise_id);
 CREATE INDEX ix_hypothesis_evidence_organization_id ON hypothesis_evidence(organization_id);
 CREATE INDEX ix_hypothesis_evidence_evidence ON hypothesis_evidence(evidence_id);
 
@@ -790,7 +769,8 @@ A solution may or may not link to a hypothesis (fast-track resolutions skip hypo
 ```sql
 CREATE TABLE solutions (
     solution_id VARCHAR(36) PRIMARY KEY,
-    organization_id VARCHAR(36) NOT NULL REFERENCES organizations(organization_id) ON DELETE CASCADE,
+    enterprise_id VARCHAR(36) NOT NULL REFERENCES enterprises(enterprise_id) ON DELETE CASCADE,
+    organization_id VARCHAR(36) REFERENCES organizations(organization_id) ON DELETE SET NULL,
     case_id VARCHAR(36) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
     hypothesis_id VARCHAR(36) REFERENCES hypotheses(hypothesis_id) ON DELETE SET NULL,
 
@@ -849,6 +829,7 @@ CREATE TABLE solutions (
 );
 
 CREATE INDEX ix_solutions_case_id ON solutions(case_id);
+CREATE INDEX ix_solutions_enterprise_id ON solutions(enterprise_id);
 CREATE INDEX ix_solutions_organization_id ON solutions(organization_id);
 CREATE INDEX ix_solutions_hypothesis_id ON solutions(hypothesis_id);
 CREATE INDEX ix_solutions_state ON solutions(state);
@@ -863,7 +844,8 @@ Stores file metadata **and the file-level preprocessing artifacts** that describ
 ```sql
 CREATE TABLE uploaded_files (
     file_id VARCHAR(36) PRIMARY KEY,
-    organization_id VARCHAR(36) NOT NULL REFERENCES organizations(organization_id) ON DELETE CASCADE,
+    enterprise_id VARCHAR(36) NOT NULL REFERENCES enterprises(enterprise_id) ON DELETE CASCADE,
+    organization_id VARCHAR(36) REFERENCES organizations(organization_id) ON DELETE SET NULL,
     case_id VARCHAR(36) REFERENCES cases(case_id) ON DELETE CASCADE,
     uploaded_by VARCHAR(36) REFERENCES users(user_id) ON DELETE SET NULL,
 
@@ -900,6 +882,7 @@ CREATE TABLE uploaded_files (
         CHECK (uploaded_at_turn >= 0)
 );
 
+CREATE INDEX ix_uploaded_files_enterprise_id ON uploaded_files(enterprise_id);
 CREATE INDEX ix_uploaded_files_organization_id ON uploaded_files(organization_id);
 CREATE INDEX ix_uploaded_files_case_id ON uploaded_files(case_id);
 CREATE INDEX ix_uploaded_files_uploaded_by ON uploaded_files(uploaded_by);
@@ -932,8 +915,10 @@ CREATE TABLE case_messages (
     -- Tier 2 (PostgreSQL-only) — aspirational for cloud deployment.
     message_id VARCHAR(36) PRIMARY KEY,         -- Tier 1 reality (live ORM)
     -- message_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),  -- Tier 2 (PostgreSQL-only)
-    organization_id VARCHAR(36) NOT NULL
-        REFERENCES organizations(organization_id) ON DELETE CASCADE,
+    enterprise_id VARCHAR(36) NOT NULL
+        REFERENCES enterprises(enterprise_id) ON DELETE CASCADE,
+    organization_id VARCHAR(36)
+        REFERENCES organizations(organization_id) ON DELETE SET NULL,
     case_id VARCHAR(36) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
     turn_number INTEGER NOT NULL,
 
@@ -1001,8 +986,10 @@ CREATE TABLE case_actions (
     -- Integer autoincrement PK (Tier 1 reality on both dialects).
     transition_id INTEGER PRIMARY KEY,
     case_id VARCHAR(36) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
-    organization_id VARCHAR(36) NOT NULL REFERENCES organizations(organization_id)
+    enterprise_id VARCHAR(36) NOT NULL REFERENCES enterprises(enterprise_id)
         ON DELETE CASCADE,
+    organization_id VARCHAR(36) REFERENCES organizations(organization_id)
+        ON DELETE SET NULL,
 
     -- ============================================================
     -- Transition Data
@@ -1093,7 +1080,8 @@ Case-summary documents generated at terminal state. Reusable knowledge derived f
 ```sql
 CREATE TABLE reports (
     report_id VARCHAR(36) PRIMARY KEY,
-    organization_id VARCHAR(36) NOT NULL REFERENCES organizations(organization_id) ON DELETE CASCADE,
+    enterprise_id VARCHAR(36) NOT NULL REFERENCES enterprises(enterprise_id) ON DELETE CASCADE,
+    organization_id VARCHAR(36) REFERENCES organizations(organization_id) ON DELETE SET NULL,
     case_id VARCHAR(36) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
     generated_by VARCHAR(36) REFERENCES users(user_id) ON DELETE SET NULL,
 
@@ -1147,15 +1135,13 @@ COMMENT ON TABLE reports IS 'Auto-generated case-summary documents (resolution /
 - `linked_to_closure` marks reports attached during case closure.
 - Cascade delete when the parent case is deleted — these are case-history artifacts, not standalone records.
 
-### 4.11 Agent Execution Cascade Tables
+### 4.11 investigation_sessions
 
-The investigation engine records its runtime activity in a four-level cascade:
+The investigation engine groups a user-initiated run into a session, which
+deletes by CASCADE from `cases`. Note: `investigation_sessions` is an
+investigation session (per-investigation context), **not** an auth session. Auth
+sessions live in Redis.
 
-```text
-Case → investigation_sessions → agent_executions → agent_tool_calls
-```
-
-All four levels delete by CASCADE from `cases`. Note: `investigation_sessions` is an agent-execution session (per-investigation context), **not** an auth session. Auth sessions live in Redis.
 
 #### investigation_sessions
 
@@ -1170,7 +1156,8 @@ Top of the cascade. One session groups all agent executions that occur within a 
 | `session_id` | VARCHAR(36) PK | |
 | `case_id` | VARCHAR(36) FK → cases CASCADE | |
 | `user_id` | VARCHAR(36) | |
-| `organization_id` | VARCHAR(36) | |
+| `enterprise_id` | VARCHAR(36) NOT NULL | Isolation key (ADR-017 D1); FK → enterprises CASCADE |
+| `organization_id` | VARCHAR(36) nullable | Billing attribution only; FK → organizations SET NULL |
 | `state` | VARCHAR(32) | `active\|paused\|completed\|abandoned` — renamed from `status` in migration 015 (`investigation_sessions_state_check`) |
 | `started_at` | TIMESTAMPTZ | |
 | `ended_at` | TIMESTAMPTZ nullable | |
@@ -1185,79 +1172,28 @@ Top of the cascade. One session groups all agent executions that occur within a 
 
 **Applicability**: Both deployments.
 
-#### agent_executions
-
-Per-turn agent run metadata. One execution record per LLM call within a session.
-
-**When written**: Created at the start of each agent execution loop iteration by the milestone engine.
-
-**Key columns** (see `models.py:1262`):
-
-| Column | Type | Notes |
-| --- | --- | --- |
-| `execution_id` | VARCHAR(36) PK | |
-| `case_id` | VARCHAR(36) FK → cases CASCADE | |
-| `session_id` | VARCHAR(36) FK → investigation\_sessions SET NULL | nullable |
-| `organization_id` | VARCHAR(36) | |
-| `agent_type` | VARCHAR(64) | `investigator\|debugger\|researcher\|validator\|reporter\|custom` |
-| `agent_model` | VARCHAR(128) | LLM model name |
-| `status` | VARCHAR(32) | `queued\|running\|completed\|failed\|cancelled\|timeout` |
-| `started_at` | TIMESTAMPTZ nullable | |
-| `completed_at` | TIMESTAMPTZ nullable | |
-| `execution_duration_ms` | INTEGER nullable | |
-| `prompt` | TEXT nullable | Full prompt sent to LLM |
-| `response` | TEXT nullable | Raw LLM response |
-| `error_message` | TEXT nullable | |
-| `token_usage` | TEXT (JSON) | |
-| `metadata` | TEXT (JSON) | stored as `execution_metadata` Python attribute |
-
-**Applicability**: Both deployments.
-
-#### agent_tool_calls
-
-Tool-call log per agent execution. FK: `execution_id → agent_executions` ON DELETE CASCADE. Records each tool invocation made by the agent during an execution.
-
-**Key columns** (see ORM `AgentToolCallModel`):
-
-| Column | Type | Notes |
-| --- | --- | --- |
-| `tool_call_id` | VARCHAR(36) PK | |
-| `organization_id` | VARCHAR(36) FK → organizations CASCADE | |
-| `execution_id` | VARCHAR(36) FK → agent_executions CASCADE | |
-| `tool_name` | VARCHAR(128) | |
-| `tool_input` | JSONB nullable | |
-| `tool_output` | JSONB nullable | |
-| `status` | VARCHAR(32) | `pending\|running\|success\|failed` |
-| `error_message` | TEXT nullable | |
-| `started_at` / `completed_at` | TIMESTAMPTZ nullable | |
-| `duration_ms` | INTEGER nullable | |
-| `created_at` / `updated_at` | TIMESTAMPTZ | |
-
-**Applicability**: Both deployments.
-
 ### 4.12 Supporting Tables
 
 `users`, `organizations`, `enterprises`, `teams`, and related auth/RBAC tables are defined in [user-schema.md](./user-schema.md) — that is the authoritative source for their DDL. They are not redefined here.
 
-#### Enterprise Tier (Enterprise → Organization → Team → User)
+#### Enterprise Tier (ADR-017: three questions, not a strict chain)
 
-The user domain has a strict three-tier tenancy hierarchy:
+The user domain is **not** a linear Enterprise → Organization → Team → User chain. Three tiers each answer a separate question, and organizations and teams are two *independent* groupings of an enterprise's accounts:
 
 ```text
-enterprises  (corporate umbrella; SSO/billing)
-  └── organizations  (workspaces; hard data-isolation boundary)
-        └── teams    (routing buckets within an org)
-              └── users  (members; one user can belong to multiple orgs in their enterprise)
+enterprises  (the isolation boundary — may these two accounts ever see each other's data?)
+  ├── organizations  (billing targets — who pays for these accounts; no role in visibility)
+  ├── teams          (sharing units, formed by consent; may span organizations)
+  └── users          (members, anchored to exactly ONE enterprise; at most ONE organization; any number of teams)
 ```
 
-**enterprise_id NOT NULL invariant** (migration 006, `be112b702fd4`):
+**enterprise_id NOT NULL invariant**:
 
-- `users.enterprise_id` and `organizations.enterprise_id` are both `VARCHAR(36) NOT NULL` with `FOREIGN KEY ... ON DELETE CASCADE` to `enterprises.enterprise_id`.
-- Migration 003 transitionally relaxed these columns to nullable; migration 006 backfills any remaining NULLs to the default enterprise UUID, then tightens both columns back to NOT NULL.
-- Single-tenant deployments use the default enterprise UUID `00000000-0000-0000-0000-000000000002` (seeded by migration 006 as an idempotent UPSERT — same UUID that `SingleTenantProvider.DEFAULT_ENTERPRISE_ID` uses).
-- Multi-tenant cloud deployments populate `enterprise_id` via the OAuth/SSO flow at user provisioning time.
+- `users.enterprise_id` and `organizations.enterprise_id` are both `VARCHAR(36) NOT NULL` with `FOREIGN KEY ... ON DELETE CASCADE` to `enterprises.enterprise_id`. So is `teams.enterprise_id` — a team is parented by its enterprise directly, **not** by an organization (`teams.organization_id` does not exist).
+- Single-tenant deployments use the default enterprise UUID `00000000-0000-0000-0000-000000000002` (`STANDALONE_ENTERPRISE_ID`), seeded by the baseline migration with **no organization row at all** — the organization is a billing target, and a deployment nobody pays for has none.
+- Multi-tenant cloud deployments populate a user's `enterprise_id` at sign-up, derived from the verified email domain (ADR-017 D3): a personal-mail domain yields a private enterprise per account; every other domain yields, or joins, the enterprise for that domain. Access and refresh tokens carry the enterprise as a claim; a token without it is refused, with no fallback to the user row.
 
-The Pydantic Case model and the case-domain tables do not carry `enterprise_id` directly — case-level tenancy is anchored on `organization_id`, and the enterprise relationship is reachable via `organizations.enterprise_id`.
+**Case-domain tables carry `enterprise_id` directly** — every tenant-scoped table in this document (`cases`, `evidence`, `hypotheses`, …) is denormalized with its own `enterprise_id NOT NULL`, not reached indirectly through `organizations.enterprise_id`. The nullable `organization_id` beside it is billing attribution only (see §5.4).
 
 ---
 
@@ -1268,6 +1204,8 @@ Cross-artifact entity index for a case. One row per `(case, entity_type, entity_
 ```sql
 CREATE TABLE case_entities (
     case_id          VARCHAR(36)  NOT NULL REFERENCES cases(case_id)          ON DELETE CASCADE,
+    enterprise_id    VARCHAR(36)  NOT NULL REFERENCES enterprises(enterprise_id) ON DELETE CASCADE,
+    organization_id  VARCHAR(36)  REFERENCES organizations(organization_id)   ON DELETE SET NULL,
     entity_type      VARCHAR(20)  NOT NULL,
     entity_value     VARCHAR(255) NOT NULL,
     evidence_id      VARCHAR(36)  NOT NULL REFERENCES evidence(evidence_id)   ON DELETE CASCADE,
@@ -1372,34 +1310,36 @@ SELECT * FROM cases WHERE case_id = 'case_123';
 
 **Our hybrid approach wins on balance!**
 
-### 5.4 Multi-Tenancy: organization_id Normalization
+### 5.4 Multi-Tenancy: enterprise_id Normalization (organization_id is billing attribution)
 
-**Decision**: `organization_id` is **denormalized onto every tenanted table** (`NOT NULL`), not stored only on `cases`. This is what the live ORM and migration 018 (RLS tenant isolation) implement — see the Implementation Pattern below.
+**Decision** (ADR-017): `enterprise_id` is **denormalized onto every tenanted table** (`NOT NULL`), not stored only on `cases`, and it — not `organization_id` — is the isolation key. `organization_id` sits beside it on the same tables as **nullable billing attribution**: stamped from the actor's organization at write time, read by nothing that decides visibility, and `ON DELETE SET NULL` because losing a cost centre must not destroy the data it paid for.
 
-> **Superseded**: An earlier revision of this section proposed storing `organization_id` only on `cases` and resolving org filtering via JOIN. That was rejected in favor of the denormalized layout because PostgreSQL Row-Level Security policies filter each table by its own `organization_id` column — RLS cannot reach through a JOIN to `cases`.
+> **Superseded**: an earlier revision of this section proposed storing the tenant key only on `cases` and resolving filtering via JOIN; that was rejected because PostgreSQL Row-Level Security policies filter each table by its own column — RLS cannot reach through a JOIN to `cases`. A later revision (superseded in turn by ADR-017) keyed that denormalized column on `organization_id`. ADR-017 moved the key one tier up: the organization was doing two jobs — who may never see whom, and who pays — and conflating them is what forced a company's two cost centres into two hard-walled tenants that could never share an incident. The enterprise now answers the first question; the organization answers only the second.
 
 **Rationale**:
 
-1. **RLS requires the column per table**: each tenanted table's `<table>_tenant_isolation` policy filters on that table's own `organization_id`; a JOIN-only design cannot back RLS.
+1. **RLS requires the column per table**: each tenanted table's `<table>_tenant_isolation` policy filters on that table's own `enterprise_id`; a JOIN-only design cannot back RLS.
 
-2. **Direct repository-layer filtering**: the repository filters by `organization_id` on every query without a mandatory JOIN to `cases`.
+2. **Direct repository-layer filtering**: the repository filters by `enterprise_id` on every query without a mandatory JOIN to `cases`.
 
 3. **Defense in depth**: the column + RLS provide a second enforcement layer independent of application-level `case_id` scoping.
 
+4. **Billing survives isolation-key changes**: because `organization_id` never gates visibility, an account moving between organizations (or into none) changes nothing about what it can see — only what its usage is billed against.
+
 **Implementation Pattern**:
 
-All tenanted tables carry `organization_id NOT NULL` for PostgreSQL Row-Level Security (RLS) and direct repository-layer filtering. The repository layer filters by `organization_id` on every query; RLS provides defense-in-depth on PostgreSQL.
+All tenanted tables carry `enterprise_id NOT NULL` for PostgreSQL Row-Level Security (RLS) and direct repository-layer filtering, plus a nullable `organization_id` for billing attribution only. The repository layer filters by `enterprise_id` on every query; RLS provides defense-in-depth on PostgreSQL.
 
 ```sql
--- Repository layer: direct filter on organization_id (Tier 1, both dialects)
+-- Repository layer: direct filter on enterprise_id (Tier 1, both dialects)
 SELECT e.* FROM evidence e
 WHERE e.case_id = :case_id
-  AND e.organization_id = :organization_id;
+  AND e.enterprise_id = :enterprise_id;
 
--- PostgreSQL RLS also enforces this via SET LOCAL app.current_org_id (Tier 2, cloud only)
+-- PostgreSQL RLS also enforces this via SET LOCAL app.current_enterprise_id (Tier 2, cloud only)
 ```
 
-**Tables WITH organization_id NOT NULL FK** (all tenanted tables):
+**Tables WITH enterprise_id NOT NULL FK** (all tenanted tables — the same tables also carry nullable `organization_id` for billing):
 
 - ✅ `cases` — top-level tenant anchor
 - ✅ `evidence`
@@ -1414,8 +1354,6 @@ WHERE e.case_id = :case_id
 - ✅ `case_entities`
 - ✅ `reports`
 - ✅ `investigation_sessions`
-- ✅ `agent_executions`
-- ✅ `agent_tool_calls`
 - ✅ `knowledge_items`
 - ✅ `knowledge_suggestions`
 - ✅ `conversion_jobs`
@@ -1425,10 +1363,10 @@ WHERE e.case_id = :case_id
 
 ```sql
 -- Composite indexes on frequently filtered columns:
-CREATE INDEX idx_cases_org_id_case_id ON cases(organization_id, case_id);
-CREATE INDEX idx_cases_org_status ON cases(organization_id, status);
+CREATE INDEX idx_cases_enterprise_id_case_id ON cases(enterprise_id, case_id);
+CREATE INDEX idx_cases_enterprise_status ON cases(enterprise_id, status);
 CREATE INDEX idx_evidence_case ON evidence(case_id);
-CREATE INDEX idx_evidence_org ON evidence(organization_id, case_id);
+CREATE INDEX idx_evidence_enterprise ON evidence(enterprise_id, case_id);
 ```
 
 ---
@@ -1736,36 +1674,37 @@ DELETE FROM cases WHERE case_id = :case_id;
 -- - All case_checkpoints (ON DELETE CASCADE)
 -- - All reports (ON DELETE CASCADE)
 -- - All investigation_sessions (ON DELETE CASCADE)
--- - All agent_executions (ON DELETE CASCADE)
--- - All agent_tool_calls (ON DELETE CASCADE)
 ```
 
 ---
 
 ## 7.5 Row-Level Security (PostgreSQL, Cloud — Tier 2)
 
-All tenanted case-domain tables get RLS policies in PostgreSQL deployments. SQLite (Local Deployment) has no equivalent — tenant isolation continues to be enforced at the repository layer.
+All tenanted case-domain tables get RLS policies in PostgreSQL deployments, keyed on `enterprise_id` — the isolation boundary (ADR-017 D1). SQLite (Local Deployment) has no equivalent — tenant isolation continues to be enforced at the repository layer.
 
 **Tenanted case-domain tables** covered by RLS:
 
-`cases`, `case_messages`, `case_actions`, `case_tags`, `case_checkpoints`, `case_entities`, `evidence`, `hypotheses`, `hypothesis_evidence`, `solutions`, `uploaded_files`, `investigation_sessions`, `agent_executions`, `agent_tool_calls`, `reports`, `conversion_jobs`, `conversion_drafts`, `causal_nodes`, `causal_edges`, `causal_node_evidence`
+`cases`, `case_messages`, `case_actions`, `case_tags`, `case_checkpoints`, `case_entities`, `evidence`, `hypotheses`, `hypothesis_evidence`, `solutions`, `uploaded_files`, `investigation_sessions`, `reports`, `conversion_jobs`, `conversion_drafts`, `causal_nodes`, `causal_edges`, `causal_node_evidence`
 
-> `causal_nodes` / `causal_edges` / `causal_node_evidence` were added after the original RLS migration (018) and enrolled later by migration **023**. New tenanted case-domain tables must be added to the RLS policy set in the migration that creates them (or a follow-up), or they silently escape tenant isolation.
+> The single baseline migration (`001_enterprise_baseline`) creates every one of these policies from a shared table list at once, keyed on `enterprise_id`. A new tenanted case-domain table must be added to that list (or enrolled by a follow-up migration), or it silently escapes tenant isolation.
 
 **Policy pattern (Tier 2 — PostgreSQL-only)**:
 
 ```sql
 ALTER TABLE cases ENABLE ROW LEVEL SECURITY;
 
+-- No FOR clause: PostgreSQL applies USING as FOR ALL, so the same expression
+-- also gates INSERT/UPDATE via WITH CHECK — writing into another enterprise
+-- is rejected, not merely hidden.
 CREATE POLICY cases_tenant_isolation ON cases
-    USING (organization_id = current_setting('app.current_org_id', true));
+    USING (enterprise_id = current_setting('app.current_enterprise_id', true));
 
 -- Repeat for each tenanted table above.
 ```
 
-**Request wiring**: A global FastAPI dependency (`faultmaven/api/middleware/tenant_scope.py::bind_request_org_context`) binds the request's organization to a contextvar (`faultmaven/config/tenant_context.py`), and an engine `begin` listener (`faultmaven/infrastructure/persistence/database.py`) applies it to **every transaction** via `SELECT set_config('app.current_org_id', :org_id, true)` (`SET LOCAL` cannot take a bound parameter). No per-endpoint code is involved.
+**Request wiring**: A global FastAPI dependency (`faultmaven/api/middleware/tenant_scope.py::bind_request_enterprise_context`) binds the request's enterprise to a contextvar (`faultmaven/config/tenant_context.py`), and an engine `begin` listener (`faultmaven/infrastructure/persistence/database.py`) applies it to **every transaction** via `SELECT set_config('app.current_enterprise_id', :enterprise_id, true)` (`SET LOCAL` cannot take a bound parameter). No per-endpoint code is involved. The same dependency also binds the request's **organization** into a second contextvar, for writers that stamp billing attribution — but nothing downstream may turn that value into a query predicate; `app.current_org_id` does not exist as a session GUC.
 
-**Test requirement**: A test must demonstrate that an `AsyncSession` with `app.current_org_id` unset returns zero rows from any tenanted table. This proves RLS is enforced, not just advisory.
+**Test requirement**: A test must demonstrate that an `AsyncSession` with `app.current_enterprise_id` unset returns zero rows from any tenanted table. This proves RLS is enforced, not just advisory.
 
 ---
 
@@ -1779,16 +1718,15 @@ Before deploying PostgreSQLHybridCaseRepository to production, validate the foll
 # Deploy PostgreSQL to K8s (if not already running)
 kubectl apply -f faultmaven-k8s-infra/applications/postgresql/
 
-# Apply migrations via alembic (chain head: c5d6e7f8a9b0)
+# Apply the single baseline migration (a1e0c17bd001, 001_enterprise_baseline)
 alembic upgrade head
 
 # Verify all tables created
 psql -U faultmaven -d faultmaven_cases -c "\dt"
 # Expected case-domain tables: cases, evidence, hypotheses, hypothesis_evidence,
 # solutions, uploaded_files, case_messages, case_actions, case_tags,
-# case_checkpoints, case_entities, reports, investigation_sessions,
-# agent_executions, agent_tool_calls.
-# See er-diagram.md for the full 32-table enumeration across all domains.
+# case_checkpoints, case_entities, reports, investigation_sessions.
+# See er-diagram.md for the full 41-table enumeration across all domains.
 
 # Verify indexes created
 psql -U faultmaven -d faultmaven_cases -c "\di"
@@ -1945,7 +1883,7 @@ psql -U faultmaven -d faultmaven_cases -c "SELECT * FROM evidence WHERE case_id 
 
 - [x] Design approved (this document)
 - [x] ORM models (`faultmaven/infrastructure/persistence/models.py`)
-- [x] Migration chain through head `c5d6e7f8a9b0` (033)
+- [x] Single baseline migration `a1e0c17bd001` (`001_enterprise_baseline`) — the enterprise isolates, RLS keyed on `enterprise_id`
 - [x] Repository implementation (`postgresql_hybrid_case_repository.py`, `sqlite_case_repository.py`)
 - [x] Container.py wiring (`CASE_STORAGE_TYPE=database`)
 - [x] Enterprise tier bootstrap (default enterprise seed; NOT NULL `enterprise_id` on users/orgs)
@@ -1986,7 +1924,7 @@ This design provides:
 - **Junction table `hypothesis_evidence`** → Replaces a JSON-blob evidence-link list; queryable in both directions with relationship qualifier
 - **JSONB for flexible data** → Inquiry, conclusions, progress tracking carried inside the case row
 - **Full-text search indexes** (Tier 2) → Fast case and evidence search on PostgreSQL
-- **Tenancy-anchored** → `organization_id NOT NULL` on every tenanted table; PostgreSQL RLS for defense in depth
+- **Tenancy-anchored** → `enterprise_id NOT NULL` on every tenanted table (the isolation boundary, ADR-017); `organization_id` alongside it is nullable billing attribution, never a visibility predicate; PostgreSQL RLS for defense in depth
 
 ---
 
@@ -1998,7 +1936,7 @@ The following tables and columns existed in earlier iterations of this design bu
 
 - **`evidence_artifacts`** — Standalone-evidence holding table written by a now-removed API endpoint and never read by the investigation engine. Replaced by `evidence` carrying `case_id NOT NULL`. The "primary evidence per case" concept that lived on `evidence_artifacts.is_primary` is preserved on `evidence.is_primary`.
 - **`standalone_evidence`** — Companion to `evidence_artifacts`; same rationale. The standalone evidence path (`POST /api/v1/evidence`, `POST /api/v1/evidence/{id}/link`, the `EvidenceService` and `APIEvidenceArtifactService`) is removed entirely.
-- **`agent_tool_calls` v1** — Earlier shape with no functional readers/writers. The current `agent_tool_calls` table (formerly `agent_tool_calls_v2`) is the only canonical tool-call log.
+- **`agent_executions` / `agent_tool_calls`** — Per-turn agent run metadata and its tool-call log, written by an `AgentOrchestrationService` behind a `POST /cases/{id}/sessions/{sid}/execute` endpoint. Both the service and the endpoint went when the milestone engine took over turn execution, leaving the tables with no writer; they are absent from the ORM and from the baseline. Investigation activity is recorded in `case_messages` and `case_actions`, and `investigation_sessions.total_agent_executions` is a counter on the session row rather than a pointer into a table of executions.
 - **`sessions`** — SQL auth-session table. Auth sessions are Redis-only (FakeRedis on local, Redis on cloud) — they never had any business in the case-domain schema.
 
 ### Removed columns
@@ -2017,9 +1955,9 @@ The following tables and columns existed in earlier iterations of this design bu
 
 - **Author**: FaultMaven Team
 - **Created**: 2025-11-09
-- **Last Updated**: 2026-05-10
-- **Version**: 4.2 (Authoritative)
-- **Status**: ✅ Implemented — live schema (migration chain head `c5d6e7f8a9b0`, 033)
+- **Last Updated**: 2026-09-06
+- **Version**: 5.0 (Authoritative)
+- **Status**: ✅ Implemented — live schema (single baseline migration `a1e0c17bd001`, `001_enterprise_baseline`)
 
 **Changelog**:
 
@@ -2084,6 +2022,6 @@ Aligned doc with the live ORM in `faultmaven/infrastructure/persistence/models.p
 - §5.4: tenanted-tables list aligned to live schema.
 - Removed v2.1 / v3.x version markers throughout where they carried no information.
 - Implementation Status table: bumped to migration head `be112b702fd4`; replaced single-baseline reference with full migration chain (001–006).
-- Historical-but-deleted tables (`evidence_artifacts`, `standalone_evidence`, `agent_tool_calls` v1, `sessions`) consolidated into Appendix A.
+- Historical-but-deleted tables (`evidence_artifacts`, `standalone_evidence`, `sessions`) consolidated into Appendix A.
 
 Earlier versions (3.x and prior) carried iterative consolidation notes. They are summarized here in spirit (single-table evidence, hypothesis-status enum unification, sessions-table removal, etc.) and have been folded into the current narrative; per-version detail is in the document's git history.

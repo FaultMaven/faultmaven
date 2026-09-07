@@ -165,7 +165,7 @@ class TestOperatorRoleSurvivesOrgRoleManagement:
         await service.assign_role(
             user_id=user.user_id,
             role=role,
-            organization_id="org-1",
+            enterprise_id="ent-1",
             admin_user_id="other-operator",
         )
 
@@ -191,7 +191,7 @@ class TestOperatorRoleSurvivesOrgRoleManagement:
             await service.assign_role(
                 user_id=user.user_id,
                 role=models_rbac.Role.ADMIN.value,
-                organization_id="org-1",
+                enterprise_id="ent-1",
                 admin_user_id="other-operator",
             )
 
@@ -207,7 +207,7 @@ class TestOperatorRoleSurvivesOrgRoleManagement:
         await service.remove_role(
             user_id=user.user_id,
             role=models_rbac.Role.ADMIN.value,
-            organization_id="org-1",
+            enterprise_id="ent-1",
             admin_user_id="other-operator",
         )
 
@@ -228,7 +228,7 @@ class TestOperatorRoleSurvivesOrgRoleManagement:
             await service.assign_role(
                 user_id=user.user_id,
                 role=PLATFORM_ADMIN_ROLE,
-                organization_id="org-1",
+                enterprise_id="ent-1",
                 admin_user_id="other-operator",
             )
         assert "Invalid role" in str(exc_info.value)
@@ -262,7 +262,7 @@ class TestOperatorRoleSurvivesOrgRoleManagement:
             await service.remove_role(
                 user_id=user.user_id,
                 role=models_rbac.Role.MEMBER.value,
-                organization_id="org-1",
+                enterprise_id="ent-1",
                 admin_user_id="operator",
             )
         repo.save.assert_not_called()
@@ -276,7 +276,7 @@ class TestOperatorRoleSurvivesOrgRoleManagement:
         await service.assign_role(
             user_id=user.user_id,
             role=models_rbac.Role.MEMBER.value,
-            organization_id="org-1",
+            enterprise_id="ent-1",
             admin_user_id="operator",
         )
         assert _saved_roles(repo) == [models_rbac.Role.MEMBER.value]
@@ -291,7 +291,7 @@ class TestOperatorRoleSurvivesOrgRoleManagement:
         await service.assign_role(
             user_id=user.user_id,
             role=models_rbac.Role.ADMIN.value,
-            organization_id="org-1",
+            enterprise_id="ent-1",
             admin_user_id="other-operator",
         )
 

@@ -19,7 +19,7 @@ def _turn(n: int, outcome: TurnOutcome, **kw) -> TurnProgress:
 
 
 def _case(turns) -> Case:
-    c = Case(organization_id="o", title="t", description="d", state=CaseState.INQUIRY)
+    c = Case(enterprise_id="o", title="t", description="d", state=CaseState.INQUIRY)
     c.turn_history = turns
     c.current_turn = turns[-1].turn_number if turns else 0
     return c

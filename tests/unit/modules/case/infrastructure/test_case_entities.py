@@ -80,7 +80,7 @@ def _make_case(
     return Case(
         case_id=case_id or f"case_{uuid4().hex[:12]}",
         user_id=user_id,
-        organization_id=organization_id,
+        enterprise_id=organization_id,
         title="Test case",
         state=CaseState.INQUIRY,
     )

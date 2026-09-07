@@ -822,6 +822,10 @@ class DIContainer(BaseDIContainer):
         import uuid
         from datetime import datetime
 
+        from faultmaven.config.tenant_context import (
+            get_current_billing_organization_id,
+            get_current_enterprise_id,
+        )
         from faultmaven.modules.case.domain.models import Case, CaseState
 
         class MinimalCaseService:
@@ -855,9 +859,18 @@ class DIContainer(BaseDIContainer):
 
                     raise ValidationException("Owner ID is required")
 
-                # Create case with proper Case model structure
+                # Create case with proper Case model structure.
+                #
+                # Isolation from the request BINDING, billing from the actor's
+                # organization — the two columns come from two different places
+                # and mean two different things (ADR-017 D1/D2). This used to
+                # stamp ``organization_id = owner_id``, which is neither: a user
+                # id in an organization FK, and no ``enterprise_id`` at all, so
+                # the degraded path 500'd on a required field the moment
+                # ``Case`` gained one.
                 final_user_id = owner_id
-                final_org_id = owner_id
+                final_enterprise_id = get_current_enterprise_id()
+                final_org_id = get_current_billing_organization_id()
 
                 # Phase 2: Handle initial_message transactionally
                 current_time = datetime.now(timezone.utc)
@@ -889,6 +902,7 @@ class DIContainer(BaseDIContainer):
                     title=provided_title,
                     description=description or "",
                     user_id=final_user_id,
+                    enterprise_id=final_enterprise_id,
                     organization_id=final_org_id,
                     status=CaseState.INQUIRY,
                     message_count=message_count,
@@ -918,8 +932,16 @@ class DIContainer(BaseDIContainer):
 
                 return case
 
-            async def get_case(self, case_id, user_id=None):
-                return self.cases.get(case_id)
+            async def get_case(self, case_id, user_id=None, *, owner_only=False):
+                case = self.cases.get(case_id)
+                # ``owner_only`` is the ownership gate the real service applies
+                # (the share allowlist is deliberately not consulted). The
+                # stand-in must honour it rather than merely accept it: a
+                # degraded path that widened a caller's reach would be worse
+                # than one that 500s.
+                if owner_only and case is not None and case.user_id != user_id:
+                    return None
+                return case
 
             def _active_session_cases(self, session_id):
                 """Non-terminal, non-empty cases for a session.

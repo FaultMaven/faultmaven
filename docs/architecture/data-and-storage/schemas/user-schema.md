@@ -1,9 +1,9 @@
 # User Storage Design - Enterprise SaaS
 
-**Version**: 3.2
-**Status**: ✅ Implemented (baseline migration `001_clean_baseline`)
-**Last Updated**: 2026-04-19
-**Implementation**: SQLAlchemy models at `faultmaven/infrastructure/persistence/models.py`; baseline migration at `alembic/versions/20260317_1919_424078e5aa04_001_clean_baseline.py`
+**Version**: 4.0
+**Status**: ✅ Implemented (baseline migration `001_enterprise_baseline`)
+**Last Updated**: 2026-09-06
+**Implementation**: SQLAlchemy models at `faultmaven/infrastructure/persistence/models.py`; baseline migration at `alembic/versions/20260906_1200_a1e0c17bd001_001_enterprise_baseline.py`
 
 ---
 
@@ -23,7 +23,7 @@ Wherever a DDL element in this document is Tier 2, it is marked inline with **"T
 
 **FK width normalization (resolved)**: Per [deployment-schema-strategy.md §4.3](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md), all id columns and their referencing FKs are normalized to `VARCHAR(36)` (fits UUID with hyphens: `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`). The prior inconsistency (`users.user_id VARCHAR(36)`, `organizations.organization_id VARCHAR(64)`, `cases.organization_id VARCHAR(20)`) is resolved as of v2.1. This spec reflects the target `VARCHAR(36)` throughout.
 
-**Tenancy context in Local Deployment**: In Local Deployment, `organizations` has exactly one row (`local-user-org`, created by the startup bootstrapper) and `organization_members` has exactly one entry (the default admin user). `teams` and `team_members` tables exist in both schemas (per the no-divergence rule) but remain empty in Local Deployment — team-management workflows are Cloud-only behavior. See the per-table applicability matrix in [deployment-schema-strategy.md §2](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
+**Tenancy context in Local Deployment**: Under ADR-017 the **enterprise**, not the organization, is the isolation boundary. Local Deployment seeds exactly one `enterprises` row (`STANDALONE_ENTERPRISE_ID`, slug `default`) and one default `teams` row inside it — and **no organization row at all**: the organization is a billing target, and a deployment nobody pays for has none. `organization_members` is therefore empty in Local Deployment. `teams` and `team_members` tables exist in both schemas (per the no-divergence rule); the seeded default team gives the sharing substrate a scope to point at, but team-scoped sharing itself stays inert in standalone — there is no membership-population path (that is the Cloud management module). See the per-table applicability matrix in [deployment-schema-strategy.md §2](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
 
 **OAuth tables** (`oauth_authorization_codes`): Exists in both schemas but is only populated when `AUTH_MODE=oauth` (Cloud Deployment). Local Deployment uses `AUTH_MODE=local` (HS256 JWT) and never writes to it. Marked Cloud-only behavior in the per-table matrix. Token *revocation* has no SQL table: revoked JTIs live in the deployment-wide Redis revocation store (migration 031 dropped the never-written `oauth_revoked_tokens` table — #767).
 
@@ -41,13 +41,13 @@ All user-domain tables, repositories, services, and API endpoints are implemente
 
 | Component | Status | Location |
 |-----------|--------|----------|
-| ✅ Schema | Deployed | `alembic/versions/20260317_*_001_clean_baseline.py` |
+| ✅ Schema | Deployed | `alembic/versions/20260906_*_001_enterprise_baseline.py` |
 | ✅ SQLAlchemy models | Live | `faultmaven/infrastructure/persistence/models.py` |
 | ✅ Repositories | Live | `faultmaven/modules/auth/infrastructure/repositories/` |
 | ✅ Services | Live | `faultmaven/modules/auth/domain/services/` |
 | ✅ API endpoints | Live | `faultmaven/modules/auth/api/` (auth, oauth, organizations, teams, session) |
 
-**Tables delivered by the user domain** (10 total): `users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `user_audit_log`, `oauth_authorization_codes`. Row-Level Security policies, seed roles/permissions, and the `user_has_org_permission()` helper are all installed by the baseline migration.
+**Tables delivered by the user domain** (14 total): `enterprises`, `users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `team_invitations`, `user_audit_log`, `oauth_authorization_codes`, `sso_org_mappings`, `sso_personal_enterprises`. Row-Level Security policies (keyed on `enterprise_id`), seed roles/permissions, and the `user_has_org_permission()` helper are all installed by the baseline migration.
 
 ---
 
@@ -95,17 +95,21 @@ In development, the same SQLite-backed user store is used as in local deployment
 
 **Storage**: SQLite (Local Deployment) or PostgreSQL (Cloud Deployment) via SQLAlchemy ORM
 
-**Tables**: 10 tables (user domain; the `enterprises` tenancy container is not yet documented in this spec — see revision history)
-- `users` - User accounts
-- `organizations` - Tenant workspaces
-- `organization_members` - User-organization mapping
-- `teams` - Sub-organization groups
+**Tables**: 14 tables (user domain). Three tiers answer three separate questions (ADR-017): the **enterprise** isolates (hard, RLS-enforced), the **organization** bills (a cost centre, no role in visibility), the **team** shares (formed by consent, may span organizations).
+- `enterprises` - The isolation boundary. Top-tier tenancy container; every tenant-scoped row carries its `enterprise_id`
+- `users` - User accounts, anchored to exactly one enterprise
+- `organizations` - Billing targets (cost centres) inside an enterprise
+- `organization_members` - The billing roster: which accounts a subscription covers, and their org-management role
+- `teams` - Sharing units, parented by their enterprise (not by an organization) — may span organizations
 - `team_members` - User-team mapping
+- `team_invitations` - Pending team invitations (consent record)
 - `roles` - Role definitions
 - `permissions` - Permission definitions
 - `role_permissions` - Role-permission mapping
 - `user_audit_log` - Security audit trail
 - `oauth_authorization_codes` - OAuth PKCE authorization codes
+- `sso_org_mappings` - IdP organization → FaultMaven enterprise (untenanted; read pre-auth)
+- `sso_personal_enterprises` - IdP subject → the personal enterprise it owns (untenanted; read pre-auth)
 
 ---
 
@@ -151,6 +155,11 @@ CREATE TABLE users (
     -- Primary Key
     user_id VARCHAR(36) PRIMARY KEY DEFAULT gen_random_uuid()::text,
 
+    -- Isolation anchor (ADR-017 D3). Every account belongs to exactly ONE
+    -- enterprise — the source of the access/refresh token's `enterprise_id`
+    -- claim. NOT NULL: an unanchored account is one no RLS policy can place.
+    enterprise_id VARCHAR(36) NOT NULL REFERENCES enterprises(enterprise_id) ON DELETE CASCADE,
+
     -- Denormalized dev-role string (in addition to organization_members.role_id)
     -- Used for simple local-auth deployments. ORM attribute/column is `dev_roles`
     -- (Text, nullable) — renamed from `roles` in migration 012.
@@ -178,6 +187,15 @@ CREATE TABLE users (
     -- Tier 2 (PostgreSQL-only) — composite UNIQUE not present in live ORM
     UNIQUE(sso_provider, sso_provider_id),
 
+    -- Account kind (ADR-017 D6): exactly two kinds exist. A team is a group of
+    -- accounts that agreed to share, never an account itself, and the
+    -- vocabulary that called one of these a team is retired.
+    account_kind VARCHAR(20) NOT NULL DEFAULT 'individual',
+    -- Which integration a service account serves (e.g. 'slack'). NULL for an
+    -- individual. Separate from account_kind so a second integration is a new
+    -- value here, not a third account kind.
+    service_channel VARCHAR(20),
+
     -- Timestamps
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -190,10 +208,12 @@ CREATE TABLE users (
     -- Constraints
     -- Tier 2 (PostgreSQL-only) — regex CHECK not in live ORM
     CONSTRAINT users_email_format CHECK (email ~* '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}$'),
-    -- Tier 2 (PostgreSQL-only) — cross-column CHECK not in live ORM
-    CONSTRAINT users_password_or_sso CHECK (
-        (hashed_password IS NOT NULL) OR (sso_provider IS NOT NULL)
-    )
+    -- Tier 1 (live ORM)
+    CONSTRAINT users_account_kind_check CHECK (account_kind IN ('individual', 'service'))
+    -- NOTE: a "(hashed_password IS NOT NULL) OR (sso_provider IS NOT NULL)"
+    -- CHECK was previously declared here. It blocked the intentional
+    -- passwordless dev-login flow (local mode); dropped in migration 007
+    -- (carried into this baseline as a permanent property, not a CHECK).
 );
 
 -- Tier 2 (PostgreSQL-only) — partial indexes (WHERE deleted_at IS NULL)
@@ -208,12 +228,56 @@ COMMENT ON COLUMN users.hashed_password IS 'Bcrypt hash, NULL for SSO-only users
 COMMENT ON COLUMN users.sso_provider_id IS 'External user ID from SSO provider (e.g., Google sub claim)';
 ```
 
+#### Table: enterprises
+
+The isolation boundary (ADR-017 D1): *may these two accounts ever see each other's data?* PostgreSQL RLS keys on `enterprise_id`; nothing crosses an enterprise line — no share, no team, no query. An enterprise groups accounts, organizations and teams; it is derived from the verified email domain at sign-up (ADR-017 D3) and grants nothing on its own.
+
+```sql
+CREATE TABLE enterprises (
+    -- Primary Key
+    enterprise_id VARCHAR(36) PRIMARY KEY,
+
+    name VARCHAR(255) NOT NULL,
+    slug VARCHAR(100) NOT NULL,
+    plan_tier VARCHAR(20) NOT NULL DEFAULT 'free',
+    max_members INTEGER NOT NULL DEFAULT 5,
+    max_cases INTEGER,
+    billing_email VARCHAR(255),
+    settings JSONB,  -- SSO config, feature flags, etc.
+
+    -- The verified email domain this enterprise is the tenant for, case-folded
+    -- (ADR-017 D3). NULL for a personal enterprise: a consumer-mail account gets
+    -- an enterprise of its own and no domain claims it, which is what makes "a
+    -- personal account can never share" true by construction.
+    domain VARCHAR(255),
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at TIMESTAMPTZ,
+
+    CONSTRAINT enterprises_name_not_empty CHECK (LENGTH(TRIM(name)) > 0),
+    CONSTRAINT enterprises_plan_tier_check CHECK (plan_tier IN ('free', 'starter', 'pro', 'business'))
+);
+
+-- Unique among LIVE rows only (partial index): a retired tenant keeps its slug
+-- / domain, and the next tenant derived from the same subject / domain must be
+-- able to claim it again.
+CREATE UNIQUE INDEX ix_enterprises_slug_live ON enterprises(slug) WHERE deleted_at IS NULL;
+CREATE INDEX ix_enterprises_slug ON enterprises(slug);
+CREATE UNIQUE INDEX ix_enterprises_domain_live ON enterprises(domain) WHERE deleted_at IS NULL;
+```
+
+Standalone seeds exactly one enterprise row (`STANDALONE_ENTERPRISE_ID`, `…0002`, slug `default`) and no organization at all — see the Tenancy Context note above.
+
 #### Table: organizations
+
+The **billing target** (ADR-017 D1/D5): who pays for these accounts. Carries the plan, the metering and the turn allowance, and has **no role in visibility** — two accounts in one organization with no common team see nothing of each other's. An organization lives inside one enterprise; it does not contain teams (teams are parented by the enterprise directly).
 
 > **Columns in doc but not in live ORM** (out of current scope):
 >
-> - `domain VARCHAR(255)` — primary email domain for auto-join; not in `models.py`.
 > - `stripe_customer_id VARCHAR(100)`, `stripe_subscription_id VARCHAR(100)`, `trial_ends_at TIMESTAMPTZ` — Stripe/billing columns; **out of current scope**. These columns are removed from the active design spec. If cloud billing integration is added in the future, they will be introduced via a migration at that time.
+>
+> `domain` lives on `enterprises`, not here (see above) — a domain names the isolation tenant, not the billing target.
 >
 > The DDL below omits these columns. They are not targeted for the current redesign.
 
@@ -222,11 +286,12 @@ CREATE TABLE organizations (
     -- Primary Key
     organization_id VARCHAR(36) PRIMARY KEY DEFAULT ('org_' || gen_random_uuid()::text),
 
+    -- Every organization is owned by an enterprise (Enterprise > Org > Team).
+    enterprise_id VARCHAR(36) NOT NULL REFERENCES enterprises(enterprise_id) ON DELETE CASCADE,
+
     -- Organization Info
     name VARCHAR(200) NOT NULL,
-    slug VARCHAR(100) UNIQUE NOT NULL,  -- URL-friendly identifier
-    -- domain, stripe_customer_id, stripe_subscription_id, trial_ends_at:
-    -- out of current scope (see note above). Not included in this spec.
+    slug VARCHAR(100) NOT NULL,  -- URL-friendly identifier, unique within the enterprise
 
     -- Ownership & Lifecycle (aligned with ORM OrganizationModel and ER diagram — audit fix, storage redesign Phase 9)
     owner_id VARCHAR(36) NULL,          -- the user who owns the organization (informational; no FK enforced today)
@@ -234,11 +299,16 @@ CREATE TABLE organizations (
     description TEXT NULL,              -- free-form description
     metadata TEXT NULL,                 -- ORM attribute is `metadata_` to avoid SQLAlchemy Base.metadata collision; physical column name is `metadata`
 
+    -- Operator override for the per-UTC-day investigation-turn cap (ADR-016
+    -- D5.3, re-keyed to a billing subject by ADR-017 D5). NULL = no override
+    -- (deployment policy), 0 = explicitly uncapped, N>0 = N turns/day. Written
+    -- by `fm-set-turn-cap`.
+    daily_turn_cap INTEGER,
+
     -- Subscription / plan limits (plan_tier, max_members, max_cases) are NOT on
-    -- organizations in the live ORM — they live on the `enterprises` table
-    -- (top-tier tenancy container; enum `('free', 'starter', 'pro', 'business')`,
-    -- max_members default 5, max_cases nullable). `enterprises` is not yet
-    -- documented in this spec (separate follow-up; see revision history).
+    -- organizations in the live ORM — they live on `enterprises` (see above;
+    -- enum `('free', 'starter', 'pro', 'business')`, max_members default 5,
+    -- max_cases nullable).
 
     -- Settings
     settings JSONB DEFAULT '{}'::jsonb,  -- Flexible org-specific settings
@@ -255,21 +325,25 @@ CREATE TABLE organizations (
     CONSTRAINT organizations_name_not_empty CHECK (LENGTH(TRIM(name)) > 0),
     -- Tier 1 (live ORM) — note: no TRIM, by design. Mirrored on Pydantic via ``min_length=1``
     CONSTRAINT organizations_slug_not_empty CHECK (LENGTH(slug) > 0),
+    -- Tier 1 (live ORM)
+    CONSTRAINT organizations_daily_turn_cap_non_negative CHECK (daily_turn_cap IS NULL OR daily_turn_cap >= 0),
     -- Tier 2 (PostgreSQL-only) — regex CHECK not in live ORM
     CONSTRAINT organizations_slug_format CHECK (slug ~* '^[a-z0-9-]+$')
     -- (plan-tier CHECK lives on `enterprises` as `enterprises_plan_tier_check`,
     --  not on organizations — see the Subscription note above.)
 );
 
--- Tier 2 (PostgreSQL-only) — partial indexes (WHERE deleted_at IS NULL)
--- Live ORM indexes exist but are non-partial
-CREATE INDEX idx_organizations_slug ON organizations(slug) WHERE deleted_at IS NULL;
+-- Partial (WHERE deleted_at IS NULL), and scoped to the enterprise: a slug is
+-- unique per enterprise, not deployment-wide.
+CREATE UNIQUE INDEX idx_organizations_slug ON organizations(enterprise_id, slug) WHERE deleted_at IS NULL;
 
-COMMENT ON TABLE organizations IS 'Tenant organizations (workspaces) for multi-tenancy';
-COMMENT ON COLUMN organizations.slug IS 'URL slug for organization (e.g., acme-corp)';
+COMMENT ON TABLE organizations IS 'Billing targets (cost centres) for the accounts in one enterprise — no role in data visibility';
+COMMENT ON COLUMN organizations.slug IS 'URL slug for organization (e.g., acme-corp), unique within its enterprise';
 ```
 
 #### Table: organization_members
+
+The **billing roster** (ADR-017 D5): which accounts a subscription covers, and each member's organization-*management* role. It is **not** the isolation membership — that is `users.enterprise_id` — and an account may be in no organization at all.
 
 ```sql
 CREATE TABLE organization_members (
@@ -278,7 +352,10 @@ CREATE TABLE organization_members (
     organization_id VARCHAR(36) NOT NULL REFERENCES organizations(organization_id) ON DELETE CASCADE,
     PRIMARY KEY (user_id, organization_id),
 
-    -- Role in Organization
+    -- Denormalized so RLS can key on it directly without a JOIN through organizations.
+    enterprise_id VARCHAR(36) NOT NULL REFERENCES enterprises(enterprise_id) ON DELETE CASCADE,
+
+    -- Management role in the organization (billing/roster admin — never a data-visibility gate)
     role_id VARCHAR(36) NOT NULL REFERENCES roles(role_id),
 
     -- Invitation
@@ -309,13 +386,16 @@ COMMENT ON TABLE organization_members IS 'User membership in organizations with 
 
 #### Table: teams
 
+The **sharing unit** (ADR-017 D1/D4): who has agreed to share. A team is formed by consent, lives inside exactly one enterprise, and may span organizations — two cost centres of one company share an incident through one team. It is parented by its enterprise, never by an organization; `teams.organization_id` does not exist.
+
 ```sql
 CREATE TABLE teams (
     -- Primary Key
     team_id VARCHAR(36) PRIMARY KEY DEFAULT ('team_' || gen_random_uuid()::text),
 
-    -- Parent Organization
-    organization_id VARCHAR(36) NOT NULL REFERENCES organizations(organization_id) ON DELETE CASCADE,
+    -- Parent Enterprise (ADR-017 D1/D4) — NOT organization. A team may span
+    -- organizations of the same enterprise.
+    enterprise_id VARCHAR(36) NOT NULL REFERENCES enterprises(enterprise_id) ON DELETE CASCADE,
 
     -- Team Info
     name VARCHAR(200) NOT NULL,
@@ -328,19 +408,40 @@ CREATE TABLE teams (
     -- Soft Delete
     deleted_at TIMESTAMPTZ,
 
-    -- Unique name within organization
-    UNIQUE (organization_id, name),
+    -- Unique name within enterprise
+    UNIQUE (enterprise_id, name),
 
     -- Constraints
     -- Tier 1 (live ORM) — mirrored on Pydantic ``Team.name`` via field validator
     CONSTRAINT teams_name_not_empty CHECK (LENGTH(TRIM(name)) > 0)
 );
 
--- Tier 2 (PostgreSQL-only) — partial index (WHERE deleted_at IS NULL)
--- Live ORM index exists but is non-partial
-CREATE INDEX idx_teams_organization_id ON teams(organization_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_teams_enterprise_id ON teams(enterprise_id);
 
-COMMENT ON TABLE teams IS 'Sub-organization groups for collaboration';
+COMMENT ON TABLE teams IS 'Sharing units (consent-formed), parented by their enterprise — may span organizations';
+```
+
+#### Table: team_invitations
+
+An offer to join a team, and the consent record that answers it (ADR-017 D4). A team admin invites an address; the invitee accepts. A pending invitation grants nothing. The address need not have an account yet — the invitation resolves when that address signs up **and lands in the same enterprise**, which is why `invited_user_id` is nullable and `email` is not.
+
+```sql
+CREATE TABLE team_invitations (
+    invitation_id VARCHAR(36) PRIMARY KEY,
+    enterprise_id VARCHAR(36) NOT NULL REFERENCES enterprises(enterprise_id) ON DELETE CASCADE,
+    team_id VARCHAR(36) NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+    email VARCHAR(255) NOT NULL,  -- the invited address, always; case-folded by the writer
+    invited_user_id VARCHAR(36) REFERENCES users(user_id) ON DELETE SET NULL,  -- the account the address resolved to, once it has one
+    invited_by VARCHAR(36) REFERENCES users(user_id) ON DELETE SET NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX ix_team_invitations_enterprise_id ON team_invitations(enterprise_id);
+CREATE INDEX ix_team_invitations_team_id ON team_invitations(team_id);
+CREATE INDEX ix_team_invitations_status ON team_invitations(status);
+
+COMMENT ON TABLE team_invitations IS 'RLS-tenanted: an invitation is exactly the sort of row the isolation wall exists to keep on one side of';
 ```
 
 #### Table: team_members
@@ -494,6 +595,9 @@ CREATE TABLE user_audit_log (
 
     -- Actor
     user_id VARCHAR(36) REFERENCES users(user_id) ON DELETE SET NULL,
+    -- The isolation tenant (ADR-017 D1) — NOT NULL, RLS key.
+    enterprise_id VARCHAR(36) NOT NULL REFERENCES enterprises(enterprise_id) ON DELETE CASCADE,
+    -- Billing attribution, nullable — an account may be in no organization.
     organization_id VARCHAR(36) REFERENCES organizations(organization_id) ON DELETE SET NULL,
 
     -- Event
@@ -537,48 +641,48 @@ COMMENT ON TABLE user_audit_log IS 'Security audit trail for compliance and fore
 
 ### 3.1 Tenant Isolation
 
-**Organization Scope**: Each organization is a separate tenant workspace.
+**Enterprise Scope** (ADR-017 D1): each **enterprise** is a separate isolation boundary — *may these two accounts ever see each other's data?* `enterprise_id` is denormalized onto every tenant-scoped table (including `cases`), so a read never has to join through `users` or `organizations` to find it.
 
 ```sql
--- Get cases for user's organization
+-- Get cases in the caller's enterprise
 SELECT c.*
 FROM cases c
-JOIN users u ON u.user_id = c.user_id
-JOIN organization_members om ON om.user_id = u.user_id
-WHERE om.organization_id = :current_organization_id
-AND om.user_id = :current_user_id;
+WHERE c.enterprise_id = :current_enterprise_id;
 ```
 
-### 3.2 Cross-Organization Access
+The **organization** answers a different question — *who pays for these accounts* — and has no role in this query. Two accounts in the same organization with no common team see nothing of each other's cases; two accounts in different organizations of the *same* enterprise are both reachable here, because isolation does not key on the organization at all.
 
-**Forbidden**: Users cannot access data from other organizations.
+### 3.2 Cross-Enterprise Access
 
-**Implementation**: Row-Level Security (RLS) in PostgreSQL
+**Forbidden**: Accounts cannot access data from another enterprise, whatever else is true of their organization or team memberships.
+
+**Implementation**: Row-Level Security (RLS) in PostgreSQL, keyed on `enterprise_id`
 
 ```sql
 -- Enable RLS on cases table
 ALTER TABLE cases ENABLE ROW LEVEL SECURITY;
 
--- Policy: Users can only see cases from their organization
-CREATE POLICY cases_org_isolation ON cases
-FOR SELECT
+-- Policy: an account can only see rows in its own enterprise. No FOR clause,
+-- so PostgreSQL applies USING as FOR ALL — the same expression also gates
+-- INSERT/UPDATE via WITH CHECK, so writing into another enterprise is
+-- rejected, not merely hidden.
+CREATE POLICY cases_tenant_isolation ON cases
 USING (
-    user_id IN (
-        SELECT u.user_id
-        FROM users u
-        JOIN organization_members om ON om.user_id = u.user_id
-        WHERE om.organization_id = current_setting('app.current_organization_id')::varchar
-    )
+    enterprise_id = current_setting('app.current_enterprise_id', true)
 );
 ```
 
-### 3.3 Organization Types
+Fail-closed: with no `app.current_enterprise_id` bound, `current_setting(...)` is NULL, every comparison is NULL, and no row matches. The engine's `begin` listener sets it once per transaction from the request's bound enterprise (`config/tenant_context.py`); there is no `app.current_org_id` — the organization is never a visibility predicate, so no session variable carries it.
 
-| Plan | Max Users | Features |
+### 3.3 Plan Tiers
+
+Plan tier lives on `enterprises.plan_tier`, not on `organizations` — it is a property of the isolation tenant, and an organization inside it inherits nothing of its own.
+
+| Plan | Max Members | Features |
 |------|-----------|----------|
 | **Free** | 5 | Basic troubleshooting, 10 cases/month |
-| **Pro** | 50 | Advanced features, unlimited cases, API access |
-| **Enterprise** | Unlimited | SSO, custom roles, dedicated support, SLA |
+| **Starter / Pro** | configurable | Advanced features, unlimited cases, API access |
+| **Business** | Unlimited | SSO, custom roles, dedicated support, SLA |
 
 ---
 
@@ -767,7 +871,7 @@ HAVING COUNT(*) > 5;
 
 ## 7. Implementation Status
 
-✅ **Implemented and deployed** — baseline migration `001_clean_baseline` (revision `424078e5aa04`) creates all 11 user-domain tables, 7 seed roles, and 19 seed permissions. The live source of truth is:
+✅ **Implemented and deployed** — baseline migration `001_enterprise_baseline` (revision `a1e0c17bd001`) creates all 14 user-domain tables, 7 seed roles, and 19 seed permissions. The live source of truth is:
 
 - SQLAlchemy models: `faultmaven/infrastructure/persistence/models.py`
 - Repositories: `faultmaven/modules/auth/infrastructure/repositories/`
@@ -781,9 +885,9 @@ HAVING COUNT(*) > 5;
 
 ### Enterprise SaaS User Schema
 
-✅ **Multi-Tenancy**: Organization-based isolation
+✅ **Multi-Tenancy**: Enterprise-based isolation (RLS on `enterprise_id`); organization is a billing target, not a visibility boundary
 ✅ **RBAC**: Flexible role and permission system
-✅ **Team Collaboration**: Sub-organization teams
+✅ **Team Collaboration**: Enterprise-parented, consent-formed teams — may span organizations
 ✅ **SSO Ready**: Google, Azure AD, Okta support
 ✅ **Audit Trail**: Comprehensive security logging
 ✅ **Scalable**: Normalized schema, Row-Level Security
@@ -793,10 +897,10 @@ HAVING COUNT(*) > 5;
 - ✅ Schema deployed via baseline migration (`alembic upgrade head`)
 - ✅ All repositories and services live
 - ✅ 30+ REST endpoints under `modules/auth/api/`
-- ✅ Multi-tenancy via `organizations` + `organization_members` + `teams`
+- ✅ Isolation via `enterprises` + `users.enterprise_id`; billing via `organizations` + `organization_members`; sharing via `teams` + `team_invitations`
 - ✅ Full RBAC via `roles`, `permissions`, `role_permissions`
 - ✅ Audit trail via `user_audit_log`
-- ✅ SSO via `sso_provider` / `sso_provider_id` columns; OAuth code flow via `oauth_authorization_codes` (token revocation is Redis-only — #767)
+- ✅ SSO via `sso_provider` / `sso_provider_id` columns, `sso_org_mappings` (IdP org → enterprise) and `sso_personal_enterprises` (IdP subject → personal enterprise); OAuth code flow via `oauth_authorization_codes` (token revocation is Redis-only — #767)
 
 ---
 
@@ -804,7 +908,7 @@ HAVING COUNT(*) > 5;
 
 - SQLAlchemy models: [faultmaven/infrastructure/persistence/models.py](../../../../faultmaven/infrastructure/persistence/models.py)
 - Auth module: [faultmaven/modules/auth/](../../../../faultmaven/modules/auth/)
-- Baseline migration: [alembic/versions/20260317_1919_424078e5aa04_001_clean_baseline.py](../../../../alembic/versions/20260317_1919_424078e5aa04_001_clean_baseline.py)
+- Baseline migration: [alembic/versions/20260906_1200_a1e0c17bd001_001_enterprise_baseline.py](../../../../alembic/versions/20260906_1200_a1e0c17bd001_001_enterprise_baseline.py)
 - Redis/FakeRedis session store: [faultmaven/modules/auth/infrastructure/stores/](../../../../faultmaven/modules/auth/infrastructure/stores/)
 - Dialect/tier policy: [deployment-schema-strategy.md](../../../../../faultmaven-doc-internal/architecture/deployment-schema-strategy.md)
 

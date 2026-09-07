@@ -107,7 +107,10 @@ ignore_imports =
     faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository -> faultmaven.modules.case.domain.owned_models.*
     faultmaven.modules.case.infrastructure.case_repository -> faultmaven.modules.case.domain.models
     faultmaven.modules.case.infrastructure.case_repository -> faultmaven.modules.case.domain.owned_models.*
-    faultmaven.modules.case.infrastructure.investigation_session_repository -> faultmaven.modules.case.domain.investigation_session
+    # investigation_session_repository ignore removed with the module: the case
+    # module carried a second, IMPORT-FREE copy of the session repository that
+    # nothing in faultmaven/ or tests/ ever imported. The live one is
+    # infrastructure/persistence/investigation_session_repository.py.
     faultmaven.modules.case.infrastructure.sqlite_case_repository -> faultmaven.modules.case.contracts
     # sqlite_case_repository -> owned_models.* ignore removed in storage redesign
     # 2026-04 phase 2: the standalone evidence path was deleted and those imports
@@ -140,9 +143,9 @@ ignore_imports =
     # SSO org-mapping adapter implements the ISSOOrgMappingRepository port
     # defined in contracts (same DIP pattern as above). #869.
     faultmaven.modules.auth.infrastructure.repositories.sso_org_mapping_repository -> faultmaven.modules.auth.contracts
-    # SSO personal-tenant adapter implements the ISSOPersonalOrgRepository port
+    # SSO personal-tenant adapter implements the ISSOPersonalEnterpriseRepository port
     # defined in contracts (same DIP pattern as above). #1045.
-    faultmaven.modules.auth.infrastructure.repositories.sso_personal_org_repository -> faultmaven.modules.auth.contracts
+    faultmaven.modules.auth.infrastructure.repositories.sso_personal_enterprise_repository -> faultmaven.modules.auth.contracts
 
 # ============================================================================
 # CONTRACT 7: Agent Module Layer Boundaries

@@ -21,7 +21,7 @@ class TestInvestigationSessionValidation:
                 session_id="",
                 case_id="case_123",
                 user_id="user_456",
-                organization_id="org_789",
+                enterprise_id="ent_789",
             )
 
     def test_empty_case_id_fails(self):
@@ -31,7 +31,7 @@ class TestInvestigationSessionValidation:
                 session_id="sess_123",
                 case_id="",
                 user_id="user_456",
-                organization_id="org_789",
+                enterprise_id="ent_789",
             )
 
     def test_empty_user_id_fails(self):
@@ -41,17 +41,17 @@ class TestInvestigationSessionValidation:
                 session_id="sess_123",
                 case_id="case_456",
                 user_id="",
-                organization_id="org_789",
+                enterprise_id="ent_789",
             )
 
-    def test_empty_organization_id_fails(self):
-        """Test that empty organization_id raises ValueError."""
-        with pytest.raises(ValueError, match="organization_id is required"):
+    def test_empty_enterprise_id_fails(self):
+        """Test that an empty enterprise_id raises ValueError."""
+        with pytest.raises(ValueError, match="enterprise_id is required"):
             InvestigationSession(
                 session_id="sess_123",
                 case_id="case_456",
                 user_id="user_789",
-                organization_id="",
+                enterprise_id="",
             )
 
     def test_negative_token_usage_fails(self):
@@ -61,7 +61,7 @@ class TestInvestigationSessionValidation:
                 session_id="sess_123",
                 case_id="case_456",
                 user_id="user_789",
-                organization_id="org_012",
+                enterprise_id="org_012",
                 total_token_usage=-100,
             )
 
@@ -74,7 +74,7 @@ class TestInvestigationSessionValidation:
                 session_id="sess_123",
                 case_id="case_456",
                 user_id="user_789",
-                organization_id="org_012",
+                enterprise_id="org_012",
                 total_agent_executions=-1,
             )
 
@@ -85,7 +85,7 @@ class TestInvestigationSessionValidation:
                 session_id="sess_123",
                 case_id="case_456",
                 user_id="user_789",
-                organization_id="org_012",
+                enterprise_id="org_012",
                 token_budget_limit=-1000,
             )
 
@@ -96,7 +96,7 @@ class TestInvestigationSessionValidation:
                 session_id="sess_123",
                 case_id="case_456",
                 user_id="user_789",
-                organization_id="org_012",
+                enterprise_id="org_012",
                 total_duration_ms=-1000,
             )
 
@@ -110,7 +110,7 @@ class TestInvestigationSessionValidation:
                 session_id="sess_123",
                 case_id="case_456",
                 user_id="user_789",
-                organization_id="org_012",
+                enterprise_id="org_012",
                 started_at=started,
                 ended_at=ended,
             )
@@ -121,7 +121,7 @@ class TestInvestigationSessionValidation:
             session_id="sess_123",
             case_id="case_456",
             user_id="user_789",
-            organization_id="org_012",
+            enterprise_id="org_012",
             total_token_usage=0,
             total_agent_executions=0,
             token_budget_limit=0,
@@ -144,7 +144,7 @@ class TestInvestigationSessionLifecycleMethods:
             session_id="sess_sample123",
             case_id="case_456",
             user_id="user_789",
-            organization_id="org_012",
+            enterprise_id="org_012",
             session_goal="Investigate timeout issue",
         )
 
@@ -276,7 +276,7 @@ class TestInvestigationSessionAgentExecution:
             session_id="sess_exec",
             case_id="case_456",
             user_id="user_789",
-            organization_id="org_012",
+            enterprise_id="org_012",
         )
 
     def test_add_agent_execution(self, sample_session):
@@ -336,7 +336,7 @@ class TestInvestigationSessionStatusChecks:
             session_id="sess_status",
             case_id="case_456",
             user_id="user_789",
-            organization_id="org_012",
+            enterprise_id="org_012",
         )
 
     def test_is_active(self, sample_session):
@@ -385,7 +385,7 @@ class TestInvestigationSessionBudget:
             session_id="sess_budget",
             case_id="case_456",
             user_id="user_789",
-            organization_id="org_012",
+            enterprise_id="org_012",
             token_budget_limit=1000,
         )
 
@@ -396,7 +396,7 @@ class TestInvestigationSessionBudget:
             session_id="sess_no_budget",
             case_id="case_456",
             user_id="user_789",
-            organization_id="org_012",
+            enterprise_id="org_012",
         )
 
     def test_is_over_budget_false_when_under(self, session_with_budget):
@@ -463,7 +463,7 @@ class TestInvestigationSessionBudget:
             session_id="sess_zero_budget",
             case_id="case_456",
             user_id="user_789",
-            organization_id="org_012",
+            enterprise_id="org_012",
             token_budget_limit=0,
         )
         assert session.get_budget_usage_percent() is None
@@ -478,7 +478,7 @@ class TestInvestigationSessionDurationDisplay:
             session_id="sess_dur",
             case_id="case_456",
             user_id="user_789",
-            organization_id="org_012",
+            enterprise_id="org_012",
             total_duration_ms=45000,  # 45 seconds
         )
         assert session.get_duration_display() == "45s"
@@ -489,7 +489,7 @@ class TestInvestigationSessionDurationDisplay:
             session_id="sess_dur",
             case_id="case_456",
             user_id="user_789",
-            organization_id="org_012",
+            enterprise_id="org_012",
             total_duration_ms=135000,  # 2 min 15 sec
         )
         assert session.get_duration_display() == "2m 15s"
@@ -500,7 +500,7 @@ class TestInvestigationSessionDurationDisplay:
             session_id="sess_dur",
             case_id="case_456",
             user_id="user_789",
-            organization_id="org_012",
+            enterprise_id="org_012",
             total_duration_ms=8145000,  # 2h 15m 45s
         )
         assert session.get_duration_display() == "2h 15m 45s"
@@ -511,7 +511,7 @@ class TestInvestigationSessionDurationDisplay:
             session_id="sess_dur",
             case_id="case_456",
             user_id="user_789",
-            organization_id="org_012",
+            enterprise_id="org_012",
             total_duration_ms=3600000,  # 1 hour
         )
         assert session.get_duration_display() == "1h"
@@ -522,7 +522,7 @@ class TestInvestigationSessionDurationDisplay:
             session_id="sess_dur",
             case_id="case_456",
             user_id="user_789",
-            organization_id="org_012",
+            enterprise_id="org_012",
             total_duration_ms=0,
         )
         assert session.get_duration_display() == "0s"
@@ -534,7 +534,7 @@ class TestInvestigationSessionDurationDisplay:
             session_id="sess_dur",
             case_id="case_456",
             user_id="user_789",
-            organization_id="org_012",
+            enterprise_id="org_012",
             started_at=started,
             # total_duration_ms is None (active session)
         )
@@ -552,7 +552,7 @@ class TestInvestigationSessionTouch:
             session_id="sess_touch",
             case_id="case_123",
             user_id="user_456",
-            organization_id="org_789",
+            enterprise_id="ent_789",
         )
 
         original = session.updated_at
@@ -568,7 +568,7 @@ class TestInvestigationSessionTouch:
             session_id="sess_activity",
             case_id="case_123",
             user_id="user_456",
-            organization_id="org_789",
+            enterprise_id="ent_789",
         )
 
         original_updated = session.updated_at
@@ -590,7 +590,7 @@ class TestInvestigationSessionRepr:
             session_id="sess_repr123",
             case_id="case_456",
             user_id="user_789",
-            organization_id="org_012",
+            enterprise_id="org_012",
             total_agent_executions=5,
         )
 
@@ -611,7 +611,7 @@ class TestInvestigationSessionStateTransitions:
             session_id="sess_lifecycle",
             case_id="case_456",
             user_id="user_789",
-            organization_id="org_012",
+            enterprise_id="org_012",
         )
 
         # Start active
@@ -641,7 +641,7 @@ class TestInvestigationSessionStateTransitions:
             session_id="sess_abandoned",
             case_id="case_456",
             user_id="user_789",
-            organization_id="org_012",
+            enterprise_id="org_012",
         )
 
         session.add_agent_execution(token_usage=100)
@@ -657,7 +657,7 @@ class TestInvestigationSessionStateTransitions:
             session_id="sess_pause_abandon",
             case_id="case_456",
             user_id="user_789",
-            organization_id="org_012",
+            enterprise_id="org_012",
         )
 
         session.pause()

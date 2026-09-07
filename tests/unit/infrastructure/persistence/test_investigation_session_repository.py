@@ -32,7 +32,7 @@ def create_sample_session(
         session_id=session_id or generate_session_id(),
         case_id=case_id or generate_case_id(),
         user_id=user_id,
-        organization_id=organization_id,
+        enterprise_id=organization_id,
         state=state,
         started_at=started_at or datetime.now(timezone.utc),
         total_token_usage=total_token_usage,

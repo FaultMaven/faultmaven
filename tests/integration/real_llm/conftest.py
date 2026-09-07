@@ -98,7 +98,7 @@ def fresh_inquiry_case() -> Case:
         title="Real-LLM Integration Test",
         state=CaseState.INQUIRY,
         user_id="user_realllm",
-        organization_id="org_realllm",
+        enterprise_id="org_realllm",
         description="",
         inquiry=InquiryData(thread_id="thread_realllm"),
         created_at=datetime.now(timezone.utc),

@@ -61,7 +61,7 @@ def _make_case() -> Case:
         title="Checkout latency spike",
         description="p99 latency tripled after the 14:02 deploy",
         user_id="test-user-123",
-        organization_id="org_test123",
+        enterprise_id="org_test123",
         state=CaseState.INQUIRY,
         current_turn=0,
     )

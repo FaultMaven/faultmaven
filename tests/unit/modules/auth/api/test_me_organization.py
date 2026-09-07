@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from faultmaven.config.constants import STANDALONE_ORG_ID
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.modules.auth.api.auth import _resolve_organization_summary
 from faultmaven.modules.auth.domain.models.api_auth import UserInfoResponse
 from faultmaven.providers.tenancy.factory import BUILTIN_MULTI, BUILTIN_SINGLE
@@ -95,7 +95,9 @@ class TestResolveOrganizationSummary:
 
         with patch(_PROVIDER, side_effect=RuntimeError("settings unreadable")):
             assert (
-                await _resolve_organization_summary(_User(STANDALONE_ORG_ID), repo)
+                await _resolve_organization_summary(
+                    _User(STANDALONE_ENTERPRISE_ID), repo
+                )
                 is None
             )
 
@@ -132,7 +134,9 @@ class TestResolveOrganizationSummary:
 
         with patch(_PROVIDER, return_value=BUILTIN_MULTI):
             assert (
-                await _resolve_organization_summary(_User(STANDALONE_ORG_ID), repo)
+                await _resolve_organization_summary(
+                    _User(STANDALONE_ENTERPRISE_ID), repo
+                )
                 is None
             )
 
@@ -149,12 +153,12 @@ class TestResolveOrganizationSummary:
 
         with patch(_PROVIDER, return_value=BUILTIN_SINGLE):
             summary = await _resolve_organization_summary(
-                _User(STANDALONE_ORG_ID), repo
+                _User(STANDALONE_ENTERPRISE_ID), repo
             )
 
         assert summary is not None
         assert summary.name == "Default Organization"
-        repo.get_organization.assert_awaited_once_with(STANDALONE_ORG_ID)
+        repo.get_organization.assert_awaited_once_with(STANDALONE_ENTERPRISE_ID)
 
 
 class TestResponseContract:

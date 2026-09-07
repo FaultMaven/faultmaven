@@ -35,7 +35,7 @@ def mock_admin_user():
     """Mock authenticated admin user."""
     return AuthenticatedUser(
         user_id="admin_123",
-        organization_id="org_123",
+        enterprise_id="org_123",
         email="admin@example.com",
         roles=["admin"],
         permissions=["admin:all"],

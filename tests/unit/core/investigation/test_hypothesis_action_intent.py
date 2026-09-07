@@ -52,7 +52,7 @@ def _make_case() -> Case:
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="user_test",
-        organization_id="org_test",
+        enterprise_id="org_test",
         title="Deploy fails",
         description="The 'Deploy to on-prem' job is failing",
         state=CaseState.INVESTIGATING,

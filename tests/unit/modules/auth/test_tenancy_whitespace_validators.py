@@ -103,7 +103,7 @@ def test_organization_slug_allows_whitespace_to_match_db_check():
 def _team_kwargs(**overrides):
     base = dict(
         team_id="team-1",
-        organization_id="org-1",
+        enterprise_id="ent-1",
         name="Platform",
         created_at=_now(),
         updated_at=_now(),

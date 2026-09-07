@@ -96,7 +96,7 @@ def repository(async_session) -> SQLiteCaseRepository:
 def _make_case(
     *,
     user_id: str = "user_alpha",
-    organization_id: str = "org_alpha",
+    enterprise_id: str = "ent_alpha",
     title: str = "Test case",
     state: CaseState = CaseState.INQUIRY,
     description: str = "",
@@ -105,7 +105,7 @@ def _make_case(
     return Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id=user_id,
-        organization_id=organization_id,
+        enterprise_id=enterprise_id,
         title=title,
         description=description,
         state=state,
@@ -227,7 +227,7 @@ class TestSaveAndGet:
         case = Case(
             case_id=f"case_{uuid4().hex[:12]}",
             user_id="user_alpha",
-            organization_id="org_alpha",
+            enterprise_id="org_alpha",
             title="Investigating case",
             description="Latency spike in API",
             state=CaseState.INVESTIGATING,
@@ -252,7 +252,7 @@ class TestSaveAndGet:
         case = Case(
             case_id=f"case_{uuid4().hex[:12]}",
             user_id="user_alpha",
-            organization_id="org_alpha",
+            enterprise_id="org_alpha",
             title="Closed case",
             description="Already closed",
             state=CaseState.RESOLVED,
@@ -653,18 +653,19 @@ class TestListAndSearch:
         assert None not in refs
 
     @pytest.mark.asyncio
-    async def test_list_ignores_organization_filter(self, repository):
-        # ADR-010: standalone is single-tenant; the organization_id param does
-        # NOT scope reads (multi-tenant isolation is RLS, not per-query filters).
-        # All cases are returned regardless of the org passed.
-        await repository.save(_make_case(organization_id="org_left"))
-        await repository.save(_make_case(organization_id="org_left"))
-        await repository.save(_make_case(organization_id="org_right"))
+    async def test_list_ignores_enterprise_filter(self, repository):
+        # ADR-017: the enterprise_id param does NOT scope reads — isolation is
+        # RLS on app.current_enterprise_id, not a per-query filter, and this
+        # repository is the standalone (SQLite) one where there is no RLS at
+        # all. All cases are returned regardless of the enterprise passed.
+        await repository.save(_make_case(enterprise_id="ent_left"))
+        await repository.save(_make_case(enterprise_id="ent_left"))
+        await repository.save(_make_case(enterprise_id="ent_right"))
 
-        cases, total = await repository.list(organization_id="org_right")
+        cases, total = await repository.list(enterprise_id="ent_right")
 
         assert total == 3
-        assert {c.organization_id for c in cases} == {"org_left", "org_right"}
+        assert {c.enterprise_id for c in cases} == {"ent_left", "ent_right"}
 
     @pytest.mark.asyncio
     async def test_list_filters_by_status(self, repository):
@@ -678,7 +679,7 @@ class TestListAndSearch:
         investigating = Case(
             case_id=f"case_{uuid4().hex[:12]}",
             user_id="user_alpha",
-            organization_id="org_alpha",
+            enterprise_id="org_alpha",
             title="I",
             description="X",
             state=CaseState.INVESTIGATING,
@@ -769,16 +770,16 @@ class TestListAndSearch:
         assert results[0].user_id == "user_a"
 
     @pytest.mark.asyncio
-    async def test_search_ignores_organization_filter(self, repository):
-        # ADR-010: org param does NOT scope reads per-query (single-tenant);
-        # both orgs' matching cases are returned.
-        await repository.save(_make_case(organization_id="org_1", title="Net issue"))
-        await repository.save(_make_case(organization_id="org_2", title="Net issue"))
+    async def test_search_ignores_enterprise_filter(self, repository):
+        # ADR-017: the enterprise param does NOT scope reads per-query;
+        # both enterprises' matching cases are returned.
+        await repository.save(_make_case(enterprise_id="ent_1", title="Net issue"))
+        await repository.save(_make_case(enterprise_id="ent_2", title="Net issue"))
 
-        results, _ = await repository.search(query="Net", organization_id="org_1")
+        results, _ = await repository.search(query="Net", enterprise_id="ent_1")
 
         assert len(results) == 2
-        assert {r.organization_id for r in results} == {"org_1", "org_2"}
+        assert {r.enterprise_id for r in results} == {"ent_1", "ent_2"}
 
     @pytest.mark.asyncio
     async def test_search_respects_limit(self, repository):
@@ -1569,7 +1570,7 @@ def _make_investigating_case_with_action() -> Case:
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="user_alpha",
-        organization_id="org_alpha",
+        enterprise_id="org_alpha",
         title="Investigating case",
         description="Latency spike in API",
         state=CaseState.INVESTIGATING,

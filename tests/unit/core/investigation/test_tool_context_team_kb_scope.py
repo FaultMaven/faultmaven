@@ -62,10 +62,10 @@ def _engine(team_ids=None, shared_ids=None, *, wired=True):
     return engine
 
 
-def _case(org_id="org_1"):
+def _case(enterprise_id="ent_1"):
     case = MagicMock()
     case.case_id = "case_1"
-    case.organization_id = org_id
+    case.enterprise_id = enterprise_id
     case.progress = None
     return case
 
@@ -111,16 +111,19 @@ async def test_the_team_arm_is_keyed_on_the_session_user():
     engine.team_service.list_all_user_team_ids.assert_awaited_once_with("session_user")
 
 
-async def test_organization_id_is_threaded_into_the_share_lookup():
-    """The share resolution must stay tenant-scoped."""
+async def test_the_enterprise_is_threaded_into_the_share_lookup():
+    """The share resolution must stay tenant-scoped — on the ENTERPRISE, which
+    is what isolates (ADR-017 D1). A team may span two organizations inside one
+    enterprise, so scoping the lookup by organization would hide a share the
+    requester is entitled to; scoping it by nothing would cross the wall."""
     engine = _engine(team_ids=["team_a"], shared_ids=["kb_1"])
 
-    await engine._build_tool_context(_case(org_id="org_xyz"), user_id="user_a")
+    await engine._build_tool_context(_case(enterprise_id="ent_xyz"), user_id="user_a")
 
     _, kwargs = engine.share_repository.list_resource_ids.await_args
     assert (
-        kwargs.get("organization_id") == "org_xyz"
-    ), f"share lookup was not scoped to the case's organization: {kwargs}"
+        kwargs.get("enterprise_id") == "ent_xyz"
+    ), f"share lookup was not scoped to the case's enterprise: {kwargs}"
     assert kwargs.get("resource_type") == "knowledge_item"
     assert kwargs.get("scope_type") == "team"
 

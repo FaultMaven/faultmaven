@@ -107,7 +107,7 @@ def base_case():
         title="Test Function Calling",
         state=CaseState.INVESTIGATING,
         user_id="user_123",
-        organization_id="org_123",
+        enterprise_id="org_123",
         description="Test function calling mode",
         problem_verification=ProblemVerification(
             symptom_statement="Test symptom",

@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from faultmaven.config.constants import STANDALONE_ORG_ID
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.infrastructure.persistence.models import (
     Base,
     EnterpriseModel,
@@ -63,7 +63,7 @@ async def seeded_session_factory(engine):
         )
         session.add(
             OrganizationModel(
-                organization_id=STANDALONE_ORG_ID,
+                organization_id=STANDALONE_ENTERPRISE_ID,
                 enterprise_id=DEFAULT_ENTERPRISE_ID,
                 name="Default Org",
                 slug="default-org",

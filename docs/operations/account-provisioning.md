@@ -57,9 +57,10 @@ needs no browser.
 ### Order is not negotiable
 
 Invite **and** provision the tenant **before** the person first signs in. There
-is no just-in-time tenant creation — an organization is a billing and isolation
-boundary, and an IdP claim is not authority to create one. A first sign-in with
-no mapping fails closed with `?error=sso_org_unmapped`.
+is no just-in-time tenant creation for a mapped IdP organization — the
+**enterprise** is the isolation boundary, and an IdP claim is not authority to
+create one. A first sign-in with no mapping fails closed with
+`?error=sso_org_unmapped`.
 
 > ⚠️ Today that error renders in the dashboard as *"Sign-in failed. Please try
 > again."* — advice that can never work (dashboard **#79**, open). Until it is
@@ -69,10 +70,11 @@ no mapping fails closed with `?error=sso_org_unmapped`.
 ### Step 1 — decide the tenant
 
 Settled beta policy is **one WorkOS Organization per participant**, mapping 1:1
-to a FaultMaven organization. Do not put unrelated participants in a shared
-tenant: the FaultMaven organization *is* the RLS boundary, so co-locating two
-parties pools their incident data, and a shared tenant means the deployment
-never exercises the multi-tenant path at all.
+to a FaultMaven enterprise (`fm-provision-sso-org` creates the enterprise, an
+organization inside it, and the mapping together). Do not put unrelated
+participants in a shared tenant: the FaultMaven enterprise *is* the RLS
+boundary, so co-locating two parties pools their incident data, and a shared
+tenant means the deployment never exercises the multi-tenant path at all.
 
 Put an account in an **existing** tenant only when the person genuinely belongs
 to that customer.
@@ -114,8 +116,10 @@ kubectl exec -it deploy/faultmaven-api -n faultmaven -- \
     --workos-org-id org_01HQZX9K3P4M5N6R7S8T9V0W1X
 ```
 
-**Record the FaultMaven `organization_id` it prints.** It is a UUID, it is not
-the `org_…` IdP id, and later steps need it.
+**Record the FaultMaven `enterprise_id` it prints** (the isolation tenant —
+what later steps and troubleshooting key on) **and the `organization_id`**
+(the billing target, needed only if you also add the account to it). Both are
+UUIDs, neither is the `org_…` IdP id.
 
 Read that runbook's warnings about slug collisions before choosing `--slug`: a
 slug that resolves onto an existing tenant binds the new IdP organization to
@@ -202,14 +206,19 @@ is a hard conflict, not a link target.
 1. They land in the dashboard, not back on the login page. Any `?error=` on the
    callback URL means it failed.
 2. The session is scoped to the right tenant. Decode the access token (devtools
-   → the `Authorization` header on any API call) and check:
+   → the `Authorization` header on any API call) and check the isolation claim:
 
    ```json
-   "organization_id": "<the UUID step 3 printed>"
+   "enterprise_id": "<the enterprise_id step 3 printed>"
    ```
 
-   An **empty** `organization_id` means no tenant resolved, and every subsequent
-   request 403s with *"Request is not scoped to an organization."*
+   No `enterprise_id` claim means no tenant resolved, and the request is
+   refused (403, *"Request is not scoped to an enterprise."*) rather than
+   issued. `organization_id` is normally **absent** on a first sign-in — a
+   login never adds the account to an organization by itself (ADR-017 D5). If
+   this participant's usage should be billed to the organization
+   `fm-provision-sso-org` created, add an `organization_members` row for them
+   deliberately; there is no CLI for this yet.
 3. Confirm the account exists and is in the right shape:
 
    ```bash
@@ -218,8 +227,8 @@ is a hard conflict, not a link target.
    ```
 
    …and, as a platform admin, `GET /api/v1/admin/users` — which lists the users
-   of **your own** organization, so run it as an operator bound to the tenant
-   you just provisioned into.
+   of **your own** enterprise, so run it as an operator bound to the tenant you
+   just provisioned into.
 
 ### Step 7 — grant elevated roles (only if needed)
 
@@ -331,19 +340,23 @@ kubectl exec -it deploy/faultmaven-api -n faultmaven -- \
   fm-provision-service-account \
     --username sim-runner \
     --account-kind individual \
-    --organization-id <faultmaven-organization-uuid> \
+    --enterprise-id <faultmaven-enterprise-uuid> \
     --token-only
 ```
 
-- `--organization-id` is **required** under `TENANT_PROVIDER=multi`, and takes
-  the FaultMaven organization **UUID** — not the IdP's `org_…` id. Without it
-  the credential would mint an empty organization claim and every request it
-  makes would be refused at `bind_request_org_context`: dead on arrival, and
-  only visible as the caller's first API call failing.
-- The Standalone sentinel (`00000000-0000-0000-0000-000000000001`) is refused —
+- `--enterprise-id` (short flag `-o`) is **required** under `TENANT_PROVIDER=multi`,
+  and takes the FaultMaven **enterprise** UUID — not the IdP's `org_…` id and
+  not the organization UUID. Without it the credential would mint an empty
+  isolation claim and every request it makes would be refused at
+  `bind_request_enterprise_context`: dead on arrival, and only visible as the
+  caller's first API call failing.
+- The Standalone sentinel (`00000000-0000-0000-0000-000000000002`) is refused —
   it identifies the single-tenant *deployment*, not a tenant.
-- `--account-kind` is `individual` or `slack` (ADR-012). Use `individual` for
-  anything that is not the Slack agent.
+- `--account-kind` is `individual` or `service` (ADR-017 D6 — those are the only
+  two kinds; a team is a group of accounts, never an account). Use `individual`
+  for anything that is not an integration's agent; a service account
+  additionally takes `--service-channel` (default `slack`) naming which
+  integration it serves.
 - `--token-only` puts the token alone on stdout and progress on stderr, so it
   can be redirected straight into a secret without touching the terminal.
 
@@ -364,7 +377,10 @@ for the exact call.
 > mint a fresh access token at the start of each run.
 
 Re-running the command on an existing account reuses it, keeping its `user_id`
-so historical cases stay attached, and corrects `account_kind` if it is wrong.
+so historical cases stay attached, and corrects both `account_kind` and
+`service_channel` if either is wrong (ADR-017 D6). Both, because the channel is
+what decides the derived `cases.source`: an account with the right kind and a
+NULL channel opens cases stamped `copilot`, and `cases.source` is immutable.
 
 ---
 
@@ -375,7 +391,7 @@ so historical cases stay attached, and corrects `account_kind` if it is wrong.
 | `?error=sso_org_unmapped` | No `sso_org_mappings` row for the IdP org. Step 3 was skipped or used the wrong `org_…`. Currently renders as a generic "please try again" (dash **#79**) |
 | `?error=sso_failed` with `reason=email_conflict` in logs | An existing unlinked account already owns that email. Deliberate: no email linking, and the browser gets a generic slug so it is not an account oracle |
 | Login fails, `reason=enterprise_mismatch` | The account sits under the wrong enterprise. This is an **account migration**, not a configuration change — see the parent runbook. One case is handled automatically and never reaches this slug: an account anchored to its own **personal** enterprise signing into a mapped company org is re-anchored (ADR-016 D5 as amended, #1045) |
-| 403 *"Request is not scoped to an organization"* | Empty `organization_id` claim — the login resolved no tenant |
+| 403 *"Request is not scoped to an enterprise"* | No `enterprise_id` claim — the login resolved no tenant |
 | Promotion appears to do nothing | Roles apply at next token mint. Sign out and back in |
 | `fm-provision-sso-org` refuses, naming `faultmaven_app` | The `env DATABASE_URL=` override did not take effect |
 | Membership query returns 0 for a user who was invited | The default filter hides `pending`. Re-query with `statuses=active,inactive,pending` |
@@ -385,15 +401,19 @@ so historical cases stay attached, and corrects `account_kind` if it is wrong.
 ```bash
 # Report what would change, without writing:
 kubectl exec -it deploy/faultmaven-api -n faultmaven -- \
-  fm-remove-org-member --organization-id <uuid> --user <username> --dry-run
+  fm-remove-org-member --enterprise-id <enterprise_uuid> --organization-id <org_uuid> --user <username> --dry-run
 
 kubectl exec -it deploy/faultmaven-api -n faultmaven -- \
-  fm-remove-org-member --organization-id <uuid> --user <username> --yes
+  fm-remove-org-member --enterprise-id <enterprise_uuid> --organization-id <org_uuid> --user <username> --yes
 ```
 
 `--user` accepts a username, an email address, or a user id. `--dry-run` and
 `--yes` are mutually exclusive — passing both is a usage error, not a
-preference.
+preference. This removes only the account's **billing-roster** membership in
+that organization; it does not touch `users.enterprise_id`, so the account can
+still sign in and land in the enterprise with no organization. To end the
+account's ability to authenticate at all, deprovision it at the IdP or
+deactivate the FaultMaven account.
 
 This removes the membership **and** revokes that user's tokens as one operation
 (#874) — important, because revoking membership alone leaves live access tokens

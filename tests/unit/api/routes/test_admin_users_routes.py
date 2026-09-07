@@ -25,7 +25,7 @@ from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 def _operator() -> AuthenticatedUser:
     return AuthenticatedUser(
         user_id="op-1",
-        organization_id="org-1",
+        enterprise_id="org-1",
         email="operator@example.com",
         roles=["user", "admin", "platform_admin"],
         permissions=[],

@@ -6,13 +6,17 @@ is the KB scope resolver ``list_all_user_team_ids`` (join-through-``teams``) and
 the membership/team CRUD substrate.
 
 FK enforcement is left OFF (SQLite default), so rows can be inserted without
-seeding parent org/user rows — these tests assert query/join behavior, not FK
-integrity.
+seeding parent enterprise rows — these tests assert query/join behavior, not FK
+integrity. The ``users`` rows ARE seeded, though, and not for the FK: since
+ADR-017 ``add_member`` compares the account's anchor against the team's and
+fails closed when either is unresolvable, so an unseeded user is refused
+membership rather than silently joined.
 """
 
 from datetime import datetime, timezone
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.infrastructure.persistence.models import Base
@@ -21,8 +25,8 @@ from faultmaven.infrastructure.persistence.team_repository import (
 )
 from faultmaven.models.interfaces_user import Team
 
-ORG_A = "org-a"
-ORG_B = "org-b"
+ENT_A = "ent-a"
+ENT_B = "ent-b"
 
 
 @pytest.fixture(scope="function")
@@ -44,18 +48,39 @@ async def session(engine):
 
 
 @pytest.fixture
-def repo(session):
-    """PostgreSQLTeamRepository bound to the test session."""
+async def repo(session):
+    """PostgreSQLTeamRepository bound to the test session.
+
+    Seeds the accounts these tests join to teams, anchored to ``ENT_A``.
+    ``add_member`` refuses a user whose anchor it cannot read (ADR-017), so
+    without this every membership assertion below would read as an empty
+    result and prove nothing about the join it is aimed at.
+    """
+    for user_id in ("user-1", "user-a", "user-b"):
+        await session.execute(
+            text(
+                "INSERT INTO users (user_id, username, email, display_name, "
+                "enterprise_id, is_active, created_at, updated_at) VALUES "
+                "(:u, :u, :e, :u, :ent, 1, :now, :now)"
+            ),
+            {
+                "u": user_id,
+                "e": f"{user_id}@example.test",
+                "ent": ENT_A,
+                "now": datetime.now(timezone.utc),
+            },
+        )
+    await session.commit()
     return PostgreSQLTeamRepository(session)
 
 
-def make_team(team_id: str, organization_id: str = ORG_A, name: str = "") -> Team:
+def make_team(team_id: str, enterprise_id: str = ENT_A, name: str = "") -> Team:
     now = datetime.now(timezone.utc)
     return Team(
         team_id=team_id,
-        organization_id=organization_id,
-        # Default the name to the id — the (organization_id, name) UNIQUE
-        # constraint rejects duplicate names within one org.
+        enterprise_id=enterprise_id,
+        # Default the name to the id — the (enterprise_id, name) UNIQUE
+        # constraint rejects duplicate names within one enterprise.
         name=name or f"Team {team_id}",
         description=None,
         created_at=now,
@@ -182,13 +207,13 @@ async def test_list_user_teams_empty_when_no_memberships(repo):
 @pytest.mark.asyncio
 @pytest.mark.unit
 async def test_create_and_get_team_roundtrip(repo):
-    await repo.create_team(make_team("t1", organization_id=ORG_A, name="Team One"))
+    await repo.create_team(make_team("t1", enterprise_id=ENT_A, name="Team One"))
 
     got = await repo.get_team("t1")
 
     assert got is not None
     assert got.team_id == "t1"
-    assert got.organization_id == ORG_A
+    assert got.enterprise_id == ENT_A
     assert got.name == "Team One"
 
 
@@ -232,10 +257,10 @@ async def test_is_team_member_and_remove_member(repo):
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_list_organization_teams_scopes_to_org(repo):
-    await repo.create_team(make_team("t1", organization_id=ORG_A))
-    await repo.create_team(make_team("t2", organization_id=ORG_B))
+async def test_list_enterprise_teams_scopes_to_enterprise(repo):
+    await repo.create_team(make_team("t1", enterprise_id=ENT_A))
+    await repo.create_team(make_team("t2", enterprise_id=ENT_B))
 
-    teams_a = await repo.list_organization_teams(ORG_A)
+    teams_a = await repo.list_enterprise_teams(ENT_A)
 
     assert [t.team_id for t in teams_a] == ["t1"]

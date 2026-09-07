@@ -196,16 +196,22 @@ NO_MATCH_ID = "kb_cccccccccccc"
 
 SEARCH_TERM = "ENOSPC"
 
+#: The enterprise the ``search_service`` fixture inserts; the corpus must use it
+#: or every create fails the FK before a single search runs.
+SEEDED_ENTERPRISE = "ent-1"
+
 
 def _item(item_id, title, content, *, category=None, tags=None):
     """A published global runbook.
 
     Global on purpose: the platform tier carries NO organization_id (#770), and
-    that is precisely what the deleted ``search_by_text`` could not see.
+    that is precisely what the deleted ``search_by_text`` could not see. It does
+    carry an ``enterprise_id`` — isolation is not optional for any tier — and it
+    must be the enterprise the fixture seeds, because the FK is enforced here.
     """
     return KnowledgeItem(
         item_id=item_id,
-        organization_id=None,
+        enterprise_id=SEEDED_ENTERPRISE,
         title=title,
         content=content,
         item_type=KnowledgeItemType.RUNBOOK,

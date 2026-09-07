@@ -76,7 +76,7 @@ class TestMemoryUsage:
             case = Case(
                 case_id=generate_case_id(),
                 user_id="memory-test-user",
-                organization_id="memory-test-org",
+                enterprise_id="memory-test-org",
                 title=f"Memory Test Case {i}" * 5,  # ~100 bytes title
                 description="x"
                 * 1900,  # ~1.9KB description per case (under 2000 char limit)
@@ -120,7 +120,7 @@ class TestMemoryUsage:
             case = Case(
                 case_id=generate_case_id(),
                 user_id="memory-efficiency-user",
-                organization_id="memory-efficiency-org",
+                enterprise_id="memory-efficiency-org",
                 title=f"Efficiency Test Case {i}",
                 description=f"Test case {i} for memory efficiency testing",
                 state=CaseState.INQUIRY,
@@ -136,7 +136,7 @@ class TestMemoryUsage:
             case = Case(
                 case_id=generate_case_id(),
                 user_id="memory-efficiency-user",
-                organization_id="memory-efficiency-org",
+                enterprise_id="memory-efficiency-org",
                 title=f"Efficiency Test Case {i}",
                 description=f"Test case {i} for memory efficiency testing",
                 state=CaseState.INQUIRY,
@@ -182,7 +182,7 @@ class TestMemoryUsage:
                 Case(
                     case_id=generate_case_id(),
                     user_id="gc-test-user",
-                    organization_id="gc-test-org",
+                    enterprise_id="gc-test-org",
                     title=f"GC Test Case {batch}-{i}",
                     description="y" * 1000,
                     state=CaseState.INQUIRY,

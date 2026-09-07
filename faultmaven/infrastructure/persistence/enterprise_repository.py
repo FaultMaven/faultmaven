@@ -32,6 +32,21 @@ def _parse_settings(raw) -> dict:
     return raw
 
 
+def _folded_domain(domain):
+    """The domain as it is STORED: case-folded, or ``None``.
+
+    ``enterprises.domain``'s uniqueness is on the raw column, and only the
+    get-or-create writer folded — so ``Acme.com`` and ``acme.com`` were two
+    enterprises for one company, each invisible to the other's sign-ups, and
+    the second one is the shape a hand-written admin write produces. A domain is
+    case-insensitive; folding it on every write is what makes the column mean
+    what the index enforces.
+    """
+    if not domain:
+        return None
+    return domain.casefold()
+
+
 def _serialize_settings(settings: dict) -> str:
     """Serialize settings dict for JsonBlob (TEXT on SQLite, JSONB on PG)."""
     return json.dumps(settings or {})
@@ -46,6 +61,7 @@ def _model_to_domain(model: EnterpriseModel) -> Enterprise:
         max_members=model.max_members,
         max_cases=model.max_cases,
         billing_email=model.billing_email,
+        domain=model.domain,
         settings=_parse_settings(model.settings),
         created_at=model.created_at,
         updated_at=model.updated_at,
@@ -73,6 +89,7 @@ class PostgreSQLEnterpriseRepository(IEnterpriseRepository):
             max_members=enterprise.max_members,
             max_cases=enterprise.max_cases,
             billing_email=enterprise.billing_email,
+            domain=_folded_domain(enterprise.domain),
             settings=_serialize_settings(enterprise.settings),
             created_at=enterprise.created_at,
             updated_at=enterprise.updated_at,
@@ -96,13 +113,44 @@ class PostgreSQLEnterpriseRepository(IEnterpriseRepository):
         return _model_to_domain(model) if model else None
 
     async def get_enterprise_by_slug(self, slug: str) -> Optional[Enterprise]:
+        """LIVE rows only, through the shared lookup — see ``tenant_bootstrap``."""
+        from faultmaven.infrastructure.persistence.tenant_bootstrap import (
+            find_live_enterprise_by_slug,
+        )
+
+        model = await find_live_enterprise_by_slug(self.db, slug)
+        return _model_to_domain(model) if model else None
+
+    async def find_live_by_domain(self, domain: str) -> Optional[Enterprise]:
+        """See :meth:`IEnterpriseRepository.find_live_by_domain`."""
+        if not domain:
+            return None
         stmt = select(EnterpriseModel).where(
-            EnterpriseModel.slug == slug,
+            EnterpriseModel.domain == domain.casefold(),
             EnterpriseModel.deleted_at.is_(None),
         )
         result = await self.db.execute(stmt)
         model = result.scalar_one_or_none()
         return _model_to_domain(model) if model else None
+
+    async def get_or_create_for_domain(
+        self, *, domain: str, name: str, slug: str
+    ) -> Enterprise:
+        """See :meth:`IEnterpriseRepository.get_or_create_for_domain`.
+
+        Delegates the row rule to ``tenant_bootstrap`` — the module that owns
+        what "already exists" means for every tenant row — rather than carrying
+        a second copy of the live-rows-only predicate here.
+        """
+        from faultmaven.infrastructure.persistence.tenant_bootstrap import (
+            get_or_create_enterprise_for_domain,
+        )
+
+        model, _ = await get_or_create_enterprise_for_domain(
+            self.db, domain=domain, name=name, slug=slug
+        )
+        await self.db.commit()
+        return _model_to_domain(model)
 
     async def update_enterprise(self, enterprise: Enterprise) -> bool:
         enterprise.updated_at = datetime.now(timezone.utc)
@@ -119,6 +167,7 @@ class PostgreSQLEnterpriseRepository(IEnterpriseRepository):
                 max_members=enterprise.max_members,
                 max_cases=enterprise.max_cases,
                 billing_email=enterprise.billing_email,
+                domain=_folded_domain(enterprise.domain),
                 settings=_serialize_settings(enterprise.settings),
                 updated_at=enterprise.updated_at,
             )

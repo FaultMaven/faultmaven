@@ -82,7 +82,7 @@ def inquiry_case():
         title="Test Inquiry",
         state=CaseState.INQUIRY,
         user_id="user_123",
-        organization_id="org_123",
+        enterprise_id="org_123",
         description="",
         inquiry=InquiryData(thread_id="thread_123"),
     )
@@ -817,7 +817,7 @@ class TestContextBuilderConfirmationInjection:
             title="Test",
             state=CaseState.INQUIRY,
             user_id="user_123",
-            organization_id="org_123",
+            enterprise_id="org_123",
             description="",
             inquiry=InquiryData(
                 thread_id="thread_123",
@@ -850,7 +850,7 @@ class TestContextBuilderConfirmationInjection:
             title="Test",
             state=CaseState.INQUIRY,
             user_id="user_123",
-            organization_id="org_123",
+            enterprise_id="org_123",
             description="",
             inquiry=InquiryData(
                 thread_id="thread_123",
@@ -880,7 +880,7 @@ class TestContextBuilderConfirmationInjection:
             title="Test",
             state=CaseState.INQUIRY,
             user_id="user_123",
-            organization_id="org_123",
+            enterprise_id="org_123",
             description="",
             inquiry=InquiryData(
                 thread_id="thread_123",
@@ -921,7 +921,7 @@ class TestHandshakeDeferredRecovery:
             title="Test",
             state=CaseState.INQUIRY,
             user_id="user_123",
-            organization_id="org_123",
+            enterprise_id="org_123",
             description="",
             current_turn=4,
             inquiry=InquiryData(
@@ -958,7 +958,7 @@ class TestHandshakeDeferredRecovery:
             title="Test",
             state=CaseState.INQUIRY,
             user_id="user_123",
-            organization_id="org_123",
+            enterprise_id="org_123",
             description="",
             current_turn=5,
             inquiry=InquiryData(

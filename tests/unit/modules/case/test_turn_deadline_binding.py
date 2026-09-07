@@ -42,7 +42,7 @@ def _case() -> Case:
         title="Checkout API 502s",
         description="",
         user_id="user_123",
-        organization_id="org_test",
+        enterprise_id="org_test",
         state=CaseState.INQUIRY,
     )
 

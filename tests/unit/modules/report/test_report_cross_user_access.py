@@ -1,15 +1,15 @@
-"""Report routes must deny a same-organization stranger (#1044).
+"""Report routes must deny a same-enterprise stranger (#1044).
 
 ``CaseService.get_case`` collapses two different answers into ``None``: "no such
 case" and "you may not see this case" (the owner ∪ shared-to-my-teams gate that
 transitively guards reports, exports, analytics and messages). The report routes
 used to read that ``None`` as "no case object, so no organization to compare"
 and skip the check entirely, falling through to a repository read keyed on
-``case_id``/``report_id`` alone. The only surviving boundary was the
-organization, so two users in one org could read, edit, delete and re-link each
-other's reports — the case narrative, with quoted logs and configs in it.
+``case_id``/``report_id`` alone. The only surviving boundary was the tenant, so
+two accounts in one enterprise could read, edit, delete and re-link each other's
+reports — the case narrative, with quoted logs and configs in it.
 
-``validate_organization_access`` was already correct and already tested
+``validate_enterprise_access`` was already correct and already tested
 (``test_report_org_scope.py``); nothing covered the ``case is None`` branch,
 which is why the suite stayed green over it. These tests cover exactly that
 branch, and they get their ``None`` from the real ``CaseService`` access-control
@@ -22,6 +22,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import HTTPException
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.config.tenant_context import set_current_enterprise_id
 from faultmaven.modules.case.domain.models import Case
 from faultmaven.modules.case.domain.owned_models.report import (
     CaseReport,
@@ -31,7 +33,7 @@ from faultmaven.modules.case.domain.owned_models.report import (
 from faultmaven.modules.case.domain.services.case_service import CaseService
 from faultmaven.modules.report.api import routes
 
-SHARED_ORG = "org_beta_group"
+SHARED_ENTERPRISE = "ent_beta_group"
 VICTIM = "user_victim"
 ATTACKER = "user_attacker"
 CASE_ID = "case_aaaabbbbcccc"
@@ -39,11 +41,11 @@ REPORT_ID = "report_1234"
 
 
 def _victims_case() -> Case:
-    """A case owned by the victim, in the organization both users share."""
+    """A case owned by the victim, in the enterprise both accounts are bound to."""
     return Case(
         case_id=CASE_ID,
         user_id=VICTIM,
-        organization_id=SHARED_ORG,
+        enterprise_id=SHARED_ENTERPRISE,
         title="Checkout latency spike",
     )
 
@@ -72,6 +74,20 @@ def _case_service_holding(case: Case) -> CaseService:
     repository = MagicMock()
     repository.get = AsyncMock(return_value=case)
     return CaseService(case_repository=repository)
+
+
+@pytest.fixture(autouse=True)
+def _bound_enterprise():
+    """Bind the enterprise the seeded case carries.
+
+    ``validate_enterprise_access`` compares the case's enterprise against the
+    request binding directly — there is no provider to leave unwired and no
+    conditional to skip — so a test whose case is in a different enterprise from
+    the binding is refused at that step and never reaches the gate it is about.
+    """
+    set_current_enterprise_id(SHARED_ENTERPRISE)
+    yield
+    set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
 
 
 def _attacker() -> MagicMock:
@@ -114,7 +130,6 @@ async def test_get_report_denies_stranger(case_service, case_repository):
         await routes.get_report(
             report_id=REPORT_ID,
             current_user=_attacker(),
-            tenant_provider=None,
             case_repository=case_repository,
             case_service=case_service,
         )
@@ -131,7 +146,6 @@ async def test_list_reports_for_case_denies_stranger(case_service, case_reposito
             include_history=False,
             report_type=None,
             current_user=_attacker(),
-            tenant_provider=None,
             case_repository=case_repository,
             case_service=case_service,
         )
@@ -147,7 +161,6 @@ async def test_get_report_versions_denies_stranger(case_service, case_repository
         await routes.get_report_versions(
             report_id=REPORT_ID,
             current_user=_attacker(),
-            tenant_provider=None,
             case_repository=case_repository,
             case_service=case_service,
         )
@@ -167,7 +180,6 @@ async def test_update_report_denies_stranger(case_service, case_repository):
             report_id=REPORT_ID,
             request=request,
             current_user=_attacker(),
-            tenant_provider=None,
             case_repository=case_repository,
             case_service=case_service,
         )
@@ -183,7 +195,6 @@ async def test_delete_report_denies_stranger(case_service, case_repository):
         await routes.delete_report(
             report_id=REPORT_ID,
             current_user=_attacker(),
-            tenant_provider=None,
             case_repository=case_repository,
             case_service=case_service,
         )
@@ -210,7 +221,6 @@ async def test_delete_denies_before_disclosing_report_type(
         await routes.delete_report(
             report_id=REPORT_ID,
             current_user=_attacker(),
-            tenant_provider=None,
             case_repository=case_repository,
             case_service=case_service,
         )
@@ -226,7 +236,6 @@ async def test_link_case_denies_stranger(case_service, case_repository):
             report_id=REPORT_ID,
             request=routes.LinkCaseRequest(),
             current_user=_attacker(),
-            tenant_provider=None,
             case_repository=case_repository,
             case_service=case_service,
         )
@@ -249,7 +258,6 @@ async def test_generate_report_denies_stranger(case_service):
             request=request,
             case_id=CASE_ID,
             current_user=_attacker(),
-            tenant_provider=None,
             case_service=case_service,
             generation_service=generation_service,
         )
@@ -272,7 +280,6 @@ async def test_owner_still_reads_their_report(case_service, case_repository):
     response = await routes.get_report(
         report_id=REPORT_ID,
         current_user=owner,
-        tenant_provider=None,
         case_repository=case_repository,
         case_service=case_service,
     )
@@ -295,7 +302,6 @@ async def test_teammate_with_a_share_still_reads_the_report(case_repository):
     response = await routes.get_report(
         report_id=REPORT_ID,
         current_user=_attacker(),
-        tenant_provider=None,
         case_repository=case_repository,
         case_service=case_service,
     )
@@ -315,7 +321,6 @@ async def test_missing_case_service_fails_closed(case_repository):
         await routes.get_report(
             report_id=REPORT_ID,
             current_user=_attacker(),
-            tenant_provider=None,
             case_repository=case_repository,
             case_service=None,
         )

@@ -409,12 +409,18 @@ class CaseRepository(ABC):
     async def list(
         self,
         user_id: Optional[str] = None,
-        organization_id: Optional[str] = None,
+        enterprise_id: Optional[str] = None,
         status: Optional[str] = None,
         limit: int = 100,
         offset: int = 0
     ) -> tuple[List[Case], int]:
-        """List cases with optional filters. Returns (cases, total_count)."""
+        """List cases with optional filters. Returns (cases, total_count).
+
+        enterprise_id (ADR-017 D1): retained for interface symmetry — it does
+        not itself scope the read. Single-tenant standalone has one enterprise;
+        multi-tenant isolation is enforced by PostgreSQL RLS keyed on the bound
+        enterprise, not by this parameter.
+        """
         ...
 
     @abstractmethod
@@ -427,7 +433,7 @@ class CaseRepository(ABC):
         self,
         query: str,
         user_id: Optional[str] = None,
-        organization_id: Optional[str] = None,
+        enterprise_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0
     ) -> tuple[List[Case], int]:
@@ -511,7 +517,7 @@ class CaseRepository(ABC):
 | --- | --- |
 | `update_evidence_vectorized(case_id, evidence_id, vectorized)` | Flip the `vectorized` flag after BGE-M3 encode completes. |
 | `update_activity_timestamp(case_id)` | Refresh `cases.updated_at` without re-serializing the aggregate. |
-| `add_uploaded_file(case_id, uploaded_file, organization_id)` | Commit ONE `uploaded_files` row mid-turn, without committing the turn. |
+| `add_uploaded_file(case_id, uploaded_file, enterprise_id, organization_id=None)` | Commit ONE `uploaded_files` row mid-turn, without committing the turn. `enterprise_id` is the RLS key (required); `organization_id` is billing attribution only (optional, `None` when nobody pays). |
 
 Scoped methods:
 

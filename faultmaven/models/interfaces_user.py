@@ -9,11 +9,13 @@ Implemented by:
 - PostgreSQLTeamRepository
 - PostgreSQLUserRepository (enhanced)
 
-Hierarchy: Enterprise > Organization > Team > User. An enterprise owns
-billing, plan tier, and SSO/SAML config; organizations live underneath it
-as customer tenants (the hard data-isolation boundary). Single-tenant
-deployments (standalone) get one default enterprise containing one default
-organization.
+Hierarchy (ADR-017 D1): **Enterprise ⊃ {accounts, organizations, teams}** — not a
+chain. The enterprise ISOLATES (RLS keys on ``enterprise_id``; nothing crosses an
+enterprise line). An organization BILLS: it is a cost centre inside an
+enterprise, with no role in visibility. A team SHARES, by consent, inside one
+enterprise, and may span organizations. Single-tenant deployments (standalone)
+get one default enterprise and one default team, and **no organization row** —
+nothing is billed there.
 
 Cross-layer parity:
 - ``Enterprise.name``, ``Organization.name``, ``Team.name`` mirror DB
@@ -134,6 +136,10 @@ class Enterprise(BaseModel):
     max_members: int = 5
     max_cases: Optional[int] = None
     billing_email: Optional[str] = None
+    #: The verified email domain this enterprise is the tenant for, case-folded
+    #: (ADR-017 D3), or ``None`` for a personal enterprise — a consumer-mail
+    #: account gets an enterprise of its own and no domain claims it.
+    domain: Optional[str] = None
     settings: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
@@ -204,10 +210,15 @@ class OrganizationMember(BaseModel):
 
 
 class Team(BaseModel):
-    """Team (sub-organization group) model."""
+    """Team — the sharing unit (ADR-017 D4).
+
+    Parented by the ENTERPRISE, not by an organization: a team may span cost
+    centres, and its members must be in the same enterprise. It references no
+    organization at all.
+    """
 
     team_id: str
-    organization_id: str
+    enterprise_id: str
     name: str = Field(min_length=1)
     description: Optional[str] = None
     created_at: datetime
@@ -273,6 +284,7 @@ class UserAuditLog(BaseModel):
     ip_address: Optional[str] = None
     user_agent: Optional[str] = None
     session_id: Optional[str] = None
+    enterprise_id: Optional[str] = None
     organization_id: Optional[str] = None
     event_at: datetime
     success: bool = True
@@ -301,6 +313,37 @@ class IEnterpriseRepository(ABC):
     @abstractmethod
     async def update_enterprise(self, enterprise: Enterprise) -> bool:
         """Update enterprise. Returns True if a row was updated."""
+
+    @abstractmethod
+    async def find_live_by_domain(self, domain: str) -> Optional[Enterprise]:
+        """The LIVE enterprise for an email domain, or ``None``. Reads only.
+
+        The half of :meth:`get_or_create_for_domain` that writes nothing, so a
+        caller can find out whether admitting this login would CREATE a tenant
+        before it decides whether the login may be admitted at all. Without it
+        the sign-up path had to write first and could only refuse afterwards,
+        leaving a live enterprise for the company's domain behind every refusal
+        — a row every later org-less sign-up from that domain then resolves to.
+
+        Case-folded like the writer, and scoped to live rows like the partial
+        unique index, so the two agree on what "already exists" means.
+        """
+
+    @abstractmethod
+    async def get_or_create_for_domain(
+        self, *, domain: str, name: str, slug: str
+    ) -> Enterprise:
+        """The enterprise for an email domain, creating it if it is the first.
+
+        The sign-up derivation of ADR-017 D3: every address at a non-consumer
+        domain lands in one enterprise, and the first account from that domain
+        is what brings it into existence. Being first confers nothing — the
+        enterprise has no administrator until a domain claim is verified (D7).
+
+        Keyed on ``enterprises.domain`` among LIVE rows, which is exactly the
+        scope of its partial unique index, so a retired enterprise neither
+        blocks the next sign-up nor is handed back to it.
+        """
 
 
 class IOrganizationRepository(ABC):
@@ -523,11 +566,11 @@ class ITeamRepository(ABC):
         pass
 
     @abstractmethod
-    async def list_organization_teams(self, organization_id: str) -> List[Team]:
-        """List all teams in an organization.
+    async def list_enterprise_teams(self, enterprise_id: str) -> List[Team]:
+        """List all teams in an enterprise.
 
         Args:
-            organization_id: Organization identifier
+            enterprise_id: Enterprise identifier
 
         Returns:
             List of teams
@@ -540,9 +583,9 @@ class ITeamRepository(ABC):
 
         The object-returning sibling of ``list_all_user_team_ids`` — same
         membership resolution (JOIN ``team_members`` through the RLS-tenanted
-        ``teams`` table, excluding soft-deleted teams), so under the caller's org
-        RLS context it returns only teams in that org. Used by the ``GET /teams``
-        read path (team picker + id→name resolution).
+        ``teams`` table, excluding soft-deleted teams), so under the caller's
+        enterprise RLS context it returns only teams in that enterprise. Used by
+        the ``GET /teams`` read path (team picker + id→name resolution).
 
         Args:
             user_id: User identifier
@@ -617,11 +660,13 @@ class ITeamRepository(ABC):
 
         Isolation posture: implementations MUST resolve membership by joining
         ``team_members`` through the ``teams`` table (which carries
-        ``organization_id`` and is RLS-tenanted), so that under the limited
-        ``faultmaven_app`` role a cross-organization membership row fails
-        closed. ``team_members`` itself is intentionally not RLS-tenanted (it
-        has no ``organization_id`` column); the join through ``teams`` is the
-        isolation boundary. See ADR-013 (Enterprise/Organization/Team).
+        ``enterprise_id`` and is RLS-tenanted), so that under the limited
+        ``faultmaven_app`` role a cross-enterprise membership row fails closed.
+        ``team_members`` carries no tenant column of its own — it is a pure
+        ``(user_id, team_id)`` join — and its RLS policy reaches the key by that
+        same hop, so the join IS the isolation boundary. A database trigger
+        (``team_members_same_enterprise``) additionally refuses a member whose
+        own enterprise is not the team's. See ADR-017 D1/D4.
 
         Args:
             user_id: User identifier
@@ -648,6 +693,7 @@ class IAuditRepository(ABC):
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
         session_id: Optional[str] = None,
+        enterprise_id: Optional[str] = None,
         organization_id: Optional[str] = None,
         success: bool = True,
     ) -> bool:
@@ -688,13 +734,13 @@ class IAuditRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_organization_audit_log(
-        self, organization_id: str, limit: int = 100, offset: int = 0
+    async def get_enterprise_audit_log(
+        self, enterprise_id: str, limit: int = 100, offset: int = 0
     ) -> List[UserAuditLog]:
-        """Get audit log entries for an organization.
+        """Get audit log entries for an enterprise.
 
         Args:
-            organization_id: Organization identifier
+            enterprise_id: Enterprise identifier
             limit: Maximum results to return
             offset: Pagination offset
 

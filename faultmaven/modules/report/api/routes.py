@@ -17,7 +17,7 @@ Authentication:
 Authorization:
 - Every endpoint resolves the report's parent case through ``authorize_case_access``
   and 404s when it does not resolve: the caller must own the case or have it shared
-  to one of their teams. Sharing an organization with the owner is not enough.
+  to one of their teams. Sharing an enterprise with the owner is not enough.
 
 Design Reference: docs/architecture/document-generation-and-closure-design.md
 """
@@ -38,9 +38,8 @@ from faultmaven.api.v1.dependencies import (
     get_case_repository,
     get_case_service,
     get_report_generation_service,
-    get_tenant_provider,
 )
-from faultmaven.config.tenant_context import get_current_org_id
+from faultmaven.config.tenant_context import get_current_enterprise_id
 from faultmaven.exceptions import (
     NotFoundError,
     ServiceException,
@@ -62,7 +61,6 @@ from faultmaven.modules.case.contracts import (
     ReportStatus,
     ReportType,
 )
-from faultmaven.providers.tenancy.base import TenantProvider
 from faultmaven.utils.serialization import to_json_compatible
 
 # Create router
@@ -189,89 +187,79 @@ def check_case_service_available(case_service: Optional[ICaseService]) -> ICaseS
     return case_service
 
 
-def check_tenant_provider_available(
-    tenant_provider: Optional[TenantProvider],
-) -> TenantProvider:
-    """Check if tenant provider is available."""
-    if tenant_provider is None:
-        raise HTTPException(status_code=503, detail="Tenant provider unavailable")
-    return tenant_provider
-
-
-async def validate_organization_access(
-    tenant_provider: TenantProvider,
+def validate_enterprise_access(
     current_user: UserDTO,
-    case_organization_id: Optional[str] = None,
+    case_enterprise_id: Optional[str] = None,
 ) -> None:
-    """Validate user has access to the organization context.
+    """Refuse a case that belongs to an enterprise other than the bound one.
+
+    One comparison, no query. This used to resolve the enterprise through
+    ``TenantProvider.get_current_enterprise(current_user, enterprise_id=
+    get_current_enterprise_id())`` and then compare ``enterprise.enterprise_id``
+    against the case — i.e. it read a whole ``enterprises`` row, per request, per
+    report call, in order to compare an id to itself. Nothing of the row was
+    used. The binding IS the answer: ``api/middleware/tenant_scope`` sets it from
+    the verified ``enterprise_id`` claim (multi) or forces the Standalone
+    enterprise (single), and the same value is what the RLS session GUC carries,
+    so a case that survived the read is already in it.
+
+    That makes this a defence-in-depth restatement rather than the boundary — the
+    boundary is RLS plus the case gate above — and it is kept because a report is
+    reachable by ``report_id`` as well as by ``case_id``, and an id-addressed read
+    is exactly where a missing predicate hides.
 
     Args:
-        tenant_provider: TenantProvider for organization resolution
-        current_user: Authenticated user
-        case_organization_id: Optional organization ID from case (for validation)
+        current_user: Authenticated caller (named in the refusal log only)
+        case_enterprise_id: Enterprise the case carries, when it names one
 
     Raises:
-        HTTPException: 403 if user lacks organization access
+        HTTPException: 403 if the case belongs to a different enterprise
     """
-    try:
-        # Resolve the current organization from the request-bound tenant context
-        # (tenant_scope middleware -> config.tenant_context). In single-tenant mode
-        # the provider ignores the id and returns the default org; in multi-tenant
-        # mode it validates the caller's membership in that org. Passing it is what
-        # keeps this check working under multi — the provider otherwise raises
-        # "organization_id required" and every report call fails closed with 403.
-        organization = await tenant_provider.get_current_organization(
-            current_user, organization_id=get_current_org_id()
+    bound_enterprise_id = get_current_enterprise_id()
+    if case_enterprise_id and case_enterprise_id != bound_enterprise_id:
+        logger.warning(
+            "Enterprise access denied",
+            extra={
+                "user_id": current_user.user_id,
+                "requested_enterprise": case_enterprise_id,
+                "bound_enterprise": bound_enterprise_id,
+            },
         )
-
-        # If case has organization_id, verify it matches
-        if (
-            case_organization_id
-            and organization.organization_id != case_organization_id
-        ):
-            logger.warning(
-                "Organization access denied",
-                extra={
-                    "user_id": current_user.user_id,
-                    "requested_org": case_organization_id,
-                    "user_org": organization.organization_id,
-                },
-            )
-            raise HTTPException(
-                status_code=403,
-                detail="Access denied - resource belongs to different organization",
-            )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Organization validation failed: {e}")
         raise HTTPException(
-            status_code=403, detail="Unable to validate organization access"
+            status_code=403,
+            detail="Access denied - resource belongs to a different enterprise",
         )
 
 
 async def authorize_case_access(
     case_id: Optional[str],
     current_user: UserDTO,
-    tenant_provider: Optional[TenantProvider],
     case_service: Optional[ICaseService],
     not_found_detail: str,
+    *,
+    owner_only: bool = False,
 ) -> Case:
     """Authorize the caller against the case a report hangs off.
 
     Deny, don't skip (#1044). ``CaseService.get_case`` returns ``None`` for BOTH
     "no such case" and "you may not see this case" — the owner ∪ shared-to-my-teams
     gate that transitively guards reports, exports, analytics and messages. The
-    report routes used to read that ``None`` as "nothing to compare organizations
+    report routes used to read that ``None`` as "nothing to compare tenants
     against" and fall through to a ``case_id``/``report_id``-only repository read,
-    leaving the organization as the only boundary: two users in one org could read,
+    leaving the tenant as the only boundary: two users in one tenant could read,
     edit and delete each other's reports. Both meanings must deny.
 
-    The organization check stays second and stays conditional on ``tenant_provider``:
-    it can only be absent in a single-tenant deployment wired without an organization
-    repository (``TENANT_PROVIDER=multi`` fails closed at container build instead), and
-    the case gate above holds on its own there. ``case_service`` absent is a 503 — the
-    gate cannot be evaluated, so nothing is served.
+    ``owner_only`` drops the shared arm for the MUTATING endpoints. A report
+    hangs off its case, so a teammate who may read the case may read its
+    reports — and must not be able to rewrite, delete or close-link them
+    (ADR-017 D4: a share is read visibility, not ownership). Inside one
+    enterprise nothing else separates the two callers, so this flag is the whole
+    of that boundary on this surface.
+
+    The enterprise check stays second and is now an unconditional comparison
+    against the request binding (see :func:`validate_enterprise_access`) rather
+    than a provider round-trip that could be absent. ``case_service`` absent is a
+    503 — the gate cannot be evaluated, so nothing is served.
 
     A report whose ``case_id`` does not resolve is therefore unreachable by
     anyone, including its owner. That is correct for every report that exists:
@@ -287,32 +275,31 @@ async def authorize_case_access(
     Args:
         case_id: Case the report belongs to (falsy is treated as unauthorized)
         current_user: Authenticated caller
-        tenant_provider: Tenant provider for the organization check, when wired
         case_service: Case service carrying the access gate
         not_found_detail: 404 body — phrase it after the resource the caller named
             (the report, not the case) so the response does not confirm existence
+        owner_only: Resolve through ownership alone (the mutating endpoints)
 
     Returns:
         The authorized case
 
     Raises:
         HTTPException: 404 if the case is missing or not the caller's, 403 if it
-            belongs to another organization, 503 if the case service is unavailable
+            belongs to another enterprise, 503 if the case service is unavailable
     """
     case_service = check_case_service_available(case_service)
 
     case = (
-        await case_service.get_case(case_id, user_id=current_user.user_id)
+        await case_service.get_case(
+            case_id, user_id=current_user.user_id, owner_only=owner_only
+        )
         if case_id
         else None
     )
     if not case:
         raise HTTPException(status_code=404, detail=not_found_detail)
 
-    if tenant_provider:
-        await validate_organization_access(
-            tenant_provider, current_user, case.organization_id
-        )
+    validate_enterprise_access(current_user, case.enterprise_id)
 
     return case
 
@@ -334,7 +321,6 @@ async def generate_report(
     request: ReportGenerationRequest,
     case_id: str = Query(..., description="Case ID to generate reports for"),
     current_user: UserDTO = Depends(require_authentication),
-    tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     case_service: Optional[ICaseService] = Depends(get_case_service),
     generation_service=Depends(get_report_generation_service),
 ) -> ReportGenerationResponse:
@@ -377,13 +363,17 @@ async def generate_report(
     )
 
     try:
-        # Authorize against the case (owner ∪ shared), then its organization
+        # ``owner_only``: generation is a WRITE — it mints report rows against
+        # the case and moves which one is current — so it resolves through
+        # ownership, like the edit/delete/link-case endpoints below. A read
+        # share opens the reports; it does not authorise rewriting them
+        # (ADR-017 D4).
         case = await authorize_case_access(
             case_id,
             current_user,
-            tenant_provider,
             case_service,
             f"Case {case_id} not found",
+            owner_only=True,
         )
 
         # Validate generation service is available
@@ -428,7 +418,6 @@ async def generate_report(
 async def get_report(
     report_id: str = Path(..., description="Report UUID"),
     current_user: UserDTO = Depends(require_authentication),
-    tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     case_repository: Optional[ICaseRepository] = Depends(get_case_repository),
     case_service: Optional[ICaseService] = Depends(get_case_service),
 ) -> ReportResponse:
@@ -437,7 +426,6 @@ async def get_report(
     Args:
         report_id: Report UUID
         current_user: Authenticated user
-        tenant_provider: Tenant provider for multi-tenant isolation
         case_repository: Case repository for report retrieval (TD-001: migrated from IReportStore)
         case_service: Case service for organization validation
 
@@ -467,7 +455,6 @@ async def get_report(
         await authorize_case_access(
             report.case_id,
             current_user,
-            tenant_provider,
             case_service,
             f"Report {report_id} not found",
         )
@@ -492,7 +479,6 @@ async def update_report(
     report_id: str = Path(..., description="Report UUID"),
     request: ReportUpdateRequest = Body(...),
     current_user: UserDTO = Depends(require_authentication),
-    tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     case_repository: Optional[ICaseRepository] = Depends(get_case_repository),
     case_service: Optional[ICaseService] = Depends(get_case_service),
 ) -> ReportResponse:
@@ -508,7 +494,6 @@ async def update_report(
         report_id: Report UUID
         request: Update request with new values
         current_user: Authenticated user
-        tenant_provider: Tenant provider for multi-tenant isolation
         case_repository: Case repository for report updates (TD-001: migrated from IReportStore)
         case_service: Case service for organization validation
 
@@ -538,9 +523,11 @@ async def update_report(
         await authorize_case_access(
             existing_report.case_id,
             current_user,
-            tenant_provider,
             case_service,
             f"Report {report_id} not found",
+            # A share grants READ, not the right to rewrite, delete
+            # or close-link the owner's report (ADR-017 D4).
+            owner_only=True,
         )
 
         # Update fields
@@ -600,7 +587,6 @@ async def update_report(
 async def delete_report(
     report_id: str = Path(..., description="Report UUID"),
     current_user: UserDTO = Depends(require_authentication),
-    tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     case_repository: Optional[ICaseRepository] = Depends(get_case_repository),
     case_service: Optional[ICaseService] = Depends(get_case_service),
 ) -> None:
@@ -614,7 +600,6 @@ async def delete_report(
     Args:
         report_id: Report UUID
         current_user: Authenticated user
-        tenant_provider: Tenant provider for multi-tenant isolation
         case_repository: Case repository for report deletion (TD-001: migrated from IReportStore)
         case_service: Case service for organization validation
 
@@ -642,9 +627,11 @@ async def delete_report(
         await authorize_case_access(
             report.case_id,
             current_user,
-            tenant_provider,
             case_service,
             f"Report {report_id} not found",
+            # A share grants READ, not the right to rewrite, delete
+            # or close-link the owner's report (ADR-017 D4).
+            owner_only=True,
         )
 
         # Check if runbook - runbooks cannot be deleted
@@ -687,7 +674,6 @@ async def list_reports_for_case(
     ),
     report_type: Optional[str] = Query(None, description="Filter by report type"),
     current_user: UserDTO = Depends(require_authentication),
-    tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     case_repository: Optional[ICaseRepository] = Depends(get_case_repository),
     case_service: Optional[ICaseService] = Depends(get_case_service),
 ) -> ReportListResponse:
@@ -698,7 +684,6 @@ async def list_reports_for_case(
         include_history: If True, include all versions; if False, only current
         report_type: Optional filter by report type (resolution_summary, closure_summary, runbook)
         current_user: Authenticated user
-        tenant_provider: Tenant provider for multi-tenant isolation
         case_repository: Case repository for report retrieval (TD-001: migrated from IReportStore)
         case_service: Case service for organization validation
 
@@ -716,7 +701,6 @@ async def list_reports_for_case(
     await authorize_case_access(
         case_id,
         current_user,
-        tenant_provider,
         case_service,
         f"Case {case_id} not found",
     )
@@ -770,7 +754,6 @@ async def list_reports_for_case(
 async def get_report_versions(
     report_id: str = Path(..., description="Report UUID"),
     current_user: UserDTO = Depends(require_authentication),
-    tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     case_repository: Optional[ICaseRepository] = Depends(get_case_repository),
     case_service: Optional[ICaseService] = Depends(get_case_service),
 ) -> ReportVersionListResponse:
@@ -781,7 +764,6 @@ async def get_report_versions(
     Args:
         report_id: Report UUID
         current_user: Authenticated user
-        tenant_provider: Tenant provider for multi-tenant isolation
         case_repository: Case repository for report retrieval (TD-001: migrated from IReportStore)
         case_service: Case service for organization validation
 
@@ -810,7 +792,6 @@ async def get_report_versions(
         await authorize_case_access(
             report.case_id,
             current_user,
-            tenant_provider,
             case_service,
             f"Report {report_id} not found",
         )
@@ -858,7 +839,6 @@ async def link_report_to_case_closure(
     report_id: str = Path(..., description="Report UUID"),
     request: LinkCaseRequest = Body(default=LinkCaseRequest()),
     current_user: UserDTO = Depends(require_authentication),
-    tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     case_repository: Optional[ICaseRepository] = Depends(get_case_repository),
     case_service: Optional[ICaseService] = Depends(get_case_service),
 ) -> LinkCaseResponse:
@@ -873,7 +853,6 @@ async def link_report_to_case_closure(
         report_id: Report UUID
         request: Optional closure note
         current_user: Authenticated user
-        tenant_provider: Tenant provider for multi-tenant isolation
         case_repository: Case repository for report updates (TD-001: migrated from IReportStore)
         case_service: Case service
 
@@ -904,9 +883,11 @@ async def link_report_to_case_closure(
         await authorize_case_access(
             report.case_id,
             current_user,
-            tenant_provider,
             case_service,
             f"Report {report_id} not found",
+            # A share grants READ, not the right to rewrite, delete
+            # or close-link the owner's report (ADR-017 D4).
+            owner_only=True,
         )
 
         # Check if already linked

@@ -49,7 +49,7 @@ class User(BaseModel):
             "It exists so mint-time tenancy can ride the token chain — the SSO "
             "exchange attaches the organization resolved at callback time and "
             "`/auth/refresh` re-attaches the validated refresh claim, which is "
-            "what `resolve_organization_claim` reads when building the token's "
+            "what `resolve_billing_organization` reads when building the token's "
             "`organization_id` claim."
         ),
     )
@@ -76,7 +76,20 @@ class User(BaseModel):
     account_kind: str = Field(
         "individual",
         max_length=20,
-        description="Account kind (ADR-012): 'individual' or 'slack'",
+        description=(
+            "Account kind (ADR-017 D6): 'individual' (a human) or 'service' "
+            "(an agent acting for an integration). A team is a group of "
+            "accounts, never an account."
+        ),
+    )
+    service_channel: Optional[str] = Field(
+        None,
+        max_length=20,
+        description=(
+            "Which integration a 'service' account serves ('slack'), or None "
+            "for a human. Separate from the kind so a second integration is a "
+            "new value here rather than a third account kind."
+        ),
     )
 
     # ============================================================
@@ -166,22 +179,50 @@ class UserRepository(ABC):
         limit: int = 50,
         offset: int = 0,
         is_active: Optional[bool] = None,
-        user_ids: Optional[Collection[str]] = None,
+        enterprise_id: Optional[str] = None,
     ) -> tuple[List[User], int]:
-        """List users with pagination, an optional active filter and an id allowlist.
+        """List users with pagination, an optional active filter and a tenant.
 
-        ``user_ids`` is the tenant predicate the operator surface resolves from
-        ``organization_members`` (``api/operator_user_scope``, #1318). It is a
-        query predicate rather than a post-filter on purpose: the operator
-        listings otherwise load every user row in the deployment and project the
-        caller's tenant out of them, which makes ``total`` a deployment-wide
-        count and couples one tenant's listing to every other tenant's rows —
-        a single row that fails hydration (an email the model rejects, say)
-        takes the listing down for everyone.
+        ``enterprise_id`` is the tenant predicate the operator surface confines
+        by (``api/operator_user_scope``, #1318). It is a query predicate rather
+        than a post-filter on purpose: the operator listings otherwise load every
+        user row in the deployment and project the caller's tenant out of them,
+        which makes ``total`` a deployment-wide count and couples one tenant's
+        listing to every other tenant's rows — a single row that fails hydration
+        (an email the model rejects, say) takes the listing down for everyone.
 
-        ``None`` means no restriction. An EMPTY collection means "this tenant
-        has no users" and must return nothing; implementations must not read it
-        as ``None``.
+        It is the ENTERPRISE ID and not a materialised set of account ids, which
+        is what it used to be: the scope read every member id of the enterprise
+        and handed them over as an ``IN (...)`` list, so an enterprise with ten
+        thousand accounts cost a full id scan plus a ten-thousand-element
+        parameter list on every page of every listing. The column is indexed and
+        the predicate is one comparison.
+
+        ``None`` means no restriction, which is only ever the single-tenant
+        answer — the deployment IS the tenant. Under ``multi`` the scope always
+        resolves an enterprise, so "no restriction" and "an enterprise with no
+        accounts" cannot be confused: the latter is a real id that matches
+        nothing.
+        """
+        pass
+
+    @abstractmethod
+    async def list_enterprise_member_ids(self, enterprise_id: str) -> frozenset:
+        """Every account id anchored to ``enterprise_id`` (ADR-017 D3).
+
+        The isolation roster. ``users.enterprise_id`` *is* enterprise
+        membership — there is no join table for it — so this is one indexed
+        read, and it is the predicate the operator user-administration surface
+        confines itself with (``api/operator_user_scope``).
+
+        ``users`` is deliberately outside RLS (every tenant's accounts live in
+        one table and the login path must reach a row before any tenant is
+        bound), so this predicate is the whole of the confinement: it has no
+        database backstop underneath it and must never be dropped "because RLS
+        covers it".
+
+        Returns an empty set — never ``None`` — for an enterprise with no
+        accounts, so a caller cannot read "no members" as "no restriction".
         """
         pass
 
@@ -283,19 +324,27 @@ class InMemoryUserRepository(UserRepository):
         paginated = all_users[offset : offset + limit]
         return paginated, total_count
 
+    async def list_enterprise_member_ids(self, enterprise_id: str) -> frozenset:
+        """Every account id anchored to ``enterprise_id`` (in-memory)."""
+        if not enterprise_id:
+            return frozenset()
+        return frozenset(
+            user.user_id
+            for user in self._users.values()
+            if user.enterprise_id == enterprise_id
+        )
+
     async def list_users(
         self,
         limit: int = 50,
         offset: int = 0,
         is_active: Optional[bool] = None,
-        user_ids: Optional[Collection[str]] = None,
+        enterprise_id: Optional[str] = None,
     ) -> tuple[List[User], int]:
-        """List users with pagination, an optional active filter and an id allowlist."""
+        """List users with pagination, an optional active filter and a tenant."""
         all_users = list(self._users.values())
-        # `is not None`, not truthiness: an empty allowlist selects nothing.
-        if user_ids is not None:
-            allowed = set(user_ids)
-            all_users = [u for u in all_users if u.user_id in allowed]
+        if enterprise_id is not None:
+            all_users = [u for u in all_users if u.enterprise_id == enterprise_id]
         if is_active is not None:
             all_users = [u for u in all_users if u.is_active == is_active]
         all_users.sort(key=lambda u: u.created_at, reverse=True)
@@ -416,24 +465,33 @@ class PostgreSQLUserRepository(UserRepository):
             deleted_at=model.deleted_at,
             roles=roles,
             account_kind=getattr(model, "account_kind", "individual"),
+            service_channel=getattr(model, "service_channel", None),
         )
 
     def _domain_to_dict(self, user: User) -> dict:
         """Convert User domain object to dict for ORM model assignment.
 
-        enterprise_id is taken from the user object; it falls back to
-        DEFAULT_ENTERPRISE_ID when unset (standalone / single-tenant, where
-        every user belongs to the one default enterprise) since the column is
-        NOT NULL.
+        enterprise_id is taken from the user object and is **required**. It
+        used to fall back to the Standalone sentinel, and that substitution was
+        silent and wrong in the direction that matters: under ``multi`` the
+        sentinel is not a tenant, so the row lands somewhere no session can
+        reach, and the caller — who is the only one able to resolve the right
+        one — never learns it failed to. A ``None`` isolation key is a caller
+        bug; it surfaces here, where it becomes knowable, rather than as a row
+        nobody can read.
 
         ``User.organization_id`` is deliberately absent from the returned dict:
         it is a runtime-only mint-time field (#869) and the ``users`` table has
         no such column — organization affiliation is a row in
         ``organization_members``, written by the SSO login path.
         """
-        from faultmaven.providers.tenancy.single_tenant import DEFAULT_ENTERPRISE_ID
-
-        enterprise_id = user.enterprise_id or DEFAULT_ENTERPRISE_ID
+        if not user.enterprise_id:
+            raise ValueError(
+                f"user {user.user_id!r} has no enterprise_id; every account is "
+                "anchored to exactly one enterprise (ADR-017 D3) and the caller "
+                "is the only one that can resolve which"
+            )
+        enterprise_id = user.enterprise_id
         return {
             "user_id": user.user_id,
             "enterprise_id": enterprise_id,
@@ -455,6 +513,7 @@ class PostgreSQLUserRepository(UserRepository):
             "last_password_change_at": user.last_password_change_at,
             "deleted_at": user.deleted_at,
             "account_kind": getattr(user, "account_kind", "individual"),
+            "service_channel": getattr(user, "service_channel", None),
             # dev_roles: JSON-serialised role list, and the canonical source of
             # the JWT role claim in BOTH auth modes (#706). Deriving the claim
             # from organization_members → roles is left unwired rather than
@@ -563,9 +622,9 @@ class PostgreSQLUserRepository(UserRepository):
         limit: int = 50,
         offset: int = 0,
         is_active: Optional[bool] = None,
-        user_ids: Optional[Collection[str]] = None,
+        enterprise_id: Optional[str] = None,
     ) -> tuple[List[User], int]:
-        """List users with pagination, an optional active filter and an id allowlist."""
+        """List users with pagination, an optional active filter and a tenant."""
         from sqlalchemy import func, select
 
         from faultmaven.infrastructure.persistence.models import UserModel
@@ -573,12 +632,13 @@ class PostgreSQLUserRepository(UserRepository):
         base_filter = []
         if is_active is not None:
             base_filter.append(UserModel.is_active == is_active)
-        # `is not None`, not truthiness: an empty allowlist becomes `IN ()`,
-        # which selects nothing — the fail-CLOSED reading. Treating it as "no
-        # filter" would turn a tenant with no members into a deployment-wide
-        # listing.
-        if user_ids is not None:
-            base_filter.append(UserModel.user_id.in_(list(user_ids)))
+        # One indexed comparison, where this used to be an ``IN (...)`` over
+        # every account id of the enterprise — materialised by the caller, per
+        # page. ``None`` is the single-tenant "no restriction"; a real id that
+        # matches nothing is a tenant with no accounts, and correctly returns
+        # nothing.
+        if enterprise_id is not None:
+            base_filter.append(UserModel.enterprise_id == enterprise_id)
 
         count_stmt = select(func.count()).select_from(UserModel).where(*base_filter)
         count_result = await self.db.execute(count_stmt)
@@ -595,6 +655,18 @@ class PostgreSQLUserRepository(UserRepository):
         models = result.scalars().all()
 
         return [self._model_to_domain(m) for m in models], total_count
+
+    async def list_enterprise_member_ids(self, enterprise_id: str) -> frozenset:
+        """Every account id anchored to ``enterprise_id``."""
+        from sqlalchemy import select
+
+        from faultmaven.infrastructure.persistence.models import UserModel
+
+        if not enterprise_id:
+            return frozenset()
+        stmt = select(UserModel.user_id).where(UserModel.enterprise_id == enterprise_id)
+        result = await self.db.execute(stmt)
+        return frozenset(result.scalars().all())
 
     async def create(self, user: User) -> User:
         """Create a new user with uniqueness checks."""
@@ -744,13 +816,24 @@ class SessionlessUserRepository(UserRepository):
         limit: int = 50,
         offset: int = 0,
         is_active: Optional[bool] = None,
-        user_ids: Optional[Collection[str]] = None,
+        enterprise_id: Optional[str] = None,
     ) -> tuple[List[User], int]:
         from faultmaven.infrastructure.persistence.database import get_db_session
 
         async with get_db_session() as session:
             return await PostgreSQLUserRepository(session).list_users(
-                limit=limit, offset=offset, is_active=is_active, user_ids=user_ids
+                limit=limit,
+                offset=offset,
+                is_active=is_active,
+                enterprise_id=enterprise_id,
+            )
+
+    async def list_enterprise_member_ids(self, enterprise_id: str) -> frozenset:
+        from faultmaven.infrastructure.persistence.database import get_db_session
+
+        async with get_db_session() as session:
+            return await PostgreSQLUserRepository(session).list_enterprise_member_ids(
+                enterprise_id
             )
 
     async def update(self, user: User) -> User:

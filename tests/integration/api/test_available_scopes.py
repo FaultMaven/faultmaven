@@ -27,7 +27,7 @@ def mock_user():
     """A baseline user: no team, not an operator."""
     return AuthenticatedUser(
         user_id="user_789",
-        organization_id="org_1",
+        enterprise_id="org_1",
         email="tester@example.com",
         roles=["member"],
         permissions=["cases:read"],
@@ -39,7 +39,7 @@ def operator_user():
     """A platform admin — the only principal that may publish at global scope."""
     return AuthenticatedUser(
         user_id="op_1",
-        organization_id="org_1",
+        enterprise_id="org_1",
         email="operator@example.com",
         roles=["user", "admin", "platform_admin"],
         permissions=[],
@@ -103,7 +103,7 @@ class TestGlobalScopeIsOperatorOnly:
         """The org-scoped `admin` role is tenant-bounded; global is not."""
         org_admin = AuthenticatedUser(
             user_id="org_admin_1",
-            organization_id="org_1",
+            enterprise_id="org_1",
             email="orgadmin@example.com",
             roles=["user", "admin"],
             permissions=[],

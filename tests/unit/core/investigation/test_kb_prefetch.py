@@ -33,7 +33,7 @@ def _engine(knowledge_service=None):
 def _case():
     from tests.unit.core.investigation.test_solution_offer_liveness import _make_case
 
-    case = _make_case()  # user_id="u1", organization_id="o1"
+    case = _make_case()  # user_id="u1", enterprise_id="o1"
     case.kb_context = None
     return case
 
@@ -254,7 +254,7 @@ class TestPrefetchFloorAndScope:
             resource_type="knowledge_item",
             scope_type="team",
             scope_ids=["team_1"],
-            organization_id="o1",
+            enterprise_id="o1",
         )
 
     @pytest.mark.asyncio

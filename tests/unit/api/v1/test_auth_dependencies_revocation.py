@@ -32,7 +32,7 @@ from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import
 from tests.utils import forge_access_token, forge_refresh_token
 
 USER_ID = "11111111-1111-1111-1111-111111111111"
-ORG_ID = "22222222-2222-2222-2222-222222222222"
+ENTERPRISE_ID = "22222222-2222-2222-2222-222222222222"
 SECRET = "test-secret-key-0123456789abcdef"  # 32+ bytes: HS256 minimum
 
 
@@ -71,7 +71,7 @@ def _mint_access_token(auth_service: AuthService) -> str:
     return forge_access_token(
         auth_service,
         user_id=USER_ID,
-        organization_id=ORG_ID,
+        enterprise_id=ENTERPRISE_ID,
         email="user@example.com",
         roles=["member"],
     )
@@ -137,7 +137,7 @@ async def test_refresh_token_is_not_an_identity(auth_service):
     """Convergence hardening: a refresh token (type != access) is rejected —
     the old bare decode never checked the ``type`` claim."""
     refresh_token = forge_refresh_token(
-        auth_service, user_id=USER_ID, organization_id=ORG_ID
+        auth_service, user_id=USER_ID, enterprise_id=ENTERPRISE_ID
     )
 
     user = await _resolve(auth_service, refresh_token)

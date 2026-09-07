@@ -43,3 +43,17 @@ class SessionlessEnterpriseRepository(IEnterpriseRepository):
         async with get_db_session() as session:
             repo = PostgreSQLEnterpriseRepository(session)
             return await repo.update_enterprise(enterprise)
+
+    async def find_live_by_domain(self, domain: str) -> Optional[Enterprise]:
+        async with get_db_session() as session:
+            repo = PostgreSQLEnterpriseRepository(session)
+            return await repo.find_live_by_domain(domain)
+
+    async def get_or_create_for_domain(
+        self, *, domain: str, name: str, slug: str
+    ) -> Enterprise:
+        async with get_db_session() as session:
+            repo = PostgreSQLEnterpriseRepository(session)
+            return await repo.get_or_create_for_domain(
+                domain=domain, name=name, slug=slug
+            )

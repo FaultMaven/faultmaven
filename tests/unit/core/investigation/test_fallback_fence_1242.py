@@ -237,7 +237,7 @@ def _case(
         title="Checkout crash-looping",
         description=description,
         user_id="user_123",
-        organization_id="org_123",
+        enterprise_id="org_123",
         state=state,
         current_stage=(
             InvestigationStage.DIAGNOSIS if state == CaseState.INVESTIGATING else None

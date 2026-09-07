@@ -52,7 +52,7 @@ class _CaseService:
             title="causal graph access",
             state=CaseState.INVESTIGATING,
             user_id=self._owner_id,
-            organization_id="org-1",
+            enterprise_id="org-1",
             description="d",
             inquiry=InquiryData(
                 problem_statement_confirmed=True,

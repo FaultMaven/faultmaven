@@ -52,7 +52,10 @@ from faultmaven.api.v1.dependencies import (
     get_user_service_optional,
 )
 from faultmaven.config.settings import AuthMode, get_settings
-from faultmaven.config.tenant_context import usable_tenant_id
+from faultmaven.config.tenant_context import (
+    get_current_enterprise_id,
+    usable_tenant_id,
+)
 from faultmaven.container import container
 from faultmaven.exceptions import FaultMavenException, UserLookupFailed
 from faultmaven.infrastructure.observability.tracing import trace
@@ -583,6 +586,11 @@ async def local_register(
             username=request_body.username,
             email=request_body.email,
             display_name=request_body.display_name,
+            # Local-mode self-registration: the account is anchored to the
+            # enterprise this request is bound to, which in a standalone
+            # deployment is the seeded one. The binder forces it, so a forged
+            # claim cannot re-scope the account being created.
+            enterprise_id=get_current_enterprise_id(),
         )
         logger.info(
             f"User registration: {request_body.username} (new user: {user.user_id})"
@@ -757,39 +765,41 @@ async def refresh_tokens(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        # 2b. Re-attach the validated refresh token's organization claim before
-        #     minting (#869). The user store's model has no organization column
-        #     — under multi-tenant it is the token chain that carries tenancy,
-        #     so without this the first refresh after an SSO login would mint an
-        #     org-less pair and every subsequent request would fail closed at
-        #     bind_request_org_context. Written with setattr because the store
-        #     may return either the repository model or a DevUser dataclass
-        #     (whose __post_init__ stamps the Standalone sentinel); under
-        #     single-tenant resolve_organization_claim restores the sentinel
-        #     anyway, so this is a no-op there.
+        # 2b. Re-attach the validated refresh token's BILLING organization
+        #     claim before minting (#869). The user store's model has no
+        #     organization column, so it is the token chain that carries who
+        #     pays; without this the first refresh after an SSO login would mint
+        #     a pair with no billing context. Written with setattr because the
+        #     store may return either the repository model or a DevUser
+        #     dataclass.
+        #
+        #     The ISOLATION claim is deliberately NOT re-attached from the
+        #     token: ``resolve_enterprise_claim`` mints it from
+        #     ``users.enterprise_id`` (ADR-017 D9), which the store now carries
+        #     across. That is what makes a moved anchor — an account retired out
+        #     of its personal enterprise into its company's — take effect on the
+        #     next rotation instead of being pinned by a token that predates it.
         setattr(user, "organization_id", claims.get("organization_id") or None)
 
-        # 2c. The tenant the chain carries must still be usable (#1045 D8 R5).
-        #     Membership and account liveness are both checked above, and
-        #     neither notices a tenant that was retired: the organization row is
-        #     soft-deleted, the claim is re-attached from the presented token,
-        #     and nothing on this path had ever read the row. A live refresh
-        #     chain therefore kept minting for a retired personal tenant
-        #     indefinitely. Retirement also bumps the user's revocation
-        #     watermark, which stops the chain at step 1 — this is the second
-        #     leg, for a chain minted after the watermark or for a tenant
-        #     retired by any other means.
-        from faultmaven.infrastructure.persistence.organization_liveness import (
-            organization_id_is_usable,
+        # 2c. The tenant the chain lives inside must still be usable (#1045 D8
+        #     R5). Account liveness is checked above and does not notice a tenant
+        #     that was retired: the enterprise row is soft-deleted and nothing
+        #     else on this path reads it, so a live refresh chain would keep
+        #     minting for a retired tenant indefinitely. Retirement also bumps
+        #     the user's revocation watermark, which stops the chain at step 1 —
+        #     this is the second leg, for a chain minted after the watermark or
+        #     for a tenant retired by any other means.
+        from faultmaven.infrastructure.persistence.enterprise_liveness import (
+            enterprise_id_is_usable,
         )
 
-        if not await organization_id_is_usable(getattr(user, "organization_id", None)):
+        if not await enterprise_id_is_usable(getattr(user, "enterprise_id", None)):
             raise HTTPException(
                 status_code=401,
                 detail={
-                    "error": "organization_unavailable",
+                    "error": "enterprise_unavailable",
                     "message": (
-                        "The organization this session belongs to is no longer "
+                        "The enterprise this session belongs to is no longer "
                         "available. Please log in again."
                     ),
                 },
@@ -865,30 +875,30 @@ async def list_users(
     unchanged.
     """
     # Resolved before the store read and outside the try: a caller with no
-    # tenant is a 403 and a missing membership store is a 503, neither of which
-    # should reach the blanket 500 below.
-    member_ids = await scope.member_ids(operator)
+    # tenant is a 403, which should not reach the blanket 500 below.
+    confined_to = scope.listing_enterprise(operator)
 
     try:
         user_store = await get_user_store(request)
-        if member_ids is None:
+        if confined_to is None:
             # Single-tenant: the deployment IS the tenant. Called exactly as it
             # always was, so a store that predates the predicate is unaffected.
             users = await user_store.list_users(limit=1000)
             total_count = await user_store.count_users()
         else:
-            # The allowlist goes INTO the store call rather than filtering the
-            # page it returns: the 1000-row window is deployment-wide, so a
-            # tenant's users could fall outside it, and loading every tenant's
-            # rows couples this listing to them — one row that fails hydration
-            # empties it for everyone (`DatabaseUserStore.list_users` answers
-            # `[]` on any exception). A store that does not accept the argument
-            # raises here rather than quietly serving an unconfined page.
-            users = await user_store.list_users(limit=1000, user_ids=member_ids)
+            # The tenant goes INTO the store call rather than filtering the page
+            # it returns: the 1000-row window is deployment-wide, so a tenant's
+            # users could fall outside it, and loading every tenant's rows
+            # couples this listing to them — one row that fails hydration empties
+            # it for everyone (`DatabaseUserStore.list_users` answers `[]` on any
+            # exception). A store that does not accept the argument raises here
+            # rather than quietly serving an unconfined page.
+            users = await user_store.list_users(limit=1000, enterprise_id=confined_to)
             # The tenant's population, which is what `truncated` below has to be
-            # measured against. `count_users()` counts the deployment and would
-            # report this page as truncated whenever ANOTHER tenant has users.
-            total_count = len(member_ids)
+            # measured against. An unconfined `count_users()` counts the
+            # deployment and would report this page as truncated whenever ANOTHER
+            # tenant has users.
+            total_count = await user_store.count_users(enterprise_id=confined_to)
 
         users_list = [
             {

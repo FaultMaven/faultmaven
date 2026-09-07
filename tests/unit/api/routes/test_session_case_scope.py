@@ -36,7 +36,7 @@ def _case_service_holding_victims_case() -> CaseService:
     case = Case(
         case_id=CASE_ID,
         user_id=VICTIM,
-        organization_id=SHARED_ORG,
+        enterprise_id=SHARED_ORG,
         title="Checkout latency spike",
     )
     repository = MagicMock()
@@ -51,12 +51,19 @@ def _user(user_id: str) -> MagicMock:
     return user
 
 
+def _request(method: str) -> MagicMock:
+    request = MagicMock()
+    request.method = method
+    return request
+
+
 @pytest.mark.asyncio
 @pytest.mark.security
 async def test_stranger_in_the_same_org_is_denied():
     with pytest.raises(NotFoundError):
         await require_case_access(
             case_id=CASE_ID,
+            request=_request("GET"),
             current_user=_user(ATTACKER),
             case_service=_case_service_holding_victims_case(),
         )
@@ -66,6 +73,7 @@ async def test_stranger_in_the_same_org_is_denied():
 async def test_owner_passes():
     await require_case_access(
         case_id=CASE_ID,
+        request=_request("GET"),
         current_user=_user(VICTIM),
         case_service=_case_service_holding_victims_case(),
     )
@@ -79,6 +87,7 @@ async def test_teammate_with_a_share_passes():
 
     await require_case_access(
         case_id=CASE_ID,
+        request=_request("GET"),
         current_user=_user(ATTACKER),
         case_service=case_service,
     )
@@ -90,6 +99,7 @@ async def test_missing_case_service_fails_closed():
     with pytest.raises(HTTPException) as exc:
         await require_case_access(
             case_id=CASE_ID,
+            request=_request("GET"),
             current_user=_user(ATTACKER),
             case_service=None,
         )
@@ -109,3 +119,58 @@ def test_every_session_route_carries_the_gate():
             for dependency in route.dependant.dependencies
         }
         assert "require_case_access" in names, f"{route.methods} {route.path}"
+
+
+# ---------------------------------------------------------------------------
+# A share grants READ, not WRITE — on the session surface too (ADR-017 D4)
+# ---------------------------------------------------------------------------
+#
+# The gate above resolves the case through the READ allowlist, which is right
+# for the three GET routes and wrong for every other one: a teammate holding a
+# read share could create, patch, pause, resume and complete the owner's
+# sessions, because the only predicate downstream is ``case.enterprise_id`` and
+# inside one enterprise that admits both parties. The read/write decision is
+# made in ONE place — here, from the request method — so a session route added
+# later inherits the right half without having to remember which it is.
+
+
+@pytest.mark.asyncio
+@pytest.mark.security
+@pytest.mark.parametrize("method", ["POST", "PATCH", "PUT", "DELETE"])
+async def test_a_teammate_with_a_share_cannot_mutate_a_session(method):
+    """The share opens the reads; it must not open the writes."""
+    case_service = _case_service_holding_victims_case()
+    case_service._resolve_shared_case_ids = AsyncMock(return_value=[CASE_ID])
+
+    with pytest.raises(NotFoundError):
+        await require_case_access(
+            case_id=CASE_ID,
+            request=_request(method),
+            current_user=_user(ATTACKER),
+            case_service=case_service,
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_owner_still_mutates_their_own_sessions():
+    """The control: refusing everyone would satisfy the case above."""
+    await require_case_access(
+        case_id=CASE_ID,
+        request=_request("POST"),
+        current_user=_user(VICTIM),
+        case_service=_case_service_holding_victims_case(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_teammate_with_a_share_still_reads_a_session():
+    """And the other control: the read half of the gate is unchanged."""
+    case_service = _case_service_holding_victims_case()
+    case_service._resolve_shared_case_ids = AsyncMock(return_value=[CASE_ID])
+
+    await require_case_access(
+        case_id=CASE_ID,
+        request=_request("GET"),
+        current_user=_user(ATTACKER),
+        case_service=case_service,
+    )

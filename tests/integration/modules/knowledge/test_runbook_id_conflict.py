@@ -1,7 +1,9 @@
 """The 046 unique index, exercised through the real service.
 
-``uq_conversion_drafts_org_runbook_id`` admits one LIVE draft per
-``(organization_id, runbook_id)`` (#1230). That is a correctness win and a
+``uq_conversion_drafts_enterprise_runbook_id`` admits one LIVE draft per
+``(enterprise_id, runbook_id)`` (#1230, re-keyed by ADR-017 D1 — the
+uniqueness scope is the ISOLATION boundary, so a colliding id in another
+enterprise is not a collision at all). That is a correctness win and a
 liability at the same time: the mint is deterministic on ``(service, title)``,
 so two ordinary user actions can reach the same id, and an unhandled
 ``IntegrityError`` there is a 500 that explains nothing.
@@ -60,7 +62,16 @@ from faultmaven.utils.runbook_id import RunbookPathEscape
 
 pytestmark = pytest.mark.integration
 
-ORG = "00000000-0000-0000-0000-000000000001"
+#: The one enterprise every row here lives in — the ISOLATION key the 046
+#: unique index is scoped by (ADR-017 D1). Named ``ORG`` while the organization
+#: was the isolation boundary; it has identified an enterprise ever since the
+#: rows below started carrying ``enterprise_id``.
+ENTERPRISE_ID = "00000000-0000-0000-0000-000000000001"
+
+#: A billing organization in that enterprise (ADR-017 D2). Seeded as a parent
+#: row only: no draft, job or upload below carries it, and the unique index
+#: does not consider it.
+BILLING_ORG_ID = "00000000-0000-0000-0000-0000000000b1"
 
 TEMPLATE_ARGS = dict(
     domain="platform",
@@ -75,6 +86,7 @@ TEMPLATE_ARGS = dict(
     causes="### Cause A: Something\nStatement: it broke.",
     prevention="Watch the dashboard.",
     user_id="user_x",
+    enterprise_id=ENTERPRISE_ID,
 )
 
 
@@ -93,13 +105,13 @@ async def session_factory(engine):
     async with factory() as session:
         session.add(
             EnterpriseModel(
-                enterprise_id=ORG, name="Default Enterprise", slug="default"
+                enterprise_id=ENTERPRISE_ID, name="Default Enterprise", slug="default"
             )
         )
         session.add(
             OrganizationModel(
-                organization_id=ORG,
-                enterprise_id=ORG,
+                organization_id=BILLING_ORG_ID,
+                enterprise_id=ENTERPRISE_ID,
                 name="Default Org",
                 slug="default-org",
             )
@@ -300,7 +312,7 @@ redis-cli INFO memory | grep used_memory_human
         (scope_dir / "c.md").write_text(self._runbook("redis-slow", "Redis Slow"))
 
         result = await service.scan_for_runbooks(
-            user_id=None, organization_id=None, is_platform_admin=True
+            user_id=None, enterprise_id=None, is_platform_admin=True
         )
 
         minted = {d["runbook_id"] for d in result["drafts"]}
@@ -418,7 +430,7 @@ class TestTheGuardCoversEveryNewDraftWritePath:
             session.add(
                 UploadedFileModel(
                     file_id="file_legacy",
-                    organization_id=ORG,
+                    enterprise_id=ENTERPRISE_ID,
                     uploaded_by=None,
                     filename="legacy.md",
                     size_bytes=1,
@@ -432,7 +444,7 @@ class TestTheGuardCoversEveryNewDraftWritePath:
             session.add(
                 ConversionJobModel(
                     id="conv_legacy",
-                    organization_id=ORG,
+                    enterprise_id=ENTERPRISE_ID,
                     scope="global",
                     status="completed",
                     source_file_id="file_legacy",
@@ -442,7 +454,7 @@ class TestTheGuardCoversEveryNewDraftWritePath:
             session.add(
                 ConversionDraftModel(
                     id="draft_legacy",
-                    organization_id=ORG,
+                    enterprise_id=ENTERPRISE_ID,
                     conversion_id="conv_legacy",
                     runbook_id="",
                     title="Legacy",
@@ -454,10 +466,10 @@ class TestTheGuardCoversEveryNewDraftWritePath:
             await session.commit()
 
         with pytest.raises(ConflictError) as excinfo:
-            await service._raise_if_runbook_id_taken(ORG, [""])
+            await service._raise_if_runbook_id_taken(ENTERPRISE_ID, [""])
         assert excinfo.value.resource_id == "draft_legacy"
         # ... and a list of only ``None`` still short-circuits.
-        await service._raise_if_runbook_id_taken(ORG, [None])
+        await service._raise_if_runbook_id_taken(ENTERPRISE_ID, [None])
 
 
 class TestTheCaseRaceStillReturnsTheWinner:
@@ -504,7 +516,9 @@ class TestTheCaseRaceStillReturnsTheWinner:
             **TEMPLATE_ARGS,
         )
         with pytest.raises(ConflictError):
-            await service._raise_if_runbook_id_taken(ORG, [first["draft"].runbook_id])
+            await service._raise_if_runbook_id_taken(
+                ENTERPRISE_ID, [first["draft"].runbook_id]
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -626,7 +640,7 @@ Alert on the used_memory to maxmemory ratio.
                 original_filename="doc.md",
                 scope="global",
                 user_id="user_x",
-                organization_id=ORG,
+                enterprise_id=ENTERPRISE_ID,
             )
 
     async def test_the_colliding_mode_is_refused_not_raised_as_IntegrityError(
@@ -774,14 +788,14 @@ class TestATakenIdCostsNoGeneration:
         service._llm_router.route = route
 
         drafts, errors = await service._convert_all_failure_modes(
-            "source text",
-            modes,
-            "global",
-            "doc.md",
-            "conv_probe",
-            "user_x",
-            None,
-            organization_id=ORG,
+            text="source text",
+            failure_modes=modes,
+            scope="global",
+            filename="doc.md",
+            conversion_id="conv_probe",
+            user_id="user_x",
+            enterprise_id=ENTERPRISE_ID,
+            team_id=None,
         )
 
         assert drafts == []
@@ -830,14 +844,14 @@ class TestATakenIdCostsNoGeneration:
         service._llm_router.route = route
 
         drafts, errors = await service._convert_all_failure_modes(
-            "source text",
-            modes,
-            "global",
-            "doc.md",
-            "conv_probe2",
-            "user_x",
-            None,
-            organization_id=ORG,
+            text="source text",
+            failure_modes=modes,
+            scope="global",
+            filename="doc.md",
+            conversion_id="conv_probe2",
+            user_id="user_x",
+            enterprise_id=ENTERPRISE_ID,
+            team_id=None,
         )
 
         assert [d.runbook_id for d in drafts] == ["redis-redis-slow"]
@@ -896,14 +910,14 @@ class TestAPathEscapeIsNeverLaunderedIntoAResponse:
             ),
         ):
             return await service._convert_all_failure_modes(
-                "source text",
-                modes,
-                "global",
-                "doc.md",
-                f"conv_esc_{n_modes}",
-                "user_x",
-                None,
-                organization_id=ORG,
+                text="source text",
+                failure_modes=modes,
+                scope="global",
+                filename="doc.md",
+                conversion_id=f"conv_esc_{n_modes}",
+                user_id="user_x",
+                enterprise_id=ENTERPRISE_ID,
+                team_id=None,
             )
 
     async def test_the_parallel_branch_propagates_instead_of_warning(self, service):

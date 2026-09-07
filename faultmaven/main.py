@@ -49,7 +49,7 @@ from fastapi.responses import JSONResponse
 from starlette.requests import Request as StarletteRequest
 
 from faultmaven.api.contract_version import API_CONTRACT_VERSION
-from faultmaven.api.middleware.tenant_scope import bind_request_org_context
+from faultmaven.api.middleware.tenant_scope import bind_request_enterprise_context
 from faultmaven.utils.optional_dependency import module_is_usable
 from faultmaven.utils.serialization import to_json_compatible
 
@@ -1001,7 +1001,7 @@ async def lifespan(app: FastAPI):
             kb_result = await bootstrap_kb(
                 knowledge_service=app.state.knowledge_service,
                 db_session_factory=get_db_session,
-                organization_id=SingleTenantProvider.DEFAULT_ORG_ID,
+                enterprise_id=SingleTenantProvider.DEFAULT_ENTERPRISE_ID,
             )
             logger.info(f"✅ KB bootstrap: {kb_result!r}")
             if kb_result.failed:
@@ -1127,7 +1127,7 @@ app = FastAPI(
     # Standalone org; multi-tenant sources it from the verified auth claim and
     # fails closed on a missing org. A global dependency (not BaseHTTPMiddleware)
     # so the contextvar reaches the endpoint's task.
-    dependencies=[Depends(bind_request_org_context)],
+    dependencies=[Depends(bind_request_enterprise_context)],
 )
 
 # Override Starlette's default multipart form-field size limit.

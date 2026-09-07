@@ -53,7 +53,7 @@ ISSUER = "faultmaven"
 AUDIENCE = "faultmaven-api"
 
 USER_ID = "11111111-1111-1111-1111-111111111111"
-ORG_ID = "22222222-2222-2222-2222-222222222222"
+ENTERPRISE_ID = "22222222-2222-2222-2222-222222222222"
 USERNAME = "forge.parity"
 EMAIL = "forge.parity@example.com"
 ROLES = ["member"]
@@ -106,7 +106,7 @@ def _user():
         username=USERNAME,
         email=EMAIL,
         display_name="Forge Parity",
-        organization_id=ORG_ID,
+        enterprise_id=ENTERPRISE_ID,
         roles=ROLES,
         created_at=datetime.now(timezone.utc),
     )
@@ -135,7 +135,7 @@ async def test_forged_access_token_has_the_live_mint_claim_set(auth_service, gen
         forge_access_token(
             auth_service,
             user_id=USER_ID,
-            organization_id=ORG_ID,
+            enterprise_id=ENTERPRISE_ID,
             email=EMAIL,
             roles=ROLES,
             username=USERNAME,
@@ -162,7 +162,7 @@ async def test_forged_refresh_token_has_the_live_mint_claim_set(
         )
     )
     forged = _claims(
-        forge_refresh_token(auth_service, user_id=USER_ID, organization_id=ORG_ID)
+        forge_refresh_token(auth_service, user_id=USER_ID, enterprise_id=ENTERPRISE_ID)
     )
 
     assert set(forged) == set(live), (

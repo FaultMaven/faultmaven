@@ -97,7 +97,7 @@ async def record_operator_role_change(
         # No organization: the role is deployment-scoped. NULL here already
         # means "spanned all tenants" for the access actions, which is the same
         # thing a deployment-scoped privilege means.
-        target_organization_id=None,
+        target_enterprise_id=None,
         deployment_mode=_deployment_mode(),
         details={
             "roles_changed": list(roles_changed),

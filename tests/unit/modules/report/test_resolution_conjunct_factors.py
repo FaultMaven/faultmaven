@@ -33,7 +33,7 @@ def _resolved_case(conjuncts: list[str]) -> Case:
     case = Case(
         case_id="case_aa0000000002",
         user_id="user_x",
-        organization_id="org_x",
+        enterprise_id="org_x",
         title="Checkout OOM kills",
         description="checkout-api crash-loops after v2.14.0.",
         state=CaseState.INVESTIGATING,

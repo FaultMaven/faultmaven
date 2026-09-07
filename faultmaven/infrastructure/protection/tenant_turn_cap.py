@@ -22,31 +22,29 @@ meters *volume* per tenant per day to bound a bill. A capped tenant keeps
 reading: since fm#994 reads sit on their own per-session windows, so a refused
 turn cannot exhaust the quota a caller needs to look at its own cases.
 
-Which tenants are capped
-------------------------
-======================  ==================================================
-tenant                  cap
-======================  ==================================================
-single-tenant           **uncapped, decided without a query** — see below
-personal, no override   the deployment default (``TENANT_DAILY_TURN_CAP``)
-company, no override    **uncapped** — the cap bounds self-service, not
-                        customers
-either, override ``0``  explicitly uncapped
-either, override ``N``  N turns per UTC day
-======================  ==================================================
+Who is charged, and who is capped
+---------------------------------
+The subject is a **billing subject** (ADR-017 D5): the organization when the
+account has one, and the account itself when it has none. That is the whole of
+what "personal" means now — an account nobody pays for — so the question needs
+no table of its own and no flag on the organization.
+
+=========================  ===============================================
+billing subject            cap
+=========================  ===============================================
+single-tenant deployment   **uncapped, decided without a query** — see below
+account (no organization)  the deployment default (``TENANT_DAILY_TURN_CAP``)
+organization, no override  **uncapped** — the cap bounds self-service, not
+                           customers
+either, override ``0``     explicitly uncapped
+either, override ``N``     N turns per UTC day
+=========================  ===============================================
 
 **Single-tenant is answered before any port is touched.** A self-hosted install
-has one organization, pays for its own compute, and is not what D5.3 exists to
-bound — and deciding it from the deployment mode rather than from a table means
-an install that has not run migration 053 (``RUN_STARTUP_MIGRATIONS=false``, a
-supported posture) keeps working instead of losing every turn to a
+pays for its own compute and is not what D5.3 exists to bound — and deciding it
+from the deployment mode rather than from a table means an install that has not
+run the migration keeps working instead of losing every turn to a
 usage-allowance message it could never have earned.
-
-"Personal" is not a flag on the organization: it is the existence of a row in
-``sso_personal_orgs`` naming it (#1045), asked through
-``ISSOPersonalOrgRepository.is_personal_organization``. That table is untenanted,
-so the question is answerable whatever tenant is bound, and there is exactly one
-writer of it — the just-in-time provisioning path.
 
 Failure direction, stated once
 ------------------------------
@@ -109,13 +107,13 @@ class TenantTurnCapExceeded(TenantTurnCapError):
     def __init__(
         self,
         *,
-        organization_id: str,
+        subject: "BillingSubject",
         limit: int,
         used: int,
         reset_at: datetime,
         source: str = "unknown",
     ):
-        self.organization_id = organization_id
+        self.subject = subject
         self.limit = limit
         self.used = used
         self.reset_at = reset_at
@@ -125,7 +123,7 @@ class TenantTurnCapExceeded(TenantTurnCapError):
         #: without a query.
         self.source = source
         super().__init__(
-            f"organization {organization_id} reached its daily turn cap "
+            f"{subject.kind} {subject.subject_id} reached its daily turn cap "
             f"({used}/{limit}); resets at {reset_at.isoformat()}"
         )
 
@@ -168,13 +166,80 @@ class TenantTurnCapUnavailable(TenantTurnCapError):
     """
 
 
+#: The two kinds of thing a turn can be charged to (ADR-017 D5). Spelled here
+#: because the ``turn_usage.billing_subject_kind`` CHECK constraint spells the
+#: same two, and a third would be a schema change rather than a code one.
+SUBJECT_ORGANIZATION = "organization"
+SUBJECT_ACCOUNT = "account"
+
+
+@dataclass(frozen=True)
+class BillingSubject:
+    """Who a turn is charged to: an organization, or an account with none.
+
+    Not the enterprise. The enterprise isolates; it does not pay (ADR-017 D2),
+    and charging it would meter a compliance boundary — which is how two
+    departments of one company would come to share one allowance they never
+    agreed to share.
+    """
+
+    kind: str
+    subject_id: str
+
+    @property
+    def is_account(self) -> bool:
+        return self.kind == SUBJECT_ACCOUNT
+
+
+def billing_subject_for(
+    organization_id: Optional[str], user_id: Optional[str]
+) -> Optional[BillingSubject]:
+    """The subject a turn by this actor is charged to, or ``None``.
+
+    ``None`` means "there is nobody to charge", which the resolver treats the
+    way it treats any other unanswerable question: the default cap, not a free
+    turn.
+    """
+    if organization_id:
+        return BillingSubject(SUBJECT_ORGANIZATION, organization_id)
+    if user_id:
+        return BillingSubject(SUBJECT_ACCOUNT, user_id)
+    return None
+
+
+#: Every value ``CapPolicy.source`` can take, named here rather than spelled at
+#: each site. ``fm-set-turn-cap`` renders one line per source, and it used to key
+#: that mapping on string literals of its own — so a source added or renamed here
+#: silently fell through to a bare number in the operator's output, which reads
+#: like an answer and is not one.
+SOURCE_SINGLE_TENANT = "single_tenant"
+SOURCE_INDETERMINATE = "indeterminate"
+SOURCE_DEFAULT_PERSONAL = "default_personal"
+SOURCE_OVERRIDE = "override"
+SOURCE_OVERRIDE_UNLIMITED = "override_unlimited"
+SOURCE_COMPANY_UNCAPPED = "company_uncapped"
+
+#: Every source a resolved policy can carry. ``fm-set-turn-cap`` asserts its
+#: rendering table covers this set, so a new source cannot ship unworded.
+CAP_POLICY_SOURCES = frozenset(
+    {
+        SOURCE_SINGLE_TENANT,
+        SOURCE_INDETERMINATE,
+        SOURCE_DEFAULT_PERSONAL,
+        SOURCE_OVERRIDE,
+        SOURCE_OVERRIDE_UNLIMITED,
+        SOURCE_COMPANY_UNCAPPED,
+    }
+)
+
+
 @dataclass(frozen=True)
 class CapPolicy:
-    """The cap in force for one organization, and where it came from.
+    """The cap in force for one billing subject, and where it came from.
 
-    ``limit is None`` means uncapped. ``source`` is carried for the log line, so
-    an operator reading a refusal can tell an override from the default without
-    querying anything.
+    ``limit is None`` means uncapped. ``source`` is one of
+    :data:`CAP_POLICY_SOURCES`, carried for the log line, so an operator reading
+    a refusal can tell an override from the default without querying anything.
     """
 
     limit: Optional[int]
@@ -185,7 +250,7 @@ class CapPolicy:
 class Reservation:
     """A turn admitted against the cap."""
 
-    organization_id: str
+    subject: Optional[BillingSubject]
     used: int
     limit: Optional[int]
     source: str
@@ -214,12 +279,6 @@ def next_utc_midnight(now: Optional[datetime] = None) -> datetime:
 # =============================================================================
 
 
-class PersonalOrgLookup(Protocol):
-    """The one question this module asks of the auth module's SSO port."""
-
-    async def is_personal_organization(self, organization_id: str) -> bool: ...
-
-
 class OrganizationLookup(Protocol):
     """The one question this module asks of the organization repository."""
 
@@ -227,7 +286,7 @@ class OrganizationLookup(Protocol):
 
 
 class ITurnLedger(ABC):
-    """Where accepted turns are counted, per organization per UTC day.
+    """Where accepted turns are counted, per billing subject per UTC day.
 
     A port rather than a module-level function so the reservation can be driven
     in a test without a database — and so the *enforcement* is what those tests
@@ -236,7 +295,7 @@ class ITurnLedger(ABC):
 
     @abstractmethod
     async def reserve(
-        self, organization_id: str, day: date, limit: Optional[int]
+        self, subject: BillingSubject, day: date, limit: Optional[int]
     ) -> Optional[int]:
         """Charge one turn, refusing at ``limit``.
 
@@ -249,8 +308,8 @@ class ITurnLedger(ABC):
         """
 
     @abstractmethod
-    async def usage(self, organization_id: str, day: date) -> int:
-        """What the ledger holds for this organization on ``day``."""
+    async def usage(self, subject: BillingSubject, day: date) -> int:
+        """What the ledger holds for this subject on ``day``."""
 
 
 class InMemoryTurnLedger(ITurnLedger):
@@ -265,23 +324,24 @@ class InMemoryTurnLedger(ITurnLedger):
     """
 
     def __init__(self) -> None:
-        self._counts: Dict[Tuple[str, date], int] = {}
+        self._counts: Dict[Tuple[str, str, date], int] = {}
 
     async def reserve(
-        self, organization_id: str, day: date, limit: Optional[int]
+        self, subject: BillingSubject, day: date, limit: Optional[int]
     ) -> Optional[int]:
-        standing = self._counts.get((organization_id, day), 0)
+        key = (subject.kind, subject.subject_id, day)
+        standing = self._counts.get(key, 0)
         if limit is not None and standing >= limit:
             return None
-        self._counts[(organization_id, day)] = standing + 1
+        self._counts[key] = standing + 1
         return standing + 1
 
-    async def usage(self, organization_id: str, day: date) -> int:
-        return self._counts.get((organization_id, day), 0)
+    async def usage(self, subject: BillingSubject, day: date) -> int:
+        return self._counts.get((subject.kind, subject.subject_id, day), 0)
 
 
 class SqlTurnLedger(ITurnLedger):
-    """The shipped ledger: one row per (organization, UTC day) in Postgres.
+    """The shipped ledger: one row per (billing subject, UTC day) in Postgres.
 
     The reservation is a single statement — ``INSERT … ON CONFLICT … DO UPDATE
     SET turn_count = turn_count + 1 WHERE turn_count < :cap RETURNING
@@ -294,21 +354,36 @@ class SqlTurnLedger(ITurnLedger):
     """
 
     async def reserve(
-        self, organization_id: str, day: date, limit: Optional[int]
+        self, subject: BillingSubject, day: date, limit: Optional[int]
     ) -> Optional[int]:
+        from faultmaven.config.tenant_context import get_current_enterprise_id
         from faultmaven.infrastructure.persistence.database import get_db_session
         from faultmaven.infrastructure.persistence.db_compat import dialect_insert
-        from faultmaven.infrastructure.persistence.models import (
-            OrganizationTurnUsageModel,
-        )
+        from faultmaven.infrastructure.persistence.models import TurnUsageModel
 
-        table = OrganizationTurnUsageModel
+        table = TurnUsageModel
+        enterprise_id = get_current_enterprise_id()
         async with get_db_session() as session:
             statement = dialect_insert(session, table).values(
-                organization_id=organization_id, usage_date=day, turn_count=1
+                # The row carries the enterprise because every tenant-scoped
+                # table does and RLS keys on it; the subject is who PAYS
+                # (ADR-017 D5). Both are in the key, and the enterprise has to
+                # be: a conflict target narrower than the RLS predicate can
+                # resolve to a row this session cannot see, and ``DO UPDATE``
+                # cannot update what it cannot see.
+                enterprise_id=enterprise_id,
+                billing_subject_kind=subject.kind,
+                billing_subject_id=subject.subject_id,
+                usage_date=day,
+                turn_count=1,
             )
             conflict = {
-                "index_elements": ["organization_id", "usage_date"],
+                "index_elements": [
+                    "enterprise_id",
+                    "billing_subject_kind",
+                    "billing_subject_id",
+                    "usage_date",
+                ],
                 "set_": {"turn_count": table.turn_count + 1},
             }
             if limit is not None:
@@ -319,20 +394,27 @@ class SqlTurnLedger(ITurnLedger):
             value = (await session.execute(statement)).scalar_one_or_none()
         return None if value is None else int(value)
 
-    async def usage(self, organization_id: str, day: date) -> int:
+    async def usage(self, subject: BillingSubject, day: date) -> int:
         from sqlalchemy import select
 
+        from faultmaven.config.tenant_context import get_current_enterprise_id
         from faultmaven.infrastructure.persistence.database import get_db_session
-        from faultmaven.infrastructure.persistence.models import (
-            OrganizationTurnUsageModel,
-        )
+        from faultmaven.infrastructure.persistence.models import TurnUsageModel
 
         async with get_db_session() as session:
             value = (
                 await session.execute(
-                    select(OrganizationTurnUsageModel.turn_count).where(
-                        OrganizationTurnUsageModel.organization_id == organization_id,
-                        OrganizationTurnUsageModel.usage_date == day,
+                    # The enterprise is named as well as bound. RLS would scope
+                    # this read anyway, but the row is keyed on the enterprise
+                    # and a subject whose account has been re-anchored has one
+                    # row per enterprise for the same day — an unqualified
+                    # ``scalar_one_or_none`` over those would raise rather than
+                    # answer.
+                    select(TurnUsageModel.turn_count).where(
+                        TurnUsageModel.enterprise_id == get_current_enterprise_id(),
+                        TurnUsageModel.billing_subject_kind == subject.kind,
+                        TurnUsageModel.billing_subject_id == subject.subject_id,
+                        TurnUsageModel.usage_date == day,
                     )
                 )
             ).scalar_one_or_none()
@@ -374,7 +456,7 @@ def _is_multi_tenant() -> bool:
 
 
 class CapPolicyResolver:
-    """Decides the cap in force for one organization, through the ports.
+    """Decides the cap in force for one billing subject, through the port.
 
     Shared by the enforcement path and by ``fm-set-turn-cap --show``, which is
     the point: an operator reading a tenant's cap sees the rule the next turn
@@ -387,32 +469,42 @@ class CapPolicyResolver:
 
     def __init__(
         self,
-        personal_orgs: PersonalOrgLookup,
         organizations: OrganizationLookup,
         *,
         default_limit=_default_limit,
         multi_tenant=_is_multi_tenant,
     ) -> None:
-        self._personal_orgs = personal_orgs
         self._organizations = organizations
         self._default_limit = default_limit
         self._multi_tenant = multi_tenant
 
-    async def resolve(self, organization_id: str) -> CapPolicy:
+    async def resolve(self, subject: Optional[BillingSubject]) -> CapPolicy:
         """The cap in force. Never raises; ambiguity resolves to the default."""
         if not self._multi_tenant():
-            return CapPolicy(limit=None, source="single_tenant")
+            return CapPolicy(limit=None, source=SOURCE_SINGLE_TENANT)
 
-        if not organization_id:
-            # Multi-tenant with no bound tenant. Unreachable through the front
-            # door — ``bind_request_org_context`` refuses an unscoped request
-            # before any route runs — and guarded anyway, because this must not
-            # be the place that decides an unscoped request is free.
-            logger.warning("turn cap: no tenant bound; applying the default cap")
-            return CapPolicy(limit=self._default_limit(), source="indeterminate")
+        if subject is None:
+            # Multi-tenant with nobody to charge. Unreachable through the front
+            # door — ``bind_request_enterprise_context`` refuses an unscoped
+            # request before any route runs, and an authenticated one always has
+            # an account — and guarded anyway, because this must not be the
+            # place that decides an unscoped request is free.
+            logger.warning("turn cap: no billing subject; applying the default cap")
+            return CapPolicy(limit=self._default_limit(), source=SOURCE_INDETERMINATE)
+
+        if subject.is_account:
+            # An account in no organization: nobody is paying for it, so it gets
+            # the self-service allowance. This is the whole of what "personal"
+            # means under ADR-017 D5 — there is no table to consult and no flag
+            # to read, so there is also no unreadable-table branch to fail into.
+            return CapPolicy(
+                limit=self._default_limit(), source=SOURCE_DEFAULT_PERSONAL
+            )
 
         try:
-            organization = await self._organizations.get_organization(organization_id)
+            organization = await self._organizations.get_organization(
+                subject.subject_id
+            )
         except Exception as exc:
             # Fail CLOSED, and this is the branch the review corrected. Reading
             # an unreadable override as "no override" would drop a company
@@ -422,39 +514,36 @@ class CapPolicyResolver:
             logger.warning(
                 "turn cap: override lookup failed for organization %s (%s); "
                 "applying the default cap",
-                organization_id,
+                subject.subject_id,
                 type(exc).__name__,
             )
-            return CapPolicy(limit=self._default_limit(), source="indeterminate")
+            return CapPolicy(limit=self._default_limit(), source=SOURCE_INDETERMINATE)
 
-        override = (
-            getattr(organization, "daily_turn_cap", None) if organization else None
-        )
+        if organization is None:
+            # The subject names an organization that does not resolve: soft
+            # deleted, in another enterprise (RLS hides it), or a bogus id out of
+            # a stale refresh chain. Reading that as "no override" made it
+            # *uncapped*, because an organization with no override is — so an id
+            # nobody can resolve bought an unlimited allowance, and the easiest
+            # way to hold one was to keep presenting a claim naming a deleted
+            # organization.
+            #
+            # An unresolvable subject is exactly as indeterminate as an
+            # unreadable one, and takes the same answer for the same reason.
+            logger.warning(
+                "turn cap: billing subject organization %s does not resolve; "
+                "applying the default cap",
+                subject.subject_id,
+            )
+            return CapPolicy(limit=self._default_limit(), source=SOURCE_INDETERMINATE)
+
+        override = getattr(organization, "daily_turn_cap", None)
         if override is not None:
             if override == UNLIMITED_OVERRIDE:
-                return CapPolicy(limit=None, source="override_unlimited")
-            return CapPolicy(limit=int(override), source="override")
+                return CapPolicy(limit=None, source=SOURCE_OVERRIDE_UNLIMITED)
+            return CapPolicy(limit=int(override), source=SOURCE_OVERRIDE)
 
-        try:
-            is_personal = await self._personal_orgs.is_personal_organization(
-                organization_id
-            )
-        except Exception as exc:
-            # The same direction, for the same reason: an un-migrated or
-            # partially-migrated deployment is the live shape of this branch,
-            # and reading it as "company" would hand every tenant an uncapped
-            # day the moment the table became unreadable.
-            logger.warning(
-                "turn cap: cannot determine whether organization %s is a "
-                "personal tenant (%s); applying the default cap",
-                organization_id,
-                type(exc).__name__,
-            )
-            return CapPolicy(limit=self._default_limit(), source="indeterminate")
-
-        if is_personal:
-            return CapPolicy(limit=self._default_limit(), source="default_personal")
-        return CapPolicy(limit=None, source="company_uncapped")
+        return CapPolicy(limit=None, source=SOURCE_COMPANY_UNCAPPED)
 
 
 class TurnCapService:
@@ -465,9 +554,9 @@ class TurnCapService:
         self._ledger = ledger
 
     async def reserve(
-        self, organization_id: str, *, now: Optional[datetime] = None
+        self, subject: Optional[BillingSubject], *, now: Optional[datetime] = None
     ) -> Reservation:
-        """Admit one turn for ``organization_id``, or refuse it.
+        """Admit one turn for ``subject``, or refuse it.
 
         ``now`` is sampled **once** and both the charged day and the reset
         instant are derived from it. Two samples would let a turn refused at
@@ -483,24 +572,30 @@ class TurnCapService:
         moment = now or datetime.now(timezone.utc)
         day = utc_day(moment)
 
-        policy = await self._resolver.resolve(organization_id)
+        policy = await self._resolver.resolve(subject)
         if policy.limit is None and policy.source == "single_tenant":
             # Decided without touching a port, so a single-tenant deployment
-            # that has never run migration 053 keeps serving turns.
-            return Reservation(
-                organization_id, used=0, limit=None, source=policy.source
+            # that has never run the migration keeps serving turns.
+            return Reservation(subject, used=0, limit=None, source=policy.source)
+
+        if subject is None:
+            # The resolver already capped an unidentifiable actor at the
+            # default; there is still nothing to write the count against, so the
+            # turn is refused rather than served uncounted.
+            raise TenantTurnCapUnavailable(
+                "no billing subject for this turn; refusing rather than serving "
+                "it uncounted"
             )
 
         try:
-            used = await self._ledger.reserve(organization_id, day, policy.limit)
-            standing = (
-                await self._ledger.usage(organization_id, day) if used is None else 0
-            )
+            used = await self._ledger.reserve(subject, day, policy.limit)
+            standing = await self._ledger.usage(subject, day) if used is None else 0
         except Exception as exc:
             logger.error(
-                "turn cap: could not reserve a turn for organization %s (%s: %s); "
+                "turn cap: could not reserve a turn for %s %s (%s: %s); "
                 "refusing the turn rather than serving it uncounted",
-                organization_id,
+                subject.kind,
+                subject.subject_id,
                 type(exc).__name__,
                 exc,
             )
@@ -516,20 +611,21 @@ class TurnCapService:
             # The refusal, logged where both callers reach it. INFO rather
             # than WARNING: a tenant meeting a cap that exists to be met is the
             # mechanism working, and a WARNING would train operators to ignore
-            # the channel. The organization and the count are both here because
-            # the operator's next action — raise this tenant's cap, or leave it
-            # — needs both.
+            # the channel. The subject and the count are both here because the
+            # operator's next action — raise this subject's cap, or leave it —
+            # needs both.
             logger.info(
-                "turn cap: refused a turn for organization %s (%s/%s used today, "
+                "turn cap: refused a turn for %s %s (%s/%s used today, "
                 "policy=%s); resets at %s",
-                organization_id,
+                subject.kind,
+                subject.subject_id,
                 standing,
                 policy.limit,
                 policy.source,
                 next_utc_midnight(moment).isoformat(),
             )
             raise TenantTurnCapExceeded(
-                organization_id=organization_id,
+                subject=subject,
                 limit=policy.limit,
                 # What the ledger actually holds, not the limit: a cap lowered
                 # mid-day leaves a count ABOVE it, and reporting the limit would
@@ -540,7 +636,7 @@ class TurnCapService:
             )
 
         return Reservation(
-            organization_id=organization_id,
+            subject=subject,
             used=used,
             limit=policy.limit,
             source=policy.source,
@@ -571,12 +667,10 @@ class UnconfiguredTurnCap:
     """
 
     async def reserve(
-        self, organization_id: str, *, now: Optional[datetime] = None
+        self, subject: Optional[BillingSubject], *, now: Optional[datetime] = None
     ) -> Reservation:
         if not _is_multi_tenant():
-            return Reservation(
-                organization_id, used=0, limit=None, source="single_tenant"
-            )
+            return Reservation(subject, used=0, limit=None, source=SOURCE_SINGLE_TENANT)
         logger.error(
             "turn cap: no cap service was wired into this InvestigationService, "
             "and this is a multi-tenant deployment; refusing the turn"

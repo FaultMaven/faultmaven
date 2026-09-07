@@ -178,7 +178,7 @@ async def convert_document(
             original_filename=filename,
             scope=scope,
             user_id=current_user.user_id,
-            organization_id=getattr(current_user, "organization_id", None),
+            enterprise_id=getattr(current_user, "enterprise_id", None),
             team_id=team_id,
         )
 
@@ -297,7 +297,7 @@ async def scan_for_runbooks(
     try:
         return await service.scan_for_runbooks(
             user_id=current_user.user_id,
-            organization_id=getattr(current_user, "organization_id", None),
+            enterprise_id=getattr(current_user, "enterprise_id", None),
             is_platform_admin=current_user.is_platform_admin(),
         )
     except RuntimeError as exc:
@@ -522,7 +522,7 @@ async def create_runbook_manually(
             causes=body.causes,
             prevention=body.prevention,
             user_id=current_user.user_id,
-            organization_id=getattr(current_user, "organization_id", None),
+            enterprise_id=getattr(current_user, "enterprise_id", None),
             team_id=body.team_id,
         )
         return {

@@ -5045,9 +5045,23 @@ class Case(BaseModel):
         max_length=36,
     )
 
-    organization_id: str = Field(
-        description="Organization this case belongs to",
+    enterprise_id: str = Field(
+        description=(
+            "Enterprise this case is isolated to (ADR-017 D1). The RLS key: "
+            "nothing outside this enterprise can ever read the case."
+        ),
         min_length=1,
+        max_length=36,
+    )
+
+    organization_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Organization the case is billed to (ADR-017 D2) — nullable "
+            "attribution stamped from the actor's own organization at write "
+            "time. It decides nothing about visibility, and ``None`` is the "
+            "ordinary answer for an account nobody pays for."
+        ),
         max_length=36,
     )
 

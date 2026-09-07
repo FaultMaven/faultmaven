@@ -80,7 +80,7 @@ class TestEvidenceBearingRerouteToEngine:
         return Case(
             case_id=f"case_{uuid4().hex[:12]}",
             user_id=user_id,
-            organization_id="org_test123",
+            enterprise_id="org_test123",
             title="Test Case",
             description="Pods are crashing",
             state=CaseState.INVESTIGATING,
@@ -264,10 +264,13 @@ class TestUploadDurabilityIsIndependentOfTheTurn:
             )
 
         repository.add_uploaded_file.assert_awaited_once()
-        call_case_id, committed_file, call_org = (
+        call_case_id, committed_file, call_enterprise, call_org = (
             repository.add_uploaded_file.await_args.args
         )
         assert call_case_id == case.case_id
+        # Both tenancy columns, positionally: the isolation key the row lands
+        # under and the billing attribution beside it (ADR-017 D1/D2).
+        assert call_enterprise == case.enterprise_id
         assert call_org == case.organization_id
         # The committed row must carry the storage pointer — a row that does not
         # reference the stored bytes leaves them orphaned just the same.

@@ -32,6 +32,9 @@ from faultmaven.cli.reassign_cases import _apply, _Refused
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 ENTERPRISE = "ent-0000-1111-2222"
+#: The billing organization the moved cases are attributed to (ADR-017 D2). It
+#: is stamped on the rows and never moves — a reassignment changes who owns a
+#: case, not who pays for it.
 ORG = "0308aea6-30eb-44d8-b9ef-f16a6c1b1584"
 OLD_OWNER = "45495d14-9436-40ec-9fde-4605016a71f0"
 NEW_OWNER = "9f1c5d20-1111-4222-8333-444455556666"
@@ -110,28 +113,35 @@ async def db(tmp_path, monkeypatch):
             await conn.execute(
                 text(
                     "INSERT INTO cases "
-                    "(case_id, organization_id, user_id, title, source, version) "
-                    "VALUES (:c, :o, :u, :t, 'slack', 7)"
+                    "(case_id, enterprise_id, organization_id, user_id, title, "
+                    " source, version) "
+                    "VALUES (:c, :e, :o, :u, :t, 'slack', 7)"
                 ),
-                {"c": case_id, "o": ORG, "u": owner, "t": f"title {case_id}"},
+                {
+                    "c": case_id,
+                    "e": ENTERPRISE,
+                    "o": ORG,
+                    "u": owner,
+                    "t": f"title {case_id}",
+                },
             )
             await conn.execute(
                 text(
                     "INSERT INTO case_messages "
-                    "(message_id, case_id, organization_id, turn_number, role, "
+                    "(message_id, case_id, enterprise_id, turn_number, role, "
                     " content, author_id) "
-                    "VALUES (:m, :c, :o, 1, 'user', 'help', :a)"
+                    "VALUES (:m, :c, :e, 1, 'user', 'help', :a)"
                 ),
-                {"m": f"msg_{case_id}", "c": case_id, "o": ORG, "a": owner},
+                {"m": f"msg_{case_id}", "c": case_id, "e": ENTERPRISE, "a": owner},
             )
             await conn.execute(
                 text(
                     "INSERT INTO uploaded_files "
-                    "(file_id, case_id, organization_id, filename, size_bytes, "
+                    "(file_id, case_id, enterprise_id, filename, size_bytes, "
                     " uploaded_by) "
-                    "VALUES (:f, :c, :o, 'log.txt', 12, :u)"
+                    "VALUES (:f, :c, :e, 'log.txt', 12, :u)"
                 ),
-                {"f": f"file_{case_id}", "c": case_id, "o": ORG, "u": owner},
+                {"f": f"file_{case_id}", "c": case_id, "e": ENTERPRISE, "u": owner},
             )
     await engine.dispose()
 
@@ -177,7 +187,7 @@ async def test_reassignment_moves_ownership_and_bumps_version(db):
     an off-by-anything is as good as no bump at all.
     """
     await _apply(
-        organization_id=ORG,
+        enterprise_id=ENTERPRISE,
         case_ids=MOVED,
         from_user_id=OLD_OWNER,
         to_user_id=NEW_OWNER,
@@ -188,23 +198,25 @@ async def test_reassignment_moves_ownership_and_bumps_version(db):
 
     rows = await _rows(
         db,
-        "SELECT case_id, user_id, version, organization_id FROM cases "
+        "SELECT case_id, user_id, version, enterprise_id FROM cases "
         "WHERE case_id IN (:a, :b, :c) ORDER BY case_id",
         {"a": MOVED[0], "b": MOVED[1], "c": MOVED[2]},
     )
     assert [r[0] for r in rows] == sorted(MOVED)
     assert {r[1] for r in rows} == {NEW_OWNER}
     assert {r[2] for r in rows} == {8}
-    # The organization is the RLS key and was already correct; this is an owner
-    # move, and rewriting it would be the "Organization move" ADR-012 D10
-    # predicted and measurement disproved.
-    assert {r[3] for r in rows} == {ORG}
+    # The enterprise is the RLS key and was already correct; this is an owner
+    # move, and rewriting it would be the tenant move ADR-012 D10 predicted and
+    # measurement disproved. Under ADR-017 that argument is sharper, not weaker:
+    # the key is one tier up, so a rewrite would move the case across the
+    # isolation wall rather than between two billing groups.
+    assert {r[3] for r in rows} == {ENTERPRISE}
 
 
 async def test_reassignment_shares_each_case_to_every_team_of_the_new_owner(db):
     """One share row per (case, team) — what auto-share would have written."""
     await _apply(
-        organization_id=ORG,
+        enterprise_id=ENTERPRISE,
         case_ids=MOVED,
         from_user_id=OLD_OWNER,
         to_user_id=NEW_OWNER,
@@ -216,21 +228,21 @@ async def test_reassignment_shares_each_case_to_every_team_of_the_new_owner(db):
     rows = await _rows(
         db,
         "SELECT resource_type, resource_id, scope_type, scope_id, "
-        "organization_id, created_by FROM resource_shares",
+        "enterprise_id, created_by FROM resource_shares",
     )
     assert {(r[1], r[3]) for r in rows} == {
         (c, t) for c in MOVED for t in (TEAM_A, TEAM_B)
     }
     assert {r[0] for r in rows} == {"case"}
     assert {r[2] for r in rows} == {"team"}
-    assert {r[4] for r in rows} == {ORG}
+    assert {r[4] for r in rows} == {ENTERPRISE}
     # The new owner is the sharer, matching _share_case_with_team's created_by.
     assert {r[5] for r in rows} == {NEW_OWNER}
 
 
 async def test_reassignment_records_one_audit_row_per_case(db):
     await _apply(
-        organization_id=ORG,
+        enterprise_id=ENTERPRISE,
         case_ids=MOVED,
         from_user_id=OLD_OWNER,
         to_user_id=NEW_OWNER,
@@ -242,13 +254,13 @@ async def test_reassignment_records_one_audit_row_per_case(db):
     rows = await _rows(
         db,
         "SELECT event_type, event_category, resource_type, resource_id, "
-        "organization_id, details FROM user_audit_log ORDER BY resource_id",
+        "enterprise_id, details FROM user_audit_log ORDER BY resource_id",
     )
     assert [r[3] for r in rows] == sorted(MOVED)
     assert {r[0] for r in rows} == {"case_reassigned"}
     assert {r[1] for r in rows} == {"administration"}
     assert {r[2] for r in rows} == {"case"}
-    assert {r[4] for r in rows} == {ORG}
+    assert {r[4] for r in rows} == {ENTERPRISE}
     assert all(OLD_OWNER in r[5] and NEW_OWNER in r[5] for r in rows)
 
 
@@ -261,7 +273,7 @@ async def test_attribution_is_not_rewritten(db):
     would be falsifying history to tidy a migration.
     """
     await _apply(
-        organization_id=ORG,
+        enterprise_id=ENTERPRISE,
         case_ids=MOVED,
         from_user_id=OLD_OWNER,
         to_user_id=NEW_OWNER,
@@ -278,9 +290,10 @@ async def test_attribution_is_not_rewritten(db):
 
 
 async def test_a_case_owned_by_someone_else_is_untouched(db):
-    """The sweep is by owner; another account's case in the same org must not move."""
+    """The sweep is by owner; another account's case in the same enterprise
+    must not move."""
     await _apply(
-        organization_id=ORG,
+        enterprise_id=ENTERPRISE,
         case_ids=MOVED,
         from_user_id=OLD_OWNER,
         to_user_id=NEW_OWNER,
@@ -313,7 +326,7 @@ async def test_a_case_that_changed_owner_underneath_rolls_the_whole_run_back(db)
 
     with pytest.raises(_Refused, match=MOVED[1]):
         await _apply(
-            organization_id=ORG,
+            enterprise_id=ENTERPRISE,
             case_ids=MOVED,
             from_user_id=OLD_OWNER,
             to_user_id=NEW_OWNER,
@@ -343,7 +356,7 @@ async def test_rerunning_does_not_duplicate_share_rows(db):
                 {"u": OLD_OWNER, "a": MOVED[0], "b": MOVED[1], "c": MOVED[2]},
             )
         await _apply(
-            organization_id=ORG,
+            enterprise_id=ENTERPRISE,
             case_ids=MOVED,
             from_user_id=OLD_OWNER,
             to_user_id=NEW_OWNER,
@@ -363,63 +376,57 @@ async def test_rerunning_does_not_duplicate_share_rows(db):
 # reached from here, and nothing observed the RLS binding at all. A guard no
 # test can see removed is a guard that will eventually be removed.
 
-OTHER_ORG = "9999aaaa-0000-4111-8222-333344445555"
+OTHER_ENTERPRISE = "9999aaaa-0000-4111-8222-333344445555"
 
 
-async def test_the_sweep_does_not_see_another_organizations_cases(db):
-    """The redundant `organization_id` predicate, exercised.
+async def _seed_a_foreign_tenants_case(db):
+    """One case in a DIFFERENT enterprise, owned by the same account id.
+
+    The same owner on purpose: the sweep is by owner, so a case that differed in
+    both owner and tenant would be excluded by either predicate and could not
+    tell them apart.
+    """
+    async with db.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO enterprises (enterprise_id, name, slug) "
+                "VALUES (:e, 'Other', 'other-ent')"
+            ),
+            {"e": OTHER_ENTERPRISE},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO cases "
+                "(case_id, enterprise_id, user_id, title, source, version) "
+                "VALUES ('case_other', :e, :u, 'theirs', 'slack', 7)"
+            ),
+            {"e": OTHER_ENTERPRISE, "u": OLD_OWNER},
+        )
+
+
+async def test_the_sweep_does_not_see_another_enterprises_cases(db):
+    """The redundant `enterprise_id` predicate, exercised.
 
     On SQLite there is no RLS at all, which is exactly the connection this
     predicate exists for: without it the sweep spans tenants and the run moves
-    a stranger's cases while reporting success.
+    a stranger's cases while reporting success. Under ADR-017 the enterprise is
+    the wall, so this predicate is what keeps the sweep inside it.
     """
     from faultmaven.cli.reassign_cases import _swept_case_ids
 
-    async with db.begin() as conn:
-        await conn.execute(
-            text(
-                "INSERT INTO organizations "
-                "(organization_id, enterprise_id, name, slug) "
-                "VALUES (:o, :e, 'Other', 'other')"
-            ),
-            {"o": OTHER_ORG, "e": ENTERPRISE},
-        )
-        await conn.execute(
-            text(
-                "INSERT INTO cases "
-                "(case_id, organization_id, user_id, title, source, version) "
-                "VALUES ('case_other', :o, :u, 'theirs', 'slack', 7)"
-            ),
-            {"o": OTHER_ORG, "u": OLD_OWNER},
-        )
+    await _seed_a_foreign_tenants_case(db)
 
-    assert await _swept_case_ids(ORG, OLD_OWNER) == set(MOVED)
+    assert await _swept_case_ids(ENTERPRISE, OLD_OWNER) == set(MOVED)
 
 
-async def test_the_reassignment_will_not_touch_another_organizations_case(db):
+async def test_the_reassignment_will_not_touch_another_enterprises_case(db):
     """Same predicate on the write side. A case id named in the file but living
     in another tenant must not be re-owned — it is not this run's to move."""
-    async with db.begin() as conn:
-        await conn.execute(
-            text(
-                "INSERT INTO organizations "
-                "(organization_id, enterprise_id, name, slug) "
-                "VALUES (:o, :e, 'Other', 'other')"
-            ),
-            {"o": OTHER_ORG, "e": ENTERPRISE},
-        )
-        await conn.execute(
-            text(
-                "INSERT INTO cases "
-                "(case_id, organization_id, user_id, title, source, version) "
-                "VALUES ('case_other', :o, :u, 'theirs', 'slack', 7)"
-            ),
-            {"o": OTHER_ORG, "u": OLD_OWNER},
-        )
+    await _seed_a_foreign_tenants_case(db)
 
     with pytest.raises(_Refused, match="case_other"):
         await _apply(
-            organization_id=ORG,
+            enterprise_id=ENTERPRISE,
             case_ids=[*MOVED, "case_other"],
             from_user_id=OLD_OWNER,
             to_user_id=NEW_OWNER,
@@ -429,9 +436,9 @@ async def test_the_reassignment_will_not_touch_another_organizations_case(db):
         )
 
     rows = await _rows(
-        db, "SELECT user_id, organization_id FROM cases WHERE case_id = 'case_other'"
+        db, "SELECT user_id, enterprise_id FROM cases WHERE case_id = 'case_other'"
     )
-    assert rows[0] == (OLD_OWNER, OTHER_ORG)
+    assert rows[0] == (OLD_OWNER, OTHER_ENTERPRISE)
 
 
 async def test_the_old_owners_team_shares_are_revoked(db):
@@ -444,14 +451,19 @@ async def test_the_old_owners_team_shares_are_revoked(db):
                 text(
                     "INSERT INTO resource_shares "
                     "(share_id, resource_type, resource_id, scope_type, scope_id, "
-                    " organization_id) "
-                    "VALUES (:s, 'case', :c, 'team', :t, :o)"
+                    " enterprise_id) "
+                    "VALUES (:s, 'case', :c, 'team', :t, :e)"
                 ),
-                {"s": f"old_{case_id}", "c": case_id, "t": "team-old", "o": ORG},
+                {
+                    "s": f"old_{case_id}",
+                    "c": case_id,
+                    "t": "team-old",
+                    "e": ENTERPRISE,
+                },
             )
 
     await _apply(
-        organization_id=ORG,
+        enterprise_id=ENTERPRISE,
         case_ids=MOVED,
         from_user_id=OLD_OWNER,
         to_user_id=NEW_OWNER,
@@ -472,13 +484,13 @@ async def test_a_team_both_owners_share_is_not_revoked(db):
             text(
                 "INSERT INTO resource_shares "
                 "(share_id, resource_type, resource_id, scope_type, scope_id, "
-                " organization_id) VALUES ('keep', 'case', :c, 'team', :t, :o)"
+                " enterprise_id) VALUES ('keep', 'case', :c, 'team', :t, :e)"
             ),
-            {"c": MOVED[0], "t": TEAM_A, "o": ORG},
+            {"c": MOVED[0], "t": TEAM_A, "e": ENTERPRISE},
         )
 
     await _apply(
-        organization_id=ORG,
+        enterprise_id=ENTERPRISE,
         case_ids=MOVED,
         from_user_id=OLD_OWNER,
         to_user_id=NEW_OWNER,
@@ -505,7 +517,7 @@ async def test_the_reassignment_stamps_updated_at(db):
     )[0][0]
 
     await _apply(
-        organization_id=ORG,
+        enterprise_id=ENTERPRISE,
         case_ids=MOVED,
         from_user_id=OLD_OWNER,
         to_user_id=NEW_OWNER,
@@ -527,7 +539,7 @@ async def test_the_audit_row_names_no_false_actor(db):
     read as the service account having moved its own cases; a CLI has no
     authenticated principal, so it claims none and records provenance instead."""
     await _apply(
-        organization_id=ORG,
+        enterprise_id=ENTERPRISE,
         case_ids=MOVED,
         from_user_id=OLD_OWNER,
         to_user_id=NEW_OWNER,

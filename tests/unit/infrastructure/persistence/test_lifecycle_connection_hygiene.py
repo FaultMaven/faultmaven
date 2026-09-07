@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.user_repository import (
     PostgreSQLUserRepository,
@@ -50,6 +51,12 @@ def _make_user(user_id: str, username: str) -> User:
         username=username,
         email=f"{username}@example.com",
         display_name=username.title(),
+        # Every account is anchored to exactly one enterprise (ADR-017 D3), and
+        # the write path refuses to invent one — the substitution it used to make
+        # was silent and, under multi-tenant, wrote a row no session could reach.
+        # These cases are about connection hygiene, so which enterprise does not
+        # matter; that there IS one does.
+        enterprise_id=STANDALONE_ENTERPRISE_ID,
         created_at=now,
         updated_at=now,
         roles=["user"],

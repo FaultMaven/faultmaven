@@ -24,7 +24,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from faultmaven.config.tenant_context import get_current_org_id, set_current_org_id
+from faultmaven.config.tenant_context import (
+    get_current_enterprise_id,
+    set_current_enterprise_id,
+)
 from faultmaven.modules.auth.domain.services.organization_membership_service import (
     MembershipRemovalIncomplete,
     MembershipRemovalMisscoped,
@@ -37,6 +40,11 @@ from faultmaven.modules.auth.domain.services.organization_membership_service imp
 pytestmark = pytest.mark.unit
 
 ORG_ID = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+#: The tenant the roster row is RLS-filtered by (ADR-017 D1). Deliberately NOT
+#: the organization id: two organizations of one enterprise are equally
+#: reachable from one binding, so a guard that compared the organization would
+#: refuse correct writes and admit nothing extra.
+ENTERPRISE_ID = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
 USER_ID = "225bae2f-f459-4a54-9c08-2da5c2b3a961"
 REVOKED_AT = datetime(2026, 8, 12, 9, 30, tzinfo=timezone.utc)
 
@@ -47,23 +55,23 @@ ADMIN_ROLE_ID = "8b1d4a2c-0000-4000-8000-00000000beef"
 
 
 @pytest.fixture(autouse=True)
-def bound_to_the_target_org():
+def bound_to_the_target_enterprise():
     """Bind the tenant context, as every real caller must, then put it back.
 
     The DELETE is RLS-filtered by it, so the service refuses when it names a
-    different organization — see ``test_refuses_when_the_tenant_context_names_a
+    different enterprise — see ``test_refuses_when_the_tenant_context_names_a
     _different_org``.
 
     The restore is the point of the ``yield``: this fixture is synchronous, so
     the set lands in pytest's own context and outlives the test. Leaving it set
     would make every later test in the session read this module's org id where
-    it expects the documented ``STANDALONE_ORG_ID`` default — a failure that
+    it expects the documented ``STANDALONE_ENTERPRISE_ID`` default — a failure that
     points at the wrong file.
     """
-    previous = get_current_org_id()
-    set_current_org_id(ORG_ID)
+    previous = get_current_enterprise_id()
+    set_current_enterprise_id(ENTERPRISE_ID)
     yield
-    set_current_org_id(previous)
+    set_current_enterprise_id(previous)
 
 
 @pytest.fixture
@@ -90,7 +98,7 @@ def service(orgs, auth_service):
 
 async def test_removal_also_revokes(service, orgs, auth_service):
     """The whole point: one call, both writes."""
-    result = await service.remove_member(ORG_ID, USER_ID)
+    result = await service.remove_member(ORG_ID, USER_ID, ENTERPRISE_ID)
 
     orgs.remove_member.assert_awaited_once_with(ORG_ID, USER_ID)
     auth_service.revoke_user_tokens.assert_awaited_once_with(USER_ID)
@@ -115,7 +123,7 @@ async def test_revocation_happens_after_the_delete(orgs, auth_service):
     service = OrganizationMembershipService(
         organization_repository=orgs, auth_service=auth_service
     )
-    await service.remove_member(ORG_ID, USER_ID)
+    await service.remove_member(ORG_ID, USER_ID, ENTERPRISE_ID)
 
     assert calls == ["delete", "revoke"]
 
@@ -131,7 +139,7 @@ async def test_revokes_even_when_there_was_no_membership_row(
     """
     orgs.remove_member.return_value = False
 
-    result = await service.remove_member(ORG_ID, USER_ID)
+    result = await service.remove_member(ORG_ID, USER_ID, ENTERPRISE_ID)
 
     auth_service.revoke_user_tokens.assert_awaited_once_with(USER_ID)
     assert result.membership_removed is False
@@ -145,7 +153,7 @@ async def test_failed_revocation_raises_and_names_the_half_state(
     auth_service.revoke_user_tokens.side_effect = RuntimeError("redis is gone")
 
     with pytest.raises(MembershipRemovalIncomplete) as exc:
-        await service.remove_member(ORG_ID, USER_ID)
+        await service.remove_member(ORG_ID, USER_ID, ENTERPRISE_ID)
 
     orgs.remove_member.assert_awaited_once_with(ORG_ID, USER_ID)
     message = str(exc.value)
@@ -167,10 +175,10 @@ async def test_refuses_when_the_tenant_context_names_a_different_org(
     before either write is what makes this service a chokepoint rather than a
     convention.
     """
-    set_current_org_id("11111111-2222-3333-4444-555555555555")
+    set_current_enterprise_id("11111111-2222-3333-4444-555555555555")
 
     with pytest.raises(MembershipRemovalMisscoped, match="RLS-filtered"):
-        await service.remove_member(ORG_ID, USER_ID)
+        await service.remove_member(ORG_ID, USER_ID, ENTERPRISE_ID)
 
     orgs.remove_member.assert_not_awaited()
     auth_service.revoke_user_tokens.assert_not_awaited()
@@ -194,7 +202,9 @@ async def test_cannot_be_constructed_without_an_auth_service(orgs):
 
 async def test_role_change_also_revokes(service, orgs, auth_service):
     """The whole point: one call, both writes."""
-    result = await service.set_member_role(ORG_ID, USER_ID, MEMBER_ROLE_ID)
+    result = await service.set_member_role(
+        ORG_ID, USER_ID, MEMBER_ROLE_ID, ENTERPRISE_ID
+    )
 
     orgs.update_member_role.assert_awaited_once_with(ORG_ID, USER_ID, MEMBER_ROLE_ID)
     auth_service.revoke_user_tokens.assert_awaited_once_with(USER_ID)
@@ -219,7 +229,7 @@ async def test_revocation_happens_after_the_role_write(orgs, auth_service):
     service = OrganizationMembershipService(
         organization_repository=orgs, auth_service=auth_service
     )
-    await service.set_member_role(ORG_ID, USER_ID, MEMBER_ROLE_ID)
+    await service.set_member_role(ORG_ID, USER_ID, MEMBER_ROLE_ID, ENTERPRISE_ID)
 
     assert calls == ["write", "revoke"]
 
@@ -233,7 +243,7 @@ async def test_promotion_revokes_too(service, orgs, auth_service):
     values, a question with no stable answer and a silent privilege leak when
     answered wrongly. The cost is one re-login.
     """
-    await service.set_member_role(ORG_ID, USER_ID, ADMIN_ROLE_ID)
+    await service.set_member_role(ORG_ID, USER_ID, ADMIN_ROLE_ID, ENTERPRISE_ID)
 
     auth_service.revoke_user_tokens.assert_awaited_once_with(USER_ID)
 
@@ -247,7 +257,9 @@ async def test_revokes_even_when_no_membership_row_matched(service, orgs, auth_s
     """
     orgs.update_member_role.return_value = False
 
-    result = await service.set_member_role(ORG_ID, USER_ID, MEMBER_ROLE_ID)
+    result = await service.set_member_role(
+        ORG_ID, USER_ID, MEMBER_ROLE_ID, ENTERPRISE_ID
+    )
 
     auth_service.revoke_user_tokens.assert_awaited_once_with(USER_ID)
     assert result.role_changed is False
@@ -267,7 +279,7 @@ async def test_failed_revocation_after_role_change_names_the_half_state(
     auth_service.revoke_user_tokens.side_effect = RuntimeError("redis is gone")
 
     with pytest.raises(MembershipRoleChangeIncomplete) as exc:
-        await service.set_member_role(ORG_ID, USER_ID, MEMBER_ROLE_ID)
+        await service.set_member_role(ORG_ID, USER_ID, MEMBER_ROLE_ID, ENTERPRISE_ID)
 
     orgs.update_member_role.assert_awaited_once_with(ORG_ID, USER_ID, MEMBER_ROLE_ID)
     message = str(exc.value)
@@ -289,10 +301,10 @@ async def test_role_change_refuses_when_the_tenant_context_names_a_different_org
     the member keeps the role the call was taking away. Refusing before either
     write is what makes this a chokepoint rather than a convention.
     """
-    set_current_org_id("11111111-2222-3333-4444-555555555555")
+    set_current_enterprise_id("11111111-2222-3333-4444-555555555555")
 
     with pytest.raises(MembershipRoleChangeMisscoped, match="RLS-filtered"):
-        await service.set_member_role(ORG_ID, USER_ID, MEMBER_ROLE_ID)
+        await service.set_member_role(ORG_ID, USER_ID, MEMBER_ROLE_ID, ENTERPRISE_ID)
 
     orgs.update_member_role.assert_not_awaited()
     auth_service.revoke_user_tokens.assert_not_awaited()
@@ -308,7 +320,9 @@ async def test_a_repository_failure_leaves_no_half_state(service, orgs, auth_ser
     orgs.update_member_role.side_effect = RuntimeError("foreign key violation")
 
     with pytest.raises(RuntimeError, match="foreign key violation"):
-        await service.set_member_role(ORG_ID, USER_ID, "not-a-real-role-id")
+        await service.set_member_role(
+            ORG_ID, USER_ID, "not-a-real-role-id", ENTERPRISE_ID
+        )
 
     auth_service.revoke_user_tokens.assert_not_awaited()
 

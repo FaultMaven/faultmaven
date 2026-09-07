@@ -56,7 +56,7 @@ class TestCaseCreationPerformance:
             return Case(
                 case_id=generate_case_id(),
                 user_id="benchmark-user-001",
-                organization_id="benchmark-org-001",
+                enterprise_id="benchmark-org-001",
                 title="Benchmark Test Case",
                 description="Performance benchmark for case creation",
                 state=CaseState.INQUIRY,
@@ -98,7 +98,7 @@ class TestCaseCreationPerformance:
                 Case(
                     case_id=generate_case_id(),
                     user_id="benchmark-user-001",
-                    organization_id="benchmark-org-001",
+                    enterprise_id="benchmark-org-001",
                     title=f"Benchmark Case {i}",
                     description=f"Case {i} for throughput testing",
                     state=CaseState.INQUIRY,
@@ -143,7 +143,7 @@ class TestCaseRetrievalPerformance:
         case = Case(
             case_id=case_id,
             user_id="benchmark-user-001",
-            organization_id="benchmark-org-001",
+            enterprise_id="benchmark-org-001",
             title="Test Case for Retrieval",
             description="For retrieval benchmark",
             state=CaseState.INQUIRY,
@@ -175,7 +175,7 @@ class TestCaseRetrievalPerformance:
             case = Case(
                 case_id=generate_case_id(),
                 user_id="benchmark-user-001",
-                organization_id="benchmark-org-001",
+                enterprise_id="benchmark-org-001",
                 title=f"List Test Case {i}",
                 description=f"Test case {i}",
                 state=CaseState.INQUIRY,
@@ -219,7 +219,7 @@ class TestCaseUpdatePerformance:
         case = Case(
             case_id=case_id,
             user_id="benchmark-user-001",
-            organization_id="benchmark-org-001",
+            enterprise_id="benchmark-org-001",
             title="Original Title",
             description="Original description",
             state=CaseState.INQUIRY,
@@ -266,7 +266,7 @@ class TestCaseSearchPerformance:
                 case = Case(
                     case_id=generate_case_id(),
                     user_id="benchmark-user-001",
-                    organization_id="benchmark-org-001",
+                    enterprise_id="benchmark-org-001",
                     title=f"{term.capitalize()} Issue {j}",
                     description=f"A {term} related problem requiring investigation",
                     state=CaseState.INQUIRY,

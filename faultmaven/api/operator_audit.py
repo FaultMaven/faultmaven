@@ -10,7 +10,7 @@ metadata/content boundary D8/D9 governs. Other operator-gated endpoints (user
 administration, LLM configuration, Global KB authoring) are not tenant-content
 reads and do not write here. Cross-tenant user administration is not audited
 because it no longer happens: since #1318 those routes carry a tenant predicate
-and refuse outside the operator's own organization (``api/operator_user_scope``).
+and refuse outside the operator's own enterprise (``api/operator_user_scope``).
 Audited break-glass for that surface — ADR-012 D9's option A, which would write
 here — is a later change, deliberately not half-built.
 """
@@ -47,7 +47,7 @@ async def record_operator_access(
     operator: AuthenticatedUser,
     action: OperatorAction,
     deployment_mode: str,
-    target_organization_id: Optional[str] = None,
+    target_enterprise_id: Optional[str] = None,
     target_case_id: Optional[str] = None,
     reason: Optional[str] = None,
     grant_id: Optional[str] = None,
@@ -71,7 +71,7 @@ async def record_operator_access(
             operator_user_id=operator.user_id,
             action=action,
             operator_username=operator.email,
-            target_organization_id=target_organization_id,
+            target_enterprise_id=target_enterprise_id,
             target_case_id=target_case_id,
             reason=reason,
             grant_id=grant_id,

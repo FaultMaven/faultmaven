@@ -26,6 +26,16 @@ from faultmaven.modules.knowledge.domain.services.conversion_service import (
     ConversionService,
 )
 
+#: The isolation boundary these fixtures live in (ADR-017 D1). Every tenancy
+#: fact the code under test reads is keyed on this, never on the organization.
+ENTERPRISE_ID = "00000000-0000-0000-0000-000000000002"
+
+#: Billing attribution only (ADR-017 D2) — never a visibility predicate. It is
+#: here because ``share_case_with_team`` carries it onto the share row, not
+#: because anything decides access with it.
+BILLING_ORG_ID = "org-billing-1111"
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -99,6 +109,7 @@ class TestConversionTeamPublishGuard:
                 original_filename="doc.md",
                 scope="team",
                 user_id="u1",
+                enterprise_id=None,
                 team_id="team_other",
             )
 
@@ -120,6 +131,7 @@ class TestConversionTeamPublishGuard:
                 original_filename="doc.md",
                 scope="team",
                 user_id="u1",
+                enterprise_id=None,
                 team_id="team_a",
             )
 
@@ -136,6 +148,7 @@ class TestConversionTeamPublishGuard:
                 original_filename="doc.md",
                 scope="team",
                 user_id="u1",
+                enterprise_id=None,
                 team_id="team_a",
             )
 
@@ -146,7 +159,7 @@ class TestConversionTeamPublishGuard:
         request.scope = "team"
         with pytest.raises(AuthorizationError, match="team you belong to"):
             await service.convert_from_case(
-                request=request, user_id="u1", team_id="team_other"
+                request=request, user_id="u1", enterprise_id=None, team_id="team_other"
             )
 
     async def test_create_runbook_refuses_non_member_team(self):
@@ -167,6 +180,7 @@ class TestConversionTeamPublishGuard:
                 causes="x" * 20,
                 prevention="x" * 20,
                 user_id="u1",
+                enterprise_id=None,
                 team_id="team_other",
             )
 
@@ -187,6 +201,7 @@ class TestConversionTeamPublishGuard:
                 original_filename="doc.md",
                 scope="personal",
                 user_id="u1",
+                enterprise_id=None,
             )
 
 
@@ -216,7 +231,10 @@ def _verify_ready_service(*, team_service, tmp_path, monkeypatch, job_team="team
     job = MagicMock()
     job.user_id = "u1"
     job.scope = "team"
-    job.organization_id = "org_1"
+    # ``verify_draft`` stamps the published item with the JOB's isolation key
+    # (ADR-017 D1). ``organization_id`` is billing attribution and is not read
+    # on this path, so naming it here said nothing about what is under test.
+    job.enterprise_id = ENTERPRISE_ID
 
     dm = MagicMock()
     dm.id = "d1"
@@ -427,7 +445,12 @@ class TestSharingSurfacesAgree:
         case = MagicMock()
         case.case_id = "case_1"
         case.user_id = "u1"
-        case.organization_id = "org_1"
+        # ``share_case_with_team`` copies both onto the share row: the
+        # enterprise is the isolation key (ADR-017 D1), the organization is
+        # billing attribution (D2). Both are stated so the fixture says which
+        # is which.
+        case.enterprise_id = ENTERPRISE_ID
+        case.organization_id = BILLING_ORG_ID
         repo = MagicMock()
         repo.get = AsyncMock(return_value=case)
         svc = CaseService(
@@ -455,6 +478,7 @@ class TestSharingSurfacesAgree:
                 original_filename="doc.md",
                 scope="team",
                 user_id="u1",
+                enterprise_id=None,
                 team_id="team_other",
             )
 
@@ -479,5 +503,6 @@ class TestSharingSurfacesAgree:
                 original_filename="doc.md",
                 scope="team",
                 user_id="u1",
+                enterprise_id=None,
                 team_id="team_a",
             )

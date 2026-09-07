@@ -14,7 +14,7 @@ Two properties carry the design and are tested here rather than assumed:
    ``TestTurnEndpointSchedulesAutoTitling`` drive a mounted app with ``TestClient``
    and assert the title changed *after* the response, not that ``add_task`` was
    called.
-2. **The tenant is still bound when the write happens.** ``get_current_org_id`` is
+2. **The tenant is still bound when the write happens.** ``get_current_enterprise_id`` is
    total — an unbound context answers the Standalone org rather than failing — so
    a task that lost the binding would not raise, it would quietly address the
    wrong tenant. The org in force at the moment of the write is asserted directly.
@@ -31,8 +31,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from faultmaven.config.constants import STANDALONE_ORG_ID
-from faultmaven.config.tenant_context import get_current_org_id, set_current_org_id
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.config.tenant_context import (
+    get_current_enterprise_id,
+    set_current_enterprise_id,
+)
 from faultmaven.exceptions import ValidationException
 from faultmaven.models.api_models import TurnResponse
 from faultmaven.modules.auth.contracts import UserDTO
@@ -56,7 +59,7 @@ def _make_case(**overrides) -> Case:
         "title": "Case-260101-1",
         "description": "",
         "user_id": "user_123",
-        "organization_id": TENANT_ORG,
+        "enterprise_id": TENANT_ORG,
         "state": CaseState.INQUIRY,
     }
     defaults.update(overrides)
@@ -556,13 +559,13 @@ class TestTitlingOrdering:
         """No explicit re-bind: it runs in the request's own context, so it must
         simply *stay* there.
 
-        ``get_current_org_id`` is total — an unbound context answers the Standalone
+        ``get_current_enterprise_id`` is total — an unbound context answers the Standalone
         org rather than failing — so a titling call that had drifted out of the
         request context would not raise, it would quietly address the wrong tenant.
         Binding a non-Standalone org and asserting the write saw it is what
         distinguishes "inherited the tenant" from "fell back to the default".
         """
-        set_current_org_id(TENANT_ORG)
+        set_current_enterprise_id(TENANT_ORG)
         case = _make_case()
         case.inquiry.proposed_problem_statement = (
             "Checkout API returns 502 for 30% of requests since the v2.1.3 deploy"
@@ -572,7 +575,7 @@ class TestTitlingOrdering:
         seen = {}
 
         async def _update(case_id, updates, user_id=None):
-            seen["write"] = get_current_org_id()
+            seen["write"] = get_current_enterprise_id()
             case.title = updates["title"]
             return True
 
@@ -586,4 +589,4 @@ class TestTitlingOrdering:
         )
 
         assert seen["write"] == TENANT_ORG
-        assert seen["write"] != STANDALONE_ORG_ID
+        assert seen["write"] != STANDALONE_ENTERPRISE_ID

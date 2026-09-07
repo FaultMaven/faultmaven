@@ -33,7 +33,7 @@ from faultmaven.modules.case.domain.models import (
 def _make_case() -> Case:
     return Case(
         user_id="u1",
-        organization_id="o1",
+        enterprise_id="o1",
         title="Test",
         description="Pods are crashing",
     )

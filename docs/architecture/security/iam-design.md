@@ -159,6 +159,7 @@ This pattern ensures:
   "email": "alice@example.com",
   "roles": ["user", "admin"],
   "scopes": ["openid", "profile", "email", "cases:read", "cases:write", "knowledge:read"],
+  "enterprise_id": "00000000-0000-0000-0000-000000000002",
   "organization_id": "org_default",
   "iat": 1706140800,
   "exp": 1706141700,
@@ -171,6 +172,8 @@ This pattern ensures:
 ```
 
 Both `HS256JWTTokenGenerator` (local mode) and `RS256JWTTokenGenerator` (cloud/OAuth mode) produce identical claim sets. The only difference is the signing algorithm and the `auth_mode` value (`"local"` vs `"oauth"`).
+
+**`enterprise_id` and `organization_id` answer different questions (ADR-017).** `enterprise_id` is the isolation input — minted from `users.enterprise_id` (NOT NULL), it is **always present**, and a request that reaches a tenanted endpoint without a usable one is refused (403), never defaulted to the Standalone enterprise or derived from the user row. `organization_id` is billing attribution only, present **only when the account is in one** — an account nobody pays for carries no such claim, and nothing reads it to decide what may be seen.
 
 `iss` and `aud` above are the **defaults** of `JWT_ISSUER` / `JWT_AUDIENCE`, not constants. A deployment names its own pair, and that one pair is what every mint stamps and every decoder checks — the generators take it as a required constructor argument, so a construction site that fails to wire it fails at construction rather than minting tokens no other decoder in the deployment accepts (#938).
 
@@ -562,14 +565,15 @@ Even in Local Mode, security best practices apply:
 | **Rate Limiting** | 10 login attempts per minute per IP |
 | **HTTPS** | Recommended even for localhost |
 
-### Organization Context
+### Tenant Context (ADR-017: the enterprise isolates, the organization bills)
 
-FaultMaven JWT tokens include an `organization_id` claim that determines the user's organization context:
+FaultMaven JWT tokens carry two separate tenancy claims, because they answer two separate questions:
 
-| Mode | Organization Strategy |
-|------|----------------------|
-| **Local Mode** | All users belong to default organization `00000000-0000-0000-0000-000000000001` (managed by `SingleTenantProvider`) |
-| **Cloud Mode** | Users can belong to multiple organizations; `organization_id` represents active context |
+| Claim | Answers | Mode | Strategy |
+|-------|---------|------|----------|
+| `enterprise_id` | *May this account ever see another enterprise's data?* (isolation, RLS key) | **Local Mode** | All users belong to the default enterprise `00000000-0000-0000-0000-000000000002` (`STANDALONE_ENTERPRISE_ID`, seeded by the baseline migration) |
+| `enterprise_id` | | **Cloud Mode** | Minted from `users.enterprise_id` (NOT NULL), derived at sign-up from the verified email domain (ADR-017 D3) |
+| `organization_id` | *Who pays for this account?* (billing attribution; no role in visibility) | **Both** | Present only when the account is in one organization; absent otherwise — an account may be in no organization at all |
 
 **JWT Payload Structure (all modes):**
 
@@ -577,7 +581,7 @@ FaultMaven JWT tokens include an `organization_id` claim that determines the use
 {
   "sub": "user_abc123",
   "username": "alice",
-  "organization_id": "00000000-0000-0000-0000-000000000001",
+  "enterprise_id": "00000000-0000-0000-0000-000000000002",
   "email": "alice@example.com",
   "roles": ["user"],
   "scopes": ["cases:read", "cases:write"],
@@ -589,7 +593,7 @@ FaultMaven JWT tokens include an `organization_id` claim that determines the use
 ```
 
 > [!IMPORTANT]
-> The `organization_id` claim is always **present**, but under `TENANT_PROVIDER=multi` it may be **empty**: a user carrying no organization gets `""` rather than the Standalone sentinel. Substituting the sentinel there would bind every org-less user to one shared tenant — and hand them the global-KB write licence that migration 033 keys on that id. Services must not assume a non-empty value; `bind_request_org_context` refuses such a request with a 403. Single-tenant is unchanged: the sentinel is the correct claim, because that user *is* the deployment's sole tenant. See `resolve_organization_claim` in `jwt_token_generator.py`.
+> The `enterprise_id` claim is **always present** — it is minted from `users.enterprise_id`, which is NOT NULL — and is the sole isolation input from the token onward: there is deliberately no fallback to reading the user row when it is absent, because a token predating the cutover is refused rather than honoured. Under `TENANT_PROVIDER=multi` a verified request that reaches a tenanted endpoint without a usable `enterprise_id` claim is refused with a 403 by `bind_request_enterprise_context`, never silently scoped to the Standalone enterprise (which the request contextvar defaults to for exactly this reason — its default must never leak into a multi-tenant decision). Single-tenant is unchanged: the Standalone sentinel is the correct claim, because that user *is* the deployment's sole tenant. `organization_id`, by contrast, is genuinely optional: `None` means nobody pays for this account, which is an ordinary, un-refused state — see `resolve_enterprise_claim` and `resolve_billing_organization` in `jwt_token_generator.py`. There is no `app.current_org_id` session variable anywhere in the stack; RLS keys exclusively on `app.current_enterprise_id`.
 
 ### Environment-Based Endpoint Exposure
 
@@ -1304,9 +1308,16 @@ Two role vocabularies coexist in the codebase:
   org `Role` enum and so cannot mint an operator.
 - **Org-scoped roles (`Role` enum).** Separately, `models/rbac.py` defines a
   `Role` enum — `admin`, `member`, `viewer` — with a granular `Permission` mapping
-  (`get_permissions_for_roles`) for organization/team-scoped RBAC. `admin` here
-  is **tenant-bounded**: full authority inside one organization, none outside
-  it. `platform_admin` is deliberately NOT a member of this enum, so holding it
+  (`get_permissions_for_roles`) for organization/team-scoped RBAC. Under
+  ADR-017 D5 these stay the organization's *management* vocabulary only —
+  `admin` here means full authority over that organization's billing roster
+  (naming which accounts a subscription covers, and their management role),
+  **not** a data-isolation boundary: an org admin gates no case or knowledge
+  visibility, which is the enterprise's job (`enterprise_id`, RLS). `admin` is
+  bounded to one organization, none outside it, but "outside it" is a billing
+  statement, not a visibility one — two accounts in the same organization with
+  no common team still see nothing of each other's data.
+  `platform_admin` is deliberately NOT a member of this enum, so holding it
   grants no org permissions by itself; the standalone deployment's single
   account legitimately holds both. (`modules/auth/domain/models/rbac.py`
   re-exports that enum rather than defining a second copy — #1040 item 4.)

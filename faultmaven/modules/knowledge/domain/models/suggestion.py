@@ -67,7 +67,7 @@ class KnowledgeSuggestion:
 
     Attributes:
         suggestion_id: Unique identifier for the suggestion
-        organization_id: Organization that owns this suggestion
+        enterprise_id: Enterprise this suggestion is isolated to (ADR-017 D1)
         case_id: Source case from which knowledge was extracted
         status: Current review status
         suggested_title: Proposed title for the knowledge item
@@ -114,7 +114,7 @@ class KnowledgeSuggestion:
     """
 
     suggestion_id: str
-    organization_id: str
+    enterprise_id: str
     case_id: str
     status: SuggestionStatus = SuggestionStatus.PENDING_REVIEW
 
@@ -182,8 +182,8 @@ class KnowledgeSuggestion:
         """Validate suggestion data."""
         if not self.suggestion_id:
             raise ValueError("suggestion_id is required")
-        if not self.organization_id:
-            raise ValueError("organization_id is required")
+        if not self.enterprise_id:
+            raise ValueError("enterprise_id is required")
         if not self.case_id:
             raise ValueError("case_id is required")
         if not isinstance(self.status, SuggestionStatus):

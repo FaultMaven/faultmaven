@@ -40,7 +40,7 @@ def base_case():
         title="Test Case",
         state=CaseState.INVESTIGATING,
         user_id="user_123",
-        organization_id="org_123",
+        enterprise_id="org_123",
         description="Test description",
         problem_verification=ProblemVerification(
             symptom_statement="Test symptom",
@@ -94,7 +94,7 @@ class TestProgressTransparency:
             title="Test",
             state=CaseState.INQUIRY,
             user_id="user_123",
-            organization_id="org_123",
+            enterprise_id="org_123",
             inquiry=InquiryData(),
         )
         result = monitor.check_progress(case)
@@ -235,7 +235,7 @@ class TestProgressTransparency:
             title="Test Case",
             state=CaseState.INVESTIGATING,
             user_id="user_123",
-            organization_id="org_123",
+            enterprise_id="org_123",
             description="Test description",
             problem_verification=ProblemVerification(
                 symptom_statement="Test symptom", severity="HIGH"

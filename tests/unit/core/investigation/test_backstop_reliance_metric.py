@@ -46,7 +46,7 @@ def _case() -> Case:
         title="backstop-reliance test",
         state=CaseState.INVESTIGATING,
         user_id="u",
-        organization_id="o",
+        enterprise_id="o",
         description="d",
         inquiry=InquiryData(
             problem_statement_confirmed=True,

@@ -119,13 +119,19 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
         the persistence write — they belong on the parent enterprise
         (`enterprises` table). enterprise_id must be set on the domain
         object; the column is NOT NULL.
+
+        A missing one **raises** rather than being filled with the Standalone
+        sentinel. Under ``multi`` that sentinel is not a tenant, so the
+        substitution wrote a billing target into a tenant nobody is in, and it
+        did so where the caller could not see it. The caller is the only party
+        that knows which enterprise is paying.
         """
         if not org.enterprise_id:
-            from faultmaven.providers.tenancy.single_tenant import (
-                DEFAULT_ENTERPRISE_ID,
+            raise ValueError(
+                f"organization {org.organization_id!r} has no enterprise_id; an "
+                "organization is a billing target INSIDE an enterprise "
+                "(ADR-017 D5) and the caller must resolve which"
             )
-
-            org.enterprise_id = DEFAULT_ENTERPRISE_ID
         model = OrganizationModel(
             organization_id=org.organization_id,
             enterprise_id=org.enterprise_id,
@@ -223,11 +229,29 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
     async def add_member(
         self, organization_id: str, user_id: str, role_id: str
     ) -> bool:
-        """Add user to organization with role (upsert)."""
+        """Add user to organization with role (upsert).
+
+        ``enterprise_id`` is derived from the organization rather than accepted
+        from the caller: ``organization_members`` is RLS-tenanted on it, and the
+        roster row must land in the same enterprise as the organization it is a
+        roster for. Deriving it here is also what makes the row impossible to
+        stamp with a foreign tenant — there is no argument to get wrong.
+        """
         now = datetime.now(timezone.utc)
+        organization = await self.db.get(OrganizationModel, organization_id)
+        if organization is None:
+            # No organization, no roster row. Refusing beats writing one with a
+            # guessed enterprise, which RLS would reject anyway — with an
+            # IntegrityError several frames from the cause.
+            logger.warning(
+                "Refusing to add a member to unknown organization %s",
+                organization_id,
+            )
+            return False
         stmt = dialect_insert(self.db, OrganizationMemberModel).values(
             user_id=user_id,
             organization_id=organization_id,
+            enterprise_id=organization.enterprise_id,
             role_id=role_id,
             joined_at=now,
             updated_at=now,

@@ -67,7 +67,7 @@ def _deferred_response():
 def _case(*, causal_absence: bool) -> Case:
     case = Case(
         title="Cross-account AssumeRole failures",
-        organization_id="org_test",
+        enterprise_id="org_test",
         user_id="user_test",
         description="data-processor pods cannot assume the cross-account role",
         problem_verification=ProblemVerification(

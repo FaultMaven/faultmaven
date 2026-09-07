@@ -39,7 +39,7 @@ def mock_user():
     """Create a mock authenticated user for testing."""
     return AuthenticatedUser(
         user_id="user_789",
-        organization_id="org_456",
+        enterprise_id="ent_456",
         email="test@example.com",
         roles=["admin"],
         permissions=["cases:read", "cases:write", "cases:delete"],
@@ -55,6 +55,12 @@ def mock_case():
     """
     mock = MagicMock()
     mock.case_id = "case_123abc"
+    # Isolation and billing are two different facts on a case (ADR-017 D1/D2):
+    # ``enterprise_id`` is NOT NULL and is what every read is scoped by, while
+    # ``organization_id`` is nullable attribution. Both are set explicitly
+    # because a MagicMock in either slot fails the response model's validation
+    # with a message about a type rather than about the fixture.
+    mock.enterprise_id = "ent_456"
     mock.organization_id = "org_456"
     mock.user_id = "user_789"
     mock.source = "copilot"
@@ -96,7 +102,7 @@ def mock_case_summary():
         updated_at=now,
         last_activity_at=now,
         user_id="user_789",
-        organization_id="org_456",
+        enterprise_id="ent_456",
         current_turn=1,
         stage=None,  # INQUIRY: no investigation stage yet
         turns_without_progress=0,
@@ -368,7 +374,7 @@ class TestGetCase:
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
         assert data["case_id"] == "case_123abc"
-        # v2.0 API passes user_id (from current_user), not organization_id
+        # v2.0 API passes user_id (from current_user), not a tenant id
         mock_case_service.get_case.assert_called_once_with("case_123abc", "user_789")
 
     async def test_get_case_not_found(self, client, mock_case_service, headers):
@@ -633,12 +639,12 @@ class TestUpdateCase:
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
     async def test_update_case_forbidden(self, client, mock_case_service, headers):
-        """Test updating case from different organization - v2.0 uses PUT method."""
+        """Test updating a case from another enterprise - v2.0 uses PUT method."""
         from faultmaven.exceptions import AuthorizationError
 
         mock_case_service.get_case.return_value = None
         mock_case_service.update_case.side_effect = AuthorizationError(
-            "Case not accessible by organization"
+            "Case not accessible by enterprise"
         )
 
         response = await client.put(
@@ -707,7 +713,7 @@ class TestDeleteCase:
         assert response.status_code == status.HTTP_204_NO_CONTENT
 
     async def test_delete_case_forbidden(self, client, mock_case_service, headers):
-        """Test deleting case from different organization - still returns 403."""
+        """Test deleting a case from another enterprise - still returns 403."""
         from faultmaven.exceptions import AuthorizationError
 
         mock_case_service.hard_delete_case.side_effect = AuthorizationError(

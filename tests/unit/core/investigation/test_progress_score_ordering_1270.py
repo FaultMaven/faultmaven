@@ -84,7 +84,7 @@ def _inquiry_case() -> Case:
         title="Checkout API returning 503s",
         state=CaseState.INQUIRY,
         user_id="user_123",
-        organization_id="org_123",
+        enterprise_id="org_123",
         description="",
         inquiry=InquiryData(thread_id="thread_1270"),
     )
@@ -434,7 +434,7 @@ def _case_awaiting_confirmation(to_state: str, *, needs_info: bool):
         title="Confirmed terminal transition",
         state=CaseState.INQUIRY,
         user_id="user_123",
-        organization_id="org_123",
+        enterprise_id="org_123",
         description="etcd connectivity",
         problem_verification=ProblemVerification(
             symptom_statement="recurring etcdInsufficientMembers alerts",

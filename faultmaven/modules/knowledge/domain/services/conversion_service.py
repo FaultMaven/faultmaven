@@ -21,7 +21,10 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.config.tenant_context import writable_org_id
+from faultmaven.config.tenant_context import (
+    get_current_billing_organization_id,
+    writable_enterprise_id,
+)
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
@@ -93,14 +96,14 @@ RUNBOOK_MAX_TOKENS_CEILING = RUNBOOK_MAX_TOKENS * 2
 ANALYSIS_MAX_TOKENS = 2048
 ANALYSIS_MAX_TOKENS_CEILING = ANALYSIS_MAX_TOKENS * 2
 
-# Single-tenant default organization. It is the *contextvar's* default (see
+# Single-tenant default enterprise. It is the *contextvar's* default (see
 # ``config.tenant_context``), not a fallback any writer here applies directly:
 # stamping this constant on a write is only correct in a single-tenant
-# deployment, and under ``TENANT_PROVIDER=multi`` it is the sentinel org, which
-# no tenant session may write (#1143). Writers resolve the org through
-# :func:`writable_org_id` instead. No production code reads this any more; it
-# stays exported because the tests name the single-tenant org by it.
-DEFAULT_ORGANIZATION_ID = SingleTenantProvider.DEFAULT_ORG_ID
+# deployment, and under ``TENANT_PROVIDER=multi`` it is the sentinel enterprise,
+# which no tenant session may write (#1143). Writers resolve the tenant through
+# :func:`writable_enterprise_id` instead. No production code reads this any more;
+# it stays exported because the tests name the single-tenant enterprise by it.
+DEFAULT_ENTERPRISE_ID = SingleTenantProvider.DEFAULT_ENTERPRISE_ID
 
 # Threshold for parallel vs sequential conversion
 PARALLEL_THRESHOLD = 6
@@ -344,7 +347,7 @@ def _partition_failure_modes(
        truthful answer for a document that yielded fewer runbooks than it
        analysed into.
     2. The minted ``runbook_id`` (#1258). Migration 046 admits one live draft
-       per ``(organization_id, runbook_id)``, and nothing is committed while a
+       per ``(enterprise_id, runbook_id)``, and nothing is committed while a
        multi-mode conversion runs, so two modes minting one id were invisible to
        both ``refuse_if_draft_slot_taken`` and ``_raise_if_runbook_id_taken``.
        They wrote both runbooks to a single file (both ids resolve to one
@@ -605,8 +608,8 @@ class ConversionService:
         original_filename: str,
         scope: str,
         user_id: str,
-        organization_id: str = None,
-        team_id: str = None,
+        enterprise_id: Optional[str],
+        team_id: Optional[str] = None,
     ) -> ConversionResponse:
         """Full conversion pipeline: preprocess → analyze → convert → validate → persist."""
         await self._ensure_team_publish_allowed(scope, team_id, user_id)
@@ -675,14 +678,14 @@ class ConversionService:
 
         # Step 4: Convert each failure mode to a runbook
         drafts, errors = await self._convert_all_failure_modes(
-            preprocessing.extracted_text,
-            analysis.failure_modes,
-            scope,
-            original_filename,
-            conversion_id,
-            user_id,
-            team_id,
-            organization_id=organization_id,
+            text=preprocessing.extracted_text,
+            failure_modes=analysis.failure_modes,
+            scope=scope,
+            filename=original_filename,
+            conversion_id=conversion_id,
+            user_id=user_id,
+            enterprise_id=enterprise_id,
+            team_id=team_id,
         )
 
         if errors:
@@ -703,7 +706,7 @@ class ConversionService:
         await self._persist_job(
             conversion_id=conversion_id,
             user_id=user_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             scope=scope,
             team_id=team_id,
             status=status,
@@ -744,8 +747,8 @@ class ConversionService:
         self,
         request: "CaseConversionRequest",
         user_id: str,
-        organization_id: str = None,
-        team_id: str = None,
+        enterprise_id: Optional[str],
+        team_id: Optional[str] = None,
     ) -> ConversionResponse:
         """Generate a runbook draft from a resolved case using the canonical template.
 
@@ -772,7 +775,7 @@ class ConversionService:
         # Wrap the actual work in a Task so other concurrent callers can
         # await the same result.
         task = asyncio.create_task(
-            self._convert_from_case_impl(request, user_id, organization_id, team_id)
+            self._convert_from_case_impl(request, user_id, enterprise_id, team_id)
         )
         self._inflight_runbook[request.case_id] = task
         try:
@@ -787,8 +790,8 @@ class ConversionService:
         self,
         request: "CaseConversionRequest",
         user_id: str,
-        organization_id: str = None,
-        team_id: str = None,
+        enterprise_id: Optional[str],
+        team_id: Optional[str] = None,
     ) -> ConversionResponse:
         """Internal: the actual conversion pipeline. Always called via
         `convert_from_case`, which wraps this with the dedup registry."""
@@ -910,7 +913,7 @@ class ConversionService:
             conversion_id=conversion_id,
             user_id=user_id,
             team_id=team_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
         )
 
         drafts: List[ConversionDraft] = []
@@ -968,7 +971,7 @@ class ConversionService:
             await self._persist_job(
                 conversion_id=conversion_id,
                 user_id=user_id,
-                organization_id=organization_id,
+                enterprise_id=enterprise_id,
                 scope=request.scope,
                 team_id=team_id,
                 status=status,
@@ -1101,8 +1104,8 @@ class ConversionService:
         filename: str,
         conversion_id: str,
         user_id: str,
-        team_id: str = None,
-        organization_id: str = None,
+        enterprise_id: Optional[str],
+        team_id: Optional[str] = None,
     ) -> Tuple[List[ConversionDraft], List[ConversionError]]:
         """Convert all failure modes, parallel for <=5, sequential for 6+."""
         drafts: List[ConversionDraft] = []
@@ -1130,7 +1133,7 @@ class ConversionService:
         # is a cost pre-filter in front of it, and the two agree because both
         # ask ``_find_live_draft_owning``.
         unique_modes, taken_errors = await self._refuse_modes_whose_id_is_taken(
-            unique_modes, organization_id
+            unique_modes, enterprise_id
         )
         errors.extend(taken_errors)
 
@@ -1147,14 +1150,14 @@ class ConversionService:
             # Parallel conversion
             tasks = [
                 self._convert_single_failure_mode(
-                    text,
-                    fm,
-                    scope,
-                    filename,
-                    conversion_id,
-                    user_id,
-                    team_id,
-                    organization_id=organization_id,
+                    text=text,
+                    failure_mode=fm,
+                    scope=scope,
+                    filename=filename,
+                    conversion_id=conversion_id,
+                    user_id=user_id,
+                    enterprise_id=enterprise_id,
+                    team_id=team_id,
                 )
                 for fm in unique_modes
             ]
@@ -1188,14 +1191,14 @@ class ConversionService:
             # Sequential conversion (avoid rate limits)
             for fm in unique_modes:
                 result = await self._convert_single_failure_mode(
-                    text,
-                    fm,
-                    scope,
-                    filename,
-                    conversion_id,
-                    user_id,
-                    team_id,
-                    organization_id=organization_id,
+                    text=text,
+                    failure_mode=fm,
+                    scope=scope,
+                    filename=filename,
+                    conversion_id=conversion_id,
+                    user_id=user_id,
+                    enterprise_id=enterprise_id,
+                    team_id=team_id,
                 )
                 if isinstance(result, ConversionError):
                     errors.append(result)
@@ -1212,8 +1215,8 @@ class ConversionService:
         filename: str,
         conversion_id: str,
         user_id: str,
-        team_id: str = None,
-        organization_id: str = None,
+        enterprise_id: Optional[str],
+        team_id: Optional[str] = None,
     ) -> ConversionDraft | ConversionError:
         """Convert a single failure mode to a runbook draft."""
         try:
@@ -1343,7 +1346,7 @@ class ConversionService:
             # its content on the way to an INSERT migration 046 rejects. See
             # ``refuse_if_draft_slot_taken``.
             await self.refuse_if_draft_slot_taken(
-                organization_id, runbook_id, str(draft_path)
+                enterprise_id, runbook_id, str(draft_path)
             )
 
             write_runbook_file(
@@ -1419,7 +1422,7 @@ class ConversionService:
         self,
         conversion_id: str,
         user_id: str,
-        organization_id: str,
+        enterprise_id: str,
         scope: str,
         team_id: str,
         status: ConversionStatus,
@@ -1435,11 +1438,11 @@ class ConversionService:
         if not self._db_session_factory:
             return
 
-        org_id = writable_org_id(organization_id)
+        enterprise_id = writable_enterprise_id(enterprise_id)
 
         try:
             await self._persist_job_rows(
-                org_id=org_id,
+                enterprise_id=enterprise_id,
                 conversion_id=conversion_id,
                 user_id=user_id,
                 scope=scope,
@@ -1457,7 +1460,7 @@ class ConversionService:
             # the classifier opens a SECOND session, and holding both at once
             # deadlocks a deployment pooled at one connection.
             await self._raise_if_runbook_id_taken(
-                org_id, [d.runbook_id for d in drafts]
+                enterprise_id, [d.runbook_id for d in drafts]
             )
             raise
 
@@ -1471,14 +1474,14 @@ class ConversionService:
                 resource_id=conversion_id,
                 scope_type="team",
                 scope_id=team_id,
-                organization_id=org_id,
+                enterprise_id=enterprise_id,
                 created_by=user_id,
             )
 
     async def _persist_job_rows(
         self,
         *,
-        org_id: str,
+        enterprise_id: str,
         conversion_id: str,
         user_id: str,
         scope: str,
@@ -1497,14 +1500,23 @@ class ConversionService:
         ``IntegrityError`` after this session has been returned to the pool.
         """
         async with self._db_session_factory() as session:
+            # Billing attribution for every row this writes (ADR-017 D2), read
+            # from the request binding exactly as ``CaseService.create_case``
+            # and the audit writer read it. ``None`` is the ordinary answer —
+            # nobody pays for this account — and it decides nothing about
+            # visibility, which is why it comes from a different binding than
+            # ``enterprise_id`` and is never a predicate anywhere below.
+            organization_id = get_current_billing_organization_id()
+
             # ``conversion_jobs`` carries a single ``source_file_id`` FK to
             # ``uploaded_files`` (ON DELETE RESTRICT). Create the upload row
             # first; the conversion_jobs row references it. Both tables
-            # require organization_id NOT NULL.
+            # require enterprise_id NOT NULL.
             source_file_id = f"file_{uuid4().hex[:12]}"
             upload = UploadedFileModel(
                 file_id=source_file_id,
-                organization_id=org_id,
+                enterprise_id=enterprise_id,
+                organization_id=organization_id,
                 case_id=None,  # KB-bound, not case-bound
                 uploaded_by=user_id,
                 filename=source_file.filename,
@@ -1533,7 +1545,8 @@ class ConversionService:
             job = ConversionJobModel(
                 id=conversion_id,
                 user_id=user_id,
-                organization_id=org_id,
+                enterprise_id=enterprise_id,
+                organization_id=organization_id,
                 scope=scope,
                 status=status.value,
                 source_file_id=source_file_id,
@@ -1554,7 +1567,8 @@ class ConversionService:
             for draft in drafts:
                 draft_model = ConversionDraftModel(
                     id=draft.draft_id,
-                    organization_id=org_id,
+                    enterprise_id=enterprise_id,
+                    organization_id=organization_id,
                     conversion_id=conversion_id,
                     runbook_id=draft.runbook_id,
                     title=draft.title,
@@ -1573,7 +1587,10 @@ class ConversionService:
             await session.commit()
 
     async def _find_live_draft_owning(
-        self, org_id: str, runbook_ids: Sequence[Optional[str]], file_path: str = None
+        self,
+        enterprise_id: str,
+        runbook_ids: Sequence[Optional[str]],
+        file_path: str = None,
     ) -> Optional[Tuple[str, str, str]]:
         """``(runbook_id, file_path, draft_id)`` of a live draft already holding
         one of these ids OR this file, in this tenant. ``None`` if the slot is
@@ -1620,7 +1637,7 @@ class ConversionService:
                     ConversionDraftModel.file_path,
                     ConversionDraftModel.id,
                 )
-                .where(ConversionDraftModel.organization_id == org_id)
+                .where(ConversionDraftModel.enterprise_id == enterprise_id)
                 .where(or_(*conditions))
                 .where(ConversionDraftModel.status != "discarded")
                 .order_by(ConversionDraftModel.created_at, ConversionDraftModel.id)
@@ -1634,7 +1651,7 @@ class ConversionService:
         runbook_id, file_path, draft_id = taken
         return ConflictError(
             f"A runbook draft with id '{runbook_id}' already exists in this "
-            f"organization (draft {draft_id}, {file_path}). Discard it before "
+            f"enterprise (draft {draft_id}, {file_path}). Discard it before "
             "creating another with the same service and title — verifying it "
             "does not release the id.",
             resource_type="conversion_draft",
@@ -1645,7 +1662,7 @@ class ConversionService:
     async def _refuse_modes_whose_id_is_taken(
         self,
         failure_modes: List[FailureModeAnalysis],
-        organization_id: Optional[str],
+        enterprise_id: Optional[str],
     ) -> Tuple[List[FailureModeAnalysis], List[ConversionError]]:
         """Drop the modes whose minted id a LIVE draft already holds, in ONE query.
 
@@ -1664,7 +1681,7 @@ class ConversionService:
         Returns ``(survivors, errors)``. Inert with no database (nothing is
         written, so nothing can be taken) — the same early return
         ``refuse_if_draft_slot_taken`` and ``_persist_job`` make, and for the
-        same reason: ``writable_org_id`` raises on an unscoped context, which
+        same reason: ``writable_enterprise_id`` raises on an unscoped context, which
         must not become a failure on a path that writes nothing.
         """
         if not self._db_session_factory or not failure_modes:
@@ -1672,7 +1689,7 @@ class ConversionService:
 
         minted = {fm.id: generate_runbook_id(fm) for fm in failure_modes}
         taken = await self._find_live_drafts_owning(
-            writable_org_id(organization_id), list(minted.values())
+            writable_enterprise_id(enterprise_id), list(minted.values())
         )
         if not taken:
             return list(failure_modes), []
@@ -1698,7 +1715,7 @@ class ConversionService:
         return survivors, errors
 
     async def _find_live_drafts_owning(
-        self, org_id: str, runbook_ids: Sequence[Optional[str]]
+        self, enterprise_id: str, runbook_ids: Sequence[Optional[str]]
     ) -> Dict[str, Tuple[str, str, str]]:
         """``{runbook_id: (runbook_id, file_path, draft_id)}`` for every live
         draft in this tenant holding one of these ids.
@@ -1723,7 +1740,7 @@ class ConversionService:
                     ConversionDraftModel.file_path,
                     ConversionDraftModel.id,
                 )
-                .where(ConversionDraftModel.organization_id == org_id)
+                .where(ConversionDraftModel.enterprise_id == enterprise_id)
                 .where(ConversionDraftModel.runbook_id.in_(ids))
                 .where(ConversionDraftModel.status != "discarded")
                 .order_by(ConversionDraftModel.created_at, ConversionDraftModel.id)
@@ -1734,7 +1751,7 @@ class ConversionService:
             return found
 
     async def refuse_if_draft_slot_taken(
-        self, organization_id: Optional[str], runbook_id: str, draft_path: str
+        self, enterprise_id: Optional[str], runbook_id: str, draft_path: str
     ) -> None:
         """Refuse BEFORE writing, on every path that mints a NEW draft file.
 
@@ -1753,9 +1770,9 @@ class ConversionService:
         This is the ordinary case; the index stays the backstop for the genuine
         cross-replica race, which is what an index is for.
 
-        Takes the RAW ``organization_id`` and resolves it here, after the
+        Takes the RAW ``enterprise_id`` and resolves it here, after the
         factory check — unlike ``_raise_if_runbook_id_taken``, whose only caller
-        has already resolved it. ``writable_org_id`` raises on an unscoped
+        has already resolved it. ``writable_enterprise_id`` raises on an unscoped
         context, and evaluating it at the call site would make that a failure on
         a path with no database, which writes nothing and has no index to
         honour. Mirrors ``_persist_job``'s own early return.
@@ -1763,18 +1780,18 @@ class ConversionService:
         if not self._db_session_factory:
             return
         taken = await self._find_live_draft_owning(
-            writable_org_id(organization_id), [runbook_id], file_path=draft_path
+            writable_enterprise_id(enterprise_id), [runbook_id], file_path=draft_path
         )
         if taken:
             raise self._duplicate_draft_conflict(taken)
 
     async def _raise_if_runbook_id_taken(
-        self, org_id: str, runbook_ids: Sequence[Optional[str]]
+        self, enterprise_id: str, runbook_ids: Sequence[Optional[str]]
     ) -> None:
         """Translate the 046 unique-index violation into a 409, or return.
 
-        ``uq_conversion_drafts_org_runbook_id`` (migration 046) admits one LIVE
-        draft per ``(organization_id, runbook_id)``. Two drafts reaching the
+        ``uq_conversion_drafts_enterprise_runbook_id`` (migration 046) admits one LIVE
+        draft per ``(enterprise_id, runbook_id)``. Two drafts reaching the
         same id is ordinary — ``runbook_id_from_parts`` is deterministic on
         ``(service, title)``, deliberately, because the disk scan reconciles a
         file to its row by that id — so a user converting the same source
@@ -1810,7 +1827,7 @@ class ConversionService:
         ``_persist_job`` carries distinct ids and what arrives here is a
         cross-job duplicate or the live-case race.
         """
-        taken = await self._find_live_draft_owning(org_id, runbook_ids)
+        taken = await self._find_live_draft_owning(enterprise_id, runbook_ids)
         if taken:
             raise self._duplicate_draft_conflict(taken)
 
@@ -2550,7 +2567,7 @@ class ConversionService:
                     document_id=knowledge_item_id,
                     title=dm.title,
                     content=content,
-                    organization_id=job.organization_id,
+                    enterprise_id=job.enterprise_id,
                     document_type="runbook",
                     source_url=f"conversion:{conversion_id}",
                     scope=job.scope,
@@ -2614,8 +2631,8 @@ class ConversionService:
         causes: str,
         prevention: str,
         user_id: str,
-        organization_id: str = None,
-        team_id: str = None,
+        enterprise_id: Optional[str],
+        team_id: Optional[str] = None,
     ) -> ConversionDraft:
         """Create a v4 causal-chain runbook from user-provided template fields (no LLM).
 
@@ -2685,7 +2702,7 @@ status: draft
         # manual create is one runbook, so refusing it IS the answer, and the
         # caller gets the 409.
         await self.refuse_if_draft_slot_taken(
-            organization_id, runbook_id, str(draft_path)
+            enterprise_id, runbook_id, str(draft_path)
         )
 
         write_runbook_file(
@@ -2727,7 +2744,7 @@ status: draft
         await self._persist_job(
             conversion_id=conversion_id,
             user_id=user_id,
-            organization_id=organization_id,
+            enterprise_id=enterprise_id,
             scope=scope,
             team_id=team_id,
             status=ConversionStatus.COMPLETED,
@@ -2759,7 +2776,7 @@ status: draft
     async def scan_for_runbooks(
         self,
         user_id: str,
-        organization_id: Optional[str] = None,
+        enterprise_id: Optional[str] = None,
         is_platform_admin: bool = False,
     ) -> dict:
         """Scan data/knowledge/ for .md files not tracked in the database.
@@ -2772,12 +2789,14 @@ status: draft
 
         Args:
             user_id: User triggering the scan (recorded as conversion job owner).
-            organization_id: Org for scoping the conversion job + source upload.
-                Falls back to the tenant the database session is bound to when
-                None (``writable_org_id``) — which is the single-tenant org in
-                a standalone deployment, and the caller's tenant under multi.
+            enterprise_id: The enterprise the conversion job + source upload
+                are isolated to (ADR-017 D1). Falls back to the tenant the
+                database session is bound to when None
+                (``writable_enterprise_id``) — the Standalone enterprise in a
+                standalone deployment, and the caller's own under multi.
             is_platform_admin: Whether the caller may author global-scope KB. A file whose
-                inferred scope is ``global`` (the org-free platform corpus) is
+                inferred scope is ``global`` (the platform corpus, billed to no
+                organization) is
                 SKIPPED when the caller is not a platform operator (any tenant
                 session under multi, or a non-admin single-tenant) — minting a
                 global draft is platform-tier authoring (#770, R4). Personal/team
@@ -2788,13 +2807,13 @@ status: draft
         """
         async with self._scan_lock:
             return await self._scan_for_runbooks_impl(
-                user_id, organization_id, is_platform_admin
+                user_id, enterprise_id, is_platform_admin
             )
 
     async def _scan_for_runbooks_impl(
         self,
         user_id: str,
-        organization_id: Optional[str] = None,
+        enterprise_id: Optional[str] = None,
         is_platform_admin: bool = False,
     ) -> dict:
         import re as _re
@@ -3156,7 +3175,7 @@ status: draft
                 await self._persist_job(
                     conversion_id=conversion_id,
                     user_id=user_id,
-                    organization_id=organization_id,
+                    enterprise_id=enterprise_id,
                     scope=scope,
                     team_id=None,
                     status=ConversionStatus.COMPLETED,
@@ -3186,7 +3205,7 @@ status: draft
                 )
                 errors.append(
                     f"{md_file.name}: runbook id {runbook_id!r} is already held "
-                    f"by another live draft in this organization"
+                    f"by another live draft in this enterprise"
                 )
                 continue
 

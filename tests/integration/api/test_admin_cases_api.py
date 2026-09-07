@@ -27,7 +27,11 @@ pytestmark = pytest.mark.integration
 
 
 def _summary(
-    case_id: str, user_id: str, org_id: str, title: str = "Case"
+    case_id: str,
+    user_id: str,
+    enterprise_id: str,
+    title: str = "Case",
+    organization_id: str | None = None,
 ) -> CaseSummary:
     now = datetime.now(timezone.utc)
     return CaseSummary(
@@ -38,7 +42,8 @@ def _summary(
         updated_at=now,
         last_activity_at=now,
         user_id=user_id,
-        organization_id=org_id,
+        enterprise_id=enterprise_id,
+        organization_id=organization_id,
         current_turn=1,
         stage=InvestigationStage.DIAGNOSIS,
         turns_without_progress=0,
@@ -67,7 +72,7 @@ def _cloud_settings(tenant_provider: str = "single"):
 def admin_user():
     return AuthenticatedUser(
         user_id="admin_1",
-        organization_id="org_1",
+        enterprise_id="org_1",
         email="admin@example.com",
         roles=["admin", "platform_admin"],
         permissions=["admin:all"],
@@ -78,7 +83,7 @@ def admin_user():
 def member_user():
     return AuthenticatedUser(
         user_id="member_1",
-        organization_id="org_1",
+        enterprise_id="org_1",
         email="member@example.com",
         roles=["member"],
         permissions=["cases:read"],
@@ -139,8 +144,8 @@ async def test_admin_list_all_cases_success(
 ):
     """Admin sees cases from multiple users in one response (standalone)."""
     summaries = [
-        _summary("case_a", "copilot_user", "org_1", "Copilot case"),
-        _summary("case_b", "slack-agent", "org_1", "Slack case"),
+        _summary("case_a", "copilot_user", "ent_1", "Copilot case"),
+        _summary("case_b", "slack-agent", "ent_1", "Slack case"),
     ]
     mock_case_service.list_all_cases.return_value = (summaries, 2)
     app = _make_app(admin_user, mock_case_service)
@@ -181,7 +186,7 @@ async def test_admin_list_all_cases_records_the_access(
     assert kwargs["action"] is OperatorAction.LIST
     assert kwargs["operator_user_id"] == admin_user.user_id
     # A cross-tenant list spans every tenant, so it is stamped with no org.
-    assert kwargs["target_organization_id"] is None
+    assert kwargs["target_enterprise_id"] is None
 
 
 async def test_admin_list_all_cases_forbidden_for_non_admin(
@@ -202,7 +207,15 @@ async def test_admin_list_in_cloud_returns_metadata_rows(
 ):
     """Cloud serves the list, projected to ambient metadata (ADR-012 D9)."""
     mock_case_service.list_all_cases.return_value = (
-        [_summary("case_a", "copilot_user", "org_1", "Payments DB down at ACME")],
+        [
+            _summary(
+                "case_a",
+                "copilot_user",
+                "ent_1",
+                "Payments DB down at ACME",
+                organization_id="org_1",
+            )
+        ],
         1,
     )
     app = _make_app(admin_user, mock_case_service)
@@ -225,6 +238,10 @@ async def test_admin_list_in_cloud_returns_metadata_rows(
     (row,) = body["cases"]
     # The triage facts an operator needs are all present...
     assert row["case_id"] == "case_a"
+    # The ENTERPRISE is the tenant the row was scoped by (ADR-017 D1) and is
+    # what "which tenant has cases stuck in INVESTIGATING?" is asking about;
+    # the organization rides along as billing attribution and may be absent.
+    assert row["enterprise_id"] == "ent_1"
     assert row["organization_id"] == "org_1"
     assert row["state"] == CaseState.INVESTIGATING.value
     assert row["current_turn"] == 1
@@ -246,7 +263,7 @@ async def test_cloud_response_body_contains_no_user_free_text(
     A metadata sentinel is planted too, so a body that leaked nothing because it
     served nothing cannot pass.
     """
-    summary = _summary("case_a", "copilot_user", "SENTINEL-ORG-METADATA")
+    summary = _summary("case_a", "copilot_user", "SENTINEL-ENT-METADATA")
     for i, field in enumerate(sorted(CASE_SUMMARY_CONTENT_FIELDS)):
         setattr(summary, field, f"SENTINEL-CONTENT-{i}-{field}")
 
@@ -268,7 +285,7 @@ async def test_cloud_response_body_contains_no_user_free_text(
         "A cloud operator list disclosed user free text: " f"{resp.text}"
     )
     # The endpoint really did serve a row — otherwise the assertion above is vacuous.
-    assert "SENTINEL-ORG-METADATA" in resp.text
+    assert "SENTINEL-ENT-METADATA" in resp.text
 
 
 async def test_admin_list_blocked_under_multi_tenant_cloud(
