@@ -239,6 +239,18 @@ that membership is part of this contract rather than a separate feature:
   (`POST /teams/{id}/invitations`); a pending offer grants nothing, and there is
   no "add a member" on the API at all. That is what keeps a stranger from pulling
   a colleague into a team's view without a word.
+- **The accept writes the consent record and the membership in ONE
+  transaction**, and that is load-bearing rather than tidy. The two orderings
+  each leak in a different direction: stamping first spends a one-shot token, so
+  a failed membership leaves the invitee with nothing and no way to retry;
+  writing the membership first leaves a **real membership** behind when a revoke
+  lands in between, while the caller is told 409 — a member of a team nobody
+  consented to admit, which is precisely the invariant this surface exists to
+  hold. Neither half may outlive the other, so there is no ordering, there is a
+  transaction (`ITeamRepository.accept_invitation`).
+- **Every write on the team port carries the enterprise**, not just the reads. A
+  write addressed by bare id does not merely observe another tenant's row, it
+  changes it, so the predicate is a parameter and its absence is a type error.
 - **Who may be offered a place is decided by DOMAIN**, before any account is
   looked up, so the invitation endpoint is not an account-existence oracle for
   the enterprise's domain. A personal enterprise (`enterprises.domain IS NULL`)
@@ -270,6 +282,15 @@ that membership is part of this contract rather than a separate feature:
   to `maße@`, folds to `masse@`) a folded key misses the account — and the miss
   silently skips *both* rules that depend on finding one, the anchored-elsewhere
   refusal and the already-a-member check.
+
+**A missing dependency is fatal under multi-tenant, not degraded.**
+`create_team_service` returns `None` for exactly one reason — single-tenant,
+where team collaboration is inert by design (ADR-017 D8) — and raises otherwise.
+`None` is read deployment-wide as "there is no team sharing here": by the team
+arm of the case read allowlist, by KB visibility, by the investigation engine
+and by `GET /teams`. Using it to report a *misconfiguration* would silently
+empty every user's shared scope while looking exactly like a correctly
+configured standalone deployment.
 
 The rule lives in `modules/auth/domain/services/team_service.py`, the routes in
 `modules/auth/api/teams.py` and `modules/auth/api/invitations.py`, and every row
