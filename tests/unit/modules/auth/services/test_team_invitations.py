@@ -36,12 +36,18 @@ from typing import Dict, List, Optional, Tuple
 
 import pytest
 
+from faultmaven.exceptions import NotFoundError
+from faultmaven.infrastructure.persistence.user_repository import (
+    InMemoryUserRepository,
+    User,
+)
 from faultmaven.models.interfaces_user import (
-    Enterprise,
+    LeaveOutcome,
     Team,
     TeamInvitation,
     TeamInvitationStatus,
     TeamMember,
+    TeamNameTakenError,
 )
 from faultmaven.modules.auth.domain.services.team_service import (
     REASON_ADDRESS_OUTSIDE_DOMAIN,
@@ -50,12 +56,13 @@ from faultmaven.modules.auth.domain.services.team_service import (
     REASON_INVITATION_EXPIRED,
     REASON_LAST_ADMIN_CANNOT_LEAVE,
     REASON_NOT_A_TEAM_ADMIN,
-    REASON_NOT_FOUND,
+    REASON_TEAM_NAME_TAKEN,
     TEAM_ROLE_ADMIN,
     TEAM_ROLE_MEMBER,
     TeamService,
 )
 from faultmaven.modules.auth.exceptions import TeamOperationRefused
+from tests.unit.modules.auth.conftest import FakeEnterpriseRepository
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
@@ -77,54 +84,24 @@ class FakeAccount:
         self.enterprise_id = enterprise_id
 
 
-class FakeUserRepository:
-    """``get_by_email`` across every enterprise, as the real one is.
-
-    ``users`` is deliberately NOT RLS-enrolled — it is read on the
-    unauthenticated login path, before any tenant is bound — so the lookup can
-    see an account anchored elsewhere. That is exactly what rule 3's second half
-    depends on, and why this fake must not filter by enterprise.
-    """
-
-    def __init__(self, accounts: Optional[List[FakeAccount]] = None):
-        self.accounts = list(accounts or [])
-
-    async def get_by_email(self, email: str) -> Optional[FakeAccount]:
-        for account in self.accounts:
-            if account.email.casefold() == email.casefold():
-                return account
-        return None
-
-
-class FakeEnterpriseRepository:
-    def __init__(self, enterprises: Dict[str, Optional[str]]):
-        """``{enterprise_id: domain or None}``."""
-        now = _now()
-        self._rows = {
-            enterprise_id: Enterprise(
-                enterprise_id=enterprise_id,
-                name=enterprise_id,
-                slug=enterprise_id,
-                domain=domain,
-                created_at=now,
-                updated_at=now,
-            )
-            for enterprise_id, domain in enterprises.items()
-        }
-
-    async def get_enterprise(self, enterprise_id: str) -> Optional[Enterprise]:
-        return self._rows.get(enterprise_id)
-
-
 class FakeTeamRepository:
-    """An in-memory team store that keeps the two invariants that matter.
+    """An in-memory team store that keeps the invariants that matter.
 
-    * ``add_member`` refuses an account anchored to another enterprise, which is
-      what the SQL implementation does with an explicit anchor comparison;
-    * one PENDING invitation per (team, address), which the real schema enforces
-      with a partial unique index.
+    * ``create_team_with_admin`` is atomic — either both rows or neither — and
+      refuses a creator anchored to another enterprise, exactly as the SQL
+      implementation does with its explicit anchor comparison;
+    * one live team name per enterprise, and one PENDING invitation per (team,
+      address), both of which the real schema enforces with a **partial** unique
+      index — so a retired team and an answered offer free their keys;
+    * ``leave_team`` decides the last-admin rule and performs the removal in one
+      step, because that is the only version of the rule that is true under
+      concurrency.
 
-    Everything else is a dictionary.
+    ``fail_next_add_member`` / ``fail_next_accept_stamp`` are one-shot fault
+    injections. They are how the accept's ordering is tested at all: the failure
+    they simulate (a team retired between the read and the write, an anchor that
+    moved after the token was minted) is real but not reachable from a single
+    linear test.
     """
 
     def __init__(self, account_enterprise: Dict[str, str]):
@@ -132,29 +109,110 @@ class FakeTeamRepository:
         self.members: Dict[Tuple[str, str], TeamMember] = {}
         self.invitations: Dict[str, TeamInvitation] = {}
         self.account_enterprise = dict(account_enterprise)
+        self.fail_next_add_member = False
+        self.fail_next_accept_stamp = False
 
     # -- teams -------------------------------------------------------------- #
 
+    def _live_name_clash(self, team: Team) -> bool:
+        return any(
+            other.enterprise_id == team.enterprise_id
+            and other.name == team.name
+            and other.deleted_at is None
+            and other.team_id != team.team_id
+            for other in self.teams.values()
+        )
+
     async def create_team(self, team: Team) -> Team:
+        if self._live_name_clash(team):
+            raise TeamNameTakenError(team.name)
         self.teams[team.team_id] = team
         return team
 
-    async def get_team(self, team_id: str) -> Optional[Team]:
+    async def create_team_with_admin(
+        self, team: Team, admin_user_id: str, team_role: Optional[str]
+    ) -> Optional[Team]:
+        if self.account_enterprise.get(admin_user_id) != team.enterprise_id:
+            return None
+        if self._live_name_clash(team):
+            raise TeamNameTakenError(team.name)
+        self.teams[team.team_id] = team
+        self.members[(team.team_id, admin_user_id)] = TeamMember(
+            user_id=admin_user_id,
+            team_id=team.team_id,
+            team_role=team_role,
+            joined_at=_now(),
+        )
+        return team
+
+    async def get_team(self, enterprise_id: str, team_id: str) -> Optional[Team]:
         team = self.teams.get(team_id)
-        if team is None or team.deleted_at is not None:
+        if (
+            team is None
+            or team.deleted_at is not None
+            or team.enterprise_id != enterprise_id
+        ):
             return None
         return team
 
-    async def delete_team(self, team_id: str) -> bool:
-        team = self.teams.get(team_id)
-        if team is None or team.deleted_at is not None:
+    async def get_team_with_members(self, enterprise_id: str, team_id: str):
+        team = await self.get_team(enterprise_id, team_id)
+        if team is None:
+            return None, []
+        return team, await self.list_team_members(enterprise_id, team_id)
+
+    async def get_team_names(self, enterprise_id: str, team_ids) -> Dict[str, str]:
+        names = {}
+        for team_id in team_ids:
+            team = await self.get_team(enterprise_id, team_id)
+            if team is not None:
+                names[team_id] = team.name
+        return names
+
+    async def delete_team(self, enterprise_id: str, team_id: str) -> bool:
+        team = await self.get_team(enterprise_id, team_id)
+        if team is None:
             return False
         self.teams[team_id] = team.model_copy(update={"deleted_at": _now()})
         return True
 
+    async def leave_team(
+        self, enterprise_id: str, team_id: str, user_id: str, admin_role: str
+    ) -> LeaveOutcome:
+        team = await self.get_team(enterprise_id, team_id)
+        if team is None or (team_id, user_id) not in self.members:
+            return LeaveOutcome.ABSENT
+        roster = await self.list_team_members(enterprise_id, team_id)
+        leaver = next(m for m in roster if m.user_id == user_id)
+        others = [m for m in roster if m.user_id != user_id]
+        if (
+            others
+            and leaver.team_role == admin_role
+            and not any(m.team_role == admin_role for m in others)
+        ):
+            return LeaveOutcome.LAST_ADMIN
+        del self.members[(team_id, user_id)]
+        if others:
+            return LeaveOutcome.LEFT
+        await self.delete_team(enterprise_id, team_id)
+        now = _now()
+        for invitation_id, row in list(self.invitations.items()):
+            if row.team_id == team_id and row.status == TeamInvitationStatus.PENDING:
+                self.invitations[invitation_id] = row.model_copy(
+                    update={
+                        "status": TeamInvitationStatus.REVOKED,
+                        "revoked_by": user_id,
+                        "revoked_at": now,
+                    }
+                )
+        return LeaveOutcome.LEFT_AND_RETIRED
+
     async def add_member(
         self, team_id: str, user_id: str, team_role: Optional[str] = None
     ) -> bool:
+        if self.fail_next_add_member:
+            self.fail_next_add_member = False
+            return False
         team = self.teams.get(team_id)
         anchor = self.account_enterprise.get(user_id)
         if team is None or team.deleted_at is not None or anchor is None:
@@ -172,7 +230,12 @@ class FakeTeamRepository:
     async def remove_member(self, team_id: str, user_id: str) -> bool:
         return self.members.pop((team_id, user_id), None) is not None
 
-    async def list_team_members(self, team_id: str) -> List[TeamMember]:
+    async def list_team_members(
+        self, enterprise_id: str, team_id: str
+    ) -> List[TeamMember]:
+        team = self.teams.get(team_id)
+        if team is None or team.enterprise_id != enterprise_id:
+            return []
         return [member for (tid, _), member in self.members.items() if tid == team_id]
 
     async def is_team_member(self, team_id: str, user_id: str) -> bool:
@@ -181,14 +244,10 @@ class FakeTeamRepository:
     # -- invitations -------------------------------------------------------- #
 
     async def create_invitation(self, invitation: TeamInvitation) -> TeamInvitation:
-        clash = [
-            row
-            for row in self.invitations.values()
-            if row.team_id == invitation.team_id
-            and row.email == invitation.email
-            and row.status == TeamInvitationStatus.PENDING
-        ]
-        assert not clash, (
+        clash = await self.find_pending_invitation(
+            invitation.enterprise_id, invitation.team_id, invitation.email
+        )
+        assert clash is None, (
             "the partial unique index admits one PENDING offer per address per "
             "team; this write would have made two"
         )
@@ -204,19 +263,26 @@ class FakeTeamRepository:
         return row
 
     async def find_pending_invitation(
-        self, team_id: str, email: str
+        self, enterprise_id: str, team_id: str, email: str
     ) -> Optional[TeamInvitation]:
         for row in self.invitations.values():
             if (
-                row.team_id == team_id
+                row.enterprise_id == enterprise_id
+                and row.team_id == team_id
                 and row.email == email
                 and row.status == TeamInvitationStatus.PENDING
             ):
                 return row
         return None
 
-    async def list_team_invitations(self, team_id: str) -> List[TeamInvitation]:
-        return [row for row in self.invitations.values() if row.team_id == team_id]
+    async def list_team_invitations(
+        self, enterprise_id: str, team_id: str
+    ) -> List[TeamInvitation]:
+        return [
+            row
+            for row in self.invitations.values()
+            if row.team_id == team_id and row.enterprise_id == enterprise_id
+        ]
 
     async def list_invitations_for_invitee(
         self, enterprise_id: str, user_id: str, email: str
@@ -235,6 +301,9 @@ class FakeTeamRepository:
     async def mark_invitation_accepted(
         self, invitation_id: str, user_id: str, at: datetime
     ) -> bool:
+        if self.fail_next_accept_stamp:
+            self.fail_next_accept_stamp = False
+            return False
         row = self.invitations.get(invitation_id)
         if row is None or row.status != TeamInvitationStatus.PENDING:
             return False
@@ -262,14 +331,17 @@ class FakeTeamRepository:
         )
         return True
 
-    async def mark_invitation_expired(self, invitation_id: str) -> bool:
-        row = self.invitations.get(invitation_id)
-        if row is None or row.status != TeamInvitationStatus.PENDING:
-            return False
-        self.invitations[invitation_id] = row.model_copy(
-            update={"status": TeamInvitationStatus.EXPIRED}
-        )
-        return True
+    async def expire_invitations(self, invitation_ids) -> int:
+        expired = 0
+        for invitation_id in invitation_ids:
+            row = self.invitations.get(invitation_id)
+            if row is None or row.status != TeamInvitationStatus.PENDING:
+                continue
+            self.invitations[invitation_id] = row.model_copy(
+                update={"status": TeamInvitationStatus.EXPIRED}
+            )
+            expired += 1
+        return expired
 
     async def resolve_invitations_for_account(
         self, enterprise_id: str, email: str, user_id: str
@@ -287,18 +359,6 @@ class FakeTeamRepository:
                 )
                 resolved += 1
         return resolved
-
-    # -- read scope (unused here, present so the fake honours the port) ------ #
-
-    async def list_user_teams(self, user_id: str) -> List[Team]:
-        return [
-            self.teams[team_id]
-            for (team_id, uid) in self.members
-            if uid == user_id and self.teams[team_id].deleted_at is None
-        ]
-
-    async def list_all_user_team_ids(self, user_id: str) -> List[str]:
-        return [team_id for (team_id, uid) in self.members if uid == user_id]
 
 
 # =============================================================================
@@ -320,15 +380,35 @@ HERMIT = FakeAccount("user-hermit", "hermit@gmail.com", PERSONAL)
 def build(
     accounts=(ALICE, BOB, MALLORY, RIVAL, HERMIT), ttl_days: Optional[int] = None
 ):
-    """A service over fakes, plus the team repository so a test can inspect it."""
+    """A service over the shared doubles, plus the team store so tests can look.
+
+    ``InMemoryUserRepository`` rather than a hand-rolled stub: its
+    ``get_by_email`` keys on ``email.lower()``, which is what the PostgreSQL
+    repository's ``func.lower()`` predicate does. A double that case-*folded*
+    would agree with an earlier version of the service and hide the mismatch
+    (fm#1365 A7) rather than catch it.
+    """
     anchors = {account.user_id: account.enterprise_id for account in accounts}
     teams = FakeTeamRepository(anchors)
+    users = InMemoryUserRepository()
+    for account in accounts:
+        now = _now()
+        users._users[account.user_id] = User(
+            user_id=account.user_id,
+            username=account.user_id,
+            email=account.email,
+            display_name=account.user_id,
+            enterprise_id=account.enterprise_id,
+            created_at=now,
+            updated_at=now,
+        )
+        users._email_index[account.email.lower()] = account.user_id
     service = TeamService(
         teams,
         enterprise_repository=FakeEnterpriseRepository(
             {ACME: "acme.com", OTHER: "other.com", PERSONAL: None}
         ),
-        user_repository=FakeUserRepository(list(accounts)),
+        user_repository=users,
         invitation_ttl_days=ttl_days,
     )
     return service, teams
@@ -354,30 +434,31 @@ async def test_the_creator_of_a_team_is_its_admin_and_its_only_member():
     team = await a_team(service)
 
     assert team.enterprise_id == ACME
-    members = await teams.list_team_members(team.team_id)
+    members = await teams.list_team_members(ACME, team.team_id)
     assert [(m.user_id, m.team_role) for m in members] == [
         (ALICE.user_id, TEAM_ROLE_ADMIN)
     ]
 
 
-async def test_a_team_leaves_no_half_formed_row_when_its_creator_cannot_join_it():
-    """The creator's anchor must match the team's, and the undo is real.
+async def test_a_team_whose_creator_cannot_join_it_is_never_written_at_all():
+    """The creator's anchor must match the team's, and NOTHING is written.
 
-    ``add_member`` is the one place that comparison lives, so this is what
-    happens when it says no: the team is deleted rather than left as a row
-    nobody is in and therefore nobody can see.
+    This used to be two writes and a compensating delete, which left a window —
+    and a soft-deleted squatter afterwards, holding its name against a
+    then-total unique constraint. The team and the creator's membership are now
+    one transaction, so the refusal leaves no row of any kind and the name is
+    free for the next attempt.
     """
     service, teams = build()
 
-    with pytest.raises(TeamOperationRefused) as caught:
+    with pytest.raises(NotFoundError):
         await service.create_team(
             enterprise_id=OTHER,  # Alice is anchored to ACME
             creator_user_id=ALICE.user_id,
             name="not-mine",
         )
 
-    assert caught.value.status_code == 404
-    assert all(team.deleted_at is not None for team in teams.teams.values())
+    assert teams.teams == {}, "a refused creation left a row behind"
 
 
 async def test_a_team_in_another_enterprise_is_absent_not_forbidden():
@@ -385,13 +466,10 @@ async def test_a_team_in_another_enterprise_is_absent_not_forbidden():
     service, _ = build()
     team = await a_team(service)
 
-    with pytest.raises(TeamOperationRefused) as caught:
+    with pytest.raises(NotFoundError):
         await service.list_members(
             enterprise_id=OTHER, team_id=team.team_id, user_id=MALLORY.user_id
         )
-
-    assert caught.value.status_code == 404
-    assert caught.value.reason == REASON_NOT_FOUND
 
 
 async def test_a_non_member_of_a_team_in_their_own_enterprise_gets_the_same_404():
@@ -404,12 +482,10 @@ async def test_a_non_member_of_a_team_in_their_own_enterprise_gets_the_same_404(
     service, _ = build()
     team = await a_team(service)
 
-    with pytest.raises(TeamOperationRefused) as caught:
+    with pytest.raises(NotFoundError):
         await service.list_members(
             enterprise_id=ACME, team_id=team.team_id, user_id=BOB.user_id
         )
-
-    assert caught.value.status_code == 404
 
 
 # =============================================================================
@@ -783,7 +859,8 @@ async def test_rule_6_accepting_an_expired_invitation_is_gone_and_stamps_the_row
         await service.accept_invitation(
             enterprise_id=ACME,
             invitation_id=invitation.invitation_id,
-            user=BOB,
+            user_id=BOB.user_id,
+            email=BOB.email,
         )
 
     assert caught.value.status_code == 410
@@ -834,14 +911,14 @@ async def test_rule_6_only_the_invitee_may_accept():
         email=BOB.email,
     )
 
-    with pytest.raises(TeamOperationRefused) as caught:
+    with pytest.raises(NotFoundError):
         await service.accept_invitation(
             enterprise_id=ACME,
             invitation_id=invitation.invitation_id,
-            user=MALLORY,
+            user_id=MALLORY.user_id,
+            email=MALLORY.email,
         )
 
-    assert caught.value.status_code == 404
     assert not await teams.is_team_member(team.team_id, MALLORY.user_id)
 
 
@@ -856,14 +933,13 @@ async def test_rule_6_an_invitation_in_another_enterprise_cannot_be_accepted():
         email=BOB.email,
     )
 
-    with pytest.raises(TeamOperationRefused) as caught:
+    with pytest.raises(NotFoundError):
         await service.accept_invitation(
             enterprise_id=OTHER,
             invitation_id=invitation.invitation_id,
-            user=MALLORY,
+            user_id=MALLORY.user_id,
+            email=MALLORY.email,
         )
-
-    assert caught.value.status_code == 404
 
 
 async def test_an_unresolved_invitation_is_answerable_by_the_matching_address():
@@ -886,12 +962,14 @@ async def test_an_unresolved_invitation_is_answerable_by_the_matching_address():
     joined = await service.accept_invitation(
         enterprise_id=ACME,
         invitation_id=invitation.invitation_id,
-        user=newcomer,
+        user_id=newcomer.user_id,
+        email=newcomer.email,
     )
 
     assert joined.team_id == team.team_id
     members = {
-        m.user_id: m.team_role for m in await teams.list_team_members(team.team_id)
+        m.user_id: m.team_role
+        for m in await teams.list_team_members(ACME, team.team_id)
     }
     assert members[newcomer.user_id] == TEAM_ROLE_MEMBER
 
@@ -906,14 +984,13 @@ async def test_an_unresolved_invitation_is_not_answerable_by_a_different_address
         email="newhire@acme.com",
     )
 
-    with pytest.raises(TeamOperationRefused) as caught:
+    with pytest.raises(NotFoundError):
         await service.accept_invitation(
             enterprise_id=ACME,
             invitation_id=invitation.invitation_id,
-            user=BOB,
+            user_id=BOB.user_id,
+            email=BOB.email,
         )
-
-    assert caught.value.status_code == 404
 
 
 async def test_accepting_creates_the_membership_and_nothing_before_it_does():
@@ -929,7 +1006,10 @@ async def test_accepting_creates_the_membership_and_nothing_before_it_does():
     assert not await teams.is_team_member(team.team_id, BOB.user_id)
 
     joined = await service.accept_invitation(
-        enterprise_id=ACME, invitation_id=invitation.invitation_id, user=BOB
+        enterprise_id=ACME,
+        invitation_id=invitation.invitation_id,
+        user_id=BOB.user_id,
+        email=BOB.email,
     )
 
     assert joined.team_id == team.team_id
@@ -950,7 +1030,10 @@ async def test_declining_records_who_declined_and_grants_nothing():
     )
 
     await service.decline_invitation(
-        enterprise_id=ACME, invitation_id=invitation.invitation_id, user=BOB
+        enterprise_id=ACME,
+        invitation_id=invitation.invitation_id,
+        user_id=BOB.user_id,
+        email=BOB.email,
     )
 
     row = teams.invitations[invitation.invitation_id]
@@ -969,12 +1052,18 @@ async def test_an_answered_invitation_cannot_be_answered_again():
         email=BOB.email,
     )
     await service.accept_invitation(
-        enterprise_id=ACME, invitation_id=invitation.invitation_id, user=BOB
+        enterprise_id=ACME,
+        invitation_id=invitation.invitation_id,
+        user_id=BOB.user_id,
+        email=BOB.email,
     )
 
     with pytest.raises(TeamOperationRefused) as caught:
         await service.accept_invitation(
-            enterprise_id=ACME, invitation_id=invitation.invitation_id, user=BOB
+            enterprise_id=ACME,
+            invitation_id=invitation.invitation_id,
+            user_id=BOB.user_id,
+            email=BOB.email,
         )
 
     assert caught.value.status_code == 409
@@ -996,7 +1085,10 @@ async def test_a_member_who_is_not_an_admin_cannot_invite():
         email=BOB.email,
     )
     await service.accept_invitation(
-        enterprise_id=ACME, invitation_id=invitation.invitation_id, user=BOB
+        enterprise_id=ACME,
+        invitation_id=invitation.invitation_id,
+        user_id=BOB.user_id,
+        email=BOB.email,
     )
 
     with pytest.raises(TeamOperationRefused) as caught:
@@ -1015,15 +1107,13 @@ async def test_a_non_member_inviting_gets_the_read_shape():
     service, _ = build()
     team = await a_team(service)
 
-    with pytest.raises(TeamOperationRefused) as caught:
+    with pytest.raises(NotFoundError):
         await service.invite(
             enterprise_id=ACME,
             team_id=team.team_id,
             actor_user_id=BOB.user_id,
             email="newhire@acme.com",
         )
-
-    assert caught.value.status_code == 404
 
 
 async def test_revoking_an_invitation_from_another_team_is_absent():
@@ -1038,15 +1128,13 @@ async def test_revoking_an_invitation_from_another_team_is_absent():
         email=BOB.email,
     )
 
-    with pytest.raises(TeamOperationRefused) as caught:
+    with pytest.raises(NotFoundError):
         await service.revoke_invitation(
             enterprise_id=ACME,
             team_id=platform.team_id,
             invitation_id=invitation.invitation_id,
             actor_user_id=ALICE.user_id,
         )
-
-    assert caught.value.status_code == 404
 
 
 async def test_a_revoked_invitation_can_no_longer_be_accepted():
@@ -1067,7 +1155,10 @@ async def test_a_revoked_invitation_can_no_longer_be_accepted():
 
     with pytest.raises(TeamOperationRefused) as caught:
         await service.accept_invitation(
-            enterprise_id=ACME, invitation_id=invitation.invitation_id, user=BOB
+            enterprise_id=ACME,
+            invitation_id=invitation.invitation_id,
+            user_id=BOB.user_id,
+            email=BOB.email,
         )
 
     assert caught.value.status_code == 409
@@ -1111,7 +1202,10 @@ async def test_the_last_admin_cannot_leave_while_other_members_remain():
         email=BOB.email,
     )
     await service.accept_invitation(
-        enterprise_id=ACME, invitation_id=invitation.invitation_id, user=BOB
+        enterprise_id=ACME,
+        invitation_id=invitation.invitation_id,
+        user_id=BOB.user_id,
+        email=BOB.email,
     )
 
     with pytest.raises(TeamOperationRefused) as caught:
@@ -1135,7 +1229,10 @@ async def test_a_plain_member_may_always_leave():
         email=BOB.email,
     )
     await service.accept_invitation(
-        enterprise_id=ACME, invitation_id=invitation.invitation_id, user=BOB
+        enterprise_id=ACME,
+        invitation_id=invitation.invitation_id,
+        user_id=BOB.user_id,
+        email=BOB.email,
     )
 
     await service.leave_team(
@@ -1143,7 +1240,7 @@ async def test_a_plain_member_may_always_leave():
     )
 
     assert not await teams.is_team_member(team.team_id, BOB.user_id)
-    assert await teams.get_team(team.team_id) is not None
+    assert await teams.get_team(ACME, team.team_id) is not None
 
 
 async def test_the_second_admin_frees_the_first_to_leave():
@@ -1157,7 +1254,10 @@ async def test_the_second_admin_frees_the_first_to_leave():
         email=BOB.email,
     )
     await service.accept_invitation(
-        enterprise_id=ACME, invitation_id=invitation.invitation_id, user=BOB
+        enterprise_id=ACME,
+        invitation_id=invitation.invitation_id,
+        user_id=BOB.user_id,
+        email=BOB.email,
     )
     await teams.add_member(team.team_id, BOB.user_id, TEAM_ROLE_ADMIN)
 
@@ -1166,7 +1266,7 @@ async def test_the_second_admin_frees_the_first_to_leave():
     )
 
     assert not await teams.is_team_member(team.team_id, ALICE.user_id)
-    assert await teams.get_team(team.team_id) is not None
+    assert await teams.get_team(ACME, team.team_id) is not None
 
 
 async def test_the_sole_member_leaving_soft_deletes_the_team():
@@ -1179,7 +1279,7 @@ async def test_the_sole_member_leaving_soft_deletes_the_team():
     )
 
     assert not await teams.is_team_member(team.team_id, ALICE.user_id)
-    assert await teams.get_team(team.team_id) is None
+    assert await teams.get_team(ACME, team.team_id) is None
     assert teams.teams[team.team_id].deleted_at is not None
 
 
@@ -1187,12 +1287,10 @@ async def test_leaving_a_team_in_another_enterprise_is_absent():
     service, _ = build()
     team = await a_team(service)
 
-    with pytest.raises(TeamOperationRefused) as caught:
+    with pytest.raises(NotFoundError):
         await service.leave_team(
             enterprise_id=OTHER, team_id=team.team_id, user_id=ALICE.user_id
         )
-
-    assert caught.value.status_code == 404
 
 
 # =============================================================================
@@ -1200,31 +1298,28 @@ async def test_leaving_a_team_in_another_enterprise_is_absent():
 # =============================================================================
 
 
-async def test_invitations_refuse_rather_than_guess_when_the_repositories_are_absent():
-    """An unwired repository is not evidence that an account does not exist.
+async def test_a9_the_service_refuses_to_exist_without_its_repositories():
+    """An unwired dependency must not be answerable as "not found".
 
-    The resolution half of this service is wired without either repository (the
-    KB read paths never touch them), so "absent" is a reachable state — and on
-    the invite path reading it as "no account" would create an unresolved
-    invitation for an address that has an account somewhere else entirely.
+    Every factory in the composition root answers ``None`` on failure, so a
+    ``TeamService`` missing its enterprise repository was a reachable state —
+    and it answered **404 for every team in the deployment**, because the
+    invitation rule read a domain it could not fetch. A wiring failure wearing
+    the shape of "you asked for a row that does not exist" is the one failure
+    nobody investigates.
+
+    Refusing to construct moves it to the honest place: ``create_team_service``
+    returns ``None``, which is already the deployment-wide "team collaboration
+    is not available here" signal, and the surface answers its own 403.
     """
-    anchors = {ALICE.user_id: ACME}
-    teams = FakeTeamRepository(anchors)
-    service = TeamService(teams)
-    team = await service.create_team(
-        enterprise_id=ACME, creator_user_id=ALICE.user_id, name="payments"
-    )
+    teams = FakeTeamRepository({ALICE.user_id: ACME})
+    enterprises = FakeEnterpriseRepository({ACME: "acme.com"})
+    users = InMemoryUserRepository()
 
-    with pytest.raises(TeamOperationRefused) as caught:
-        await service.invite(
-            enterprise_id=ACME,
-            team_id=team.team_id,
-            actor_user_id=ALICE.user_id,
-            email="bob@acme.com",
-        )
-
-    assert caught.value.status_code == 404
-    assert teams.invitations == {}
+    with pytest.raises(ValueError, match="enterprise repository"):
+        TeamService(teams, enterprise_repository=None, user_repository=users)
+    with pytest.raises(ValueError, match="user repository"):
+        TeamService(teams, enterprise_repository=enterprises, user_repository=None)
 
 
 # =============================================================================
@@ -1262,8 +1357,16 @@ async def test_the_signup_hook_runs_when_the_account_is_already_anchored():
     )
 
     teams = FakeTeamRepository({})
+    team_service = TeamService(
+        teams,
+        enterprise_repository=FakeEnterpriseRepository({ACME: "acme.com"}),
+        user_repository=InMemoryUserRepository(),
+    )
     service = SSOLoginService.__new__(SSOLoginService)
-    service._teams = teams
+    # The SERVICE, as the composition root wires it: the hook goes through the
+    # domain rule (address key, enterprise short-circuit, idempotence) rather
+    # than reaching past it to the repository with a second copy of the key.
+    service._teams = team_service
     user = FakeAccount("user-newhire", "NewHire@Acme.com", ACME)
     now = _now()
     teams.invitations["inv-1"] = TeamInvitation(
@@ -1298,7 +1401,7 @@ async def test_a_failed_invitation_resolution_never_costs_the_login():
     )
 
     class Exploding:
-        async def resolve_invitations_for_account(self, *_args):
+        async def resolve_invitations_for_account(self, **_kwargs):
             raise RuntimeError("the invitations table is on fire")
 
     service = SSOLoginService.__new__(SSOLoginService)
