@@ -30,7 +30,7 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
-# 3.2.0 — MINOR. A turn says which runbooks informed it (fm#1361). One
+# 3.3.0 — MINOR. A turn says which runbooks informed it (fm#1361). One
 # optional response field and two new component schemas; nothing existing
 # changes, so every current client survives unchanged.
 #
@@ -312,4 +312,4 @@ asked to accept, and it belongs to a person.
 # cannot tell two contracts apart is not doing its job. The first act of the
 # version is therefore to give the contract on main an identity distinct from
 # the 1.0.0 the clients are written against.
-API_CONTRACT_VERSION = "3.2.0"
+API_CONTRACT_VERSION = "3.3.0"
