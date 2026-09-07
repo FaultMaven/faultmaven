@@ -522,14 +522,16 @@ def _is_genuinely_first_party(module) -> bool:
     is not a module, a hand-built ``ModuleType`` has no spec, and a
     helper-installed stand-in has a spec that locates nothing.
 
-    This package no longer HAS a first-party namespace package —
-    ``faultmaven.api``, ``faultmaven.providers`` and
-    ``faultmaven.modules.case.domain.services`` were the three, and each gained
-    an ``__init__.py`` so that grimp would put it in the import graph and the
+    This package no longer HAS a first-party namespace package. There were
+    five — ``faultmaven.api``, ``faultmaven.providers``,
+    ``faultmaven.core.investigation.prompts``, ``faultmaven.infrastructure.caching``
+    and ``faultmaven.modules.case.domain.services`` — and each gained an
+    ``__init__.py`` so that grimp would put it in the import graph and the
     import-linter contracts naming it could fail. The namespace branch stays
     because the shape is still legal and a future package could take it; the
-    positive control below builds one rather than borrowing one from the tree,
-    so it cannot quietly stop testing this branch again.
+    positive control below derives one from a real directory rather than
+    borrowing a package from this tree, so it cannot quietly stop testing this
+    branch again.
     """
     if not isinstance(module, types.ModuleType):
         return False
@@ -584,7 +586,7 @@ def test_no_first_party_module_in_sys_modules_is_a_stand_in():
     )
 
 
-def test_the_shadow_sweep_rejects_each_stand_in_shape():
+def test_the_shadow_sweep_rejects_each_stand_in_shape(tmp_path):
     """POSITIVE CONTROL for the sweep's discriminator.
 
     A ``_is_genuinely_first_party`` that returned True for everything would
@@ -594,17 +596,37 @@ def test_the_shadow_sweep_rejects_each_stand_in_shape():
     real = importlib.import_module("faultmaven.core.processing.log_analyzer")
     assert _is_genuinely_first_party(real) is True
 
-    # A namespace package's shape, built rather than borrowed: no __file__ and
-    # no spec origin, located only by submodule_search_locations. This used to
-    # import faultmaven.api, which stopped being a namespace package when it
-    # gained an __init__.py — at which point the assertion below was no longer
-    # exercising the namespace branch at all.
-    namespace_pkg = types.ModuleType("faultmaven.pretend_namespace")
-    namespace_pkg.__spec__ = importlib.machinery.ModuleSpec(
-        "faultmaven.pretend_namespace", loader=None, origin=None, is_package=True
-    )
-    namespace_pkg.__spec__.submodule_search_locations = [str(PACKAGE_ROOT / "api")]
+    # A REAL namespace package, imported from a directory with no __init__.py,
+    # rather than a hand-built stand-in for one. This used to import
+    # `faultmaven.api`, which stopped being a namespace package when it gained an
+    # __init__.py — at which point the assertion below was no longer exercising
+    # the namespace branch at all. Deriving the shape from the filesystem is what
+    # stops that happening again silently.
+    (tmp_path / "ns_probe").mkdir()
+    sys.path.insert(0, str(tmp_path))
+    try:
+        namespace_pkg = importlib.import_module("ns_probe")
+    finally:
+        sys.path.remove(str(tmp_path))
+        sys.modules.pop("ns_probe", None)
+
+    # The shape, confirmed rather than assumed: no __file__, located only by
+    # submodule_search_locations.
     assert getattr(namespace_pkg, "__file__", None) is None
+    assert list(namespace_pkg.__spec__.submodule_search_locations or []) != []
+    assert namespace_pkg.__spec__.origin is None
+
+    # Outside the package root it is correctly rejected. Without this the check
+    # below would pass for a discriminator that accepted every namespace
+    # package regardless of where it lives.
+    assert _is_genuinely_first_party(namespace_pkg) is False
+
+    # The same shape, located inside the package root, is accepted. PACKAGE_ROOT
+    # is asserted to exist because `Path.resolve()` is non-strict: a location
+    # that is merely a string under the root would satisfy `is_relative_to`
+    # without naming anything real.
+    assert PACKAGE_ROOT.is_dir()
+    namespace_pkg.__spec__.submodule_search_locations = [str(PACKAGE_ROOT)]
     assert _is_genuinely_first_party(namespace_pkg) is True, (
         "a genuine namespace package was rejected — the sweep would fail on a "
         "clean tree"

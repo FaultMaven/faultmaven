@@ -267,6 +267,13 @@ ignore_imports =
     # Container is the composition root - allowed to wire all module internals
     faultmaven.container.providers.services -> faultmaven.modules.auth.domain.services.*
     faultmaven.container.providers.services -> faultmaven.modules.auth.infrastructure.repositories.*
+    # Reaching the container is reaching everything it wires, and every module's
+    # authenticated route reaches it through the shared API auth dependency.
+    # Contracts 10, 12 and 13 each needed this once faultmaven/api became a real
+    # package. This contract has the same source modules and the same indirect
+    # semantics, and passes today only because the one chain that gets here ends
+    # on an edge already ignored above.
+    faultmaven.api.v1.auth_dependencies -> faultmaven.container
 
 # ============================================================================
 # CONTRACT 12: Domain Services Cannot Bypass Case Contracts
@@ -355,3 +362,33 @@ forbidden_modules =
 # case.infrastructure imports are still blocked, which is the contract
 # we actually need.
 allow_indirect_imports = true
+
+# ============================================================================
+# CONTRACT 15: Providers Do Not Reach Into Module Internals
+# ============================================================================
+# faultmaven.providers is cross-cutting: config.tenant_context resolves a
+# provider, so EVERY module reaches this package. That makes it the widest
+# blast radius in the tree — a provider that imports one module's internals
+# makes every other module a transitive importer of them, which is exactly how
+# `providers.tenancy` came to couple all five modules to `auth.domain`.
+#
+# It had no rule of its own until now because it had no __init__.py: grimp
+# never put it in the graph, so a contract naming it could not have failed.
+# The tenancy violation was only ever visible transitively, through chains that
+# happened to start at one of the five modules.
+[importlinter:contract:15]
+name = Providers do not reach into module internals
+type = forbidden
+source_modules =
+    faultmaven.providers
+forbidden_modules =
+    faultmaven.modules.auth.domain
+    faultmaven.modules.auth.infrastructure
+    faultmaven.modules.case.domain
+    faultmaven.modules.case.infrastructure
+    faultmaven.modules.knowledge.domain
+    faultmaven.modules.knowledge.infrastructure
+    faultmaven.modules.evidence.domain
+    faultmaven.modules.agent.domain
+    faultmaven.modules.report.domain
+allow_indirect_imports = false
