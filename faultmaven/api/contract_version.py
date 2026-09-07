@@ -30,6 +30,30 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
+# 3.2.0 — MINOR. A turn says which runbooks informed it (fm#1361). One
+# optional response field and two new component schemas; nothing existing
+# changes, so every current client survives unchanged.
+#
+#   * `TurnResponse.sources` — a list, defaulting to empty, of the knowledge
+#     the engine put in front of the model for that turn. A client that
+#     ignores it sees the response it always saw.
+#   * `Source` and `SourceType` join `components`. Both already existed in the
+#     API models and were simply never reachable from a published operation;
+#     they are published now because `TurnResponse` references them.
+#
+# Each entry carries the matched excerpt as `content`, the retrieval score as
+# `confidence`, and the runbook's `document_id` / `title` / `trigger` under
+# `metadata`. `type` is `knowledge_base` for everything emitted today —
+# `SourceType`'s other members are published because the enum is, not because
+# a turn can currently return them.
+#
+# The list is empty whenever the KB pre-fetch admitted nothing, which includes
+# every deployment that sets `KB_PREFETCH_ENABLED=false` (fm#1360). A client
+# must therefore treat absence as "no citation to show", never as an error or
+# as a signal that retrieval failed. Runbooks the model fetched itself through
+# the `kb_qa` tool are NOT represented: that tool returns a formatted answer
+# string, so their identity does not exist at the tool boundary to publish.
+#
 # 3.1.0 — MINOR. Teams form by consent (ADR-017 D4). Nine operations are added
 # and nothing existing is touched, so every current client survives the change
 # unchanged — which is what makes this the minor bump rather than the major one
@@ -288,4 +312,4 @@ asked to accept, and it belongs to a person.
 # cannot tell two contracts apart is not doing its job. The first act of the
 # version is therefore to give the contract on main an identity distinct from
 # the 1.0.0 the clients are written against.
-API_CONTRACT_VERSION = "3.1.0"
+API_CONTRACT_VERSION = "3.2.0"
