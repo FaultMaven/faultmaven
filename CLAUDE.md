@@ -885,6 +885,7 @@ Key configuration in `.env`:
 | LLM | `CHAT_PROVIDER`, `*_API_KEY` | Primary LLM provider |
 | Capability Overrides | `CODE_PROVIDER`, `MULTIMODAL_PROVIDER`, `SYNTHESIS_PROVIDER`, `CLASSIFIER_PROVIDER`, `KNOWLEDGE_PROVIDER` | Override specific agents |
 | External Tools | `ENABLE_WEB_SEARCH`, `TAVILY_API_KEY` | Web search capability |
+| Knowledge | `KB_PREFETCH_ENABLED` | Governs the KB **push** only (default `true`): the deterministic pre-fetch that injects matched runbooks into the prompt at case transitions. `kb_qa` (the **pull**) stays registered and elected either way, so `false` narrows what the model is handed unasked, never what it can ask for. Gated at BOTH ends — the pre-fetch skips the search and clears `case.kb_context`, and `context_builder` refuses to render a `kb_context` already on a reloaded case. `GET /admin/config/status` reports `kb_prefetch` |
 | Database | `DATABASE_URL`, `DB_BACKEND` | SQLite (default) or PostgreSQL |
 | Sessions | `REDIS_HOST`, `REDIS_URL` | FakeRedis (default) or real Redis |
 | Vectors | `VECTOR_STORAGE_TYPE`, `CHROMADB_URL` | `chromadb` (local PersistentClient by default; external server via `CHROMADB_URL`) |

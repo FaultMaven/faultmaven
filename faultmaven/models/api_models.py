@@ -14,7 +14,7 @@ from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from faultmaven.models.api import CaseMessagesResponse
+from faultmaven.models.api import CaseMessagesResponse, Source
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseState,
@@ -945,6 +945,18 @@ class TurnResponse(BaseModel):
         description="True when the case's conclusion claims 'verified' certainty "
         "while the assurance grade is below 'confirmed' (conclusion_overclaims "
         "seam). None when no cause is stated.",
+    )
+    sources: List[Source] = Field(
+        default_factory=list,
+        description="Knowledge the engine put in front of the model for this "
+        "turn: the runbooks the KB pre-fetch admitted (the PUSH channel, "
+        "governed by KB_PREFETCH_ENABLED). Each entry carries the matched "
+        "excerpt as `content`, the retrieval score as `confidence`, and the "
+        "runbook's `document_id`/`title` under `metadata` so a client can link "
+        "to it. Empty when nothing was pre-fetched — including when the push "
+        "is disabled. Runbooks the model fetched itself via the kb_qa tool are "
+        "NOT represented: that tool returns a formatted answer string, so "
+        "per-turn identity is not available at the tool boundary.",
     )
 
 

@@ -144,6 +144,11 @@ def mock_settings():
     settings.observability.opik_use_local = False
     settings.knowledge.enable_web_search = False
     settings.knowledge.tavily_api_key = None
+    # Explicit for the same reason as the OAuth fields above, and the fixture
+    # models "configures nothing" rather than the shipped default (which is
+    # True): an auto-created MagicMock attribute is truthy, so the KB push
+    # would report enabled on a process that composed no knowledge service.
+    settings.knowledge.kb_prefetch_enabled = False
     settings.tools.web_search_api_key = None
     settings.tools.web_search_engine_id = None
     settings.is_cloud = False  # standalone (canonical DEPLOYMENT_MODE, ADR-004)
@@ -1194,6 +1199,11 @@ def _pure_settings_answer(feature: str, settings) -> bool:
         )
     if feature == "suggestion_store_worker_safe":
         return settings.server.workers <= 1
+    if feature == "kb_prefetch":
+        # The obvious version: echo the knob. It is what this entry was first
+        # written as, and it reports True on a process that composed no
+        # knowledge service and therefore pushes nothing.
+        return bool(settings.knowledge.kb_prefetch_enabled)
     raise AssertionError(f"no settings-only stand-in defined for {feature}")
 
 
@@ -1744,7 +1754,22 @@ def _scenario_suggestion_store_worker_safe(settings, app, monkeypatch, reality):
     )
 
 
+def _scenario_kb_prefetch(settings, app, monkeypatch, reality):
+    """The runtime fact withheld here is the composed knowledge service.
+
+    ``KB_PREFETCH_ENABLED`` is set in BOTH arms — that is the point. A process
+    whose container returned no knowledge service (#899: ``None``, not a
+    fabricating stub) pushes no runbooks however the flag reads, and the
+    engine's own guard is ``if not self.knowledge_service: return``. So a
+    settings-only implementation reports True on a deployment with no knowledge
+    base at all, which is the opposite of what is happening.
+    """
+    settings.knowledge.kb_prefetch_enabled = True
+    app.state.knowledge_service = MagicMock() if reality else None
+
+
 FEATURE_SCENARIOS = {
+    "kb_prefetch": _scenario_kb_prefetch,
     "web_search": _scenario_web_search,
     "llm_tracing": _scenario_llm_tracing,
     "first_party_consent_skip": _scenario_first_party_consent_skip,

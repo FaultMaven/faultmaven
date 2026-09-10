@@ -77,6 +77,46 @@ asked to accept, and it belongs to a person.
 # client's error handling is unchanged; what changes is that it is now
 # deterministic.
 #
+# 3.3.0 — MINOR. A turn says which runbooks informed it (fm#1361). One
+# optional response field and two new component schemas; nothing existing
+# changes, so every current client survives unchanged.
+#
+#   * `TurnResponse.sources` — a list, defaulting to empty, of the knowledge
+#     the engine put in front of the model for that turn. A client that
+#     ignores it sees the response it always saw.
+#   * `Source` and `SourceType` join `components`. Both already existed in the
+#     API models and were simply never reachable from a published operation;
+#     they are published now because `TurnResponse` references them.
+#
+# Each entry carries the matched excerpt as `content`, the retrieval score as
+# `confidence`, and the runbook's `document_id` / `title` / `trigger` under
+# `metadata`. `type` is `knowledge_base` for everything emitted today —
+# `SourceType`'s other members are published because the enum is, not because
+# a turn can currently return them.
+#
+# ⚠ **`SourceType`'s value domain does not match the Copilot's `Source.type`
+# union**, and publishing the enum is what makes that a contract question
+# rather than an internal detail. The FIELD NAMES agree; the values overlap on
+# exactly one member of six:
+#
+#     published here : documentation, knowledge_base, log_file,
+#                      previous_analysis, user_provided, web_search
+#     copilot union  : external_api, knowledge_base, log_analysis,
+#                      previous_case, system_metrics, user_input
+#
+# Only `knowledge_base` is emitted, so no client breaks today — but this
+# document now licenses five values that client's union rejects, and a future
+# emitter choosing one would break it without changing this contract again.
+# The reconciliation is a two-repo decision and is deliberately NOT made here;
+# until it is, a producer on this surface may emit `knowledge_base` only.
+#
+# The list is empty whenever the KB pre-fetch admitted nothing, which includes
+# every deployment that sets `KB_PREFETCH_ENABLED=false` (fm#1360). A client
+# must therefore treat absence as "no citation to show", never as an error or
+# as a signal that retrieval failed. Runbooks the model fetched itself through
+# the `kb_qa` tool are NOT represented: that tool returns a formatted answer
+# string, so their identity does not exist at the tool boundary to publish.
+#
 # 3.2.0 — MINOR. `LLMProviderDetail` gains an optional, nullable
 # `selected_model_priced` (#1359): whether the model this provider will
 # actually call has a rate in the cost table. `false` means that provider's
@@ -153,16 +193,9 @@ asked to accept, and it belongs to a person.
 # a UI ends up wrong in a language it was not written in. The slugs are
 # `enterprise_is_personal`,
 # `address_outside_enterprise_domain`, `already_a_member`, `not_a_team_admin`,
-# `team_name_taken`, `invitation_expired`, `invitation_not_pending`,
+# `not_found`, `invitation_expired`, `invitation_not_pending`,
 # `last_admin_cannot_leave`, `single_tenant_has_no_teams` and
 # `single_tenant_has_no_invitations`.
-#
-# **A 404 on this surface carries no `reason` at all**, and that is deliberate
-# rather than an omission. The read shape ADR-017 D2 requires — an id in
-# another enterprise is *absent*, never *forbidden* — has nothing to tell
-# apart, so those answer the house `NotFoundError` envelope
-# (`{"error", "detail", "status_code"}`) like every other 404 in the API. A
-# client must not branch on a reason there; there is none.
 #
 # Two of those slugs are deliberately ONE answer to two questions.
 # `address_outside_enterprise_domain` is returned both for an address on

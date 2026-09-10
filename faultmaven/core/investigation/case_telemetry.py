@@ -93,6 +93,8 @@ import re
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Mapping
 
+from faultmaven.core.investigation.kb_push import visible_kb_context
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from faultmaven.modules.case.domain.models import Case
 
@@ -256,6 +258,15 @@ FIELD_ALLOWLIST: frozenset[str] = frozenset(
         # paragraph that produced nothing", carrying no content
         "user_message_chars",
         "attachment_count",
+        # retrieval — which runbooks the KB PUSH channel handed this turn
+        # (fm#1361). Ids and scores only: the allowlist admits token-shaped
+        # values, and a runbook TITLE is prose that would (correctly) be
+        # dropped by the guard below. An id joins back to ``knowledge_items``
+        # server-side for anyone entitled to make that join, which is the same
+        # bargain ``case_id`` already makes.
+        "kb_prefetch_hits",
+        "kb_prefetch_top_score",
+        "kb_runbook_ids",
     }
 )
 
@@ -263,6 +274,10 @@ FIELD_ALLOWLIST: frozenset[str] = frozenset(
 #: transcript summaries are long and carry spaces and punctuation.
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9_.:@/-]*$")
 _MAX_TOKEN_LEN = 64
+
+#: Hard cap on how many elements a list-valued field may carry. See the
+#: sequence branch of ``_sanitize``.
+_MAX_SEQUENCE_LEN = 16
 
 
 def _is_token(value: str) -> bool:
@@ -320,6 +335,34 @@ def _sanitize(payload: Mapping[str, Any]) -> dict[str, Any]:
                         "case telemetry dropped %r bucket %r: %s", key, str(k), exc
                     )
             clean[key] = bucket
+        elif isinstance(value, (list, tuple)):
+            # A bounded list of ids. Checked PER ELEMENT for exactly the reason
+            # the mapping branch is: the natural way to break this is to append
+            # a title beside an id, and dropping the whole list over one bad
+            # member would turn a partially-wrong field into an ABSENT one —
+            # which reads as "retrieval returned nothing" rather than "one entry
+            # was malformed".
+            #
+            # ``str`` is a Sequence and must not land here; the isinstance test
+            # names list/tuple explicitly rather than testing for Sequence.
+            #
+            # Length-capped: this field's producer already slices to
+            # ``KB_CONTEXT_MAX_ENTRIES``, but the cap belongs on the guard too —
+            # an unbounded id list is the one shape that could make a row
+            # arbitrarily large, and the guard's job is to hold whatever a
+            # future producer does.
+            items: list[Any] = []
+            for element in list(value)[:_MAX_SEQUENCE_LEN]:
+                try:
+                    items.append(_scalar(element))
+                except ValueError as exc:
+                    _diag.warning(
+                        "case telemetry dropped %r element %r: %s",
+                        key,
+                        str(element)[:32],
+                        exc,
+                    )
+            clean[key] = items
         else:
             try:
                 clean[key] = _scalar(value)
@@ -515,6 +558,61 @@ def _assessment(case: "Case") -> dict[str, Any]:
     }
 
 
+def _kb_retrieval(case: "Case") -> dict[str, Any]:
+    """What the KB PUSH channel put in front of the model for this case.
+
+    The stream carried no retrieval signal at all before fm#1361, so
+    "did the model use what retrieval gave it, or fall back on parametric
+    knowledge?" was not answerable from stored data — it could only be
+    reconstructed by re-running the case.
+
+    Reads the pre-fetch's own output: the admitted hits, already floored and
+    already sliced to ``KB_CONTEXT_MAX_ENTRIES``.
+
+    Read through ``visible_kb_context``, so a deployment with
+    ``KB_PREFETCH_ENABLED=false`` reports zero hits even on a case still
+    carrying context persisted while the push was on. Gating at the reader
+    rather than trusting the pre-fetch to have cleared the field is load
+    bearing: the pre-fetch is edge-triggered (two call sites, both at case
+    transitions), so a case past both edges never re-enters it. A stream that
+    reported the push active while it was off would be worse than no stream —
+    it is the measurement the push's cost/benefit decision rests on. Whether
+    the push is enabled at all is deployment configuration, reported by
+    ``GET /admin/config/status``, not per turn.
+
+    ``kb_prefetch_top_score`` is the max rather than the mean because the
+    question it answers is "did retrieval find anything genuinely close?", and
+    a mean over a fixed-size slice answers a different one — three mediocre
+    hits and one excellent hit beside two poor ones average alike.
+
+    **``kb_prefetch_hits`` and ``len(kb_runbook_ids)`` can differ, on purpose.**
+    ``hits`` counts what was PUT IN FRONT OF THE MODEL; the id list carries only
+    entries retrieval could attribute to a parent document, and the producer
+    writes ``parent_document_id: None`` whenever the search result had none
+    (``milestone_engine``). Collapsing them would either understate the prompt
+    surface or hide that retrieval is returning unattributable chunks — which is
+    itself a defect worth seeing. The invariant a consumer may rely on is
+    ``len(kb_runbook_ids) <= kb_prefetch_hits``, and the difference is the count
+    of pushed runbooks that cannot be cited.
+    """
+    entries = visible_kb_context(case)
+    scores = []
+    for entry in entries:
+        try:
+            scores.append(float(entry.get("score") or 0.0))
+        except (AttributeError, TypeError, ValueError):
+            continue
+    return {
+        "kb_prefetch_hits": len(entries),
+        "kb_prefetch_top_score": max(scores) if scores else 0.0,
+        "kb_runbook_ids": [
+            str(entry.get("parent_document_id") or "")
+            for entry in entries
+            if isinstance(entry, Mapping) and entry.get("parent_document_id")
+        ],
+    }
+
+
 def build_case_turn_event(
     case: "Case",
     *,
@@ -571,6 +669,7 @@ def build_case_turn_event(
     payload.update(ask)
     payload.update(_frontier(case))
     payload.update(_assessment(case))
+    payload.update(_kb_retrieval(case))
     return _sanitize(payload)
 
 

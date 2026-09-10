@@ -6627,6 +6627,21 @@ Solution verification details for RESOLVED phase.
 
 ---
 
+### Source
+
+Represents a single piece of citable evidence to build user trust.
+
+**Properties:**
+
+- `confidence` (object, optional)
+- `content` (string, required)
+- `metadata` (object, optional)
+- `type` (object, required)
+- `verification_reason` (object, optional)
+- `verification_status` (object, optional)
+
+---
+
 ### SourceFileReference
 
 Reference to source file that evidence was derived from.
@@ -6636,6 +6651,14 @@ Reference to source file that evidence was derived from.
 - `file_id` (string, required)
 - `filename` (string, required)
 - `uploaded_at_turn` (integer, required)
+
+---
+
+### SourceType
+
+Defines the origin of a piece of evidence.
+
+**Values:** `knowledge_base`, `log_file`, `web_search`, `documentation`, `previous_analysis`, `user_provided`
 
 ---
 
@@ -6781,6 +6804,7 @@ Response for POST /cases/{id}/turns.
 - `milestones_completed` (array, required)
 - `progress_made` (boolean, required)
 - `progress_transparency` (object, optional) — Progress transparency state. Present when investigation has stalled and agent is surfacing milestone dependencies.
+- `sources` (array, optional) — Knowledge the engine put in front of the model for this turn: the runbooks the KB pre-fetch admitted (the PUSH channel, governed by KB_PREFETCH_ENABLED). Each entry carries the matched excerpt as `content`, the retrieval score as `confidence`, and the runbook's `document_id`/`title` under `metadata` so a client can link to it. Empty when nothing was pre-fetched — including when the push is disabled. Runbooks the model fetched itself via the kb_qa tool are NOT represented: that tool returns a formatted answer string, so per-turn identity is not available at the tool boundary.
 - `suggested_actions` (array, optional)
 - `turn_number` (integer, required)
 

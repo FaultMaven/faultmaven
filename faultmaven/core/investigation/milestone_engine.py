@@ -11910,6 +11910,26 @@ class MilestoneEngine:
         if not self.knowledge_service:
             return None
 
+        # Policy gate on the PUSH channel (fm#1360, Option B). Off means the
+        # search does not run AT ALL — the cost this gate exists to control is
+        # the hybrid retrieval as much as the prompt surface it produces.
+        #
+        # Clearing rather than merely returning: ``case.kb_context`` is
+        # persisted (it must be, or the push can never reach a prompt — see the
+        # repository metadata blob), so a case that accumulated context while
+        # the push was enabled would otherwise keep standing runbooks in its
+        # turn response and telemetry after the operator turned the push off.
+        # "Off" has to mean off for the case, not only for new searches.
+        #
+        # The prompt is guarded independently in ``context_builder`` — that is
+        # the seam that decides what the model actually sees, and it must hold
+        # for a case reloaded with context already on it.
+        from faultmaven.config.settings import get_settings
+
+        if not get_settings().knowledge.kb_prefetch_enabled:
+            case.kb_context = None
+            return None
+
         try:
             # Owner-aware scope. The pre-fetch may
             # read only what the case OWNER can read: global (platform-curated)
@@ -12003,9 +12023,39 @@ class MilestoneEngine:
                     }
                     for r in relevant[:KB_CONTEXT_MAX_ENTRIES]
                 ]
+                # Identity, not just a count (fm#1361). "3 matches" cannot
+                # answer "which runbook informed this answer?" or "was
+                # retrieval any good?" — both need to know WHICH documents were
+                # admitted and at what score, and reconstructing that meant
+                # re-running the case. Emitted twice on purpose: in the message
+                # for a human reading a log, and under ``extra`` as separate
+                # fields for a structured consumer (the root handler is
+                # structlog's ProcessorFormatter with ExtraAdder, so these land
+                # as top-level keys on the JSON line).
+                _kb_ids = [
+                    str(r.get("parent_document_id") or "") for r in case.kb_context
+                ]
+                _kb_scores = [float(r.get("score") or 0.0) for r in case.kb_context]
                 logger.info(
-                    f"KB pre-fetch ({trigger}): {len(case.kb_context)} matches "
-                    f"for case {case.case_id}"
+                    "KB pre-fetch (%s): %d matches for case %s: %s",
+                    trigger,
+                    len(case.kb_context),
+                    case.case_id,
+                    "; ".join(
+                        f"{r.get('title') or '(untitled)'}"
+                        f" [{r.get('parent_document_id') or 'no-id'}]"
+                        f" score={float(r.get('score') or 0.0):.3f}"
+                        for r in case.kb_context
+                    ),
+                    extra={
+                        "kb_prefetch_trigger": trigger,
+                        "kb_prefetch_hits": len(case.kb_context),
+                        "kb_prefetch_top_score": max(_kb_scores),
+                        "kb_runbook_ids": _kb_ids,
+                        "kb_runbook_titles": [
+                            str(r.get("title") or "") for r in case.kb_context
+                        ],
+                    },
                 )
             else:
                 # Nothing usable this trigger → clear stale context, so a later

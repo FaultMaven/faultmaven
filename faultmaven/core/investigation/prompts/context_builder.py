@@ -43,6 +43,7 @@ from faultmaven.core.investigation.evidence_need_surfacing import (
     is_ask_exhausted,
     select_surfaced_causal_needs,
 )
+from faultmaven.core.investigation.kb_push import visible_kb_context
 from faultmaven.core.investigation.prompts.fence import (
     PromptFence,
     delimiter_overhead_chars,
@@ -129,6 +130,7 @@ STATE_SUMMARY_MAX_HYPOTHESES = 10
 STATE_SUMMARY_DIGEST_CHARS = 180
 # Max chars per KB solution in context (prevents verbose runbooks from consuming budget)
 KB_MAX_SOLUTION_CHARS = 800
+
 
 # Min structural-index length for an uploaded file to count as a searchable
 # target. This is the single source of truth: the context builder renders a
@@ -3820,10 +3822,27 @@ def build_investigation_context(
     # 7. Knowledge Base Results
     # Cap individual solution text to prevent a single verbose runbook from
     # consuming the remaining token budget.
-    # KB context: combine passed-in results with case-level pre-fetched context
+    # KB context: combine passed-in results with case-level pre-fetched context.
+    #
+    # ``case.kb_context`` is the PUSH channel (fm#1360) — runbooks the engine
+    # handed the model unasked, via ``MilestoneEngine._prefetch_kb_context``.
+    # ``KB_PREFETCH_ENABLED`` governs it, and THIS is the seam where the policy
+    # has to bite: the flag's whole claim is that the block is absent from the
+    # rendered prompt, and a producer-side guard alone cannot make that true for
+    # a case reloaded with context already persisted on it.
+    #
+    # ``kb_results`` (the parameter) is deliberately NOT gated. It is a
+    # caller-supplied channel, not the pre-fetch, and the flag is scoped to the
+    # push. It is ``None`` at the only production call site today, so the block
+    # below is the pre-fetch and nothing else — but scoping the gate to the
+    # field it names keeps that true if a caller ever starts passing results.
+    #
+    # Read through ``visible_kb_context`` rather than off the case: the same
+    # gate has to hold for the turn response's ``sources`` and the ``case_turn``
+    # telemetry, and three copies of one predicate is how two of them ended up
+    # without it.
     all_kb_results = list(kb_results or [])
-    if case.kb_context:
-        all_kb_results.extend(case.kb_context)
+    all_kb_results.extend(visible_kb_context(case))
 
     kb_str = ""
     if all_kb_results:

@@ -2157,6 +2157,16 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                             if case.last_suggestions
                             else None
                         ),
+                        # The KB PUSH channel's payload (fm#1360) — see the
+                        # SQLite repository's writer for why it must round
+                        # trip. The falsy filter below drops it when empty,
+                        # which is the same "no context" the reader's
+                        # ``.get`` produces.
+                        "kb_context": (
+                            to_json_compatible(case.kb_context)
+                            if case.kb_context
+                            else None
+                        ),
                     }.items()
                     if v
                 }
@@ -3192,6 +3202,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             ),
             "pending_transition": metadata.get("pending_transition"),
             "last_suggestions": metadata.get("last_suggestions"),
+            # Pre-fetched runbooks (the KB push channel, fm#1360).
+            "kb_context": metadata.get("kb_context"),
             "progress": progress,
             "current_turn": int(row.current_turn or 0),
             "turns_without_progress": int(row.turns_without_progress or 0),
