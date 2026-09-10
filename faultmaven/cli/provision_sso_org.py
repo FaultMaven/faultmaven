@@ -11,8 +11,12 @@ that prints the current state):
 
 1. an **enterprise** (the top tier), unless ``--enterprise-id`` names one;
 2. an **organization** inside it, keyed by ``--slug`` within that enterprise;
-3. the organization's **default team** (ADR-013: every organization has one);
-4. the ``sso_org_mappings`` row binding ``(workos, --workos-org-id)`` to it.
+3. the ``sso_org_mappings`` row binding ``(workos, --workos-org-id)`` to the
+   enterprise (ADR-017 D9).
+
+It creates NO team: under ADR-017 D4 a team is parented by the enterprise and
+forms by consent (any account creates one; invitees accept), so nothing here
+has standing to create one on a member's behalf.
 
 Remapping is NOT a script default. If the IdP organization is already mapped to
 a *different* FaultMaven organization the script prints both and exits non-zero:
@@ -21,7 +25,7 @@ membership-level consequences (see
 ``docs/operations/sso-org-provisioning.md``).
 
 **Run it with the owner DSN.** ``organizations`` and ``teams`` are RLS-tenanted
-(migration 018) and this script writes rows for a tenant that does not exist
+(the baseline keys every policy on ``app.current_enterprise_id``) and this script writes rows for a tenant that does not exist
 yet, so it needs the RLS-owning role (``faultmaven``), not the limited
 application role (``faultmaven_app``). A preflight verifies the connected role
 really is RLS-exempt and refuses before any write if it is not — the pod's own
@@ -29,16 +33,17 @@ really is RLS-exempt and refuses before any write if it is not — the pod's own
 ``kubectl exec`` would otherwise run under exactly the role this script forbids.
 
 That exemption is the mechanism. Nothing here scopes the writes to the new
-tenant: the tenant policies key on ``organization_id``, while this script
-resolves an organization by ``(enterprise_id, slug)`` — the id is what the
-lookup exists to learn. So under FORCE ROW LEVEL SECURITY a scoped role could
+tenant: the tenant policies key on ``enterprise_id``, and on a first run the
+enterprise this script is about to create has no id to bind yet — the id is what
+the run exists to mint. So under FORCE ROW LEVEL SECURITY a scoped role could
 not read that row whatever it bound, and the INSERT that followed would trip the
-policy's WITH CHECK arm (migration 018 omits ``FOR``, so USING doubles as WITH
+policy's WITH CHECK arm (the policies omit ``FOR``, so USING doubles as WITH
 CHECK). FORCE RLS subjects a table's *owner* to its policies — superusers and
 ``BYPASSRLS`` roles are never forced — and FaultMaven enables it nowhere.
 
 Slug-keyed resolution is what forces that, and it *could* be avoided:
-``sso_org_mappings`` is deliberately untenanted (migration 038), so a re-run
+``sso_org_mappings`` is deliberately untenanted (it is read on the
+unauthenticated callback), so a re-run
 could recover the organization id from the mapping and bind it before opening
 the session. That is not done, and not from inertia — it would only help
 bindings that already exist, and a first run would then meet a slug collision as

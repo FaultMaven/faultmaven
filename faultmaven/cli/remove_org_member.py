@@ -28,7 +28,7 @@ In a Kubernetes deployment, run it in the API pod::
 
 ``--user`` accepts a username, an email address, or a user id. The organization
 is addressed by **id**, not slug: the tenant context is set to that id so the
-command runs under the pod's own RLS-scoped application role (migration 018)
+command runs under the pod's own RLS-scoped application role (enterprise-keyed policies)
 rather than needing the RLS-exempt owner DSN. A slug lookup would have to read
 ``organizations`` across tenants, which that role cannot do — and should not.
 ``fm-provision-sso-org`` prints the organization id when it provisions a tenant.
@@ -276,7 +276,7 @@ async def remove_org_member(
     print(f"User:         {user.username} <{user.email}> ({user.user_id})")
 
     if current_role_id is None:
-        # `users` is NOT tenant-scoped (migration 018), so the lookup above finds
+        # `users` is NOT tenant-scoped (RLS keys on the enterprise elsewhere), so the lookup above finds
         # any account in the deployment — including one belonging to a different
         # organization. Revoking unconditionally here would sign that unrelated
         # user out everywhere on a mistyped --organization-id, having removed
