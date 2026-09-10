@@ -18,11 +18,12 @@ Usage (``fm-provision-service-account``, installed with the package):
     # Interim single global Slack service account
     fm-provision-service-account --username slack-agent
 
-    # Multi-tenant (TENANT_PROVIDER=multi): the enterprise is REQUIRED — the
-    # credential's tenancy travels in its own claim chain, so an org-less one is
-    # refused on every request it makes.
+    # Multi-tenant (TENANT_PROVIDER=multi): the ENTERPRISE is REQUIRED — the
+    # credential's tenancy travels in its own claim chain, so an enterprise-less
+    # one is refused on every request it makes (ADR-017 D1/D6). ``-o`` is the
+    # short form of ``--enterprise-id``; read the id from ``enterprises``.
     fm-provision-service-account -u slack-agent \
-        -o 22222222-2222-2222-2222-222222222222
+        --enterprise-id <enterprise uuid>
 
     # Capture straight into a file without it reaching the terminal/scrollback
     fm-provision-service-account -u slack-agent --token-only > token.txt

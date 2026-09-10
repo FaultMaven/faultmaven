@@ -14,7 +14,7 @@ a revocation and no re-grant, while the account held ``platform_admin`` again.
 Demotion has no such shared writer and calls this directly.
 
 **Which table, and why not the obvious one.** ``user_audit_log`` is RLS-tenanted
-(migration 018) and ``platform_admin`` is deployment-scoped (ADR-012 D9), so
+(RLS, keyed on the enterprise) and ``platform_admin`` is deployment-scoped (ADR-012 D9), so
 there is no organization to stamp such a row with. Under ``TENANT_PROVIDER=multi``
 the standalone default organization does not exist, so the write would fail its
 FK — on precisely the deployment where the gap was found — and naming a real

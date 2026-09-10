@@ -21,15 +21,15 @@ The SQL wipe is ``DROP DATABASE`` + ``CREATE DATABASE`` + the migration Job, run
 by the operator with the owner DSN. This command will not ``DELETE`` or
 ``TRUNCATE`` its way to a clean database, because that does not produce one:
 
-* Migration 029 seeds ``roles`` / ``permissions`` / ``role_permissions`` with a
+* The baseline seeds ``roles`` / ``permissions`` / ``role_permissions`` with a
   bare ``op.bulk_insert``, and Alembic will not re-run it on an already-stamped
   database. Delete those rows and the SSO login path's membership write fails its
   ``role_id`` FK — **every SSO login fails closed**, with nothing to restore the
   seed but a hand-written INSERT.
-* Migration 006 seeds the default ``enterprises`` row that the user repository
-  still falls back to.
+* The baseline seeds the Standalone ``enterprises`` row and its default
+  ``teams`` row (ADR-017 D8), which the standalone deployment is built on.
 * ``operator_access_grants`` and ``operator_access_audit`` **reject DELETE and
-  TRUNCATE by trigger** (migration 036), so a blanket truncate aborts part-way
+  TRUNCATE by trigger** (the baseline's append-only triggers), so a blanket truncate aborts part-way
   and leaves the wipe half-applied.
 
 You cannot drop the database you are connected to in any case. This command
@@ -1088,7 +1088,7 @@ The API should already be scaled down — it is a PREREQUISITE of the wipe you j
 ran, not a next step; if it was up, re-run the wipe with it down.
 
   1. DROP DATABASE faultmaven; CREATE DATABASE faultmaven OWNER faultmaven;
-     Never DELETE/TRUNCATE — migration 029's RBAC seed will not re-run, and the
+     Never DELETE/TRUNCATE — the baseline's RBAC seed will not re-run, and the
      operator-access tables reject both by trigger.
      ⚠ Never faultmaven_slack: it holds the Slack workspace installations.
   2. Re-grant, BEFORE migrating, so ALTER DEFAULT PRIVILEGES covers the tables
