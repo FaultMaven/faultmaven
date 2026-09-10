@@ -192,7 +192,9 @@ class SingleTenantProvider(TenantProvider):
         if self.team_repository is None:
             return None
 
-        existing = await self.team_repository.get_team(self.DEFAULT_TEAM_ID)
+        existing = await self.team_repository.get_team(
+            self.DEFAULT_ENTERPRISE_ID, self.DEFAULT_TEAM_ID
+        )
         if existing:
             self._default_team = existing
             return existing

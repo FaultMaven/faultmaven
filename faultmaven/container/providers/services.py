@@ -538,13 +538,25 @@ def create_team_service(
     ``GET /meta/capabilities`` reports team sharing off, and the team-management
     and invitation routes refuse with a reason slug.
 
-    ``enterprise_repository`` is what the invitation rule needs beyond the team
-    tables: the domain an address must match is ``enterprises.domain`` (ADR-017
-    D3). It is optional here so the resolver still builds without it — the KB
-    read paths never touch it — and the service refuses invitations rather than
-    guessing when it is absent. The user repository is built here rather than
-    passed: it is sessionless and stateless, and the multi-tenant provider
-    implies a persistent database, so there is nothing to select between.
+    ``None`` means exactly one thing here: **single-tenant**, where team
+    collaboration is inert by design (ADR-017 D8 — one enterprise, one default
+    team, one account, nobody to invite). Every consumer reads it that way, and
+    they read it for more than the consent routes: the team arm of the case read
+    allowlist, KB visibility, the milestone engine and ``GET /teams`` all
+    collapse to "this deployment has no team sharing" when it is ``None``.
+
+    So a missing dependency under **multi**-tenant is **fatal**, not ``None``.
+    Returning ``None`` there was a worse failure than the one it replaced: it
+    did not merely disable the consent routes, it silently removed every
+    team-shared case and runbook from every user's scope — quieter and wider
+    than the 404 it was fixing, and indistinguishable from a correctly
+    configured standalone deployment. A multi-tenant deployment that cannot
+    build this service is misconfigured, and the honest response to a
+    misconfiguration is to refuse to start.
+
+    The user repository is built here rather than passed: it is sessionless and
+    stateless, and the multi-tenant provider implies a persistent database, so
+    there is nothing to select between.
     """
     if team_repository is None or tenant_provider is None:
         return None
@@ -554,6 +566,15 @@ def create_team_service(
     if isinstance(tenant_provider, SingleTenantProvider):
         logger.debug("TeamService skipped (single-tenant; team collaboration inert)")
         return None
+
+    if enterprise_repository is None:
+        raise RuntimeError(
+            "TeamService cannot be built: no enterprise repository. Under "
+            "TENANT_PROVIDER=multi this is a misconfiguration, not a degraded "
+            "mode — continuing would disable team sharing across every read "
+            "path (cases, knowledge, the investigation engine) while looking "
+            "exactly like a correctly configured standalone deployment."
+        )
 
     from faultmaven.infrastructure.persistence.user_repository import (
         SessionlessUserRepository,
@@ -1005,6 +1026,7 @@ def create_sso_login_service(
     redis_client: Any,
     token_generator: Any,
     session_service: Any,
+    team_service: Any | None = None,
 ) -> Any | None:
     """Create the SSO login orchestration service, or None when SSO is off.
 
@@ -1041,9 +1063,6 @@ def create_sso_login_service(
     from faultmaven.infrastructure.persistence.sessionless_enterprise_repository import (
         SessionlessEnterpriseRepository,
     )
-    from faultmaven.infrastructure.persistence.sessionless_team_repository import (
-        SessionlessTeamRepository,
-    )
     from faultmaven.infrastructure.persistence.user_repository import (
         SessionlessUserRepository,
     )
@@ -1079,10 +1098,11 @@ def create_sso_login_service(
         # consults it only on the no-IdP-organization branch and only when
         # SSO_JIT_PERSONAL_TENANT_ENABLED is on, which it is not by default.
         personal_enterprise_repository=SessionlessSSOPersonalEnterpriseRepository(),
-        # Team invitations (ADR-017 D4). Wired unconditionally: an offer issued
-        # to an address with no account resolves on that address's first
-        # sign-in, and SSO is the only sign-up path there is.
-        team_repository=SessionlessTeamRepository(),
+        # Team invitations (ADR-017 D4): an offer issued to an address with no
+        # account resolves on that address's first sign-in, and SSO is the only
+        # sign-up path there is. ``None`` in standalone, where the service is
+        # unwired and there is nobody to have invited anybody.
+        team_service=team_service,
     )
     logger.info("✅ SSO login service initialized")
     return service
@@ -1406,6 +1426,10 @@ def register_services(container: BaseDIContainer) -> None:
             redis_client=redis_client,
             token_generator=container.get_service("jwt_token_generator"),
             session_service=session_service,
+            # The consent side of ADR-017 D4 reaches the login path here, and
+            # only here: the sign-up hook resolves the offers waiting for the
+            # address that just signed in.
+            team_service=team_service,
         )
         if sso_login_service:
             container._register_service("sso_login_service", sso_login_service)

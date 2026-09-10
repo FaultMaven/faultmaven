@@ -20,6 +20,55 @@ if the data has any value.
 
 ---
 
+## ⚠️ The baseline migration is amended in place until the cutover
+
+**Any database already stamped at `a1e0c17bd001` must be dropped and re-created,
+not upgraded.**
+
+There is exactly one migration — `001_enterprise_baseline` — and while the
+ADR-017 campaign is in flight it is edited **in place** rather than appended to.
+That is the campaign's own rule (ADR-017, "No data migration, no compatibility
+layer"): the schema is rebuilt clean, no deployment holds data worth keeping,
+and this wipe is how the live one gets there.
+
+The consequence an operator has to know: a database that ran the baseline
+*before* an amendment landed carries the revision id `a1e0c17bd001` and will
+never receive the change, because Alembic sees itself as up to date. `alembic
+upgrade head` is a no-op and reports success. The failure then shows up at
+runtime as a missing column or a missing constraint — for the team-consent
+amendment, every invitation read raises on `team_invitations.revoked_by`.
+
+**The same applies to a database stamped at the RETIRED chain**, i.e. anything
+provisioned before the baseline replaced it. Alembic cannot walk from the old
+chain's head to `a1e0c17bd001` — there is no path — so the upgrade is again a
+no-op, and the symptom is not a missing column but a database with the *old*
+schema entirely: every test and every process that boots the app fails on the
+first query. This is not hypothetical; it is what a developer machine looks like
+the first time it meets this campaign.
+
+So, for any environment that is not being wiped anyway:
+
+```bash
+# NOT `alembic upgrade head` — from either the retired chain OR an earlier
+# `a1e0c17bd001`, it will do nothing and say it worked.
+dropdb faultmaven && createdb faultmaven
+alembic upgrade head
+```
+
+To tell which case you are in before dropping anything:
+
+```bash
+psql -d faultmaven -c "SELECT version_num FROM alembic_version;"
+# a1e0c17bd001  -> the baseline, but possibly an older amendment of it
+# anything else -> the retired chain; nothing will migrate it forward
+# (no such table) -> never provisioned; `alembic upgrade head` is enough
+```
+
+CI is unaffected: it always builds from an empty database. This note retires
+when the campaign ends and the baseline is frozen.
+
+---
+
 ## The surfaces
 
 A wipe that covers only the database is not a wipe. Five surfaces hold state,

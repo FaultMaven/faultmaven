@@ -239,6 +239,18 @@ that membership is part of this contract rather than a separate feature:
   (`POST /teams/{id}/invitations`); a pending offer grants nothing, and there is
   no "add a member" on the API at all. That is what keeps a stranger from pulling
   a colleague into a team's view without a word.
+- **The accept writes the consent record and the membership in ONE
+  transaction**, and that is load-bearing rather than tidy. The two orderings
+  each leak in a different direction: stamping first spends a one-shot token, so
+  a failed membership leaves the invitee with nothing and no way to retry;
+  writing the membership first leaves a **real membership** behind when a revoke
+  lands in between, while the caller is told 409 — a member of a team nobody
+  consented to admit, which is precisely the invariant this surface exists to
+  hold. Neither half may outlive the other, so there is no ordering, there is a
+  transaction (`ITeamRepository.accept_invitation`).
+- **Every write on the team port carries the enterprise**, not just the reads. A
+  write addressed by bare id does not merely observe another tenant's row, it
+  changes it, so the predicate is a parameter and its absence is a type error.
 - **Who may be offered a place is decided by DOMAIN**, before any account is
   looked up, so the invitation endpoint is not an account-existence oracle for
   the enterprise's domain. A personal enterprise (`enterprises.domain IS NULL`)
@@ -249,13 +261,36 @@ that membership is part of this contract rather than a separate feature:
   can create a team, which is everybody.
 - **Leaving is the member's own act** (`DELETE /teams/{id}/members/me`) and there
   is no way to remove somebody else. It is refused (409) when the leaver is the
-  team's only admin and other members remain; the sole member leaving
-  soft-deletes the team, which drops it out of every share-to-team picker.
-- **The refusals carry a reason slug.** These routes answer
-  `{"error", "detail", "status_code", "reason"}` — the `ConflictError` envelope —
-  because a client must tell `already_a_member` from
-  `address_outside_enterprise_domain` without parsing prose. The 404s keep the
-  read shape below: an id in another enterprise is absent, never forbidden.
+  team's only admin and other members remain; the sole member leaving retires
+  the team, which drops it out of every share-to-team picker and revokes its
+  pending invitations in the same transaction. Both rules are decided **inside**
+  that transaction, under a row lock on the team: the last-admin check is a read
+  of the roster followed by a write to it, so deciding it outside the lock lets
+  two admins leaving at the same instant each see the other and both go —
+  leaving a member in a team no route can ever administer, because there is no
+  promote endpoint.
+- **The refusals carry a reason slug — except the 404s.** The 403/409/410 family
+  answers `{"error", "detail", "status_code", "reason"}`, the `ConflictError`
+  envelope, because a client must tell `already_a_member` from
+  `address_outside_enterprise_domain` without parsing prose. A 404 carries no
+  reason at all and uses the house `NotFoundError` envelope: the read shape below
+  exists precisely because there is nothing to tell apart, and a reason there
+  would be one more thing that could differ between "absent" and "not yours".
+- **The address key is `strip().lower()`, matching `func.lower(users.email)`.**
+  Not `casefold`, though that is the stronger Unicode comparison: the key has to
+  match the index the account lookup uses. Where the two differ (`MAẞE@` lowers
+  to `maße@`, folds to `masse@`) a folded key misses the account — and the miss
+  silently skips *both* rules that depend on finding one, the anchored-elsewhere
+  refusal and the already-a-member check.
+
+**A missing dependency is fatal under multi-tenant, not degraded.**
+`create_team_service` returns `None` for exactly one reason — single-tenant,
+where team collaboration is inert by design (ADR-017 D8) — and raises otherwise.
+`None` is read deployment-wide as "there is no team sharing here": by the team
+arm of the case read allowlist, by KB visibility, by the investigation engine
+and by `GET /teams`. Using it to report a *misconfiguration* would silently
+empty every user's shared scope while looking exactly like a correctly
+configured standalone deployment.
 
 The rule lives in `modules/auth/domain/services/team_service.py`, the routes in
 `modules/auth/api/teams.py` and `modules/auth/api/invitations.py`, and every row

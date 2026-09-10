@@ -421,6 +421,21 @@ CREATE INDEX idx_teams_enterprise_id ON teams(enterprise_id);
 COMMENT ON TABLE teams IS 'Sharing units (consent-formed), parented by their enterprise — may span organizations';
 ```
 
+**`teams_enterprise_name_unique` is a PARTIAL unique index**, not a constraint:
+`(enterprise_id, name) WHERE deleted_at IS NULL`. A team's designed end is its
+sole member leaving (ADR-017 D4), which soft-deletes it — and under a total
+constraint the retired team would hold its name against the enterprise for ever,
+answering a 500 to anyone who tried to reuse it. The DDL above shows the
+constraint form the ORM declared before fm#1365; the live shape is:
+
+```sql
+CREATE UNIQUE INDEX teams_enterprise_name_unique
+    ON teams(enterprise_id, name) WHERE deleted_at IS NULL;
+```
+
+A duplicate live name is a **409** with reason `team_name_taken`, raised from the
+repository as a typed error rather than allowed to escape as an `IntegrityError`.
+
 #### Table: team_invitations
 
 An offer to join a team, and the consent record that answers it (ADR-017 D4). A team admin invites an address; the invitee accepts. A pending invitation grants nothing. The address need not have an account yet — the invitation resolves when that address signs up **and lands in the same enterprise**, which is why `invited_user_id` is nullable and `email` is not.
@@ -459,6 +474,36 @@ CREATE UNIQUE INDEX ix_team_invitations_pending_unique
 
 COMMENT ON TABLE team_invitations IS 'RLS-tenanted: an invitation is exactly the sort of row the isolation wall exists to keep on one side of';
 ```
+
+**An elapsed offer is `expired`, never `revoked`.** Accepting, declining or
+withdrawing one answers **410** and stamps `expired`: `revoked_by` is the record
+of who ended the offer, and writing a withdrawal nobody performed would put a
+decision in the record that no person made. Every verb settles the row the same
+way, so they cannot disagree about it whatever order they arrive in.
+
+**Only somebody entitled to the row may settle it**, and the settle happens
+after that check rather than inside the read. Settling first made every caller's
+opening move a write: any authenticated account in the enterprise could name an
+invitation id that was not theirs, mutate it to `expired`, and be told 404 — and
+a team-A admin could do it to team-B's offer. A refusal must not be reachable
+through a side effect.
+
+**A settle reports only the rows its UPDATE moved.** The statement carries
+`RETURNING`, and a row answered between the read and the write is skipped by the
+`pending` predicate and reported as what it now is. Reporting the caller's whole
+candidate list as expired told somebody 410 for an invitation that had in fact
+been accepted.
+
+**Retiring a team ends its offers, and ends each one the way it actually
+ended.** When the sole member of a team leaves, the same transaction that
+soft-deletes the team also closes its pending invitations — an offer to a team
+nobody can see can be neither accepted (the team is gone) nor declined
+(declining writes against it). The close is **split by `expires_at`**: an offer
+that had already run out becomes `expired` with no `revoked_by`, and only a
+still-live one becomes `revoked` by the leaver. Stamping the lapsed ones
+`revoked` recorded a withdrawal nobody performed, in the column whose entire job
+is to say who ended the offer — and made the leaver a third writer of it, which
+is one more than the contract describes.
 
 **Status is a lifecycle, and `revoked` has two doors.** `pending → accepted`
 (the invitee consented; `accepted_at` is stamped and a `team_members` row is

@@ -482,16 +482,21 @@ class TestTeamOperationRefusedHandler:
 
     @pytest.mark.asyncio
     async def test_it_carries_each_status_the_surface_uses(self, mock_request):
-        """403, 404, 409 and 410 all travel on the exception.
+        """403, 409 and 410 all travel on the exception.
 
         The 410 is the one that would go wrong quietly: it is outside the range
         every other handler here answers, and a hardcoded status would turn "this
         invitation has expired" into "you may not have it", which is a different
         statement to the person holding it.
+
+        **404 is not in this set**, and its absence is the design. The read
+        shape ADR-017 D2 requires — an id in another enterprise is *absent*,
+        never *forbidden* — carries no reason, because there is nothing to tell
+        apart; those raise ``NotFoundError`` and use the house envelope. Pinned
+        by ``test_the_read_shape_is_not_a_reasoned_refusal`` below.
         """
         for status_code, title in (
             (403, "Forbidden"),
-            (404, "Not Found"),
             (409, "Conflict"),
             (410, "Gone"),
         ):
@@ -503,6 +508,34 @@ class TestTeamOperationRefusedHandler:
             )
             assert response.status_code == status_code
             assert json.loads(response.body)["error"] == title
+
+    @pytest.mark.asyncio
+    async def test_the_read_shape_is_not_a_reasoned_refusal(self, mock_request):
+        """The consent surface's 404s go to the house not-found handler.
+
+        Asserted here rather than left implicit, because the two envelopes are
+        one field apart and the difference is the whole point: a ``reason`` on a
+        404 would be something for a client to branch on, and the read shape
+        exists precisely so there is nothing to branch on. Also checks the id
+        does not reach the body — ``NotFoundError``'s structured form would put
+        it there, so the service must raise the message-only form.
+        """
+        from faultmaven.api.exception_handlers import not_found_exception_handler
+        from faultmaven.exceptions import NotFoundError
+        from faultmaven.modules.auth.domain.services.team_service import _not_found
+
+        refusal = _not_found()
+        assert isinstance(refusal, NotFoundError)
+
+        response = await not_found_exception_handler(mock_request, refusal)
+        body = json.loads(response.body)
+
+        assert response.status_code == 404
+        assert "reason" not in body
+        assert set(body) == {"error", "detail", "status_code"}, (
+            "the read shape grew a field: anything beyond the house envelope is "
+            f"something a caller can distinguish an absent id by: {body}"
+        )
 
     @pytest.mark.asyncio
     async def test_an_unexpected_status_does_not_crash_the_handler(self, mock_request):

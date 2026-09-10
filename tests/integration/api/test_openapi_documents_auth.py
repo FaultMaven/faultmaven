@@ -34,6 +34,12 @@ MANDATORY_AUTH_DEPENDENCIES = frozenset(
         "faultmaven.api.v1.auth_dependencies.require_platform_admin",
         "faultmaven.api.middleware.auth.get_current_user",
         "faultmaven.api.middleware.auth.require_platform_admin",
+        # The team-consent routers' shared context (ADR-017 D4). It depends on
+        # ``require_authentication`` and resolves the caller's enterprise, so it
+        # refuses an anonymous caller twice over. One name for both routers,
+        # because one factory builds both — they differ only in the reason slug
+        # a single-tenant deployment is refused with.
+        "faultmaven.modules.auth.api.teams.resolve_team_context",
     }
 )
 

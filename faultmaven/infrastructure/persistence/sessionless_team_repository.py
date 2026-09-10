@@ -13,7 +13,9 @@ from faultmaven.infrastructure.persistence.team_repository import (
     PostgreSQLTeamRepository,
 )
 from faultmaven.models.interfaces_user import (
+    AcceptOutcome,
     ITeamRepository,
+    LeaveOutcome,
     Team,
     TeamInvitation,
     TeamMember,
@@ -32,23 +34,47 @@ class SessionlessTeamRepository(ITeamRepository):
             repo = PostgreSQLTeamRepository(session)
             return await repo.create_team(team)
 
-    async def get_team(self, team_id: str) -> Optional[Team]:
-        """Get team by ID."""
+    async def create_team_with_admin(
+        self, team: Team, admin_user_id: str, team_role: str
+    ) -> Optional[Team]:
+        """Create a team and its creator's membership as one transaction."""
         async with get_db_session() as session:
             repo = PostgreSQLTeamRepository(session)
-            return await repo.get_team(team_id)
+            return await repo.create_team_with_admin(team, admin_user_id, team_role)
 
-    async def update_team(self, team: Team) -> bool:
-        """Update team."""
+    async def get_team(self, enterprise_id: str, team_id: str) -> Optional[Team]:
+        """Get a team by id, within an enterprise."""
         async with get_db_session() as session:
             repo = PostgreSQLTeamRepository(session)
-            return await repo.update_team(team)
+            return await repo.get_team(enterprise_id, team_id)
 
-    async def delete_team(self, team_id: str) -> bool:
-        """Soft delete team."""
+    async def get_team_with_members(
+        self, enterprise_id: str, team_id: str
+    ) -> tuple[Optional[Team], List[TeamMember]]:
+        """The team and its roster, in one session."""
         async with get_db_session() as session:
             repo = PostgreSQLTeamRepository(session)
-            return await repo.delete_team(team_id)
+            return await repo.get_team_with_members(enterprise_id, team_id)
+
+    async def get_team_names(self, enterprise_id: str, team_ids: List[str]) -> dict:
+        """Map team ids to names, for live teams of an enterprise."""
+        async with get_db_session() as session:
+            repo = PostgreSQLTeamRepository(session)
+            return await repo.get_team_names(enterprise_id, team_ids)
+
+    async def update_team(self, enterprise_id: str, team: Team) -> bool:
+        """Update team, within an enterprise."""
+        async with get_db_session() as session:
+            repo = PostgreSQLTeamRepository(session)
+            return await repo.update_team(enterprise_id, team)
+
+    async def leave_team(
+        self, enterprise_id: str, team_id: str, user_id: str, admin_role: str
+    ) -> LeaveOutcome:
+        """Remove a member, deciding the last-admin rule under a row lock."""
+        async with get_db_session() as session:
+            repo = PostgreSQLTeamRepository(session)
+            return await repo.leave_team(enterprise_id, team_id, user_id, admin_role)
 
     async def list_enterprise_teams(self, enterprise_id: str) -> List[Team]:
         """List all teams in an enterprise."""
@@ -63,30 +89,24 @@ class SessionlessTeamRepository(ITeamRepository):
             return await repo.list_user_teams(user_id)
 
     async def add_member(
-        self, team_id: str, user_id: str, team_role: Optional[str] = None
+        self,
+        enterprise_id: str,
+        team_id: str,
+        user_id: str,
+        team_role: Optional[str] = None,
     ) -> bool:
-        """Add user to team."""
+        """Add user to team, within an enterprise."""
         async with get_db_session() as session:
             repo = PostgreSQLTeamRepository(session)
-            return await repo.add_member(team_id, user_id, team_role)
+            return await repo.add_member(enterprise_id, team_id, user_id, team_role)
 
-    async def remove_member(self, team_id: str, user_id: str) -> bool:
-        """Remove user from team."""
+    async def list_team_members(
+        self, enterprise_id: str, team_id: str
+    ) -> List[TeamMember]:
+        """List all members of a team, within an enterprise."""
         async with get_db_session() as session:
             repo = PostgreSQLTeamRepository(session)
-            return await repo.remove_member(team_id, user_id)
-
-    async def list_team_members(self, team_id: str) -> List[TeamMember]:
-        """List all members of a team."""
-        async with get_db_session() as session:
-            repo = PostgreSQLTeamRepository(session)
-            return await repo.list_team_members(team_id)
-
-    async def is_team_member(self, team_id: str, user_id: str) -> bool:
-        """Check if user is member of team."""
-        async with get_db_session() as session:
-            repo = PostgreSQLTeamRepository(session)
-            return await repo.is_team_member(team_id, user_id)
+            return await repo.list_team_members(enterprise_id, team_id)
 
     async def list_all_user_team_ids(self, user_id: str) -> List[str]:
         """List every team id a user belongs to (KB scope resolution)."""
@@ -111,18 +131,20 @@ class SessionlessTeamRepository(ITeamRepository):
             return await repo.get_invitation(enterprise_id, invitation_id)
 
     async def find_pending_invitation(
-        self, team_id: str, email: str
+        self, enterprise_id: str, team_id: str, email: str
     ) -> Optional[TeamInvitation]:
         """The live offer for an address on a team, if there is one."""
         async with get_db_session() as session:
             repo = PostgreSQLTeamRepository(session)
-            return await repo.find_pending_invitation(team_id, email)
+            return await repo.find_pending_invitation(enterprise_id, team_id, email)
 
-    async def list_team_invitations(self, team_id: str) -> List[TeamInvitation]:
+    async def list_team_invitations(
+        self, enterprise_id: str, team_id: str
+    ) -> List[TeamInvitation]:
         """Every invitation ever issued for a team, newest first."""
         async with get_db_session() as session:
             repo = PostgreSQLTeamRepository(session)
-            return await repo.list_team_invitations(team_id)
+            return await repo.list_team_invitations(enterprise_id, team_id)
 
     async def list_invitations_for_invitee(
         self, enterprise_id: str, user_id: str, email: str
@@ -134,27 +156,38 @@ class SessionlessTeamRepository(ITeamRepository):
                 enterprise_id, user_id, email
             )
 
-    async def mark_invitation_accepted(
-        self, invitation_id: str, user_id: str, at: datetime
-    ) -> bool:
-        """Stamp an invitation accepted, but only if it is still pending."""
+    async def accept_invitation(
+        self,
+        enterprise_id: str,
+        invitation_id: str,
+        user_id: str,
+        team_role: str,
+        at: datetime,
+    ) -> tuple[AcceptOutcome, Optional[Team]]:
+        """Stamp the invitation accepted AND write the membership, atomically."""
         async with get_db_session() as session:
             repo = PostgreSQLTeamRepository(session)
-            return await repo.mark_invitation_accepted(invitation_id, user_id, at)
+            return await repo.accept_invitation(
+                enterprise_id, invitation_id, user_id, team_role, at
+            )
 
     async def mark_invitation_revoked(
-        self, invitation_id: str, by_user_id: str, at: datetime
+        self, enterprise_id: str, invitation_id: str, by_user_id: str, at: datetime
     ) -> bool:
         """Stamp an invitation revoked, but only if it is still pending."""
         async with get_db_session() as session:
             repo = PostgreSQLTeamRepository(session)
-            return await repo.mark_invitation_revoked(invitation_id, by_user_id, at)
+            return await repo.mark_invitation_revoked(
+                enterprise_id, invitation_id, by_user_id, at
+            )
 
-    async def mark_invitation_expired(self, invitation_id: str) -> bool:
-        """Stamp a pending invitation expired (lazy, on read or accept)."""
+    async def expire_invitations(
+        self, enterprise_id: str, invitation_ids: List[str]
+    ) -> List[str]:
+        """Stamp pending invitations expired, and report which ones moved."""
         async with get_db_session() as session:
             repo = PostgreSQLTeamRepository(session)
-            return await repo.mark_invitation_expired(invitation_id)
+            return await repo.expire_invitations(enterprise_id, invitation_ids)
 
     async def resolve_invitations_for_account(
         self, enterprise_id: str, email: str, user_id: str

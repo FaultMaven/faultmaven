@@ -499,14 +499,22 @@ async def team_operation_refused_handler(
 ) -> JSONResponse:
     """Handle TeamOperationRefused (ADR-017 D4).
 
-    The team-and-invitation surface refuses at four different statuses — 403,
-    404, 409 and 410 — for reasons a client has to tell apart to say anything
-    useful: "you are already a member" and "that address cannot join a team in
-    this enterprise" are the same status in some designs and are never the same
+    The team-and-invitation surface refuses at three statuses — 403, 409 and
+    410 — for reasons a client has to tell apart to say anything useful: "you
+    are already a member" and "that address cannot join a team in this
+    enterprise" are the same status in some designs and are never the same
     message. So the exception carries the status it means AND a **reason slug**,
     and the slug is surfaced as its own field, exactly as ``ConflictError``
     surfaces ``conflict_reason``. Clients branch on ``reason``; ``detail`` is
     for a person.
+
+    **404 is deliberately not in that set.** The read shape ADR-017 D2 requires
+    — an id in another enterprise is *absent*, never *forbidden* — must carry no
+    reason at all, because a reason is something to tell apart and there is
+    nothing to tell apart. Those raise ``NotFoundError`` and go to
+    :func:`not_found_exception_handler`, which is the house envelope for it;
+    a second not-found shape with its own title map was one more thing to keep
+    in step for nothing.
 
     A handler rather than an ``HTTPException`` raised at the route, because
     ``http_exception_handler`` flattens a dict ``detail`` down to its human
@@ -541,7 +549,6 @@ async def team_operation_refused_handler(
 #: default rather than a ``ValueError`` raised inside an exception handler.
 _TEAM_REFUSAL_TITLES = {
     status.HTTP_403_FORBIDDEN: "Forbidden",
-    status.HTTP_404_NOT_FOUND: "Not Found",
     status.HTTP_409_CONFLICT: "Conflict",
     status.HTTP_410_GONE: "Gone",
 }
