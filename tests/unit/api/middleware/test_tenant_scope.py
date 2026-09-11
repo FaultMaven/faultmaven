@@ -14,13 +14,19 @@ must:
 * multi-tenant: leave the non-tenant sentinel bound for unauthenticated /
   invalid-token requests (public endpoints), whose own auth dependency 401s;
 * bind the BILLING organization from the same claim set, and never let it decide
-  anything about visibility.
+  anything about visibility;
+* **publish** whatever it bound on ``request.state`` as a ``RequestPrincipal``,
+  so the access log can name the principal and the enterprise. The contextvars
+  above do not reach ``LoggingMiddleware`` — Starlette runs a
+  ``BaseHTTPMiddleware``'s downstream in a separate task — and the ASGI scope
+  does.
 """
 
 from unittest.mock import AsyncMock
 
 import pytest
 
+from faultmaven.api.middleware.principal import read_request_principal
 from faultmaven.api.middleware.tenant_scope import bind_request_enterprise_context
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.tenant_context import (
@@ -288,3 +294,160 @@ async def test_an_invalid_token_binds_the_non_tenant_sentinel(multi, error):
 
     assert get_current_enterprise_id() == ""
     assert get_current_billing_organization_id() is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_single_tenant_publishes_the_standalone_enterprise_it_forced():
+    """The binding is published on ``request.state``, not only in a contextvar.
+
+    ``LoggingMiddleware`` runs its downstream in a separate task and cannot read
+    the contextvar, so the access log had no way to say which enterprise a
+    request was bound to. This arm never reads the token, so it names no
+    subject — the enterprise is what it has to publish.
+    """
+    import faultmaven.providers.tenancy.factory as factory
+
+    original = factory.requested_tenant_provider
+    factory.requested_tenant_provider = lambda: BUILTIN_SINGLE
+    try:
+        request = request_with_authorization("Bearer forged-token")
+
+        await bind_request_enterprise_context(
+            request, auth_service=_auth_service({"sub": "user-1"})
+        )
+
+        principal = read_request_principal(request)
+        assert principal is not None, "the binder published nothing"
+        assert principal.enterprise_id == STANDALONE_ENTERPRISE_ID
+        assert principal.user_id is None
+        assert principal.organization_id is None
+    finally:
+        factory.requested_tenant_provider = original
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_multi_tenant_publishes_the_verified_subject_and_both_ids(multi):
+    """The three facts an access log needs, from the one verified claim set."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    organizations = MagicMock()
+    organizations.get_organization = AsyncMock(
+        return_value=SimpleNamespace(
+            organization_id=BILLING_ORG, enterprise_id=OTHER_ENTERPRISE
+        )
+    )
+    request = request_with_authorization("Bearer good-token")
+
+    await bind_request_enterprise_context(
+        request,
+        auth_service=_auth_service(
+            {
+                "sub": "user-1",
+                "enterprise_id": OTHER_ENTERPRISE,
+                "organization_id": BILLING_ORG,
+            }
+        ),
+        organization_repository=organizations,
+    )
+
+    principal = read_request_principal(request)
+    assert principal is not None, "the binder published nothing"
+    assert principal.user_id == "user-1"
+    assert principal.enterprise_id == OTHER_ENTERPRISE
+    assert principal.organization_id == BILLING_ORG
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_published_organization_is_the_validated_one_not_the_claim(multi):
+    """A dropped claim must not survive into the log line.
+
+    The contextvar and the published record come from the same value, so a line
+    can never attribute a request to an organization nothing was billed to.
+    """
+    from unittest.mock import MagicMock
+
+    organizations = MagicMock()
+    organizations.get_organization = AsyncMock(return_value=None)
+    request = request_with_authorization("Bearer good-token")
+
+    await bind_request_enterprise_context(
+        request,
+        auth_service=_auth_service(
+            {
+                "sub": "user-1",
+                "enterprise_id": OTHER_ENTERPRISE,
+                "organization_id": BILLING_ORG,
+            }
+        ),
+        organization_repository=organizations,
+    )
+
+    assert get_current_billing_organization_id() is None
+    assert read_request_principal(request).organization_id is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "authorization, auth_service_kwargs",
+    [
+        pytest.param(None, {"claims": {}}, id="unauthenticated"),
+        pytest.param(
+            "Bearer bad-token",
+            {"error": AuthenticationError("bad")},
+            id="invalid-token",
+        ),
+        pytest.param(
+            "Bearer revoked-token",
+            {"error": TokenRevocationError()},
+            id="revoked-token",
+        ),
+    ],
+)
+async def test_an_unverified_request_publishes_the_non_tenant_sentinel_and_no_user(
+    multi, authorization, auth_service_kwargs
+):
+    """Nothing was verified, so there is no subject to name — and the enterprise
+    published is the one actually bound, the empty non-tenant sentinel."""
+    request = request_with_authorization(authorization)
+
+    await bind_request_enterprise_context(
+        request, auth_service=_auth_service(**auth_service_kwargs)
+    )
+
+    principal = read_request_principal(request)
+    assert principal is not None, "the binder published nothing"
+    assert principal.user_id is None
+    assert principal.enterprise_id == ""
+    assert principal.organization_id is None
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_a_refused_request_still_names_who_presented_the_token(multi):
+    """The 403 line is the one an operator most needs attributed.
+
+    The token verified — the subject is a verified fact — and only the tenancy
+    claim was unusable. Publishing before raising is what lets the completed line
+    say which account is presenting pre-cutover tokens, without binding anything.
+    """
+    from fastapi import HTTPException
+
+    request = request_with_authorization("Bearer claimless-token")
+
+    with pytest.raises(HTTPException):
+        await bind_request_enterprise_context(
+            request, auth_service=_auth_service({"sub": "user-1"})
+        )
+
+    principal = read_request_principal(request)
+    assert principal is not None, "the refusal published nothing"
+    assert principal.user_id == "user-1"
+    assert principal.enterprise_id == ""
+    # The contextvar is still untouched: publishing is not binding.
+    assert get_current_enterprise_id() == STANDALONE_ENTERPRISE_ID
