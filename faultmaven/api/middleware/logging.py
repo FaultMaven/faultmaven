@@ -7,11 +7,19 @@ logging configuration for structured output.
 
 Enhanced with session context management to provide continuous user/session
 context across requests within the same session.
+
+The completion and failure lines are attributed from the ``RequestPrincipal``
+the tenancy binder publishes on ``request.state``
+(``api/middleware/tenant_scope.py``), which is the only place per request that
+verifies the token. The session lookup below predates it and guesses the user
+from a **session id** that a bearer-authenticated request does not carry — so on
+its own it logged ``user_id: null`` for every API call and named no enterprise at
+all. It survives as the fallback, never as an override.
 """
 
 import json
 import time
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -20,6 +28,7 @@ from faultmaven.api.middleware.client_ip import (
     parse_trusted_proxies,
     resolve_client_ip_once,
 )
+from faultmaven.api.middleware.principal import read_request_principal
 from faultmaven.config.protection import get_trusted_proxies
 from faultmaven.infrastructure.health.sla_tracker import sla_tracker
 from faultmaven.infrastructure.logging.config import get_logger
@@ -39,6 +48,19 @@ def _endpoint_label(request: Request) -> str:
     """
     route = request.scope.get("route")
     return getattr(route, "path", None) or "unmatched"
+
+
+def _attribution_suffix(user_id: Optional[str], enterprise_id: Optional[str]) -> str:
+    """The human-readable ``[user: …][enterprise: …]`` tail of a request line.
+
+    Each part is omitted when there is nothing to say — including the empty
+    non-tenant sentinel, which reads as nothing in prose. The structured fields
+    carry the distinction between "no enterprise bound" and "no binder ran";
+    the message does not have to.
+    """
+    user_info = f" [user: {user_id}]" if user_id else ""
+    enterprise_info = f" [enterprise: {enterprise_id}]" if enterprise_id else ""
+    return f"{user_info}{enterprise_info}"
 
 
 class LoggingMiddleware(BaseHTTPMiddleware):
@@ -126,9 +148,12 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         # Request context is already set by LoggingCoordinator.start_request()
 
         # Log request start (coordinator ensures this happens only once)
-        # Include session context in log message for better traceability
+        # Include session context in log message for better traceability.
+        # The start line is emitted BEFORE the route runs, so the binder has not
+        # published yet and this pair is all it can say. The completion and
+        # failure lines below re-derive their attribution from the binding.
         session_info = f" [session: {session_id}]" if session_id else ""
-        user_info = f" [user: {user_id}]" if user_id else ""
+        user_info = _attribution_suffix(user_id, None)
 
         # Reduce verbosity for heartbeat requests to prevent log spam
         is_heartbeat = request.url.path.endswith("/heartbeat")
@@ -213,12 +238,20 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             )
             log_level = "debug" if is_heartbeat_404 else "info"
 
+            # Who the request was actually bound to. Available only now: the
+            # binder is a route dependency, so it has run by the time call_next
+            # returns.
+            bound_user_id, enterprise_id, organization_id = self._bound_attribution(
+                request, user_id
+            )
+
             # Log completion (coordinator ensures this happens only once)
             LoggingCoordinator.log_once(
                 operation_key=f"request_complete:{context.correlation_id}",
                 logger=logger,
                 level=log_level,
-                message=f"Request completed: {request.method} {request.url.path}{session_info}{user_info} "
+                message=f"Request completed: {request.method} {request.url.path}{session_info}"
+                f"{_attribution_suffix(bound_user_id, enterprise_id)} "
                 f"-> {response.status_code} in {duration:.3f}s",
                 method=request.method,
                 path=request.url.path,
@@ -227,7 +260,9 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 response_size=response.headers.get("content-length", "unknown"),
                 correlation_id=context.correlation_id,
                 session_id=session_id,
-                user_id=user_id,
+                user_id=bound_user_id,
+                enterprise_id=enterprise_id,
+                organization_id=organization_id,
                 case_id=case_id,
             )
 
@@ -276,11 +311,20 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
                 # Only log if this layer should handle it (prevents cascade)
                 if should_log:
+                    # An unhandled exception is raised by the ROUTE, so the
+                    # binder has already published: the 500 names its principal
+                    # exactly as the completion line does.
+                    (
+                        bound_user_id,
+                        enterprise_id,
+                        organization_id,
+                    ) = self._bound_attribution(request, user_id)
                     LoggingCoordinator.log_once(
                         operation_key=f"request_error:{context.correlation_id}",
                         logger=logger,
                         level="error",
-                        message=f"Request failed: {request.method} {request.url.path}{session_info}{user_info} "
+                        message=f"Request failed: {request.method} {request.url.path}{session_info}"
+                        f"{_attribution_suffix(bound_user_id, enterprise_id)} "
                         f"after {duration:.3f}s: {str(e)}",
                         method=request.method,
                         path=request.url.path,
@@ -289,7 +333,9 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                         error_type=type(e).__name__,
                         correlation_id=context.correlation_id,
                         session_id=session_id,
-                        user_id=user_id,
+                        user_id=bound_user_id,
+                        enterprise_id=enterprise_id,
+                        organization_id=organization_id,
                         case_id=case_id,
                     )
 
@@ -307,6 +353,40 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
             # Re-raise the exception to maintain FastAPI error handling
             raise
+
+    def _bound_attribution(
+        self, request: Request, session_user_id: Optional[str]
+    ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        """``(user_id, enterprise_id, organization_id)`` for a finished request.
+
+        Read from the ``RequestPrincipal`` the tenancy binder published, which is
+        the one place per request that verified the token. Two absences are kept
+        apart deliberately:
+
+        * **No principal at all** — no binder ran, because the request matched no
+          route or a middleware answered above the router. The enterprise is
+          ``None`` (unknown), and the session lookup is all there is.
+        * **A principal naming no user** — the single-tenant arm, which never
+          reads the token, and the unauthenticated arm. The enterprise it bound
+          is a fact and is reported; the user id falls back to the session
+          lookup rather than being overwritten with ``None``, so this never
+          takes attribution away from a line that had it.
+
+        Args:
+            request: The request whose route dependency has now run.
+            session_user_id: What the session lookup found before the route ran.
+
+        Returns:
+            The three identifiers to stamp on the completion / failure line.
+        """
+        principal = read_request_principal(request)
+        if principal is None:
+            return session_user_id, None, None
+        return (
+            principal.user_id or session_user_id,
+            principal.enterprise_id,
+            principal.organization_id,
+        )
 
     async def _extract_session_id(self, request: Request) -> Optional[str]:
         """
