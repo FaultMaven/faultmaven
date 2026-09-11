@@ -200,14 +200,24 @@ multi-tenant.
 ## Provisioning
 
 `fm-provision-sso-org` idempotently creates the enterprise, an organization
-inside it, the organization's default team, and the mapping row. It runs with
-the RLS-owning database role because it writes rows for a tenant that does not
-exist yet, and it refuses to remap an IdP organization that already points at a
-different FaultMaven enterprise — remapping is a deliberate operator act, not a
-script default. Reusing an existing enterprise (matched by `--slug`, not named
-with `--enterprise-id`) prints a loud reuse warning, because under ADR-017 the
-enterprise is the isolation boundary and a slug collision there lands a new
-customer's users inside somebody else's wall.
+inside it, and the mapping row. It creates **no team**: a team forms by consent
+(ADR-017 D4), so one minted here would have no members and no way to gain any.
+
+The enterprise carries the customer's email domain (`--domain`, required), and
+that is what it is resolved by — the same column the sign-up path derives from
+the IdP-verified email and looks a domain enterprise up by. Keying provisioning
+on anything else lets the two disagree: the operator's tenant is not found by
+the colleague who signs in next, who gets a second enterprise instead. A
+consumer mail domain is refused, because under D3 such a domain gives every
+account a private enterprise of its own.
+
+It runs with the RLS-owning database role because it writes rows for a tenant
+that does not exist yet, and it refuses to remap an IdP organization that
+already points at a different FaultMaven enterprise — remapping is a deliberate
+operator act, not a script default. Reusing an existing enterprise (matched by
+`--domain`, not named with `--enterprise-id`) prints a loud reuse warning,
+because under ADR-017 the enterprise is the isolation boundary and the wrong
+domain there lands a new customer's users inside somebody else's wall.
 
 Admin binding is manual and post-hoc (ADR-015 D5): no login path grants elevated
 roles, so the first user signs in via SSO and an operator promotes them with the
@@ -306,13 +316,14 @@ is confirmed **last**, after the database commit (see
 ### Why the login path does not need the owner role
 
 `fm-provision-sso-org` demands the RLS-exempt owner DSN because it resolves an
-enterprise by `(enterprise_id or slug)` — an id-blind lookup the `organizations`
-policy cannot satisfy pre-bind. The login path has no such lookup: it *derives*
+enterprise by `(enterprise_id or domain)` and an organization by
+`(enterprise_id, slug)` — id-blind lookups the `organizations` policy cannot
+satisfy pre-bind. The login path has no such lookup: it *derives*
 the enterprise's slug from the subject and binds it as the tenant context
 **before** the transaction opens, so the engine's `begin` listener writes it
 into `app.current_enterprise_id` and the RLS policy (no `FOR` clause, so
 `USING` doubles as `WITH CHECK`) accepts every row. The subject-keyed
-`sso_personal_enterprises` table is what stands in for the CLI's slug lookup,
+`sso_personal_enterprises` table is what stands in for the CLI's id-blind lookup,
 and it is untenanted, so "which enterprise is this?" is answered before RLS is
 in the way.
 

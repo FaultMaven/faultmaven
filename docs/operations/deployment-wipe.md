@@ -240,7 +240,7 @@ alembic upgrade head
     The cleanup pod must run as the agent's uid/gid, not the wipe Job's.
 10. fm-wipe-deployment --verify            # ← must pass before provisioning
 11. Provision, in this order:
-      fm-provision-sso-org --name … --slug … --workos-org-id org_…   (owner DSN)
+      fm-provision-sso-org --name … --slug … --domain … --workos-org-id org_…   (owner DSN)
       human signs in via WorkOS
       fm-promote-platform-admin <username>     (verify the derived username first)
       fm-provision-service-account -u slack-agent --enterprise-id <enterprise_id>
