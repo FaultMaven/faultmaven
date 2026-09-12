@@ -31,9 +31,11 @@ pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 def test_resolution_alone_does_not_make_a_distinct_failure_mode():
     """The exact clause that caused #1375 must not come back.
 
-    Matched case-insensitively on the disjunction itself rather than on the old
-    sentence, so a reworded revert ("differing symptoms or differing fixes")
-    is caught too.
+    A literal check on three phrasings, and no more than that: a revert worded
+    "distinct by symptom or by remediation" passes it. It is a tripwire for the
+    obvious revert, not a proof. The load-bearing half is the two tests below,
+    which assert the POSITIVE statements the measurement validated — a prompt
+    cannot both carry those and license resolution-based splitting.
     """
     normalised = " ".join(ANALYSIS_SYSTEM_PROMPT.lower().split())
 

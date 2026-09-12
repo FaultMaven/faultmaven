@@ -126,15 +126,20 @@ This distinction decides how many items you return, so apply it literally:
   upstream, oversized headers and stale DNS describes ONE failure mode. The
   operator sees one thing -- a 502 -- and has to work out which cause it is.
   Distinguishing between them is the JOB the runbook does; it is not a reason
-  to write four runbooks. Return one item, and let `symptoms_summary` describe
-  the shared symptom and `resolution_summary` name the several causes.
+  to write four runbooks. Return one item whose `symptoms_summary` describes
+  the shared symptom and whose `resolution_summary` names each cause -- that
+  pair is the analysis record the operator reads back, so it must account for
+  every cause you merged.
 - Different observable symptoms are different failure modes. A reference
   covering `OOMKilled`, `ImagePullBackOff`, `Pending` and `CrashLoopBackOff`
   describes FOUR: an operator seeing one of them is not seeing the others.
 
 The reliable test is `symptom_class`. If two candidate items would carry the
-same `symptom_class` for the same `service`, they are one failure mode with two
-causes -- merge them. If you find yourself distinguishing items by their FIX
+same SET of `symptom_class` values for the same `service`, they are one failure
+mode with two causes -- merge them. Overlapping sets are a warning sign too:
+["oom"] and ["oom", "crash_loop"] for one service usually means one observed
+failure that you have described twice, so re-read the source and decide which
+single set is right. If you find yourself distinguishing items by their FIX
 rather than by what is observed, you are splitting causes, not failure modes.
 
 Your task: Read the provided document and identify every distinct failure mode

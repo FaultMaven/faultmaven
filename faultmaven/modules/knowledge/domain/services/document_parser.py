@@ -10,6 +10,10 @@ from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
+from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
+    mask_html_comments,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -180,11 +184,23 @@ class DocumentParser:
         return self._read_text_with_fallback(file_path)
 
     def _extract_markdown(self, file_path: Path) -> str:
-        """Read markdown file, stripping embedded HTML comments."""
-        text = self._read_text_with_fallback(file_path)
-        # Strip HTML comments
-        text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
-        return text
+        """Read markdown file, blanking embedded HTML comments.
+
+        Routed through ``runbook_grammar.mask_html_comments`` — "THE single
+        decision about what a comment is; every consumer routes here" — rather
+        than a local ``<!--.*?-->`` sweep, which was wrong twice over and
+        measurably disarmed the already-a-runbook gate this text feeds (#1375):
+
+        * **Fence-blind.** A runbook that shows ``<!--`` inside a fenced example
+          had everything from that token to the next ``-->`` anywhere in the
+          document deleted. Measured on a document ``RunbookValidator`` PASSES:
+          ``## Causes`` vanished, so ``detect_existing_runbook`` answered False
+          for a genuine runbook and it was converted and fragmented.
+        * **Splicing.** ``re.sub`` to the empty string joins the lines either
+          side, which can stop a heading being a heading. The shared mask blanks
+          in place, so every offset and line number survives.
+        """
+        return mask_html_comments(self._read_text_with_fallback(file_path))
 
     def _extract_html(self, file_path: Path) -> str:
         """Extract text from HTML, preserving structural elements."""

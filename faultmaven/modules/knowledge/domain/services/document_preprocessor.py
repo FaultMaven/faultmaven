@@ -3,7 +3,10 @@
 Stages:
 1. Format extraction (via DocumentParser)
 1b. Already-a-runbook gate: refuse a document that is already a FaultMaven
-    runbook (ALREADY_A_RUNBOOK), or warn when only its frontmatter matches
+    runbook (ALREADY_A_RUNBOOK). A document with runbook frontmatter whose body
+    is not the canonical skeleton is WARNED about instead, and only when that
+    frontmatter carries `symptom_class` — see ``is_near_runbook`` for why the
+    frontmatter alone is too generic to warn on
 2. Content cleanup (strip boilerplate)
 3. Sensitive content scan (PII redaction)
 4. Size check (hard limit at 30K tokens)
@@ -29,6 +32,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
 from faultmaven.modules.knowledge.domain.services.document_parser import (
     DocumentParser,
 )
+from faultmaven.modules.knowledge.domain.services.runbook_grammar import code_spans
 
 logger = logging.getLogger(__name__)
 
@@ -341,21 +345,23 @@ _RUNBOOK_BODY_SECTION_RES = tuple(
     for section in _RUNBOOK_BODY_SECTIONS
 )
 
-# Fenced blocks are masked before the section search, because a postmortem that
-# QUOTES the runbook it followed is a document this pipeline exists to convert,
-# and a fenced quote of ``## Symptom Recognition`` + ``## Causes`` would
-# otherwise satisfy the body half and hard-refuse it (422). Note this is where
-# the gate deliberately parts company with ``RunbookValidator._validate_structure``,
-# which does NOT mask: the validator is already looking at something claiming to
-# be a runbook, so a fenced heading costs it nothing, while here it costs a
-# legitimate conversion. ``_flag_malformed_cause_headings`` masks for the same
-# reason this does.
+# Code is masked before the section search, because a postmortem that QUOTES the
+# runbook it followed is a document this pipeline exists to convert, and a fenced
+# quote of ``## Symptom Recognition`` + ``## Causes`` would otherwise satisfy the
+# body half and hard-refuse it (422). This is where the gate deliberately parts
+# company with ``RunbookValidator._validate_structure``, which does NOT mask: the
+# validator is already looking at something claiming to be a runbook, so a fenced
+# heading costs it nothing, while here it costs a legitimate conversion.
 #
-# Masked to BLANK LINES rather than deleted. Deleting splices the lines either
-# side of the fence together, which can manufacture a line that starts with
-# ``##`` where the source had none — the same splice hazard #1241 hit when it
-# deleted comments instead of masking them.
-_CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+# Via ``runbook_grammar.mask_code`` rather than a local regex. A private
+# ``re.compile(r"```.*?```", re.DOTALL)`` shipped here first and was wrong three
+# ways, each of which either refused a legitimate document or disarmed the gate
+# on a real runbook: it did not know ``~~~`` fences; it paired backtick runs
+# positionally, so an unclosed fence swallowed the real headings after it; and
+# replacing the span with newlines dropped the characters before its first and
+# after its last, splicing WITHIN a line and manufacturing a ``## Causes`` the
+# source never had. The shared helper answers all three because it is the same
+# ``_protected_spans`` the comment mask uses, and it is length-preserving.
 
 # Bytes before the opening ``---`` that must not disarm the gate. The
 # frontmatter anchor is ``re.match``, so it binds at offset 0: a UTF-8 BOM (the
@@ -368,6 +374,29 @@ _CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 _LEADING_NOISE = "\ufeff \t\r\n"
 
 
+def classify_runbook_shape(text: str) -> tuple[bool, bool]:
+    """Return ``(is_runbook, is_near_runbook)`` from ONE pass over the document.
+
+    ``preprocess`` needs both answers and they share every expensive step: the
+    leading-noise strip, the YAML parse, and the code-span scan over a document
+    that may run to ``MAX_TOKEN_LIMIT`` (30K tokens) — the size check happens
+    later, so this stage sees the document at full size. Asking
+    ``detect_existing_runbook`` and then ``is_near_runbook`` did all of it
+    twice.
+
+    The two public predicates below delegate here rather than the other way
+    round, so the shape rule is stated once and the surface the tests drive is
+    the surface production uses.
+    """
+    fields = _runbook_frontmatter_fields(text)
+    if len(fields) < _RUNBOOK_FRONTMATTER_MIN_FIELDS:
+        return False, False
+    # Only now is the body scan worth paying for.
+    if _has_runbook_body(text):
+        return True, False
+    return False, "symptom_class" in fields
+
+
 def detect_existing_runbook(text: str) -> bool:
     """Is this document already a FaultMaven runbook?
 
@@ -375,7 +404,7 @@ def detect_existing_runbook(text: str) -> bool:
     its body carries the canonical section skeleton OUTSIDE any fenced block.
     See the constants above for why neither half decides it alone.
     """
-    return _has_runbook_frontmatter(text) and has_runbook_body(text)
+    return _has_runbook_frontmatter(text) and _has_runbook_body(text)
 
 
 def _runbook_frontmatter_fields(text: str) -> frozenset:
@@ -417,7 +446,7 @@ def _has_runbook_frontmatter(text: str) -> bool:
 def is_near_runbook(text: str) -> bool:
     """Ours by frontmatter, but the body is not the canonical skeleton.
 
-    Deliberately NARROWER than ``_has_runbook_frontmatter``. The threshold is
+    Deliberately NARROWER than the gate's own frontmatter half. The threshold is
     four of six, and four of those six are generic enough that an incident
     report carrying ``id``/``service``/``severity``/``status`` meets it — so
     warning on the frontmatter half alone would fire on precisely the document
@@ -432,18 +461,28 @@ def is_near_runbook(text: str) -> bool:
     gate no longer recognises — sections renamed locally, heading levels
     flattened by a round trip through another format.
     """
-    fields = _runbook_frontmatter_fields(text)
-    return (
-        len(fields) >= _RUNBOOK_FRONTMATTER_MIN_FIELDS
-        and "symptom_class" in fields
-        and not has_runbook_body(text)
+    return classify_runbook_shape(text)[1]
+
+
+def _has_runbook_body(text: str) -> bool:
+    """Does the body carry the canonical section skeleton, outside code?
+
+    Matches on the RAW text and discards any hit that starts inside a code span,
+    rather than matching on a masked copy. A mask must pick a fill character,
+    and the fill can satisfy the pattern being tested: blanking to spaces turns
+    ``##`` + an inline span + `` Causes`` into ``##             Causes``, which
+    ``^##[ \t]+Causes[ \t]*$`` accepts — a heading the mask invented. Offsets
+    have no fill to be confused by.
+    """
+    spans = code_spans(text)
+
+    def outside_code(match) -> bool:
+        return not any(start <= match.start() < end for start, end in spans)
+
+    return all(
+        any(outside_code(m) for m in pattern.finditer(text))
+        for pattern in _RUNBOOK_BODY_SECTION_RES
     )
-
-
-def has_runbook_body(text: str) -> bool:
-    """Does the body carry the canonical section skeleton, outside code fences?"""
-    unfenced = _CODE_FENCE_RE.sub(lambda m: "\n" * m.group(0).count("\n"), text)
-    return all(pattern.search(unfenced) for pattern in _RUNBOOK_BODY_SECTION_RES)
 
 
 # =============================================================================
@@ -528,7 +567,8 @@ class DocumentPreprocessor:
         # refusal costs nothing. ``ALREADY_A_RUNBOOK`` already had its 422 in
         # ``conversion_routes`` and its user-facing copy in the Dashboard; this
         # is the raise site they were waiting for.
-        if detect_existing_runbook(extracted_text):
+        is_runbook, near_runbook = classify_runbook_shape(extracted_text)
+        if is_runbook:
             return PreprocessingResult(
                 extracted_text="",
                 source_metadata={},
@@ -548,7 +588,7 @@ class DocumentPreprocessor:
         # fragmentation is still the likely outcome, so the user is told why
         # rather than left with silence. See ``is_near_runbook`` for why this is
         # narrower than the gate's own frontmatter half.
-        if is_near_runbook(extracted_text):
+        if near_runbook:
             warnings.append(
                 "This document carries FaultMaven runbook frontmatter but not the "
                 "expected section structure. Conversion will re-derive runbooks "

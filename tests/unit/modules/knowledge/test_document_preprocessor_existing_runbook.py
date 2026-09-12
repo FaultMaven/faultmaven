@@ -15,6 +15,7 @@ blocks the incident reports this pipeline exists to convert).
 from __future__ import annotations
 
 import re
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,7 @@ from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
     _RUNBOOK_FRONTMATTER_FIELDS,
     _RUNBOOK_FRONTMATTER_MIN_FIELDS,
     DocumentPreprocessor,
+    _has_runbook_body,
     cleanup_text,
     detect_existing_runbook,
 )
@@ -395,20 +397,89 @@ def test_a_postmortem_quoting_a_runbook_is_not_detected():
     assert detect_existing_runbook(POSTMORTEM_QUOTING_A_RUNBOOK) is False
 
 
-def test_fence_masking_preserves_line_structure():
-    """Masking to blank lines, not deleting — deletion can manufacture a match.
+# The mask has to blank IN PLACE. Deleting a code span joins the text either
+# side, which can manufacture a heading the source never had — for this gate a
+# false 422 on a legitimate document. The first version of this test put the
+# newlines OUTSIDE the fence, so ``##`` and ``Causes`` stayed on separate lines
+# under deletion as well as under masking and the assertion held either way:
+# swapping the mask for ``sub("")`` left all 113 tests green. These fixtures
+# splice, which is what makes the test bite.
+SPLICING_FIXTURES = [
+    # Same line either side: deletion yields a line-start ``## Causes``.
+    ("inline", "note x```a\nb```## Causes\n## Symptom Recognition\n"),
+    # Bare ``##`` joined to `` Causes`` across a fence carrying no newline.
+    ("across a fence", "## Symptom Recognition\n\n##```fenced``` Causes\n"),
+]
 
-    Deleting a fence splices the lines either side together. Here that would
-    join a bare ``##`` to ``Causes``, producing a heading the source never had
-    (the splice hazard #1241 hit when it deleted comments instead of masking).
+
+@pytest.mark.parametrize(
+    "label,text", SPLICING_FIXTURES, ids=lambda v: v if isinstance(v, str) else ""
+)
+def test_code_masking_does_not_manufacture_a_heading(label, text):
+    """A heading that only exists once the code is removed is not a heading."""
+    assert _has_runbook_body(text) is False
+
+
+def test_a_heading_inside_code_is_not_a_heading_but_one_outside_is():
+    """The discriminator stated directly, both columns.
+
+    A fixture only shows that ONE shape is handled. This asserts the rule: the
+    same heading text counts when it is prose and does not count when it is
+    code.
     """
-    spliced = (
-        valid_runbook().split("## Causes")[0]
-        + "##"
-        + "\n```\nfenced\n```\n"
-        + " Causes\n\n### Cause A: x\n"
+    fence = "`" * 3
+    body = "## Symptom Recognition\n\n## Causes\n"
+
+    assert _has_runbook_body(body) is True
+    assert _has_runbook_body(f"{fence}markdown\n{body}{fence}\n") is False
+
+
+def test_tilde_fences_are_masked_too():
+    """``~~~`` is standard CommonMark, and a local backtick-only regex missed it.
+
+    A postmortem quoting a runbook in a ``~~~`` fence was hard-refused with 422
+    while the identical document using backticks was correctly let through —
+    the first cut of this gate only ever tested the backtick form.
+    """
+    postmortem = (
+        "---\nid: INC-4821\nservice: checkout-api\nseverity: high\n"
+        "status: resolved\n---\n\n# Incident\n\n~~~markdown\n"
+        "## Symptom Recognition\n- x\n\n## Causes\n### Cause A: y\n~~~\n"
     )
-    assert detect_existing_runbook(spliced) is False
+    assert detect_existing_runbook(postmortem) is False
+
+
+def test_a_runbook_quoting_an_unclosed_comment_in_a_fence_is_still_detected():
+    """The parser's comment sweep must not eat the headings the gate reads.
+
+    ``_extract_markdown`` stripped ``<!--.*?-->`` with a fence-blind DOTALL sub,
+    so a runbook showing an unclosed ``<!--`` inside a fenced example lost
+    everything up to the next ``-->`` anywhere in the document — ``## Causes``
+    included. Measured on a document ``RunbookValidator`` PASSES: the gate
+    answered False and #1375 reproduced in full. This drives the REAL path,
+    because the raw text was detected correctly the whole time.
+    """
+    fence = "`" * 3
+    content = (
+        valid_runbook()
+        .replace(
+            "## Causes",
+            f"{fence}html\n<!-- example: an unclosed comment opener\n{fence}\n\n## Causes",
+            1,
+        )
+        .replace("## Prevention", "A note mentioning --> in prose.\n\n## Prevention", 1)
+    )
+
+    assert (
+        RunbookValidator().validate_content(content).passed
+    ), "fixture stopped being a runbook"
+    assert detect_existing_runbook(content) is True, "raw text regressed"
+
+    path = Path(tempfile.mkdtemp()) / "rb.md"
+    path.write_text(content)
+    assert (
+        detect_existing_runbook(DocumentParser().parse(path, "text/markdown")) is True
+    )
 
 
 async def test_near_runbook_still_warns(tmp_path):

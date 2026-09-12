@@ -52,7 +52,22 @@ path did discard: 4 modes became 3 drafts, the fourth dropped by the coarse
 ## Running it
 
 There is no driver in `tests/` — the measurement calls a live LLM, so it is not
-a CI test. Re-run it against a branch with the snippet in
-`docs/architecture/knowledge-and-ai/document-to-runbook-conversion.md` §5.1, or
-drive `ConversionService._analyze_document` over `documents/` directly and
-compare the mode counts to the table above.
+a CI test.
+
+Drive `ConversionService._analyze_document` over `documents/` and compare the
+mode counts to the table above. Note it needs the real settings and router (the
+call resolves `settings.llm.get_knowledge_model()` and passes
+`**_knowledge_route_kwargs()`), so construct the service rather than calling the
+prompt directly:
+
+```python
+svc = ConversionService.__new__(ConversionService)
+svc._settings = get_settings()
+svc._llm_router = LLMRouter()
+analysis = await svc._analyze_document(path.read_text(), path.name)
+```
+
+Do **not** copy the illustrative snippet in
+`docs/architecture/knowledge-and-ai/document-to-runbook-conversion.md` §5.1: it
+shows an `_analyze_and_split` that has never existed in the codebase, and a bare
+`route(...)` that omits the knowledge-provider routing.

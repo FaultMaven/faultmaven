@@ -690,27 +690,40 @@ score two of three and look like a fix.
 The splitting logic is:
 
 ```python
-async def _analyze_and_split(self, text: str, filename: str) -> AnalysisResult:
-    """
-    Analyze document for failure modes.
+async def _analyze_document(self, text: str, filename: str) -> AnalysisResult:
+    """Analyze document for failure modes using KNOWLEDGE_PROVIDER.
 
-    Returns:
-        AnalysisResult with failure_modes list.
-        - 0 modes: source is not actionable (architectural/conceptual)
-        - 1 mode: single runbook conversion
-        - N modes: N separate runbook conversions
+    Returns AnalysisResult with failure_modes:
+      - 0 modes: source is not actionable (architectural/conceptual)
+      - 1 mode:  single runbook — INCLUDING a document that covers one symptom
+                 with several causes, however many causes it lists (§5.1)
+      - N modes: N separate runbook conversions, one per observable symptom
     """
-    response = await self._llm_router.route(
-        messages=[
-            {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
-            {"role": "user", "content": f"Analyze this document:\n\n{text}"}
-        ],
-        model=self._knowledge_model,
-        max_tokens=2048,
-        temperature=0.2,
-        response_format={"type": "json_object"},
+    knowledge_model = self._settings.llm.get_knowledge_model()
+
+    async def _analyze(cap: int):
+        return await self._llm_router.route(
+            messages=[
+                {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
+                {"role": "user", "content": f"Analyze this document:\n\n{text}"},
+            ],
+            model=knowledge_model,
+            max_tokens=cap,
+            temperature=0.2,
+            response_format={"type": "json_object"},
+            # Lands on KNOWLEDGE_PROVIDER when the operator set one.
+            **self._knowledge_route_kwargs(),
+        )
+
+    # A document with many failure modes can outgrow the budget; raise the cap
+    # once rather than reporting an unparseable body (#1094).
+    response = await generate_with_truncation_retry(
+        _analyze,
+        max_tokens=ANALYSIS_MAX_TOKENS,
+        ceiling=ANALYSIS_MAX_TOKENS_CEILING,
+        label=f"document analysis ({filename})",
     )
-    return AnalysisResult.model_validate_json(response.content)
+    ...
 ```
 
 ### 5.2 Text Routing for Multi-Mode Documents
