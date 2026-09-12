@@ -1,8 +1,9 @@
 """6-stage document preprocessing pipeline for conversion.
 
 Stages:
-1. Format extraction (via DocumentParser), then refuse a document that is
-   already a FaultMaven runbook (ALREADY_A_RUNBOOK) — see Stage 1b below
+1. Format extraction (via DocumentParser)
+1b. Already-a-runbook gate: refuse a document that is already a FaultMaven
+    runbook (ALREADY_A_RUNBOOK), or warn when only its frontmatter matches
 2. Content cleanup (strip boilerplate)
 3. Sensitive content scan (PII redaction)
 4. Size check (hard limit at 30K tokens)
@@ -303,6 +304,14 @@ _RUNBOOK_FRONTMATTER_FIELDS = {
     "status",
 }
 
+# 4 of 6 is "runbook-shaped frontmatter". Named rather than inlined so
+# ``test_document_preprocessor_existing_runbook`` can assert the threshold is
+# actually reachable — see ``_RUNBOOK_FRONTMATTER_FIELDS`` against
+# ``RunbookValidator.REQUIRED_METADATA``. If a schema change made three of these
+# six optional, every valid runbook would fall under the threshold and this gate
+# would disarm with no test failing.
+_RUNBOOK_FRONTMATTER_MIN_FIELDS = 4
+
 # The two sections that make a document a FaultMaven runbook rather than some
 # other technical document, checked alongside the frontmatter above.
 #
@@ -332,31 +341,109 @@ _RUNBOOK_BODY_SECTION_RES = tuple(
     for section in _RUNBOOK_BODY_SECTIONS
 )
 
+# Fenced blocks are masked before the section search, because a postmortem that
+# QUOTES the runbook it followed is a document this pipeline exists to convert,
+# and a fenced quote of ``## Symptom Recognition`` + ``## Causes`` would
+# otherwise satisfy the body half and hard-refuse it (422). Note this is where
+# the gate deliberately parts company with ``RunbookValidator._validate_structure``,
+# which does NOT mask: the validator is already looking at something claiming to
+# be a runbook, so a fenced heading costs it nothing, while here it costs a
+# legitimate conversion. ``_flag_malformed_cause_headings`` masks for the same
+# reason this does.
+#
+# Masked to BLANK LINES rather than deleted. Deleting splices the lines either
+# side of the fence together, which can manufacture a line that starts with
+# ``##`` where the source had none — the same splice hazard #1241 hit when it
+# deleted comments instead of masking them.
+_CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+
+# Bytes before the opening ``---`` that must not disarm the gate. The
+# frontmatter anchor is ``re.match``, so it binds at offset 0: a UTF-8 BOM (the
+# "UTF-8 with BOM" default of several Windows editors, preserved verbatim by
+# ``Path.read_text(encoding="utf-8")``) or one blank line ahead of the
+# delimiter made ``detect_existing_runbook`` answer False for a byte-identical
+# runbook. Detection runs BEFORE ``cleanup_text``, which is the only thing that
+# would otherwise have removed them, so #1375 still reproduced on any runbook
+# saved by such an editor.
+_LEADING_NOISE = "\ufeff \t\r\n"
+
 
 def detect_existing_runbook(text: str) -> bool:
     """Is this document already a FaultMaven runbook?
 
     True only when BOTH hold: the document opens with runbook frontmatter, and
-    its body carries the canonical section skeleton. See the constants above for
-    why the frontmatter alone does not decide it.
+    its body carries the canonical section skeleton OUTSIDE any fenced block.
+    See the constants above for why neither half decides it alone.
     """
+    return _has_runbook_frontmatter(text) and has_runbook_body(text)
+
+
+def _runbook_frontmatter_fields(text: str) -> frozenset:
+    """Which of ``_RUNBOOK_FRONTMATTER_FIELDS`` the opening frontmatter carries.
+
+    Returns the matched field NAMES rather than a bool, because the two callers
+    need different questions answered from one parse: the gate asks "are there
+    at least four", the near-runbook warning asks "is ``symptom_class`` among
+    them". Empty when the document does not open with parseable frontmatter.
+
+    Sole owner of the ``_LEADING_NOISE`` strip, and the only reader for which
+    offset 0 is load-bearing — the section search is ``MULTILINE`` and
+    indifferent to what precedes the first delimiter. A second copy in the
+    caller made the guard untestable: removing either left the other, so a
+    mutation that should have restored the BOM bug killed no test.
+    """
+    text = text.lstrip(_LEADING_NOISE)
+
     match = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
     if not match:
-        return False
+        return frozenset()
 
     try:
         import yaml
 
         metadata = yaml.safe_load(match.group(1))
         if not isinstance(metadata, dict):
-            return False
-        present = set(metadata.keys()) & _RUNBOOK_FRONTMATTER_FIELDS
-        if len(present) < 4:  # 4 of 6 fields = runbook-shaped frontmatter
-            return False
+            return frozenset()
+        return frozenset(metadata.keys()) & _RUNBOOK_FRONTMATTER_FIELDS
     except Exception:
-        return False
+        return frozenset()
 
-    return all(pattern.search(text) for pattern in _RUNBOOK_BODY_SECTION_RES)
+
+def _has_runbook_frontmatter(text: str) -> bool:
+    """Runbook-SHAPED frontmatter: at least the threshold many fields."""
+    return len(_runbook_frontmatter_fields(text)) >= _RUNBOOK_FRONTMATTER_MIN_FIELDS
+
+
+def is_near_runbook(text: str) -> bool:
+    """Ours by frontmatter, but the body is not the canonical skeleton.
+
+    Deliberately NARROWER than ``_has_runbook_frontmatter``. The threshold is
+    four of six, and four of those six are generic enough that an incident
+    report carrying ``id``/``service``/``severity``/``status`` meets it — so
+    warning on the frontmatter half alone would fire on precisely the document
+    class this pipeline exists to convert, which is the same false-positive
+    argument that made the body half mandatory for the 422.
+
+    ``symptom_class`` is the discriminator: it is the one field in the set that
+    is FaultMaven's own controlled vocabulary rather than a word every tracker
+    also uses, it is in ``REQUIRED_METADATA`` so every runbook we produce or
+    accept carries it, and no ticket export does. What is left is the case worth
+    a warning and nothing else: a document that IS one of ours whose body the
+    gate no longer recognises — sections renamed locally, heading levels
+    flattened by a round trip through another format.
+    """
+    fields = _runbook_frontmatter_fields(text)
+    return (
+        len(fields) >= _RUNBOOK_FRONTMATTER_MIN_FIELDS
+        and "symptom_class" in fields
+        and not has_runbook_body(text)
+    )
+
+
+def has_runbook_body(text: str) -> bool:
+    """Does the body carry the canonical section skeleton, outside code fences?"""
+    unfenced = _CODE_FENCE_RE.sub(lambda m: "\n" * m.group(0).count("\n"), text)
+    return all(pattern.search(unfenced) for pattern in _RUNBOOK_BODY_SECTION_RES)
 
 
 # =============================================================================
@@ -454,6 +541,20 @@ class DocumentPreprocessor:
                     "it to the knowledge base directly instead of converting it."
                 ),
                 error_code=ConversionErrorCode.ALREADY_A_RUNBOOK,
+            )
+
+        # A NEAR-runbook keeps the advisory the refusal above replaces: one of
+        # ours whose body the gate no longer recognises still converts, and
+        # fragmentation is still the likely outcome, so the user is told why
+        # rather than left with silence. See ``is_near_runbook`` for why this is
+        # narrower than the gate's own frontmatter half.
+        if is_near_runbook(extracted_text):
+            warnings.append(
+                "This document carries FaultMaven runbook frontmatter but not the "
+                "expected section structure. Conversion will re-derive runbooks "
+                "from its prose, which may split one runbook's causes into "
+                "several. If it is already a runbook, add it to the knowledge "
+                "base directly instead of converting it."
             )
 
         # Stage 2: Content cleanup

@@ -20,13 +20,17 @@ from pathlib import Path
 import pytest
 
 from faultmaven.modules.knowledge.domain.models.conversion import ConversionErrorCode
+from faultmaven.modules.knowledge.domain.services.document_parser import DocumentParser
 from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
     _RUNBOOK_BODY_SECTIONS,
+    _RUNBOOK_FRONTMATTER_FIELDS,
+    _RUNBOOK_FRONTMATTER_MIN_FIELDS,
     DocumentPreprocessor,
     cleanup_text,
     detect_existing_runbook,
 )
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+    REQUIRED_METADATA,
     REQUIRED_SECTIONS,
     RunbookValidator,
 )
@@ -59,6 +63,23 @@ def test_body_sections_are_required_sections():
     assert set(_RUNBOOK_BODY_SECTIONS) <= set(REQUIRED_SECTIONS)
 
 
+def test_frontmatter_fields_are_required_metadata():
+    """The OTHER half of the AND needs the same pin, for the same reason.
+
+    Only the section names were pinned at first, which left the frontmatter half
+    free to drift: ``REQUIRED_METADATA`` currently carries all six of
+    ``_RUNBOOK_FRONTMATTER_FIELDS``, so the 4-of-6 threshold is reachable. Make
+    three of them optional in a future schema change and EVERY valid runbook
+    falls under the threshold — the gate disarms completely and nothing fails.
+    """
+    assert set(_RUNBOOK_FRONTMATTER_FIELDS) <= set(REQUIRED_METADATA)
+    # …and enough of them survive for the threshold to be satisfiable at all.
+    assert (
+        len(set(_RUNBOOK_FRONTMATTER_FIELDS) & set(REQUIRED_METADATA))
+        >= _RUNBOOK_FRONTMATTER_MIN_FIELDS
+    )
+
+
 # ---------------------------------------------------------------------------
 # Direction 1: a runbook is detected
 # ---------------------------------------------------------------------------
@@ -80,9 +101,14 @@ def test_every_shipped_runbook_is_detected(path: Path):
     Checked through ``cleanup_text`` as well: detection runs before cleanup
     today, and this keeps the gate honest if that order ever changes.
     """
-    content = path.read_text()
-    assert detect_existing_runbook(content) is True
-    assert detect_existing_runbook(cleanup_text(content)) is True
+    # Through ``DocumentParser``, which is what production feeds the gate —
+    # not ``read_text``. ``_extract_markdown`` strips HTML comments before
+    # detection ever runs, so a pack runbook that later ships a ``<!-- … -->``
+    # directive across a section heading would break the real path while a
+    # read_text-based test kept passing.
+    parsed = DocumentParser().parse(path, "text/markdown")
+    assert detect_existing_runbook(parsed) is True
+    assert detect_existing_runbook(cleanup_text(parsed)) is True
 
 
 def test_pack_is_not_empty():
@@ -171,10 +197,14 @@ def test_plain_troubleshooting_prose_is_not_detected():
 
 
 async def test_preprocess_refuses_a_runbook_with_already_a_runbook(tmp_path):
-    """Stage 1b rejects, and does so before any LLM call.
+    """Stage 1b rejects, before cleanup and before any LLM call.
 
-    ``llm_router``/``settings`` are left unset: the triage stage would need
-    them, so reaching it at all would raise here rather than pass.
+    The ordering is asserted directly, on ``extracted_text``: a refusal at
+    Stage 1b carries no document text onward, whereas every later rejection
+    returns the extracted text it had already produced. (``llm_router`` being
+    unset is NOT an oracle here — ``_run_content_triage`` returns ``None`` when
+    it is missing rather than raising, so the pipeline would have run to
+    completion without one.)
     """
     path = tmp_path / "redis-oom.md"
     path.write_text(valid_runbook())
@@ -191,8 +221,9 @@ async def test_preprocess_refuses_a_runbook_with_already_a_runbook(tmp_path):
 async def test_preprocess_does_not_refuse_an_incident_report(tmp_path):
     """The negative control on the same seam: this one proceeds past Stage 1b.
 
-    It is stopped later (no triage router is wired, so the run ends at the
-    stages that need one) — what matters is that it is not stopped HERE.
+    Without an LLM router the triage stage is skipped (it returns ``None``), so
+    this document runs the pipeline to a non-rejected result. What is asserted
+    is only that it was not stopped HERE, by this gate.
     """
     path = tmp_path / "INC-4821.md"
     path.write_text(INCIDENT_REPORT)
@@ -269,16 +300,163 @@ def _app_with_real_service():
 
 def test_post_convert_answers_422_already_a_runbook():
     """End to end: uploading a runbook to /knowledge/convert is a 422."""
-    client = _app_with_real_service()
-
-    response = client.post(
-        "/api/v1/knowledge/convert",
-        # "personal" keeps the request clear of the global-authoring admin gate.
-        data={"scope": "personal"},
-        files={"file": ("redis-oom.md", valid_runbook(), "text/markdown")},
-    )
+    with _app_with_real_service() as client:
+        response = client.post(
+            "/api/v1/knowledge/convert",
+            # "personal" keeps the request clear of the global-authoring admin gate.
+            data={"scope": "personal"},
+            files={"file": ("redis-oom.md", valid_runbook(), "text/markdown")},
+        )
 
     assert response.status_code == 422, response.text
     body = response.json()
     assert body["error_code"] == ConversionErrorCode.ALREADY_A_RUNBOOK
     assert "already a FaultMaven runbook" in body["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Regressions found by review of the first cut of this gate
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "label,prefix",
+    [
+        ("utf-8 BOM", "\ufeff"),
+        ("leading blank line", "\n"),
+        ("leading blank lines", "\n\n\n"),
+        ("leading spaces", "   "),
+        ("BOM then blank line", "\ufeff\n"),
+    ],
+)
+def test_bytes_before_the_frontmatter_do_not_disarm_the_gate(label, prefix):
+    """A runbook saved by an editor that emits a BOM is still a runbook.
+
+    The frontmatter anchor is ``re.match``, so it binds at offset 0. A UTF-8 BOM
+    — what "UTF-8 with BOM" produces, and what ``Path.read_text(encoding='utf-8')``
+    faithfully preserves — or one blank line ahead of the ``---`` made the whole
+    gate answer False, and #1375 reproduced in full on a byte-identical file.
+    Detection runs before ``cleanup_text``, which is the only thing that would
+    otherwise have removed them.
+    """
+    assert detect_existing_runbook(prefix + valid_runbook()) is True
+
+
+async def test_bom_encoded_runbook_is_refused_end_to_end(tmp_path):
+    """The same thing through the real read path, not just the predicate."""
+    path = tmp_path / "redis-oom.md"
+    # ``utf-8-sig`` is how a BOM actually arrives: the editor writes it, and
+    # nothing between the file and the gate removes it.
+    path.write_text(valid_runbook(), encoding="utf-8-sig")
+
+    result = await DocumentPreprocessor().preprocess(path, "text/markdown")
+
+    assert result.is_rejected is True
+    assert result.error_code == ConversionErrorCode.ALREADY_A_RUNBOOK
+
+
+POSTMORTEM_QUOTING_A_RUNBOOK = """---
+id: INC-4821
+service: checkout-api
+severity: high
+status: resolved
+---
+
+# Incident 4821: Checkout latency
+
+## Timeline
+- 14:11 Connection pool saturation confirmed.
+
+## What we ran
+We followed the connection-pool runbook, reproduced here for the record:
+
+```markdown
+## Symptom Recognition
+- "ERROR: remaining connection slots are reserved"
+
+## Causes
+### Cause A: idle-in-transaction sessions hold their slots
+```
+
+## Follow-up
+- Cap aggregate pool size in the Helm chart.
+"""
+
+
+def test_a_postmortem_quoting_a_runbook_is_not_detected():
+    """Quoting the runbook you ran is routine in a postmortem — and convertible.
+
+    This document meets the frontmatter threshold on four generic fields, and
+    its fenced quote carries both canonical section headings. Searching the raw
+    text finds them and hard-refuses with 422 the exact document class the body
+    requirement was added to protect. The fence mask is what separates "is a
+    runbook" from "talks about one".
+    """
+    assert detect_existing_runbook(POSTMORTEM_QUOTING_A_RUNBOOK) is False
+
+
+def test_fence_masking_preserves_line_structure():
+    """Masking to blank lines, not deleting — deletion can manufacture a match.
+
+    Deleting a fence splices the lines either side together. Here that would
+    join a bare ``##`` to ``Causes``, producing a heading the source never had
+    (the splice hazard #1241 hit when it deleted comments instead of masking).
+    """
+    spliced = (
+        valid_runbook().split("## Causes")[0]
+        + "##"
+        + "\n```\nfenced\n```\n"
+        + " Causes\n\n### Cause A: x\n"
+    )
+    assert detect_existing_runbook(spliced) is False
+
+
+async def test_near_runbook_still_warns(tmp_path):
+    """Frontmatter but no recognised body: convertible, but say why it may split.
+
+    The tightened gate made this case silent — it previously carried the
+    "appears to already be a FaultMaven runbook" advisory. It still converts,
+    and fragmentation is still the likely outcome, so the advisory is the right
+    severity for the half that cannot carry a refusal alone.
+    """
+    frontmatter, _ = _split_sample()
+    path = tmp_path / "flattened-runbook.md"
+    path.write_text(
+        f"{frontmatter}\n# Runbook\n\nSymptoms: the pool is exhausted and "
+        "`ERROR: remaining connection slots are reserved` appears in the log.\n\n"
+        "Run `SELECT count(*) FROM pg_stat_activity;` to check.\n"
+    )
+
+    result = await DocumentPreprocessor().preprocess(path, "text/markdown")
+
+    assert result.error_code != ConversionErrorCode.ALREADY_A_RUNBOOK
+    assert any("runbook frontmatter" in w for w in result.warnings), result.warnings
+
+
+def test_incident_report_gets_no_near_runbook_warning():
+    """The near-runbook warning must not fire on an incident report.
+
+    This is where restoring the warning could have re-introduced, as noise, the
+    very false positive the body requirement removed from the 422: the incident
+    report meets the 4-of-6 frontmatter threshold on generic fields, so a
+    warning keyed on that half alone fires on every one of them.
+    ``is_near_runbook`` keys on ``symptom_class`` as well, which no tracker
+    export carries.
+    """
+    from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
+        _has_runbook_frontmatter,
+        is_near_runbook,
+    )
+
+    # The threshold IS met — that is the point; the warning still must not fire.
+    assert _has_runbook_frontmatter(INCIDENT_REPORT) is True
+    assert is_near_runbook(INCIDENT_REPORT) is False
+
+
+def test_a_full_runbook_is_not_a_near_runbook():
+    """A runbook the gate refuses outright is not also warned about."""
+    from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
+        is_near_runbook,
+    )
+
+    assert is_near_runbook(valid_runbook()) is False

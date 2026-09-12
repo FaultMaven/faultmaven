@@ -862,10 +862,19 @@ Implementation: Reuse existing `require_platform_admin` dependency for global sc
 | 403 | Insufficient permissions for scope | `{"detail": "Global KB conversion requires platform admin role"}` |
 | 413 | File too large | `{"detail": "File exceeds maximum size of 10MB"}` |
 | 415 | Unsupported file type | `{"detail": "Unsupported file type: image/png. Allowed: ..."}` |
+| 422 | Source is already a FaultMaven runbook (§2.1 stage 1b) | `{"detail": "This document is already a FaultMaven runbook...", "error_code": "ALREADY_A_RUNBOOK"}` |
 | 422 | Document not actionable | `{"detail": "Source document does not contain actionable failure modes..."}` |
 | 422 | All drafts failed validation | `{"detail": "Generated runbooks failed quality validation", "validation_errors": [...]}` |
 | 500 | LLM failure after retries | `{"detail": "Document conversion failed. Please try again."}` |
 | 503 | No LLM provider available | `{"detail": "Knowledge provider is not configured or unavailable"}` |
+
+Every refusal above carries an `error_code` alongside `detail`; the Dashboard
+keys its user-facing copy on that code, not on the prose. **This table is
+illustrative, not exhaustive** — the authoritative mapping is the `status_map`
+in `modules/knowledge/api/conversion_routes.py`, which also returns
+`FILE_EMPTY`, `FILE_CORRUPT`, `ENCODING_ERROR`, `DOCUMENT_TOO_SHORT`,
+`NO_TECHNICAL_CONTENT` and `LLM_PARSE_ERROR` as 422. Read the map rather than
+extending this list, or the two drift apart again.
 
 ---
 
