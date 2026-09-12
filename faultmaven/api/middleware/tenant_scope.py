@@ -60,6 +60,16 @@ Dropping it never refuses the request. Billing is attribution, not access, so a
 lapsed subscription must not read as an outage: the account keeps its enterprise
 anchor, and leaving an organization changes what is metered, not what is visible
 (ADR-017 D5).
+
+Whatever it decides, this dependency **publishes** it on ``request.state`` as a
+``RequestPrincipal`` (``api/middleware/principal.py``). The contextvars above
+scope the database; the published record is what lets the access log name the
+principal and the enterprise a request was bound to. ``LoggingMiddleware`` cannot
+read the contextvars — it is a ``BaseHTTPMiddleware``, running its downstream in
+a separate task, which is the same reason this is a dependency and not a
+middleware — but ``request.state`` is backed by the ASGI scope, one dict shared
+by both tasks. Identifiers only: the token is in hand here and must never reach
+the record, because the record's whole purpose is to be logged.
 """
 
 import logging
@@ -68,6 +78,10 @@ from typing import Optional
 from fastapi import Depends, HTTPException, Request, status
 
 from faultmaven.api.middleware.auth import _extract_token, get_auth_service
+from faultmaven.api.middleware.principal import (
+    RequestPrincipal,
+    publish_request_principal,
+)
 from faultmaven.api.v1.dependencies import get_organization_repository
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.tenant_context import (
@@ -164,6 +178,13 @@ async def bind_request_enterprise_context(
         # nothing is billed and the attribution stays NULL.
         set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
         set_current_billing_organization_id(None)
+        # No verified subject to publish: this arm deliberately never reads the
+        # token, which is what makes the re-leak guard unconditional. The access
+        # log keeps its session-derived user id here and gains the enterprise.
+        publish_request_principal(
+            request,
+            RequestPrincipal(user_id=None, enterprise_id=STANDALONE_ENTERPRISE_ID),
+        )
         return
 
     # Multi-tenant: the enterprise comes from the authenticated user's verified
@@ -177,6 +198,10 @@ async def bind_request_enterprise_context(
         # license (#770).
         set_current_enterprise_id(_UNSCOPED_ENTERPRISE)
         set_current_billing_organization_id(None)
+        publish_request_principal(
+            request,
+            RequestPrincipal(user_id=None, enterprise_id=_UNSCOPED_ENTERPRISE),
+        )
         return
 
     try:
@@ -185,9 +210,14 @@ async def bind_request_enterprise_context(
         )
     except (AuthenticationError, TokenRevocationError):
         # Invalid / revoked token — let the endpoint's own auth dependency 401;
-        # same non-tenant binding as the unauthenticated case.
+        # same non-tenant binding as the unauthenticated case. Nothing was
+        # verified, so there is no subject to name either.
         set_current_enterprise_id(_UNSCOPED_ENTERPRISE)
         set_current_billing_organization_id(None)
+        publish_request_principal(
+            request,
+            RequestPrincipal(user_id=None, enterprise_id=_UNSCOPED_ENTERPRISE),
+        )
         return
 
     # Fail closed: a verified user without a usable tenant must never fall
@@ -205,6 +235,18 @@ async def bind_request_enterprise_context(
             "enterprise claim",
             claims.get("sub"),
         )
+        # Publish before refusing. The token verified, so the subject is a
+        # verified fact and the 403 line can name who is presenting a
+        # pre-cutover token — which is the whole question an operator asks when
+        # these appear. No enterprise was bound, and the record says so.
+        publish_request_principal(
+            request,
+            RequestPrincipal(
+                user_id=claims.get("sub"),
+                enterprise_id=_UNSCOPED_ENTERPRISE,
+                account_kind=claims.get("account_kind"),
+            ),
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=UNSCOPED_REQUEST_MSG,
@@ -218,8 +260,20 @@ async def bind_request_enterprise_context(
     #
     # Validated after the enterprise is bound, so the lookup is scoped by the
     # policy the same way every other read in this request is.
-    set_current_billing_organization_id(
-        await _validated_billing_organization(
-            organization_repository, claims.get("organization_id")
-        )
+    billing_organization_id = await _validated_billing_organization(
+        organization_repository, claims.get("organization_id")
+    )
+    set_current_billing_organization_id(billing_organization_id)
+
+    # The same three facts, published for the access log. The organization is the
+    # VALIDATED one, not the claim: a line that named a stale claim would
+    # attribute the request to an organization nothing was actually billed to.
+    publish_request_principal(
+        request,
+        RequestPrincipal(
+            user_id=claims.get("sub"),
+            enterprise_id=enterprise_id,
+            organization_id=billing_organization_id,
+            account_kind=claims.get("account_kind"),
+        ),
     )

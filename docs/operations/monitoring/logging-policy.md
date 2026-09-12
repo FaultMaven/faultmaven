@@ -66,10 +66,53 @@ except Exception as e:
   request — every log line emitted while handling a request carries it.
 
 ## Access logs
-- Uvicorn's plaintext access log is **disabled** (`access_log=False` in
-  `main.py`). The single access log is the structured request
-  start/completion pair emitted by `LoggingMiddleware` (method, path,
-  status_code, duration_seconds, correlation_id, request_id).
+
+Uvicorn's plaintext access log is **disabled** (`access_log=False` in
+`main.py`). The single access log is the structured request start/completion
+pair emitted by `LoggingMiddleware`, plus a `Request failed` ERROR in place of
+the completion when the route raises.
+
+### Fields
+
+| Field | On | Meaning |
+|---|---|---|
+| `method`, `path` | all | The request line. `path` is the raw path; the *route template* is what the Prometheus `endpoint` label carries |
+| `status_code` | completed | |
+| `duration_seconds` | completed, failed | |
+| `error`, `error_type` | failed | |
+| `correlation_id` | all | Ties the pair together, and to every line logged while handling the request |
+| `client_ip` | started | The **resolved** client — the same address the rate limiters enforce on, not the socket peer |
+| `query_param_names` | started | Parameter **names** only. Values never reach a record: the SSO callback carries the IdP authorization code as a query parameter |
+| `session_id`, `case_id` | all | Extracted from the header / query / JSON body when present |
+| `user_id` | all | Who the request acts as — see below |
+| `enterprise_id` | completed, failed | The enterprise the request was bound to: the isolation boundary (ADR-017) |
+| `organization_id` | completed, failed | The billing organization, or `null` for an account in none. Attribution only, never a visibility predicate |
+
+### How a line is attributed
+
+`bind_request_enterprise_context` is the one place per request that verifies the
+token, and it publishes what it bound on `request.state` as a `RequestPrincipal`
+(`api/middleware/principal.py`). The completion and failure lines read it.
+Identifiers only — the binder holds the bearer token at that moment and never
+puts it, or anything else secret, on the record.
+
+`LoggingMiddleware` is a `BaseHTTPMiddleware`, so Starlette runs the route in a
+separate task and the tenancy contextvars do not reach it; `request.state` is
+backed by the ASGI scope, which both tasks share. This is why the **started**
+line carries no `enterprise_id`: it is emitted before the route, and therefore
+before the binding exists.
+
+Two fallbacks are worth knowing when reading a line:
+
+- **No `enterprise_id` at all** means no binder ran — the request matched no
+  route, or a middleware answered above the router.
+- An **empty** `enterprise_id` is the non-tenant sentinel: an unauthenticated or
+  invalid-token request under `TENANT_PROVIDER=multi`, which matches no
+  enterprise's rows.
+- `user_id` falls back to a lookup from `session_id` where the binding names no
+  subject — the single-tenant arm, which deliberately never reads the token.
+  That lookup is all this log had before, and a bearer-authenticated request
+  carries no session id, which is why API calls used to log `user_id: null`.
 
 ## Redaction
 - Strip or hash PII/session identifiers; avoid storing raw user content in logs

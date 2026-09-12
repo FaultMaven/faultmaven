@@ -16,7 +16,7 @@ query string, whatever it is called — rather than on a list of secret names.
 from unittest.mock import MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.testclient import TestClient
 
 from faultmaven.api.middleware.logging import LoggingMiddleware
@@ -165,3 +165,95 @@ class TestErrorPathsOmitQueryValues:
         assert SECRET not in emitted, "the authorization code reached an ERROR record"
         assert STATE not in emitted, "the CSRF state reached an ERROR record"
         assert "/api/v1/auth/sso/callback" in emitted, "the path must survive"
+
+
+BEARER = "eyJhbGciOiJSUzI1NiJ9.the-live-access-token.signature-Zm9vYmFy"
+PRINCIPAL_USER = "user_01HQXJ"
+PRINCIPAL_ENTERPRISE = "11111111-1111-1111-1111-111111111111"
+
+
+@pytest.mark.unit
+@pytest.mark.security
+class TestTheBoundPrincipalCarriesNoCredential:
+    """``request.state.principal`` is a channel INTO the access log.
+
+    The tenancy binder publishes it while holding the bearer token, and
+    everything on it is logged by construction. So the guarantee is structural —
+    a closed set of identifier fields — rather than "nobody pasted a token in
+    this time".
+    """
+
+    def test_the_record_declares_only_identifier_fields(self):
+        """Asserted on the field SET, not on one instance's values.
+
+        A future field is the way a token would get here, and a value-only check
+        would not see one until something happened to populate it.
+        """
+        from dataclasses import fields
+
+        from faultmaven.api.middleware.principal import RequestPrincipal
+
+        assert {field.name for field in fields(RequestPrincipal)} == {
+            "user_id",
+            "enterprise_id",
+            "organization_id",
+            "account_kind",
+        }
+
+    def test_it_is_frozen_so_nothing_downstream_can_attach_a_secret(self):
+        import dataclasses
+
+        from faultmaven.api.middleware.principal import RequestPrincipal
+
+        principal = RequestPrincipal(
+            user_id=PRINCIPAL_USER, enterprise_id=PRINCIPAL_ENTERPRISE
+        )
+
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            principal.token = BEARER  # type: ignore[attr-defined]
+
+    def test_a_populated_principal_does_not_bring_the_token_into_the_log(self, caplog):
+        """The end-to-end direction: a real request carrying a real
+        ``Authorization`` header, whose route publishes a principal, and a
+        completed line that names the principal and none of the credential."""
+        from faultmaven.api.middleware.principal import (
+            RequestPrincipal,
+            publish_request_principal,
+        )
+
+        async def bind(request: Request):
+            publish_request_principal(
+                request,
+                RequestPrincipal(
+                    user_id=PRINCIPAL_USER, enterprise_id=PRINCIPAL_ENTERPRISE
+                ),
+            )
+
+        app = FastAPI(dependencies=[Depends(bind)])
+        app.add_middleware(LoggingMiddleware)
+
+        @app.get("/api/v1/cases/{case_id}")
+        async def read_case(case_id: str):
+            return {"id": case_id}
+
+        with (
+            patch("faultmaven.api.middleware.logging.request_counter") as counter,
+            patch("faultmaven.api.middleware.logging.request_duration") as duration,
+            patch("faultmaven.api.middleware.logging.sla_tracker"),
+        ):
+            counter.labels.return_value = MagicMock()
+            duration.labels.return_value = MagicMock()
+            with caplog.at_level("DEBUG"):
+                response = TestClient(app, raise_server_exceptions=False).get(
+                    "/api/v1/cases/case-42",
+                    headers={"Authorization": f"Bearer {BEARER}"},
+                )
+
+        assert response.status_code == 200
+        emitted = _emitted(caplog)
+        assert BEARER not in emitted, "the bearer token reached a log record"
+        assert "Authorization" not in emitted, "the header name was logged too"
+        # Not vacuous: the line that had to omit the credential is the same line
+        # that had to name the principal.
+        assert PRINCIPAL_USER in emitted, "the completed line named no principal"
+        assert PRINCIPAL_ENTERPRISE in emitted, "the completed line named no enterprise"
