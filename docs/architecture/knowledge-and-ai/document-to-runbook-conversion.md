@@ -210,6 +210,20 @@ Upload (file + scope + metadata)
   │     Markdown/TXT → pass through
   │     Reuse existing extractors from faultmaven/modules/preprocessing/
   │
+  ├── 1b. Already-a-Runbook Gate (deterministic, no LLM)
+  │     Detect: runbook frontmatter (≥4 of id/domain/service/symptom_class/
+  │             severity/status) AND the canonical body skeleton
+  │             (`## Symptom Recognition` + `## Causes`, exact-anchored)
+  │     If both: REJECT with HTTP 422 / ALREADY_A_RUNBOOK
+  │       → "This document is already a FaultMaven runbook. Converting it
+  │          would re-derive a new runbook from its prose — splitting its
+  │          causes into separate runbooks and resetting its verification
+  │          status — rather than adding the runbook you already have."
+  │     Both halves are required: the frontmatter threshold alone is met by
+  │     an incident-report export carrying id/service/severity/status, and
+  │     an incident report is a document this pipeline exists to convert.
+  │     See §5.4 for what conversion does to a runbook that gets through.
+  │
   ├── 2. Content Cleanup
   │     Strip: navigation boilerplate, cookie banners, sidebars
   │     Strip: table of contents (redundant with headings)
@@ -693,6 +707,7 @@ def _generate_runbook_id(self, failure_mode: FailureMode) -> str:
 
 | Scenario | Behavior |
 |----------|----------|
+| Document is already a FaultMaven runbook | Rejected in preprocessing (§2.1 stage 1b) with `ALREADY_A_RUNBOOK`, before either LLM call. A runbook is one failure mode with N causes ([runbook-content-architecture.md §2](./runbook-content-architecture.md)), but the analysis prompt's definition of a failure mode — "different symptoms OR different resolutions" — is satisfied by each `### Cause` separately, since a Cause carries its own Statement, Indicators and Interventions. Left to run, the analyzer therefore emits one failure mode per cause: measured over the shipped pack, 7 of 9 runbooks fed back analysed into exactly `causes − 1` modes, yielding up to 4 drafts from one runbook (#1375). Splitting is correct for an ordinary source document and wrong only here, which is why the gate is a refusal of the input rather than a change to the analysis prompt. The round trip would be lossy regardless: the runbook is re-derived under `RUNBOOK_MAX_TOKENS` (4096, ~16K chars) from sources routinely 34K chars long, and `status`/`verified_by`/`version` reset to `draft`/`""`/`1.0.0`. |
 | Document has 0 failure modes (architectural/conceptual) | Return 422 with message: "Source document does not contain actionable failure modes. Runbooks require specific symptoms, diagnostics, and resolution steps." |
 | Document has 1 failure mode | Standard single-runbook conversion. |
 | Document has 2-5 failure modes | Parallel conversion (asyncio.gather). |

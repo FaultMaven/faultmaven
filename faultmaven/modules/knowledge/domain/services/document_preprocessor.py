@@ -1,7 +1,8 @@
 """6-stage document preprocessing pipeline for conversion.
 
 Stages:
-1. Format extraction (via DocumentParser)
+1. Format extraction (via DocumentParser), then refuse a document that is
+   already a FaultMaven runbook (ALREADY_A_RUNBOOK) — see Stage 1b below
 2. Content cleanup (strip boilerplate)
 3. Sensitive content scan (PII redaction)
 4. Size check (hard limit at 30K tokens)
@@ -302,9 +303,43 @@ _RUNBOOK_FRONTMATTER_FIELDS = {
     "status",
 }
 
+# The two sections that make a document a FaultMaven runbook rather than some
+# other technical document, checked alongside the frontmatter above.
+#
+# The frontmatter test ALONE is not a safe basis for a refusal. Its threshold is
+# "4 of 6", and four of those six field names are generic: an incident-report or
+# ticket export carrying ``id`` / ``service`` / ``severity`` / ``status`` meets it
+# without being a runbook — and an incident report is precisely the kind of
+# document this pipeline exists to convert (``ANALYSIS_SYSTEM_PROMPT`` names
+# ``incident_report`` as a source type). While the detection only raised a
+# warning, a false positive cost nothing; as the basis of a 422 it would
+# refuse legitimate work, so the body shape is required too.
+#
+# ``## Symptom Recognition`` + ``## Causes`` are the pair that carries the cause
+# model this refusal is about — the runbook states one failure surface and
+# enumerates its causes underneath — and nothing outside a FaultMaven runbook
+# writes both. Their spelling is the validator's, not a second copy: they are
+# asserted to be a subset of ``RunbookValidator``'s ``REQUIRED_SECTIONS`` by
+# ``test_document_preprocessor_existing_runbook.py``, so renaming a section there
+# fails that test rather than silently disarming this gate.
+_RUNBOOK_BODY_SECTIONS = ("Symptom Recognition", "Causes")
+
+# Exact-anchored ``^## Section$``, the same anchoring ``RunbookValidator``
+# ``_validate_structure`` uses. A prefix match would accept ``## Causes of the
+# outage`` in an ordinary postmortem.
+_RUNBOOK_BODY_SECTION_RES = tuple(
+    re.compile(rf"^##[ \t]+{re.escape(section)}[ \t]*$", re.MULTILINE)
+    for section in _RUNBOOK_BODY_SECTIONS
+)
+
 
 def detect_existing_runbook(text: str) -> bool:
-    """Check if text already has FaultMaven runbook frontmatter."""
+    """Is this document already a FaultMaven runbook?
+
+    True only when BOTH hold: the document opens with runbook frontmatter, and
+    its body carries the canonical section skeleton. See the constants above for
+    why the frontmatter alone does not decide it.
+    """
     match = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
     if not match:
         return False
@@ -316,9 +351,12 @@ def detect_existing_runbook(text: str) -> bool:
         if not isinstance(metadata, dict):
             return False
         present = set(metadata.keys()) & _RUNBOOK_FRONTMATTER_FIELDS
-        return len(present) >= 4  # 4 of 6 fields = almost certainly a runbook
+        if len(present) < 4:  # 4 of 6 fields = runbook-shaped frontmatter
+            return False
     except Exception:
         return False
+
+    return all(pattern.search(text) for pattern in _RUNBOOK_BODY_SECTION_RES)
 
 
 # =============================================================================
@@ -377,13 +415,45 @@ class DocumentPreprocessor:
                 error_code=error_code,
             )
 
-        # Stage 1b: Existing runbook detection
-        is_existing_runbook = detect_existing_runbook(extracted_text)
-        if is_existing_runbook:
-            warnings.append(
-                "This document appears to already be a FaultMaven runbook. "
-                "The conversion will re-process it, which may produce a duplicate. "
-                "Consider uploading it directly instead."
+        # Stage 1b: Existing runbook detection — a REFUSAL, not a warning.
+        #
+        # Converting a runbook is a category error, and the warning this
+        # replaces both under-stated the outcome and bound nothing. It said the
+        # conversion "may produce a duplicate" (one); what it actually produces
+        # is one runbook per ``### Cause`` subsection of the source, because the
+        # analysis pass's definition of a failure mode ("different symptoms OR
+        # different resolutions") is satisfied by each Cause separately — a
+        # Cause carries its own Statement, Indicators and Interventions. That
+        # inverts the content model, which is explicit that one runbook is one
+        # failure mode and that several ``### Cause N`` subsections within it are
+        # expected and correct (runbook-content-architecture.md §2). Measured on
+        # the shipped pack: 7 of 9 runbooks fed back analysed into exactly
+        # ``causes - 1`` failure modes, up to 4 drafts from one runbook (#1375).
+        #
+        # Even a conversion that returned a single mode would be lossy: the
+        # runbook is re-derived by an LLM under RUNBOOK_MAX_TOKENS (4096, ~16K
+        # chars) from sources that routinely run to 34K chars, and ``status``,
+        # ``verified_by`` and ``version`` reset to draft/""/1.0.0 — so whatever
+        # verification the source carried is discarded. Nothing about the output
+        # is better than the input that was already in hand.
+        #
+        # Refused HERE, before cleanup and before either LLM call, so the
+        # refusal costs nothing. ``ALREADY_A_RUNBOOK`` already had its 422 in
+        # ``conversion_routes`` and its user-facing copy in the Dashboard; this
+        # is the raise site they were waiting for.
+        if detect_existing_runbook(extracted_text):
+            return PreprocessingResult(
+                extracted_text="",
+                source_metadata={},
+                is_rejected=True,
+                rejection_reason=(
+                    "This document is already a FaultMaven runbook. Converting it "
+                    "would re-derive a new runbook from its prose — splitting its "
+                    "causes into separate runbooks and resetting its verification "
+                    "status — rather than adding the runbook you already have. Add "
+                    "it to the knowledge base directly instead of converting it."
+                ),
+                error_code=ConversionErrorCode.ALREADY_A_RUNBOOK,
             )
 
         # Stage 2: Content cleanup
@@ -480,7 +550,6 @@ class DocumentPreprocessor:
             triage_result=triage_result,
             warnings=warnings,
             token_count=token_count,
-            is_existing_runbook=is_existing_runbook,
         )
 
     async def _run_content_triage(self, text: str) -> Optional[TriageResult]:
