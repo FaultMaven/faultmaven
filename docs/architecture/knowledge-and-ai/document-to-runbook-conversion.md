@@ -655,7 +655,39 @@ TODAY: {iso_date}
 
 ### 5.1 Detection Strategy
 
-The analysis LLM call (Section 4.1) identifies failure modes. The splitting logic is:
+**A failure mode is defined by what the operator OBSERVES, not by why it
+happened.** This is the rule that decides how many runbooks a document becomes,
+and it is the direct expression of the content model's *"One runbook = one
+failure mode … multiple `### Cause N` subsections within a runbook are expected
+and correct"* ([runbook-content-architecture.md §2](./runbook-content-architecture.md)):
+
+- Several **root causes of the same observable symptom** are **one** failure
+  mode. A guide covering "502 Bad Gateway" whose causes are a dead upstream, a
+  slow upstream, oversized headers and stale DNS is ONE runbook with four
+  `### Cause` sections. Telling those causes apart is the job the runbook does.
+- Different **observable symptoms** are different failure modes. A reference
+  covering `OOMKilled`, `ImagePullBackOff`, `Pending` and `CrashLoopBackOff` is
+  four runbooks.
+
+The operational test is `symptom_class`: two candidates carrying the same
+`symptom_class` for the same `service` are one failure mode with two causes.
+
+⚠ Until #1375 the prompt read *"distinct — different symptoms **OR** different
+resolutions"*. Causes of one failure differ by resolution **by definition**, so
+that `OR` licensed one runbook per cause, for every input rather than only for a
+runbook fed back in. Measured on `gemini-3.7-flash`: a vendor guide with one
+symptom and five causes analysed into 4 failure modes and produced 3 drafts
+(the fourth lost to the §5.4 collapse); every shipped pack runbook re-analysed
+into `causes − 1` modes. After the fix all nine analyse to 1, the four-symptom
+control still analyses to 4, and the vendor guide generates a single runbook
+carrying Causes A–E plus Cause Z, passing `RunbookValidator`. The labelled
+documents and the full before/after table are in
+[`tests/eval/conversion_splitting/`](../../../tests/eval/conversion_splitting/README.md);
+any change to `ANALYSIS_SYSTEM_PROMPT` should be re-measured against them,
+**including the control** — a criterion that merely always answered "1" would
+score two of three and look like a fix.
+
+The splitting logic is:
 
 ```python
 async def _analyze_and_split(self, text: str, filename: str) -> AnalysisResult:
@@ -707,6 +739,7 @@ def _generate_runbook_id(self, failure_mode: FailureMode) -> str:
 
 | Scenario | Behavior |
 |----------|----------|
+| Document covers ONE symptom with several causes | **One** runbook, whose `## Causes` carries one `### Cause` per documented cause. This is the common shape of a vendor troubleshooting guide and of a postmortem, and it is decided in the analysis pass (§5.1) — not by any downstream merge. |
 | Document is already a FaultMaven runbook | Rejected in preprocessing (§2.1 stage 1b) with `ALREADY_A_RUNBOOK`, before either LLM call. A runbook is one failure mode with N causes ([runbook-content-architecture.md §2](./runbook-content-architecture.md)), but the analysis prompt's definition of a failure mode — "different symptoms OR different resolutions" — is satisfied by each `### Cause` separately, since a Cause carries its own Statement, Indicators and Interventions. Left to run, the analyzer therefore emits one failure mode per cause: measured over the shipped pack, 7 of 9 runbooks fed back analysed into exactly `causes − 1` modes, yielding up to 4 drafts from one runbook (#1375). Splitting is correct for an ordinary source document and wrong only here, which is why the gate is a refusal of the input rather than a change to the analysis prompt. The round trip would be lossy regardless: the runbook is re-derived under `RUNBOOK_MAX_TOKENS` (4096, ~16K chars) from sources routinely 34K chars long, and `status`/`verified_by`/`version` reset to `draft`/`""`/`1.0.0`. |
 | Document has 0 failure modes (architectural/conceptual) | Return 422 with message: "Source document does not contain actionable failure modes. Runbooks require specific symptoms, diagnostics, and resolution steps." |
 | Document has 1 failure mode | Standard single-runbook conversion. |
