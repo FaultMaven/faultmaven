@@ -71,7 +71,8 @@ create one. A first sign-in with no mapping fails closed with
 
 Settled beta policy is **one WorkOS Organization per participant**, mapping 1:1
 to a FaultMaven enterprise (`fm-provision-sso-org` creates the enterprise, an
-organization inside it, and the mapping together). Do not put unrelated
+organization inside it, and the mapping together — and no team: the customer
+forms those by consent). Do not put unrelated
 participants in a shared tenant: the FaultMaven enterprise *is* the RLS
 boundary, so co-locating two parties pools their incident data, and a shared
 tenant means the deployment never exercises the multi-tenant path at all.
@@ -112,17 +113,24 @@ OWNER_DSN=$(kubectl -n faultmaven get secret faultmaven-db-privileged \
 kubectl exec -it deploy/faultmaven-api -n faultmaven -- \
   env DATABASE_URL="$OWNER_DSN" \
   fm-provision-sso-org \
-    --name "Acme Corp" --slug acme \
+    --name "Acme Corp" --slug acme --domain acme.com \
     --workos-org-id org_01HQZX9K3P4M5N6R7S8T9V0W1X
 ```
+
+`--domain` is the customer's email domain and is **required**. It is what a
+colleague's sign-in finds this enterprise by and what team invitations are
+decided on: provisioned without one, the tenant can invite nobody and the next
+sign-up on that domain builds a second enterprise beside it. A consumer mail
+domain (`gmail.com` and the rest of `PERSONAL_EMAIL_DOMAINS`) is refused — such
+a domain gives every account a private enterprise of its own.
 
 **Record the FaultMaven `enterprise_id` it prints** (the isolation tenant —
 what later steps and troubleshooting key on) **and the `organization_id`**
 (the billing target, needed only if you also add the account to it). Both are
 UUIDs, neither is the `org_…` IdP id.
 
-Read that runbook's warnings about slug collisions before choosing `--slug`: a
-slug that resolves onto an existing tenant binds the new IdP organization to
+Read that runbook's warning about reusing a tenant before choosing `--domain`:
+a domain that already has an enterprise binds the new IdP organization to
 *that* tenant and pools its cases.
 
 ### Step 4 — invite the person

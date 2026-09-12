@@ -1,13 +1,12 @@
 """The writers that bring a tenant into existence (ADR-013, ADR-017, #869, #1045).
 
-Two call sites create tenants and they no longer create the same rows, so this
-module holds the per-row writers both share plus the one composite the operator
-path needs:
+Two call sites create tenants, and this module holds the per-row writers they
+share:
 
 * **the operator path** (``fm-provision-sso-org``) onboards a paying customer:
-  enterprise, organization, default team, and the ``sso_org_mappings`` row that
-  binds an IdP organization to it. :func:`bootstrap_tenant` writes those four,
-  in that order.
+  the enterprise that carries the customer's email domain, an organization to
+  bill, and the ``sso_org_mappings`` row that binds an IdP organization to the
+  enterprise. It composes those writers itself.
 * **the sign-up path** (the SSO login) creates an **enterprise and nothing
   else** (ADR-017 D3/D5/D4). An organization is a billing target created by
   payment and a team is formed by consent, so a sign-in — which knows neither —
@@ -15,8 +14,16 @@ path needs:
   :func:`get_or_create_enterprise_for_domain`) with :func:`ensure_mapping`
   itself.
 
+**Neither path writes a team** (ADR-017 D4). A team forms by consent: any
+account creates one and every member joins by accepting an invitation, so a
+team minted here would have no members, and a memberless team is invisible to
+every membership-gated read, cannot be administered or retired, and holds its
+name against the enterprise's partial unique index. The one default team a
+deployment does get is the standalone sentinel, seeded by the baseline
+migration and by :mod:`faultmaven.providers.tenancy.single_tenant`.
+
 They share the per-row writers rather than a single composite, because the rows
-they write genuinely differ now; what has to stay shared is each row's own rule
+they write genuinely differ; what has to stay shared is each row's own rule
 (what an existing row means, which lookups are live-only), and that is what
 these functions are.
 
@@ -54,12 +61,10 @@ nothing left to bind.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import select
 
-from faultmaven.config.constants import STANDALONE_TEAM_NAME
 from faultmaven.infrastructure.persistence.enterprise_liveness import (
     enterprise_is_usable,
 )
@@ -67,7 +72,6 @@ from faultmaven.infrastructure.persistence.models import (
     EnterpriseModel,
     OrganizationModel,
     SSOOrgMappingModel,
-    TeamModel,
 )
 
 #: The only SSO provider FaultMaven ships an adapter for (ADR-015).
@@ -92,19 +96,6 @@ class OrgAlreadyClaimed(Exception):
         self.enterprise_id = enterprise_id
         self.claimed_by = claimed_by
         self.requested_by = requested_by
-
-
-@dataclass(frozen=True)
-class BootstrappedTenant:
-    """What one bootstrap call created or found."""
-
-    enterprise: EnterpriseModel
-    enterprise_created: bool
-    organization: OrganizationModel
-    organization_created: bool
-    team: TeamModel
-    team_created: bool
-    mapping_created: bool
 
 
 async def find_live_enterprise_by_slug(session, slug: str):
@@ -286,35 +277,6 @@ async def get_or_create_organization(
     return organization, True
 
 
-async def get_or_create_default_team(
-    session, *, enterprise_id: str
-) -> tuple[TeamModel, bool]:
-    """Return (team, created). One default team per ENTERPRISE (ADR-017 D4)."""
-    existing = (
-        await session.execute(
-            select(TeamModel).where(
-                TeamModel.enterprise_id == enterprise_id,
-                TeamModel.name == STANDALONE_TEAM_NAME,
-            )
-        )
-    ).scalar_one_or_none()
-    if existing is not None:
-        return existing, False
-
-    now = datetime.now(UTC)
-    team = TeamModel(
-        team_id=str(uuid.uuid4()),
-        enterprise_id=enterprise_id,
-        name=STANDALONE_TEAM_NAME,
-        description="Default team for this enterprise",
-        created_at=now,
-        updated_at=now,
-    )
-    session.add(team)
-    await session.flush()
-    return team, True
-
-
 async def find_mapping(session, *, provider_org_id: str):
     """Return the mapping row for this IdP org, or None."""
     return await session.get(SSOOrgMappingModel, (PROVIDER, provider_org_id))
@@ -376,47 +338,3 @@ async def ensure_mapping(session, *, provider_org_id: str, enterprise_id: str) -
     )
     await session.flush()
     return True
-
-
-async def bootstrap_tenant(
-    session,
-    *,
-    name: str,
-    slug: str,
-    provider_org_id: str,
-    enterprise_id: str | None = None,
-    organization_id: str | None = None,
-) -> BootstrappedTenant:
-    """Write enterprise → organization → default team → mapping, in that order.
-
-    Does **not** commit: the caller owns the transaction, which is what lets the
-    login path add its own subject row to the same one and get an all-or-nothing
-    tenant.
-    """
-    enterprise, enterprise_created = await get_or_create_enterprise(
-        session, enterprise_id=enterprise_id, name=name, slug=slug
-    )
-    organization, organization_created = await get_or_create_organization(
-        session,
-        enterprise_id=enterprise.enterprise_id,
-        name=name,
-        slug=slug,
-        organization_id=organization_id,
-    )
-    team, team_created = await get_or_create_default_team(
-        session, enterprise_id=enterprise.enterprise_id
-    )
-    mapping_created = await ensure_mapping(
-        session,
-        provider_org_id=provider_org_id,
-        enterprise_id=enterprise.enterprise_id,
-    )
-    return BootstrappedTenant(
-        enterprise=enterprise,
-        enterprise_created=enterprise_created,
-        organization=organization,
-        organization_created=organization_created,
-        team=team,
-        team_created=team_created,
-        mapping_created=mapping_created,
-    )

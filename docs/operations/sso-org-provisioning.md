@@ -46,9 +46,15 @@ affiliation at login time; it does not second-guess it.
 
 ## Step 2 — provision the tenant and the mapping
 
-`fm-provision-sso-org` creates, idempotently, the enterprise, the organization,
-its default team, and the mapping row. Re-running it with the same arguments is
-a no-op that prints the current state.
+`fm-provision-sso-org` creates, idempotently, the enterprise, the organization
+and the mapping row. Re-running it with the same arguments is a no-op that
+prints the current state.
+
+It creates **no team**. A team forms by consent (ADR-017 D4): any account in the
+enterprise creates one and every member joins by accepting an invitation, so a
+team minted by provisioning would have no members — invisible to every
+membership-gated read, impossible to administer or retire, and holding its name
+against the enterprise's partial unique index. The customer builds their own.
 
 It is a console entrypoint shipped with the installed package
 (`faultmaven/cli/provision_sso_org.py`), so it is on `PATH` in the API pod and
@@ -78,6 +84,7 @@ kubectl exec -it deploy/faultmaven-api -n faultmaven -- \
   fm-provision-sso-org \
     --name "Acme Corp" \
     --slug acme \
+    --domain acme.com \
     --workos-org-id org_01HQZX9K3P4M5N6R7S8T9V0W1X
 ```
 
@@ -90,7 +97,8 @@ Locally, against a database URL you supply:
 ```bash
 DATABASE_URL="postgresql+asyncpg://faultmaven:…@host/faultmaven" \
   fm-provision-sso-org \
-    --name "Acme Corp" --slug acme --workos-org-id org_01H…
+    --name "Acme Corp" --slug acme --domain acme.com \
+    --workos-org-id org_01H…
 ```
 
 Options:
@@ -99,79 +107,123 @@ Options:
 | --- | --- |
 | `--name` | organization display name |
 | `--slug` | URL-friendly slug, unique within the enterprise |
+| `--domain` | the customer's email domain, e.g. `acme.com`. **Required** unless `--enterprise-id` names an enterprise that already carries one |
 | `--workos-org-id` | the `org_…` id from step 1 |
 | `--enterprise-id` | put the organization under an **existing** enterprise instead of creating one (use this for a second organization belonging to the same customer) |
 
-Expected output ends with `✅ Tenant ready` and the three ids plus the mapping,
-each marked `created` or `already present`.
+Expected output ends with `✅ Tenant ready` and the enterprise (with its
+domain), the organization and the mapping, each marked `created` or
+`already present`.
+
+### Why `--domain` is required
+
+`enterprises.domain` is not a label. Two live rules read it:
+
+* **Team invitations** are decided by domain, before any account is looked up,
+  so that the endpoint is not an account-existence oracle. An enterprise whose
+  `domain` is NULL is a *personal* enterprise — an island — and **every**
+  invitation into it is refused. A customer provisioned without a domain cannot
+  build a single team.
+* **Sign-up** derives the domain from the IdP-verified email and looks the
+  enterprise up by that column. A colleague signing in on the customer's domain
+  would not find a domainless tenant and would create a **second** enterprise
+  beside it, with its own isolation boundary — two halves of one company that
+  cannot see each other.
+
+Both failures are silent at provisioning time and surface days later, which is
+why the argument is required rather than optional. If a tenant was provisioned
+before the argument existed, re-run the command with `--domain` and the same
+`--enterprise-id` — it refuses if the domain would change, and only stamps a
+NULL one.
+
+The value is stored case-folded, by the same function sign-up derives a domain
+with, so `ACME.Com` and `acme.com` are one enterprise.
+
+**A consumer mail domain is refused.** `gmail.com` and the rest of
+`PERSONAL_EMAIL_DOMAINS` give every account a private enterprise of its own
+(ADR-017 D3), so an enterprise stamped with one would claim strangers into a
+single isolation boundary.
 
 ### If it warns about reusing a tenant
 
-The organization is resolved by `(enterprise, slug)` and the enterprise by slug,
-so a `--slug` that collides with an existing customer's resolves onto **their**
-tenant. When the script binds a new IdP organization to a tenant it did not
-create in this run, it says so before writing:
+The enterprise is resolved by `--domain`, so a domain that already has an
+enterprise — a colleague signed up first, or you mistyped it — resolves onto
+**that** tenant. When the script binds a new IdP organization to an enterprise
+it did not create in this run and you did not name, it says so before writing:
 
 ```text
 ⚠️  REUSING AN EXISTING TENANT — confirm this is the right one.
-    enterprise   3333…  (Acme / acme) already existed
-    organization 2222…  (Acme Corp / acme) already existed
-    workos:org_01J… is being bound to it, so its users will land in
-    that tenant and see its cases. If this is a different customer, stop and
-    re-provision under a distinct --slug.
-```
-
-That is correct and expected when you are adding a **second** IdP organization
-for a customer you already provisioned. If the name on the existing tenant is
-not the customer you are onboarding, **stop** — re-run with a distinct `--slug`
-(or an explicit `--enterprise-id`). Binding two customers to one organization
-pools their cases.
-
-This warning is about the **enterprise**, which is the isolation boundary —
-cases belong to it, so reusing one is what pools two customers' data. Creating a
-new organization under an existing enterprise is a different, milder situation
-(the organization is only a billing target) and gets its own message, below.
-
-### If it warns about the enterprise parent
-
-With no `--enterprise-id`, the enterprise is resolved by `--slug` too. A slug
-that matches an existing *enterprise* therefore parents the new organization
-under it:
-
-```text
-⚠️  NEW ORGANIZATION UNDER AN EXISTING ENTERPRISE.
     enterprise   3333…  (Acme / acme) already existed and was matched
-                 by --slug, not named with --enterprise-id.
-    If this customer does not belong to that enterprise, stop and re-run
-    with a distinct --slug (or an explicit --enterprise-id). …
+                 by --domain, not named with --enterprise-id.
+    organization 2222…  (Acme Corp / acme)
+    workos:org_01J… is being bound to that enterprise, so its users
+    will land inside it and can be invited to its teams. If this is a different
+    customer, stop and re-provision under its own --domain.
 ```
 
-Nothing is pooled — the organization is new and its cases are its own — so this
-is not a data-isolation incident. It is flagged because it is expensive to
-correct later: a user account created under the wrong enterprise fails login
-closed with `reason=enterprise_mismatch`, and moving it is an account migration
-(see that section below), not a configuration change.
+That is correct and expected when a user of this customer has already signed up
+— the sign-up path created the domain's enterprise, and this is the row the
+customer should be onboarded onto. If the name on the existing tenant is not the
+customer you are onboarding, **stop**: you have the wrong domain.
+
+The warning is about the **enterprise**, which is the isolation boundary — cases
+belong to it, so reusing the wrong one is what pools two customers' data.
 
 It is silent when you pass `--enterprise-id` explicitly, because naming the
-parent *is* the confirmation this message asks for.
+enterprise *is* the confirmation this message asks for.
 
 An `--enterprise-id` that is present but empty — an unset shell variable in the
 `kubectl exec` recipe above — is refused outright rather than treated as absent.
-The two readings ("use the enterprise I named" and "resolve one from `--slug`")
-lead to different tenants, so the script will not guess between them.
+The two readings ("use the enterprise I named" and "resolve one from
+`--domain`") lead to different tenants, so the script will not guess between
+them. `--domain` is refused the same way for the same reason.
 
-### If it refuses: organization already claimed
+### If it warns that the enterprise carries no domain
 
 ```text
-❌ FaultMaven organization 2222… is already claimed by a different workos organization.
+⚠️  THIS ENTERPRISE CARRIES NO DOMAIN.
+```
+
+Only reachable through `--enterprise-id` — the domain path always stamps one.
+The tenant is usable for cases but its teams can invite nobody, and the next
+sign-up on the customer's domain will build a second enterprise. Re-run with
+`--domain` to stamp it.
+
+### If it refuses: the slug belongs to another enterprise
+
+```text
+❌ slug 'acme' already belongs to enterprise 3333… (domain acme.example).
+```
+
+Slugs are unique among live enterprises, and this domain's enterprise does not
+exist yet, so creating it under that slug is refused rather than left to the
+unique index. Nothing was written. Pick a distinct `--slug`, or — if that
+enterprise *is* the intended tenant — name it with `--enterprise-id`.
+
+### If it refuses: the domain does not match the named enterprise
+
+```text
+❌ enterprise 3333… carries domain acme.example, not 'globex.example'.
+```
+
+You named an enterprise with `--enterprise-id` and a different `--domain`.
+Re-domaining is not something a provisioning run does quietly: it changes which
+addresses the tenant's teams may invite and which sign-ups join it, for the
+accounts already inside. Nothing was written. Drop `--domain` to use the
+enterprise as it stands, or provision this domain under its own enterprise.
+
+### If it refuses: enterprise already claimed
+
+```text
+❌ FaultMaven enterprise 3333… is already claimed by a different workos organization.
    claimed by: org_01H…
    requested:  org_01J…
 ```
 
-The tenant your `--slug` resolved to is already bound to another IdP
+The tenant your `--domain` resolved to is already bound to another IdP
 organization, and the mapping is 1:1 per provider. Nothing was written. This is
-almost always the slug collision above, caught one step later. Re-provision the
-new customer under a distinct slug.
+almost always the wrong domain, caught one step later. Re-provision the new
+customer under its own domain.
 
 ## Register the logout redirect (once per environment)
 

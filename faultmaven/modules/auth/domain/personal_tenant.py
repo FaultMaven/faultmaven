@@ -172,13 +172,31 @@ def personal_key_of_slug(slug: str) -> str | None:
 # =============================================================================
 
 
-def email_domain(email: str) -> str | None:
-    """The case-folded domain of ``email``, or ``None`` when there is none.
+def normalize_domain(domain: str | None) -> str | None:
+    """The comparable spelling of a bare domain, or ``None`` when there is none.
 
     Case-folded rather than lowercased: ``str.casefold`` is the comparison the
     Unicode standard defines for caseless matching, and a domain reaching here
     is IdP-verified but not necessarily ASCII. Lowercasing would leave two
     spellings of one domain as two enterprises.
+
+    A trailing dot is the DNS root and names the same domain; keeping it would
+    make ``acme.com.`` a second enterprise for the same company.
+
+    This is the one folding rule, and it has two callers by design: sign-up
+    reaches it through :func:`email_domain`, and the operator command
+    ``fm-provision-sso-org`` applies it to the ``--domain`` an operator types.
+    Both write ``enterprises.domain``, and a second spelling of the fold would
+    put the customer an operator provisioned and the colleague who signs in
+    next into two enterprises.
+    """
+    if not domain:
+        return None
+    return domain.strip().casefold().rstrip(".") or None
+
+
+def email_domain(email: str) -> str | None:
+    """The case-folded domain of ``email``, or ``None`` when there is none.
 
     Splits on the LAST ``@``, because the local part may legitimately contain
     one inside quotes and the domain may not contain one at all. Anything that
@@ -190,11 +208,7 @@ def email_domain(email: str) -> str | None:
     local, separator, domain = email.rpartition("@")
     if not separator or not local or not domain:
         return None
-    domain = domain.strip().casefold()
-    # A trailing dot is the DNS root and names the same domain; keeping it would
-    # make ``acme.com.`` a second enterprise for the same company.
-    domain = domain.rstrip(".")
-    return domain or None
+    return normalize_domain(domain)
 
 
 def is_personal_domain(domain: str | None, personal_domains) -> bool:

@@ -689,7 +689,7 @@ FaultMaven is installed (API pod; locally after `pip install -e .`):
 fm-promote-platform-admin <username>       # Promote user to platform admin (deployment operator)
 fm-demote-platform-admin <username>        # Remove platform admin privileges
 fm-provision-service-account -u slack-agent  # Mint a service-account OAuth refresh credential (AUTH_MODE=oauth)
-fm-provision-sso-org --name ... --slug ... --workos-org-id org_...  # Provision a Cloud tenant + WorkOS org mapping (TENANT_PROVIDER=multi)
+fm-provision-sso-org --name ... --slug ... --domain acme.com --workos-org-id org_...  # Provision a Cloud tenant (enterprise carrying the customer's domain + organization) and its WorkOS org mapping (TENANT_PROVIDER=multi). Creates NO team — teams form by consent (ADR-017 D4)
 fm-remove-org-member --enterprise-id ... --organization-id ... --user alice --yes  # Remove a BILLING membership AND revoke that user's tokens, as one operation (#874); the account keeps its enterprise anchor — leaving an organization changes what is metered, not what is visible (ADR-017 D5)
 fm-personal-tenant retire --subject user_01H... --apply       # Retire a JIT personal tenant (fence the enterprise, revoke tokens, stamp the binding retired+policy, delete WorkOS org by recorded id, delete mapping); the account STAYS anchored (users.enterprise_id is NOT NULL, ADR-017 D3); --next-login refuse|fresh-tenant, dry run by default (#1045 D8)
 fm-personal-tenant re-anchor --subject user_01H... --enterprise-id ... --apply  # Move a personal account onto a mapped company enterprise (billing organization membership is a separate, deliberate act — ADR-017 D5)

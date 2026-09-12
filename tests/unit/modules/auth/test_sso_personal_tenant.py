@@ -89,6 +89,7 @@ from faultmaven.modules.auth.domain.personal_tenant import (
     domain_enterprise_slug,
     email_domain,
     is_personal_domain,
+    normalize_domain,
     personal_enterprise_slug,
     personal_tenant_key,
 )
@@ -778,6 +779,21 @@ def test_the_domain_is_derived_case_folded_and_from_the_last_at():
     assert email_domain("a@acme.example.") == "acme.example"
     for bad in ("", "no-at-sign", "@acme.example", "alice@"):
         assert email_domain(bad) is None
+
+
+def test_the_operator_fold_and_the_signup_fold_are_one_function():
+    """``fm-provision-sso-org --domain`` and sign-up write the SAME column.
+
+    The operator types a bare domain and the sign-up path derives one from a
+    verified address; both land in ``enterprises.domain``, and the operator's
+    row is only found by the colleague who signs in next if the two spellings
+    agree. They agree because there is one fold, not two that match today.
+    """
+    for spelling in ("ACME.Example", " acme.example ", "acme.example."):
+        assert normalize_domain(spelling) == "acme.example"
+        assert normalize_domain(spelling) == email_domain(f"alice@{spelling.strip()}")
+    for empty in ("", "   ", ".", None):
+        assert normalize_domain(empty) is None
 
 
 def test_an_address_with_no_derivable_domain_is_treated_as_personal():

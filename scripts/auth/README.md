@@ -65,7 +65,8 @@ fm-provision-service-account --username slack-agent
 # Provision a Cloud tenant and map a WorkOS organization onto it
 # (TENANT_PROVIDER=multi only — see docs/operations/sso-org-provisioning.md)
 fm-provision-sso-org \
-    --name "Acme Corp" --slug acme --workos-org-id org_01H...
+    --name "Acme Corp" --slug acme --domain acme.com \
+    --workos-org-id org_01H...
 ```
 
 ---
