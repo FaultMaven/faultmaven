@@ -40,7 +40,7 @@ from faultmaven.models.api_models import (
 from faultmaven.models.interfaces import ISessionStore
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.auth.contracts import is_team_member
-from faultmaven.modules.case.domain.models import Case, CaseState, MessageType
+from faultmaven.modules.case.domain.models import Case, CaseState
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.utils.datetime import parse_utc_timestamp
 from faultmaven.utils.serialization import to_json_compatible
@@ -722,16 +722,25 @@ class CaseService(ICaseService):
             success = await self.link_session_to_case(session_id, case_id)
 
             if success:
-                # Log resume event
-                resume_message = CaseMessage(
-                    case_id=case_id,
-                    session_id=session_id,
-                    message_type=MessageType.SYSTEM_EVENT,
-                    content=f"Case resumed in session {session_id}",
-                    metadata={"event_type": "case_resumed"},
-                )
-
-                await self.add_message_to_case(case_id, resume_message, session_id)
+                # The resume is the LINK; there is no conversation row for it.
+                #
+                # This used to build a `CaseMessage` carrying `session_id` and
+                # `message_type=SYSTEM_EVENT` — neither of which the model
+                # declares — while omitting the four fields it requires, so the
+                # constructor raised, the handler below swallowed it, and this
+                # method returned False on a resume that had ALREADY linked the
+                # session. The route reads that as failure and answers 404
+                # "Case not found or resume not permitted", so the caller was
+                # told the case was gone while its session was in fact attached
+                # to it.
+                #
+                # The write is removed rather than repaired: nothing reads the
+                # `case_resumed` event (`SYSTEM_EVENT` had no other use in the
+                # codebase), and a repaired one would post a `role: "system"`
+                # row, which both clients render as a NOTICE in the transcript
+                # — so "fixing" it would introduce user-visible chatter that no
+                # deployment has ever emitted, under cover of a bug fix. The
+                # event is recorded where it was already recorded: the log.
                 logger.info(f"Resumed case {case_id} in session {session_id}")
 
             return success
@@ -1464,40 +1473,6 @@ class CaseService(ICaseService):
             logger.error(f"Failed to get messages for case {case_id}: {e}")
             raise ServiceException(f"Failed to retrieve case messages: {str(e)}") from e
 
-    @trace("case_service_count_case_queries")
-    async def count_case_queries(self, case_id: str) -> int:
-        """
-        Count total user queries for a case
-
-        Used for pagination metadata.
-
-        Args:
-            case_id: Case identifier
-
-        Returns:
-            Total number of user queries in the case
-        """
-        if not case_id:
-            raise ValidationException("Case ID is required")
-
-        try:
-            # Get all messages and count queries
-            # Note: This could be optimized with store-level counting
-            all_messages = await self.get_case_messages(case_id, limit=1000, offset=0)
-
-            query_count = sum(
-                1 for msg in all_messages if msg.message_type == MessageType.USER_QUERY
-            )
-
-            logger.debug(f"Counted {query_count} queries for case {case_id}")
-            return query_count
-
-        except ValidationException:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to count queries for case {case_id}: {e}")
-            return 0  # Graceful degradation for pagination
-
     @trace("case_service_count_user_cases")
     async def count_user_cases(
         self, user_id: str, filters: Optional[CaseListFilter] = None
@@ -1531,79 +1506,6 @@ class CaseService(ICaseService):
         except Exception as e:
             logger.error(f"Failed to count cases for user {user_id}: {e}")
             return 0  # Graceful degradation for pagination
-
-    @trace("case_service_get_query_result")
-    async def get_query_result(
-        self, case_id: str, query_id: str
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Get result for a specific query
-
-        This method attempts to find a query response by looking for
-        the agent response that follows a specific user query.
-
-        Args:
-            case_id: Case identifier
-            query_id: Query message identifier
-
-        Returns:
-            Agent response dictionary or None if not found
-        """
-        if not case_id or not query_id:
-            raise ValidationException("Case ID and query ID are required")
-
-        try:
-            # Get case messages and find the query + response pair
-            messages = await self.get_case_messages(case_id, limit=1000, offset=0)
-
-            # Find the query message
-            query_message = None
-            query_index = -1
-
-            for i, msg in enumerate(messages):
-                if (
-                    msg.message_id == query_id
-                    and msg.message_type == MessageType.USER_QUERY
-                ):
-                    query_message = msg
-                    query_index = i
-                    break
-
-            if not query_message:
-                logger.debug(f"Query {query_id} not found in case {case_id}")
-                return None
-
-            # Find the next agent response after this query
-            for i in range(query_index + 1, len(messages)):
-                msg = messages[i]
-                if msg.message_type == MessageType.AGENT_RESPONSE:
-                    # Found the response - convert to expected format
-                    response_dict = {
-                        "schema_version": "3.1.0",
-                        "content": msg.content,
-                        "response_type": msg.metadata.get("response_type", "ANSWER"),
-                        "confidence_score": msg.metadata.get("confidence_score", 0.8),
-                        "created_at": to_json_compatible(msg.created_at),
-                        "query_id": query_id,
-                        "response_id": msg.message_id,
-                    }
-
-                    logger.debug(f"Found query result for {query_id} in case {case_id}")
-                    return response_dict
-
-            # No agent response found after this query
-            logger.debug(
-                f"No agent response found for query {query_id} in case {case_id}"
-            )
-            return None
-
-        except ValidationException:
-            raise
-        except Exception as e:
-            logger.error(
-                f"Failed to get query result for {query_id} in case {case_id}: {e}"
-            )
-            return None
 
     @trace("case_service_get_case_messages_enhanced")
     async def get_case_messages_enhanced(

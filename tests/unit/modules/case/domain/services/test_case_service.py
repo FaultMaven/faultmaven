@@ -1,5 +1,6 @@
 """Tests for CaseService - case lifecycle, access control, conversation management."""
 
+import pathlib
 import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,6 +15,7 @@ from faultmaven.config.tenant_context import (
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.models.api_models import CaseListFilter, CaseMessage, CaseSearchRequest
 from faultmaven.modules.case.domain.models import Case, CaseState, MessageType
+from faultmaven.modules.case.domain.services import case_service
 from faultmaven.modules.case.domain.services.case_service import CaseService
 
 
@@ -744,6 +746,86 @@ class TestLinkSessionToCase:
             await service.link_session_to_case("", "case_abc123abc123")
         with pytest.raises(ValidationException):
             await service.link_session_to_case("sess_abc", "")
+
+
+# ============================================================
+# resume_case_in_session (#1390)
+# ============================================================
+
+
+class TestResumeCaseInSession:
+    """The resume reports the outcome of the LINK, and writes no transcript row.
+
+    It used to build a ``CaseMessage`` carrying ``session_id`` and
+    ``message_type`` — neither of which the model declares — while omitting the
+    four fields it requires. The constructor raised, the method's own handler
+    swallowed it, and it returned False on a resume that had already linked the
+    session: the route reads that as failure and answers 404 "Case not found or
+    resume not permitted".
+    """
+
+    @pytest.mark.asyncio
+    async def test_reports_success_when_the_link_succeeds(self, service):
+        service.link_session_to_case = AsyncMock(return_value=True)
+        assert await service.resume_case_in_session("case_abc123abc123", "sess_abc")
+
+    @pytest.mark.asyncio
+    async def test_reports_failure_when_the_link_fails(self, service):
+        service.link_session_to_case = AsyncMock(return_value=False)
+        assert not await service.resume_case_in_session("case_abc123abc123", "sess_abc")
+
+    @pytest.mark.asyncio
+    async def test_writes_no_conversation_row(self, service):
+        """Repairing the broken write instead of removing it would post a
+        ``role: "system"`` row, which both clients render as a NOTICE — so a
+        session re-link would start putting chatter in the transcript that no
+        deployment has ever emitted. Nothing reads the event; the log records
+        it."""
+        service.link_session_to_case = AsyncMock(return_value=True)
+        service.add_message_to_case = AsyncMock(return_value=True)
+
+        await service.resume_case_in_session("case_abc123abc123", "sess_abc")
+
+        service.add_message_to_case.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rejects_missing_ids(self, service):
+        with pytest.raises(ValidationException):
+            await service.resume_case_in_session("", "sess_abc")
+        with pytest.raises(ValidationException):
+            await service.resume_case_in_session("case_abc123abc123", "")
+
+
+class TestCaseMessageIsReadByRole:
+    """The root #1390 closes: ``CaseMessage`` carries ``role``, not ``message_type``.
+
+    Three call sites in this service screened on ``message_type``, which the
+    model has never declared — so each raised ``AttributeError`` on the first
+    row and had it swallowed by a bare handler. Two of them could therefore
+    only ever answer 0 / None; the third turned a successful resume into a 404.
+    """
+
+    def test_the_model_has_no_message_type_or_session_id(self):
+        fields = set(CaseMessage.model_fields)
+        assert "role" in fields
+        assert "message_type" not in fields
+        assert "session_id" not in fields
+
+    def test_the_service_never_reads_message_type(self):
+        """Parsed, not grepped: a substring search matches comments and strings
+        and would pass on a re-introduction inside either."""
+        import ast
+
+        source = pathlib.Path(case_service.__file__).read_text()
+        offenders = [
+            node.lineno
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Attribute) and node.attr == "message_type"
+        ]
+        assert offenders == [], (
+            f"{case_service.__file__} reads .message_type at lines {offenders}; "
+            "CaseMessage carries `role`. See #1390."
+        )
 
 
 # ============================================================
