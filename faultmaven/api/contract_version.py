@@ -416,4 +416,28 @@ asked to accept, and it belongs to a person.
 # cannot tell two contracts apart is not doing its job. The first act of the
 # version is therefore to give the contract on main an identity distinct from
 # the 1.0.0 the clients are written against.
-API_CONTRACT_VERSION = "3.4.0"
+# 3.5.0 — MINOR. `POST /knowledge/documents` gains two optional body fields,
+# `scope` and `team_id` (#1377). Uploading a finished runbook file was an
+# operator privilege hard-wired to the global tier; it is now an input method
+# like Convert and Write Runbook, and the operator gate moved to `scope ==
+# "global"` where it belongs.
+#
+# MINOR rather than MAJOR, and the judgement is worth stating because the
+# schema alone does not settle it. Two new OPTIONAL fields are textbook MINOR,
+# but the DEFAULT BEHAVIOUR changed: a caller that sends no `scope` used to
+# publish at global and now publishes at personal. That is a silent semantic
+# change, which is usually the worse kind.
+#
+# It is MINOR because no existing client can observe it. The only product
+# caller is faultmaven-dashboard, which adopts the change in the same batch
+# (faultmaven-dashboard#142 / #145). faultmaven-copilot names the URL in one
+# test and never calls it; faultmaven-slack-agent does not reference it. A
+# client that DID rely on the old default would deserve MAJOR — if one appears
+# before this is adopted, this entry is the thing to revisit.
+#
+# `scope` is also now a closed set (`personal | team | global`) rather than a
+# free string, so the schema publishes an `enum`. That narrows what is accepted
+# — but only to values the server ever handled: anything else reached an
+# unguarded `else` branch that wrote into the global runbook tree and then 500'd.
+#
+API_CONTRACT_VERSION = "3.5.0"

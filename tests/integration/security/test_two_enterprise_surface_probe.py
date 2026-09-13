@@ -3291,6 +3291,81 @@ async def test_the_case_list_team_filter_cannot_name_the_other_partys_team(world
     assert_no_b_content(attack, "GET /api/v1/cases?team_id=<B's team>")
 
 
+async def test_a_runbook_FILE_cannot_be_uploaded_into_the_other_partys_team(world):
+    """``POST /knowledge/documents`` with ``team_id`` naming B's team.
+
+    Probed rather than exempted, even though its ``team_id`` reaches the same
+    ``is_team_member`` predicate as the runbook-create publish below. The
+    exemption granted to ``POST /knowledge/convert`` rests on its team id
+    travelling an *identical path* — the one ``ConversionService`` call site.
+    Upload's is a SEPARATE call site, added by #1377, and a missing call site is
+    exactly how this broke: before review this route accepted any ``team_id``
+    and returned 201, planting a ``resource_shares`` row in a team the caller
+    had never joined. "Same predicate" is not the same claim as "same path".
+
+    Verified against the rows, not the status, for the reason the neighbouring
+    probe states: #1168 records that any id reaching the shared arm is served by
+    the vector layer verbatim, so a planted row puts A's content inside B's KB
+    reads.
+    """
+    runbook = (
+        f"---\nid: planted\ntitle: {SECRET_A} planted upload\n"
+        "domain: database\nservice: postgres\nsymptom_class: [timeout]\n"
+        "severity: medium\nstatus: draft\n---\n\n# Planted\n"
+    )
+    attack = await as_a(
+        world,
+        "POST",
+        "/api/v1/knowledge/documents",
+        data={
+            "title": f"{SECRET_A} planted upload",
+            "document_type": "runbook",
+            "scope": "team",
+            "team_id": world.b.team_id,
+        },
+        files={"file": ("planted.md", runbook.encode(), "text/markdown")},
+    )
+
+    assert attack.status_code in REFUSED, (
+        f"a runbook FILE was uploaded into another party's team "
+        f"({attack.status_code}): {attack.text[:300]}"
+    )
+
+    # Same two halves, and neither a bare count, for the same reason: A's seeded
+    # runbooks are excluded by id so the assertion cannot pass by measuring them.
+    async with world.superuser_engine.begin() as conn:
+        planted = (
+            await conn.execute(
+                text(
+                    "SELECT count(*) FROM resource_shares "
+                    "WHERE scope_id = :t AND resource_type = 'knowledge_item'"
+                ),
+                {"t": world.b.team_id},
+            )
+        ).scalar()
+        foreign_items = (
+            await conn.execute(
+                text(
+                    "SELECT count(*) FROM knowledge_items "
+                    "WHERE owner_id = :o AND item_id NOT IN (:seeded_p, :seeded_t)"
+                ),
+                {
+                    "o": world.a.user_id,
+                    "seeded_p": world.a.kb_personal_id,
+                    "seeded_t": world.a.kb_team_id,
+                },
+            )
+        ).scalar()
+    assert planted == 1, (
+        "a refused upload added a knowledge_item share to the other party's team "
+        f"(expected only the seeded one, found {planted})"
+    )
+    assert foreign_items == 0, (
+        "a refused upload wrote a knowledge item anyway: A owns "
+        f"{foreign_items} item(s) beyond the two this world seeded"
+    )
+
+
 async def test_a_runbook_cannot_be_published_into_the_other_partys_team(world):
     """``POST /knowledge/runbooks/create`` with ``team_id`` naming B's team.
 
@@ -4610,6 +4685,10 @@ SURFACE_INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     ("POST", "/api/v1/knowledge/runbooks/create"): (
         _PROBED,
         "publish into another tenant's team, rows checked",
+    ),
+    ("POST", "/api/v1/knowledge/documents"): (
+        _PROBED,
+        "upload a runbook file into another tenant's team, rows checked",
     ),
     ("POST", "/api/v1/knowledge/convert"): (
         _EXEMPT,
