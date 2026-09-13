@@ -270,3 +270,49 @@ def test_upload_stamps_the_session_enterprise_not_a_sentinel():
         assert writable_enterprise_id(None) == "ent-tenant-b"
     finally:
         set_current_enterprise_id(token_before)
+
+
+# ---------------------------------------------------------------------------
+# team_id reaches a filesystem path, and is now caller-supplied here
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        "../../../../escaped",
+        "/etc/passwd",
+        "team-9/../../x",
+        "..",
+        ".",
+        "..%2f..%2fetc",
+    ],
+)
+def test_a_hostile_team_id_cannot_escape_the_knowledge_tree(hostile):
+    """`team_id` is a REQUEST BODY field on this route since #1377.
+
+    `KnowledgeService.upload_document` interpolates it into a scope directory
+    (`team_{team_id}`), so opening this route to a caller-supplied value added a
+    new taint path from an HTTP form field to a filesystem path — which is what
+    CodeQL's `py/path-injection` flags on the head of this PR.
+
+    `safe_path_component` is the protection and it predates this change; what
+    this pins is that the protection actually holds for the source that is now
+    reachable. #1213 is the reason it matters: a containment check on the
+    FILENAME is worthless once the DIRECTORY has escaped — an `owner_id` of
+    `../../../../escaped` sent the write to `<cwd>/escaped` while every
+    filename-level guard passed.
+    """
+    from pathlib import Path
+
+    from faultmaven.utils.runbook_id import safe_path_component
+
+    root = Path("/data/knowledge")
+    resolved = (root / f"team_{safe_path_component(hostile)}").resolve()
+
+    assert str(resolved).startswith(
+        "/data/knowledge/"
+    ), f"team_id {hostile!r} escaped the knowledge tree to {resolved}"
+    assert (
+        resolved.parent == root
+    ), f"team_id {hostile!r} produced more than one path segment: {resolved}"
