@@ -334,6 +334,28 @@ async def upload_document(
             raise HTTPException(
                 status_code=400, detail="team_id is required for team scope"
             )
+        # PARSED, not merely validated, and the distinction is the point: the
+        # value carried onward is one this route CONSTRUCTED from a parsed UUID,
+        # so the caller's string never reaches the scope directory
+        # (`team_{team_id}`) that `KnowledgeService.upload_document` builds.
+        #
+        # Team ids are `str(uuid.uuid4())` in a `String(36)` column, so a
+        # non-UUID can never name a real team — 400 is the honest answer, and it
+        # is a FORMAT error rather than an existence one, so it is not an
+        # enumeration oracle.
+        #
+        # `safe_path_component` already slugs the component and
+        # `resolve_runbook_path` already checks containment; this bounds the
+        # taint at the boundary instead of relying on two sanitisers further
+        # down, which is also what makes the guarantee legible to the
+        # path-injection analysis (#1388 review).
+        try:
+            team_id = str(uuid.UUID(team_id))
+        except (ValueError, AttributeError, TypeError):
+            raise HTTPException(
+                status_code=400,
+                detail="team_id must be a valid team identifier",
+            ) from None
         # #854, and the reason this is not merely a presence check: a `team_id`
         # becomes a `resource_shares` row, i.e. content injected into that
         # team's knowledge scope and retrieved into its investigations. The

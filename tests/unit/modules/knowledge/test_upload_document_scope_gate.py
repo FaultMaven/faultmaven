@@ -27,6 +27,10 @@ from faultmaven.modules.knowledge.api.routes import router as knowledge_router
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
+_TEAM_UUID = "11111111-1111-4111-8111-111111111111"
+_OTHER_UUID = "22222222-2222-4222-8222-222222222222"  # the victim team
+_UNRELATED_UUID = "33333333-3333-4333-8333-333333333333"  # what a non-member belongs to
+
 RUNBOOK = b"---\nid: x\ndomain: database\nservice: redis\n---\n\n# A runbook\n"
 
 
@@ -97,12 +101,12 @@ def test_team_scope_carries_the_team(service):
     _post(
         _client(service, is_admin=False, team_service=_team_service(member=True)),
         scope="team",
-        team_id="team-9",
+        team_id=_TEAM_UUID,
     )
 
     kwargs = service.upload_document.await_args.kwargs
     assert kwargs["scope"] == "team"
-    assert kwargs["team_id"] == "team-9"
+    assert kwargs["team_id"] == _TEAM_UUID
 
 
 def test_publishing_into_a_team_you_do_not_belong_to_is_refused(service):
@@ -119,7 +123,7 @@ def test_publishing_into_a_team_you_do_not_belong_to_is_refused(service):
     response = _post(
         _client(service, is_admin=False, team_service=_team_service(member=False)),
         scope="team",
-        team_id="victim-team",
+        team_id=_OTHER_UUID,
     )
 
     assert response.status_code == 403
@@ -131,7 +135,7 @@ def test_team_scope_is_refused_when_teams_are_unavailable(service):
     response = _post(
         _client(service, is_admin=False, team_service=None),
         scope="team",
-        team_id="team-9",
+        team_id=_TEAM_UUID,
     )
 
     assert response.status_code == 403
@@ -217,7 +221,7 @@ def _team_service(*, member: bool):
     """
     return SimpleNamespace(
         list_all_user_team_ids=AsyncMock(
-            return_value=["team-9"] if member else ["some-other-team"]
+            return_value=[_TEAM_UUID] if member else [_UNRELATED_UUID]
         )
     )
 
@@ -316,3 +320,46 @@ def test_a_hostile_team_id_cannot_escape_the_knowledge_tree(hostile):
     assert (
         resolved.parent == root
     ), f"team_id {hostile!r} produced more than one path segment: {resolved}"
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    ["../../../../escaped", "/etc/passwd", "team-9", "..", "not-a-uuid", "' OR 1=1"],
+)
+def test_a_team_id_that_is_not_an_identifier_is_refused(service, malformed):
+    """Parsed at the boundary, so the caller's string never reaches a path.
+
+    Team ids are `str(uuid.uuid4())` in a `String(36)` column, so a non-UUID
+    can never name a real team. Refusing it here means the value that travels
+    on to `team_{team_id}` is one this route CONSTRUCTED from a parsed UUID —
+    the taint is bounded at the boundary rather than relying on
+    `safe_path_component` and `resolve_runbook_path` further down.
+
+    400, and a FORMAT error rather than an existence one, so it says nothing
+    about which teams exist.
+    """
+    response = _post(
+        _client(service, is_admin=False, team_service=_team_service(member=True)),
+        scope="team",
+        team_id=malformed,
+    )
+
+    assert response.status_code == 400, response.text
+    service.upload_document.assert_not_awaited()
+
+
+def test_the_team_id_forwarded_is_the_reconstructed_one(service):
+    """Not the caller's bytes, even when the caller's bytes are well-formed.
+
+    A UUID has equivalent spellings (case, braces, urn: prefix). What reaches
+    the service is always the canonical form this route built, which is what
+    makes "the caller's string never reaches the path" true rather than
+    usually-true.
+    """
+    _post(
+        _client(service, is_admin=False, team_service=_team_service(member=True)),
+        scope="team",
+        team_id=_TEAM_UUID.upper(),
+    )
+
+    assert service.upload_document.await_args.kwargs["team_id"] == _TEAM_UUID
