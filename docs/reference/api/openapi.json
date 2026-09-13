@@ -981,6 +981,11 @@
           },
           "scope": {
             "default": "personal",
+            "enum": [
+              "personal",
+              "team",
+              "global"
+            ],
             "title": "Scope",
             "type": "string"
           },
@@ -8133,7 +8138,7 @@
     },
     "/api/v1/auth/me/available-scopes": {
       "get": {
-        "description": "Return the scopes the calling user can target for team collaboration.\n\n``personal`` (author-only) is always available.\n\n``team`` is reported only when the deployment is team-enabled\n(``team_service`` is wired \u2014 a Cloud collaboration feature, unwired in\nstandalone) AND the caller actually belongs to at least one Team, since a\nuser with no Team has nothing to target.\n\n``global`` is the platform tier, so it is reported only to a\n``platform_admin``: every route that publishes at global scope requires\nthat role (``POST /knowledge/documents`` unconditionally; the conversion\nroutes for ``scope == \"global\"``). Reporting it to everyone made the\ndashboard offer a target the backend then refused, which is the drift this\nendpoint exists to prevent \u2014 its whole point is to reflect the caller's\nreal capability rather than a hardcoded assumption.\n\nScopes are returned narrowest-to-widest: ``personal | team | global``.",
+        "description": "Return the scopes the calling user can target for team collaboration.\n\n``personal`` (author-only) is always available.\n\n``team`` is reported only when the deployment is team-enabled\n(``team_service`` is wired \u2014 a Cloud collaboration feature, unwired in\nstandalone) AND the caller actually belongs to at least one Team, since a\nuser with no Team has nothing to target.\n\n``global`` is the platform tier, so it is reported only to a\n``platform_admin``: every route that publishes at global scope requires\nthat role \u2014 upload, convert and manual authoring alike, each for\n``scope == \"global\"`` (#1377 removed upload's route-level operator gate,\nwhich had made uploading a privilege rather than the tier it guarded). Reporting it to everyone made the\ndashboard offer a target the backend then refused, which is the drift this\nendpoint exists to prevent \u2014 its whole point is to reflect the caller's\nreal capability rather than a hardcoded assumption.\n\nScopes are returned narrowest-to-widest: ``personal | team | global``.",
         "operationId": "get_available_scopes_api_v1_auth_me_available_scopes_get",
         "responses": {
           "200": {
@@ -12156,7 +12161,7 @@
         ]
       },
       "post": {
-        "description": "Upload a document to the knowledge base\n\nArgs:\n    file: Document file to upload\n    title: Document title\n    document_type: Type of document\n    tags: Comma-separated tags\n    source_url: Source URL if applicable\n\nReturns:\n    Upload job information",
+        "description": "Upload a document to the knowledge base\n\nArgs:\n    file: Document file to upload\n    title: Document title\n    document_type: Type of document\n    tags: Comma-separated tags\n    source_url: Source URL if applicable\n    scope: Publishing tier \u2014 ``personal`` (default), ``team`` or\n        ``global``. ``global`` is the platform corpus every tenant reads\n        and requires the platform-admin role; ``team`` requires a\n        ``team_id`` naming a team you belong to.\n    team_id: Required when ``scope`` is ``team``.\n\nReturns:\n    Upload job information",
         "operationId": "upload_document_api_v1_knowledge_documents_post",
         "requestBody": {
           "content": {

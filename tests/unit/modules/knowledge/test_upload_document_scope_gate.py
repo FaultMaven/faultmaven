@@ -39,9 +39,12 @@ def service():
     )
 
 
-def _client(service, *, is_admin: bool):
+def _client(service, *, is_admin: bool, team_service=None):
     app = FastAPI()
     app.include_router(knowledge_router, prefix="/api/v1")
+    # The route reads membership from the same `app.state.team_service` signal
+    # the teams routes read; `None` is standalone (teams unavailable).
+    app.state.team_service = team_service
 
     async def _service():
         return service
@@ -91,11 +94,80 @@ def test_the_uploader_is_recorded_as_the_owner(service):
 
 
 def test_team_scope_carries_the_team(service):
-    _post(_client(service, is_admin=False), scope="team", team_id="team-9")
+    _post(
+        _client(service, is_admin=False, team_service=_team_service(member=True)),
+        scope="team",
+        team_id="team-9",
+    )
 
     kwargs = service.upload_document.await_args.kwargs
     assert kwargs["scope"] == "team"
     assert kwargs["team_id"] == "team-9"
+
+
+def test_publishing_into_a_team_you_do_not_belong_to_is_refused(service):
+    """#854 — a `team_id` is content injected into that team's knowledge scope.
+
+    The caller names it, so it must name a team the caller belongs to. The two
+    sibling authoring paths enforce this through
+    `ConversionService._ensure_team_publish_allowed`; without the same check
+    here, ANY authenticated user could publish a runbook into ANY team in their
+    enterprise, which is then retrieved into that team's investigations.
+    Verified before the fix: this returned 201 with the foreign team_id
+    forwarded to the service.
+    """
+    response = _post(
+        _client(service, is_admin=False, team_service=_team_service(member=False)),
+        scope="team",
+        team_id="victim-team",
+    )
+
+    assert response.status_code == 403
+    service.upload_document.assert_not_awaited()
+
+
+def test_team_scope_is_refused_when_teams_are_unavailable(service):
+    """Fail closed: no team service wired means no team publishing."""
+    response = _post(
+        _client(service, is_admin=False, team_service=None),
+        scope="team",
+        team_id="team-9",
+    )
+
+    assert response.status_code == 403
+    service.upload_document.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "spelling", ["Global", "GLOBAL", " global", "bogus", "undefined"]
+)
+def test_a_scope_outside_the_closed_set_is_refused(service, spelling):
+    """The gate is an exact `== "global"` match, so a near-miss must not pass it.
+
+    It is not merely that the operator check is skipped. `KnowledgeService`
+    routes an unrecognised scope to its `else` branch, which writes the file
+    into `data/knowledge/global/` — so before this was a closed set, a
+    non-operator sending `scope="Global"` planted a file in the global runbook
+    tree and then 500'd, leaving an orphan `.md` that a later
+    `POST /knowledge/scan` would mint a global draft from.
+    """
+    response = _post(_client(service, is_admin=False), scope=spelling)
+
+    assert response.status_code == 422
+    service.upload_document.assert_not_awaited()
+
+
+def test_an_empty_scope_falls_back_to_personal(service):
+    """An empty form value takes the declared default, and that default is safe.
+
+    Worth pinning separately from the rejections above: it is accepted rather
+    than refused, so the property that matters is where it LANDS — never the
+    platform tier.
+    """
+    response = _post(_client(service, is_admin=False), scope="")
+
+    assert response.status_code == 201, response.text
+    assert service.upload_document.await_args.kwargs["scope"] == "personal"
 
 
 def test_team_scope_without_a_team_is_refused(service):
@@ -135,3 +207,66 @@ def test_the_default_scope_is_not_global(service):
 
     assert response.status_code == 201, response.text
     assert service.upload_document.await_args.kwargs["scope"] != "global"
+
+
+def _team_service(*, member: bool):
+    """A team service whose membership answer is fixed.
+
+    `is_team_member` resolves the roster through this object; what matters to
+    the route is only the yes/no, so the double answers that directly.
+    """
+    return SimpleNamespace(
+        list_all_user_team_ids=AsyncMock(
+            return_value=["team-9"] if member else ["some-other-team"]
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# The tenant the row is stamped with
+# ---------------------------------------------------------------------------
+
+
+def test_upload_stamps_the_session_enterprise_not_a_sentinel():
+    """#1143, made reachable by #1377.
+
+    `KnowledgeService.upload_document` stamped
+    `SingleTenantProvider.DEFAULT_ENTERPRISE_ID` on `uploaded_files`,
+    `conversion_jobs`, `conversion_drafts`, `knowledge_items` and the
+    `resource_shares` row. That was harmless while the route refused every
+    upload under multi with the platform-tier gate — the path was unreachable
+    there. Opening personal and team scope makes it reachable, and
+    `writable_enterprise_id`'s docstring names what follows: under multi the
+    sentinel "is not the caller's tenant", so PostgreSQL rejects the INSERT with
+    `new row violates row-level security policy` — and on SQLite, which has no
+    RLS, the row lands in a FOREIGN TENANT silently.
+
+    Asserted at the source of the value rather than through the route, because
+    the route tests mock the service and so cannot see the stamp at all.
+    """
+    import inspect
+
+    from faultmaven.config.tenant_context import (
+        get_current_enterprise_id,
+        set_current_enterprise_id,
+    )
+    from faultmaven.modules.knowledge.domain.services import knowledge_service
+
+    source = inspect.getsource(knowledge_service.KnowledgeService.upload_document)
+    assert (
+        "writable_enterprise_id" in source
+    ), "upload_document no longer resolves the enterprise from the session"
+    assert (
+        "DEFAULT_ENTERPRISE_ID" not in source
+    ), "upload_document stamps a hardcoded single-tenant sentinel again"
+
+    # And the helper it now uses really does follow the bound session, which is
+    # the property the assertion above is only a proxy for.
+    from faultmaven.config.tenant_context import writable_enterprise_id
+
+    token_before = get_current_enterprise_id()
+    try:
+        set_current_enterprise_id("ent-tenant-b")
+        assert writable_enterprise_id(None) == "ent-tenant-b"
+    finally:
+        set_current_enterprise_id(token_before)

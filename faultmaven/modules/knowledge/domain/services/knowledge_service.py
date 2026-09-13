@@ -39,6 +39,7 @@ if TYPE_CHECKING:
 from faultmaven.config.tenant_context import (
     get_current_billing_organization_id,
     usable_tenant_id,
+    writable_enterprise_id,
 )
 from faultmaven.exceptions import ValidationException
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
@@ -1695,11 +1696,18 @@ class KnowledgeService:
             # enterprise_id NOT NULL — fall back to the single-tenant default
             # when no explicit enterprise is in scope. Resolved before the
             # session block because ingest_runbook below needs it too.
-            from faultmaven.providers.tenancy.single_tenant import (
-                SingleTenantProvider,
-            )
-
-            enterprise_id = SingleTenantProvider.DEFAULT_ENTERPRISE_ID
+            # The enterprise the SESSION is bound to, never a hardcoded
+            # sentinel (#1143). This path used to be unreachable under
+            # TENANT_PROVIDER=multi — the route refused every upload with the
+            # platform-tier gate — so stamping the Standalone sentinel was
+            # harmless. #1377 makes personal and team uploads reachable under
+            # multi, and `writable_enterprise_id`'s own docstring names the
+            # failure that would follow: "under TENANT_PROVIDER=multi it is not
+            # the caller's tenant but the sentinel enterprise, so PostgreSQL
+            # rejects the INSERT with new row violates row-level security
+            # policy" — and on SQLite, which has no RLS, it would silently
+            # write the row into a foreign tenant instead.
+            enterprise_id = writable_enterprise_id(None)
 
             # Create SQLite record (synthetic draft, immediately verified)
             from faultmaven.infrastructure.persistence.models import (

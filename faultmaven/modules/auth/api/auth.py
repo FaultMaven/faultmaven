@@ -1394,8 +1394,9 @@ async def get_available_scopes(
 
     ``global`` is the platform tier, so it is reported only to a
     ``platform_admin``: every route that publishes at global scope requires
-    that role (``POST /knowledge/documents`` unconditionally; the conversion
-    routes for ``scope == "global"``). Reporting it to everyone made the
+    that role — upload, convert and manual authoring alike, each for
+    ``scope == "global"`` (#1377 removed upload's route-level operator gate,
+    which had made uploading a privilege rather than the tier it guarded). Reporting it to everyone made the
     dashboard offer a target the backend then refused, which is the drift this
     endpoint exists to prevent — its whole point is to reflect the caller's
     real capability rather than a hardcoded assumption.

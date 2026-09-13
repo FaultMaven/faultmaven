@@ -28,7 +28,7 @@ Core Design Principles:
 import logging
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import (
     APIRouter,
@@ -57,7 +57,7 @@ from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models import KnowledgeBaseDocument, SearchRequest
 from faultmaven.models.api import DocumentSnippetResponse
 from faultmaven.models.exceptions import KnowledgeBaseError
-from faultmaven.modules.auth.contracts import DevUser
+from faultmaven.modules.auth.contracts import DevUser, is_team_member
 from faultmaven.modules.knowledge.api.platform_tier import (
     require_global_authoring_allowed,
 )
@@ -281,8 +281,9 @@ async def upload_document(
     tags: Optional[str] = Form(None),
     source_url: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
-    scope: str = Form("personal"),
+    scope: Literal["personal", "team", "global"] = Form("personal"),
     team_id: Optional[str] = Form(None),
+    request: Request = None,  # noqa: B008 — app.state carries team_service
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
     response: Response = Response(),
     current_user: DevUser = Depends(require_authentication),
@@ -296,6 +297,11 @@ async def upload_document(
         document_type: Type of document
         tags: Comma-separated tags
         source_url: Source URL if applicable
+        scope: Publishing tier — ``personal`` (default), ``team`` or
+            ``global``. ``global`` is the platform corpus every tenant reads
+            and requires the platform-admin role; ``team`` requires a
+            ``team_id`` naming a team you belong to.
+        team_id: Required when ``scope`` is ``team``.
 
     Returns:
         Upload job information
@@ -323,10 +329,24 @@ async def upload_document(
                 status_code=403,
                 detail="Global KB runbook upload requires platform admin role",
             )
-    if scope == "team" and not team_id:
-        raise HTTPException(
-            status_code=400, detail="team_id is required for team scope"
-        )
+    if scope == "team":
+        if not team_id:
+            raise HTTPException(
+                status_code=400, detail="team_id is required for team scope"
+            )
+        # #854, and the reason this is not merely a presence check: a `team_id`
+        # becomes a `resource_shares` row, i.e. content injected into that
+        # team's knowledge scope and retrieved into its investigations. The
+        # caller names it, so it must name a team the caller belongs to — the
+        # same rule `ConversionService._ensure_team_publish_allowed` enforces
+        # on the other two authoring paths, through the same shared predicate.
+        # Without it any authenticated user could publish into any team.
+        team_service = getattr(request.app.state, "team_service", None)
+        if not await is_team_member(team_service, current_user.user_id, team_id):
+            raise HTTPException(
+                status_code=403,
+                detail="You can only publish a runbook to a team you belong to",
+            )
 
     try:
         # Validate file type — runbook upload accepts text formats only
