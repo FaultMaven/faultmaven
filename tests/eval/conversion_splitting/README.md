@@ -49,6 +49,36 @@ collapse preserved every cause rather than discarding four of them. The old
 path did discard: 4 modes became 3 drafts, the fourth dropped by the coarse
 `(service, symptom_class)` collapse (#1376).
 
+## Does the criterion survive a provider change?
+
+It is enforced by PROSE. `_analyze_document` sends
+`response_format={"type": "json_object"}`, which constrains the envelope and not
+the content, so nothing structural stops a weaker model splitting by cause. The
+role follows `CHAT_PROVIDER` when `KNOWLEDGE_PROVIDER` is unset, so whichever
+provider a deployment runs is the one that actually decides.
+
+Measured over these documents plus three shipped pack runbooks, one provider per
+process (`get_settings()` is cached and reads the provider from the environment):
+
+| provider | model | structured output | score |
+|---|---|---|---|
+| gemini | `gemini-3.7-flash` | STRICT | **6/6** |
+| openai | `gpt-5.6-luna` | STRICT | **6/6** |
+| fireworks | `deepseek-v4-flash` | **BEST_EFFORT** | **6/6** |
+| anthropic | `claude-sonnet-4-5` | — | **not scorable** — #1380 |
+| groq | `llama-3.3-70b-versatile` | — | **not scorable** — #1381 |
+
+The Fireworks row is the informative one: a BEST_EFFORT provider, with no schema
+enforcement of any kind, still merged the five-cause vendor guide into one
+failure mode and still split the four-symptom control into four. The criterion
+travels on prose alone rather than riding on a provider's schema mode.
+
+The two unscorable rows are **not** criterion failures — neither provider could
+be reached at all. Anthropic ignores `response_format` and returns its (correct)
+JSON inside a markdown fence, which the bare `json.loads` at
+`conversion_service.py:1099` cannot read; Groq's shipped default model id is
+decommissioned and 404s. Both predate this corpus and are filed separately.
+
 ## Running it
 
 There is no driver in `tests/` — the measurement calls a live LLM, so it is not
