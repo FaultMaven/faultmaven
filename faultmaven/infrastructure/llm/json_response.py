@@ -35,6 +35,9 @@ from typing import Any
 # this module exists to eliminate.
 _FENCED_BLOCK_RE = re.compile(r"```(?:json|JSON)?\s*(.*?)\s*```", re.DOTALL)
 
+# Just the opening marker plus its info string, for an unterminated fence.
+_OPENING_FENCE_RE = re.compile(r"^```(?:json|JSON)?[ \t]*\n?")
+
 
 def strip_json_fence(content: str) -> str:
     """Return ``content`` with a surrounding markdown fence removed.
@@ -51,16 +54,15 @@ def strip_json_fence(content: str) -> str:
     if match:
         return match.group(1).strip()
 
-    # An UNTERMINATED fence — the regex needs both delimiters, so peel what is
-    # there. Guarded on a non-empty result: on a single-line body the peel drops
-    # the only line and returns "", which is worse than not stripping at all.
+    # An UNTERMINATED fence — the regex needs both delimiters, so peel the
+    # opening marker (and its info string) wherever it sits. Peeling the whole
+    # first LINE is wrong when the body is a single line: it drops the payload
+    # too and returns "", which is worse than not stripping at all.
     if cleaned.startswith("```"):
-        lines = cleaned.split("\n")
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        peeled = "\n".join(lines).strip()
+        peeled = _OPENING_FENCE_RE.sub("", cleaned, count=1)
+        if peeled.endswith("```"):
+            peeled = peeled[: -len("```")]
+        peeled = peeled.strip()
         if peeled:
             return peeled
 
