@@ -724,8 +724,10 @@ class Message(BaseModel):
             "(anchors, `uploaded_at_turn` lookups) — those are message-clock "
             "references and re-basing them breaks jump-to-turn. On the newest "
             "row this equals `TurnResponse.investigation_turn`, which is the "
-            "same quantity read at the case level. Null when the server "
-            "predates the field or the row carries no turn."
+            "same quantity read at the case level. Null on a row that owns no "
+            "turn — a `system` notice reporting a background job, stamped with "
+            "whichever turn was open when the job finished — and on a server "
+            "that predates the field."
         ),
     )
     role: Literal["user", "assistant", "system"]

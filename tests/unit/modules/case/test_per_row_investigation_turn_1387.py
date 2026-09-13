@@ -10,12 +10,18 @@ label on the live row and the label on that row after a reload agree.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from unittest import mock
 from unittest.mock import AsyncMock
 
 import pytest
 
 from faultmaven.models.api import Message
+from faultmaven.models.api_models import (
+    AdminCaseMetadata,
+    CaseDetail,
+    CaseSummary,
+)
 from faultmaven.models.case_ui import (
     CaseUIResponse_Inquiry,
     CaseUIResponse_Investigating,
@@ -27,6 +33,7 @@ from faultmaven.modules.case.domain.models import (
     TurnOutcome,
     TurnProgress,
 )
+from faultmaven.modules.case.domain.services import case_service as case_service_module
 from faultmaven.modules.case.domain.services.case_service import CaseService
 from faultmaven.modules.case.domain.services.case_ui_adapter import (
     transform_case_for_ui,
@@ -59,7 +66,7 @@ def _case(*outcomes: TurnOutcome, messages=None) -> Case:
     )
     case.turn_history = [_turn(i, o) for i, o in enumerate(outcomes, start=1)]
     if messages is not None:
-        object.__setattr__(case, "messages", messages)
+        case.messages = messages
     return case
 
 
@@ -157,6 +164,46 @@ class TestOrdinal:
                 case.investigation_turn_at(t)
             )
 
+    def test_the_ordinal_never_exceeds_the_case_level_count(self):
+        """Review of #1389: a row's turn_number is NOT bounded by the clock.
+
+        ``create_case(initial_message=...)`` stamps that row ``turn_number: 1``
+        and leaves ``current_turn`` at 0, because no turn has been processed
+        yet — so without the clamp the only row reports "Turn 1" while the
+        header reports "Turn 0" on the same screen, and the invariant the
+        design rests on is false on the very first case a client opens.
+        """
+        case = _case()
+        case.messages = _rows(1)
+        assert case.current_turn == 0
+        assert case.investigation_turn_at(1) == 0
+        assert case.investigation_turn_at(1) <= case.investigation_turn_count
+
+    def test_a_duplicate_aside_record_subtracts_once(self):
+        """A duplicate turn number means the CLOCK did not advance for the
+        second record (the #1264 corpus: two user messages on one
+        ``(case_id, turn_number)``), so counting it twice subtracts a turn that
+        was never counted and shifts every later row down by one."""
+        case = _case(
+            TurnOutcome.DATA_PROVIDED,
+            TurnOutcome.OUT_OF_BAND,
+            TurnOutcome.CONVERSATION,
+        )
+        case.turn_history = [
+            *case.turn_history,
+            _turn(2, TurnOutcome.OUT_OF_BAND),  # same turn recorded twice
+        ]
+        assert case.out_of_band_turns == [2]
+        assert case.investigation_turn_at(3) == 2
+        assert case.investigation_turn_count == 2
+
+    def test_the_aside_screen_is_the_shared_predicate(self):
+        """``TurnProgress.is_out_of_band`` is the counterpart to ``is_skipped``:
+        one screen, so a refinement cannot land in some readers and not others."""
+        assert _turn(1, TurnOutcome.OUT_OF_BAND).is_out_of_band is True
+        assert _turn(1, TurnOutcome.CONVERSATION).is_out_of_band is False
+        assert _turn(1, TurnOutcome.SKIPPED).is_out_of_band is False
+
     def test_the_ordinal_never_goes_negative(self):
         case = _case(TurnOutcome.OUT_OF_BAND)
         assert case.investigation_turn_at(0) == 0
@@ -234,6 +281,72 @@ class TestMessageRows:
             assert row.investigation_turn == by_id[row.message_id]
 
     @pytest.mark.asyncio
+    async def test_a_notice_row_carries_no_investigation_turn(self):
+        """A ``system`` row is a background-job notice stamped with whichever
+        turn happened to be OPEN when the job finished, so it owns no turn and
+        a number on it would assert membership in an exchange it had no part
+        in. Both clients suppress that in their own code today; the null is
+        what lets them stop."""
+        rows = _rows(1, 2)
+        rows.append(
+            {
+                "message_id": "m-notice",
+                "turn_number": 2,
+                "role": "system",
+                "content": "Your runbook draft is ready.",
+                "created_at": datetime.now(timezone.utc),
+                "metadata": {"source": "runbook_conversion_complete"},
+            }
+        )
+        case = _case(*_MIXED[:2], messages=rows)
+        response = await self._service(case).get_case_messages_enhanced(
+            case_id=case.case_id, limit=100
+        )
+        notice = next(m for m in response.messages if m.message_id == "m-notice")
+        assert notice.investigation_turn is None
+        # …while it keeps the message clock, which is what places it.
+        assert notice.turn_number == 2
+        assert all(
+            m.investigation_turn is not None
+            for m in response.messages
+            if m.role != "system"
+        )
+
+    @pytest.mark.asyncio
+    async def test_include_debug_returns_a_response_instead_of_raising(self):
+        """Review of #1389: the debug envelope was built from fields the model
+        does not declare and without the one it requires, so `include_debug=true`
+        raised a ValidationError — and the handler rebuilt the same object and
+        raised again from inside its own ``except``, turning a documented query
+        parameter into a 500."""
+        case = _case(*_MIXED, messages=_rows(1, 2, 3, 4, 5))
+        response = await self._service(case).get_case_messages_enhanced(
+            case_id=case.case_id, limit=100, include_debug=True
+        )
+        assert response.debug_info is not None
+        assert response.debug_info.redis_operation_time_ms >= 0
+        assert response.retrieved_count == 10
+
+    @pytest.mark.asyncio
+    async def test_only_the_page_is_converted(self):
+        """Counting used to mean converting every message in the case — 2000
+        pydantic models built to keep 50 — on every page a client scrolled."""
+        case = _case(*_MIXED, messages=_rows(1, 2, 3, 4, 5))
+        service = self._service(case)
+        with mock.patch(
+            "faultmaven.modules.case.domain.services.case_service._case_messages_from",
+            wraps=case_service_module._case_messages_from,
+        ) as convert:
+            response = await service.get_case_messages_enhanced(
+                case_id=case.case_id, limit=4
+            )
+        assert response.total_count == 10
+        assert response.retrieved_count == 4
+        # One call, and it was handed exactly the page.
+        assert convert.call_count == 1
+        assert len(convert.call_args.args[1]) == 4
+
+    @pytest.mark.asyncio
     async def test_the_newest_row_agrees_with_the_case_level_count(self):
         """What a client sees after a reload equals what it saw while typing."""
         case = _case(*_MIXED, messages=_rows(1, 2, 3, 4, 5))
@@ -265,6 +378,47 @@ class TestContract:
         assert model.model_fields["investigation_turn"].default is None
 
 
+class TestCaseSchemas:
+    """`GET /cases` and `GET /cases/{id}` publish the same count.
+
+    Review of #1389: the first pass moved the three `CaseUIResponse_*` schemas
+    and left these two, so the Dashboard's case export still counted the haiku
+    (`exportMarkdown.ts` prints `**Turns:** ${caseDetail.current_turn}`). The
+    argument for going past the issue text — shipping only the rows leaves the
+    bug one line higher — applies to them too.
+    """
+
+    def _case(self) -> Case:
+        case = _case(*_MIXED)
+        case.inquiry.proposed_problem_statement = "DNS resolution failing on prod"
+        case.inquiry.problem_statement_confirmed = True
+        case.inquiry.decided_to_investigate = True
+        case.state = CaseState.INVESTIGATING
+        return case
+
+    def test_case_summary_reports_both_counters(self):
+        summary = CaseSummary.from_case(self._case())
+        assert summary.current_turn == 5
+        assert summary.investigation_turn == 3
+
+    def test_case_detail_reports_both_counters(self):
+        detail = CaseDetail.from_case(self._case())
+        assert detail.current_turn == 5
+        assert detail.investigation_turn == 3
+
+    def test_the_operator_list_shows_the_same_turn_as_everyone_else(self):
+        """`AdminCaseMetadata.from_summary` names its fields deliberately so a
+        new one is classified by a human (ADR-012 D9). This one is metadata: a
+        count, carrying no text a user typed."""
+        metadata = AdminCaseMetadata.from_summary(CaseSummary.from_case(self._case()))
+        assert metadata.current_turn == 5
+        assert metadata.investigation_turn == 3
+
+    @pytest.mark.parametrize("model", [CaseSummary, CaseDetail, AdminCaseMetadata])
+    def test_the_field_is_nullable_on_every_case_schema(self, model):
+        assert model.model_fields["investigation_turn"].default is None
+
+
 class TestCaseRead:
     """``GET /cases/{id}/ui`` reports the case-level count beside the clock.
 
@@ -283,15 +437,36 @@ class TestCaseRead:
         return case
 
     def _terminal(self, state: CaseState, *outcomes: TurnOutcome) -> Case:
-        case = self._investigating(*outcomes)
-        now = datetime.now(timezone.utc)
-        if state is CaseState.RESOLVED:
-            object.__setattr__(case, "resolved_at", now)
-            object.__setattr__(case, "closure_reason", None)
-        else:
-            object.__setattr__(case, "closure_reason", "closed_insufficient_evidence")
-        object.__setattr__(case, "closed_at", now)
-        object.__setattr__(case, "state", state)
+        """A terminal case the MODEL would actually emit.
+
+        ``Case`` sets ``validate_assignment=True`` and its terminal validators
+        are bidirectional — a terminal state requires ``closed_at`` and
+        ``closed_at`` requires a terminal state — so no ORDER of assignments
+        satisfies both, which is why the fixtures elsewhere in the suite reach
+        for ``object.__setattr__``. Passing the pair to the CONSTRUCTOR runs
+        the validators once with both present and needs no bypass, so the
+        adapter under test is exercised against a shape the model admits
+        rather than one only a test can build.
+        """
+        closed_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+        case = Case(
+            case_id="case_aabb11223344",
+            title="OOM",
+            description="Production DNS failing",
+            user_id="u",
+            enterprise_id="ent_1",
+            state=state,
+            closed_at=closed_at,
+            resolved_at=closed_at if state is CaseState.RESOLVED else None,
+            closure_reason=(
+                None if state is CaseState.RESOLVED else "closed_insufficient_evidence"
+            ),
+            current_turn=len(outcomes),
+        )
+        case.inquiry.proposed_problem_statement = "DNS resolution failing on prod"
+        case.inquiry.problem_statement_confirmed = True
+        case.inquiry.decided_to_investigate = True
+        case.turn_history = [_turn(i, o) for i, o in enumerate(outcomes, start=1)]
         return case
 
     def test_inquiry_reports_the_count(self):

@@ -35,21 +35,30 @@ asked to accept, and it belongs to a person.
 # a submitted turn, and the one schema no history read and no header read can
 # reach. Every other surface therefore went on printing the message clock, so
 # an aside still moved the number the user was looking at, which is the symptom
-# #1329 set out to remove. Two response schemas gain it (#1387):
+# #1329 set out to remove. Every schema that publishes a turn for DISPLAY gains
+# a nullable `investigation_turn` (#1387):
 #
-#   * `Message` gains `investigation_turn` (nullable integer) — the per-row
-#     ORDINAL: the message clock at that row minus the out-of-band turns at or
-#     before it. Note this is not the case-level total moved onto the row.
-#     Attaching that total to every row would print the same number on all of
-#     them, because a count of "the turns so far" is only the label of the
-#     newest row; the ordinal is what labels the other rows, and the two agree
-#     exactly where they should, on the newest one.
+#   * `Message` — the per-row ORDINAL: the message clock at that row minus the
+#     out-of-band turns at or before it. Note this is not the case-level total
+#     moved onto the row. Attaching that total to every row would print the
+#     same number on all of them, because a count of "the turns so far" is only
+#     the label of the newest row; the ordinal is what labels the other rows,
+#     and the two agree exactly where they should, on the newest one.
 #
-#   * `CaseUIResponse_Inquiry`, `_Investigating` and `_Resolved` gain
-#     `investigation_turn` (nullable integer) — the case-level COUNT, the same
-#     quantity `TurnResponse.investigation_turn` reports, carried on the case
-#     read so a case header or a resolution summary ("12 turns") can show it
-#     without having just submitted a turn.
+#     Null on a `system` row. Those are background-job notices (runbook
+#     conversion) stamped with whichever turn happened to be OPEN when the job
+#     finished, so a number on one asserts membership in an exchange it had no
+#     part in — a rule both clients already implement privately, and the kind
+#     of duplication a server-computed field exists to remove.
+#
+#   * `CaseUIResponse_Inquiry`, `_Investigating`, `_Resolved`, and also
+#     `CaseSummary` (`GET /cases`), `CaseDetail` (`GET /cases/{id}`) and
+#     `AdminCaseMetadata` — the case-level COUNT, the same quantity
+#     `TurnResponse.investigation_turn` reports, carried on the case reads so a
+#     header, a resolution summary ("12 turns") or an exported archive can show
+#     it without having just submitted a turn. All six, not the three the first
+#     pass moved: a client reading the clock off whichever one it happens to
+#     hold is how the same defect survives in a different corner.
 #
 # `turn_number` and `current_turn` are unchanged and still mean the message
 # clock. That distinction is now load-bearing rather than incidental: the clock
