@@ -754,7 +754,7 @@ class DocumentPreprocessor:
             # fails QUIETLY — the exception handler below returns None and the
             # document proceeds with no triage verdict — so a provider without
             # a JSON mode silently disabled triage rather than reporting it.
-            result = loads_llm_json(response.content)
+            result = loads_llm_json(response.content, strict=True)
             return TriageResult(
                 is_actionable=result.get("is_actionable", True),
                 confidence=float(result.get("confidence", 0.5)),

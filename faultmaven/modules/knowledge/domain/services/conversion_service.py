@@ -9,7 +9,6 @@ Pipeline:
 """
 
 import asyncio
-import json
 import logging
 import shutil
 from datetime import datetime, timezone
@@ -1100,11 +1099,11 @@ class ConversionService:
             # Tolerant of a markdown fence: `response_format` is an
             # OpenAI-shaped parameter and a provider that cannot express it
             # drops it, so the body arrives as fenced prose-JSON. A bare
-            # `json.loads` made every conversion fail under such a provider
+            # A bare `json.loads` made every conversion fail under such a provider
             # (#1380) with LLM_PARSE_ERROR, whose user-facing advice is "try a
             # different document" — advice that can never work, because the
             # document was never the problem.
-            data = loads_llm_json(response.content)
+            data = loads_llm_json(response.content, strict=True)
             return AnalysisResult(
                 is_actionable=data.get("is_actionable", False),
                 failure_modes=[

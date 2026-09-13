@@ -150,7 +150,10 @@ from faultmaven.core.investigation.working_conclusion_generator import (
     is_early_stage_conclusion,
 )
 from faultmaven.exceptions import TOKEN_LIMIT
-from faultmaven.infrastructure.llm.json_response import loads_llm_json
+from faultmaven.infrastructure.llm.json_response import (
+    json_payload_text,
+    loads_llm_json,
+)
 from faultmaven.infrastructure.llm.metering import (
     TurnTokenTracker,
     active_token_tracker,
@@ -9562,18 +9565,21 @@ class MilestoneEngine:
                     else:
                         # Already a string
                         content = args
-            else:
-                # For non-function-calling modes the body may arrive fenced —
-                # stripped inside `loads_llm_json` below. This branch used to
-                # hold a second, byte-equivalent copy of that logic, and its
-                # being private to this file is why the two conversion call
-                # sites had none (#1380).
-                pass
-
             try:
-                # First, try to load content as JSON if it's a string
+                # First, try to load content as JSON if it's a string.
+                #
+                # ``content`` is REASSIGNED to whatever actually parsed, which is
+                # load-bearing rather than tidiness: ``is_truncated_json_error``
+                # below measures a ``JSONDecodeError.pos`` against
+                # ``len(content)`` to decide whether the body was cut and the
+                # ``max_tokens`` ladder should re-run (#513). Parsing a
+                # de-fenced copy while leaving ``content`` fenced makes that
+                # comparison read an offset from one string against the length
+                # of a longer one, so the guard answers False and the ladder
+                # silently stops engaging on any fenced truncated response.
                 if isinstance(content, str):
-                    content_obj = loads_llm_json(content)
+                    content = json_payload_text(content)
+                    content_obj = json.loads(content, strict=False)
                 else:
                     content_obj = content
 

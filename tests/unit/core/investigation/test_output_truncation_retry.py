@@ -598,3 +598,64 @@ async def test_an_unknown_stop_reason_is_not_treated_as_a_cut():
 
     assert result.agent_response == "the kubelet on node-3 is out of disk"
     assert len(_attempts(generate)) == 1
+
+
+# ---------------------------------------------------------------------------
+# A FENCED truncated body must ladder exactly as a bare one does (#1380)
+# ---------------------------------------------------------------------------
+
+FENCE = "`" * 3
+
+# The same cut, wrapped the way a provider with no JSON mode answers. Cut
+# OUTSIDE a string on purpose: a cut inside one short-circuits on the decoder's
+# "Unterminated string" message, so it would ladder either way and prove nothing.
+FENCED_TRUNCATED = f'{FENCE}json\n{{"agent_response": "x", "hyps": [1,2'
+FENCED_COMPLETE = f'{FENCE}json\n{{"agent_response": "the kubelet on node-3 is out of disk"}}\n{FENCE}'
+
+
+@pytest.mark.asyncio
+async def test_a_fenced_truncated_body_still_spends_the_ladder():
+    """The guard must measure the offset against the text that was PARSED.
+
+    ``is_truncated_json_error`` compares ``JSONDecodeError.pos`` to
+    ``len(content)``. #1380 moved the de-fencing into the parse helper, which
+    left the engine holding the FENCED body while the error's offset came from
+    the stripped one — so ``pos >= len(content)`` was False on every fenced
+    truncated response, the ladder silently stopped engaging, and a recoverable
+    turn died with a raw decoder message.
+
+    Only bodies cut INSIDE a string still laddered, which is why the whole
+    existing suite stayed green through the regression.
+    """
+    engine = _make_engine()
+    generate = AsyncMock(side_effect=[FENCED_TRUNCATED, FENCED_COMPLETE])
+    engine.llm_provider.generate = generate
+
+    result = await engine._generate_structured_output_inner(
+        prompt="why is node-3 NotReady?", schema_model=_Schema
+    )
+
+    assert result.agent_response == "the kubelet on node-3 is out of disk"
+    first, second = _attempts(generate)
+    assert first["max_tokens"] == STRUCTURED_OUTPUT_MAX_TOKENS
+    assert second["max_tokens"] == STRUCTURED_OUTPUT_MAX_TOKENS * 2
+    assert second["bypass_cache"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_fenced_complete_body_needs_no_ladder():
+    """Vacuity control: the fence alone must not look like truncation.
+
+    Without this, a helper that simply always reported truncation would pass the
+    test above.
+    """
+    engine = _make_engine()
+    generate = AsyncMock(side_effect=[FENCED_COMPLETE])
+    engine.llm_provider.generate = generate
+
+    result = await engine._generate_structured_output_inner(
+        prompt="why is node-3 NotReady?", schema_model=_Schema
+    )
+
+    assert result.agent_response == "the kubelet on node-3 is out of disk"
+    assert len(_attempts(generate)) == 1
