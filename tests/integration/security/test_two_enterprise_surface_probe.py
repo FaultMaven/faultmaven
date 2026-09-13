@@ -1807,7 +1807,7 @@ async def _wall_world(probe_app, arm: str):
         organization_id=None,
         user_id=user_a,
         secret=SECRET_A,
-        team_id=f"team_a_{uuid.uuid4().hex[:8]}",
+        team_id=str(uuid.uuid4()),  # production shape: teams mint str(uuid4)
         kb_personal_id=f"kb_a_{uuid.uuid4().hex[:12]}",
         kb_team_id=f"kb_at_{uuid.uuid4().hex[:12]}",
         enterprise_members=[user_a, operator_a],
@@ -1817,7 +1817,7 @@ async def _wall_world(probe_app, arm: str):
         organization_id=None,
         user_id=user_b,
         secret=SECRET_B,
-        team_id=f"team_b_{uuid.uuid4().hex[:8]}",
+        team_id=str(uuid.uuid4()),  # production shape: teams mint str(uuid4)
         kb_personal_id=f"kb_b_{uuid.uuid4().hex[:12]}",
         kb_team_id=f"kb_bt_{uuid.uuid4().hex[:12]}",
         enterprise_members=[user_b],
@@ -2075,8 +2075,8 @@ async def shared_world(probe_app):
         await session.commit()
 
     team_shared = f"team_t_{uuid.uuid4().hex[:8]}"
-    team_a_own = f"team_ao_{uuid.uuid4().hex[:8]}"
-    team_b_own = f"team_bo_{uuid.uuid4().hex[:8]}"
+    team_a_own = str(uuid.uuid4())
+    team_b_own = str(uuid.uuid4())
     kb_shared_id = f"kb_sh_{uuid.uuid4().hex[:12]}"
     kb_private_id = f"kb_pv_{uuid.uuid4().hex[:12]}"
 
@@ -3329,6 +3329,14 @@ async def test_a_runbook_FILE_cannot_be_uploaded_into_the_other_partys_team(worl
     assert attack.status_code in REFUSED, (
         f"a runbook FILE was uploaded into another party's team "
         f"({attack.status_code}): {attack.text[:300]}"
+    )
+    # Not 400: the route PARSES `team_id` as a UUID before checking membership
+    # (#1388), so a malformed id is refused at the format gate and would never
+    # reach the boundary this probe exists to test. B's id is a real one, so the
+    # refusal here has to be the authorization one.
+    assert attack.status_code != 400, (
+        "refused on FORMAT, not authorization — this probe stopped exercising "
+        f"the membership check: {attack.text[:200]}"
     )
 
     # Same two halves, and neither a bare count, for the same reason: A's seeded
