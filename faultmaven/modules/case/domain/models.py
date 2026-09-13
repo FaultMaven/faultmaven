@@ -22,9 +22,10 @@ Architecture:
 
 import logging
 import re
+from bisect import bisect_right
 from datetime import UTC, datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Sequence
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -5600,6 +5601,40 @@ class Case(BaseModel):
         return v
 
     @property
+    def out_of_band_turns(self) -> List[int]:
+        """The turn numbers recorded as asides (#1329), ascending.
+
+        Sorted rather than taken in ``turn_history`` order: the order is
+        maintained by ``reconcile_turn_sequence`` on load and before save, not
+        by the validator (which only logs), so an in-flight history can be
+        out of order — and :meth:`investigation_turn_at` bisects this.
+        """
+        return sorted(
+            t.turn_number
+            for t in self.turn_history
+            if t.outcome and t.outcome.value == TurnOutcome.OUT_OF_BAND.value
+        )
+
+    def investigation_turn_at(
+        self, turn_number: int, *, asides: Optional[Sequence[int]] = None
+    ) -> int:
+        """Which turn OF THE INVESTIGATION the given message turn is (#1387).
+
+        The ordinal a client prints beside one conversation row: the message
+        clock at that row, minus the asides at or before it. An aside does not
+        advance it, so an out-of-band turn carries the same ordinal as the
+        investigation turn that preceded it — which is the whole point, and is
+        what "``Turn 7`` stays ``Turn 7``" means.
+
+        ``asides`` lets a caller labelling MANY rows pass
+        :attr:`out_of_band_turns` once instead of rebuilding it per row; the
+        formula stays here so there is only one of it.
+        """
+        if asides is None:
+            asides = self.out_of_band_turns
+        return max(0, turn_number - bisect_right(asides, turn_number))
+
+    @property
     def investigation_turn_count(self) -> int:
         """How many consumed turns were part of the investigation (#1329).
 
@@ -5614,13 +5649,16 @@ class Case(BaseModel):
         Every such turn ran the engine, so it IS investigation work; counting
         only recorded, non-skipped entries would silently undercount exactly
         those cases. Derived, not stored, so it cannot drift from the clock.
+
+        The case-level COUNT and the per-row ORDINAL are the same quantity read
+        at two points, so this is :meth:`investigation_turn_at` evaluated at the
+        clock rather than a second implementation of it. That is what makes the
+        number a client sees while typing (``TurnResponse.investigation_turn``,
+        which is this) and the number it sees after a reload
+        (``Message.investigation_turn`` on the newest row) provably the same —
+        the disagreement #1387 exists to prevent.
         """
-        asides = sum(
-            1
-            for t in self.turn_history
-            if t.outcome and t.outcome.value == TurnOutcome.OUT_OF_BAND.value
-        )
-        return max(0, self.current_turn - asides)
+        return self.investigation_turn_at(self.current_turn)
 
     @property
     def effective_current_turn(self) -> int:

@@ -1927,7 +1927,7 @@
             "type": "string"
           },
           "current_turn": {
-            "description": "Current turn counter",
+            "description": "The MESSAGE clock: every persisted exchange advances it, asides included. It is what `Message.turn_number`, evidence `uploaded_at_turn` and the conversation anchors are keyed on, so keep using it to ADDRESS a turn \u2014 and prefer `investigation_turn` to DISPLAY one.",
             "minimum": 0.0,
             "title": "Current Turn",
             "type": "integer"
@@ -1950,6 +1950,19 @@
           "inquiry": {
             "$ref": "#/components/schemas/InquiryResponseData",
             "description": "Nested inquiry phase data"
+          },
+          "investigation_turn": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How many of this case's turns so far were investigation work (#1329/#1387) \u2014 the same quantity `TurnResponse.investigation_turn` reports, carried on the case read so a header or a resolution summary can show it without having just submitted a turn. Excludes out-of-band turns (small talk, trivia, questions about FaultMaven itself), which are answered outside the investigation: an aside advances `current_turn` and leaves this alone. Null when the server predates the field.",
+            "title": "Investigation Turn"
           },
           "state": {
             "const": "inquiry",
@@ -2026,7 +2039,7 @@
             "type": "string"
           },
           "current_turn": {
-            "description": "Current turn counter",
+            "description": "The MESSAGE clock: every persisted exchange advances it, asides included. It is what `Message.turn_number`, evidence `uploaded_at_turn` and the conversation anchors are keyed on, so keep using it to ADDRESS a turn \u2014 and prefer `investigation_turn` to DISPLAY one.",
             "minimum": 0.0,
             "title": "Current Turn",
             "type": "integer"
@@ -2045,6 +2058,19 @@
             ],
             "description": "Per-disposition eligibility for UI affordance gating. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:\n- ``ready`` \u2014 disposition is appropriate; render the affordance enabled with the default 'click to confirm' UX.\n- ``needs_info`` \u2014 disposition is allowed but the case is partial; user must ADD information (root cause / solution) before transitioning. UX: prompt the user for the missing data. Currently only the Resolve side surfaces this.\n- ``suggests_alternative`` \u2014 disposition is allowed but the system recommends the OTHER disposition for this case. UX: warn and offer the alternative; if the user confirms anyway, proceed. Distinct from ``needs_info`` \u2014 no data is missing; the user is asked to RE-DIRECT, not to add. Currently only the Close side surfaces this (when the case has root cause + solution \u2192 resolving preserves attribution).\n- ``not_eligible`` \u2014 disposition is not available; hide the affordance entirely.\n\nDifferent from ``valid_next_states`` \u2014 that field is the structural action graph (which edges exist), this field is the content-readiness layer on top.",
             "title": "Disposition Eligibility"
+          },
+          "investigation_turn": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How many of this case's turns so far were investigation work (#1329/#1387) \u2014 the same quantity `TurnResponse.investigation_turn` reports, carried on the case read so a header or a resolution summary can show it without having just submitted a turn. Excludes out-of-band turns (small talk, trivia, questions about FaultMaven itself), which are answered outside the investigation: an aside advances `current_turn` and leaves this alone. Null when the server predates the field.",
+            "title": "Investigation Turn"
           },
           "latest_evidence": {
             "description": "Most recent evidence collected (last 5)",
@@ -2173,7 +2199,7 @@
             "type": "string"
           },
           "current_turn": {
-            "description": "Current turn counter",
+            "description": "The MESSAGE clock: every persisted exchange advances it, asides included. It is what `Message.turn_number`, evidence `uploaded_at_turn` and the conversation anchors are keyed on, so keep using it to ADDRESS a turn \u2014 and prefer `investigation_turn` to DISPLAY one.",
             "minimum": 0.0,
             "title": "Current Turn",
             "type": "integer"
@@ -2192,6 +2218,19 @@
             ],
             "description": "Per-disposition eligibility for UI affordance gating. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:\n- ``ready`` \u2014 disposition is appropriate; render the affordance enabled with the default 'click to confirm' UX.\n- ``needs_info`` \u2014 disposition is allowed but the case is partial; user must ADD information (root cause / solution) before transitioning. UX: prompt the user for the missing data. Currently only the Resolve side surfaces this.\n- ``suggests_alternative`` \u2014 disposition is allowed but the system recommends the OTHER disposition for this case. UX: warn and offer the alternative; if the user confirms anyway, proceed. Distinct from ``needs_info`` \u2014 no data is missing; the user is asked to RE-DIRECT, not to add. Currently only the Close side surfaces this (when the case has root cause + solution \u2192 resolving preserves attribution).\n- ``not_eligible`` \u2014 disposition is not available; hide the affordance entirely.\n\nDifferent from ``valid_next_states`` \u2014 that field is the structural action graph (which edges exist), this field is the content-readiness layer on top.",
             "title": "Disposition Eligibility"
+          },
+          "investigation_turn": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How many of this case's turns so far were investigation work (#1329/#1387) \u2014 the same quantity `TurnResponse.investigation_turn` reports, carried on the case read so a header or a resolution summary can show it without having just submitted a turn. Excludes out-of-band turns (small talk, trivia, questions about FaultMaven itself), which are answered outside the investigation: an aside advances `current_turn` and leaves this alone. Null when the server predates the field.",
+            "title": "Investigation Turn"
           },
           "problem_statement": {
             "anyOf": [
@@ -3898,6 +3937,18 @@
             "description": "ISO 8601 datetime string (matches SQL schema)",
             "title": "Created At",
             "type": "string"
+          },
+          "investigation_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Which turn OF THE INVESTIGATION this row belongs to (#1387): the message clock at this row minus the out-of-band turns at or before it. `turn_number` is the message clock and advances on every exchange, asides included (small talk, trivia, questions about FaultMaven itself); this does not, so an aside carries the same value as the investigation turn before it. A client displaying \"Turn N\" against a conversation row should prefer this, and keep `turn_number` for anything that ADDRESSES a turn (anchors, `uploaded_at_turn` lookups) \u2014 those are message-clock references and re-basing them breaks jump-to-turn. On the newest row this equals `TurnResponse.investigation_turn`, which is the same quantity read at the case level. Null when the server predates the field or the row carries no turn.",
+            "title": "Investigation Turn"
           },
           "message_id": {
             "title": "Message Id",
@@ -6628,7 +6679,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "3.4.0"
+    "version": "3.5.0"
   },
   "openapi": "3.1.0",
   "paths": {

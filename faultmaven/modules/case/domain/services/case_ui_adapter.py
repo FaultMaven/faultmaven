@@ -300,6 +300,7 @@ def _transform_inquiry(case: Case) -> CaseUIResponse_Inquiry:
         state=CaseState.INQUIRY,
         title=case.title,
         current_turn=case.current_turn,
+        investigation_turn=case.investigation_turn_count,
         created_at=case.created_at,
         updated_at=case.updated_at,
         uploaded_files_count=len(case.uploaded_files),
@@ -427,6 +428,7 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
         state=CaseState.INVESTIGATING,
         title=case.title,
         current_turn=case.current_turn,
+        investigation_turn=case.investigation_turn_count,
         created_at=case.created_at,
         updated_at=case.updated_at,
         uploaded_files_count=len(case.uploaded_files),
@@ -616,6 +618,7 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
         state=case.state,  # Use actual state (RESOLVED or CLOSED)
         title=case.title,
         current_turn=case.current_turn,
+        investigation_turn=case.investigation_turn_count,
         created_at=case.created_at,
         updated_at=case.updated_at,
         resolved_at=case.resolved_at if case.resolved_at else case.updated_at,

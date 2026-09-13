@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 3.4.0
+**Version:** 3.5.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -5515,7 +5515,7 @@ User hasn't committed to full investigation yet.
 
 - `case_id` (string, required) — Case identifier
 - `created_at` (string, required) — When case was created
-- `current_turn` (integer, required) — Current turn counter
+- `current_turn` (integer, required) — The MESSAGE clock: every persisted exchange advances it, asides included. It is what `Message.turn_number`, evidence `uploaded_at_turn` and the conversation anchors are keyed on, so keep using it to ADDRESS a turn — and prefer `investigation_turn` to DISPLAY one.
 - `disposition_eligibility` (object, optional) — Per-disposition eligibility for UI affordance gating. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:
 - ``ready`` — disposition is appropriate; render the affordance enabled with the default 'click to confirm' UX.
 - ``needs_info`` — disposition is allowed but the case is partial; user must ADD information (root cause / solution) before transitioning. UX: prompt the user for the missing data. Currently only the Resolve side surfaces this.
@@ -5524,6 +5524,7 @@ User hasn't committed to full investigation yet.
 
 Different from ``valid_next_states`` — that field is the structural action graph (which edges exist), this field is the content-readiness layer on top.
 - `inquiry` (object, required) — Nested inquiry phase data
+- `investigation_turn` (object, optional) — How many of this case's turns so far were investigation work (#1329/#1387) — the same quantity `TurnResponse.investigation_turn` reports, carried on the case read so a header or a resolution summary can show it without having just submitted a turn. Excludes out-of-band turns (small talk, trivia, questions about FaultMaven itself), which are answered outside the investigation: an aside advances `current_turn` and leaves this alone. Null when the server predates the field.
 - `state` (string, optional) — Always 'inquiry' for this response type
 - `title` (string, required) — Case title
 - `updated_at` (string, required) — Last update timestamp
@@ -5545,7 +5546,7 @@ User has committed to investigation and agent is working through milestones.
 - `agent_status` (string, required) — What agent is currently doing
 - `case_id` (string, required) — Case identifier
 - `created_at` (string, required) — When case was created
-- `current_turn` (integer, required) — Current turn counter
+- `current_turn` (integer, required) — The MESSAGE clock: every persisted exchange advances it, asides included. It is what `Message.turn_number`, evidence `uploaded_at_turn` and the conversation anchors are keyed on, so keep using it to ADDRESS a turn — and prefer `investigation_turn` to DISPLAY one.
 - `disposition_eligibility` (object, optional) — Per-disposition eligibility for UI affordance gating. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:
 - ``ready`` — disposition is appropriate; render the affordance enabled with the default 'click to confirm' UX.
 - ``needs_info`` — disposition is allowed but the case is partial; user must ADD information (root cause / solution) before transitioning. UX: prompt the user for the missing data. Currently only the Resolve side surfaces this.
@@ -5553,6 +5554,7 @@ User has committed to investigation and agent is working through milestones.
 - ``not_eligible`` — disposition is not available; hide the affordance entirely.
 
 Different from ``valid_next_states`` — that field is the structural action graph (which edges exist), this field is the content-readiness layer on top.
+- `investigation_turn` (object, optional) — How many of this case's turns so far were investigation work (#1329/#1387) — the same quantity `TurnResponse.investigation_turn` reports, carried on the case read so a header or a resolution summary can show it without having just submitted a turn. Excludes out-of-band turns (small talk, trivia, questions about FaultMaven itself), which are answered outside the investigation: an aside advances `current_turn` and leaves this alone. Null when the server predates the field.
 - `latest_evidence` (array, optional) — Most recent evidence collected (last 5)
 - `next_actions` (array, optional) — Suggested next steps for investigation
 - `problem_statement` (object, optional) — Confirmed problem statement carried over from INQUIRY (sourced from case.description).
@@ -5579,7 +5581,7 @@ Investigation complete, case closed with solution.
 
 - `case_id` (string, required) — Case identifier
 - `created_at` (string, required) — When case was created
-- `current_turn` (integer, required) — Current turn counter
+- `current_turn` (integer, required) — The MESSAGE clock: every persisted exchange advances it, asides included. It is what `Message.turn_number`, evidence `uploaded_at_turn` and the conversation anchors are keyed on, so keep using it to ADDRESS a turn — and prefer `investigation_turn` to DISPLAY one.
 - `disposition_eligibility` (object, optional) — Per-disposition eligibility for UI affordance gating. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:
 - ``ready`` — disposition is appropriate; render the affordance enabled with the default 'click to confirm' UX.
 - ``needs_info`` — disposition is allowed but the case is partial; user must ADD information (root cause / solution) before transitioning. UX: prompt the user for the missing data. Currently only the Resolve side surfaces this.
@@ -5587,6 +5589,7 @@ Investigation complete, case closed with solution.
 - ``not_eligible`` — disposition is not available; hide the affordance entirely.
 
 Different from ``valid_next_states`` — that field is the structural action graph (which edges exist), this field is the content-readiness layer on top.
+- `investigation_turn` (object, optional) — How many of this case's turns so far were investigation work (#1329/#1387) — the same quantity `TurnResponse.investigation_turn` reports, carried on the case read so a header or a resolution summary can show it without having just submitted a turn. Excludes out-of-band turns (small talk, trivia, questions about FaultMaven itself), which are answered outside the investigation: an aside advances `current_turn` and leaves this alone. Null when the server predates the field.
 - `problem_statement` (object, optional) — Confirmed problem statement carried over from INQUIRY (sourced from case.description).
 - `reports_available` (array, optional) — Available reports (incident report, post-mortem, runbook)
 - `resolution_summary` (object, required) — Overall resolution metrics and insights
@@ -6070,6 +6073,7 @@ Schema matches case-storage-design.md Section 4.7 (case_messages table).
 - `author_id` (object, optional) — User who created the message
 - `content` (string, required)
 - `created_at` (string, required) — ISO 8601 datetime string (matches SQL schema)
+- `investigation_turn` (object, optional) — Which turn OF THE INVESTIGATION this row belongs to (#1387): the message clock at this row minus the out-of-band turns at or before it. `turn_number` is the message clock and advances on every exchange, asides included (small talk, trivia, questions about FaultMaven itself); this does not, so an aside carries the same value as the investigation turn before it. A client displaying "Turn N" against a conversation row should prefer this, and keep `turn_number` for anything that ADDRESSES a turn (anchors, `uploaded_at_turn` lookups) — those are message-clock references and re-basing them breaks jump-to-turn. On the newest row this equals `TurnResponse.investigation_turn`, which is the same quantity read at the case level. Null when the server predates the field or the row carries no turn.
 - `message_id` (string, required)
 - `metadata` (object, optional) — Sources, tools used, etc.
 - `role` (string, required)

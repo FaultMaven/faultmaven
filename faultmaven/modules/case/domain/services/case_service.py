@@ -48,6 +48,33 @@ from faultmaven.utils.serialization import to_json_compatible
 logger = logging.getLogger(__name__)
 
 
+def _case_messages_from(case: Case) -> List[CaseMessage]:
+    """Convert a case's stored message dicts into ``CaseMessage`` objects.
+
+    Shared by ``get_case_messages`` and ``get_case_messages_enhanced`` so the
+    latter can load the case ONCE — it needs ``turn_history`` as well as the
+    rows, to label each row with its investigation turn (#1387), and reading
+    the case twice for the two halves of one answer is how the two come from
+    different snapshots.
+    """
+    # Per case-storage-design.md Section 4.7, use "created_at"
+    return [
+        CaseMessage(
+            message_id=msg_dict["message_id"],
+            case_id=case.case_id,
+            turn_number=msg_dict.get("turn_number", 0),
+            role=msg_dict.get("role", "user"),
+            content=msg_dict["content"],
+            created_at=msg_dict.get("created_at"),
+            author_id=msg_dict.get("author_id"),
+            token_count=msg_dict.get("token_count"),
+            metadata=msg_dict.get("metadata", {}),
+            attachments=msg_dict.get("attachments"),
+        )
+        for msg_dict in case.messages
+    ]
+
+
 class CaseService(ICaseService):
     """Service for centralized case management and coordination"""
 
@@ -1419,23 +1446,7 @@ class CaseService(ICaseService):
             )
 
             # Convert dict messages to CaseMessage objects
-            case_messages = []
-            for msg_dict in case.messages:
-                # Convert dict to CaseMessage object for compatibility
-                # Per case-storage-design.md Section 4.7, use "created_at"
-                case_msg = CaseMessage(
-                    message_id=msg_dict["message_id"],
-                    case_id=case_id,
-                    turn_number=msg_dict.get("turn_number", 0),
-                    role=msg_dict.get("role", "user"),
-                    content=msg_dict["content"],
-                    created_at=msg_dict.get("created_at"),
-                    author_id=msg_dict.get("author_id"),
-                    token_count=msg_dict.get("token_count"),
-                    metadata=msg_dict.get("metadata", {}),
-                    attachments=msg_dict.get("attachments"),
-                )
-                case_messages.append(case_msg)
+            case_messages = _case_messages_from(case)
 
             # Log for observability
             logger.debug(f"Retrieved {len(case_messages)} messages for case {case_id}")
@@ -1632,9 +1643,23 @@ class CaseService(ICaseService):
         message_parsing_errors = 0
 
         try:
-            # Get all messages for the case first to calculate total count
-            all_messages = await self.get_case_messages(case_id, limit=1000, offset=0)
+            # ONE load: the rows and ``turn_history`` are two halves of one
+            # answer here (#1387) — the per-row investigation turn is computed
+            # from the history — and two reads could return two snapshots.
+            case = await self.repository.get(case_id)
+            if not case:
+                # Same shape the previous ``get_case_messages`` call raised for
+                # a missing case: caught below and answered as an empty
+                # response, not a 500. Both routes 404 before reaching here.
+                raise ServiceException(f"Case {case_id} not found")
+
+            all_messages = _case_messages_from(case)
             total_count = len(all_messages)
+
+            # Built once for the whole page rather than per row: each lookup
+            # bisects it, and rebuilding it per row would walk the history
+            # again for every message.
+            aside_turns = case.out_of_band_turns
 
             # Apply pagination to the messages
             paginated_messages = all_messages[offset : offset + limit]
@@ -1667,6 +1692,14 @@ class CaseService(ICaseService):
                     api_message = Message(
                         message_id=case_msg.message_id,
                         turn_number=case_msg.turn_number,
+                        # The ordinal a client prints as "Turn N" (#1387).
+                        # Derived from ``turn_history``, the same source
+                        # ``Case.investigation_turn_count`` uses, so the label
+                        # a client shows on the live row and the one it shows
+                        # for that row after a reload cannot disagree.
+                        investigation_turn=case.investigation_turn_at(
+                            case_msg.turn_number, asides=aside_turns
+                        ),
                         role=role,
                         content=case_msg.content,
                         created_at=created_at_str,
