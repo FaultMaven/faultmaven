@@ -2297,7 +2297,7 @@ def _build_turn_summary(turn) -> str:
     # An aside (#1329) is summarised as what it was, not as what was said: the
     # poem or the trivia answer is not investigation context, and rendering it
     # invites the model to treat the exchange as a thread to pick back up.
-    if turn.outcome and turn.outcome.value == "out_of_band":
+    if turn.is_out_of_band:
         return f"TURN {turn.turn_number}: {ASIDE_LINE}"
 
     parts = []
@@ -2965,9 +2965,7 @@ def _build_compact_history(
     if case.turn_history:
         last_turn = case.turn_history[-1]
         recent_history += "\n\n<previous_turn>\n"
-        last_is_aside = bool(
-            last_turn.outcome and last_turn.outcome.value == "out_of_band"
-        )
+        last_is_aside = last_turn.is_out_of_band
         if last_is_aside:
             recent_history += f"{ASIDE_LINE}\n"  # #1329
         elif last_turn.evidence_added:

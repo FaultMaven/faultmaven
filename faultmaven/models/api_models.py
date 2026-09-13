@@ -113,7 +113,27 @@ class CaseSummary(BaseModel):
     # mitigation path. ``stage`` (None outside INVESTIGATING) plus
     # ``turns_without_progress`` carry the two facts a case list actually needs:
     # where in the arc the case is, and whether it is moving.
-    current_turn: int
+    current_turn: int = Field(
+        description=(
+            "The MESSAGE clock: every persisted exchange advances it, asides "
+            "included. It is what `Message.turn_number`, evidence "
+            "`uploaded_at_turn` and the conversation anchors are keyed on, so "
+            "keep using it to ADDRESS a turn — and prefer `investigation_turn` "
+            "to DISPLAY one."
+        )
+    )
+    investigation_turn: Optional[int] = Field(
+        default=None,
+        description=(
+            "How many of this case's turns so far were investigation work "
+            "(#1329/#1387) — the same quantity `TurnResponse.investigation_turn` "
+            "and `CaseUIResponse.investigation_turn` report. Excludes "
+            "out-of-band turns (small talk, trivia, questions about FaultMaven "
+            "itself), which are answered outside the investigation: an aside "
+            "advances `current_turn` and leaves this alone. Null when the "
+            "server predates the field."
+        ),
+    )
     stage: Optional[InvestigationStage]
     turns_without_progress: int
 
@@ -150,6 +170,7 @@ class CaseSummary(BaseModel):
             source=getattr(case, "source", "copilot"),
             closure_reason=case.closure_reason,
             current_turn=case.current_turn,
+            investigation_turn=case.investigation_turn_count,
             stage=case.current_stage,
             turns_without_progress=case.turns_without_progress,
             is_terminal=case.is_terminal,
@@ -184,7 +205,27 @@ class CaseDetail(BaseModel):
     closure_reason: Optional[str]
 
     # Progress
-    current_turn: int
+    current_turn: int = Field(
+        description=(
+            "The MESSAGE clock: every persisted exchange advances it, asides "
+            "included. It is what `Message.turn_number`, evidence "
+            "`uploaded_at_turn` and the conversation anchors are keyed on, so "
+            "keep using it to ADDRESS a turn — and prefer `investigation_turn` "
+            "to DISPLAY one."
+        )
+    )
+    investigation_turn: Optional[int] = Field(
+        default=None,
+        description=(
+            "How many of this case's turns so far were investigation work "
+            "(#1329/#1387) — the same quantity `TurnResponse.investigation_turn` "
+            "and `CaseUIResponse.investigation_turn` report. Excludes "
+            "out-of-band turns (small talk, trivia, questions about FaultMaven "
+            "itself), which are answered outside the investigation: an aside "
+            "advances `current_turn` and leaves this alone. Null when the "
+            "server predates the field."
+        ),
+    )
     turns_without_progress: int
     current_stage: Optional[InvestigationStage]
 
@@ -231,6 +272,7 @@ class CaseDetail(BaseModel):
             source=getattr(case, "source", "copilot"),
             closure_reason=case.closure_reason,
             current_turn=case.current_turn,
+            investigation_turn=case.investigation_turn_count,
             turns_without_progress=case.turns_without_progress,
             current_stage=case.current_stage,
             milestones_completed=case.progress.completed_milestones,
@@ -409,6 +451,11 @@ class AdminCaseMetadata(BaseModel):
     # ``turns_without_progress`` is a system-maintained counter. Neither can
     # carry text a user typed.
     current_turn: int
+    #: Classified as metadata under the rule on ``from_summary`` below: a count
+    #: of investigative turns, carrying no text a user typed (#1387). The
+    #: operator list shows a turn number, so it shows the same one every other
+    #: surface does.
+    investigation_turn: Optional[int] = None
     stage: Optional[InvestigationStage]
     turns_without_progress: int
 
@@ -437,6 +484,7 @@ class AdminCaseMetadata(BaseModel):
             source=summary.source,
             closure_reason=summary.closure_reason,
             current_turn=summary.current_turn,
+            investigation_turn=summary.investigation_turn,
             stage=summary.stage,
             turns_without_progress=summary.turns_without_progress,
             is_terminal=summary.is_terminal,

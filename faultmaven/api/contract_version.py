@@ -30,6 +30,49 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
+# 3.5.0 — MINOR. The investigation turn reaches the surfaces that DISPLAY a
+# turn. 2.7.0 put `investigation_turn` on `TurnResponse` (#1329) — the reply to
+# a submitted turn, and the one schema no history read and no header read can
+# reach. Every other surface therefore went on printing the message clock, so
+# an aside still moved the number the user was looking at, which is the symptom
+# #1329 set out to remove. Every schema that publishes a turn for DISPLAY gains
+# a nullable `investigation_turn` (#1387):
+#
+#   * `Message` — the per-row ORDINAL: the message clock at that row minus the
+#     out-of-band turns at or before it. Note this is not the case-level total
+#     moved onto the row. Attaching that total to every row would print the
+#     same number on all of them, because a count of "the turns so far" is only
+#     the label of the newest row; the ordinal is what labels the other rows,
+#     and the two agree exactly where they should, on the newest one.
+#
+#     Null on a `system` row. Those are background-job notices (runbook
+#     conversion) stamped with whichever turn happened to be OPEN when the job
+#     finished, so a number on one asserts membership in an exchange it had no
+#     part in — a rule both clients already implement privately, and the kind
+#     of duplication a server-computed field exists to remove.
+#
+#   * `CaseUIResponse_Inquiry`, `_Investigating`, `_Resolved`, and also
+#     `CaseSummary` (`GET /cases`), `CaseDetail` (`GET /cases/{id}`) and
+#     `AdminCaseMetadata` — the case-level COUNT, the same quantity
+#     `TurnResponse.investigation_turn` reports, carried on the case reads so a
+#     header, a resolution summary ("12 turns") or an exported archive can show
+#     it without having just submitted a turn. All six, not the three the first
+#     pass moved: a client reading the clock off whichever one it happens to
+#     hold is how the same defect survives in a different corner.
+#
+# `turn_number` and `current_turn` are unchanged and still mean the message
+# clock. That distinction is now load-bearing rather than incidental: the clock
+# is what ADDRESSES a turn — conversation anchors, evidence `uploaded_at_turn`,
+# suggestion liveness — and re-basing those to the displayed label would break
+# jump-to-turn silently, with no error and no failing test. Display the
+# ordinal, address by the clock.
+#
+# MINOR: nullable additions to response-only schemas. A client that ignores
+# them renders exactly what it renders today, and one that reads them falls
+# back to the clock when the field is absent. Adoption is tracked in
+# faultmaven-copilot#251, faultmaven-dashboard#127 and
+# faultmaven-slack-agent#64.
+#
 # 3.4.0 — MINOR. Two amendments to the team-consent surface 3.1.0 published,
 # found by review of #1365 after it merged.
 #
@@ -416,7 +459,7 @@ asked to accept, and it belongs to a person.
 # cannot tell two contracts apart is not doing its job. The first act of the
 # version is therefore to give the contract on main an identity distinct from
 # the 1.0.0 the clients are written against.
-# 3.5.0 — MINOR. `POST /knowledge/documents` gains two optional body fields,
+# 3.6.0 — MINOR. `POST /knowledge/documents` gains two optional body fields,
 # `scope` and `team_id` (#1377). Uploading a finished runbook file was an
 # operator privilege hard-wired to the global tier; it is now an input method
 # like Convert and Write Runbook, and the operator gate moved to `scope ==
@@ -440,4 +483,10 @@ asked to accept, and it belongs to a person.
 # — but only to values the server ever handled: anything else reached an
 # unguarded `else` branch that wrote into the global runbook tree and then 500'd.
 #
-API_CONTRACT_VERSION = "3.5.0"
+#
+# Numbered 3.6.0, not 3.5.0, and for the reason 3.4.0 records above: #1389 took
+# 3.5.0 while this sat in review and merged first. Two different contracts must
+# never share a version — a number that cannot tell two contracts apart is not
+# doing its job — so this moves rather than collides, and both entries stay.
+# They describe unrelated surfaces.
+API_CONTRACT_VERSION = "3.6.0"
