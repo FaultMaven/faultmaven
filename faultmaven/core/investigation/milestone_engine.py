@@ -247,7 +247,7 @@ _PENDING_GATE_SUBSTANTIVE_LEN = 40
 # several of the top-ranked slots. The fetch depth is the RERANKER'S candidate
 # pool on the hybrid path: ``hybrid_search`` recalls max(3k, 15) vector and 2k
 # keyword candidates for a fetch of k and reranks them, so k decides which
-# three runbooks can reach the prompt at all, not merely how many are kept.
+# runbooks can reach the prompt at all, not merely how many are kept.
 # Render only the top KB_CONTEXT_MAX_ENTRIES into `case.kb_context`. Lowering
 # the depth to the surface cap is a retrieval-quality change, not a cleanup
 # (it was sized when a deeper consumer existed; that consumer is gone, the
@@ -255,7 +255,11 @@ _PENDING_GATE_SUBSTANTIVE_LEN = 40
 KB_PREFETCH_FETCH_LIMIT = 10
 KB_CONTEXT_MAX_ENTRIES = 5
 
-# At most this many chunks from ONE runbook may be rendered (#1379).
+# How many chunks from ONE runbook are admitted BEFORE other runbooks get a
+# turn (#1379). A preference, not a bound: the backfill below deliberately
+# exceeds it rather than hand back budget, so lowering this does NOT cap how
+# much of one runbook can reach the prompt when nothing else clears the
+# floor. What it bounds is how far one runbook can crowd out ANOTHER.
 #
 # A chunk is a ``### Cause``, and the admission slice used to be a flat
 # ``relevant[:KB_CONTEXT_MAX_ENTRIES]`` — blind to which runbook each chunk came
@@ -282,10 +286,33 @@ KB_CONTEXT_MAX_ENTRIES = 5
 # model most needs several causes from. Zero queries regress under (5, 2).
 #
 # Applied to the pool already fetched, so this costs no extra query, embedding
-# or round trip. ``context_builder`` already slices the combined list at 5 and
-# truncates each entry to ``KB_MAX_SOLUTION_CHARS``, so the rendered budget is
-# bounded at 5 x 800 chars.
+# or round trip. The prompt cost is 2 extra entries, each a ``title`` plus the
+# search ``snippet``. NOT ``KB_MAX_SOLUTION_CHARS``: that truncation reads
+# ``res.get("solution")`` and a pre-fetch entry has no ``solution`` key, so
+# the 800-char bound is dead code for this channel and quoting it would give a
+# future reader a number to re-size against that was never in effect.
 KB_CONTEXT_MAX_PER_RUNBOOK = 2
+
+
+_CHUNK_HEADING_RE = re.compile(r"^\s*(#{2,4})[ \t]+(.+?)[ \t]*$", re.MULTILINE)
+
+
+def _chunk_label(snippet: str) -> str:
+    """The markdown heading a retrieved chunk opens with, if it has one.
+
+    Chunking is structure-aware, so a chunk IS a section — ``### Cause C: …``,
+    ``## Symptom Recognition``, ``### Step 7: …``. The pre-fetch entry carries
+    the runbook's TITLE, which is the same for every chunk of it, so once more
+    than one chunk of a runbook can be rendered the prompt shows repeated
+    identical ``MATCH n: <title>`` blocks distinguished only by their snippet.
+    A model can read that as several corroborating sources rather than several
+    parts of one document.
+
+    Returns "" when the chunk does not open with a heading; the caller then
+    renders the title alone, exactly as before.
+    """
+    match = _CHUNK_HEADING_RE.search(snippet or "")
+    return match.group(2).strip() if match else ""
 
 
 def _admit_diverse(ranked: list) -> list:
@@ -314,24 +341,33 @@ def _admit_diverse(ranked: list) -> list:
     counts only against the total.
     """
     seen: dict = {}
-    admitted: list = []
+    chosen: list = []
     deferred: list = []
 
-    for hit in ranked:
-        if len(admitted) == KB_CONTEXT_MAX_ENTRIES:
+    for index, hit in enumerate(ranked):
+        if len(chosen) == KB_CONTEXT_MAX_ENTRIES:
             break
         parent = getattr(hit, "parent_document_id", None)
         if parent is not None:
             if seen.get(parent, 0) >= KB_CONTEXT_MAX_PER_RUNBOOK:
-                deferred.append(hit)
+                deferred.append((index, hit))
                 continue
             seen[parent] = seen.get(parent, 0) + 1
-        admitted.append(hit)
+        chosen.append((index, hit))
 
-    if len(admitted) < KB_CONTEXT_MAX_ENTRIES:
-        admitted.extend(deferred[: KB_CONTEXT_MAX_ENTRIES - len(admitted)])
+    if len(chosen) < KB_CONTEXT_MAX_ENTRIES:
+        chosen.extend(deferred[: KB_CONTEXT_MAX_ENTRIES - len(chosen)])
 
-    return admitted
+    # Re-sorted into rank order. The backfill appends what the cap skipped, so
+    # without this the returned list is not monotonic in rank — and rank order
+    # is not cosmetic here. ``context_builder`` head-truncates the KB section
+    # under budget pressure ("rank-ordered best-first, so keep='head'"), so a
+    # lower-ranked backfilled hit sitting early would survive while better ones
+    # were cut; the prompt numbers the entries ``MATCH 1..n``, implying
+    # descending relevance; and the pre-fetch log prints ``score=`` in list
+    # order. Selection is the cap's job, ORDER is the reranker's.
+    chosen.sort(key=lambda pair: pair[0])
+    return [hit for _, hit in chosen]
 
 
 # Cosine floor a pre-fetched runbook must clear to enter `case.kb_context`.
@@ -12094,6 +12130,10 @@ class MilestoneEngine:
                 case.kb_context = [
                     {
                         "title": r.title,
+                        # Which SECTION of the runbook matched. Two chunks of one
+                        # runbook are two entries with the same title, so without
+                        # this the prompt cannot tell them apart (#1379 review).
+                        "section": _chunk_label(r.snippet),
                         "summary": r.snippet,
                         "score": r.score,
                         "type": getattr(r, "document_type", "runbook"),

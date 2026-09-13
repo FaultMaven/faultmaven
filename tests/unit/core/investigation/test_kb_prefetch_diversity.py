@@ -59,8 +59,9 @@ def test_the_cap_binds_until_every_runbook_has_had_its_share():
     """
     admitted = _admit_diverse([hit("A")] * 4 + [hit("B")] * 4)
 
-    assert parents(admitted) == ["A", "A", "B", "B", "A"]
-    # Both runbooks reached the prompt, which is the property that matters.
+    # Rank order: A's backfilled third chunk sits at its own rank (3), not
+    # appended after B's.
+    assert parents(admitted) == ["A", "A", "A", "B", "B"]
     assert set(parents(admitted)) == {"A", "B"}
 
 
@@ -89,6 +90,25 @@ def test_backfill_cannot_change_which_runbooks_are_covered():
                 break
 
         assert set(parents(_admit_diverse(pool))) == set(parents(capped_only))
+
+
+def test_the_returned_list_is_monotonic_in_rank():
+    """Backfilled hits sit at THEIR rank, not appended after better ones.
+
+    `context_builder` head-truncates the KB section under budget pressure
+    ("rank-ordered best-first, so keep='head'"), the prompt numbers entries
+    `MATCH 1..n` implying descending relevance, and the pre-fetch log prints
+    `score=` in list order. Appending the backfill broke all three at once.
+    """
+    ranked = [
+        SimpleNamespace(parent_document_id=p, rank=i + 1)
+        for i, p in enumerate(["A", "A", "A", "A", "B"])
+    ]
+
+    ranks = [h.rank for h in _admit_diverse(ranked)]
+
+    assert ranks == sorted(ranks), f"not rank-ordered: {ranks}"
+    assert ranks == [1, 2, 3, 4, 5]
 
 
 def test_rank_order_is_preserved():
@@ -127,7 +147,7 @@ def test_backfill_takes_the_skipped_hits_in_rank_order():
     """Diversity first, then the best of what the cap skipped."""
     admitted = _admit_diverse([hit("A"), hit("A"), hit("A"), hit("A"), hit("B")])
 
-    assert parents(admitted) == ["A", "A", "B", "A", "A"]
+    assert parents(admitted) == ["A", "A", "A", "A", "B"]
 
 
 def test_a_short_pool_is_returned_whole():
@@ -166,7 +186,7 @@ def test_hits_without_a_parent_id_are_not_capped_against_each_other():
 def test_a_missing_id_does_not_free_a_real_runbooks_share():
     admitted = _admit_diverse([hit("A"), hit(None), hit("A"), hit("A"), hit("B")])
 
-    assert parents(admitted) == ["A", None, "A", "B", "A"]
+    assert parents(admitted) == ["A", None, "A", "A", "B"]
 
 
 # ---------------------------------------------------------------------------
@@ -186,17 +206,97 @@ def test_the_render_budget_is_reachable_from_the_pool():
 
 
 def test_the_renderer_can_show_every_admitted_entry():
-    """``context_builder`` slices the combined list; the cap must fit inside it.
+    """Every admitted entry survives into the rendered prompt.
 
-    If ``KB_CONTEXT_MAX_ENTRIES`` outgrew that slice, the extra entries would be
-    admitted, logged and counted — and then silently dropped before the prompt.
+    Asserted on RENDERED OUTPUT, not on a substring of another module's source.
+    The first version pinned the literal `all_kb_results[:5]` in
+    `context_builder`, which had it backwards: it forbade replacing that magic
+    number with the shared constant — the actual fix for the drift it warned
+    about — and a reformat or a rename would have turned it into a false pass.
+
+    The renderer slices the COMBINED list (caller-supplied `kb_results` plus the
+    pre-fetch), so this also covers the coupling the substring check said
+    nothing about.
     """
-    import inspect
+    from faultmaven.core.investigation.prompts.context_builder import (
+        build_investigation_context,
+    )
 
-    from faultmaven.core.investigation.prompts import context_builder
+    case = _case_with_kb_entries(KB_CONTEXT_MAX_ENTRIES)
+    kb_block = build_investigation_context(case, "why?")["kb_results"]
 
-    source = inspect.getsource(context_builder.build_investigation_context)
-    assert (
-        "all_kb_results[:5]" in source
-    ), "the renderer's slice moved; re-check it against KB_CONTEXT_MAX_ENTRIES"
-    assert KB_CONTEXT_MAX_ENTRIES <= 5
+    for i in range(KB_CONTEXT_MAX_ENTRIES):
+        assert f"runbook-{i}" in kb_block, (
+            f"entry {i} of {KB_CONTEXT_MAX_ENTRIES} admitted did not reach the "
+            "prompt; the renderer's slice is narrower than the admission budget"
+        )
+
+
+def test_two_chunks_of_one_runbook_are_distinguishable_in_the_prompt():
+    """Entries sharing a runbook must not render as identical MATCH blocks.
+
+    A pre-fetch entry carries the runbook TITLE, which is the same for every
+    chunk of it. Once the cap admits two, the prompt showed
+    `MATCH 1: Redis OOM` twice with nothing but the snippet to tell them apart,
+    which a model can read as two corroborating sources rather than two parts of
+    one document. The chunk's own heading is what separates them.
+    """
+    from faultmaven.core.investigation.prompts.context_builder import (
+        build_investigation_context,
+    )
+
+    case = _case_with_kb_entries(2, title="Redis OOM", same_runbook=True)
+    kb_block = build_investigation_context(case, "why?")["kb_results"]
+
+    assert "Cause A: memory ceiling" in kb_block
+    assert "Cause B: fragmentation" in kb_block
+    # And the shared title alone would NOT have distinguished them.
+    assert kb_block.count("Redis OOM") == 2
+
+
+def _case_with_kb_entries(
+    count: int, title: str | None = None, same_runbook: bool = False
+):
+    """A real ``Case`` carrying `count` pre-fetch entries, shaped as the engine writes them.
+
+    The real model rather than a namespace: `build_investigation_context` reads
+    a wide surface of it, and a stand-in fails on whichever attribute the
+    builder happens to touch next rather than on the property under test.
+    """
+    from datetime import datetime, timezone
+
+    from faultmaven.modules.case.domain.models import Case, CaseState, InquiryData
+
+    sections = ["Cause A: memory ceiling", "Cause B: fragmentation"]
+    entries = [
+        {
+            "title": title or f"runbook-{i}",
+            "section": sections[i] if same_runbook and i < len(sections) else "",
+            "summary": f"snippet {i}",
+            "score": 0.9 - (i * 0.01),
+            "type": "runbook",
+            "parent_document_id": "kb-same" if same_runbook else f"kb-{i}",
+            "trigger": "symptom",
+        }
+        for i in range(count)
+    ]
+
+    now = datetime.now(timezone.utc)
+    case = Case(
+        case_id="case_abcdef012345",
+        user_id="u",
+        enterprise_id="o",
+        title="t",
+        description="d",
+        state=CaseState.INVESTIGATING,
+        inquiry=InquiryData(
+            problem_statement_confirmed=True,
+            decided_to_investigate=True,
+            proposed_problem_statement="why is redis evicting keys?",
+        ),
+        created_at=now,
+        updated_at=now,
+        last_activity_at=now,
+    )
+    case.kb_context = entries
+    return case
