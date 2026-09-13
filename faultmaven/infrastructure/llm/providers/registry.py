@@ -227,18 +227,13 @@ PROVIDER_SCHEMA = {
         "model_var": "GROQ_MODEL",
         "default_base_url": "https://api.groq.com/openai/v1",
         "default_model": "openai/gpt-oss-20b",
-        # The two gpt-oss entries are Groq's ONLY models with STRICT
-        # structured-output enforcement (see GroqProvider.
-        # get_structured_output_capability). This list was widened because
-        # offering only BEST_EFFORT models meant the one Groq configuration
-        # suitable for CHAT_PROVIDER was the one an operator could not pick;
-        # the BEST_EFFORT entries have since been removed for a different
-        # reason — see below.
-        # The Llama entries are gone, not deprioritised: Groq 404s both with
-        # `model_not_found` and its catalogue now carries no Llama CHAT model
-        # at all — the remaining `meta-llama/*` ids are prompt-guard
-        # classifiers. Offering an operator a model the API refuses is worse
-        # than offering a short list.
+        # Groq's only two models with STRICT structured-output enforcement
+        # (see ``GroqProvider.get_structured_output_capability``), and since it
+        # decommissioned its Llama chat models, also the only chat models it
+        # serves — the remaining ``meta-llama/*`` ids in its catalogue are
+        # prompt-guard classifiers. A BEST_EFFORT entry here would degrade
+        # primary CHAT, because the engine drives state from schema-constrained
+        # responses.
         "available_models": [
             "openai/gpt-oss-20b",
             "openai/gpt-oss-120b",

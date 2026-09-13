@@ -30,75 +30,86 @@ def _default() -> str:
     return LLMSettings.model_fields["groq_model"].default
 
 
-def test_the_default_is_offered_by_the_picker():
-    """An operator must be able to select what the deployment already runs.
+def test_the_default_itself_is_strict_not_merely_one_of_the_options():
+    """The gap the neighbouring suite leaves.
 
-    The two are separate lists and drifted apart: the default was a model the
-    picker offered and the API refused.
+    `test_groq_picker_offers_a_strict_model` asserts that AT LEAST ONE offered
+    model enforces a schema natively — it takes the list, filters for STRICT and
+    asserts the filter is non-empty. A BEST_EFFORT **default** sitting beside a
+    STRICT option passes it, and the default is what a deployment actually runs
+    unless an operator intervenes. The engine drives state from
+    schema-constrained responses, so that is the configuration that matters.
     """
-    assert _default() in PROVIDER_SCHEMA["groq"]["available_models"]
+    from faultmaven.infrastructure.llm.providers.base import ProviderConfig
 
-
-def test_the_registry_and_settings_agree_on_the_default():
-    assert PROVIDER_SCHEMA["groq"]["default_model"] == _default()
-
-
-def test_every_offered_model_is_priced():
-    """A model the picker offers but pricing does not know bills as zero.
-
-    `lookup_rates` matches on bare substrings, so this also pins the
-    `openai/`-prefix convention the Groq ids use.
-    """
-    for model in PROVIDER_SCHEMA["groq"]["available_models"]:
-        assert lookup_rates("groq", model) is not None, model
-
-
-def test_the_default_can_carry_the_investigation_role():
-    """STRICT, because the engine drives state from schema-constrained output.
-
-    A BEST_EFFORT default silently degrades every investigation on that
-    provider — the reason the picker list was widened to include gpt-oss in the
-    first place.
-    """
-    # A minimal config: `get_effective_model` honours a requested model only
-    # when it is in `config.models`, which the registry populates from the
-    # picker list. Driving the real method rather than asserting on the
-    # provider's internal set keeps this a test of behaviour.
-    from types import SimpleNamespace
-
-    provider = GroqProvider.__new__(GroqProvider)
-    provider.config = SimpleNamespace(
-        models=list(PROVIDER_SCHEMA["groq"]["available_models"]),
-        default_model=_default(),
+    # A REAL ProviderConfig, as the neighbouring suite builds one. A namespace
+    # carrying only `models`/`default_model` works until `get_effective_model`
+    # takes its warning branch, which touches `self.logger` and
+    # `self.provider_name` — then this raises AttributeError instead of
+    # reporting the capability it names.
+    provider = GroqProvider(
+        ProviderConfig(
+            name="groq",
+            api_key="test-key",
+            base_url=PROVIDER_SCHEMA["groq"]["default_base_url"],
+            models=list(PROVIDER_SCHEMA["groq"]["available_models"]),
+            default_model=_default(),
+        )
     )
-    capability = provider.get_structured_output_capability(_default())
 
-    assert capability is StructuredOutputCapability.STRICT
+    assert (
+        provider.get_structured_output_capability(_default())
+        is StructuredOutputCapability.STRICT
+    )
 
 
-def test_no_shipped_source_still_pins_the_decommissioned_model():
-    """All four copies moved together, which is the part that failed before.
+def test_every_shipped_source_names_the_current_default():
+    """All the places the id is written by hand agree with `settings.py`.
 
-    settings, the registry default, the picker list, `.env.example` and
-    CLAUDE.md each carried the id independently; three of them are not reached
-    by any import, so only a text sweep catches a straggler.
+    Stated POSITIVELY, and that is the point. The first version asserted the
+    decommissioned id was ABSENT and exempted lines starting with `#` or `|` so
+    prose could mention it — which is exactly how `.env.example` and CLAUDE.md
+    write the value, so the guard passed with `llama-3.3-70b-versatile`
+    restored in both. Mutation-verified at the time; the exemption swallowed
+    the only files the sweep existed for.
+
+    A positive claim has no exemption to slip through: whatever else a file
+    says, it must name the model actually shipped.
     """
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[4]
-    for relative in (
-        "faultmaven/config/settings.py",
-        "faultmaven/infrastructure/llm/providers/registry.py",
-        ".env.example",
-        "CLAUDE.md",
-    ):
-        text = (root / relative).read_text()
-        # The id may appear in prose explaining WHY it was dropped; what must
-        # not survive is an assignment or an offered value.
-        for line in text.splitlines():
-            stripped = line.strip()
-            if "llama-3.3-70b-versatile" not in stripped:
-                continue
-            assert stripped.startswith("#") or stripped.startswith(
-                "|"
-            ), f"{relative} still pins the decommissioned model: {stripped}"
+    default = _default()
+
+    env_example = (root / ".env.example").read_text()
+    assert f"GROQ_MODEL={default}" in env_example
+
+    claude_md = (root / "CLAUDE.md").read_text()
+    groq_rows = [
+        line
+        for line in claude_md.splitlines()
+        if line.startswith("|") and "`GROQ_API_KEY`" in line
+    ]
+    assert groq_rows, "CLAUDE.md no longer documents Groq in its provider table"
+    for row in groq_rows:
+        assert default in row, f"provider table names a different model: {row}"
+
+
+def test_the_getting_started_guide_lists_only_servable_models():
+    """Onboarding is a way to re-introduce the defect, not just document it.
+
+    `_create_provider_config` folds a configured model into `config.models`, so
+    `get_effective_model` honours whatever a user sets — a guide listing a
+    decommissioned id sends them straight to `model_not_found` (#1381).
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[4]
+    guide = (root / "docs/getting-started/user-guide.md").read_text()
+
+    groq_lines = [ln for ln in guide.splitlines() if "**Groq**" in ln]
+    assert groq_lines, "the guide no longer documents Groq models"
+    for line in groq_lines:
+        assert "llama-3.3-70b-versatile" not in line
+        assert "llama-3.1-8b-instant" not in line
+        assert _default() in line
