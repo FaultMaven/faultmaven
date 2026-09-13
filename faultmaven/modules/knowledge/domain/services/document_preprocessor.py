@@ -2,6 +2,11 @@
 
 Stages:
 1. Format extraction (via DocumentParser)
+1b. Already-a-runbook gate: refuse a document that is already a FaultMaven
+    runbook (ALREADY_A_RUNBOOK). A document with runbook frontmatter whose body
+    is not the canonical skeleton is WARNED about instead, and only when that
+    frontmatter carries `symptom_class` — see ``is_near_runbook`` for why the
+    frontmatter alone is too generic to warn on
 2. Content cleanup (strip boilerplate)
 3. Sensitive content scan (PII redaction)
 4. Size check (hard limit at 30K tokens)
@@ -27,6 +32,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
 from faultmaven.modules.knowledge.domain.services.document_parser import (
     DocumentParser,
 )
+from faultmaven.modules.knowledge.domain.services.runbook_grammar import code_spans
 
 logger = logging.getLogger(__name__)
 
@@ -302,23 +308,181 @@ _RUNBOOK_FRONTMATTER_FIELDS = {
     "status",
 }
 
+# 4 of 6 is "runbook-shaped frontmatter". Named rather than inlined so
+# ``test_document_preprocessor_existing_runbook`` can assert the threshold is
+# actually reachable — see ``_RUNBOOK_FRONTMATTER_FIELDS`` against
+# ``RunbookValidator.REQUIRED_METADATA``. If a schema change made three of these
+# six optional, every valid runbook would fall under the threshold and this gate
+# would disarm with no test failing.
+_RUNBOOK_FRONTMATTER_MIN_FIELDS = 4
+
+# The two sections that make a document a FaultMaven runbook rather than some
+# other technical document, checked alongside the frontmatter above.
+#
+# The frontmatter test ALONE is not a safe basis for a refusal. Its threshold is
+# "4 of 6", and four of those six field names are generic: an incident-report or
+# ticket export carrying ``id`` / ``service`` / ``severity`` / ``status`` meets it
+# without being a runbook — and an incident report is precisely the kind of
+# document this pipeline exists to convert (``ANALYSIS_SYSTEM_PROMPT`` names
+# ``incident_report`` as a source type). While the detection only raised a
+# warning, a false positive cost nothing; as the basis of a 422 it would
+# refuse legitimate work, so the body shape is required too.
+#
+# ``## Symptom Recognition`` + ``## Causes`` are the pair that carries the cause
+# model this refusal is about — the runbook states one failure surface and
+# enumerates its causes underneath — and nothing outside a FaultMaven runbook
+# writes both. Their spelling is the validator's, not a second copy: they are
+# asserted to be a subset of ``RunbookValidator``'s ``REQUIRED_SECTIONS`` by
+# ``test_document_preprocessor_existing_runbook.py``, so renaming a section there
+# fails that test rather than silently disarming this gate.
+_RUNBOOK_BODY_SECTIONS = ("Symptom Recognition", "Causes")
+
+# Exact-anchored ``^## Section$``, the same anchoring ``RunbookValidator``
+# ``_validate_structure`` uses. A prefix match would accept ``## Causes of the
+# outage`` in an ordinary postmortem.
+_RUNBOOK_BODY_SECTION_RES = tuple(
+    re.compile(rf"^##[ \t]+{re.escape(section)}[ \t]*$", re.MULTILINE)
+    for section in _RUNBOOK_BODY_SECTIONS
+)
+
+# Code is masked before the section search, because a postmortem that QUOTES the
+# runbook it followed is a document this pipeline exists to convert, and a fenced
+# quote of ``## Symptom Recognition`` + ``## Causes`` would otherwise satisfy the
+# body half and hard-refuse it (422). This is where the gate deliberately parts
+# company with ``RunbookValidator._validate_structure``, which does NOT mask: the
+# validator is already looking at something claiming to be a runbook, so a fenced
+# heading costs it nothing, while here it costs a legitimate conversion.
+#
+# Via ``runbook_grammar.mask_code`` rather than a local regex. A private
+# ``re.compile(r"```.*?```", re.DOTALL)`` shipped here first and was wrong three
+# ways, each of which either refused a legitimate document or disarmed the gate
+# on a real runbook: it did not know ``~~~`` fences; it paired backtick runs
+# positionally, so an unclosed fence swallowed the real headings after it; and
+# replacing the span with newlines dropped the characters before its first and
+# after its last, splicing WITHIN a line and manufacturing a ``## Causes`` the
+# source never had. The shared helper answers all three because it is the same
+# ``_protected_spans`` the comment mask uses, and it is length-preserving.
+
+# Bytes before the opening ``---`` that must not disarm the gate. The
+# frontmatter anchor is ``re.match``, so it binds at offset 0: a UTF-8 BOM (the
+# "UTF-8 with BOM" default of several Windows editors, preserved verbatim by
+# ``Path.read_text(encoding="utf-8")``) or one blank line ahead of the
+# delimiter made ``detect_existing_runbook`` answer False for a byte-identical
+# runbook. Detection runs BEFORE ``cleanup_text``, which is the only thing that
+# would otherwise have removed them, so #1375 still reproduced on any runbook
+# saved by such an editor.
+_LEADING_NOISE = "\ufeff \t\r\n"
+
+
+def classify_runbook_shape(text: str) -> tuple[bool, bool]:
+    """Return ``(is_runbook, is_near_runbook)`` from ONE pass over the document.
+
+    ``preprocess`` needs both answers and they share every expensive step: the
+    leading-noise strip, the YAML parse, and the code-span scan over a document
+    that may run to ``MAX_TOKEN_LIMIT`` (30K tokens) — the size check happens
+    later, so this stage sees the document at full size. Asking
+    ``detect_existing_runbook`` and then ``is_near_runbook`` did all of it
+    twice.
+
+    The two public predicates below delegate here rather than the other way
+    round, so the shape rule is stated once and the surface the tests drive is
+    the surface production uses.
+    """
+    fields = _runbook_frontmatter_fields(text)
+    if len(fields) < _RUNBOOK_FRONTMATTER_MIN_FIELDS:
+        return False, False
+    # Only now is the body scan worth paying for.
+    if _has_runbook_body(text):
+        return True, False
+    return False, "symptom_class" in fields
+
 
 def detect_existing_runbook(text: str) -> bool:
-    """Check if text already has FaultMaven runbook frontmatter."""
+    """Is this document already a FaultMaven runbook?
+
+    True only when BOTH hold: the document opens with runbook frontmatter, and
+    its body carries the canonical section skeleton OUTSIDE any fenced block.
+    See the constants above for why neither half decides it alone.
+    """
+    return _has_runbook_frontmatter(text) and _has_runbook_body(text)
+
+
+def _runbook_frontmatter_fields(text: str) -> frozenset:
+    """Which of ``_RUNBOOK_FRONTMATTER_FIELDS`` the opening frontmatter carries.
+
+    Returns the matched field NAMES rather than a bool, because the two callers
+    need different questions answered from one parse: the gate asks "are there
+    at least four", the near-runbook warning asks "is ``symptom_class`` among
+    them". Empty when the document does not open with parseable frontmatter.
+
+    Sole owner of the ``_LEADING_NOISE`` strip, and the only reader for which
+    offset 0 is load-bearing — the section search is ``MULTILINE`` and
+    indifferent to what precedes the first delimiter. A second copy in the
+    caller made the guard untestable: removing either left the other, so a
+    mutation that should have restored the BOM bug killed no test.
+    """
+    text = text.lstrip(_LEADING_NOISE)
+
     match = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
     if not match:
-        return False
+        return frozenset()
 
     try:
         import yaml
 
         metadata = yaml.safe_load(match.group(1))
         if not isinstance(metadata, dict):
-            return False
-        present = set(metadata.keys()) & _RUNBOOK_FRONTMATTER_FIELDS
-        return len(present) >= 4  # 4 of 6 fields = almost certainly a runbook
+            return frozenset()
+        return frozenset(metadata.keys()) & _RUNBOOK_FRONTMATTER_FIELDS
     except Exception:
-        return False
+        return frozenset()
+
+
+def _has_runbook_frontmatter(text: str) -> bool:
+    """Runbook-SHAPED frontmatter: at least the threshold many fields."""
+    return len(_runbook_frontmatter_fields(text)) >= _RUNBOOK_FRONTMATTER_MIN_FIELDS
+
+
+def is_near_runbook(text: str) -> bool:
+    """Ours by frontmatter, but the body is not the canonical skeleton.
+
+    Deliberately NARROWER than the gate's own frontmatter half. The threshold is
+    four of six, and four of those six are generic enough that an incident
+    report carrying ``id``/``service``/``severity``/``status`` meets it — so
+    warning on the frontmatter half alone would fire on precisely the document
+    class this pipeline exists to convert, which is the same false-positive
+    argument that made the body half mandatory for the 422.
+
+    ``symptom_class`` is the discriminator: it is the one field in the set that
+    is FaultMaven's own controlled vocabulary rather than a word every tracker
+    also uses, it is in ``REQUIRED_METADATA`` so every runbook we produce or
+    accept carries it, and no ticket export does. What is left is the case worth
+    a warning and nothing else: a document that IS one of ours whose body the
+    gate no longer recognises — sections renamed locally, heading levels
+    flattened by a round trip through another format.
+    """
+    return classify_runbook_shape(text)[1]
+
+
+def _has_runbook_body(text: str) -> bool:
+    """Does the body carry the canonical section skeleton, outside code?
+
+    Matches on the RAW text and discards any hit that starts inside a code span,
+    rather than matching on a masked copy. A mask must pick a fill character,
+    and the fill can satisfy the pattern being tested: blanking to spaces turns
+    ``##`` + an inline span + `` Causes`` into ``##             Causes``, which
+    ``^##[ \t]+Causes[ \t]*$`` accepts — a heading the mask invented. Offsets
+    have no fill to be confused by.
+    """
+    spans = code_spans(text)
+
+    def outside_code(match) -> bool:
+        return not any(start <= match.start() < end for start, end in spans)
+
+    return all(
+        any(outside_code(m) for m in pattern.finditer(text))
+        for pattern in _RUNBOOK_BODY_SECTION_RES
+    )
 
 
 # =============================================================================
@@ -377,13 +541,60 @@ class DocumentPreprocessor:
                 error_code=error_code,
             )
 
-        # Stage 1b: Existing runbook detection
-        is_existing_runbook = detect_existing_runbook(extracted_text)
-        if is_existing_runbook:
+        # Stage 1b: Existing runbook detection — a REFUSAL, not a warning.
+        #
+        # Converting a runbook is a category error, and the warning this
+        # replaces both under-stated the outcome and bound nothing. It said the
+        # conversion "may produce a duplicate" (one); what it actually produces
+        # is one runbook per ``### Cause`` subsection of the source, because the
+        # analysis pass's definition of a failure mode ("different symptoms OR
+        # different resolutions") is satisfied by each Cause separately — a
+        # Cause carries its own Statement, Indicators and Interventions. That
+        # inverts the content model, which is explicit that one runbook is one
+        # failure mode and that several ``### Cause N`` subsections within it are
+        # expected and correct (runbook-content-architecture.md §2). Measured on
+        # the shipped pack: 7 of 9 runbooks fed back analysed into exactly
+        # ``causes - 1`` failure modes, up to 4 drafts from one runbook (#1375).
+        #
+        # Even a conversion that returned a single mode would be lossy: the
+        # runbook is re-derived by an LLM under RUNBOOK_MAX_TOKENS (4096, ~16K
+        # chars) from sources that routinely run to 34K chars, and ``status``,
+        # ``verified_by`` and ``version`` reset to draft/""/1.0.0 — so whatever
+        # verification the source carried is discarded. Nothing about the output
+        # is better than the input that was already in hand.
+        #
+        # Refused HERE, before cleanup and before either LLM call, so the
+        # refusal costs nothing. ``ALREADY_A_RUNBOOK`` already had its 422 in
+        # ``conversion_routes`` and its user-facing copy in the Dashboard; this
+        # is the raise site they were waiting for.
+        is_runbook, near_runbook = classify_runbook_shape(extracted_text)
+        if is_runbook:
+            return PreprocessingResult(
+                extracted_text="",
+                source_metadata={},
+                is_rejected=True,
+                rejection_reason=(
+                    "This document is already a FaultMaven runbook. Converting it "
+                    "would re-derive a new runbook from its prose — splitting its "
+                    "causes into separate runbooks and resetting its verification "
+                    "status — rather than adding the runbook you already have. Add "
+                    "it to the knowledge base directly instead of converting it."
+                ),
+                error_code=ConversionErrorCode.ALREADY_A_RUNBOOK,
+            )
+
+        # A NEAR-runbook keeps the advisory the refusal above replaces: one of
+        # ours whose body the gate no longer recognises still converts, and
+        # fragmentation is still the likely outcome, so the user is told why
+        # rather than left with silence. See ``is_near_runbook`` for why this is
+        # narrower than the gate's own frontmatter half.
+        if near_runbook:
             warnings.append(
-                "This document appears to already be a FaultMaven runbook. "
-                "The conversion will re-process it, which may produce a duplicate. "
-                "Consider uploading it directly instead."
+                "This document carries FaultMaven runbook frontmatter but not the "
+                "expected section structure. Conversion will re-derive runbooks "
+                "from its prose, which may split one runbook's causes into "
+                "several. If it is already a runbook, add it to the knowledge "
+                "base directly instead of converting it."
             )
 
         # Stage 2: Content cleanup
@@ -480,7 +691,6 @@ class DocumentPreprocessor:
             triage_result=triage_result,
             warnings=warnings,
             token_count=token_count,
-            is_existing_runbook=is_existing_runbook,
         )
 
     async def _run_content_triage(self, text: str) -> Optional[TriageResult]:

@@ -243,6 +243,50 @@ def mask_html_comments(text: str) -> str:
     return "".join(out)
 
 
+def code_spans(text: str) -> list[tuple[int, int]]:
+    """Character ranges of markdown CODE — fenced blocks and inline spans.
+
+    The public form of :func:`_protected_spans`, for callers that need to ask
+    "is this offset inside code?" rather than to read a masked copy. Preferred
+    over masking wherever a caller then matches a PATTERN: any mask has to
+    choose a fill character, and a fill can satisfy the very pattern the caller
+    is testing for. Blanking to spaces turns ``##`` + an inline span + ``
+    Causes`` into ``##             Causes``, which an ``^##[ \t]+Causes$``
+    heading regex accepts — a heading manufactured by the mask, exactly the
+    class of artifact masking was adopted to avoid.
+    """
+    return _protected_spans(text)
+
+
+def mask_code(text: str) -> str:
+    """Blank every fenced block and inline code span *in place*, length-preserved.
+
+    The companion to :func:`mask_html_comments`, and THE single decision about
+    what markdown CODE is — both route through :func:`_protected_spans`, so
+    ``~~~`` fences, indented fences, an unclosed fence running to EOF and inline
+    spans are handled once rather than per-caller.
+
+    Masking rather than deleting, for the reason spelled out on
+    ``mask_html_comments``: deleting JOINS the text either side. A caller that
+    deletes a fence splices what precedes it onto what follows, and can
+    manufacture a line-start ``##`` the source never had — which for a caller
+    asking "does this document have a ``## Causes`` heading" is a false YES.
+    Blanking to spaces leaves every offset and line number identical to the raw
+    text. On a document with no code it is the identity.
+    """
+    spans = _protected_spans(text)
+    if not spans:
+        return text
+    out: list[str] = []
+    previous = 0
+    for start, end in spans:
+        out.append(text[previous:start])
+        out.append(COMMENT_BODY_CHAR_RE.sub(" ", text[start:end]))
+        previous = end
+    out.append(text[previous:])
+    return "".join(out)
+
+
 def causes_section(content: str) -> tuple[str, str]:
     """``(raw_body, masked_body)`` of the ``## Causes`` section, or ``("", "")``.
 

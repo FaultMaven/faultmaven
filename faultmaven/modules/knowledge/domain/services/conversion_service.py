@@ -115,21 +115,49 @@ QUALITY_WARNING_THRESHOLD = 50.0
 # =============================================================================
 
 ANALYSIS_SYSTEM_PROMPT = """You are an expert at analyzing technical documentation to identify distinct
-failure modes. A failure mode is a specific way a system can fail, characterized
-by unique symptoms, diagnostic procedures, and resolution steps.
+failure modes. A failure mode is defined by WHAT THE OPERATOR OBSERVES: one
+symptom surface -- the alert that fires, the error the clients see, the metric
+that breaches. It is NOT defined by why it happened.
+
+This distinction decides how many items you return, so apply it literally:
+
+- Several ROOT CAUSES of the SAME observable symptom are ONE failure mode.
+  A guide covering "502 Bad Gateway" whose causes are a dead upstream, a slow
+  upstream, oversized headers and stale DNS describes ONE failure mode. The
+  operator sees one thing -- a 502 -- and has to work out which cause it is.
+  Distinguishing between them is the JOB the runbook does; it is not a reason
+  to write four runbooks. Return one item whose `symptoms_summary` describes
+  the shared symptom and whose `resolution_summary` names each cause -- that
+  pair is the analysis record the operator reads back, so it must account for
+  every cause you merged.
+- Different observable symptoms are different failure modes. A reference
+  covering `OOMKilled`, `ImagePullBackOff`, `Pending` and `CrashLoopBackOff`
+  describes FOUR: an operator seeing one of them is not seeing the others.
+
+The reliable test is `symptom_class`. If two candidate items would carry the
+same SET of `symptom_class` values for the same `service`, they are one failure
+mode with two causes -- merge them. Overlapping sets are a warning sign too:
+["oom"] and ["oom", "crash_loop"] for one service usually means one observed
+failure that you have described twice, so re-read the source and decide which
+single set is right. If you find yourself distinguishing items by their FIX
+rather than by what is observed, you are splitting causes, not failure modes.
 
 Your task: Read the provided document and identify every distinct failure mode
 it covers. For each failure mode, provide:
-1. A short title (include the technology and failure type)
+1. A short title (include the technology and the observed failure)
 2. The symptoms or error messages associated with it
-3. A brief summary of the resolution approach
+3. A brief summary of the resolution approach -- naming each documented cause
+   when the symptom has several
 
 Rules:
-- If the document covers only ONE failure mode, return exactly one item.
+- If the document covers only ONE failure mode, return exactly one item. A
+  document organised as one symptom with several causes IS this case, however
+  many causes it lists.
 - If the document is purely architectural/conceptual with no failure modes,
   return an empty list and set "is_actionable" to false.
 - Do NOT invent failure modes not present in the source material.
-- Failure modes must be distinct -- different symptoms OR different resolutions.
+- Failure modes must be distinct in what is OBSERVED. Differing only in
+  resolution is not distinct -- that is one failure mode with several causes.
 - `symptom_class` values MUST come from this controlled vocabulary: __SYMPTOM_CLASS_VOCAB__. Choose the closest-fitting value(s); omit anything that doesn't fit (the runbook author uses free-text `tags` for long-tail symptoms). This is the same vocabulary the runbook frontmatter is validated against, and it keys failure-mode deduplication -- an off-vocabulary value here silently escapes both.
 
 Respond with JSON matching this schema:

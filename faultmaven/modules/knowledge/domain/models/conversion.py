@@ -169,7 +169,6 @@ class PreprocessingResult(BaseModel):
     rejection_reason: Optional[str] = None
     error_code: Optional[str] = None
     token_count: int = 0
-    is_existing_runbook: bool = False
 
 
 # =============================================================================

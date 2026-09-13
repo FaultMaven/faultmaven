@@ -210,6 +210,20 @@ Upload (file + scope + metadata)
   │     Markdown/TXT → pass through
   │     Reuse existing extractors from faultmaven/modules/preprocessing/
   │
+  ├── 1b. Already-a-Runbook Gate (deterministic, no LLM)
+  │     Detect: runbook frontmatter (≥4 of id/domain/service/symptom_class/
+  │             severity/status) AND the canonical body skeleton
+  │             (`## Symptom Recognition` + `## Causes`, exact-anchored)
+  │     If both: REJECT with HTTP 422 / ALREADY_A_RUNBOOK
+  │       → "This document is already a FaultMaven runbook. Converting it
+  │          would re-derive a new runbook from its prose — splitting its
+  │          causes into separate runbooks and resetting its verification
+  │          status — rather than adding the runbook you already have."
+  │     Both halves are required: the frontmatter threshold alone is met by
+  │     an incident-report export carrying id/service/severity/status, and
+  │     an incident report is a document this pipeline exists to convert.
+  │     See §5.4 for what conversion does to a runbook that gets through.
+  │
   ├── 2. Content Cleanup
   │     Strip: navigation boilerplate, cookie banners, sidebars
   │     Strip: table of contents (redundant with headings)
@@ -641,30 +655,75 @@ TODAY: {iso_date}
 
 ### 5.1 Detection Strategy
 
-The analysis LLM call (Section 4.1) identifies failure modes. The splitting logic is:
+**A failure mode is defined by what the operator OBSERVES, not by why it
+happened.** This is the rule that decides how many runbooks a document becomes,
+and it is the direct expression of the content model's *"One runbook = one
+failure mode … multiple `### Cause N` subsections within a runbook are expected
+and correct"* ([runbook-content-architecture.md §2](./runbook-content-architecture.md)):
+
+- Several **root causes of the same observable symptom** are **one** failure
+  mode. A guide covering "502 Bad Gateway" whose causes are a dead upstream, a
+  slow upstream, oversized headers and stale DNS is ONE runbook with four
+  `### Cause` sections. Telling those causes apart is the job the runbook does.
+- Different **observable symptoms** are different failure modes. A reference
+  covering `OOMKilled`, `ImagePullBackOff`, `Pending` and `CrashLoopBackOff` is
+  four runbooks.
+
+The operational test is `symptom_class`: two candidates carrying the same
+`symptom_class` for the same `service` are one failure mode with two causes.
+
+⚠ Until #1375 the prompt read *"distinct — different symptoms **OR** different
+resolutions"*. Causes of one failure differ by resolution **by definition**, so
+that `OR` licensed one runbook per cause, for every input rather than only for a
+runbook fed back in. Measured on `gemini-3.7-flash`: a vendor guide with one
+symptom and five causes analysed into 4 failure modes and produced 3 drafts
+(the fourth lost to the §5.4 collapse); every shipped pack runbook re-analysed
+into `causes − 1` modes. After the fix all nine analyse to 1, the four-symptom
+control still analyses to 4, and the vendor guide generates a single runbook
+carrying Causes A–E plus Cause Z, passing `RunbookValidator`. The labelled
+documents and the full before/after table are in
+[`tests/eval/conversion_splitting/`](../../../tests/eval/conversion_splitting/README.md);
+any change to `ANALYSIS_SYSTEM_PROMPT` should be re-measured against them,
+**including the control** — a criterion that merely always answered "1" would
+score two of three and look like a fix.
+
+The splitting logic is:
 
 ```python
-async def _analyze_and_split(self, text: str, filename: str) -> AnalysisResult:
-    """
-    Analyze document for failure modes.
+async def _analyze_document(self, text: str, filename: str) -> AnalysisResult:
+    """Analyze document for failure modes using KNOWLEDGE_PROVIDER.
 
-    Returns:
-        AnalysisResult with failure_modes list.
-        - 0 modes: source is not actionable (architectural/conceptual)
-        - 1 mode: single runbook conversion
-        - N modes: N separate runbook conversions
+    Returns AnalysisResult with failure_modes:
+      - 0 modes: source is not actionable (architectural/conceptual)
+      - 1 mode:  single runbook — INCLUDING a document that covers one symptom
+                 with several causes, however many causes it lists (§5.1)
+      - N modes: N separate runbook conversions, one per observable symptom
     """
-    response = await self._llm_router.route(
-        messages=[
-            {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
-            {"role": "user", "content": f"Analyze this document:\n\n{text}"}
-        ],
-        model=self._knowledge_model,
-        max_tokens=2048,
-        temperature=0.2,
-        response_format={"type": "json_object"},
+    knowledge_model = self._settings.llm.get_knowledge_model()
+
+    async def _analyze(cap: int):
+        return await self._llm_router.route(
+            messages=[
+                {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
+                {"role": "user", "content": f"Analyze this document:\n\n{text}"},
+            ],
+            model=knowledge_model,
+            max_tokens=cap,
+            temperature=0.2,
+            response_format={"type": "json_object"},
+            # Lands on KNOWLEDGE_PROVIDER when the operator set one.
+            **self._knowledge_route_kwargs(),
+        )
+
+    # A document with many failure modes can outgrow the budget; raise the cap
+    # once rather than reporting an unparseable body (#1094).
+    response = await generate_with_truncation_retry(
+        _analyze,
+        max_tokens=ANALYSIS_MAX_TOKENS,
+        ceiling=ANALYSIS_MAX_TOKENS_CEILING,
+        label=f"document analysis ({filename})",
     )
-    return AnalysisResult.model_validate_json(response.content)
+    ...
 ```
 
 ### 5.2 Text Routing for Multi-Mode Documents
@@ -693,6 +752,8 @@ def _generate_runbook_id(self, failure_mode: FailureMode) -> str:
 
 | Scenario | Behavior |
 |----------|----------|
+| Document covers ONE symptom with several causes | **One** runbook, whose `## Causes` carries one `### Cause` per documented cause. This is the common shape of a vendor troubleshooting guide and of a postmortem, and it is decided in the analysis pass (§5.1) — not by any downstream merge. |
+| Document is already a FaultMaven runbook | Rejected in preprocessing (§2.1 stage 1b) with `ALREADY_A_RUNBOOK`, before either LLM call. A runbook is one failure mode with N causes ([runbook-content-architecture.md §2](./runbook-content-architecture.md)), but the analysis prompt's definition of a failure mode — "different symptoms OR different resolutions" — is satisfied by each `### Cause` separately, since a Cause carries its own Statement, Indicators and Interventions. Left to run, the analyzer therefore emits one failure mode per cause: measured over the shipped pack, 7 of 9 runbooks fed back analysed into exactly `causes − 1` modes, yielding up to 4 drafts from one runbook (#1375). Splitting is correct for an ordinary source document and wrong only here, which is why the gate is a refusal of the input rather than a change to the analysis prompt. The round trip would be lossy regardless: the runbook is re-derived under `RUNBOOK_MAX_TOKENS` (4096, ~16K chars) from sources routinely 34K chars long, and `status`/`verified_by`/`version` reset to `draft`/`""`/`1.0.0`. |
 | Document has 0 failure modes (architectural/conceptual) | Return 422 with message: "Source document does not contain actionable failure modes. Runbooks require specific symptoms, diagnostics, and resolution steps." |
 | Document has 1 failure mode | Standard single-runbook conversion. |
 | Document has 2-5 failure modes | Parallel conversion (asyncio.gather). |
@@ -847,10 +908,19 @@ Implementation: Reuse existing `require_platform_admin` dependency for global sc
 | 403 | Insufficient permissions for scope | `{"detail": "Global KB conversion requires platform admin role"}` |
 | 413 | File too large | `{"detail": "File exceeds maximum size of 10MB"}` |
 | 415 | Unsupported file type | `{"detail": "Unsupported file type: image/png. Allowed: ..."}` |
+| 422 | Source is already a FaultMaven runbook (§2.1 stage 1b) | `{"detail": "This document is already a FaultMaven runbook...", "error_code": "ALREADY_A_RUNBOOK"}` |
 | 422 | Document not actionable | `{"detail": "Source document does not contain actionable failure modes..."}` |
 | 422 | All drafts failed validation | `{"detail": "Generated runbooks failed quality validation", "validation_errors": [...]}` |
 | 500 | LLM failure after retries | `{"detail": "Document conversion failed. Please try again."}` |
 | 503 | No LLM provider available | `{"detail": "Knowledge provider is not configured or unavailable"}` |
+
+Every refusal above carries an `error_code` alongside `detail`; the Dashboard
+keys its user-facing copy on that code, not on the prose. **This table is
+illustrative, not exhaustive** — the authoritative mapping is the `status_map`
+in `modules/knowledge/api/conversion_routes.py`, which also returns
+`FILE_EMPTY`, `FILE_CORRUPT`, `ENCODING_ERROR`, `DOCUMENT_TOO_SHORT`,
+`NO_TECHNICAL_CONTENT` and `LLM_PARSE_ERROR` as 422. Read the map rather than
+extending this list, or the two drift apart again.
 
 ---
 
