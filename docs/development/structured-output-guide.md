@@ -359,7 +359,7 @@ response_format = create_response_format_json_schema(SchemaModel)
 ## References
 
 - [OpenAI Structured Outputs](https://platform.openai.com/docs/guides/structured-outputs)
-- [Groq JSON Mode](https://console.groq.com/docs/model/llama-3.3-70b-versatile)
+- [Groq JSON Mode](https://console.groq.com/docs/model/openai/gpt-oss-20b)
 - [Pydantic JSON Schema](https://docs.pydantic.dev/latest/concepts/json_schema/)
 - Internal: `faultmaven/utils/schema_converter.py`
 - Internal: `faultmaven/core/investigation/schemas.py`
