@@ -437,7 +437,31 @@ class CaseUIResponse_Inquiry(BaseModel):
 
     title: str = Field(description="Case title", max_length=200)
 
-    current_turn: int = Field(ge=0, description="Current turn counter")
+    current_turn: int = Field(
+        ge=0,
+        description=(
+            "The MESSAGE clock: every persisted exchange advances it, asides "
+            "included. It is what `Message.turn_number`, evidence "
+            "`uploaded_at_turn` and the conversation anchors are keyed on, so "
+            "keep using it to ADDRESS a turn — and prefer "
+            "`investigation_turn` to DISPLAY one."
+        ),
+    )
+
+    investigation_turn: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description=(
+            "How many of this case's turns so far were investigation work "
+            "(#1329/#1387) — the same quantity `TurnResponse.investigation_turn` "
+            "reports, carried on the case read so a header or a resolution "
+            "summary can show it without having just submitted a turn. Excludes "
+            "out-of-band turns (small talk, trivia, questions about FaultMaven "
+            "itself), which are answered outside the investigation: an aside "
+            "advances `current_turn` and leaves this alone. Null when the "
+            "server predates the field."
+        ),
+    )
 
     created_at: datetime = Field(description="When case was created")
 
@@ -500,7 +524,31 @@ class CaseUIResponse_Investigating(BaseModel):
 
     title: str = Field(description="Case title", max_length=200)
 
-    current_turn: int = Field(ge=0, description="Current turn counter")
+    current_turn: int = Field(
+        ge=0,
+        description=(
+            "The MESSAGE clock: every persisted exchange advances it, asides "
+            "included. It is what `Message.turn_number`, evidence "
+            "`uploaded_at_turn` and the conversation anchors are keyed on, so "
+            "keep using it to ADDRESS a turn — and prefer "
+            "`investigation_turn` to DISPLAY one."
+        ),
+    )
+
+    investigation_turn: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description=(
+            "How many of this case's turns so far were investigation work "
+            "(#1329/#1387) — the same quantity `TurnResponse.investigation_turn` "
+            "reports, carried on the case read so a header or a resolution "
+            "summary can show it without having just submitted a turn. Excludes "
+            "out-of-band turns (small talk, trivia, questions about FaultMaven "
+            "itself), which are answered outside the investigation: an aside "
+            "advances `current_turn` and leaves this alone. Null when the "
+            "server predates the field."
+        ),
+    )
 
     created_at: datetime = Field(description="When case was created")
 
@@ -607,7 +655,31 @@ class CaseUIResponse_Resolved(BaseModel):
 
     title: str = Field(description="Case title", max_length=200)
 
-    current_turn: int = Field(ge=0, description="Current turn counter")
+    current_turn: int = Field(
+        ge=0,
+        description=(
+            "The MESSAGE clock: every persisted exchange advances it, asides "
+            "included. It is what `Message.turn_number`, evidence "
+            "`uploaded_at_turn` and the conversation anchors are keyed on, so "
+            "keep using it to ADDRESS a turn — and prefer "
+            "`investigation_turn` to DISPLAY one."
+        ),
+    )
+
+    investigation_turn: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description=(
+            "How many of this case's turns so far were investigation work "
+            "(#1329/#1387) — the same quantity `TurnResponse.investigation_turn` "
+            "reports, carried on the case read so a header or a resolution "
+            "summary can show it without having just submitted a turn. Excludes "
+            "out-of-band turns (small talk, trivia, questions about FaultMaven "
+            "itself), which are answered outside the investigation: an aside "
+            "advances `current_turn` and leaves this alone. Null when the "
+            "server predates the field."
+        ),
+    )
 
     created_at: datetime = Field(description="When case was created")
 

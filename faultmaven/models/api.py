@@ -710,6 +710,26 @@ class Message(BaseModel):
     turn_number: int = Field(
         ..., description="Turn number in conversation (user messages increment turn)"
     )
+    investigation_turn: Optional[int] = Field(
+        None,
+        description=(
+            "Which turn OF THE INVESTIGATION this row belongs to (#1387): the "
+            "message clock at this row minus the out-of-band turns at or "
+            "before it. `turn_number` is the message clock and advances on "
+            "every exchange, asides included (small talk, trivia, questions "
+            "about FaultMaven itself); this does not, so an aside carries the "
+            "same value as the investigation turn before it. A client "
+            'displaying "Turn N" against a conversation row should prefer '
+            "this, and keep `turn_number` for anything that ADDRESSES a turn "
+            "(anchors, `uploaded_at_turn` lookups) — those are message-clock "
+            "references and re-basing them breaks jump-to-turn. On the newest "
+            "row this equals `TurnResponse.investigation_turn`, which is the "
+            "same quantity read at the case level. Null on a row that owns no "
+            "turn — a `system` notice reporting a background job, stamped with "
+            "whichever turn was open when the job finished — and on a server "
+            "that predates the field."
+        ),
+    )
     role: Literal["user", "assistant", "system"]
     content: str
     created_at: str = Field(

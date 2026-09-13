@@ -48,6 +48,40 @@ from faultmaven.utils.serialization import to_json_compatible
 logger = logging.getLogger(__name__)
 
 
+def _case_messages_from(
+    case: Case, rows: Optional[List[Dict[str, Any]]] = None
+) -> List[CaseMessage]:
+    """Convert stored message dicts into ``CaseMessage`` objects.
+
+    Shared by ``get_case_messages`` and ``get_case_messages_enhanced`` so the
+    latter can load the case ONCE — it needs ``turn_history`` as well as the
+    rows, to label each row with its investigation turn (#1387), and reading
+    the case twice for the two halves of one answer is how the two come from
+    different snapshots.
+
+    ``rows`` defaults to the whole case; pass a slice to convert only the page
+    a caller is about to return.
+    """
+    if rows is None:
+        rows = case.messages
+    # Per case-storage-design.md Section 4.7, use "created_at"
+    return [
+        CaseMessage(
+            message_id=msg_dict["message_id"],
+            case_id=case.case_id,
+            turn_number=msg_dict.get("turn_number", 0),
+            role=msg_dict.get("role", "user"),
+            content=msg_dict["content"],
+            created_at=msg_dict.get("created_at"),
+            author_id=msg_dict.get("author_id"),
+            token_count=msg_dict.get("token_count"),
+            metadata=msg_dict.get("metadata", {}),
+            attachments=msg_dict.get("attachments"),
+        )
+        for msg_dict in rows
+    ]
+
+
 class CaseService(ICaseService):
     """Service for centralized case management and coordination"""
 
@@ -1419,23 +1453,7 @@ class CaseService(ICaseService):
             )
 
             # Convert dict messages to CaseMessage objects
-            case_messages = []
-            for msg_dict in case.messages:
-                # Convert dict to CaseMessage object for compatibility
-                # Per case-storage-design.md Section 4.7, use "created_at"
-                case_msg = CaseMessage(
-                    message_id=msg_dict["message_id"],
-                    case_id=case_id,
-                    turn_number=msg_dict.get("turn_number", 0),
-                    role=msg_dict.get("role", "user"),
-                    content=msg_dict["content"],
-                    created_at=msg_dict.get("created_at"),
-                    author_id=msg_dict.get("author_id"),
-                    token_count=msg_dict.get("token_count"),
-                    metadata=msg_dict.get("metadata", {}),
-                    attachments=msg_dict.get("attachments"),
-                )
-                case_messages.append(case_msg)
+            case_messages = _case_messages_from(case)
 
             # Log for observability
             logger.debug(f"Retrieved {len(case_messages)} messages for case {case_id}")
@@ -1632,13 +1650,30 @@ class CaseService(ICaseService):
         message_parsing_errors = 0
 
         try:
-            # Get all messages for the case first to calculate total count
-            all_messages = await self.get_case_messages(case_id, limit=1000, offset=0)
-            total_count = len(all_messages)
+            # ONE load: the rows and ``turn_history`` are two halves of one
+            # answer here (#1387) — the per-row investigation turn is computed
+            # from the history — and two reads could return two snapshots.
+            case = await self.repository.get(case_id)
+            if not case:
+                # Same shape the previous ``get_case_messages`` call raised for
+                # a missing case: caught below and answered as an empty
+                # response, not a 500. Both routes 404 before reaching here.
+                raise ServiceException(f"Case {case_id} not found")
 
-            # Apply pagination to the messages
-            paginated_messages = all_messages[offset : offset + limit]
+            # Count from the stored rows and convert only the PAGE. Converting
+            # everything just to take a length built and validated a pydantic
+            # model for every message in the case on every page a client
+            # scrolled — 2000 of them at ``limit=50`` to keep 50.
+            total_count = len(case.messages)
+            paginated_messages = _case_messages_from(
+                case, case.messages[offset : offset + limit]
+            )
             retrieved_count = len(paginated_messages)
+
+            # Built once for the whole page rather than per row: each lookup
+            # bisects it, and rebuilding it per row would walk the history
+            # again for every message.
+            aside_turns = case.out_of_band_turns
 
             # Convert CaseMessage objects to API Message format
             messages = []
@@ -1664,9 +1699,33 @@ class CaseService(ICaseService):
 
                     # Create API Message object
                     # Per case-storage-design.md Section 4.7, use "created_at" field
+                    # The ordinal a client prints as "Turn N" (#1387).
+                    # Derived from ``turn_history``, the same source
+                    # ``Case.investigation_turn_count`` uses, so the label a
+                    # client shows on the live row and the one it shows for
+                    # that row after a reload cannot disagree.
+                    #
+                    # None for a ``system`` row, which owns no turn: those are
+                    # background-job notices (runbook conversion), stamped with
+                    # whichever turn happened to be OPEN when the job finished
+                    # — so a number on them asserts membership in an exchange
+                    # they had no part in. Both clients suppress that today in
+                    # their own code (``ChatWindow`` calls its formatter
+                    # without a turn; the Dashboard's ``transcriptTurnNumbers``
+                    # returns null), which is the duplicated rule a
+                    # server-computed field exists to remove.
+                    investigation_turn = (
+                        None
+                        if role == "system"
+                        else case.investigation_turn_at(
+                            case_msg.turn_number, asides=aside_turns
+                        )
+                    )
+
                     api_message = Message(
                         message_id=case_msg.message_id,
                         turn_number=case_msg.turn_number,
+                        investigation_turn=investigation_turn,
                         role=role,
                         content=case_msg.content,
                         created_at=created_at_str,
@@ -1687,16 +1746,22 @@ class CaseService(ICaseService):
             # Calculate performance metrics
             processing_time_ms = int((time.time() - start_time) * 1000)
 
-            # Create debug info if requested
+            # Create debug info if requested.
+            #
+            # The fields are ``MessageRetrievalDebugInfo``'s own. They used to
+            # be a different set entirely — ``storage_backend``,
+            # ``total_messages_in_storage``, ``messages_requested``,
+            # ``offset_used``, ``processing_time_ms`` — none of which the model
+            # declares, and none of which is the REQUIRED
+            # ``redis_operation_time_ms``. Pydantic ignored the extras and
+            # refused the omission, so ``include_debug=true`` raised a
+            # ValidationError here, the handler below rebuilt the same object
+            # and raised again from inside its own ``except``, and a documented
+            # query parameter answered 500.
             if include_debug:
                 debug_info = MessageRetrievalDebugInfo(
-                    storage_backend="redis",
                     redis_key=f"case:{case_id}:messages",
-                    total_messages_in_storage=total_count,
-                    messages_requested=limit,
-                    messages_retrieved=retrieved_count,
-                    offset_used=offset,
-                    processing_time_ms=processing_time_ms,
+                    redis_operation_time_ms=processing_time_ms,
                     storage_errors=storage_errors,
                     message_parsing_errors=message_parsing_errors,
                 )
@@ -1727,13 +1792,8 @@ class CaseService(ICaseService):
             # Return empty response with error info for graceful degradation
             if include_debug:
                 debug_info = MessageRetrievalDebugInfo(
-                    storage_backend="redis",
                     redis_key=f"case:{case_id}:messages",
-                    total_messages_in_storage=0,
-                    messages_requested=limit,
-                    messages_retrieved=0,
-                    offset_used=offset,
-                    processing_time_ms=int((time.time() - start_time) * 1000),
+                    redis_operation_time_ms=int((time.time() - start_time) * 1000),
                     storage_errors=[f"Service error: {str(e)}"],
                     message_parsing_errors=0,
                 )

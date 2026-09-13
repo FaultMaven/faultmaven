@@ -22,9 +22,10 @@ Architecture:
 
 import logging
 import re
+from bisect import bisect_right
 from datetime import UTC, datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Sequence
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -4400,6 +4401,19 @@ class TurnProgress(BaseModel):
         """
         return self.outcome is TurnOutcome.SKIPPED
 
+    @property
+    def is_out_of_band(self) -> bool:
+        """True for an aside — small talk, trivia, a question about FaultMaven
+        itself — answered outside the investigation (#1329).
+
+        The counterpart to :attr:`is_skipped`, and for the same reason: the
+        screen was written out by hand at four call sites (two in
+        ``prompts/context_builder``, the investigation-turn count and the
+        per-row ordinal), which is four places a refinement would have to land
+        in step.
+        """
+        return self.outcome is TurnOutcome.OUT_OF_BAND
+
     # ============================================================
     # Configuration
     # ============================================================
@@ -5600,6 +5614,54 @@ class Case(BaseModel):
         return v
 
     @property
+    def out_of_band_turns(self) -> List[int]:
+        """The DISTINCT turn numbers recorded as asides (#1329), ascending.
+
+        Sorted because :meth:`investigation_turn_at` bisects this, and the
+        order is maintained by ``reconcile_turn_sequence`` on load and before
+        save rather than by the validator (which only logs) — so an in-flight
+        history can be out of order.
+
+        De-duplicated for the same reason the sort exists. ``reconcile_turn_sequence``
+        treats a duplicate turn number as the SAME anomaly as an out-of-order
+        one, and the corpus behind #1264 is exactly that shape: seven dev cases
+        carry two user messages on one ``(case_id, turn_number)``, one carries
+        three. A duplicate means the clock did NOT advance for the second
+        record, so counting it twice subtracts a turn the clock never counted
+        and shifts every later row's ordinal down by one.
+        """
+        return sorted({t.turn_number for t in self.turn_history if t.is_out_of_band})
+
+    def investigation_turn_at(
+        self, turn_number: int, *, asides: Optional[Sequence[int]] = None
+    ) -> int:
+        """Which turn OF THE INVESTIGATION the given message turn is (#1387).
+
+        The ordinal a client prints beside one conversation row: the message
+        clock at that row, minus the asides at or before it. An aside does not
+        advance it, so an out-of-band turn carries the same ordinal as the
+        investigation turn that preceded it — which is the whole point, and is
+        what "``Turn 7`` stays ``Turn 7``" means.
+
+        **Bounded by the clock**, so the ordinal can never exceed
+        :attr:`investigation_turn_count` — the invariant the whole design rests
+        on, held here by construction rather than by the two agreeing. It is
+        reachable: ``create_case(initial_message=...)`` stamps that row
+        ``turn_number: 1`` and leaves ``current_turn`` at 0, because no turn has
+        been processed yet. Clamping reports 0 there, which is the honest answer
+        — the investigation has had no turns — and the row becomes turn 1 when
+        the first one runs, since ``process_turn`` numbers it 1 as well.
+
+        ``asides`` lets a caller labelling MANY rows pass
+        :attr:`out_of_band_turns` once instead of rebuilding it per row; the
+        formula stays here so there is only one of it.
+        """
+        if asides is None:
+            asides = self.out_of_band_turns
+        effective = min(turn_number, self.current_turn)
+        return max(0, effective - bisect_right(asides, effective))
+
+    @property
     def investigation_turn_count(self) -> int:
         """How many consumed turns were part of the investigation (#1329).
 
@@ -5614,13 +5676,16 @@ class Case(BaseModel):
         Every such turn ran the engine, so it IS investigation work; counting
         only recorded, non-skipped entries would silently undercount exactly
         those cases. Derived, not stored, so it cannot drift from the clock.
+
+        The case-level COUNT and the per-row ORDINAL are the same quantity read
+        at two points, so this is :meth:`investigation_turn_at` evaluated at the
+        clock rather than a second implementation of it. That is what makes the
+        number a client sees while typing (``TurnResponse.investigation_turn``,
+        which is this) and the number it sees after a reload
+        (``Message.investigation_turn`` on the newest row) provably the same —
+        the disagreement #1387 exists to prevent.
         """
-        asides = sum(
-            1
-            for t in self.turn_history
-            if t.outcome and t.outcome.value == TurnOutcome.OUT_OF_BAND.value
-        )
-        return max(0, self.current_turn - asides)
+        return self.investigation_turn_at(self.current_turn)
 
     @property
     def effective_current_turn(self) -> int:
