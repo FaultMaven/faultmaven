@@ -150,6 +150,10 @@ from faultmaven.core.investigation.working_conclusion_generator import (
     is_early_stage_conclusion,
 )
 from faultmaven.exceptions import TOKEN_LIMIT
+from faultmaven.infrastructure.llm.json_response import (
+    json_payload_text,
+    loads_llm_json,
+)
 from faultmaven.infrastructure.llm.metering import (
     TurnTokenTracker,
     active_token_tracker,
@@ -8944,20 +8948,7 @@ class MilestoneEngine:
         the schema but doesn't represent a real response — those should
         escalate to the non-tool fallback path, not be returned as-is.
         """
-        cleaned = text.strip()
-        if "```" in cleaned:
-            match = re.search(r"```(?:json|JSON)?\s*\n(.*?)\n```", cleaned, re.DOTALL)
-            if match:
-                cleaned = match.group(1).strip()
-            elif cleaned.startswith("```"):
-                lines = cleaned.split("\n")
-                if lines and lines[0].startswith("```"):
-                    lines = lines[1:]
-                if lines and lines[-1].strip() == "```":
-                    lines = lines[:-1]
-                cleaned = "\n".join(lines).strip()
-
-        content_obj = json.loads(cleaned, strict=False)
+        content_obj = loads_llm_json(text)
         content_obj = self._parse_nested_json(content_obj)
         _su = (
             content_obj.get("state_updates") if isinstance(content_obj, dict) else None
@@ -9689,36 +9680,20 @@ class MilestoneEngine:
                     else:
                         # Already a string
                         content = args
-            else:
-                # For non-function-calling modes, strip markdown code blocks if present
-                # Some LLMs return: ```json\n{...}\n``` instead of raw JSON
-                # Or even worse: "Here's the response:\n```json\n{...}\n```"
-                if isinstance(content, str):
-                    content = content.strip()
-
-                    # Check if content contains a markdown code block
-                    if "```" in content:
-                        # Extract JSON from markdown code block
-                        # Handle both cases:
-                        # 1. ```json\n{...}\n```
-                        # 2. Some text\n```json\n{...}\n```\nMore text
-                        # Match ```json (or ```JSON or just ```) followed by content until closing ```
-                        pattern = r"```(?:json|JSON)?\s*\n(.*?)\n```"
-                        match = re.search(pattern, content, re.DOTALL)
-                        if match:
-                            content = match.group(1).strip()
-                        elif content.startswith("```"):
-                            # Fallback to old logic if regex fails
-                            lines = content.split("\n")
-                            if lines and lines[0].startswith("```"):
-                                lines = lines[1:]
-                            if lines and lines[-1].strip() == "```":
-                                lines = lines[:-1]
-                            content = "\n".join(lines).strip()
-
             try:
-                # First, try to load content as JSON if it's a string
+                # First, try to load content as JSON if it's a string.
+                #
+                # ``content`` is REASSIGNED to whatever actually parsed, which is
+                # load-bearing rather than tidiness: ``is_truncated_json_error``
+                # below measures a ``JSONDecodeError.pos`` against
+                # ``len(content)`` to decide whether the body was cut and the
+                # ``max_tokens`` ladder should re-run (#513). Parsing a
+                # de-fenced copy while leaving ``content`` fenced makes that
+                # comparison read an offset from one string against the length
+                # of a longer one, so the guard answers False and the ladder
+                # silently stops engaging on any fenced truncated response.
                 if isinstance(content, str):
+                    content = json_payload_text(content)
                     content_obj = json.loads(content, strict=False)
                 else:
                     content_obj = content
