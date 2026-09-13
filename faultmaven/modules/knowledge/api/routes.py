@@ -281,9 +281,11 @@ async def upload_document(
     tags: Optional[str] = Form(None),
     source_url: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
+    scope: str = Form("personal"),
+    team_id: Optional[str] = Form(None),
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
     response: Response = Response(),
-    current_user: DevUser = Depends(require_platform_admin),
+    current_user: DevUser = Depends(require_authentication),
 ) -> dict:
     """
     Upload a document to the knowledge base
@@ -301,12 +303,30 @@ async def upload_document(
     logger = logging.getLogger(__name__)
     logger.info(f"Uploading document: {file.filename}")
 
-    # This route publishes at global scope — the platform tier, never
-    # authorable from a tenant session under multi (#770). The tier is stated
-    # at the call to upload_document below rather than inherited from a
-    # default (#1166), so this gate and the scope it guards are visible in the
-    # same file.
-    require_global_authoring_allowed()
+    # Uploading a finished runbook file is an INPUT METHOD, not a publishing
+    # tier. It used to be both: the route carried a `require_platform_admin`
+    # dependency and hard-coded `scope="global"`, so "operator-only" had become
+    # a property of *uploading* rather than of the platform tier it was meant to
+    # guard. The effect was that the same file an operator could upload, nobody
+    # else could put anywhere — while the other two authoring paths (Convert,
+    # Write Runbook) already let any user author at their own scope (#1377).
+    #
+    # The gate belongs on the SCOPE, and this is the same three-line form
+    # `create_runbook_manually` uses, deliberately verbatim so the two cannot
+    # drift: global is the org-free platform tier, readable by every tenant and
+    # retrieved into every tenant's investigations, so authoring it is a
+    # platform-operator action (`global_authoring.py`, #770).
+    if scope == "global":
+        require_global_authoring_allowed()
+        if not current_user.is_platform_admin():
+            raise HTTPException(
+                status_code=403,
+                detail="Global KB runbook upload requires platform admin role",
+            )
+    if scope == "team" and not team_id:
+        raise HTTPException(
+            status_code=400, detail="team_id is required for team scope"
+        )
 
     try:
         # Validate file type — runbook upload accepts text formats only
@@ -389,9 +409,18 @@ async def upload_document(
             content=content_str,
             title=title,
             document_type=document_type,
-            # The platform tier, stated (#1166) — gated by the
-            # require_global_authoring_allowed() above.
-            scope="global",
+            # The tier is stated here rather than inherited from a default
+            # (#1166); the gate for it is above.
+            scope=scope,
+            team_id=team_id,
+            # REQUIRED for personal scope, and it was never passed while this
+            # route only wrote global. `owner_id` decides two things: the
+            # on-disk path (`user_<id>/`) and, through
+            # `build_kb_scope_filter`, whether the author can see their own
+            # item at all — the filter admits a non-global row by
+            # `{"owner_id": owner_id}`. Omitted, a personal upload would
+            # succeed and then be invisible to the person who made it.
+            owner_id=current_user.user_id,
             category=category,
             tags=tag_list,
             source_url=source_url,

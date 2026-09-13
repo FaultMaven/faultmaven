@@ -5251,8 +5251,10 @@ Knowledge-base scopes the calling user may publish to.
 - `description` (object, optional)
 - `document_type` (string, required)
 - `file` (string, required)
+- `scope` (string, optional)
 - `source_url` (object, optional)
 - `tags` (object, optional)
+- `team_id` (object, optional)
 - `title` (string, required)
 
 ---

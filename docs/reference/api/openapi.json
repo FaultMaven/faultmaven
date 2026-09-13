@@ -979,6 +979,11 @@
             "title": "File",
             "type": "string"
           },
+          "scope": {
+            "default": "personal",
+            "title": "Scope",
+            "type": "string"
+          },
           "source_url": {
             "anyOf": [
               {
@@ -1000,6 +1005,17 @@
               }
             ],
             "title": "Tags"
+          },
+          "team_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Id"
           },
           "title": {
             "title": "Title",
