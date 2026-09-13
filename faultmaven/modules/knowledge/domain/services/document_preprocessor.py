@@ -22,6 +22,7 @@ from typing import Any, Dict, Optional
 
 import tiktoken
 
+from faultmaven.infrastructure.llm.json_response import loads_llm_json
 from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionErrorCode,
     PreprocessingResult,
@@ -749,9 +750,11 @@ class DocumentPreprocessor:
                 )
                 return None
 
-            import json
-
-            result = json.loads(response.content)
+            # Fence-tolerant, for the reason in `loads_llm_json`. This site
+            # fails QUIETLY — the exception handler below returns None and the
+            # document proceeds with no triage verdict — so a provider without
+            # a JSON mode silently disabled triage rather than reporting it.
+            result = loads_llm_json(response.content)
             return TriageResult(
                 is_actionable=result.get("is_actionable", True),
                 confidence=float(result.get("confidence", 0.5)),

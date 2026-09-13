@@ -31,6 +31,7 @@ from faultmaven.exceptions import (
     NotFoundError,
     ValidationException,
 )
+from faultmaven.infrastructure.llm.json_response import loads_llm_json
 from faultmaven.infrastructure.llm.truncation import generate_with_truncation_retry
 from faultmaven.infrastructure.persistence.models import (
     ConversionDraftModel,
@@ -1096,7 +1097,14 @@ class ConversionService:
             )
 
         try:
-            data = json.loads(response.content)
+            # Tolerant of a markdown fence: `response_format` is an
+            # OpenAI-shaped parameter and a provider that cannot express it
+            # drops it, so the body arrives as fenced prose-JSON. A bare
+            # `json.loads` made every conversion fail under such a provider
+            # (#1380) with LLM_PARSE_ERROR, whose user-facing advice is "try a
+            # different document" — advice that can never work, because the
+            # document was never the problem.
+            data = loads_llm_json(response.content)
             return AnalysisResult(
                 is_actionable=data.get("is_actionable", False),
                 failure_modes=[
