@@ -405,7 +405,15 @@ class LLMSettings(BaseSettings):
     fireworks_model: str = Field(
         default="accounts/fireworks/models/deepseek-v4-flash",
     )
-    groq_model: str = Field(default="llama-3.3-70b-versatile")
+    # `llama-3.3-70b-versatile` was decommissioned: Groq 404s it with
+    # `model_not_found`, and its catalogue now carries no Llama CHAT model at
+    # all (the `meta-llama/*` entries are prompt-guard classifiers). gpt-oss is
+    # the replacement the rest of the codebase already assumes — `groq_provider`
+    # reports STRICT structured output for exactly these two models, and the
+    # pricing table calls them "the only ones here fit to be CHAT_PROVIDER".
+    # 20b over 120b because Groq's documented role is cheap classification and
+    # it is half the price at the same capability.
+    groq_model: str = Field(default="openai/gpt-oss-20b")
     cohere_model: str = Field(default="command-r-plus")
     gemini_model: str = Field(default="gemini-3.7-flash")
     huggingface_model: str = Field(default="mistralai/Mistral-Large-Instruct-2411")
