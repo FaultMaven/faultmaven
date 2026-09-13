@@ -253,7 +253,86 @@ _PENDING_GATE_SUBSTANTIVE_LEN = 40
 # (it was sized when a deeper consumer existed; that consumer is gone, the
 # pool is what remains).
 KB_PREFETCH_FETCH_LIMIT = 10
-KB_CONTEXT_MAX_ENTRIES = 3
+KB_CONTEXT_MAX_ENTRIES = 5
+
+# At most this many chunks from ONE runbook may be rendered (#1379).
+#
+# A chunk is a ``### Cause``, and the admission slice used to be a flat
+# ``relevant[:KB_CONTEXT_MAX_ENTRIES]`` — blind to which runbook each chunk came
+# from. Since a runbook carries 3-10 causes, the entries the model saw were
+# routinely several causes of ONE runbook while a DIFFERENT runbook the query
+# also needed sat in the pool unrendered. Measured over the labelled corpus in
+# ``tests/eval/kb_retrieval/``: the median query drew 7 of the 10 pool slots from
+# a single runbook, 5 of 16 drew all 10, and **22 of 23 expected runbooks
+# reached the pool while only 17 reached the prompt**. The five that did not
+# were not retrieval failures — they were discarded at the render step by
+# another runbook's causes.
+#
+# The pair (5, 2) is a measured point, not a guess. Over that corpus:
+#
+#   render  cap   coverage   depth on the top runbook
+#        3  none    17/23     2.44   <- what shipped
+#        3     1    20/23     1.00
+#        5  none    19/23     3.56
+#        5     2    21/23     1.88   <- this
+#
+# Both levers are load-bearing. Widening alone reaches only 19/23 — the extra
+# slots go to MORE causes of the same runbook. Capping alone buys the coverage
+# but collapses depth on the runbook that matched best, which is the one the
+# model most needs several causes from. Zero queries regress under (5, 2).
+#
+# Applied to the pool already fetched, so this costs no extra query, embedding
+# or round trip. ``context_builder`` already slices the combined list at 5 and
+# truncates each entry to ``KB_MAX_SOLUTION_CHARS``, so the rendered budget is
+# bounded at 5 x 800 chars.
+KB_CONTEXT_MAX_PER_RUNBOOK = 2
+
+
+def _admit_diverse(ranked: list) -> list:
+    """Take up to ``KB_CONTEXT_MAX_ENTRIES`` hits, preferring runbook diversity.
+
+    Two passes over one ranked list. The first admits at most
+    ``KB_CONTEXT_MAX_PER_RUNBOOK`` hits from any single runbook; the second
+    BACKFILLS any slots still empty from the hits the cap skipped, in their
+    original rank order.
+
+    The backfill is what keeps the cap free. Without it, a query whose answer
+    genuinely lives in ONE runbook — the whole pool from a single document, which
+    is 5 of 16 queries on the labelled corpus — would render fewer entries than
+    the budget allows and the model would see LESS than before the cap existed.
+    Diversity is a preference between candidates, not a reason to hand back
+    budget: the cap exists because a second relevant runbook was being crowded
+    out, and where there is no second runbook there is nothing to protect.
+
+    Rank order is preserved throughout — hits are skipped, never reordered — so
+    a runbook that owns the answer still leads.
+
+    Hits whose ``parent_document_id`` is absent are never grouped together. The
+    id is what identifies a runbook, and treating "unknown" as a shared key
+    would cap unrelated documents against one another — the same falsy-vs-absent
+    trap ``_find_live_draft_owning`` states for its own id filter. Each such hit
+    counts only against the total.
+    """
+    seen: dict = {}
+    admitted: list = []
+    deferred: list = []
+
+    for hit in ranked:
+        if len(admitted) == KB_CONTEXT_MAX_ENTRIES:
+            break
+        parent = getattr(hit, "parent_document_id", None)
+        if parent is not None:
+            if seen.get(parent, 0) >= KB_CONTEXT_MAX_PER_RUNBOOK:
+                deferred.append(hit)
+                continue
+            seen[parent] = seen.get(parent, 0) + 1
+        admitted.append(hit)
+
+    if len(admitted) < KB_CONTEXT_MAX_ENTRIES:
+        admitted.extend(deferred[: KB_CONTEXT_MAX_ENTRIES - len(admitted)])
+
+    return admitted
+
 
 # Cosine floor a pre-fetched runbook must clear to enter `case.kb_context`.
 # Same scale, corpus and calibration as
@@ -12021,7 +12100,7 @@ class MilestoneEngine:
                         "parent_document_id": getattr(r, "parent_document_id", None),
                         "trigger": trigger,
                     }
-                    for r in relevant[:KB_CONTEXT_MAX_ENTRIES]
+                    for r in _admit_diverse(relevant)
                 ]
                 # Identity, not just a count (fm#1361). "3 matches" cannot
                 # answer "which runbook informed this answer?" or "was
