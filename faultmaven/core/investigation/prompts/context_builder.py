@@ -3856,6 +3856,12 @@ def build_investigation_context(
             summary = res.get("summary", "")
             solution = res.get("solution", "")
             title = res.get("title", "")
+            # Several chunks of ONE runbook can now be rendered, and they share
+            # its title; the section is what distinguishes them. Absent on an
+            # entry written by an older build, which renders as it always did.
+            section = res.get("section", "")
+            if section:
+                title = f"{title} — {section}"
             trigger = res.get("trigger", "")
             trigger_label = f" [matched on {trigger}]" if trigger else ""
             if len(solution) > KB_MAX_SOLUTION_CHARS:

@@ -150,6 +150,10 @@ from faultmaven.core.investigation.working_conclusion_generator import (
     is_early_stage_conclusion,
 )
 from faultmaven.exceptions import TOKEN_LIMIT
+from faultmaven.infrastructure.llm.json_response import (
+    json_payload_text,
+    loads_llm_json,
+)
 from faultmaven.infrastructure.llm.metering import (
     TurnTokenTracker,
     active_token_tracker,
@@ -247,13 +251,128 @@ _PENDING_GATE_SUBSTANTIVE_LEN = 40
 # several of the top-ranked slots. The fetch depth is the RERANKER'S candidate
 # pool on the hybrid path: ``hybrid_search`` recalls max(3k, 15) vector and 2k
 # keyword candidates for a fetch of k and reranks them, so k decides which
-# three runbooks can reach the prompt at all, not merely how many are kept.
+# runbooks can reach the prompt at all, not merely how many are kept.
 # Render only the top KB_CONTEXT_MAX_ENTRIES into `case.kb_context`. Lowering
 # the depth to the surface cap is a retrieval-quality change, not a cleanup
 # (it was sized when a deeper consumer existed; that consumer is gone, the
 # pool is what remains).
 KB_PREFETCH_FETCH_LIMIT = 10
-KB_CONTEXT_MAX_ENTRIES = 3
+KB_CONTEXT_MAX_ENTRIES = 5
+
+# How many chunks from ONE runbook are admitted BEFORE other runbooks get a
+# turn (#1379). A preference, not a bound: the backfill below deliberately
+# exceeds it rather than hand back budget, so lowering this does NOT cap how
+# much of one runbook can reach the prompt when nothing else clears the
+# floor. What it bounds is how far one runbook can crowd out ANOTHER.
+#
+# A chunk is a ``### Cause``, and the admission slice used to be a flat
+# ``relevant[:KB_CONTEXT_MAX_ENTRIES]`` — blind to which runbook each chunk came
+# from. Since a runbook carries 3-10 causes, the entries the model saw were
+# routinely several causes of ONE runbook while a DIFFERENT runbook the query
+# also needed sat in the pool unrendered. Measured over the labelled corpus in
+# ``tests/eval/kb_retrieval/``: the median query drew 7 of the 10 pool slots from
+# a single runbook, 5 of 16 drew all 10, and **22 of 23 expected runbooks
+# reached the pool while only 17 reached the prompt**. The five that did not
+# were not retrieval failures — they were discarded at the render step by
+# another runbook's causes.
+#
+# The pair (5, 2) is a measured point, not a guess. Over that corpus:
+#
+#   render  cap   coverage   depth on the top runbook
+#        3  none    17/23     2.44   <- what shipped
+#        3     1    20/23     1.00
+#        5  none    19/23     3.56
+#        5     2    21/23     1.88   <- this
+#
+# Both levers are load-bearing. Widening alone reaches only 19/23 — the extra
+# slots go to MORE causes of the same runbook. Capping alone buys the coverage
+# but collapses depth on the runbook that matched best, which is the one the
+# model most needs several causes from. Zero queries regress under (5, 2).
+#
+# Applied to the pool already fetched, so this costs no extra query, embedding
+# or round trip. The prompt cost is 2 extra entries, each a ``title`` plus the
+# search ``snippet``. NOT ``KB_MAX_SOLUTION_CHARS``: that truncation reads
+# ``res.get("solution")`` and a pre-fetch entry has no ``solution`` key, so
+# the 800-char bound is dead code for this channel and quoting it would give a
+# future reader a number to re-size against that was never in effect.
+KB_CONTEXT_MAX_PER_RUNBOOK = 2
+
+
+_CHUNK_HEADING_RE = re.compile(r"^\s*(#{2,4})[ \t]+(.+?)[ \t]*$", re.MULTILINE)
+
+
+def _chunk_label(snippet: str) -> str:
+    """The markdown heading a retrieved chunk opens with, if it has one.
+
+    Chunking is structure-aware, so a chunk IS a section — ``### Cause C: …``,
+    ``## Symptom Recognition``, ``### Step 7: …``. The pre-fetch entry carries
+    the runbook's TITLE, which is the same for every chunk of it, so once more
+    than one chunk of a runbook can be rendered the prompt shows repeated
+    identical ``MATCH n: <title>`` blocks distinguished only by their snippet.
+    A model can read that as several corroborating sources rather than several
+    parts of one document.
+
+    Returns "" when the chunk does not open with a heading; the caller then
+    renders the title alone, exactly as before.
+    """
+    match = _CHUNK_HEADING_RE.search(snippet or "")
+    return match.group(2).strip() if match else ""
+
+
+def _admit_diverse(ranked: list) -> list:
+    """Take up to ``KB_CONTEXT_MAX_ENTRIES`` hits, preferring runbook diversity.
+
+    Two passes over one ranked list. The first admits at most
+    ``KB_CONTEXT_MAX_PER_RUNBOOK`` hits from any single runbook; the second
+    BACKFILLS any slots still empty from the hits the cap skipped, in their
+    original rank order.
+
+    The backfill is what keeps the cap free. Without it, a query whose answer
+    genuinely lives in ONE runbook — the whole pool from a single document, which
+    is 5 of 16 queries on the labelled corpus — would render fewer entries than
+    the budget allows and the model would see LESS than before the cap existed.
+    Diversity is a preference between candidates, not a reason to hand back
+    budget: the cap exists because a second relevant runbook was being crowded
+    out, and where there is no second runbook there is nothing to protect.
+
+    Rank order is preserved throughout — hits are skipped, never reordered — so
+    a runbook that owns the answer still leads.
+
+    Hits whose ``parent_document_id`` is absent are never grouped together. The
+    id is what identifies a runbook, and treating "unknown" as a shared key
+    would cap unrelated documents against one another — the same falsy-vs-absent
+    trap ``_find_live_draft_owning`` states for its own id filter. Each such hit
+    counts only against the total.
+    """
+    seen: dict = {}
+    chosen: list = []
+    deferred: list = []
+
+    for index, hit in enumerate(ranked):
+        if len(chosen) == KB_CONTEXT_MAX_ENTRIES:
+            break
+        parent = getattr(hit, "parent_document_id", None)
+        if parent is not None:
+            if seen.get(parent, 0) >= KB_CONTEXT_MAX_PER_RUNBOOK:
+                deferred.append((index, hit))
+                continue
+            seen[parent] = seen.get(parent, 0) + 1
+        chosen.append((index, hit))
+
+    if len(chosen) < KB_CONTEXT_MAX_ENTRIES:
+        chosen.extend(deferred[: KB_CONTEXT_MAX_ENTRIES - len(chosen)])
+
+    # Re-sorted into rank order. The backfill appends what the cap skipped, so
+    # without this the returned list is not monotonic in rank — and rank order
+    # is not cosmetic here. ``context_builder`` head-truncates the KB section
+    # under budget pressure ("rank-ordered best-first, so keep='head'"), so a
+    # lower-ranked backfilled hit sitting early would survive while better ones
+    # were cut; the prompt numbers the entries ``MATCH 1..n``, implying
+    # descending relevance; and the pre-fetch log prints ``score=`` in list
+    # order. Selection is the cap's job, ORDER is the reranker's.
+    chosen.sort(key=lambda pair: pair[0])
+    return [hit for _, hit in chosen]
+
 
 # Cosine floor a pre-fetched runbook must clear to enter `case.kb_context`.
 # Same scale, corpus and calibration as
@@ -8829,20 +8948,7 @@ class MilestoneEngine:
         the schema but doesn't represent a real response — those should
         escalate to the non-tool fallback path, not be returned as-is.
         """
-        cleaned = text.strip()
-        if "```" in cleaned:
-            match = re.search(r"```(?:json|JSON)?\s*\n(.*?)\n```", cleaned, re.DOTALL)
-            if match:
-                cleaned = match.group(1).strip()
-            elif cleaned.startswith("```"):
-                lines = cleaned.split("\n")
-                if lines and lines[0].startswith("```"):
-                    lines = lines[1:]
-                if lines and lines[-1].strip() == "```":
-                    lines = lines[:-1]
-                cleaned = "\n".join(lines).strip()
-
-        content_obj = json.loads(cleaned, strict=False)
+        content_obj = loads_llm_json(text)
         content_obj = self._parse_nested_json(content_obj)
         _su = (
             content_obj.get("state_updates") if isinstance(content_obj, dict) else None
@@ -9574,36 +9680,20 @@ class MilestoneEngine:
                     else:
                         # Already a string
                         content = args
-            else:
-                # For non-function-calling modes, strip markdown code blocks if present
-                # Some LLMs return: ```json\n{...}\n``` instead of raw JSON
-                # Or even worse: "Here's the response:\n```json\n{...}\n```"
-                if isinstance(content, str):
-                    content = content.strip()
-
-                    # Check if content contains a markdown code block
-                    if "```" in content:
-                        # Extract JSON from markdown code block
-                        # Handle both cases:
-                        # 1. ```json\n{...}\n```
-                        # 2. Some text\n```json\n{...}\n```\nMore text
-                        # Match ```json (or ```JSON or just ```) followed by content until closing ```
-                        pattern = r"```(?:json|JSON)?\s*\n(.*?)\n```"
-                        match = re.search(pattern, content, re.DOTALL)
-                        if match:
-                            content = match.group(1).strip()
-                        elif content.startswith("```"):
-                            # Fallback to old logic if regex fails
-                            lines = content.split("\n")
-                            if lines and lines[0].startswith("```"):
-                                lines = lines[1:]
-                            if lines and lines[-1].strip() == "```":
-                                lines = lines[:-1]
-                            content = "\n".join(lines).strip()
-
             try:
-                # First, try to load content as JSON if it's a string
+                # First, try to load content as JSON if it's a string.
+                #
+                # ``content`` is REASSIGNED to whatever actually parsed, which is
+                # load-bearing rather than tidiness: ``is_truncated_json_error``
+                # below measures a ``JSONDecodeError.pos`` against
+                # ``len(content)`` to decide whether the body was cut and the
+                # ``max_tokens`` ladder should re-run (#513). Parsing a
+                # de-fenced copy while leaving ``content`` fenced makes that
+                # comparison read an offset from one string against the length
+                # of a longer one, so the guard answers False and the ladder
+                # silently stops engaging on any fenced truncated response.
                 if isinstance(content, str):
+                    content = json_payload_text(content)
                     content_obj = json.loads(content, strict=False)
                 else:
                     content_obj = content
@@ -12015,13 +12105,17 @@ class MilestoneEngine:
                 case.kb_context = [
                     {
                         "title": r.title,
+                        # Which SECTION of the runbook matched. Two chunks of one
+                        # runbook are two entries with the same title, so without
+                        # this the prompt cannot tell them apart (#1379 review).
+                        "section": _chunk_label(r.snippet),
                         "summary": r.snippet,
                         "score": r.score,
                         "type": getattr(r, "document_type", "runbook"),
                         "parent_document_id": getattr(r, "parent_document_id", None),
                         "trigger": trigger,
                     }
-                    for r in relevant[:KB_CONTEXT_MAX_ENTRIES]
+                    for r in _admit_diverse(relevant)
                 ]
                 # Identity, not just a count (fm#1361). "3 matches" cannot
                 # answer "which runbook informed this answer?" or "was
