@@ -61,6 +61,10 @@ FENCE_UNIT = FENCE
 #: A body with NO fences at all: the shape `has_fix` was quadratic on, and the
 #: shape the first fix and its tests were both blind to.
 NO_FENCE_UNIT = "\n "
+#: An unterminated markdown link, repeated. A THIRD hostile shape: it carries
+#: no fences, no newlines and no whitespace, so neither payload above reaches
+#: the link regex's backtracking at all.
+LINK_UNIT = "[aaaa](http://x"
 
 _REPS = 3
 
@@ -160,6 +164,76 @@ _BUDGET_SECONDS = 1.0
 def test_scoring_a_fence_heavy_body_costs_a_time_a_request_can_afford():
     """The originally reported shape. 12.2s at 24 KB with the lazy `.*?`."""
     assert _once(_scorer().score_content, _kb(FENCE_UNIT, 24)) < _BUDGET_SECONDS
+
+
+def test_validation_of_unterminated_markdown_links_costs_a_time_a_request_can_afford():
+    """A third shape, and the one that shows why the ENTRY POINT must be driven.
+
+    ``\\[([^\\]]+)\\]\\(https?://[^\\)]+\\)`` is unbounded on both sides, so every
+    ``[`` in the document starts a scan that runs to the end of the input
+    looking for a closing paren that never arrives -- and the next ``[`` does
+    it again. On main: 1.57s at 96 KB, 4.49s at 192 KB, 19.7s at 384 KB, with
+    MAX_UPLOAD_SIZE_MB defaulting to 10.
+
+    The fix is a LENGTH CAP, not a narrower character class. Narrowing first
+    (``[^\\]\\n]``, ``[^\\)\\s]``) was measured and rejected -- it made the same
+    payload 8x WORSE than main, because excluding whitespace only adds failure
+    positions to backtrack through. Measuring the isolated regex suggested that
+    variant had worked; measuring ``validate_content`` showed it had not.
+    """
+    from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+        RunbookValidator,
+    )
+
+    # 192 KB, not 96. At 96 KB the UNBOUNDED pattern costs 0.36s and slips
+    # under the budget -- the mutation control caught that: restoring main's
+    # regex left this test green. At 192 KB it costs 2.39s against 0.30s for
+    # the bounded one, so the budget separates them with room on both sides.
+    assert (
+        _once(RunbookValidator().validate_content, _kb(LINK_UNIT, 192))
+        < _BUDGET_SECONDS
+    )
+
+
+def test_the_link_pattern_still_finds_real_links():
+    """A cap that is too tight stops counting references and is silent about it.
+
+    The only consumer is a ``len(links) == 0`` warning, so a broken pattern
+    does not fail anything -- it just stops warning. Both bounds sit far past
+    real content: 2048 is the practical URL ceiling, 500 is well past any link
+    text.
+    """
+    from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+        RunbookValidator,
+    )
+
+    doc = (
+        "---\nid: x\n---\n# T\n\n"
+        "See [the docs](https://example.com/a/b?c=d) and [more](http://x.io/y).\n"
+    ) + "Another [ref](https://example.org/page#frag) here.\n" * 20
+
+    from faultmaven.modules.knowledge.domain.services import runbook_validator
+
+    # Read the SHIPPED pattern out of the source rather than restating it, so
+    # tightening the cap in production cannot leave this guard green against a
+    # stale copy of its own.
+    shipped = re.search(
+        r'links = re\.findall\(\s*r"(.+?)", content\)',
+        pathlib.Path(runbook_validator.__file__).read_text(encoding="utf-8"),
+        re.DOTALL,
+    )
+    assert shipped, "the link pattern moved; this guard cannot find it"
+    pattern = re.compile(shipped.group(1))
+
+    # The COUNT, not merely "at least one". A cap of 8 still matches the one
+    # short URL in this document, so an "at least one" assertion stayed green
+    # while the pattern had stopped finding 21 of 22 links -- and the only
+    # consumer is a `len(links) == 0` warning, so nothing else would say so.
+    assert len(pattern.findall(doc)) == 22
+
+    warnings: list[str] = []
+    RunbookValidator()._validate_quality(doc, warnings)
+    assert "No external references found" not in warnings
 
 
 def test_scoring_a_body_with_no_fences_costs_a_time_a_request_can_afford():
