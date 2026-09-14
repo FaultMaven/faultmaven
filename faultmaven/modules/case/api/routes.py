@@ -4116,7 +4116,19 @@ async def list_uploaded_files(
         paginated_files = uploaded_files_list[offset : offset + limit]
 
         # Convert to response models
-        files = [UploadedFileMetadata.from_uploaded_file(f) for f in paginated_files]
+        # One `out_of_band_turns` for the whole page rather than per row: the
+        # formula lives on the Case and bisects this list, and rebuilding it per
+        # file is the only cost that scales with the page size.
+        asides = case.out_of_band_turns
+        files = [
+            UploadedFileMetadata.from_uploaded_file(
+                f,
+                investigation_turn=case.investigation_turn_at(
+                    f.uploaded_at_turn, asides=asides
+                ),
+            )
+            for f in paginated_files
+        ]
 
         # Set pagination header (required by API contract)
         response.headers["X-Total-Count"] = str(total_count)
@@ -4187,6 +4199,8 @@ async def get_uploaded_file_details(
         # eliminated by the schema redesign.
         derived_evidence = []
         first_summary: Optional[str] = None
+        # Built once for the loop below, for the same reason as the file list.
+        asides = case.out_of_band_turns
         for evidence in case.evidence:
             if evidence.source_file_id != uploaded_file.file_id:
                 continue
@@ -4205,6 +4219,9 @@ async def get_uploaded_file_details(
                     summary=evidence.summary,
                     category=_safe_enum_value(evidence.category),
                     collected_at_turn=evidence.collected_at_turn,
+                    investigation_turn=case.investigation_turn_at(
+                        evidence.collected_at_turn, asides=asides
+                    ),
                     source_type=_safe_enum_value(evidence.source_type),
                     primary_purpose=evidence.primary_purpose,
                     related_hypothesis_ids=related_hypothesis_ids,
@@ -4230,6 +4247,9 @@ async def get_uploaded_file_details(
             content_type=uploaded_file.content_type,
             content_hash=uploaded_file.content_hash,
             uploaded_at_turn=uploaded_file.uploaded_at_turn,
+            investigation_turn=case.investigation_turn_at(
+                uploaded_file.uploaded_at_turn, asides=asides
+            ),
             uploaded_at=uploaded_file.uploaded_at,
             upload_source=uploaded_file.upload_source,
             summary=first_summary,
@@ -4258,6 +4278,9 @@ def _build_evidence_response(case, evidence, case_id: str) -> EvidenceDetailsRes
             file_id=matched_file.file_id,
             filename=matched_file.filename,
             uploaded_at_turn=matched_file.uploaded_at_turn,
+            investigation_turn=case.investigation_turn_at(
+                matched_file.uploaded_at_turn
+            ),
         )
         if matched_file
         else None
@@ -4287,6 +4310,7 @@ def _build_evidence_response(case, evidence, case_id: str) -> EvidenceDetailsRes
         category=_safe_enum_value(evidence.category),
         primary_purpose=evidence.primary_purpose,
         collected_at_turn=evidence.collected_at_turn,
+        investigation_turn=case.investigation_turn_at(evidence.collected_at_turn),
         collected_at=evidence.collected_at,
         collected_by=evidence.collected_by,
         source_file=source_file,

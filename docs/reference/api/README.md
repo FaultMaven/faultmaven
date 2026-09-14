@@ -5637,6 +5637,7 @@ Summary of evidence derived from an uploaded file.
 - `category` (string, required) — SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | SYMPTOM_ABSENCE_EVIDENCE | CAUSAL_ABSENCE_EVIDENCE | OTHER
 - `collected_at_turn` (integer, required)
 - `evidence_id` (string, required)
+- `investigation_turn` (object, optional) — Which turn OF THE INVESTIGATION this row sits on (#1387/#1391): the message clock at that turn minus the out-of-band turns at or before it. An aside does not advance it. `collected_at_turn` keeps its meaning as the message clock and is what anchors and jump-to-turn are keyed on, so ADDRESS a turn with that and DISPLAY this one. Null when the server predates the field.
 - `primary_purpose` (object, optional)
 - `related_hypothesis_ids` (array, optional)
 - `source_type` (string, required) — LOGS | METRICS | CONFIGURATION | CODE | TEXT | IMAGE
@@ -5722,6 +5723,7 @@ Detailed evidence information with source and hypothesis linkage.
 - `collected_by` (string, required)
 - `evidence_id` (string, required)
 - `extract` (object, optional) — Optional verbatim quote backing the summary. NULL when the LLM omitted it (the summary is self-contained).
+- `investigation_turn` (object, optional) — Which turn OF THE INVESTIGATION this row sits on (#1387/#1391): the message clock at that turn minus the out-of-band turns at or before it. An aside does not advance it. `collected_at_turn` keeps its meaning as the message clock and is what anchors and jump-to-turn are keyed on, so ADDRESS a turn with that and DISPLAY this one. Null when the server predates the field.
 - `primary_purpose` (string, required)
 - `related_hypotheses` (array, optional)
 - `source_file` (object, optional) — Source file this evidence was derived from. NULL only when the evidence is a verbatim quote extracted from the user's chat message (source_type=USER_DESCRIPTION).
@@ -6665,6 +6667,7 @@ Reference to source file that evidence was derived from.
 
 - `file_id` (string, required)
 - `filename` (string, required)
+- `investigation_turn` (object, optional) — Which turn OF THE INVESTIGATION this row sits on (#1387/#1391): the message clock at that turn minus the out-of-band turns at or before it. An aside does not advance it. `uploaded_at_turn` keeps its meaning as the message clock and is what anchors and jump-to-turn are keyed on, so ADDRESS a turn with that and DISPLAY this one. Null when the server predates the field.
 - `uploaded_at_turn` (integer, required)
 
 ---
@@ -6837,6 +6840,7 @@ Detailed information about an uploaded file with evidence linkage.
 - `evidence_count` (integer, required)
 - `file_id` (string, required)
 - `filename` (string, required)
+- `investigation_turn` (object, optional) — Which turn OF THE INVESTIGATION this row sits on (#1387/#1391): the message clock at that turn minus the out-of-band turns at or before it. An aside does not advance it. `uploaded_at_turn` keeps its meaning as the message clock and is what anchors and jump-to-turn are keyed on, so ADDRESS a turn with that and DISPLAY this one. Null when the server predates the field.
 - `size_bytes` (integer, required)
 - `size_display` (string, required)
 - `summary` (object, optional) — File-level preprocessing summary, set by the ingestion pipeline.
@@ -6855,6 +6859,7 @@ Metadata for uploaded files (evidence) - List view.
 - `analysis_status` (string, required) — pending | processing | completed | failed
 - `file_id` (string, required) — Evidence/File identifier
 - `filename` (string, required) — Original or generated filename
+- `investigation_turn` (object, optional) — Which turn OF THE INVESTIGATION this row sits on (#1387/#1391): the message clock at that turn minus the out-of-band turns at or before it. An aside does not advance it. `uploaded_at_turn` keeps its meaning as the message clock and is what anchors and jump-to-turn are keyed on, so ADDRESS a turn with that and DISPLAY this one. Null when the server predates the field.
 - `size_bytes` (integer, required) — File size in bytes
 - `size_display` (string, required) — Human-readable size (e.g., '2.3 MB')
 - `source_metadata` (object, optional) — Source origin metadata (e.g. page capture URL)

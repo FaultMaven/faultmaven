@@ -1109,6 +1109,18 @@ class UploadedFileMetadata(BaseModel):
     size_bytes: int = Field(description="File size in bytes", ge=0)
     size_display: str = Field(description="Human-readable size (e.g., '2.3 MB')")
     uploaded_at_turn: int = Field(description="Turn when file was uploaded", ge=0)
+    investigation_turn: Optional[int] = Field(
+        default=None,
+        description=(
+            "Which turn OF THE INVESTIGATION this row sits on "
+            "(#1387/#1391): the message clock at that turn minus the "
+            "out-of-band turns at or before it. An aside does not advance "
+            "it. `uploaded_at_turn` keeps its meaning as the message clock and is "
+            "what anchors and jump-to-turn are keyed on, so ADDRESS a turn "
+            "with that and DISPLAY this one. Null when the server predates "
+            "the field."
+        ),
+    )
     uploaded_at: datetime = Field(description="Upload timestamp")
     source_type: str = Field(
         description="file_upload | paste | screenshot | page_injection | agent_generated"
@@ -1124,8 +1136,18 @@ class UploadedFileMetadata(BaseModel):
     )
 
     @classmethod
-    def from_uploaded_file(cls, uploaded_file) -> "UploadedFileMetadata":
-        """Convert UploadedFile model to UploadedFileMetadata."""
+    def from_uploaded_file(
+        cls, uploaded_file, investigation_turn: Optional[int] = None
+    ) -> "UploadedFileMetadata":
+        """Convert UploadedFile model to UploadedFileMetadata.
+
+        ``investigation_turn`` is passed IN rather than derived: the ordinal
+        is a property of the parent case's turn history, which an
+        ``UploadedFile`` does not carry. A caller without the case omits it
+        and the row reads as "did not say" — the answer every client already
+        handles for an older server — rather than falling back to the clock
+        under the new name.
+        """
         from faultmaven.modules.case.contracts import UploadedFile
 
         # Calculate human-readable size
@@ -1153,6 +1175,7 @@ class UploadedFileMetadata(BaseModel):
             # field-level update.
             summary=None,
             source_metadata=None,
+            investigation_turn=investigation_turn,
         )
 
     # `from_evidence` (legacy) was removed: it relied on the dropped
@@ -1291,6 +1314,18 @@ class DerivedEvidenceSummary(BaseModel):
         description="SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | SYMPTOM_ABSENCE_EVIDENCE | CAUSAL_ABSENCE_EVIDENCE | OTHER"
     )
     collected_at_turn: int
+    investigation_turn: Optional[int] = Field(
+        default=None,
+        description=(
+            "Which turn OF THE INVESTIGATION this row sits on "
+            "(#1387/#1391): the message clock at that turn minus the "
+            "out-of-band turns at or before it. An aside does not advance "
+            "it. `collected_at_turn` keeps its meaning as the message clock and is "
+            "what anchors and jump-to-turn are keyed on, so ADDRESS a turn "
+            "with that and DISPLAY this one. Null when the server predates "
+            "the field."
+        ),
+    )
     source_type: str = Field(
         description="LOGS | METRICS | CONFIGURATION | CODE | TEXT | IMAGE"
     )
@@ -1312,6 +1347,18 @@ class UploadedFileDetailsResponse(BaseModel):
         default=None, description="SHA-256 of file contents (storage-backend dedup)"
     )
     uploaded_at_turn: int
+    investigation_turn: Optional[int] = Field(
+        default=None,
+        description=(
+            "Which turn OF THE INVESTIGATION this row sits on "
+            "(#1387/#1391): the message clock at that turn minus the "
+            "out-of-band turns at or before it. An aside does not advance "
+            "it. `uploaded_at_turn` keeps its meaning as the message clock and is "
+            "what anchors and jump-to-turn are keyed on, so ADDRESS a turn "
+            "with that and DISPLAY this one. Null when the server predates "
+            "the field."
+        ),
+    )
     uploaded_at: datetime
     upload_source: str = Field(
         description="Provenance: file_upload | paste | screenshot | page_capture | agent_generated | conversion_source"
@@ -1340,6 +1387,18 @@ class SourceFileReference(BaseModel):
     file_id: str
     filename: str
     uploaded_at_turn: int
+    investigation_turn: Optional[int] = Field(
+        default=None,
+        description=(
+            "Which turn OF THE INVESTIGATION this row sits on "
+            "(#1387/#1391): the message clock at that turn minus the "
+            "out-of-band turns at or before it. An aside does not advance "
+            "it. `uploaded_at_turn` keeps its meaning as the message clock and is "
+            "what anchors and jump-to-turn are keyed on, so ADDRESS a turn "
+            "with that and DISPLAY this one. Null when the server predates "
+            "the field."
+        ),
+    )
 
 
 class RelatedHypothesis(BaseModel):
@@ -1360,6 +1419,18 @@ class EvidenceDetailsResponse(BaseModel):
     primary_purpose: str
 
     collected_at_turn: int
+    investigation_turn: Optional[int] = Field(
+        default=None,
+        description=(
+            "Which turn OF THE INVESTIGATION this row sits on "
+            "(#1387/#1391): the message clock at that turn minus the "
+            "out-of-band turns at or before it. An aside does not advance "
+            "it. `collected_at_turn` keeps its meaning as the message clock and is "
+            "what anchors and jump-to-turn are keyed on, so ADDRESS a turn "
+            "with that and DISPLAY this one. Null when the server predates "
+            "the field."
+        ),
+    )
     collected_at: datetime
     collected_by: str
 
