@@ -30,6 +30,30 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
+# 3.8.0 — MINOR. `GET /api/v1/cases` accepts `created_after` and
+# `created_before`. `CaseListFilter` has carried both fields since it was
+# written, and the route never bound them as query params — so a client that
+# sent a date got no error and no filtering: FastAPI drops an unknown query
+# param silently, and the dashboard shipped a date picker that did nothing for
+# long enough that it was eventually deleted as a lie
+# (faultmaven-dashboard#51). This binds them.
+#
+# Both bounds are INCLUSIVE (`created_at >= created_after`,
+# `created_at <= created_before`) and are applied in the same WHERE clause as
+# every other predicate, so `total_count` counts the same set the page comes
+# from — the pagination-soundness rule `include_empty` already follows, for the
+# same reason: a bound applied after the repository paginated would thin an
+# already-sliced page.
+#
+# THEY ARE INSTANTS, NOT CALENDAR DAYS, and that is the part a client has to
+# read. The server cannot know which day "2026-09-14" meant, so it does not
+# guess: a client offering a date picker resolves the day to the first and last
+# instant of that day IN ITS OWN TIMEZONE and sends those. A bare naive value is
+# read as UTC — the only reading that does not silently shift by whatever zone
+# the server happens to run in.
+#
+# Additive: every existing call is unaffected, both params default to None.
+#
 # 3.7.0 — MINOR. The investigation turn reaches the EVIDENCE surfaces. 3.5.0
 # gave every schema that publishes a turn for display a nullable
 # `investigation_turn`, and missed the two that name a turn they do not
@@ -521,4 +545,4 @@ asked to accept, and it belongs to a person.
 # never share a version — a number that cannot tell two contracts apart is not
 # doing its job — so this moves rather than collides, and both entries stay.
 # They describe unrelated surfaces.
-API_CONTRACT_VERSION = "3.7.0"
+API_CONTRACT_VERSION = "3.8.0"

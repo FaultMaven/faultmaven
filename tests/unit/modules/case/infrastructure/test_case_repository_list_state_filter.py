@@ -173,3 +173,80 @@ async def test_inmemory_list_filters_by_state_keyword():
     excluded, total_excluded = await repo.list(user_id="u1", state=CaseState.RESOLVED)
     assert total_excluded == 0
     assert excluded == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("provider", _LIST_PROVIDERS, ids=lambda c: c.__name__)
+def test_list_declares_creation_date_bounds(provider):
+    """Case ``list()`` must accept ``created_after``/``created_before`` everywhere.
+
+    Same failure mode as ``state`` and ``include_empty`` above: the service
+    calls ``repo.list(created_after=..., created_before=...)`` by keyword, so an
+    impl missing either raises ``unexpected keyword argument`` at runtime — and
+    the list route swallows that into an empty result rather than a 500, which
+    is how the ``state`` rename went unnoticed.
+    """
+    params = inspect.signature(provider.list).parameters
+    for name in ("created_after", "created_before"):
+        assert name in params, (
+            f"{provider.__name__}.list() missing '{name}' param — the service "
+            f"calls list({name}=...) by keyword"
+        )
+        # Default must preserve the unbounded behavior.
+        assert params[name].default is None
+
+
+@pytest.mark.unit
+async def test_inmemory_creation_bounds_are_inclusive_and_constrain_the_total():
+    """The bounds are INCLUSIVE at both ends, and they move the total with the page.
+
+    Inclusivity is the half a client cannot discover by experiment: a date
+    picker sends the last instant of the chosen day, so an exclusive upper bound
+    would silently drop every case created in that final microsecond — and more
+    importantly would make "1 Jan to 1 Jan" mean nothing rather than that day.
+    """
+    from datetime import datetime, timezone
+
+    repo = InMemoryCaseRepository()
+    days = [datetime(2026, 9, d, 12, 0, tzinfo=timezone.utc) for d in (10, 11, 12, 13)]
+    for i, created in enumerate(days):
+        case = _make_case(title=f"Day {10 + i}")
+        object.__setattr__(case, "created_at", created)
+        await repo.save(case)
+
+    # Unbounded: everything.
+    _, total_all = await repo.list(user_id="u1")
+    assert total_all == 4
+
+    # Lower bound INCLUDES a case created exactly on it.
+    rows, total = await repo.list(user_id="u1", created_after=days[1])
+    assert total == 3
+    assert {c.title for c in rows} == {"Day 11", "Day 12", "Day 13"}
+
+    # Upper bound INCLUDES a case created exactly on it.
+    rows, total = await repo.list(user_id="u1", created_before=days[1])
+    assert total == 2
+    assert {c.title for c in rows} == {"Day 10", "Day 11"}
+
+    # Both ends together, and a single-instant window resolves to one case —
+    # the "one day" case a date picker produces.
+    rows, total = await repo.list(
+        user_id="u1", created_after=days[1], created_before=days[2]
+    )
+    assert total == 2
+    assert {c.title for c in rows} == {"Day 11", "Day 12"}
+
+    rows, total = await repo.list(
+        user_id="u1", created_after=days[0], created_before=days[0]
+    )
+    assert total == 1
+    assert {c.title for c in rows} == {"Day 10"}
+
+    # The total is the BOUNDED count, not the unfiltered one: a page taken from
+    # inside the window must be described by a total drawn from the same window,
+    # or the caller pages past the end.
+    page, total = await repo.list(
+        user_id="u1", created_after=days[1], limit=1, offset=0
+    )
+    assert total == 3
+    assert len(page) == 1

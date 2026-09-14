@@ -153,6 +153,8 @@ class CaseRepository(ABC):
         shared_case_ids: Optional[List[str]] = None,
         restrict_case_ids: Optional[List[str]] = None,
         include_empty: bool = True,
+        created_after: Optional[datetime] = None,
+        created_before: Optional[datetime] = None,
     ) -> tuple[List[Case], int]:
         """
         List cases with optional filters.
@@ -174,6 +176,9 @@ class CaseRepository(ABC):
             restrict_case_ids: Filter-by-team facet — narrows the result to one
                 team's shared case ids (the caller resolves/authorizes the team).
                 ``None`` = no facet; a non-``None`` empty list matches nothing.
+            created_after: Inclusive lower bound on ``created_at``, applied in
+                the query for the same reason ``include_empty`` is.
+            created_before: Inclusive upper bound on ``created_at``.
 
         Returns:
             Tuple of (cases, total_count)
@@ -932,6 +937,8 @@ class InMemoryCaseRepository(CaseRepository):
         shared_case_ids: Optional[List[str]] = None,
         restrict_case_ids: Optional[List[str]] = None,
         include_empty: bool = True,
+        created_after: Optional[datetime] = None,
+        created_before: Optional[datetime] = None,
     ) -> tuple[List[Case], int]:
         """List cases with filters."""
         # Filter cases
@@ -963,6 +970,13 @@ class InMemoryCaseRepository(CaseRepository):
         # (mirrors the SQL WHERE-clause predicate in the DB repositories).
         if not include_empty:
             filtered = [c for c in filtered if c.current_turn > 0]
+
+        # Creation-date bounds, INCLUSIVE on both ends, applied before the count
+        # for the same reason as include_empty above.
+        if created_after is not None:
+            filtered = [c for c in filtered if c.created_at >= created_after]
+        if created_before is not None:
+            filtered = [c for c in filtered if c.created_at <= created_before]
 
         # Sort by last_activity_at descending
         filtered.sort(key=lambda c: c.last_activity_at, reverse=True)

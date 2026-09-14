@@ -6809,7 +6809,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "3.7.0"
+    "version": "3.8.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -9211,7 +9211,7 @@
     },
     "/api/v1/cases": {
       "get": {
-        "description": "List user's cases with pagination (v2.0 milestone-based)\n\nReturns CaseListResponse with:\n- List of CaseSummary objects (with milestone progress)\n- Total count for pagination\n- has_more flag\n\nDefault Filtering Behavior:\n- INCLUDES empty cases (current_turn == 0) - newly created cases are visible\n- INCLUDES closed/resolved cases (frontend categorizes by status)\n- Use include_empty=false to hide cases with no conversation yet\n- Use status filter to further refine results",
+        "description": "List user's cases with pagination (v2.0 milestone-based)\n\nReturns CaseListResponse with:\n- List of CaseSummary objects (with milestone progress)\n- Total count for pagination\n- has_more flag\n\nDefault Filtering Behavior:\n- INCLUDES empty cases (current_turn == 0) - newly created cases are visible\n- INCLUDES closed/resolved cases (frontend categorizes by status)\n- Use include_empty=false to hide cases with no conversation yet\n- Use status filter to further refine results\n\nCreation-date bounds:\n- created_after/created_before bound `created_at` INCLUSIVELY, in the same\n  WHERE clause as every other filter, so `total_count` describes the same\n  set as the page.\n- They are INSTANTS, not calendar days. A client offering a date picker\n  resolves the day to the instants ITS user means \u2014 start and end of day in\n  the browser's timezone \u2014 because a bare date would otherwise silently\n  mean the UTC day.",
         "operationId": "list_cases_api_v1_cases_get",
         "parameters": [
           {
@@ -9271,6 +9271,44 @@
               ],
               "description": "Filter to cases shared with this Team (ADR-013 \u00a7D4). Only Teams the caller belongs to yield results; ignored in standalone (no teams).",
               "title": "Team Id"
+            }
+          },
+          {
+            "description": "Only cases created at or after this instant (inclusive). ISO-8601; a value without an offset is read as UTC.",
+            "in": "query",
+            "name": "created_after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only cases created at or after this instant (inclusive). ISO-8601; a value without an offset is read as UTC.",
+              "title": "Created After"
+            }
+          },
+          {
+            "description": "Only cases created at or before this instant (inclusive). ISO-8601; a value without an offset is read as UTC.",
+            "in": "query",
+            "name": "created_before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only cases created at or before this instant (inclusive). ISO-8601; a value without an offset is read as UTC.",
+              "title": "Created Before"
             }
           },
           {

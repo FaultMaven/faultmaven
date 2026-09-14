@@ -330,6 +330,88 @@ class TestSQLiteCaseRepository:
         assert len(seen) == 4
         assert all(c.current_turn > 0 for c in seen)
 
+    async def test_list_creation_date_bounds_against_real_sqlite(self, sqlite_session):
+        """Real SQLite: the creation-date bounds actually filter, and inclusively.
+
+        This is the test the in-memory one cannot stand in for. The bounds go
+        into raw SQL as bound parameters and are compared against a column the
+        driver wrote — so what is really being asserted is that the value on the
+        way IN and the value on the way OUT are rendered in the same encoding.
+        A Python list comprehension over datetimes would pass while the real
+        query silently matched nothing, which is the whole failure this feature
+        exists to stop repeating.
+        """
+        from faultmaven.modules.case.domain.models import (
+            Case,
+            CaseState,
+            DocumentationData,
+            InquiryData,
+            InvestigationProgress,
+        )
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
+        )
+
+        repo = SQLiteCaseRepository(sqlite_session)
+        user_id = f"user_{uuid4().hex[:8]}"
+        enterprise_id = f"ent_{uuid4().hex[:8]}"
+
+        days = [datetime(2026, 9, d, 12, 0, tzinfo=timezone.utc) for d in (10, 11, 12)]
+        for i, created in enumerate(days):
+            case = Case(
+                case_id=f"case_{uuid4().hex[:12]}",
+                user_id=user_id,
+                enterprise_id=enterprise_id,
+                title=f"Day {10 + i}",
+                state=CaseState.INQUIRY,
+                inquiry=InquiryData(),
+                documentation=DocumentationData(),
+                progress=InvestigationProgress(),
+                created_at=created,
+                updated_at=created,
+            )
+            object.__setattr__(case, "current_turn", 1)
+            await repo.save(case)
+
+        # Sanity: unbounded sees all three, so a later zero is a filter result
+        # and not an empty table.
+        _, total_all = await repo.list(user_id=user_id)
+        assert total_all == 3
+
+        # Lower bound includes the case created exactly on it.
+        rows, total = await repo.list(user_id=user_id, created_after=days[1])
+        assert total == 2
+        assert {c.title for c in rows} == {"Day 11", "Day 12"}
+
+        # Upper bound includes the case created exactly on it.
+        rows, total = await repo.list(user_id=user_id, created_before=days[1])
+        assert total == 2
+        assert {c.title for c in rows} == {"Day 10", "Day 11"}
+
+        # A window of one instant is one case — "from this day to this day".
+        rows, total = await repo.list(
+            user_id=user_id, created_after=days[1], created_before=days[1]
+        )
+        assert total == 1
+        assert {c.title for c in rows} == {"Day 11"}
+
+        # A window that excludes everything reports zero, not everything: a
+        # dropped predicate would return 3 here and look like a working filter
+        # on every other assertion above.
+        _, total_none = await repo.list(
+            user_id=user_id,
+            created_after=datetime(2026, 9, 20, tzinfo=timezone.utc),
+        )
+        assert total_none == 0
+
+        # The bound constrains the COUNT as well as the page (pagination
+        # soundness): a page of 1 inside a 2-case window reports 2, not 3.
+        page, total = await repo.list(
+            user_id=user_id, created_after=days[1], limit=1, offset=0
+        )
+        assert len(page) == 1
+        assert total == 2
+
     async def test_message_operations_sqlite_compatible(self, sqlite_session):
         """Test that message operations work with SQLite (no ::jsonb)."""
         from faultmaven.modules.case.domain.models import (

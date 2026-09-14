@@ -8,7 +8,7 @@ They handle:
 - Backward compatibility
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
@@ -320,11 +320,22 @@ class CaseListFilter(BaseModel):
     )
 
     created_after: Optional[datetime] = Field(
-        default=None, description="Cases created after this date"
+        default=None,
+        description=(
+            "Lower bound on ``created_at``, INCLUSIVE (``created_at >= "
+            "created_after``). A naive value is read as UTC."
+        ),
     )
 
     created_before: Optional[datetime] = Field(
-        default=None, description="Cases created before this date"
+        default=None,
+        description=(
+            "Upper bound on ``created_at``, INCLUSIVE (``created_at <= "
+            "created_before``). A naive value is read as UTC. Both bounds are "
+            "instants, not dates: a client filtering by calendar day sends the "
+            "day's first and last instant in ITS OWN timezone, which is what "
+            "makes \"today\" mean the user's today rather than UTC's."
+        ),
     )
 
     limit: int = Field(
@@ -337,6 +348,21 @@ class CaseListFilter(BaseModel):
         default=True,
         description="Include cases with no conversation (current_turn == 0)",
     )
+
+    @field_validator("created_after", "created_before")
+    @classmethod
+    def _assume_utc_when_naive(cls, value: Optional[datetime]) -> Optional[datetime]:
+        """Read a naive bound as UTC rather than passing it to the driver.
+
+        ``cases.created_at`` is ``timestamptz``, and asyncpg refuses to compare
+        a naive datetime against one — the filter would raise instead of
+        filtering. The clients all send an offset (``...Z``), so this only
+        catches a hand-written query string, and UTC is the only reading that
+        does not silently shift by the server's local zone.
+        """
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
 
 
 class OperatorAccessAuditEntry(BaseModel):

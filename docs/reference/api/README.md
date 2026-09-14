@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 3.7.0
+**Version:** 3.8.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -1480,6 +1480,15 @@ Default Filtering Behavior:
 - Use include_empty=false to hide cases with no conversation yet
 - Use status filter to further refine results
 
+Creation-date bounds:
+- created_after/created_before bound `created_at` INCLUSIVELY, in the same
+  WHERE clause as every other filter, so `total_count` describes the same
+  set as the page.
+- They are INSTANTS, not calendar days. A client offering a date picker
+  resolves the day to the instants ITS user means — start and end of day in
+  the browser's timezone — because a bare date would otherwise silently
+  mean the UTC day.
+
 **Tags:** `cases`
 
 **Auth:** `HTTPBearer`
@@ -1489,6 +1498,8 @@ Default Filtering Behavior:
 - `state` (query, optional) — Filter by state
 - `source` (query, optional) — Filter by case source
 - `team_id` (query, optional) — Filter to cases shared with this Team (ADR-013 §D4). Only Teams the caller belongs to yield results; ignored in standalone (no teams).
+- `created_after` (query, optional) — Only cases created at or after this instant (inclusive). ISO-8601; a value without an offset is read as UTC.
+- `created_before` (query, optional) — Only cases created at or before this instant (inclusive). ISO-8601; a value without an offset is read as UTC.
 - `limit` (query, optional) — Items per page
 - `offset` (query, optional) — Number of items to skip
 - `include_empty` (query, optional) — Include cases with current_turn == 0 (newly created)

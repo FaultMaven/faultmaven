@@ -658,6 +658,35 @@ class TestListUserCases:
         assert kwargs["offset"] == 50
 
     @pytest.mark.asyncio
+    async def test_forwards_creation_date_bounds_to_repo(self, service, mock_repo):
+        # Same contract as include_empty above: the bounds belong in the query,
+        # so the service forwards them and trusts the repo's page + total. A
+        # service that bounded the page itself would hand back a short page with
+        # a total drawn from a wider set.
+        mock_repo.list.return_value = ([], 0)
+        after = datetime(2026, 9, 10, tzinfo=timezone.utc)
+        before = datetime(2026, 9, 12, 23, 59, 59, tzinfo=timezone.utc)
+        await service.list_user_cases(
+            "user_123",
+            filters=CaseListFilter(created_after=after, created_before=before),
+        )
+        kwargs = mock_repo.list.await_args.kwargs
+        assert kwargs["created_after"] == after
+        assert kwargs["created_before"] == before
+
+    @pytest.mark.asyncio
+    async def test_unset_creation_bounds_are_forwarded_as_none(
+        self, service, mock_repo
+    ):
+        # Unbounded must reach the repository as None rather than as "today" or
+        # an epoch: a default the service invents is a filter nobody asked for.
+        mock_repo.list.return_value = ([], 0)
+        await service.list_user_cases("user_123", filters=CaseListFilter())
+        kwargs = mock_repo.list.await_args.kwargs
+        assert kwargs["created_after"] is None
+        assert kwargs["created_before"] is None
+
+    @pytest.mark.asyncio
     async def test_no_python_post_filter_of_empty_cases(self, service, mock_repo):
         # The repo (with include_empty pushed down) returns exactly the rows the
         # service should surface. The service must NOT re-filter empties itself

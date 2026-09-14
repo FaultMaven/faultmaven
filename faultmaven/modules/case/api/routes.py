@@ -1096,6 +1096,20 @@ async def list_cases(
             "caller belongs to yield results; ignored in standalone (no teams)."
         ),
     ),
+    created_after: Optional[datetime] = Query(
+        None,
+        description=(
+            "Only cases created at or after this instant (inclusive). ISO-8601; "
+            "a value without an offset is read as UTC."
+        ),
+    ),
+    created_before: Optional[datetime] = Query(
+        None,
+        description=(
+            "Only cases created at or before this instant (inclusive). ISO-8601; "
+            "a value without an offset is read as UTC."
+        ),
+    ),
     limit: int = Query(50, ge=1, le=100, description="Items per page"),
     offset: int = Query(0, ge=0, description="Number of items to skip"),
     # Changed default to True - new cases should be visible immediately
@@ -1117,6 +1131,15 @@ async def list_cases(
     - INCLUDES closed/resolved cases (frontend categorizes by status)
     - Use include_empty=false to hide cases with no conversation yet
     - Use status filter to further refine results
+
+    Creation-date bounds:
+    - created_after/created_before bound `created_at` INCLUSIVELY, in the same
+      WHERE clause as every other filter, so `total_count` describes the same
+      set as the page.
+    - They are INSTANTS, not calendar days. A client offering a date picker
+      resolves the day to the instants ITS user means — start and end of day in
+      the browser's timezone — because a bare date would otherwise silently
+      mean the UTC day.
     """
     case_service = check_case_service_available(case_service)
     correlation_id = str(uuid.uuid4())
@@ -1134,6 +1157,8 @@ async def list_cases(
             state=state,
             source=source,
             team_id=team_id,
+            created_after=created_after,
+            created_before=created_before,
             limit=limit,
             offset=offset,
             include_empty=include_empty,

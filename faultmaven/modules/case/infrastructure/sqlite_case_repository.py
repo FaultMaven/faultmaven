@@ -1223,6 +1223,8 @@ class SQLiteCaseRepository(CaseRepository):
         shared_case_ids: list[str] | None = None,
         restrict_case_ids: list[str] | None = None,
         include_empty: bool = True,
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
     ) -> tuple[list[Case], int]:
         """List cases with optional filters and pagination.
 
@@ -1268,6 +1270,17 @@ class SQLiteCaseRepository(CaseRepository):
             # page/total contract sound.
             if not include_empty:
                 where_clauses.append("current_turn > 0")
+
+            # Creation-date bounds, INCLUSIVE on both ends. Bound as datetime
+            # objects, exactly as ``save`` binds ``created_at`` on the way in —
+            # the same driver adapter renders both sides, so the stored value
+            # and the bound compare in the one encoding.
+            if created_after is not None:
+                where_clauses.append("created_at >= :created_after")
+                params["created_after"] = created_after
+            if created_before is not None:
+                where_clauses.append("created_at <= :created_before")
+                params["created_before"] = created_before
 
             where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 

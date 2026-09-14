@@ -1203,8 +1203,9 @@ class CaseService(ICaseService):
         Returns:
             Tuple of (case summaries for the requested page, total match count).
             The total reflects every filter the repository applies (state,
-            source, ``include_empty``, team scope) so the API can compute
-            ``has_more`` soundly — it is NOT the length of the returned page.
+            source, ``include_empty``, creation-date bounds, team scope) so the
+            API can compute ``has_more`` soundly — it is NOT the length of the
+            returned page.
         """
         if not user_id:
             raise ValidationException("User ID cannot be empty")
@@ -1220,6 +1221,11 @@ class CaseService(ICaseService):
             limit = filters.limit if filters else 50
             offset = filters.offset if filters else 0
             include_empty = filters.include_empty if filters else True
+            # Creation-date bounds go down the same path, and for the same
+            # reason: a bound applied here, after the repository paginated,
+            # would thin an already-sliced page and disagree with ``total``.
+            created_after = filters.created_after if filters else None
+            created_before = filters.created_before if filters else None
             # Resolve team membership once for both the facet and the allowlist.
             team_ids = await self._resolve_user_team_ids(user_id)
             # Filter-by-team facet (ADR-013 §D4): narrow to one Team's shares.
@@ -1247,6 +1253,8 @@ class CaseService(ICaseService):
                 shared_case_ids=shared_case_ids,
                 restrict_case_ids=restrict_case_ids,
                 include_empty=include_empty,
+                created_after=created_after,
+                created_before=created_before,
             )
 
             # NOTE: include_empty is applied in the repository query (above), not
