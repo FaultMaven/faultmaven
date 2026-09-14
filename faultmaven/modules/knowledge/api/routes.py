@@ -28,7 +28,7 @@ Core Design Principles:
 import logging
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import (
     APIRouter,
@@ -57,7 +57,7 @@ from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models import KnowledgeBaseDocument, SearchRequest
 from faultmaven.models.api import DocumentSnippetResponse
 from faultmaven.models.exceptions import KnowledgeBaseError
-from faultmaven.modules.auth.contracts import DevUser
+from faultmaven.modules.auth.contracts import DevUser, is_team_member
 from faultmaven.modules.knowledge.api.platform_tier import (
     require_global_authoring_allowed,
 )
@@ -281,9 +281,12 @@ async def upload_document(
     tags: Optional[str] = Form(None),
     source_url: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
+    scope: Literal["personal", "team", "global"] = Form("personal"),
+    team_id: Optional[str] = Form(None),
+    request: Request = None,  # noqa: B008 — app.state carries team_service
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
     response: Response = Response(),
-    current_user: DevUser = Depends(require_platform_admin),
+    current_user: DevUser = Depends(require_authentication),
 ) -> dict:
     """
     Upload a document to the knowledge base
@@ -294,6 +297,11 @@ async def upload_document(
         document_type: Type of document
         tags: Comma-separated tags
         source_url: Source URL if applicable
+        scope: Publishing tier — ``personal`` (default), ``team`` or
+            ``global``. ``global`` is the platform corpus every tenant reads
+            and requires the platform-admin role; ``team`` requires a
+            ``team_id`` naming a team you belong to.
+        team_id: Required when ``scope`` is ``team``.
 
     Returns:
         Upload job information
@@ -301,12 +309,66 @@ async def upload_document(
     logger = logging.getLogger(__name__)
     logger.info(f"Uploading document: {file.filename}")
 
-    # This route publishes at global scope — the platform tier, never
-    # authorable from a tenant session under multi (#770). The tier is stated
-    # at the call to upload_document below rather than inherited from a
-    # default (#1166), so this gate and the scope it guards are visible in the
-    # same file.
-    require_global_authoring_allowed()
+    # Uploading a finished runbook file is an INPUT METHOD, not a publishing
+    # tier. It used to be both: the route carried a `require_platform_admin`
+    # dependency and hard-coded `scope="global"`, so "operator-only" had become
+    # a property of *uploading* rather than of the platform tier it was meant to
+    # guard. The effect was that the same file an operator could upload, nobody
+    # else could put anywhere — while the other two authoring paths (Convert,
+    # Write Runbook) already let any user author at their own scope (#1377).
+    #
+    # The gate belongs on the SCOPE, and this is the same three-line form
+    # `create_runbook_manually` uses, deliberately verbatim so the two cannot
+    # drift: global is the org-free platform tier, readable by every tenant and
+    # retrieved into every tenant's investigations, so authoring it is a
+    # platform-operator action (`global_authoring.py`, #770).
+    if scope == "global":
+        require_global_authoring_allowed()
+        if not current_user.is_platform_admin():
+            raise HTTPException(
+                status_code=403,
+                detail="Global KB runbook upload requires platform admin role",
+            )
+    if scope == "team":
+        if not team_id:
+            raise HTTPException(
+                status_code=400, detail="team_id is required for team scope"
+            )
+        # PARSED, not merely validated, and the distinction is the point: the
+        # value carried onward is one this route CONSTRUCTED from a parsed UUID,
+        # so the caller's string never reaches the scope directory
+        # (`team_{team_id}`) that `KnowledgeService.upload_document` builds.
+        #
+        # Team ids are `str(uuid.uuid4())` in a `String(36)` column, so a
+        # non-UUID can never name a real team — 400 is the honest answer, and it
+        # is a FORMAT error rather than an existence one, so it is not an
+        # enumeration oracle.
+        #
+        # `safe_path_component` already slugs the component and
+        # `resolve_runbook_path` already checks containment; this bounds the
+        # taint at the boundary instead of relying on two sanitisers further
+        # down, which is also what makes the guarantee legible to the
+        # path-injection analysis (#1388 review).
+        try:
+            team_id = str(uuid.UUID(team_id))
+        except (ValueError, AttributeError, TypeError):
+            raise HTTPException(
+                status_code=400,
+                detail="team_id must be a valid team identifier",
+            ) from None
+        # #854, and the reason this is not merely a presence check: a `team_id`
+        # becomes a `resource_shares` row, i.e. content injected into that
+        # team's knowledge scope and retrieved into its investigations. The
+        # caller names it, so it must name a team the caller belongs to — the
+        # same rule `ConversionService._ensure_team_publish_allowed` enforces
+        # on the other two authoring paths, through the same shared predicate.
+        # Without it any authenticated user could publish into any team.
+        team_service = getattr(request.app.state, "team_service", None)
+        if not await is_team_member(team_service, current_user.user_id, team_id):
+            raise HTTPException(
+                status_code=403,
+                detail="You can only publish a runbook to a team you belong to",
+            )
 
     try:
         # Validate file type — runbook upload accepts text formats only
@@ -389,9 +451,18 @@ async def upload_document(
             content=content_str,
             title=title,
             document_type=document_type,
-            # The platform tier, stated (#1166) — gated by the
-            # require_global_authoring_allowed() above.
-            scope="global",
+            # The tier is stated here rather than inherited from a default
+            # (#1166); the gate for it is above.
+            scope=scope,
+            team_id=team_id,
+            # REQUIRED for personal scope, and it was never passed while this
+            # route only wrote global. `owner_id` decides two things: the
+            # on-disk path (`user_<id>/`) and, through
+            # `build_kb_scope_filter`, whether the author can see their own
+            # item at all — the filter admits a non-global row by
+            # `{"owner_id": owner_id}`. Omitted, a personal upload would
+            # succeed and then be invisible to the person who made it.
+            owner_id=current_user.user_id,
             category=category,
             tags=tag_list,
             source_url=source_url,

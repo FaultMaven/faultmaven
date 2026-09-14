@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 3.5.0
+**Version:** 3.6.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -955,8 +955,9 @@ user with no Team has nothing to target.
 
 ``global`` is the platform tier, so it is reported only to a
 ``platform_admin``: every route that publishes at global scope requires
-that role (``POST /knowledge/documents`` unconditionally; the conversion
-routes for ``scope == "global"``). Reporting it to everyone made the
+that role — upload, convert and manual authoring alike, each for
+``scope == "global"`` (#1377 removed upload's route-level operator gate,
+which had made uploading a privilege rather than the tier it guarded). Reporting it to everyone made the
 dashboard offer a target the backend then refused, which is the drift this
 endpoint exists to prevent — its whole point is to reflect the caller's
 real capability rather than a hardcoded assumption.
@@ -3141,6 +3142,11 @@ Args:
     document_type: Type of document
     tags: Comma-separated tags
     source_url: Source URL if applicable
+    scope: Publishing tier — ``personal`` (default), ``team`` or
+        ``global``. ``global`` is the platform corpus every tenant reads
+        and requires the platform-admin role; ``team`` requires a
+        ``team_id`` naming a team you belong to.
+    team_id: Required when ``scope`` is ``team``.
 
 Returns:
     Upload job information
@@ -5252,8 +5258,10 @@ Knowledge-base scopes the calling user may publish to.
 - `description` (object, optional)
 - `document_type` (string, required)
 - `file` (string, required)
+- `scope` (string, optional)
 - `source_url` (object, optional)
 - `tags` (object, optional)
+- `team_id` (object, optional)
 - `title` (string, required)
 
 ---

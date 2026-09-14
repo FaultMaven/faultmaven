@@ -139,12 +139,19 @@ def safe_path_component(value: str | None, *, fallback: str = "unknown") -> str:
     """One directory-name component, guaranteed to be a single safe segment.
 
     For the identifiers interpolated into scope directories
-    (``team_{team_id}`` / ``user_{owner_id}``). Those are auth-context values
-    rather than request bodies, so they are a lower-risk source than a title —
-    but they are still interpolated into a path, and #1213's review showed the
+    (``team_{team_id}`` / ``user_{owner_id}``). #1213's review showed the
     containment check is worthless if the DIRECTORY has already escaped: an
     ``owner_id`` of ``../../../../escaped`` sent the write to ``<cwd>/escaped``
     while every filename-level guard passed.
+
+    ``team_id`` is a REQUEST BODY field, not an auth-context value. This
+    docstring used to call these "auth-context values rather than request
+    bodies, so a lower-risk source than a title", and that stopped being true
+    when ``POST /knowledge/documents`` began accepting a caller-supplied
+    ``team_id`` (#1377) — the same field the conversion routes already take.
+    The sanitisation was always the real protection and is unchanged; what is
+    corrected here is a stated rationale that would otherwise invite someone to
+    relax this guard on the strength of a premise that no longer holds.
     """
     return _slug(value)[:_MAX_SLUG_CHARS] or fallback
 

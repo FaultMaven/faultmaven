@@ -107,7 +107,10 @@ def upload_client():
     service = MagicMock()
     service.upload_document = AsyncMock(return_value={"document_id": "kb_1"})
     app.dependency_overrides[get_knowledge_service] = lambda: service
-    app.dependency_overrides[require_platform_admin] = _admin_user
+    # The route authenticates normally and gates on the SCOPE (#1377); the
+    # admin identity is what makes the `global` cases here about the TENANT
+    # MODE rather than about the role.
+    app.dependency_overrides[require_authentication] = _admin_user
     return TestClient(app), service
 
 
@@ -200,7 +203,46 @@ class TestConversionRoutesSingleTenantAdminGate:
 
 
 class TestUploadRouteUnderMulti:
-    def test_upload_refused_under_multi(self, upload_client):
+    def test_global_upload_refused_under_multi(self, upload_client):
+        """The invariant: NO tenant session authors the platform tier (#770).
+
+        Not even a platform_admin — the role a tenant session carries is an ORG
+        admin, so publishing globally would be a cross-tenant content injection
+        vector. This is asserted with the admin identity precisely so it is
+        about the tenant MODE and not about the role.
+        """
+        client, service = upload_client
+        with _MULTI:
+            resp = client.post(
+                "/knowledge/documents",
+                data={"title": "T", "document_type": "runbook", "scope": "global"},
+                files={"file": ("doc.md", b"# doc", "text/markdown")},
+            )
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == GLOBAL_AUTHORING_FORBIDDEN_MSG
+        service.upload_document.assert_not_awaited()
+
+    def test_personal_upload_is_allowed_under_multi(self, upload_client):
+        """A tenant authoring at their OWN scope is the ordinary case.
+
+        This route used to refuse it, but only as a side effect of being
+        hard-wired to `global` — the gate it carried was the platform-tier one.
+        Convert and Write Runbook have always allowed personal authoring under
+        multi; upload now agrees (#1377). The tier gate above is what #770
+        protects, and it is untouched.
+        """
+        client, service = upload_client
+        with _MULTI:
+            resp = client.post(
+                "/knowledge/documents",
+                data={"title": "T", "document_type": "runbook", "scope": "personal"},
+                files={"file": ("doc.md", b"# doc", "text/markdown")},
+            )
+        assert resp.status_code == 201, resp.text
+        assert service.upload_document.await_args.kwargs["scope"] == "personal"
+
+    def test_omitting_the_scope_does_not_reach_the_platform_tier(self, upload_client):
+        """#1166: the tier every tenant reads is never what silence gets you."""
         client, service = upload_client
         with _MULTI:
             resp = client.post(
@@ -208,9 +250,8 @@ class TestUploadRouteUnderMulti:
                 data={"title": "T", "document_type": "runbook"},
                 files={"file": ("doc.md", b"# doc", "text/markdown")},
             )
-        assert resp.status_code == 403
-        assert resp.json()["detail"] == GLOBAL_AUTHORING_FORBIDDEN_MSG
-        service.upload_document.assert_not_awaited()
+        assert resp.status_code == 201, resp.text
+        assert service.upload_document.await_args.kwargs["scope"] != "global"
 
 
 class TestSuggestionApprovalUnderMulti:
