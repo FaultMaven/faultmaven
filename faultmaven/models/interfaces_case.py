@@ -364,15 +364,28 @@ class ICaseService(ABC):
         pass
 
     @abstractmethod
-    async def link_session_to_case(self, session_id: str, case_id: str) -> bool:
+    async def link_session_to_case(
+        self, session_id: str, case_id: str, user_id: Optional[str]
+    ) -> bool:
         """Link a session to an existing case.
 
         Args:
             session_id: Session identifier
             case_id: Case identifier
+            user_id: The caller, resolved through the same owner ∪ shared gate
+                every other case read uses. REQUIRED — a gate whose
+                enforcement depends on a caller remembering a keyword is the
+                omission this member is being fixed for (#1393/#1398).
+                ``None`` means an internal caller with no user, passed
+                deliberately rather than by forgetting.
 
         Returns:
-            True if linking was successful
+            True if the link was made and persisted
+
+        Raises:
+            NotFoundError: the case does not exist, or the caller cannot reach
+                it. Distinct from returning False, which means the link itself
+                failed — a 404 and a 500 respectively.
         """
         pass
 
@@ -390,15 +403,21 @@ class ICaseService(ABC):
         pass
 
     @abstractmethod
-    async def resume_case_in_session(self, case_id: str, session_id: str) -> bool:
+    async def resume_case_in_session(
+        self, case_id: str, session_id: str, user_id: Optional[str]
+    ) -> bool:
         """Resume an existing case in a new session.
 
         Args:
             case_id: Case identifier
             session_id: Session identifier
+            user_id: The caller, forwarded to ``link_session_to_case``'s gate.
 
         Returns:
-            True if case was resumed successfully
+            True if the case was resumed
+
+        Raises:
+            NotFoundError: the case does not exist or the caller cannot reach it
         """
         pass
 

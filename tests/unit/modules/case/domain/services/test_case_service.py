@@ -12,7 +12,11 @@ from faultmaven.config.tenant_context import (
     get_current_enterprise_id,
     set_current_enterprise_id,
 )
-from faultmaven.exceptions import ServiceException, ValidationException
+from faultmaven.exceptions import (
+    NotFoundError,
+    ServiceException,
+    ValidationException,
+)
 from faultmaven.models.api_models import CaseListFilter, CaseMessage, CaseSearchRequest
 from faultmaven.modules.case.domain.models import Case, CaseState, MessageType
 from faultmaven.modules.case.domain.services import case_service
@@ -729,28 +733,129 @@ class TestLinkSessionToCase:
     async def test_links_successfully(self, service, mock_repo, mock_session_store):
         case = _make_case()
         mock_repo.get.return_value = case
-        result = await service.link_session_to_case("sess_abc", "case_abc123abc123")
+        result = await service.link_session_to_case(
+            "sess_abc", "case_abc123abc123", "user_123"
+        )
         assert result is True
         mock_repo.update_activity_timestamp.assert_awaited()
         mock_session_store.set.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_returns_false_for_missing_case(self, service, mock_repo):
+    async def test_raises_for_a_case_the_caller_cannot_reach(self, service, mock_repo):
+        """Not False (#1398): the caller needs to tell "you may not have this"
+        from "the link failed" — a 404 and a 500. Returning one value for both
+        is what reported a working resume as an absence."""
         mock_repo.get.return_value = None
-        result = await service.link_session_to_case("sess_abc", "case_nonexistent1")
-        assert result is False
+        with pytest.raises(NotFoundError):
+            await service.link_session_to_case(
+                "sess_abc", "case_nonexistent1", "user_123"
+            )
 
     @pytest.mark.asyncio
     async def test_rejects_missing_ids(self, service):
         with pytest.raises(ValidationException):
-            await service.link_session_to_case("", "case_abc123abc123")
+            await service.link_session_to_case("", "case_abc123abc123", "user_123")
         with pytest.raises(ValidationException):
-            await service.link_session_to_case("sess_abc", "")
+            await service.link_session_to_case("sess_abc", "", "user_123")
 
 
 # ============================================================
 # resume_case_in_session (#1390)
 # ============================================================
+
+
+class TestTheLinkGatesTheCase:
+    """The access gate moved out of the handler and into the member (#1398).
+
+    It sat in the route first, which closed the hole for the one route that
+    existed and left it open for every other caller — both members are on
+    ``ICaseService``, reachable by another route, the Slack agent or an
+    ``fm-*`` CLI. Resolving through ``get_case`` also folds the existence check
+    and the access check into one load of the same row.
+    """
+
+    def _service_with_share(self, mock_repo, *, shared_ids):
+        team_service = AsyncMock()
+        team_service.list_all_user_team_ids = AsyncMock(return_value=["team_1"])
+        share_repo = AsyncMock()
+        share_repo.list_resource_ids = AsyncMock(return_value=shared_ids)
+        return CaseService(
+            case_repository=mock_repo,
+            session_store=AsyncMock(),
+            team_service=team_service,
+            share_repository=share_repo,
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_owner_reaches_their_own_case(self, service, mock_repo):
+        mock_repo.get.return_value = _make_case(user_id="user_123")
+        assert await service.link_session_to_case(
+            "sess_abc", "case_abc123abc123", "user_123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_teammate_holding_a_share_reaches_it(self, mock_repo):
+        """Owner ∪ shared, matching ``submit_turn``: a teammate who may post a
+        turn into a shared case must be able to attach a session to it.
+
+        The allowlist is matched against the case the repository RETURNED, not
+        against the id that was asked for — so the fixture returns the case it
+        was asked for, as a repository does.
+        """
+        case = _make_case(user_id="user_owner")
+        mock_repo.get.return_value = case
+        svc = self._service_with_share(mock_repo, shared_ids=[case.case_id])
+
+        assert await svc.link_session_to_case("sess_abc", case.case_id, "user_teammate")
+
+    @pytest.mark.asyncio
+    async def test_a_stranger_is_refused(self, mock_repo):
+        """The hole: this member resolved with a bare ``repository.get`` — no
+        caller, no ownership, no share — so any authenticated user could attach
+        a session to any case the tenant could see (#1393)."""
+        case = _make_case(user_id="user_owner")
+        mock_repo.get.return_value = case
+        svc = self._service_with_share(mock_repo, shared_ids=[])
+
+        with pytest.raises(NotFoundError):
+            await svc.link_session_to_case("sess_abc", case.case_id, "user_stranger")
+
+
+class TestAnOutageIsNotAnAbsence:
+    """A repository failure must not answer 404 (#1408 review).
+
+    The gate cannot resolve through ``get_case``: that wraps everything in
+    ``except Exception: return None``, so a DB blip is indistinguishable from
+    "no such case" and the route would tell the caller a case that exists and
+    is reachable is gone — the half-success-as-absence shape #1390 was about.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_outage_reports_failure_rather_than_absence(
+        self, service, mock_repo
+    ):
+        mock_repo.get.side_effect = RuntimeError("connection pool exhausted")
+
+        # Falsy, which the route answers as 500 — NOT NotFoundError, which it
+        # answers as 404 "Case not found" for a case that is perfectly fine.
+        result = await service.link_session_to_case(
+            "sess_abc", "case_abc123abc123", "user_123"
+        )
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_is_still_an_absence(self, mock_repo):
+        """The control: the same member still raises when the answer really is
+        "you may not have this", so the test above is not passing because the
+        gate stopped working."""
+        mock_repo.get.return_value = _make_case(user_id="user_owner")
+        svc = CaseService(case_repository=mock_repo, session_store=AsyncMock())
+
+        with pytest.raises(NotFoundError):
+            await svc.link_session_to_case(
+                "sess_abc", "case_abc123abc123", "user_stranger"
+            )
 
 
 class TestLinkReportsTheWriteItMade:
@@ -772,7 +877,9 @@ class TestLinkReportsTheWriteItMade:
         mock_repo.get.return_value = _make_case()
         mock_session_store.set.side_effect = RuntimeError("redis down")
 
-        assert not await service.link_session_to_case("sess_abc", "case_abc123abc123")
+        assert not await service.link_session_to_case(
+            "sess_abc", "case_abc123abc123", "user_123"
+        )
 
     @pytest.mark.asyncio
     async def test_no_session_store_is_a_failure(self, mock_repo):
@@ -781,7 +888,9 @@ class TestLinkReportsTheWriteItMade:
             case_repository=mock_repo, session_store=None, max_cases_per_user=50
         )
 
-        assert not await service.link_session_to_case("sess_abc", "case_abc123abc123")
+        assert not await service.link_session_to_case(
+            "sess_abc", "case_abc123abc123", "user_123"
+        )
 
 
 class TestResumeCaseInSession:
@@ -798,7 +907,9 @@ class TestResumeCaseInSession:
     @pytest.mark.asyncio
     async def test_reports_success_when_the_link_succeeds(self, service):
         service.link_session_to_case = AsyncMock(return_value=True)
-        assert await service.resume_case_in_session("case_abc123abc123", "sess_abc")
+        assert await service.resume_case_in_session(
+            "case_abc123abc123", "sess_abc", "user_123"
+        )
         # Asserted with the arguments, not just awaited: the two methods take
         # the SAME two strings in OPPOSITE order —
         # `resume_case_in_session(case_id, session_id)` calls
@@ -807,13 +918,15 @@ class TestResumeCaseInSession:
         # swapped call would leave every test here green while the pointer
         # became `session:{case_id}:current_case_id`.
         service.link_session_to_case.assert_awaited_once_with(
-            "sess_abc", "case_abc123abc123"
+            "sess_abc", "case_abc123abc123", "user_123"
         )
 
     @pytest.mark.asyncio
     async def test_reports_failure_when_the_link_fails(self, service):
         service.link_session_to_case = AsyncMock(return_value=False)
-        assert not await service.resume_case_in_session("case_abc123abc123", "sess_abc")
+        assert not await service.resume_case_in_session(
+            "case_abc123abc123", "sess_abc", "user_123"
+        )
 
     @pytest.mark.asyncio
     async def test_writes_no_conversation_row(self, service):
@@ -825,16 +938,18 @@ class TestResumeCaseInSession:
         service.link_session_to_case = AsyncMock(return_value=True)
         service.add_message_to_case = AsyncMock(return_value=True)
 
-        await service.resume_case_in_session("case_abc123abc123", "sess_abc")
+        await service.resume_case_in_session(
+            "case_abc123abc123", "sess_abc", "user_123"
+        )
 
         service.add_message_to_case.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_rejects_missing_ids(self, service):
         with pytest.raises(ValidationException):
-            await service.resume_case_in_session("", "sess_abc")
+            await service.resume_case_in_session("", "sess_abc", "user_123")
         with pytest.raises(ValidationException):
-            await service.resume_case_in_session("case_abc123abc123", "")
+            await service.resume_case_in_session("case_abc123abc123", "", "user_123")
 
 
 class TestCaseMessageIsReadByRole:
