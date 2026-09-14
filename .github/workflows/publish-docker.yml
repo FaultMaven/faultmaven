@@ -18,6 +18,13 @@ env:
   REGISTRY_GHCR: ghcr.io
   IMAGE_NAME: faultmaven
 
+# Default-deny for the GITHUB_TOKEN. The publish job overrides this with the
+# `packages: write` it needs to push to GHCR; this file is the only one whose
+# token can push an image, so a job added here must ask for that explicitly
+# rather than inherit whatever the repository setting happens to be.
+permissions:
+  contents: read
+
 jobs:
   publish:
     runs-on: ubuntu-latest

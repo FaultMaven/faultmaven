@@ -16,6 +16,11 @@ on:
   push:
     branches: [main]
 
+# Default-deny for the GITHUB_TOKEN -- the lint reads the checkout and
+# nothing else.
+permissions:
+  contents: read
+
 jobs:
   brand-lint:
     runs-on: ubuntu-latest
