@@ -260,12 +260,34 @@ def test_capabilities_team_flags_gate_on_team_service():
 #: rate-limit, below) is compared — content type, `vary`, `content-encoding`,
 #: and any cache header either path might grow — so a middleware that keys on
 #: the path and treats the two differently fails here rather than in a client.
+#:
+#: ‼ Every name here must be one something actually WRITES. `x-process-time`
+#: was listed and is emitted nowhere in `faultmaven/`; the header the
+#: performance middleware really writes is `x-response-time`
+#: (`api/middleware/performance.py`). So the filter excluded a header that does
+#: not exist and compared two wall-clock measurements for equality, and this
+#: test failed 6 runs out of 6 on a clean checkout. CI stayed green because
+#: that middleware is conditional and absent under its preset -- which is what
+#: made this a local-developer failure that a green pipeline was not evidence
+#: against. `test_every_per_request_header_is_one_something_emits` now pins the
+#: rule so a renamed header cannot quietly empty the filter again.
 _PER_REQUEST_HEADERS = frozenset(
     {
         "date",
         "x-correlation-id",
-        "x-process-time",
         "x-request-id",
+        # Wall-clock, different on every request by construction. BOTH are
+        # emitted on this route: `x-response-time` by the performance
+        # middleware (2-decimal ms, so it differs almost every time -- this is
+        # what failed) and `x-processing-time` by the request-id middleware
+        # (3-decimal seconds, so it usually collides and was a latent flake
+        # rather than a constant one). `x-process-time`, the name that was
+        # listed, is a near-miss of the second and excluded nothing.
+        "x-response-time",
+        "x-processing-time",
+        # Written only when THAT request crossed the latency threshold, so it
+        # can appear on one of the two calls and not the other.
+        "x-performance-warning",
     }
 )
 
@@ -299,6 +321,38 @@ def _assert_rate_limit_agrees(alias, canonical) -> None:
                 f"the two paths were rate limited under different {header} "
                 f"values — the limiter is keying on the path"
             )
+
+
+def test_every_per_request_header_is_one_something_emits():
+    """A name in the filter that nothing writes excludes nothing.
+
+    That is not hypothetical: `x-process-time` sat in this set while the
+    middleware wrote `x-processing-time`, so the filter silently compared two
+    wall-clock values for equality and this module failed 6 runs out of 6 on a
+    clean checkout. A green CI pipeline was not evidence against it -- the
+    middleware is conditional and absent under that preset -- so the rule needs
+    to be checked here rather than inferred from the suite passing.
+
+    `date` is the one exception: Starlette writes it, not us.
+    """
+    import re
+
+    written = {
+        name.lower()
+        for source in (Path(__file__).resolve().parents[2] / "faultmaven").rglob("*.py")
+        for name in re.findall(
+            r"""headers\[["']([A-Za-z][A-Za-z0-9-]*)["']\]\s*=""",
+            source.read_text(encoding="utf-8"),
+        )
+    }
+    written.add("date")  # emitted by the ASGI server, not by this codebase
+
+    unknown = sorted(_PER_REQUEST_HEADERS - written)
+
+    assert unknown == [], (
+        "headers excluded from the comparison that nothing in faultmaven/ "
+        f"writes -- the exclusion is doing nothing: {unknown}"
+    )
 
 
 def test_capabilities_is_the_same_response_under_both_paths():
