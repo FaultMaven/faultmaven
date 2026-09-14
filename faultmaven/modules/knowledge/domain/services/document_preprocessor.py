@@ -424,7 +424,7 @@ def _runbook_frontmatter_fields(text: str) -> frozenset:
     """
     text = text.lstrip(_LEADING_NOISE)
 
-    match = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
+    match = re.match(r"^---[ \t]*\n(.*?)\n---[ \t]*\n", text, re.DOTALL)
     if not match:
         return frozenset()
 

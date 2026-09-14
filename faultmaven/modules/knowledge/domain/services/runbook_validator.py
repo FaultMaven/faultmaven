@@ -522,7 +522,7 @@ class RunbookValidator:
         )
 
     def _extract_metadata(self, content: str) -> Optional[Dict[str, Any]]:
-        match = re.match(r"^---\s*\n(.*?)\n---\s*\n", content, re.DOTALL)
+        match = re.match(r"^---[ \t]*\n(.*?)\n---[ \t]*\n", content, re.DOTALL)
         if not match:
             return None
         try:
@@ -1121,7 +1121,9 @@ class RunbookValidator:
         return not any(p in body_lower for p in non_command_phrases)
 
     def _validate_quality(self, content: str, warnings: List[str]) -> None:
-        content_body = re.sub(r"^---\s*\n.*?\n---\s*\n", "", content, flags=re.DOTALL)
+        content_body = re.sub(
+            r"^---[ \t]*\n.*?\n---[ \t]*\n", "", content, flags=re.DOTALL
+        )
 
         if len(content_body) < MIN_CONTENT_LENGTH:
             warnings.append(
@@ -1362,7 +1364,15 @@ class QualityScorer:
         if has_fix:
             score += 5
 
-        command_explanations = re.findall(r"```.*?```\s*\n\s*[A-Z]", content, re.DOTALL)
+        # Tempered `[^`]*` rather than `.*?` under DOTALL: the lazy form rescans
+        # forward across every other fence in the document, which is quadratic
+        # in the number of fences — 18 KB of ````` ``` ```` repeats took 5.4s of
+        # event-loop-blocking CPU, and this validator runs on CALLER-SUPPLIED
+        # runbook content up to MAX_UPLOAD_SIZE_MB (py/polynomial-redos).
+        # A fence body containing a bare triple-backtick is malformed anyway.
+        # Counts differ on 8 of the 91 shipped runbooks and the SCORE differs on
+        # none: the only consumer is the `>= 3` threshold below.
+        command_explanations = re.findall(r"```[^`]*```[ \t]*\n\s*[A-Z]", content)
         if len(command_explanations) >= 3:
             score += 10
 
@@ -1424,7 +1434,7 @@ class QualityScorer:
             return "F"
 
     def _extract_metadata(self, content: str) -> Dict:
-        match = re.match(r"^---\s*\n(.*?)\n---\s*\n", content, re.DOTALL)
+        match = re.match(r"^---[ \t]*\n(.*?)\n---[ \t]*\n", content, re.DOTALL)
         if match:
             try:
                 return yaml.safe_load(match.group(1)) or {}
