@@ -18,17 +18,27 @@ copies (#1404). Normalising at the boundary is one decision instead of N, and it
 leaves ``runbook_grammar`` — a manual mirror of the kb-toolkit grammar, locked by
 a frozen-literal test and an upstream cross-repo CI job — untouched.
 
-WHY ``\\r\\n?`` AND NOT ``replace("\\r\\n", "\\n")``. Three reasons, and the first
-is decisive: it is what the rest of the codebase already does. Every disk read
-here goes through ``Path.read_text``, which is universal-newlines
-(``newline=None``) and translates CR, CRLF and lone CR alike — that is why the
-conversion pipeline was never affected by #1403 while the upload path was.
-Second, CommonMark 2.1 defines a line ending as "a newline, a carriage return
-not followed by a newline, or a carriage return and a following newline" —
-exactly this. Third, the narrow form is NOT idempotent:
-``"\\r\\r\\n".replace("\\r\\n", "\\n")`` is ``"\\r\\n"``, which still holds a CRLF.
-A lone ``\\r`` is a line ending under all three authorities, so treating it as
-data would be the divergence, not the safety.
+WHY A LONE ``\\r`` IS IN SCOPE, and not only CRLF. Two reasons, and the first is
+decisive: it is what the rest of the codebase already does. Every disk read here
+goes through ``Path.read_text``, which is universal-newlines (``newline=None``)
+and translates CR, CRLF and lone CR alike — that is why the conversion pipeline
+was never affected by #1403 while the upload path was. Second, CommonMark 2.1
+defines a line ending as "a newline, a carriage return not followed by a
+newline, or a carriage return and a following newline" — the same set. A single
+``replace("\\r\\n", "\\n")`` covers neither, and is not even idempotent:
+``"\\r\\r\\n"`` becomes ``"\\r\\n"``, which still holds a CRLF. See
+``normalize_line_endings`` for the two-pass form that does, and why it is
+preferred over the equivalent regex.
+
+The cost of treating it as a line ending is real and accepted: a lone ``\\r``
+that is DATA rather than a terminator — a raw HTTP request quoted in a fenced
+block (RFC 9112 2.2), a ``printf 'progress\\r'`` example — is rewritten along
+with the rest. Excluding fenced spans was considered and refused: the chunker
+and every ``^...$`` matcher treat a fence's line ends as line ends too, so a
+document normalised everywhere EXCEPT inside fences would be one where the gate
+and the chunker disagree again, which is the failure this exists to remove. An
+author who needs a literal CR in an example should write the two-character
+escape ``\\r``, which is untouched.
 
 ``decode_text`` exists because the translation is FREE when fused into the
 decode and expensive when bolted on afterwards. Measured on a 10 MB body:
@@ -41,14 +51,7 @@ IS a ``str`` (a JSON body field), which has no decode to fuse with.
 """
 
 import io
-import re
 from typing import Optional
-
-# Matched explicitly rather than left to ``\s``: ``\s`` also matches ``\n``, and
-# a pattern that can consume the very character it is looking for is the shape
-# that made the frontmatter grammar quadratic (#1395). See the module docstring
-# for why a lone ``\r`` is in scope.
-_LINE_ENDING_RE = re.compile(r"\r\n?")
 
 
 def normalize_line_endings(text: str) -> str:
@@ -57,17 +60,41 @@ def normalize_line_endings(text: str) -> str:
     Idempotent, and the identity on text that is already LF — verified against
     all 91 shipped runbooks.
 
-    The ``"\\r" not in text`` gate is load-bearing, not a micro-optimisation.
+    TWO ``str.replace`` PASSES, NOT A REGEX. ``re.sub(r"\\r\\n?", "\\n", text)``
+    is the obvious spelling and is byte-equivalent (checked over 20 000 random
+    strings drawn from ``{a, b, \\r, \\n, \\r\\n, \\r\\r\\n, \\n\\r}``), but it is
+    an order of magnitude slower on the shapes that matter: 10 MB of ``\\r``
+    costs 2012 ms against 55 ms, and 9.5 MB of CRLF 1130 ms against 121 ms.
+    That is real, because several of these call sites run SYNCHRONOUSLY on the
+    event loop over caller-sized bodies, next to a gate that was deliberately
+    moved to a thread for 31.5 ms of CPU.
+
+    The order is load-bearing and the pair is not the same as the single
+    ``replace("\\r\\n", "\\n")`` the module docstring rejects: CRLF is collapsed
+    first, so the second pass sees only the ``\\r`` that were never part of a
+    pair. After both, no ``\\r`` remains anywhere, which is what makes it
+    idempotent where the single form is not.
+
+    The ``"\\r" not in text`` gate is load-bearing too, not a micro-optimisation.
     It is what makes LAYERING affordable: this is applied at several boundaries
     so that no single forgotten call site can reintroduce #1403, and every layer
     downstream of the one that actually converted sees LF and pays only a
-    ``memchr`` (0.68 ms on 10 MB) instead of a full scan. The expensive
-    conversion happens once, at whichever boundary meets the CRLF first. Same
-    fast-path reasoning as ``runbook_grammar.comment_spans``.
+    ``memchr`` instead of two passes. The expensive conversion happens once, at
+    whichever boundary meets the CRLF first. Same fast-path reasoning as
+    ``runbook_grammar.comment_spans``.
+
+    A non-``str`` is returned UNCHANGED rather than raising. One caller reaches
+    here from an untyped ``dict`` request body (``PUT /knowledge/documents/{id}``
+    passes ``update_data`` straight through), where ``content`` may be any JSON
+    scalar; ``RedactionService.sanitize`` downstream accepts ``int``/``float``/
+    ``bool`` and stringifies the rest, so raising here would turn a value it used
+    to handle into a 500. Without the guard the failure is also asymmetric in a
+    way that hides it — ``"\\r" not in {...}`` is a KEY test, so ``dict`` and
+    ``list`` bodies pass silently while ``int`` raises.
     """
-    if "\r" not in text:
+    if not isinstance(text, str) or "\r" not in text:
         return text
-    return _LINE_ENDING_RE.sub("\n", text)
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def decode_text(

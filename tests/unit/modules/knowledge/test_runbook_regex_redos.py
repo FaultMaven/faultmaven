@@ -513,39 +513,27 @@ def test_crlf_content_is_scored_and_validated_like_its_lf_twin():
     into a different grade. The shipped corpus is LF-only, so a corpus
     comparison cannot see this — it needs its own fixture.
     """
-    from faultmaven.modules.knowledge.domain.services.runbook_validator import (
-        RunbookValidator,
-    )
     from faultmaven.utils.frontmatter import match_frontmatter, parse_frontmatter
 
     lf = _runbook_corpus()[0].read_text(encoding="utf-8")
     crlf = lf.replace("\n", "\r\n")
 
+    # Driven at `match_frontmatter`/`parse_frontmatter` ONLY, and that is now the
+    # whole point of this test. It used to also assert on
+    # `validate_content(crlf).errors` -- that "No YAML frontmatter found" was
+    # absent and no `Missing required metadata field` fired. Those three
+    # assertions went VACUOUS when #1403 made `validate_content` normalise line
+    # endings at its first line: they cannot fail for a line-ending reason any
+    # more, whatever `utils.frontmatter` does, so keeping them here would read as
+    # coverage while guarding nothing. Mutation-checked -- narrowing `_DELIMITER`
+    # back to `---[ \t]*\n` fails only the two calls below.
+    #
+    # Whole-document CRLF/LF equality, including the validator and the scorer, is
+    # asserted across the corpus in `test_crlf_line_endings_1403.py`. This stays
+    # as the frontmatter-grammar half: the one that fails if `\r?\n` is narrowed
+    # again.
     assert match_frontmatter(crlf) is not None, "CRLF frontmatter stopped parsing"
     assert parse_frontmatter(crlf) == parse_frontmatter(lf)
-
-    validator = RunbookValidator()
-    crlf_errors = list(validator.validate_content(crlf).errors or [])
-    assert "No YAML frontmatter found" not in crlf_errors, (
-        "frontmatter stopped parsing on CRLF, so every REQUIRED_METADATA check "
-        f"fires on content that carries the metadata: {crlf_errors}"
-    )
-    assert not any(e.startswith("Missing required metadata field") for e in crlf_errors)
-
-    # The scorer reads the same block, and its result is persisted to
-    # `conversion_drafts.quality_score` and drives the warning threshold.
-    scorer = _scorer()
-    assert scorer._extract_metadata(crlf) == scorer._extract_metadata(lf)
-
-    # The gap this used to disclaim is CLOSED (#1403). CRLF section matching was
-    # a separate, pre-existing defect -- `_validate_structure` was `\n`-specific
-    # on main too, so a CRLF runbook reported missing sections with or without
-    # the frontmatter change -- and this guard deliberately pinned only the
-    # regression #1395 caused. Whole-document CRLF/LF equality is now asserted
-    # across the corpus in `test_crlf_line_endings_1403.py`, which also covers
-    # the scorer, the upload route, the parser and every service write path.
-    # This test stays as the frontmatter-specific half: it is the one that fails
-    # if `utils.frontmatter`'s `\r?\n` is narrowed again.
 
 
 # --------------------------------------------------------------------------

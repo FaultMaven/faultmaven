@@ -32,6 +32,7 @@ import re
 from pathlib import Path
 from uuid import uuid4
 
+from faultmaven.utils.line_endings import normalize_line_endings
 from faultmaven.utils.path_containment import PathEscape, resolve_within_root
 
 # A bootstrap-published (platform built-in) runbook has a deterministic
@@ -522,5 +523,20 @@ def write_runbook_file(
     """
     resolved = resolve_runbook_path(path, source=source, root=root)
     resolved.parent.mkdir(parents=True, exist_ok=True)
-    resolved.write_text(content, encoding=encoding)
+    # LF on disk, decided HERE because this is "the one helper every runbook
+    # write goes through" (#1403). Normalising at each calling service was the
+    # first shape of the fix and it missed one — the LLM conversion draft at
+    # ``_convert_single_failure_mode`` wrote model output verbatim while the
+    # validate/score calls on the next line judged the normalised twin. An
+    # enumeration of write sites is only ever as good as the enumeration; this
+    # is the choke point, so it cannot be partial.
+    #
+    # ``newline="\n"`` is the other half and is not redundant with it: text mode
+    # defaults to ``newline=None``, which translates every ``\n`` BACK to
+    # ``os.linesep`` on write. On a non-LF host that silently undoes the
+    # normalisation at the last step and leaves ``size_bytes=len(content.encode())``
+    # under-reporting the file by one byte per line.
+    resolved.write_text(
+        normalize_line_endings(content), encoding=encoding, newline="\n"
+    )
     return resolved

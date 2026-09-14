@@ -118,9 +118,14 @@ def test_normalize_is_the_identity_on_the_shipped_corpus():
     the whole-corpus half of the 'LF behaviour unchanged' bar."""
     for path in _runbook_corpus():
         text = path.read_text(encoding="utf-8")
-        assert (
-            normalize_line_endings(text) is text or normalize_line_endings(text) == text
-        )
+        # `is`, not `==`: the disjunction this replaces (`X is text or
+        # X == text`) reduced to the equality arm and asserted nothing about
+        # identity. Note what this does and does NOT pin -- identity survives
+        # even without the `"\r" not in text` fast path, because CPython's
+        # `str.replace` returns the original object when nothing matches. So
+        # this guards "LF text is never rebuilt", not the fast path itself,
+        # which is a performance property and is left to the benchmark file.
+        assert normalize_line_endings(text) is text, path.name
 
 
 def test_decode_text_agrees_with_decode_then_normalize():
@@ -302,7 +307,17 @@ def test_the_parser_strips_a_cr_smuggled_through_an_html_entity(tmp_path):
 # call mocked, so a revert of layer 3 is not covered for by layers 1 or 4.
 # --------------------------------------------------------------------------
 
-_DEFAULT_ENTERPRISE_ID = "00000000-0000-0000-0000-000000000002"
+#: The standalone tenant the services resolve to via
+#: `writable_enterprise_id(None)`. Read from the constant both sides use --
+#: a hand-copied literal would drift into a foreign-key failure that says
+#: nothing about line endings.
+_DEFAULT_ENTERPRISE_ID = STANDALONE_ENTERPRISE_ID
+
+#: A distinct id for the BILLING row. The fixture this was adapted from used
+#: the enterprise constant as an organization primary key; nothing here needs
+#: them equal, and separate ids keep the two tiers legible (ADR-017: the
+#: enterprise isolates, the organization bills).
+_STANDALONE_ORG_ID = "00000000-0000-0000-0000-0000000000b1"
 
 
 @pytest.fixture(scope="function")
@@ -327,7 +342,7 @@ async def _session_factory(_engine):
         )
         session.add(
             OrganizationModel(
-                organization_id=STANDALONE_ENTERPRISE_ID,
+                organization_id=_STANDALONE_ORG_ID,
                 enterprise_id=_DEFAULT_ENTERPRISE_ID,
                 name="Default Org",
                 slug="default-org",
@@ -557,8 +572,13 @@ async def test_create_runbook_from_template_writes_lf(
     )
     service._ensure_team_publish_allowed = AsyncMock()
 
-    await service.create_runbook_from_template(
-        title="Redis Runs Out Of Memory",
+    result = await service.create_runbook_from_template(
+        # CR in `title` deliberately: it is one of the SEVEN fields the first
+        # shape of this fix did not normalise (with domain, service_name,
+        # symptom_class, severity, tags, difficulty), and it reaches BOTH the
+        # frontmatter and the H1. A payload using only the five named free-text
+        # fields re-certifies the partial fix.
+        title="Redis Runs Out\r\nOf Memory",
         domain="database",
         service_name="redis",
         symptom_class=["resource_exhaustion"],
@@ -585,3 +605,124 @@ async def test_create_runbook_from_template_writes_lf(
     on_disk = written[0].read_bytes().decode("utf-8")
     assert CR not in on_disk, repr(on_disk[:300])
     assert "### Cause A: maxmemory reached\n" in on_disk
+    assert "Redis Runs Out\nOf Memory" in on_disk
+
+    # The RETURNED draft, not just the file. `write_runbook_file` normalises as
+    # a backstop, so the on-disk assertion above can no longer tell whether this
+    # method normalised -- but `content`, `content_preview` and `size_bytes` are
+    # built from the in-memory string and handed straight back to the client, so
+    # they can. Without this the service-level call is unguarded, which a
+    # mutation run showed.
+    draft = result["draft"]
+    assert CR not in draft.content, repr(draft.content[:300])
+    assert CR not in draft.content_preview, repr(draft.content_preview)
+
+
+# --------------------------------------------------------------------------
+# Found in review of this PR
+# --------------------------------------------------------------------------
+
+
+def test_a_bom_does_not_hide_the_frontmatter():
+    """ "UTF-8 with BOM" is the default save of several Windows editors, so the
+    real Windows artefact is BOM **and** CRLF — and fixing only the CRLF half
+    left that file refused.
+
+    A separate, PRE-EXISTING defect with a different mechanism: the frontmatter
+    pattern is ``re.match``-anchored at offset 0, and both readers that produce
+    text here preserve the BOM (only ``utf-8-sig`` strips one). Measured before
+    the fix: ``passed=False``, ``['No YAML frontmatter found']``, score 94.0 ->
+    80.5, a 422 from ``POST /knowledge/documents`` on a runbook carrying every
+    section. BOM+LF failed identically, which is what shows it is not a
+    line-ending bug.
+
+    Mutation: drop ``{_BOM}`` from ``FRONTMATTER_RE``.
+    """
+    lf = _runbook_corpus()[0].read_text(encoding="utf-8")
+    validator, scorer = RunbookValidator(), QualityScorer()
+
+    for label, raw in (
+        ("BOM+LF", ("﻿" + lf).encode("utf-8")),
+        ("BOM+CRLF", ("﻿" + _crlf(lf)).encode("utf-8")),
+    ):
+        text = decode_text(raw)
+        assert text[0] == "﻿", f"{label}: the BOM must be PRESERVED, not stripped"
+        assert validator.validate_content(text).passed, label
+        assert scorer.score_content(text).overall == scorer.score_content(lf).overall
+
+
+def test_write_runbook_file_writes_lf_bytes(tmp_path):
+    """Enumerating the writing services missed one — the LLM conversion draft at
+    ``_convert_single_failure_mode`` wrote model output verbatim while the
+    validate/score calls on the next line judged the normalised twin. An
+    enumeration is only ever as good as the enumeration, so the guarantee lives
+    at the choke point every runbook write already goes through.
+
+    Asserted on the RAW BYTES, not the decoded text. Text mode defaults to
+    ``newline=None``, which translates ``\n`` back to ``os.linesep`` on write,
+    and ``read_text`` would translate it straight back and hide that — so on a
+    non-LF host the whole fix is undone at the last step and a decoded
+    assertion still passes.
+
+    Mutation: the normalisation half of the write line. The ``newline="\n"``
+    half is NOT observable on an LF host -- ``os.linesep`` is already ``"\n"``
+    and cannot be faked for ``write_text`` -- so it is asserted by construction
+    rather than by this test, and a mutation of it correctly kills nothing here.
+    """
+    from faultmaven.utils.runbook_id import write_runbook_file
+
+    root = tmp_path / "data" / "knowledge"
+    root.mkdir(parents=True)
+    written = write_runbook_file(
+        root / "global" / "rb.md",
+        "## Causes\r\n### Cause A: x\r\nbody\rmore\n",
+        source="test",
+        root=root,
+    )
+
+    raw = written.read_bytes()
+    assert b"\r" not in raw, repr(raw)
+    assert raw == b"## Causes\n### Cause A: x\nbody\nmore\n"
+
+
+def test_normalize_leaves_a_non_string_alone():
+    """``PUT /knowledge/documents/{id}`` declares an untyped ``dict`` body, so
+    ``content`` may be any JSON value. ``RedactionService.sanitize`` accepts
+    ``int``/``float``/``bool`` and stringifies the rest, so raising here would
+    turn a value the endpoint used to handle into a 500.
+
+    The asymmetry is why it needs a test rather than a convention: ``"\\r" not
+    in {...}`` is a KEY test, so a dict or list passed silently while an int
+    raised ``TypeError``.
+
+    Mutation: drop the ``isinstance`` half of the guard.
+    """
+    for value in (5, True, 3.5, None, {"a": 1}, ["x"], b"\r\n"):
+        assert normalize_line_endings(value) is value
+
+
+def test_the_two_pass_replace_agrees_with_the_regex_it_replaced():
+    """The helper uses two ``str.replace`` passes rather than
+    ``re.sub(r"\\r\\n?", ...)`` because the regex costs 2012 ms against 55 ms on
+    10 MB of ``\\r``, and several call sites run on the event loop. Equivalence
+    is the thing that makes that swap safe, so it is asserted rather than
+    assumed — over the shapes that distinguish the two, including the
+    ``\\r\\r\\n`` case that breaks the SINGLE-pass form.
+    """
+    import re
+
+    reference = re.compile(r"\r\n?")
+    for sample in (
+        "a\r\nb",
+        "a\rb",
+        "a\r\r\nb",
+        "a\n\rb",
+        "\r",
+        "\r\n\r\n",
+        "\r\r\r",
+        "no carriage returns here",
+        "",
+    ):
+        assert normalize_line_endings(sample) == reference.sub("\n", sample), repr(
+            sample
+        )

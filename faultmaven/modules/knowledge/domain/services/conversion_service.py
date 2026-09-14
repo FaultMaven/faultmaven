@@ -2695,17 +2695,6 @@ class ConversionService:
         """
         await self._ensure_team_publish_allowed(scope, team_id, user_id)
 
-        # The five free-text fields are JSON body values interpolated into the
-        # markdown template below, so a CRLF client mixes its own line endings
-        # into a template that supplies LF ones (#1403). ``causes`` is the one
-        # that decides the outcome: it must carry ``### Cause N:`` headings and
-        # ``**Statement:**`` sub-fields, all of which are matched line-anchored.
-        symptom_recognition = normalize_line_endings(symptom_recognition)
-        applicability = normalize_line_endings(applicability)
-        diagnostic_steps = normalize_line_endings(diagnostic_steps)
-        causes = normalize_line_endings(causes)
-        prevention = normalize_line_endings(prevention)
-
         today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         # Generate kebab-case ID. Shared mint point with the LLM conversion
@@ -2752,6 +2741,19 @@ status: draft
 ## Sources
 - Manually authored runbook
 """
+
+        # Normalised on the COMPOSED document, not per field (#1403). This
+        # method has no document to receive — it has fifteen JSON body values
+        # interpolated into an LF template, so a CRLF client produces a document
+        # with mixed endings. Normalising the named free-text fields was the
+        # first shape of this fix and it was wrong: it covered five of the
+        # fifteen and left ``title``, ``domain``, ``service_name``,
+        # ``symptom_class``, ``severity``, ``tags`` and ``difficulty`` carrying
+        # CR into the frontmatter and the H1, while the validate/score calls
+        # below judged the normalised twin — re-creating the verdict-vs-storage
+        # split this whole change exists to remove. One call on ``content``
+        # cannot be partial, and is less code than five that can.
+        content = normalize_line_endings(content)
 
         # Write to disk through the shared containment-checked helper — same
         # anchor, same before-mkdir ordering as every other runbook write.
