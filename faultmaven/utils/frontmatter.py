@@ -7,7 +7,9 @@ enrich chunk metadata for hybrid search, reranking, and staleness-aware synthesi
 
 import logging
 import re
-from typing import Dict, List
+from typing import Dict, List, Optional
+
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +19,64 @@ _SCALAR_FIELDS = ("domain", "service", "last_updated", "status", "severity")
 # List fields: joined to comma-separated string for ChromaDB metadata
 _LIST_FIELDS = ("symptom_class",)
 
-# Compiled pattern for frontmatter block
-_FRONTMATTER_PATTERN = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+# The ONE frontmatter grammar. Nine copies of this regex used to live across
+# the knowledge services, and they drifted: #1395 fixed four of them and left
+# five, so a document's YAML was stripped by the chunker but counted as body by
+# the validator. Every site imports from here now.
+#
+# Two properties the spelling is load-bearing for:
+#
+# * `[ \t]*` not `\s*` before the line ending. `\s` matches `\n`, so `\s*\n`
+#   admits many ways to split the same text and the lazy `(.*?)` between the
+#   delimiters rescans every one of them — quadratic in document size, on
+#   CALLER-SUPPLIED content up to MAX_UPLOAD_SIZE_MB (py/polynomial-redos).
+# * `\r?\n` not `\n`. `\s` used to match the `\r` of a CRLF line ending by
+#   accident; narrowing to `[ \t]*` alone silently dropped CRLF support, so a
+#   Windows-authored runbook's frontmatter stopped parsing entirely and every
+#   REQUIRED_METADATA check fired on content that had the metadata. The line
+#   ending is matched explicitly instead of being left to `\s`.
+#
+# Trailing blank lines after a delimiter are NOT part of the block (the old
+# `\s*\n` ate them). That ambiguity is exactly what made it quadratic, and YAML
+# tolerates the leading newline landing in the body instead.
+_DELIMITER = r"---[ \t]*\r?\n"
+FRONTMATTER_RE = re.compile(rf"^{_DELIMITER}(.*?)\r?\n{_DELIMITER}", re.DOTALL)
+
+# Backwards-compatible alias for the private name this module used to export.
+_FRONTMATTER_PATTERN = FRONTMATTER_RE
+
+
+def match_frontmatter(content: str) -> Optional[re.Match]:
+    """The frontmatter block at the start of ``content``, or ``None``.
+
+    Group 1 is the raw YAML body, without either delimiter line.
+    """
+    return FRONTMATTER_RE.match(content)
+
+
+def strip_frontmatter(content: str) -> str:
+    """``content`` with a leading frontmatter block removed, if it has one.
+
+    Anchored at position 0, so a `---` rule further down the document is left
+    alone — a horizontal rule is body content, not a second frontmatter block.
+    """
+    return FRONTMATTER_RE.sub("", content, count=1)
+
+
+def parse_frontmatter(content: str) -> Dict[str, object]:
+    """The frontmatter parsed as YAML, or ``{}`` if absent or unparseable.
+
+    Callers that need to tell "no frontmatter" from "empty frontmatter" should
+    use :func:`match_frontmatter` instead — this collapses both to ``{}``.
+    """
+    match = match_frontmatter(content)
+    if not match:
+        return {}
+    try:
+        return yaml.safe_load(match.group(1)) or {}
+    except Exception as e:  # yaml raises a family, not one class
+        logger.warning(f"Failed to parse frontmatter YAML: {e}")
+        return {}
 
 
 def extract_frontmatter_metadata(content: str) -> Dict[str, str]:
@@ -35,13 +93,11 @@ def extract_frontmatter_metadata(content: str) -> Dict[str, str]:
         Dict with string values for any RAG fields found. Empty dict if
         no frontmatter or parsing fails.
     """
-    fm_match = _FRONTMATTER_PATTERN.match(content)
+    fm_match = match_frontmatter(content)
     if not fm_match:
         return {}
 
     try:
-        import yaml
-
         fm = yaml.safe_load(fm_match.group(1)) or {}
     except Exception as e:
         logger.warning(f"Failed to parse frontmatter YAML: {e}")

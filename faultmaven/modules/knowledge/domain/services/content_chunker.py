@@ -10,6 +10,8 @@ This is a pure domain component with no infrastructure dependencies.
 import re
 from typing import List
 
+from faultmaven.utils.frontmatter import strip_frontmatter
+
 # The structural split boundary: a newline immediately followed by an H1–H4 ATX
 # heading line with a non-space payload (``# Foo`` … ``#### Foo``). ``_split_by_structure``
 # breaks the document at every occurrence, so any line matching ``#{1,4}\s+\S`` inside
@@ -40,9 +42,7 @@ class ContentChunker:
         3. Fallback: sentence-boundary splitting if no structure detected
         4. Post-process: merge tiny sections, split oversized ones
         """
-        stripped = re.sub(
-            r"^---\s*\n.*?\n---\s*\n", "", content, count=1, flags=re.DOTALL
-        )
+        stripped = strip_frontmatter(content)
         stripped = stripped.strip()
 
         if not stripped:

@@ -73,6 +73,7 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     RunbookValidator,
 )
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
+from faultmaven.utils.frontmatter import match_frontmatter
 from faultmaven.utils.runbook_id import (
     RunbookPathEscape,
     draft_filename,
@@ -2539,7 +2540,7 @@ class ConversionService:
 
             import yaml
 
-            fm_match = _re.match(r"^---\s*\n(.*?)\n---\s*\n", content, _re.DOTALL)
+            fm_match = match_frontmatter(content)
             if fm_match:
                 try:
                     raw_fm = yaml.safe_load(fm_match.group(1)) or {}
@@ -3111,7 +3112,7 @@ status: draft
                 continue
 
             # Extract metadata from frontmatter
-            fm_match = _re.match(r"^---\s*\n(.*?)\n---\s*\n", content, _re.DOTALL)
+            fm_match = match_frontmatter(content)
             metadata = {}
             if fm_match:
                 try:

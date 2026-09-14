@@ -57,6 +57,7 @@ from faultmaven.modules.knowledge.domain.write_scope import (
     metadata_scope_floor,
     require_write_scope,
 )
+from faultmaven.utils.frontmatter import strip_frontmatter
 
 
 def _call_with_timeout(fn: Callable[[], Any], timeout_s: float, what: str) -> Any:
@@ -583,9 +584,7 @@ class KnowledgeIngester:
         The embedding model handles this fine.
         """
         # Strip frontmatter before chunking
-        stripped = re.sub(
-            r"^---\s*\n.*?\n---\s*\n", "", content, count=1, flags=re.DOTALL
-        )
+        stripped = strip_frontmatter(content)
         stripped = stripped.strip()
 
         if not stripped:
