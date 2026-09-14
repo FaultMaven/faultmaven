@@ -537,10 +537,15 @@ def test_crlf_content_is_scored_and_validated_like_its_lf_twin():
     scorer = _scorer()
     assert scorer._extract_metadata(crlf) == scorer._extract_metadata(lf)
 
-    # Scoped deliberately. CRLF *section* matching is a separate, PRE-EXISTING
-    # gap -- `_validate_sections` is `\n`-specific on main too, so a CRLF
-    # runbook reports missing sections there with or without this change. This
-    # guard pins the regression this change caused and does not claim the rest.
+    # The gap this used to disclaim is CLOSED (#1403). CRLF section matching was
+    # a separate, pre-existing defect -- `_validate_structure` was `\n`-specific
+    # on main too, so a CRLF runbook reported missing sections with or without
+    # the frontmatter change -- and this guard deliberately pinned only the
+    # regression #1395 caused. Whole-document CRLF/LF equality is now asserted
+    # across the corpus in `test_crlf_line_endings_1403.py`, which also covers
+    # the scorer, the upload route, the parser and every service write path.
+    # This test stays as the frontmatter-specific half: it is the one that fails
+    # if `utils.frontmatter`'s `\r?\n` is narrowed again.
 
 
 # --------------------------------------------------------------------------

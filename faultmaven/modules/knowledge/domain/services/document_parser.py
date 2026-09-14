@@ -13,6 +13,7 @@ from typing import Optional
 from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
     mask_html_comments,
 )
+from faultmaven.utils.line_endings import normalize_line_endings
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,24 @@ class DocumentParser:
                 "The file may be image-only (scanned PDF) or empty."
             )
 
-        return text
+        # ONE normalisation for all five extractors (#1403). The txt/markdown/html
+        # readers come back through ``Path.read_text``, which is already
+        # universal-newlines, so this is the identity for them. The other two are
+        # not, and both were measured smuggling a bare CR out of a file that had
+        # none of its own:
+        #
+        # * pypdf does NOT implement PDF 32000 7.3.4.2 ("an unescaped EOL in a
+        #   literal string shall be treated as 0Ah"). ``read_string_from_stream``
+        #   handles only the ESCAPED EOL; an unescaped ``\r`` falls through to
+        #   ``txt.append(ord(tok))`` and survives as 0x0D. Measured on 6.16.2:
+        #   ``(alpha\rbravo)`` decodes to ``'alpha\rbravo'``.
+        # * BeautifulSoup decodes the ``&#13;`` entity to a literal ``\r``.
+        #
+        # A CR here is not cosmetic: ``cleanup_text``'s first rule is
+        # ``(?m)^(?:Page \d+...)$``, and page-footer stripping is precisely what
+        # the PDF path needs. Under CR the ``$`` never anchors, so page numbers
+        # and uncollapsed blank-line runs ride into the conversion prompt.
+        return normalize_line_endings(text)
 
     def _detect_format(self, file_path: Path, content_type: Optional[str]) -> str:
         """Determine format from MIME type or file extension."""

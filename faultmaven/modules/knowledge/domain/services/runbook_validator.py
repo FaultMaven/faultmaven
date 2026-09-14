@@ -70,6 +70,7 @@ from faultmaven.utils.frontmatter import (
     parse_frontmatter,
     strip_frontmatter,
 )
+from faultmaven.utils.line_endings import normalize_line_endings
 
 # =============================================================================
 # Security hazard detection (same shape as kb-toolkit's validator). Hazards
@@ -530,7 +531,21 @@ class RunbookValidator:
         return self.validate_content(content)
 
     def validate_content(self, content: str) -> ValidationResult:
-        """Validate runbook markdown content."""
+        """Validate runbook markdown content.
+
+        Line endings are normalised FIRST (#1403). Every structural check below
+        is ``^...$`` under ``re.MULTILINE``, and ``$`` does not reach across the
+        ``\\r`` of a CRLF line ending, so a Windows-authored runbook reported all
+        six required sections missing while carrying every one of them.
+
+        Normalised here and not only at the request boundaries because this
+        method has ten call sites and seven of them never pass through one —
+        including ``SuggestionService`` reviewing content BEFORE approval, where
+        a CRLF edit would show the reviewer six errors that are not about the
+        document. The boundaries own what gets STORED; this owns what the gate
+        SEES, and the two are different contracts.
+        """
+        content = normalize_line_endings(content)
         errors: List[str] = []
         warnings: List[str] = []
 
@@ -1291,7 +1306,18 @@ class QualityScorer:
         return self.score_content(content)
 
     def score_content(self, content: str) -> QualityScore:
-        """Score runbook markdown content."""
+        """Score runbook markdown content.
+
+        Normalised for the same reason as ``validate_content`` (#1403), and
+        independently of it: the score is persisted to
+        ``conversion_drafts.quality_score`` and drives the
+        ``< QUALITY_WARNING_THRESHOLD`` warning, so a CRLF document scoring 75.8
+        where its LF twin scores 90.5 is a durable, user-visible wrong answer —
+        a whole grade band — not just a failed gate. The
+        ``validate_content`` call below re-normalises, which is a ``memchr`` on
+        text this line has already converted.
+        """
+        content = normalize_line_endings(content)
         validation = self._validator.validate_content(content)
 
         completeness = self._score_completeness(content, validation)

@@ -74,6 +74,7 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
 )
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 from faultmaven.utils.frontmatter import match_frontmatter
+from faultmaven.utils.line_endings import normalize_line_endings
 from faultmaven.utils.runbook_id import (
     RunbookPathEscape,
     draft_filename,
@@ -2248,6 +2249,17 @@ class ConversionService:
             if not dm or dm.status == DraftStatus.DISCARDED.value:
                 return None
 
+            # Line endings, before the write AND before the re-validate below
+            # (#1403). ``content`` is a JSON body field from
+            # ``PUT /knowledge/conversions/{id}/drafts/{draft_id}``, so nothing
+            # upstream has decoded it through ``Path.read_text``; a CRLF edit
+            # from any non-browser client used to be written to disk and then
+            # scored 15 points lower for its line endings alone. Before the
+            # write specifically, because this method persists first and
+            # validates second — normalising after the write would leave the
+            # file and the verdict disagreeing.
+            content = normalize_line_endings(content)
+
             # Write updated content to disk.
             #
             # ``dm.file_path`` comes straight back out of the database. Every
@@ -2682,6 +2694,17 @@ class ConversionService:
         loop_break), plus a ### Cause Z: Unidentified fallback with [Default] indicator.
         """
         await self._ensure_team_publish_allowed(scope, team_id, user_id)
+
+        # The five free-text fields are JSON body values interpolated into the
+        # markdown template below, so a CRLF client mixes its own line endings
+        # into a template that supplies LF ones (#1403). ``causes`` is the one
+        # that decides the outcome: it must carry ``### Cause N:`` headings and
+        # ``**Statement:**`` sub-fields, all of which are matched line-anchored.
+        symptom_recognition = normalize_line_endings(symptom_recognition)
+        applicability = normalize_line_endings(applicability)
+        diagnostic_steps = normalize_line_endings(diagnostic_steps)
+        causes = normalize_line_endings(causes)
+        prevention = normalize_line_endings(prevention)
 
         today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 

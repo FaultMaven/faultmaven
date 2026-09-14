@@ -37,6 +37,7 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     RunbookValidator,
 )
 from faultmaven.modules.knowledge.exceptions import SuggestionConcurrencyError
+from faultmaven.utils.line_endings import normalize_line_endings
 from faultmaven.utils.runbook_id import (
     is_hash_only_runbook_id,
     runbook_id_from_parts,
@@ -1536,9 +1537,20 @@ level, and the tools needed.]
             return None
 
         if title or content:
+            # ``PUT /knowledge/suggestions/{id}`` takes an untyped ``dict`` body,
+            # so there is no request model a validator could hang off and this
+            # method is the boundary (#1403). What makes it matter is where the
+            # content goes: ``suggested_content`` is re-validated by the review
+            # loop below and then handed to ``upload_document`` verbatim on
+            # approval, so a CRLF edit showed the reviewer six "Missing required
+            # section" errors about a document that had all six.
             suggestion.update_content(
                 title=title or suggestion.suggested_title,
-                content=content or suggestion.suggested_content,
+                content=(
+                    normalize_line_endings(content)
+                    if content
+                    else suggestion.suggested_content
+                ),
             )
             # Re-scan for PII since content changed, and re-record the gate's
             # verdict on the result. This is the loop the reviewer actually
