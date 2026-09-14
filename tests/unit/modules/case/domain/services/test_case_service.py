@@ -753,6 +753,37 @@ class TestLinkSessionToCase:
 # ============================================================
 
 
+class TestLinkReportsTheWriteItMade:
+    """The session pointer IS the link, so a write that did not happen is not a
+    success.
+
+    `get_or_create_case_for_session` reads `session:{id}:current_case_id` to
+    decide which case a session is working. The store write used to be a
+    `logger.warning` inside its own try/except followed by an unconditional
+    `return True`, so a refused write answered "Case resumed in session" and the
+    caller's next turn opened a brand-new case — the mirror of the 404-on-success
+    bug this lane fixed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_refused_store_write_is_a_failure(
+        self, service, mock_repo, mock_session_store
+    ):
+        mock_repo.get.return_value = _make_case()
+        mock_session_store.set.side_effect = RuntimeError("redis down")
+
+        assert not await service.link_session_to_case("sess_abc", "case_abc123abc123")
+
+    @pytest.mark.asyncio
+    async def test_no_session_store_is_a_failure(self, mock_repo):
+        mock_repo.get.return_value = _make_case()
+        service = CaseService(
+            case_repository=mock_repo, session_store=None, max_cases_per_user=50
+        )
+
+        assert not await service.link_session_to_case("sess_abc", "case_abc123abc123")
+
+
 class TestResumeCaseInSession:
     """The resume reports the outcome of the LINK, and writes no transcript row.
 
@@ -768,6 +799,16 @@ class TestResumeCaseInSession:
     async def test_reports_success_when_the_link_succeeds(self, service):
         service.link_session_to_case = AsyncMock(return_value=True)
         assert await service.resume_case_in_session("case_abc123abc123", "sess_abc")
+        # Asserted with the arguments, not just awaited: the two methods take
+        # the SAME two strings in OPPOSITE order —
+        # `resume_case_in_session(case_id, session_id)` calls
+        # `link_session_to_case(session_id, case_id)` — with no type to tell
+        # them apart. A bare AsyncMock advertises (*args, **kwargs), so a
+        # swapped call would leave every test here green while the pointer
+        # became `session:{case_id}:current_case_id`.
+        service.link_session_to_case.assert_awaited_once_with(
+            "sess_abc", "case_abc123abc123"
+        )
 
     @pytest.mark.asyncio
     async def test_reports_failure_when_the_link_fails(self, service):
@@ -811,20 +852,66 @@ class TestCaseMessageIsReadByRole:
         assert "message_type" not in fields
         assert "session_id" not in fields
 
-    def test_the_service_never_reads_message_type(self):
+    def test_the_service_neither_reads_nor_writes_message_type(self):
         """Parsed, not grepped: a substring search matches comments and strings
-        and would pass on a re-introduction inside either."""
+        and would pass on a re-introduction inside either.
+
+        Both node kinds, because the two defects had different shapes and the
+        first version of this guard only caught one. `msg.message_type == ...`
+        is an ``ast.Attribute``; the LIVE bug was
+        ``CaseMessage(session_id=..., message_type=...)``, where those are
+        ``ast.keyword`` nodes and the only Attribute present is
+        ``MessageType.SYSTEM_EVENT`` — so the guard written FOR that bug was
+        green against it.
+        """
         import ast
 
-        source = pathlib.Path(case_service.__file__).read_text()
-        offenders = [
+        # `encoding` is pinned: this module carries em dashes and `∪`, and
+        # `read_text()` without it follows the ambient locale — under a
+        # POSIX-locale runner the guard would die with UnicodeDecodeError
+        # instead of returning a verdict. Same reason as the scanner in
+        # tests/unit/test_harness_stand_ins.py.
+        source_path = pathlib.Path(case_service.__file__)
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+
+        # Positive control: a clean verdict from the wrong tree — an editable
+        # install pointing elsewhere, or the module moved — says nothing.
+        classes = {
+            node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)
+        }
+        assert "CaseService" in classes, (
+            f"{source_path} does not define CaseService, so this scan resolved "
+            "the wrong module and its clean verdict means nothing"
+        )
+
+        # Reads: `.message_type` on anything. `.session_id` is NOT banned —
+        # sessions legitimately have one; it is only `CaseMessage` that does not.
+        reads = {
             node.lineno
-            for node in ast.walk(ast.parse(source))
+            for node in ast.walk(tree)
             if isinstance(node, ast.Attribute) and node.attr == "message_type"
-        ]
+        }
+
+        # Writes: the two fields the model does not declare, on `CaseMessage(...)`
+        # specifically — `create_case(session_id=...)` in this same file is a
+        # legitimate keyword on a different call, so the check is scoped to the
+        # constructor that was getting them wrong.
+        never_on_a_case_message = {"message_type", "session_id"}
+        writes = {
+            keyword.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "CaseMessage"
+            for keyword in node.keywords
+            if keyword.arg in never_on_a_case_message
+        }
+
+        offenders = sorted(reads | writes)
         assert offenders == [], (
-            f"{case_service.__file__} reads .message_type at lines {offenders}; "
-            "CaseMessage carries `role`. See #1390."
+            f"{source_path} reads .message_type or builds a CaseMessage with "
+            f"{sorted(never_on_a_case_message)} at lines {offenders}; the model "
+            "carries `role` and no session. See #1390."
         )
 
 

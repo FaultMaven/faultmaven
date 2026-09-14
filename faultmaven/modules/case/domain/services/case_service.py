@@ -619,16 +619,33 @@ class CaseService(ICaseService):
             # Update last activity timestamp via repository
             await self.repository.update_activity_timestamp(case_id)
 
-            # Update session store with case reference
-            if self.session_store:
-                try:
-                    await self.session_store.set(
-                        f"session:{session_id}:current_case_id",
-                        case_id,
-                        ttl=86400,  # 24 hours
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to update session store: {e}")
+            # Update session store with case reference.
+            #
+            # The pointer IS the link — `get_or_create_case_for_session` reads
+            # exactly this key to decide which case a session is working. So a
+            # write that did not happen is a link that did not happen, and
+            # reporting success for it tells the caller "Case resumed in
+            # session" while their next turn opens a brand-new case. The
+            # failure used to be a `logger.warning` followed by an
+            # unconditional `return True`; it is the mirror of the bug #1390
+            # fixed on this path (404 on a resume that worked) and it is the
+            # same lie in the other direction.
+            if not self.session_store:
+                logger.error(
+                    f"Cannot link session {session_id} to case {case_id}: "
+                    "no session store is configured"
+                )
+                return False
+
+            try:
+                await self.session_store.set(
+                    f"session:{session_id}:current_case_id",
+                    case_id,
+                    ttl=86400,  # 24 hours
+                )
+            except Exception as e:
+                logger.error(f"Failed to update session store: {e}")
+                return False
 
             logger.info(f"Linked session {session_id} to case {case_id}")
             return True
