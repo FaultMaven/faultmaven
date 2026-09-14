@@ -1736,7 +1736,7 @@ if _is_debug_enabled(settings=_debug_settings):
         except Exception as e:
             logger.error(f"Failed to get configuration info: {e}")
             return {
-                "error": f"Failed to get configuration: {e}",
+                "error": "Failed to get configuration",
                 "timestamp": to_json_compatible(datetime.now(UTC)),
             }
 
@@ -1796,7 +1796,8 @@ if _is_debug_enabled(settings=_debug_settings):
                     "matched_registry_key": rb.matched_key,
                 }
             except Exception as budget_exc:  # pragma: no cover - best effort
-                prompt_budget = {"error": str(budget_exc)}
+                logger.warning(f"Prompt budget unavailable: {budget_exc}")
+                prompt_budget = {"error": "Prompt budget unavailable"}
 
             return {
                 "timestamp": to_json_compatible(datetime.now(UTC)),
@@ -1811,7 +1812,7 @@ if _is_debug_enabled(settings=_debug_settings):
         except Exception as e:
             logger.error(f"Failed to get LLM provider status: {e}")
             return {
-                "error": f"Failed to get LLM provider status: {e}",
+                "error": "Failed to get LLM provider status",
                 "timestamp": to_json_compatible(datetime.now(UTC)),
             }
 
@@ -2197,9 +2198,10 @@ async def health_check_dependencies():
                     "response_time_ms": round((time.time() - service_start) * 1000, 2),
                 }
             except Exception as e:
+                logger.warning(f"Service probe failed for {service_name}: {e}")
                 service_tests[service_name] = {
                     "available": False,
-                    "error": str(e),
+                    "error": "Service probe failed",
                     "response_time_ms": round((time.time() - service_start) * 1000, 2),
                 }
 
@@ -2219,7 +2221,7 @@ async def health_check_dependencies():
                 )
             except Exception as e:
                 logger.warning(f"Failed to get SLA details for {component_name}: {e}")
-                sla_details[component_name] = {"error": str(e)}
+                sla_details[component_name] = {"error": "SLA details unavailable"}
 
         return {
             "timestamp": to_json_compatible(datetime.now(UTC)),
@@ -2251,7 +2253,7 @@ async def health_check_dependencies():
     except Exception as e:
         logger.error(f"Enhanced dependency health check failed: {e}")
         return {
-            "error": f"Enhanced dependency health check failed: {e}",
+            "error": "Enhanced dependency health check failed",
             "container_available": False,
             "timestamp": to_json_compatible(datetime.now(UTC)),
         }
@@ -2270,7 +2272,8 @@ async def readiness():
             return {"status": "unready", "reason": "chromadb_unavailable"}
         return {"status": "ready"}
     except Exception as e:
-        return {"status": "unready", "reason": str(e)}
+        logger.warning(f"Readiness probe failed: {e}")
+        return {"status": "unready", "reason": "dependency_check_failed"}
 
 
 @app.get("/health/logging")
@@ -2291,7 +2294,7 @@ async def logging_health_check():
         logger.error(f"Logging health check failed: {e}")
         return {
             "status": "error",
-            "error": f"Logging health check failed: {e}",
+            "error": "Logging health check failed",
             "timestamp": to_json_compatible(datetime.now(UTC)),
             "service": "logging",
         }
@@ -2314,7 +2317,7 @@ async def health_check_sla():
                 )
             except Exception as e:
                 logger.warning(f"Failed to get SLA details for {component_name}: {e}")
-                detailed_sla[component_name] = {"error": str(e)}
+                detailed_sla[component_name] = {"error": "SLA details unavailable"}
 
         return {
             "timestamp": to_json_compatible(datetime.now(UTC)),
@@ -2325,7 +2328,7 @@ async def health_check_sla():
     except Exception as e:
         logger.error(f"SLA health check failed: {e}")
         return {
-            "error": f"SLA health check failed: {e}",
+            "error": "SLA health check failed",
             "timestamp": to_json_compatible(datetime.now(UTC)),
         }
 
@@ -2350,7 +2353,7 @@ async def health_check_component(component_name: str):
             sla_details = sla_tracker.get_component_sla_details(component_name)
         except Exception as e:
             logger.warning(f"Failed to get SLA details for {component_name}: {e}")
-            sla_details = {"error": str(e)}
+            sla_details = {"error": "SLA details unavailable"}
 
         return {
             "timestamp": to_json_compatible(datetime.now(UTC)),
@@ -2371,7 +2374,7 @@ async def health_check_component(component_name: str):
     except Exception as e:
         logger.error(f"Component health check failed for {component_name}: {e}")
         return {
-            "error": f"Component health check failed: {e}",
+            "error": "Component health check failed",
             "component_name": component_name,
             "timestamp": to_json_compatible(datetime.now(UTC)),
         }
@@ -2414,7 +2417,7 @@ async def health_check_error_patterns():
     except Exception as e:
         logger.error(f"Error patterns health check failed: {e}")
         return {
-            "error": f"Error patterns health check failed: {e}",
+            "error": "Error patterns health check failed",
             "timestamp": to_json_compatible(datetime.now(UTC)),
         }
 
@@ -2454,7 +2457,7 @@ async def get_performance_metrics():
     except Exception as e:
         logger.error(f"Performance metrics endpoint failed: {e}")
         return {
-            "error": f"Performance metrics failed: {e}",
+            "error": "Performance metrics failed",
             "timestamp": to_json_compatible(datetime.now(UTC)),
         }
 
@@ -2494,7 +2497,7 @@ async def get_realtime_metrics(time_window_minutes: int = 5):
     except Exception as e:
         logger.error(f"Real-time metrics endpoint failed: {e}")
         return {
-            "error": f"Real-time metrics failed: {e}",
+            "error": "Real-time metrics failed",
             "timestamp": to_json_compatible(datetime.now(UTC)),
         }
 
@@ -2536,7 +2539,7 @@ async def get_alert_status():
     except Exception as e:
         logger.error(f"Alert status endpoint failed: {e}")
         return {
-            "error": f"Alert status failed: {e}",
+            "error": "Alert status failed",
             "timestamp": to_json_compatible(datetime.now(UTC)),
         }
 
@@ -2604,7 +2607,7 @@ async def get_system_optimization_metrics():
     except Exception as e:
         logger.error(f"System optimization metrics endpoint failed: {e}")
         return {
-            "error": f"System optimization metrics failed: {e}",
+            "error": "System optimization metrics failed",
             "timestamp": to_json_compatible(datetime.now(UTC)),
         }
 
@@ -2626,7 +2629,8 @@ async def trigger_system_cleanup():
                         await resource_service.trigger_resource_cleanup(aggressive=True)
                     )
         except Exception as e:
-            cleanup_results["resource_cleanup"] = {"error": str(e)}
+            logger.warning(f"Resource cleanup failed: {e}")
+            cleanup_results["resource_cleanup"] = {"error": "Resource cleanup failed"}
 
         # Trigger manual garbage collection
         import gc
@@ -2645,7 +2649,7 @@ async def trigger_system_cleanup():
     except Exception as e:
         logger.error(f"System cleanup trigger failed: {e}")
         return {
-            "error": f"System cleanup failed: {e}",
+            "error": "System cleanup failed",
             "timestamp": to_json_compatible(datetime.now(UTC)),
             "cleanup_triggered": False,
         }
