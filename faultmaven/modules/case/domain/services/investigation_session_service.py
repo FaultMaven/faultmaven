@@ -765,7 +765,7 @@ class APIInvestigationSessionService(BaseService):
         Args:
             case_id: Case ID to list sessions for
             enterprise_id: Enterprise for authorization
-            state: Optional filter by status
+            state: Optional filter by case state
             limit: Max results
             offset: Pagination offset
 
