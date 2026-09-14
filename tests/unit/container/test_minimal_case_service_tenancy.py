@@ -77,3 +77,44 @@ async def test_an_account_in_no_organization_is_billed_to_nobody(service):
     case = await service.create_case(title="Checkout latency", owner_id=OWNER)
 
     assert case.organization_id is None
+
+
+class TestTheDegradedReadHonoursOwnership:
+    """Ownership applies on BOTH arms of the stand-in's ``get_case`` (#1398).
+
+    It used to apply only under ``owner_only=True``, so every read-arm caller —
+    which is most of them, including the session resume — got any case from any
+    caller. That made a route-level gate resolving through this stand-in inert
+    in exactly the mode where a working fallback is the point.
+
+    Refusing a non-owner is both the narrow answer and the accurate one here:
+    the real read arm is owner ∪ shared-to-my-teams, and this stand-in cannot
+    consult the share allowlist because ``resource_shares`` lives in the
+    repository it is standing in for — so in this mode no share can exist to
+    honour.
+    """
+
+    async def _owned_case(self, service):
+        set_current_enterprise_id(ENTERPRISE)
+        set_current_billing_organization_id(None)
+        return await service.create_case(title="Checkout latency", owner_id=OWNER)
+
+    async def test_the_owner_still_reads_their_own_case(self, service):
+        case = await self._owned_case(service)
+
+        assert await service.get_case(case.case_id, OWNER) is not None
+        assert await service.get_case(case.case_id, OWNER, owner_only=True) is not None
+
+    async def test_a_stranger_is_refused_on_the_READ_arm(self, service):
+        case = await self._owned_case(service)
+
+        # The regression: `owner_only` defaults False, so this used to return
+        # the owner's case to anyone who asked.
+        assert await service.get_case(case.case_id, "user_stranger") is None
+
+    async def test_an_unscoped_read_is_still_allowed(self, service):
+        """``user_id=None`` is an internal caller with no user to check, which
+        is the pre-existing contract and not something this narrows."""
+        case = await self._owned_case(service)
+
+        assert await service.get_case(case.case_id) is not None

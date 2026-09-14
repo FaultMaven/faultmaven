@@ -19,6 +19,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from faultmaven.api.exception_handlers import get_exception_handlers
 from faultmaven.api.v1.auth_dependencies import (
     get_current_user_optional,
     require_authentication,
@@ -43,10 +44,24 @@ def build_app():
 
     def _build(*, session=None, case=None, case_id="case-123", case_service=None):
         app = FastAPI()
+        # The app's own handlers, so a DOMAIN exception reaching a route here
+        # is mapped the way production maps it. Without them a `NotFoundError`
+        # escaped the test client as a raw exception, and a route that relies
+        # on the mapping for its 404 (the session resume, #1398) could not be
+        # asserted against the status a client would actually see.
+        for exc_type, handler in get_exception_handlers().items():
+            app.add_exception_handler(exc_type, handler)
         app.include_router(case_router, prefix="/api/v1")
 
         async def _session_service():
             async def get_session(session_id, validate=True):
+                # The real service RAISES when it cannot answer (e.g.
+                # `ServiceException("Session store not configured")`) rather
+                # than returning None, so an Exception passed as `session`
+                # models that arm — a caller that only ever returns None
+                # cannot exercise the route's unevaluable-gate path.
+                if isinstance(session, Exception):
+                    raise session
                 return session
 
             return SimpleNamespace(get_session=get_session)

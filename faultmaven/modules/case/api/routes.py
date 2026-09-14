@@ -2757,32 +2757,39 @@ async def resume_case_in_session(
         # this route had neither.
         #
         # ── 1. The case ──────────────────────────────────────────────────
-        # `resume_case_in_session` -> `link_session_to_case` resolves the case
-        # with a bare `repository.get(case_id)` — no caller, no ownership, no
-        # share — so any authenticated user could attach a session to any case
-        # their tenant could see. It was not exploitable only because the
-        # method always failed on a malformed event row and the route read that
-        # as "not found"; fixing that bug is what makes the gate's absence
-        # reachable, so the two land together.
+        # Enforced in BOTH places, deliberately (#1398).
         #
-        # Owner ∪ shared-to-my-teams, NOT `owner_only`. That is a deliberate
-        # departure from the method-based rule in `sessions.py` (writes take
-        # `owner_only`), and the reason is coherence with `submit_turn` above,
-        # which resolves the same way: a teammate who may POST a turn into a
-        # shared case — writing messages, turn history and the activity stamp —
-        # must be able to attach a session to it. Refusing the resume while
-        # admitting the turn would leave the extension able to read and write a
-        # case it cannot open. The only row this path writes that a read share
-        # does not already cover is `last_activity`, which is bookkeeping about
-        # access rather than case content, and the teammate's own turn bumps it
-        # a moment later anyway.
+        # The authoritative gate is inside `link_session_to_case`: it is on
+        # `ICaseService`, reachable by another route, the Slack agent or an
+        # `fm-*` CLI, and a gate that lives only in this handler protects only
+        # this handler. That one also folds in the existence check, so the
+        # member asks one question of one load.
+        #
+        # This early check is a SECOND resolution of the same row, and it is
+        # kept for ordering rather than for safety. The session check below
+        # cannot always be evaluated — where no session store is configured it
+        # answers 503 — and if it ran first it would answer BOTH parties the
+        # same way, which is how `test_two_enterprise_surface_probe` stops
+        # exercising the case boundary on this route at all ("a parametrisation
+        # that never reaches the tenant check asserts nothing"). Refusing here
+        # keeps the cross-tenant refusal attributable to the case, and makes it
+        # cheap: no session lookup for a caller who was never going to pass.
+        #
+        # A case the caller cannot reach raises `NotFoundError` from the
+        # service, which the app's handler answers as 404; a link that FAILS
+        # returns False and is a 500 below. Keeping those apart is the point —
+        # conflating them reported a working resume as an absence (#1390).
+        #
+        # Owner ∪ shared-to-my-teams, matching `submit_turn` and the service's
+        # own gate: a teammate who may POST a turn into a shared case must be
+        # able to attach a session to it.
         case = await case_service.get_case(case_id, current_user.user_id)
         if case is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Case not found or resume not permitted",
             )
-
+        #
         # ── 2. The session ───────────────────────────────────────────────
         # Without this, naming SOMEONE ELSE'S session id retargets their
         # `session:{id}:current_case_id` pointer at a case of the caller's
@@ -2797,7 +2804,24 @@ async def resume_case_in_session(
         # first would refuse BOTH parties there and the case half would stop
         # being exercised — the "parametrisation that never reaches the tenant
         # check asserts nothing" failure that probe's own docstring warns about.
-        session = await session_service.get_session(session_id, validate=True)
+        #
+        # `get_session` RAISES rather than returning None when it cannot
+        # answer — `ServiceException("Session store not configured")` is the
+        # shipped case. Treating it as a nullable return let that escape to the
+        # handler's bare `except` and answer 500 on a request the server simply
+        # could not evaluate. An unevaluable gate is a 503, which is the rule
+        # `faultmaven/api/routes/sessions.py` already states for its own:
+        # "503 if the case service is unavailable (the gate cannot be
+        # evaluated, so nothing is served)".
+        try:
+            session = await session_service.get_session(session_id, validate=True)
+        except ServiceException as exc:
+            logger.warning(f"Cannot evaluate session ownership for {session_id}: {exc}")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Session service unavailable",
+            )
+
         if session is None or session.user_id != current_user.user_id:
             # One answer for "no such session" and "not yours": naming
             # another user's session must not be distinguishable from naming
@@ -2809,13 +2833,16 @@ async def resume_case_in_session(
                 detail="Session not found or resume not permitted",
             )
 
-        success = await case_service.resume_case_in_session(case_id, session_id)
+        success = await case_service.resume_case_in_session(
+            case_id, session_id, current_user.user_id
+        )
 
         if not success:
-            # NOT a 404. Both gates have just proved the case exists, the
-            # caller may reach it, and the session is theirs — so a failure
-            # here is the link itself failing (a repository error, a session
-            # store that refused the write), which is the server's problem.
+            # NOT a 404. A case the caller cannot reach raised `NotFoundError`
+            # inside the service and never got here, and the session is theirs
+            # — so a falsy result is the link itself failing (a repository
+            # error, a session store that refused the write), the server's
+            # problem.
             # Reporting it as "not found or not permitted" is the same
             # half-success-as-absence shape this endpoint was fixed for: the
             # client abandons a case that is fine instead of retrying.
@@ -2832,13 +2859,19 @@ async def resume_case_in_session(
 
     except HTTPException:
         raise
+    except NotFoundError:
+        # The access verdict from `link_session_to_case`. Re-raised so the
+        # app's handler answers 404; the bare handler below would make it a
+        # 500 and tell the caller the server broke on a request it was simply
+        # not allowed to make.
+        raise
     except ValidationException as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to resume case: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to resume case",
+            detail="Failed to resume case (unexpected error)",
         )
 
 

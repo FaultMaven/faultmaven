@@ -934,12 +934,20 @@ class DIContainer(BaseDIContainer):
 
             async def get_case(self, case_id, user_id=None, *, owner_only=False):
                 case = self.cases.get(case_id)
-                # ``owner_only`` is the ownership gate the real service applies
-                # (the share allowlist is deliberately not consulted). The
-                # stand-in must honour it rather than merely accept it: a
-                # degraded path that widened a caller's reach would be worse
-                # than one that 500s.
-                if owner_only and case is not None and case.user_id != user_id:
+                # Ownership is applied on BOTH arms, not just under
+                # ``owner_only``. The stand-in must honour the gate rather than
+                # merely accept it: a degraded path that widened a caller's
+                # reach would be worse than one that 500s.
+                #
+                # The read arm of the real resolver is owner ∪ shared-to-my-
+                # teams, and this stand-in cannot consult the share allowlist —
+                # ``resource_shares`` lives in the repository it is standing in
+                # for, so in this mode no share can exist to honour. Refusing a
+                # non-owner is therefore the narrow answer AND the accurate
+                # one. Gating this on ``owner_only`` meant every read-arm
+                # caller — which is most of them, including the session resume
+                # (#1393) — got any case from any caller.
+                if case is not None and user_id is not None and case.user_id != user_id:
                     return None
                 return case
 

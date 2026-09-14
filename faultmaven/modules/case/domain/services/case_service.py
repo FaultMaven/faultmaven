@@ -26,7 +26,11 @@ from faultmaven.config.tenant_context import (
     get_current_enterprise_id,
     get_current_tenant_id,
 )
-from faultmaven.exceptions import ServiceException, ValidationException
+from faultmaven.exceptions import (
+    NotFoundError,
+    ServiceException,
+    ValidationException,
+)
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.api_models import (
     CaseCreateRequest,
@@ -596,25 +600,53 @@ class CaseService(ICaseService):
             raise ServiceException(f"Case management failed: {str(e)}") from e
 
     @trace("case_service_link_session_to_case")
-    async def link_session_to_case(self, session_id: str, case_id: str) -> bool:
+    async def link_session_to_case(
+        self, session_id: str, case_id: str, user_id: Optional[str] = None
+    ) -> bool:
         """
         Link a session to an existing case
 
         Args:
             session_id: Session identifier
             case_id: Case identifier
+            user_id: The caller. Required in practice — see below.
 
         Returns:
-            True if linking was successful
+            True if the link was made and persisted
+
+        Raises:
+            NotFoundError: the case does not exist, or ``user_id`` cannot reach
+                it (owner ∪ shared-to-my-teams). Raised rather than returned as
+                ``False`` so a caller can tell "you may not have this" from
+                "the link failed", which are a 404 and a 500 respectively;
+                conflating them is what made this endpoint report a working
+                resume as an absence (#1390).
         """
         if not session_id or not case_id:
             raise ValidationException("Session ID and Case ID are required")
 
         try:
-            # Verify case exists
-            case = await self.repository.get(case_id)
+            # The access gate lives HERE, not in the handler (#1398).
+            #
+            # This resolved the case with a bare ``repository.get(case_id)`` —
+            # no caller, no ownership, no share — so any authenticated user
+            # could attach a session to any case the tenant could see (#1393).
+            # A route-level gate closed that for the one route that existed,
+            # and left it open for the next caller: both this member and
+            # ``resume_case_in_session`` are on ``ICaseService``, reachable by
+            # another route, the Slack agent or an ``fm-*`` CLI.
+            #
+            # It also replaces the existence check rather than adding to it:
+            # ``get_case`` loads the case and answers both questions, so the
+            # pair used to be two full loads of the same row per resume.
+            #
+            # Owner ∪ shared-to-my-teams, matching ``submit_turn``: a teammate
+            # who may POST a turn into a shared case must be able to attach a
+            # session to it. ``user_id=None`` resolves unscoped, which is the
+            # pre-existing behaviour for internal callers that have no user.
+            case = await self.get_case(case_id, user_id)
             if not case:
-                return False
+                raise NotFoundError("Case", case_id)
 
             # Update last activity timestamp via repository
             await self.repository.update_activity_timestamp(case_id)
@@ -650,7 +682,11 @@ class CaseService(ICaseService):
             logger.info(f"Linked session {session_id} to case {case_id}")
             return True
 
-        except ValidationException:
+        except (ValidationException, NotFoundError):
+            # NotFoundError is the ACCESS verdict, not a link failure. The bare
+            # handler below converts anything it catches into False, which the
+            # route reads as "the link failed" — a 500 for a request that
+            # should be a 404.
             raise
         except Exception as e:
             logger.error(f"Failed to link session to case: {e}")
@@ -720,23 +756,34 @@ class CaseService(ICaseService):
             return ""
 
     @trace("case_service_resume_case")
-    async def resume_case_in_session(self, case_id: str, session_id: str) -> bool:
+    async def resume_case_in_session(
+        self, case_id: str, session_id: str, user_id: Optional[str] = None
+    ) -> bool:
         """
         Resume an existing case in a new session
 
         Args:
             case_id: Case identifier
             session_id: Session identifier
+            user_id: The caller, forwarded to the access gate in
+                ``link_session_to_case``.
 
         Returns:
-            True if case was resumed successfully
+            True if the case was resumed
+
+        Raises:
+            NotFoundError: the case does not exist or the caller cannot reach
+                it (raised by ``link_session_to_case``).
         """
         if not case_id or not session_id:
             raise ValidationException("Case ID and Session ID are required")
 
         try:
-            # Link session to case
-            success = await self.link_session_to_case(session_id, case_id)
+            # Note the argument order: this takes (case, session) and the
+            # method it calls takes (session, case). Same two strings, no type
+            # to tell them apart — pinned by an assert_awaited_once_with in the
+            # tests for that reason.
+            success = await self.link_session_to_case(session_id, case_id, user_id)
 
             if success:
                 # The resume is the LINK; there is no conversation row for it.
@@ -762,7 +809,7 @@ class CaseService(ICaseService):
 
             return success
 
-        except ValidationException:
+        except (ValidationException, NotFoundError):
             raise
         except Exception as e:
             logger.error(
