@@ -923,7 +923,12 @@ class DIContainer(BaseDIContainer):
                     initial_msg = {
                         "message_id": f"initial_{case_id}",
                         "case_id": case_id,
-                        "message_type": "user_query",
+                        # `role`, not `message_type` (#1397). This stand-in was
+                        # the last thing reading that key: it wrote it INSTEAD
+                        # of `role` and mapped it back on the way out, so it
+                        # was the only place the second name still carried
+                        # information rather than duplicating `role`.
+                        "role": "user",
                         "content": initial_message.strip(),
                         "timestamp": current_time,
                         "user_id": final_user_id,
@@ -1268,27 +1273,27 @@ class DIContainer(BaseDIContainer):
                         try:
                             # Handle both dict and object formats
                             if isinstance(msg, dict):
-                                msg_type = msg.get("message_type")
+                                role = msg.get("role")
                                 message_id = msg.get("message_id")
                                 content = msg.get("content", "")
                                 timestamp = msg.get("timestamp")
                             else:
-                                msg_type = getattr(msg, "message_type", None)
+                                role = getattr(msg, "role", None)
                                 message_id = getattr(msg, "message_id", None)
                                 content = getattr(msg, "content", "")
                                 timestamp = getattr(msg, "timestamp", None)
 
-                            # Map message_type to role
-                            role = None
-                            if hasattr(msg_type, "value"):
-                                msg_type = msg_type.value
-                            if msg_type in ("user_query", "case_note"):
-                                role = "user"
-                            elif msg_type in ("agent_response",):
-                                role = "assistant"  # Frontend expects "assistant", not "agent"
+                            # `role` is read directly now (#1397): it used to be
+                            # derived from a `message_type` this stand-in was
+                            # the last writer and reader of, through a mapping
+                            # ("user_query"/"case_note" -> user, "agent_response"
+                            # -> assistant) that the real rows never needed.
+                            if hasattr(role, "value"):
+                                role = role.value
 
-                            # Skip non user/assistant roles
-                            if role is None:
+                            # Skip anything that is not one of the two the
+                            # conversation renders, as before.
+                            if role not in ("user", "assistant"):
                                 continue
 
                             # Format timestamp

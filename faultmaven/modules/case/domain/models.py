@@ -255,17 +255,6 @@ def is_valid_action(from_state: CaseState, to_state: CaseState) -> bool:
 is_valid_transition = is_valid_action
 
 
-class MessageType(str, Enum):
-    """Types of messages in a case conversation (restored from old implementation)"""
-
-    USER_QUERY = "user_query"
-    AGENT_RESPONSE = "agent_response"
-    SYSTEM_EVENT = "system_event"
-    DATA_UPLOAD = "data_upload"
-    CASE_NOTE = "case_note"
-    CASE_ACTION = "case_action"
-
-
 class ParticipantRole(str, Enum):
     """Participant roles in case collaboration"""
 

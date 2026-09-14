@@ -18,7 +18,7 @@ from faultmaven.exceptions import (
     ValidationException,
 )
 from faultmaven.models.api_models import CaseListFilter, CaseMessage, CaseSearchRequest
-from faultmaven.modules.case.domain.models import Case, CaseState, MessageType
+from faultmaven.modules.case.domain.models import Case, CaseState
 from faultmaven.modules.case.domain.services import case_service
 from faultmaven.modules.case.domain.services.case_service import CaseService
 
