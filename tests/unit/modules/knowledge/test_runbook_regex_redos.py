@@ -39,9 +39,9 @@ not percent.
 
 from __future__ import annotations
 
+import ast
 import pathlib
 import re
-import statistics
 import time
 
 import pytest
@@ -83,20 +83,27 @@ def _once(fn, payload: str) -> float:
     return time.perf_counter() - start
 
 
-def _median_elapsed(fn, payload: str) -> float:
-    """Median wall-clock over ``_REPS`` runs, after a warm-up call.
+def _fastest_elapsed(fn, payload: str) -> float:
+    """Best wall-clock over ``_REPS`` runs, after a warm-up call.
 
-    Median rather than a single sample because one scheduling slice or GC pause
-    landing in the only measurement is enough to move a ratio past its bound
-    with the code entirely correct.
+    MINIMUM, not mean or median. Every source of noise here is additive -- a
+    scheduling slice, a GC pause, another test on a neighbouring core -- so the
+    fastest sample is the one least contaminated by things that are not the
+    code under test, and it is the standard estimator for exactly that reason.
+
+    A median was tried first and still flaked: the ratio test passed 6/6 alone
+    and failed when run alongside a 117-test module, which is the condition CI
+    actually runs under. A median of three is only as good as its middle
+    sample, and under load two of three can be contended.
     """
     fn(payload[:64])
-    samples = []
-    for _ in range(_REPS):
-        start = time.perf_counter()
-        fn(payload)
-        samples.append(time.perf_counter() - start)
-    return statistics.median(samples)
+    return min(_elapsed(fn, payload) for _ in range(_REPS))
+
+
+def _elapsed(fn, payload: str) -> float:
+    start = time.perf_counter()
+    fn(payload)
+    return time.perf_counter() - start
 
 
 def _growth_ratio(fn, small: str, large: str) -> float:
@@ -107,8 +114,8 @@ def _growth_ratio(fn, small: str, large: str) -> float:
     numerator first, so ``large`` is timed on the colder caches and its cost is
     overstated; that ordering alone put this ratio at 3.6 on correct code.
     """
-    small_seconds = max(_median_elapsed(fn, small), 1e-6)
-    large_seconds = _median_elapsed(fn, large)
+    small_seconds = max(_fastest_elapsed(fn, small), 1e-6)
+    large_seconds = _fastest_elapsed(fn, large)
     return large_seconds / small_seconds
 
 
@@ -122,7 +129,7 @@ def _scorer():
 
 def _time_scoring(payload: str) -> float:
     """Seconds to score ``payload`` — a duration, not a quality score."""
-    return _median_elapsed(_scorer().score_content, payload)
+    return _fastest_elapsed(_scorer().score_content, payload)
 
 
 def _runbook_corpus() -> list[pathlib.Path]:
@@ -205,47 +212,92 @@ def test_scoring_grows_linearly_with_body_size():
 # Verdicts and scores are unchanged
 # --------------------------------------------------------------------------
 
-#: Pinned on the pre-fix code. Both sums are sensitive to the fence regex —
-#: `actionability` carries its +10 bonus — so a change that alters what counts
-#: as a command explanation moves these, which is exactly what the previous
-#: version of this test claimed to check and structurally could not.
-_CORPUS_ACTIONABILITY_SUM = 8655.0
-_CORPUS_OVERALL_SUM = 8236.2
+
+def _reference_command_explanation_count(content: str) -> int:
+    """Count fence-then-prose pairs WITHOUT a regex, by index scanning.
+
+    An independent second opinion for the tempered pattern. Pinning absolute
+    score sums was tried first and is the wrong instrument: the vendored KB
+    pack is rebuilt periodically by ``kb-build-pack``, so editing a single
+    runbook would fail this test with a message blaming the fence regex on a
+    PR that never touched one. This compares the regex against a reference on
+    whatever the corpus happens to contain, so it pins the invariant that
+    matters and is indifferent to pack content.
+    """
+    count, i = 0, 0
+    while True:
+        open_at = content.find("```", i)
+        if open_at == -1:
+            return count
+        close_at = content.find("```", open_at + 3)
+        if close_at == -1:
+            return count
+        j = close_at + 3
+        while j < len(content) and content[j] in " \t":
+            j += 1
+        if j < len(content) and content[j] == "\r":
+            j += 1
+        if j < len(content) and content[j] == "\n":
+            k = j + 1
+            while k < len(content) and content[k].isspace():
+                k += 1
+            if k < len(content) and content[k].isupper():
+                count += 1
+        i = close_at + 3
 
 
-def test_the_shipped_corpus_still_validates_identically():
-    """A performance fix that changes verdicts is not a performance fix."""
-    from faultmaven.modules.knowledge.domain.services.runbook_validator import (
-        RunbookValidator,
-    )
-
-    validator = RunbookValidator()
-    failures = [
-        p.name
-        for p in _runbook_corpus()
-        if not validator.validate_content(p.read_text(encoding="utf-8")).passed
-    ]
-
-    assert failures == [], f"the ReDoS fix changed validation verdicts: {failures}"
-
-
-def test_the_shipped_corpus_still_scores_identically():
+def test_the_fence_pattern_agrees_with_a_regex_free_reference():
     """The guard the previous version of this file could not be.
 
-    ``RunbookValidator`` never calls ``QualityScorer`` — the validator class
-    ends well above where the scorer begins — so a test driving
-    ``validate_content`` cannot observe the fence regex at all. This one scores
-    every runbook and pins two aggregates the fence bonus feeds.
+    ``RunbookValidator`` never calls ``QualityScorer`` -- the validator class
+    ends well above where the scorer begins -- so a test driving
+    ``validate_content`` cannot observe the fence regex at all. That is what
+    made the earlier corpus test vacuous about the very change it named.
+
+    This one runs the shipped pattern against every runbook and checks it
+    against a reference that uses no regex, so a change to what counts as a
+    command explanation shows up as a disagreement rather than as a score
+    nobody notices.
+    """
+    from faultmaven.modules.knowledge.domain.services import runbook_validator
+
+    pattern = re.compile(r"```(?:[^`]|`(?!``))*```[ \t]*\r?\n\s*[A-Z]")
+    source = pathlib.Path(runbook_validator.__file__).read_text(encoding="utf-8")
+    assert pattern.pattern in source, (
+        "the fence pattern moved; this guard is comparing a stale copy and "
+        "would pass while the shipped one changed"
+    )
+
+    disagreements = []
+    for p in _runbook_corpus():
+        body = p.read_text(encoding="utf-8")
+        got, want = len(pattern.findall(body)), _reference_command_explanation_count(
+            body
+        )
+        if got != want:
+            disagreements.append(f"{p.name}: regex={got} reference={want}")
+
+    assert disagreements == [], (
+        "the fence pattern changed what counts as a command explanation: "
+        f"{disagreements}"
+    )
+
+
+def test_the_shipped_corpus_is_still_scored_without_error():
+    """Every shipped runbook still scores, and nothing lands at grade F.
+
+    A floor rather than a pinned sum, for the same pack-rebuild reason as
+    above: it catches a change that breaks scoring outright without failing on
+    a runbook edit.
     """
     scorer = _scorer()
-    scores = [
-        scorer.score_content(p.read_text(encoding="utf-8")) for p in _runbook_corpus()
-    ]
+    scores = {
+        p.name: scorer.score_content(p.read_text(encoding="utf-8"))
+        for p in _runbook_corpus()
+    }
 
-    assert sum(s.actionability for s in scores) == pytest.approx(
-        _CORPUS_ACTIONABILITY_SUM
-    ), "the fence pattern changed what counts as a command explanation"
-    assert sum(s.overall for s in scores) == pytest.approx(_CORPUS_OVERALL_SUM)
+    failing = {n: s.overall for n, s in scores.items() if s.grade == "F"}
+    assert failing == {}, f"shipped runbooks scoring F: {failing}"
 
 
 def test_a_bash_fence_containing_inline_backticks_still_counts():
@@ -261,6 +313,72 @@ def test_a_bash_fence_containing_inline_backticks_still_counts():
     ) * 4
 
     assert _scorer().score_content(body).actionability == 65.0
+
+
+# --------------------------------------------------------------------------
+# The chunker's other splitter
+# --------------------------------------------------------------------------
+
+
+def test_chunking_a_body_with_no_headers_costs_a_time_a_request_can_afford():
+    """The horizontal-rule splitter carried the same defect as the frontmatter one.
+
+    ``\\n\\s*(?:---+|\\*\\*\\*+|___+)\\s*\\n`` -- ``\\s`` matches ``\\n``, so a body of
+    alternating newline and space admits many ways to reach the same rule and
+    is rescanned. It ran on every document with no markdown headers (the header
+    split returns one section, and this is what runs next), synchronously
+    inside ``async def _index_document_in_vector_store``, on content from
+    ``POST /knowledge/documents``. Measured before the fix: 0.31s at 8 KB,
+    17.9s at 64 KB -- and MAX_UPLOAD_SIZE_MB defaults to 10, so 64 KB is 0.6%
+    of the ceiling.
+
+    It lived here and in ``ingestion`` verbatim, which is the same
+    two-copies-drift story as the frontmatter grammar, so it is now one
+    definition both import.
+    """
+    from faultmaven.modules.knowledge.domain.services.content_chunker import (
+        ContentChunker,
+    )
+
+    body = "x" + _kb(NO_FENCE_UNIT, 64) + "x"
+
+    assert _once(ContentChunker().split, body) < _BUDGET_SECONDS
+
+
+# --------------------------------------------------------------------------
+# Frontmatter that is valid YAML but not a mapping
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["domain of the service", "this is a valid identifier line", "- a\n- b", "42"],
+    ids=["scalar-with-a-field-name", "scalar-containing-id", "sequence", "int"],
+)
+def test_non_mapping_frontmatter_does_not_reach_a_subscript(body):
+    """``yaml.safe_load`` returns whatever the YAML says, not always a dict.
+
+    ``---\\ndomain of the service\\n---`` parses to a plain string. Every
+    consumer then subscripts it: ``if key in fm`` is a SUBSTRING test on a str
+    and ``fm[key]`` raises ``TypeError``, reaching an unhandled 500 from
+    ``validate_content``, ``score_content`` and ``extract_frontmatter_metadata``
+    on caller-supplied content. ``or {}`` does not catch it -- a non-empty
+    string is truthy.
+    """
+    from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+        RunbookValidator,
+    )
+    from faultmaven.utils.frontmatter import (
+        extract_frontmatter_metadata,
+        parse_frontmatter,
+    )
+
+    doc = f"---\n{body}\n---\n# Title\n\nSome prose.\n"
+
+    assert parse_frontmatter(doc) == {}
+    assert extract_frontmatter_metadata(doc) == {}
+    RunbookValidator().validate_content(doc)  # must not raise
+    _scorer().score_content(doc)  # must not raise
 
 
 # --------------------------------------------------------------------------
@@ -312,34 +430,82 @@ def test_crlf_content_is_scored_and_validated_like_its_lf_twin():
 # The grammar has exactly one definition
 # --------------------------------------------------------------------------
 
-#: Matches a hand-rolled frontmatter-delimiter regex in a source line.
-#:
-#: The optional group before the dashes is not cosmetic. A first draft of this
-#: guard was anchored on ``r"^---`` alone and missed
-#: ``_re.match(r"^(---\\s*\\n)(.*?)(\\n---\\s*\\n)", ...)`` in
-#: ``conversion_service`` -- a tenth copy, sitting in the tree while the guard
-#: reported it clean, because that one wraps the delimiter in a capture group.
-_INLINE_GRAMMAR = re.compile(r'r"\^\(?-{3}')
+
+#: Three dashes NOT followed by `+`. The trailing `+` makes it a "one or more
+#: dashes" quantifier, which is the HORIZONTAL RULE pattern
+#: (`---+|\*\*\*+|___+`) -- a different grammar that legitimately contains three
+#: dashes and has its own single definition in
+#: `content_chunker.HR_SPLIT_BOUNDARY_RE`. Without the distinction this guard
+#: fires on that pattern and gets suppressed by the next person to hit it,
+#: which is how a guard stops guarding.
+_DELIMITER_LITERAL = re.compile(r"-{3}(?!\+)")
+
+
+def _is_delimiter_literal(literal: str) -> bool:
+    return bool(_DELIMITER_LITERAL.search(literal))
+
+
+def _inline_grammar_sites(path: pathlib.Path) -> list[str]:
+    """Every ``re.*`` call in ``path`` whose pattern literal contains ``---``.
+
+    Matched on the AST, not on source text. A first draft of this guard was a
+    source regex anchored on ``r"^---`` and had a blind spot the exact shape of
+    the bug it exists to prevent: it did not see
+    ``_re.match(r"^(---\\s*\\n)(.*?)(\\n---\\s*\\n)", ...)``, a tenth copy that
+    sat in the tree while the guard reported it clean. Nor would it have seen
+    ``r'^---'`` in single quotes, an ``rf"..."`` prefix, or a pattern with no
+    caret at all -- and ``re.match`` is already anchored, so omitting the caret
+    is the natural thing for the next author to do.
+
+    Looking at what is PASSED TO ``re`` rather than at how it is spelled
+    removes all of those at once.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    sites = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        base = node.func.value
+        if not isinstance(base, ast.Name) or base.id not in {"re", "_re"}:
+            continue
+        for arg in node.args[:1]:
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                if _is_delimiter_literal(arg.value):
+                    sites.append(f"{path.name}:{node.lineno}")
+            elif isinstance(arg, ast.JoinedStr):  # an f-string pattern
+                literal = "".join(
+                    v.value
+                    for v in arg.values
+                    if isinstance(v, ast.Constant) and isinstance(v.value, str)
+                )
+                if _is_delimiter_literal(literal):
+                    sites.append(f"{path.name}:{node.lineno}")
+    return sites
 
 
 def test_the_frontmatter_grammar_is_defined_in_exactly_one_place():
     """Nine copies of this regex drifted apart; that is the root defect.
 
-    Four were fixed and five left, so a document's YAML was stripped by the
+    Four were fixed and six left, so a document's YAML was stripped by the
     chunker but counted as body by the validator, and the two disagreed about
     where the document started. A guard on the count is the only thing that
-    stops the tenth copy being written — the fix itself does not.
+    stops the eleventh copy being written -- the fix itself does not.
+
+    Scope is ``faultmaven/`` AND ``tests/``: a test helper carried a copy of
+    this grammar and had already drifted from production, which is how a
+    fixture came to assert on a document shape the code under test could no
+    longer parse.
     """
-    root = pathlib.Path(__file__).resolve().parents[4] / "faultmaven"
-    canonical = root / "utils" / "frontmatter.py"
+    repo = pathlib.Path(__file__).resolve().parents[4]
+    canonical = repo / "faultmaven" / "utils" / "frontmatter.py"
     assert canonical.exists(), f"canonical grammar missing at {canonical}"
 
     offenders = sorted(
-        f"{p.relative_to(root.parent)}:{n}"
-        for p in root.rglob("*.py")
+        f"{p.relative_to(repo)}:{site.split(':')[1]}"
+        for root in ("faultmaven", "tests", "scripts")
+        for p in (repo / root).rglob("*.py")
         if p != canonical
-        for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
-        if _INLINE_GRAMMAR.search(line)
+        for site in _inline_grammar_sites(p)
     )
 
     assert offenders == [], (

@@ -53,6 +53,9 @@ from faultmaven.infrastructure.persistence.chromadb_store import (
 )
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.models import KnowledgeBaseDocument
+from faultmaven.modules.knowledge.domain.services.content_chunker import (
+    HR_SPLIT_BOUNDARY_RE,
+)
 from faultmaven.modules.knowledge.domain.write_scope import (
     metadata_scope_floor,
     require_write_scope,
@@ -622,8 +625,7 @@ class KnowledgeIngester:
             return sections
 
         # No headers found — try splitting on horizontal rules
-        hr_pattern = re.compile(r"\n\s*(?:---+|\*\*\*+|___+)\s*\n")
-        parts = hr_pattern.split(content)
+        parts = HR_SPLIT_BOUNDARY_RE.split(content)
         sections = [p.strip() for p in parts if p.strip()]
         if len(sections) > 1:
             return sections

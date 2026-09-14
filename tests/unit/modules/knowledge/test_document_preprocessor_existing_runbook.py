@@ -14,7 +14,6 @@ blocks the incident reports this pipeline exists to convert).
 
 from __future__ import annotations
 
-import re
 import tempfile
 from pathlib import Path
 

@@ -531,9 +531,13 @@ class RunbookValidator:
         if not match:
             return None
         try:
-            return yaml.safe_load(match.group(1))
-        except yaml.YAMLError as e:
+            loaded = yaml.safe_load(match.group(1))
+        except yaml.YAMLError:
             return None
+        # None distinguishes "no frontmatter" from "empty frontmatter" here, so
+        # this cannot just call parse_frontmatter. A non-mapping body is still
+        # refused rather than returned: `_validate_metadata` subscripts it.
+        return loaded if isinstance(loaded, dict) else None
 
     def _validate_metadata(
         self, metadata: Dict[str, Any], errors: List[str], warnings: List[str]
@@ -1368,9 +1372,16 @@ class QualityScorer:
         # most of what `score_content` spent. Semantics are unchanged: `^` under
         # MULTILINE already matches at every line start, so a `-` reachable by
         # crossing newlines is equally reachable anchored to its own line.
+        #
+        # Only the ANCHOR is tightened. The separator between `-` and the bold
+        # quadrant stays `\s*`, because narrowing that one is NOT
+        # semantics-preserving -- it stops matching a bullet whose quadrant sits
+        # on the following line -- and it buys nothing: with the anchor fixed,
+        # the hostile body costs 0.0052s either way. Measured: main 7.62s,
+        # both-narrowed 0.0052s, anchor-only 0.0052s.
         has_fix = re.search(
             r"(?im)^[ \t]*\*\*Interventions:\*\*"
-            rf"|^[ \t]*-[ \t]*\*\*({QUADRANT_ALTERNATION})\*\*",
+            rf"|^[ \t]*-\s*\*\*({QUADRANT_ALTERNATION})\*\*",
             content,
         )
         if has_fix:

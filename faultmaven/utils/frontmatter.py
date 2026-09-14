@@ -42,9 +42,6 @@ _LIST_FIELDS = ("symptom_class",)
 _DELIMITER = r"---[ \t]*\r?\n"
 FRONTMATTER_RE = re.compile(rf"^{_DELIMITER}(.*?)\r?\n{_DELIMITER}", re.DOTALL)
 
-# Backwards-compatible alias for the private name this module used to export.
-_FRONTMATTER_PATTERN = FRONTMATTER_RE
-
 
 def match_frontmatter(content: str) -> Optional[re.Match]:
     """The frontmatter block at the start of ``content``, or ``None``.
@@ -73,10 +70,19 @@ def parse_frontmatter(content: str) -> Dict[str, object]:
     if not match:
         return {}
     try:
-        return yaml.safe_load(match.group(1)) or {}
+        loaded = yaml.safe_load(match.group(1))
     except Exception as e:  # yaml raises a family, not one class
         logger.warning(f"Failed to parse frontmatter YAML: {e}")
         return {}
+    # `or {}` is not enough. A frontmatter body that is valid YAML but not a
+    # MAPPING -- `---\ndomain of the service\n---` parses to a plain string --
+    # used to be handed back as-is, and every consumer subscripts it:
+    # `if key in fm` is a SUBSTRING test on a str, and `fm[key]` then raises
+    # TypeError. That reached an unhandled 500 from `validate_content`,
+    # `score_content` and `extract_frontmatter_metadata` on caller-supplied
+    # content. `document_preprocessor` already guarded for this locally; the
+    # guard belongs here, where there is one copy of it.
+    return loaded if isinstance(loaded, dict) else {}
 
 
 def extract_frontmatter_metadata(content: str) -> Dict[str, str]:
@@ -93,15 +99,7 @@ def extract_frontmatter_metadata(content: str) -> Dict[str, str]:
         Dict with string values for any RAG fields found. Empty dict if
         no frontmatter or parsing fails.
     """
-    fm_match = match_frontmatter(content)
-    if not fm_match:
-        return {}
-
-    try:
-        fm = yaml.safe_load(fm_match.group(1)) or {}
-    except Exception as e:
-        logger.warning(f"Failed to parse frontmatter YAML: {e}")
-        return {}
+    fm = parse_frontmatter(content)
 
     result: Dict[str, str] = {}
 

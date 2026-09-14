@@ -2541,8 +2541,6 @@ class ConversionService:
             dm.severity = fm_meta.get("severity")
             dm.document_type = "runbook"
 
-            import re as _re
-
             import yaml
 
             fm_match = match_frontmatter(content)
@@ -2857,8 +2855,6 @@ status: draft
         enterprise_id: Optional[str] = None,
         is_platform_admin: bool = False,
     ) -> dict:
-        import re as _re
-
         import yaml
 
         # Whether this caller may mint global-scope drafts. Computed once (the
