@@ -313,7 +313,13 @@ def test_crlf_content_is_scored_and_validated_like_its_lf_twin():
 # --------------------------------------------------------------------------
 
 #: Matches a hand-rolled frontmatter-delimiter regex in a source line.
-_INLINE_GRAMMAR = re.compile(r'r"\^-{3}')
+#:
+#: The optional group before the dashes is not cosmetic. A first draft of this
+#: guard was anchored on ``r"^---`` alone and missed
+#: ``_re.match(r"^(---\\s*\\n)(.*?)(\\n---\\s*\\n)", ...)`` in
+#: ``conversion_service`` -- a tenth copy, sitting in the tree while the guard
+#: reported it clean, because that one wraps the delimiter in a capture group.
+_INLINE_GRAMMAR = re.compile(r'r"\^\(?-{3}')
 
 
 def test_the_frontmatter_grammar_is_defined_in_exactly_one_place():

@@ -36,6 +36,7 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     REQUIRED_SECTIONS,
     RunbookValidator,
 )
+from faultmaven.utils.frontmatter import match_frontmatter
 from tests.runbook_samples import valid_runbook
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
@@ -163,10 +164,19 @@ def test_incident_report_with_frontmatter_is_not_detected():
 
 
 def _split_sample() -> tuple[str, str]:
-    """Return the sample's (frontmatter block, body), split on the delimiters."""
-    match = re.match(r"^(---\s*\n.*?\n---\s*\n)(.*)$", valid_runbook(), re.DOTALL)
+    """Return the sample's (frontmatter block, body), split on the delimiters.
+
+    Splits with the SHARED grammar rather than a local copy. A local one drifts:
+    this helper used to carry ``^(---\\s*\\n.*?\\n---\\s*\\n)(.*)$``, which by the
+    end accepted frontmatter shapes production rejected -- so a fixture built
+    here split cleanly while ``_runbook_frontmatter_fields`` returned
+    ``frozenset()`` for the same text, and the test asserted on a document shape
+    the code under test could no longer parse.
+    """
+    sample = valid_runbook()
+    match = match_frontmatter(sample)
     assert match, "sample no longer opens with a frontmatter block"
-    return match.group(1), match.group(2)
+    return sample[: match.end()], sample[match.end() :]
 
 
 def test_runbook_frontmatter_without_the_body_is_not_detected():
