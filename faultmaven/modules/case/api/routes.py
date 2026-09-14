@@ -1131,9 +1131,9 @@ async def list_cases(
 
     Default Filtering Behavior:
     - INCLUDES empty cases (current_turn == 0) - newly created cases are visible
-    - INCLUDES closed/resolved cases (frontend categorizes by status)
+    - INCLUDES closed/resolved cases (the client categorizes by state)
     - Use include_empty=false to hide cases with no conversation yet
-    - Use status filter to further refine results
+    - Use the `state` filter to further refine results
 
     Creation-date bounds:
     - The window is HALF-OPEN, `[created_after, created_before)`, and lives in
