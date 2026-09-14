@@ -352,6 +352,53 @@ VALID_SYMPTOM_CLASSES = [
 
 MAX_TITLE_LENGTH = 100
 MIN_CONTENT_LENGTH = 500
+
+#: Caps on the markdown-link matcher below. Named, not inline in the regex, so
+#: the guard that pins them can import them instead of scraping the source.
+#:
+#: ‼ The URL cap bounds the portion AFTER the scheme -- the pattern spells
+#: `https?://` literally and applies the cap to what follows -- so a matched
+#: URL is up to `MAX_LINK_URL_AFTER_SCHEME_CHARS` plus the scheme. Naming it
+#: for the whole URL cost a test its boundary: `2048 - len("https://")` looks
+#: like the edge and is 8 characters inside it.
+MAX_LINK_TEXT_CHARS = 500
+MAX_LINK_URL_AFTER_SCHEME_CHARS = 2048
+
+#: External-reference detector, used only to decide whether a runbook cites
+#: anything (`_validate_quality`). It runs on CALLER-SUPPLIED content up to
+#: MAX_UPLOAD_SIZE_MB (default 10), synchronously inside an async handler, so
+#: its cost is an availability property, not a nicety (py/polynomial-redos,
+#: #1405).
+#:
+#: ‼ Two things about the spelling, both measured on `"[" * n`, the worst shape:
+#:
+#: * The character classes are EXACTLY the unbounded original's -- `[^\]]` and
+#:   `[^\)]`. Narrowing them to exclude newline and whitespace looked right
+#:   (link text does not span lines, URLs contain no whitespace) and was wrong
+#:   twice over: it made the hostile payload slower, and it silently stopped
+#:   matching titled links `[text](url "Title")`, a standard CommonMark form,
+#:   because the title sits inside the parens behind a space.
+#: * The POSSESSIVE quantifiers (`{1,n}+`, Python 3.11+) are what removes the
+#:   backtracking. Once a scan has consumed its run it never gives characters
+#:   back, so a `[` with no closing `)` after it fails at once instead of
+#:   retrying every length. A plain `{1,n}` cap bounds each attempt but still
+#:   makes n of them.
+#:
+#: 192 KB of `"["`:  unbounded 257s · plain cap 1.55s · possessive 0.054s.
+#: All three match the same links in real content; only this one is affordable.
+#:
+#: Which quantifier carries the weight is asymmetric, and the mutation control
+#: is what established it rather than the reasoning above: dropping `+` from
+#: the TEXT cap puts 192 KB of brackets back over the one-second budget, while
+#: dropping it from the URL cap leaves the pattern linear and costs about 3x a
+#: constant factor. The URL one stays because it is free and the asymmetry is a
+#: property of the payloads reached today, not of the grammar — but there is
+#: deliberately no test asserting it, because inventing a guard for something
+#: measured not to be a risk is how a suite fills with tests that pass for the
+#: wrong reason.
+EXTERNAL_LINK_RE = re.compile(
+    rf"\[([^\]]{{1,{MAX_LINK_TEXT_CHARS}}}+)\]\(https?://[^\)]{{1,{MAX_LINK_URL_AFTER_SCHEME_CHARS}}}+\)"
+)
 MAX_TAG_COUNT = 10
 # Hard limit on a Cause **Statement** (the match surface). Mirrors the kb-toolkit
 # generator/validator (``config.validation.cause_statement_max_chars``) and the
@@ -1144,7 +1191,7 @@ class RunbookValidator:
         if not re.search(r"```(?:bash|shell|sh)", content):
             warnings.append("No shell command examples found")
 
-        links = re.findall(r"\[([^\]]+)\]\(https?://[^\)]+\)", content)
+        links = EXTERNAL_LINK_RE.findall(content)
         if len(links) == 0:
             warnings.append("No external references found")
 

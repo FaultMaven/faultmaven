@@ -61,6 +61,17 @@ FENCE_UNIT = FENCE
 #: A body with NO fences at all: the shape `has_fix` was quadratic on, and the
 #: shape the first fix and its tests were both blind to.
 NO_FENCE_UNIT = "\n "
+#: A bare `[`, repeated. A THIRD hostile shape: it carries no fences, no
+#: newlines and no whitespace, so neither payload above reaches the link
+#: regex's backtracking at all.
+#:
+#: A BARE bracket, not `"[aaaa](http://x"`. The first version of this guard
+#: used the link-shaped payload and the mutation control showed why that was
+#: the wrong choice: on the unbounded pattern the link-shaped body costs 1.5s
+#: at 192 KB while bare brackets cost 257s, so the cheap shape was being used
+#: to certify the expensive one. Same error as testing well-formed fences for
+#: a bug that only bites on bare ones.
+LINK_UNIT = "["
 
 _REPS = 3
 
@@ -160,6 +171,112 @@ _BUDGET_SECONDS = 1.0
 def test_scoring_a_fence_heavy_body_costs_a_time_a_request_can_afford():
     """The originally reported shape. 12.2s at 24 KB with the lazy `.*?`."""
     assert _once(_scorer().score_content, _kb(FENCE_UNIT, 24)) < _BUDGET_SECONDS
+
+
+def test_validation_of_bracket_heavy_content_costs_a_time_a_request_can_afford():
+    """The external-link matcher, on the shape that costs the most.
+
+    ``\\[([^\\]]+)\\]\\(https?://[^\\)]+\\)`` is unbounded on both sides, so every
+    ``[`` starts a scan to the end of the input looking for a closing paren
+    that never arrives, and the next ``[`` does it again. On main, 192 KB of
+    bare brackets costs **257s**; ``MAX_UPLOAD_SIZE_MB`` defaults to 10.
+
+    The fix is POSSESSIVE quantifiers, not a narrower character class and not a
+    plain cap. See ``EXTERNAL_LINK_RE``'s own comment for why both of those
+    were tried and rejected.
+    """
+    from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+        RunbookValidator,
+    )
+
+    seconds = _fastest_elapsed(RunbookValidator().validate_content, _kb(LINK_UNIT, 192))
+
+    assert seconds < _BUDGET_SECONDS, (
+        f"{seconds:.3f}s to validate 192 KB of brackets — the unbounded "
+        "pattern took 257s on the same input"
+    )
+
+
+def test_the_link_pattern_matches_exactly_what_the_unbounded_one_did():
+    """Equivalence against the ORIGINAL pattern, over the shipped corpus.
+
+    The previous version of this guard counted links in a 22-link synthetic
+    fixture. That could not see a narrowing, because the fixture only contained
+    the forms the narrowed pattern still matched — and a narrowed pattern did
+    ship and did stop matching titled links. Comparing against the unbounded
+    original over real runbooks is the check that would have caught it.
+    """
+    from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+        EXTERNAL_LINK_RE,
+    )
+
+    unbounded = re.compile(r"\[([^\]]+)\]\(https?://[^\)]+\)")
+
+    disagreements = []
+    for path in _runbook_corpus():
+        body = path.read_text(encoding="utf-8")
+        got, want = len(EXTERNAL_LINK_RE.findall(body)), len(unbounded.findall(body))
+        if got != want:
+            disagreements.append(f"{path.name}: bounded={got} unbounded={want}")
+
+    assert (
+        disagreements == []
+    ), f"the link pattern stopped matching what it used to: {disagreements}"
+
+
+@pytest.mark.parametrize(
+    "markdown",
+    [
+        "[the docs](https://example.com/a/b?c=d)",
+        # CommonMark titled link. The narrowed pattern that shipped in the
+        # first version of this fix returned ZERO for this, because the title
+        # sits inside the parens behind a space and the class excluded \s.
+        '[the docs](https://example.com/a "The Docs")',
+        # Link text may span lines in CommonMark; excluding \n dropped these.
+        "[the\ndocs](https://example.com/a)",
+        "[x](https://example.org/page?a=1&b=2#frag)",
+    ],
+    ids=["plain", "titled", "multiline-text", "query-and-fragment"],
+)
+def test_real_markdown_link_forms_are_still_counted(markdown):
+    """A pattern that stops matching a real form fails silently.
+
+    The only consumer is a ``len(links) == 0`` warning, so nothing breaks — the
+    runbook just stops being credited with its references.
+    """
+    from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+        EXTERNAL_LINK_RE,
+    )
+
+    assert EXTERNAL_LINK_RE.findall(markdown), f"stopped matching: {markdown!r}"
+
+
+def test_the_link_caps_are_where_the_constants_say_they_are():
+    """Pins the caps at their actual values, which the old fixture did not.
+
+    Its longest link text was 8 characters and its longest post-scheme URL 21,
+    so caps of ``{1,8}`` and ``{1,21}`` — 1.6% and 1.0% of the shipped values —
+    still returned the expected count. A tightening to ``{1,64}``, which would
+    drop any GitHub permalink, would have left it green.
+    """
+    from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+        EXTERNAL_LINK_RE,
+        MAX_LINK_TEXT_CHARS,
+        MAX_LINK_URL_AFTER_SCHEME_CHARS,
+    )
+
+    def link(text_len: int, after_scheme_len: int) -> str:
+        return f"[{'t' * text_len}](https://{'u' * after_scheme_len})"
+
+    # At the cap: matched. One over: not. The URL cap bounds what follows the
+    # scheme, not the whole URL -- `2048 - len("https://")` reads like the edge
+    # and sits 8 characters inside it, which is how the first version of this
+    # test passed against a boundary it never reached.
+    assert EXTERNAL_LINK_RE.findall(link(MAX_LINK_TEXT_CHARS, 8))
+    assert not EXTERNAL_LINK_RE.findall(link(MAX_LINK_TEXT_CHARS + 1, 8))
+
+    assert EXTERNAL_LINK_RE.findall(link(8, MAX_LINK_URL_AFTER_SCHEME_CHARS))
+    assert not EXTERNAL_LINK_RE.findall(link(8, MAX_LINK_URL_AFTER_SCHEME_CHARS + 1))
 
 
 def test_scoring_a_body_with_no_fences_costs_a_time_a_request_can_afford():
