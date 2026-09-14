@@ -2198,6 +2198,7 @@ async def health_check_dependencies():
                     "response_time_ms": round((time.time() - service_start) * 1000, 2),
                 }
             except Exception as e:
+                logger.warning(f"Service probe failed for {service_name}: {e}")
                 service_tests[service_name] = {
                     "available": False,
                     "error": "Service probe failed",

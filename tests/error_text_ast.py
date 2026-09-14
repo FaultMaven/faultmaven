@@ -69,17 +69,42 @@ def _mentions(node: ast.AST, name: str) -> bool:
     return any(_mentions(child, name) for child in ast.iter_child_nodes(node))
 
 
-def _root_name(target: ast.AST) -> str | None:
-    """The name a binding ultimately writes through.
+def _written_name(target: ast.AST) -> str | None:
+    """The name a binding writes through, as the RETURN side will spell it.
 
-    ``d["k"]``, ``d.attr`` and ``d["k"]["j"]`` all write into ``d``. Treating
-    them as bindings of ``d`` is an over-approximation -- the exception reaches
-    one key, not the whole object -- but the object is what gets returned, so
-    the whole object is what carries the text onto the wire.
+    Subscripts collapse to the container: ``d["k"]`` and ``d["k"]["j"]`` both
+    write into ``d``, the object that later gets returned. That
+    over-approximation is the point -- the exception reaches one key, but the
+    whole object goes onto the wire.
+
+    Attributes do NOT collapse. ``self.last_error = str(e)`` writes
+    ``self.last_error``, not ``self``, and collapsing it to ``self`` made every
+    ``return`` in the method that merely mentions ``self`` a reported leak --
+    ``return {"status": self.status}`` among them. That is not a hypothetical:
+    ``self.<field> = str(e)`` is an ordinary pattern, and
+    ``infrastructure/health/component_monitor.py`` alone reported twelve
+    offenders, nearly all of them this. A guard that cries wolf is one the next
+    person to hit it weakens, which this module's own docstring says out loud.
     """
-    while isinstance(target, (ast.Subscript, ast.Attribute)):
-        target = target.value
-    return target.id if isinstance(target, ast.Name) else None
+    if isinstance(target, ast.Name):
+        return target.id
+    if isinstance(target, ast.Attribute):
+        return _dotted_name(target)
+    if isinstance(target, ast.Subscript):
+        return _written_name(target.value)
+    return None
+
+
+def _dotted_name(node: ast.AST) -> str | None:
+    """``self.a.b`` -> ``"self.a.b"``; anything else -> ``None``."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(node.id)
+    return ".".join(reversed(parts))
 
 
 def _local_assignments(handler: ast.ExceptHandler) -> dict[str, list[ast.AST]]:
@@ -106,7 +131,13 @@ def _local_assignments(handler: ast.ExceptHandler) -> dict[str, list[ast.AST]]:
     def bind(target: ast.AST, value: ast.AST | None) -> None:
         if value is None:
             return
-        name = target.id if isinstance(target, ast.Name) else _root_name(target)
+        if isinstance(target, (ast.Tuple, ast.List)):
+            # `msg, code = str(e), 500` binds each element. Without this the
+            # whole statement was skipped and `msg` looked clean.
+            for element in target.elts:
+                bind(element, value)
+            return
+        name = _written_name(target)
         if name:
             assigns.setdefault(name, []).append(value)
 
@@ -118,6 +149,19 @@ def _local_assignments(handler: ast.ExceptHandler) -> dict[str, list[ast.AST]]:
             bind(node.target, node.value)
         elif isinstance(node, ast.NamedExpr):
             bind(node.target, node.value)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            # A container MUTATED by method call is bound just as effectively
+            # as one assigned into: `out.append({"error": str(e)})` and
+            # `res.update(...)` are the natural siblings of the
+            # `cleanup_results["k"] = ...` shape this analysis already covers,
+            # and both reported clean. Any method is accepted rather than a
+            # denylist of append/update/extend/setdefault -- the receiver is
+            # what gets returned either way, and guessing which names mutate
+            # is how the next spelling slips through.
+            receiver = _written_name(node.func.value)
+            if receiver:
+                for value in [*node.args, *(kw.value for kw in node.keywords)]:
+                    assigns.setdefault(receiver, []).append(value)
     return assigns
 
 
@@ -227,14 +271,35 @@ def _own_nodes(fn: ast.AST):
         stack.extend(ast.iter_child_nodes(node))
 
 
-def _tainted_names(handlers: list[ast.ExceptHandler]) -> set[str]:
-    """Names bound inside these handlers to something carrying the exception."""
-    tainted: set[str] = set()
+def _tainted_names(handlers: list[ast.ExceptHandler]) -> dict[str, int]:
+    """Names bound in these handlers to the exception, and where that happens.
+
+    The value is the line of the EARLIEST handler that taints the name. A
+    ``return`` above that line cannot be carrying the text -- it has already
+    executed by the time the handler can run -- and reporting it is the
+    cry-wolf mode this module is careful about::
+
+        def f(flag):
+            data = build()
+            if flag:
+                return {"data": data}      # <- cannot be a leak
+            try:
+                do()
+            except Exception as e:
+                data = {"error": str(e)}
+            return data                    # <- is one
+
+    Line order is a coarse stand-in for reachability, not a real flow analysis.
+    It is sound for the shape that matters (a handler stashing text that a
+    later return carries) and it removes the one false positive that shape's
+    guard produced.
+    """
+    tainted: dict[str, int] = {}
     for handler in handlers:
         assigns = _local_assignments(handler)
         for name, values in assigns.items():
             if any(_carries_exception(v, handler.name, assigns) for v in values):
-                tainted.add(name)
+                tainted[name] = min(tainted.get(name, handler.lineno), handler.lineno)
     return tainted
 
 
@@ -263,9 +328,12 @@ def returned_body_leak_sites(path: pathlib.Path) -> list[str]:
     A ``raise`` outside the handler carrying a tainted local is the same class
     and is deliberately **not** covered: no such site exists in the tree today,
     and widening a guard past its evidence is how false positives arrive.
+
+    Results are sorted. ``_own_nodes`` pops LIFO, so an unsorted list reports
+    line numbers out of order, which reads as a bug in the guard.
     """
     offenders: list[str] = []
-    tree = ast.parse(path.read_text())
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     for fn in ast.walk(tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -274,21 +342,44 @@ def returned_body_leak_sites(path: pathlib.Path) -> list[str]:
         if not handlers:
             continue
         tainted = _tainted_names(handlers)
-        in_handler = {id(n) for h in handlers for n in ast.walk(h)}
+        # One pass: which handler owns each node, and each handler's assignment
+        # map. The fallback below used to rebuild both per return per handler.
+        owner: dict[int, ast.ExceptHandler] = {
+            id(n): h for h in handlers for n in ast.walk(h)
+        }
+        assigns_by_handler = {id(h): _local_assignments(h) for h in handlers}
+
         for node in own:
             if not isinstance(node, ast.Return) or node.value is None:
                 continue
             leaks = any(
-                n.id in tainted for n in ast.walk(node.value) if isinstance(n, ast.Name)
+                name in tainted and node.lineno > tainted[name]
+                for name in _names_in(node.value)
             )
-            if not leaks and id(node) in in_handler:
-                for handler in handlers:
-                    if id(node) in {id(n) for n in ast.walk(handler)}:
-                        leaks = _carries_exception(
-                            node.value, handler.name, _local_assignments(handler)
-                        )
-                        if leaks:
-                            break
+            if not leaks:
+                handler = owner.get(id(node))
+                if handler is not None:
+                    leaks = _carries_exception(
+                        node.value, handler.name, assigns_by_handler[id(handler)]
+                    )
             if leaks:
                 offenders.append(f"{path.name}:{node.lineno}")
-    return offenders
+    return sorted(offenders, key=lambda s: int(s.rsplit(":", 1)[1]))
+
+
+def _names_in(expr: ast.AST) -> set[str]:
+    """Plain and dotted names an expression reads.
+
+    Dotted too, because ``self.last_error`` is bound and read under that
+    spelling -- collapsing it to ``self`` is what made every return mentioning
+    ``self`` look like a leak.
+    """
+    found: set[str] = set()
+    for node in ast.walk(expr):
+        if isinstance(node, ast.Name):
+            found.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            dotted = _dotted_name(node)
+            if dotted:
+                found.add(dotted)
+    return found

@@ -64,14 +64,64 @@ def _main_source() -> pathlib.Path:
 
 
 @pytest.mark.unit
-def test_no_500_site_interpolates_the_exception():
-    """No 5xx ``HTTPException`` in ``main.py`` carries ``e`` into the response."""
-    offenders = http_exception_leak_sites(_main_source())
+def test_main_raises_no_http_exception_so_only_the_returned_body_guard_applies():
+    """States the fact the guard below depends on, instead of implying it.
 
-    assert offenders == [], (
-        "5xx HTTPException sites carrying the caught exception into the "
-        "response (leaks internal text verbatim; use a static message and log "
-        f"server-side): {offenders}"
+    ``main.py`` contains **zero** ``raise HTTPException`` sites -- its health,
+    readiness and metrics endpoints degrade by RETURNING a body rather than
+    raising. So running ``http_exception_leak_sites`` over it passes
+    unconditionally, and an earlier version of this file did exactly that while
+    sharing a handler-count floor with the returned-body test, which made the
+    vacuous half look guarded.
+
+    Asserting the count instead makes the vacuity explicit and gives it a job:
+    the first ``raise HTTPException`` added to ``main.py`` trips this test, and
+    whoever adds it has to decide whether the 5xx guard now needs to run here.
+    """
+    source = _main_source().read_text(encoding="utf-8")
+    raise_sites = [
+        node.lineno
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Raise)
+        and isinstance(node.exc, ast.Call)
+        and (getattr(node.exc.func, "id", None) or getattr(node.exc.func, "attr", None))
+        == "HTTPException"
+    ]
+
+    assert raise_sites == [], (
+        "main.py now raises HTTPException at these lines; the 5xx leak guard "
+        f"(http_exception_leak_sites) should be enabled for this file: {raise_sites}"
+    )
+
+
+@pytest.mark.unit
+def test_no_handler_swallows_the_exception_without_logging_it():
+    """Redacting the body must move the diagnostic, not delete it.
+
+    Every site swept here already logged the exception, so replacing the
+    returned text with a static message cost nothing. One did not -- the
+    service probe in ``/health/dependencies`` bound ``as e`` and, after the
+    sweep, read it nowhere: the text had been going only to the caller, and
+    redacting it discarded the only record of seven services' failures.
+
+    ``ruff``'s F841 does not catch this: ``pyproject.toml`` exempts
+    ``faultmaven/main.py``.
+    """
+    tree = ast.parse(_main_source().read_text(encoding="utf-8"))
+    silent = [
+        handler.lineno
+        for handler in ast.walk(tree)
+        if isinstance(handler, ast.ExceptHandler)
+        and handler.name
+        and not any(
+            isinstance(node, ast.Name) and node.id == handler.name
+            for node in ast.walk(handler)
+        )
+    ]
+
+    assert silent == [], (
+        "except handlers that bind the exception and never read it -- the text "
+        f"is discarded, not redacted; log it before returning: {silent}"
     )
 
 
