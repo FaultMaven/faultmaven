@@ -73,6 +73,7 @@ from faultmaven.modules.case.domain.owned_models.report import CaseReport, Repor
 from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.modules.case.infrastructure.case_scope import case_scope_where
+from faultmaven.modules.case.infrastructure.created_bounds import created_bounds_where
 from faultmaven.utils.datetime import parse_utc_timestamp
 
 # TYPE_CHECKING imports not needed - models imported directly above
@@ -1010,8 +1011,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 widens owner-only scope to ``owned ∪ shared-to-my-teams``.
             restrict_case_ids: Filter-by-team facet — narrows the result to one
                 team's shared case ids (the caller resolves/authorizes the team).
-            created_after: Inclusive lower bound on ``created_at``
-            created_before: Inclusive upper bound on ``created_at``
+            created_after: INCLUSIVE lower bound on ``created_at``
+            created_before: EXCLUSIVE upper bound — the window is
+                ``[created_after, created_before)``
 
         Returns:
             Tuple of (cases, total_count)
@@ -1054,16 +1056,14 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             if not include_empty:
                 where_clauses.append("current_turn > 0")
 
-            # Creation-date bounds, INCLUSIVE on both ends. ``cases.created_at``
-            # is indexed ``timestamptz``; the bounds arrive UTC-aware (the
-            # CaseListFilter validator attaches UTC to a naive one), which is
-            # what asyncpg requires to compare against it.
-            if created_after is not None:
-                where_clauses.append("created_at >= :created_after")
-                params["created_after"] = created_after
-            if created_before is not None:
-                where_clauses.append("created_at <= :created_before")
-                params["created_before"] = created_before
+            # Creation-date window `[created_after, created_before)`. The helper
+            # normalizes to UTC HERE rather than trusting a caller two layers up
+            # to have done it: ``created_at`` is ``timestamptz`` and asyncpg
+            # raises on a naive bound, which CaseService.list_user_cases would
+            # then swallow into an empty list.
+            where_clauses.extend(
+                created_bounds_where(params, created_after, created_before)
+            )
 
             where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 

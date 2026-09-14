@@ -83,6 +83,50 @@ except ImportError:
     IBusinessLogicWorkflowEngine = Any
 
 
+def _within_created_window(cases, filters):
+    """Apply `[created_after, created_before)` to an in-memory list of cases.
+
+    Shared by ``MinimalCaseService.list_user_cases`` and ``count_user_cases`` so
+    the page and its count cannot apply different windows — the degraded
+    service's whole job is to behave like the real one, and two copies of a
+    predicate is how that stops being true.
+
+    Both sides are normalized to UTC: an aware bound compared against a naive
+    ``created_at`` raises TypeError, which the caller's blanket handler would
+    turn into an empty list rather than an error. Mirrors the rule stated in
+    ``modules/case/infrastructure/created_bounds.py``.
+    """
+    from datetime import timezone
+
+    def _utc(value):
+        if value is None:
+            return None
+        return (
+            value.replace(tzinfo=timezone.utc)
+            if value.tzinfo is None
+            else value.astimezone(timezone.utc)
+        )
+
+    after = _utc(getattr(filters, "created_after", None))
+    before = _utc(getattr(filters, "created_before", None))
+    if after is None and before is None:
+        return cases
+
+    def _keep(case):
+        created = _utc(getattr(case, "created_at", None))
+        if created is None:
+            # A case with no creation timestamp cannot be placed in the window.
+            # Excluding it is the answer that does not claim a date it lacks.
+            return False
+        if after is not None and created < after:
+            return False
+        if before is not None and created >= before:
+            return False
+        return True
+
+    return [case for case in cases if _keep(case)]
+
+
 class DIContainer(BaseDIContainer):
     """Singleton dependency injection container for centralized component management.
 
@@ -1068,6 +1112,14 @@ class DIContainer(BaseDIContainer):
                             for case in user_cases
                             if case.owner_id == filters.owner_id
                         ]
+                    # Creation-date window `[created_after, created_before)`.
+                    # Honoured HERE too: every line of this stand-in runs in
+                    # production the moment the repository is missing, and a
+                    # bound it ignored would answer 200 with the UNFILTERED
+                    # list — the exact silence the date bounds were added to
+                    # end. Both `list_user_cases` and `count_user_cases` apply
+                    # it, so the page and the count cannot disagree.
+                    user_cases = _within_created_window(user_cases, filters)
                 else:
                     # Phase 1: No filters provided - apply default exclusions
                     # Only show active (non-terminal) cases by default
@@ -1179,6 +1231,14 @@ class DIContainer(BaseDIContainer):
                             for case in user_cases
                             if case.owner_id == filters.owner_id
                         ]
+                    # Creation-date window `[created_after, created_before)`.
+                    # Honoured HERE too: every line of this stand-in runs in
+                    # production the moment the repository is missing, and a
+                    # bound it ignored would answer 200 with the UNFILTERED
+                    # list — the exact silence the date bounds were added to
+                    # end. Both `list_user_cases` and `count_user_cases` apply
+                    # it, so the page and the count cannot disagree.
+                    user_cases = _within_created_window(user_cases, filters)
                 else:
                     # Phase 1: No filters provided - apply default exclusions (same as list_user_cases)
                     # Only show active (non-terminal) cases by default

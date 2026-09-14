@@ -79,6 +79,7 @@ from faultmaven.modules.case.contracts import (
 from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.modules.case.infrastructure.case_scope import case_scope_where
+from faultmaven.modules.case.infrastructure.created_bounds import created_bounds_where
 from faultmaven.utils.serialization import to_json_compatible
 
 if TYPE_CHECKING:
@@ -1271,16 +1272,13 @@ class SQLiteCaseRepository(CaseRepository):
             if not include_empty:
                 where_clauses.append("current_turn > 0")
 
-            # Creation-date bounds, INCLUSIVE on both ends. Bound as datetime
-            # objects, exactly as ``save`` binds ``created_at`` on the way in —
-            # the same driver adapter renders both sides, so the stored value
-            # and the bound compare in the one encoding.
-            if created_after is not None:
-                where_clauses.append("created_at >= :created_after")
-                params["created_after"] = created_after
-            if created_before is not None:
-                where_clauses.append("created_at <= :created_before")
-                params["created_before"] = created_before
+            # Creation-date window `[created_after, created_before)`. The
+            # normalization to UTC is NOT cosmetic here: this column is stored
+            # as adapter-rendered TEXT, so the comparison is lexicographic and
+            # blind to the offset suffix — see created_bounds.py.
+            where_clauses.extend(
+                created_bounds_where(params, created_after, created_before)
+            )
 
             where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 

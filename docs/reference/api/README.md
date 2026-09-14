@@ -1481,13 +1481,19 @@ Default Filtering Behavior:
 - Use status filter to further refine results
 
 Creation-date bounds:
-- created_after/created_before bound `created_at` INCLUSIVELY, in the same
-  WHERE clause as every other filter, so `total_count` describes the same
-  set as the page.
-- They are INSTANTS, not calendar days. A client offering a date picker
-  resolves the day to the instants ITS user means — start and end of day in
-  the browser's timezone — because a bare date would otherwise silently
-  mean the UTC day.
+- The window is HALF-OPEN, `[created_after, created_before)`, and lives in
+  the same WHERE clause as every other filter, so `total_count` describes
+  the same set as the page.
+- Half-open because an inclusive upper bound is not expressible by a client
+  whose clock stops at milliseconds — which is every browser — while
+  `created_at` keeps microseconds. A day bounded at 23:59:59.999 silently
+  drops a case created at 23:59:59.9997.
+- They are INSTANTS, not calendar days. To select one day, send that day's
+  first instant and the FOLLOWING day's first instant, both resolved in the
+  CLIENT's timezone: only the client knows which day the user meant.
+- Send an offset. A bare naive value is read as UTC, and any offset is
+  normalized to UTC before it reaches the query, so two spellings of one
+  instant always answer alike.
 
 **Tags:** `cases`
 
@@ -1498,8 +1504,8 @@ Creation-date bounds:
 - `state` (query, optional) — Filter by state
 - `source` (query, optional) — Filter by case source
 - `team_id` (query, optional) — Filter to cases shared with this Team (ADR-013 §D4). Only Teams the caller belongs to yield results; ignored in standalone (no teams).
-- `created_after` (query, optional) — Only cases created at or after this instant (inclusive). ISO-8601; a value without an offset is read as UTC.
-- `created_before` (query, optional) — Only cases created at or before this instant (inclusive). ISO-8601; a value without an offset is read as UTC.
+- `created_after` (query, optional) — Only cases created at or after this instant — INCLUSIVE. ISO-8601 with an offset; a value without one is read as UTC.
+- `created_before` (query, optional) — Only cases created strictly before this instant — EXCLUSIVE. ISO-8601 with an offset; a value without one is read as UTC. To select a calendar day, pass that day's first instant as created_after and the FOLLOWING day's first instant here.
 - `limit` (query, optional) — Items per page
 - `offset` (query, optional) — Number of items to skip
 - `include_empty` (query, optional) — Include cases with current_turn == 0 (newly created)

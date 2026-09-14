@@ -38,19 +38,32 @@ asked to accept, and it belongs to a person.
 # long enough that it was eventually deleted as a lie
 # (faultmaven-dashboard#51). This binds them.
 #
-# Both bounds are INCLUSIVE (`created_at >= created_after`,
-# `created_at <= created_before`) and are applied in the same WHERE clause as
-# every other predicate, so `total_count` counts the same set the page comes
-# from — the pagination-soundness rule `include_empty` already follows, for the
-# same reason: a bound applied after the repository paginated would thin an
-# already-sliced page.
+# THE WINDOW IS HALF-OPEN: `[created_after, created_before)`, inclusive lower
+# and EXCLUSIVE upper. An inclusive upper bound is not expressible by a client
+# whose clock stops at milliseconds — which is every browser, because
+# `Date.prototype.toISOString` does — while `created_at` keeps microseconds. A
+# day bounded at 23:59:59.999 silently drops a case created at 23:59:59.9997,
+# which is the same class of quiet row-loss this entry exists to remove. To
+# select a calendar day, send that day's first instant and the FOLLOWING day's.
 #
-# THEY ARE INSTANTS, NOT CALENDAR DAYS, and that is the part a client has to
-# read. The server cannot know which day "2026-09-14" meant, so it does not
-# guess: a client offering a date picker resolves the day to the first and last
-# instant of that day IN ITS OWN TIMEZONE and sends those. A bare naive value is
-# read as UTC — the only reading that does not silently shift by whatever zone
-# the server happens to run in.
+# THEY ARE INSTANTS, NOT CALENDAR DAYS. The server cannot know which day
+# "2026-09-14" meant, so it does not guess: the client resolves the day in ITS
+# OWN timezone. But any offset is NORMALIZED TO UTC before it reaches the query,
+# and that is load-bearing rather than tidy — on SQLite `created_at` is stored
+# as adapter-rendered TEXT and compared lexicographically, so
+# `2026-09-11T00:00:00+05:30` and the identical instant written
+# `2026-09-10T18:30:00Z` returned DIFFERENT rows until the bound was converted.
+# A naive value is read as UTC, the only reading that does not shift by whatever
+# zone the server happens to run in.
+#
+# An INVERTED window (`created_after > created_before`) is a 422, not an empty
+# list: unsatisfiable by construction, it would otherwise answer "you have no
+# cases in that range" when the truth is "you swapped the ends".
+#
+# Both predicates live in the same WHERE clause as every other filter, so
+# `total_count` counts the same set the page comes from — the pagination rule
+# `include_empty` already follows, and for the same reason: a bound applied
+# after the repository paginated would thin an already-sliced page.
 #
 # Additive: every existing call is unaffected, both params default to None.
 #

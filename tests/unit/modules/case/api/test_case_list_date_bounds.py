@@ -14,7 +14,7 @@ into the filter it built. A test that only checked the status code would have
 passed throughout the entire life of the bug.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -114,6 +114,107 @@ async def test_a_naive_bound_is_read_as_utc(build_app, call_api):
 
     assert captured[0].created_after == datetime(2026, 9, 10, tzinfo=timezone.utc)
     assert captured[0].created_after.tzinfo is not None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_offset_bound_is_CONVERTED_to_utc(build_app, call_api):
+    """An aware bound is converted, not merely passed along.
+
+    Anchoring naive values was the first version of this and left the half that
+    matters undone. On SQLite the bound is compared lexicographically against
+    adapter-rendered TEXT, so ``2026-09-11T00:00:00+05:30`` and the identical
+    instant written ``2026-09-10T18:30:00Z`` returned DIFFERENT rows — and the
+    route's own description invites the first spelling.
+    """
+    captured: list = []
+    app = build_app(case_service=_capturing_case_service(captured))
+
+    await call_api(
+        app,
+        "GET",
+        "/api/v1/cases",
+        params={"created_after": "2026-09-11T00:00:00+05:30"},
+    )
+
+    bound = captured[0].created_after
+    assert bound == datetime(2026, 9, 10, 18, 30, tzinfo=timezone.utc)
+    # The same moment, and now also the same SPELLING — which is what the
+    # string comparison downstream actually reads.
+    assert bound.utcoffset() == timedelta(0)
+    assert bound.isoformat() == "2026-09-10T18:30:00+00:00"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_inverted_window_is_refused_not_served_empty(build_app, call_api):
+    """`created_after > created_before` is a 422, not an empty list.
+
+    It is unsatisfiable by construction, so serving it returns "you have no
+    cases in that range" when the truth is "you swapped the ends" — the same
+    silence these bounds exist to end, wearing a different hat.
+    """
+    captured: list = []
+    app = build_app(case_service=_capturing_case_service(captured))
+
+    response = await call_api(
+        app,
+        "GET",
+        "/api/v1/cases",
+        params={
+            "created_after": "2026-09-12T00:00:00Z",
+            "created_before": "2026-09-10T00:00:00Z",
+        },
+    )
+
+    assert response.status_code == 422
+    assert captured == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_inverted_window_is_judged_on_the_INSTANTS(build_app, call_api):
+    """Two spellings of a valid window must not look inverted to each other.
+
+    `2026-09-11T00:00:00+05:30` is EARLIER than `2026-09-10T20:00:00Z`, and a
+    comparison made on the wall-clock digits rather than the instants would
+    refuse this perfectly ordinary range.
+    """
+    captured: list = []
+    app = build_app(case_service=_capturing_case_service(captured))
+
+    response = await call_api(
+        app,
+        "GET",
+        "/api/v1/cases",
+        params={
+            "created_after": "2026-09-11T00:00:00+05:30",  # = 18:30Z
+            "created_before": "2026-09-10T20:00:00Z",
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(captured) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_empty_window_is_allowed(build_app, call_api):
+    """`[x, x)` is degenerate but expressible — only a strictly inverted pair is refused."""
+    captured: list = []
+    app = build_app(case_service=_capturing_case_service(captured))
+
+    response = await call_api(
+        app,
+        "GET",
+        "/api/v1/cases",
+        params={
+            "created_after": "2026-09-10T00:00:00Z",
+            "created_before": "2026-09-10T00:00:00Z",
+        },
+    )
+
+    assert response.status_code == 200
 
 
 @pytest.mark.unit

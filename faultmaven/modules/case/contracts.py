@@ -142,10 +142,15 @@ class ICaseRepository(Protocol):
         shares (the caller resolves and authorizes the team). ``None`` = no facet;
         a non-``None`` empty list matches nothing.
 
-        ``created_after``/``created_before`` bound ``created_at`` INCLUSIVELY
-        (``>=`` / ``<=``). Like ``include_empty`` they belong in the query, not
-        in a Python post-filter: a bound applied after pagination would drop
-        rows from an already-sliced page and disagree with the total.
+        ``created_after``/``created_before`` bound ``created_at`` as a HALF-OPEN
+        window, ``[created_after, created_before)`` — inclusive lower, exclusive
+        upper. Implementations normalize both to UTC first; see
+        ``infrastructure/created_bounds.py`` for why each of those is load-
+        bearing rather than a matter of taste.
+
+        Like ``include_empty`` they belong in the query, not in a Python
+        post-filter: a bound applied after pagination would drop rows from an
+        already-sliced page and disagree with the total.
         """
         ...
 

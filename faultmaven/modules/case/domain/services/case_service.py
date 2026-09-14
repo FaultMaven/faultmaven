@@ -1198,14 +1198,18 @@ class CaseService(ICaseService):
 
         Args:
             user_id: User identifier
-            filters: Optional filter criteria (include_empty, status, limit, offset, etc.)
+            filters: Optional filter criteria (state, source, team_id, limit,
+                offset, include_empty, created_after, created_before) — the same
+                list ``ICaseService.list_user_cases`` documents. It said
+                ``status`` until now, a name the #405 rename removed from this
+                very signature.
 
         Returns:
             Tuple of (case summaries for the requested page, total match count).
             The total reflects every filter the repository applies (state,
-            source, ``include_empty``, creation-date bounds, team scope) so the
-            API can compute ``has_more`` soundly — it is NOT the length of the
-            returned page.
+            source, ``include_empty``, the creation-date window, team scope) so
+            the API can compute ``has_more`` soundly — it is NOT the length of
+            the returned page.
         """
         if not user_id:
             raise ValidationException("User ID cannot be empty")
@@ -1221,9 +1225,12 @@ class CaseService(ICaseService):
             limit = filters.limit if filters else 50
             offset = filters.offset if filters else 0
             include_empty = filters.include_empty if filters else True
-            # Creation-date bounds go down the same path, and for the same
-            # reason: a bound applied here, after the repository paginated,
-            # would thin an already-sliced page and disagree with ``total``.
+            # The creation-date window goes down the same path, and for the
+            # same reason: a bound applied here, after the repository
+            # paginated, would thin an already-sliced page and disagree with
+            # ``total``. Normalization to UTC happens at the repository
+            # boundary (created_bounds.py), not here — this layer must not be
+            # the only thing standing between a caller and asyncpg.
             created_after = filters.created_after if filters else None
             created_before = filters.created_before if filters else None
             # Resolve team membership once for both the facet and the allowlist.

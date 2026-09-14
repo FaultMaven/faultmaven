@@ -197,13 +197,14 @@ def test_list_declares_creation_date_bounds(provider):
 
 
 @pytest.mark.unit
-async def test_inmemory_creation_bounds_are_inclusive_and_constrain_the_total():
-    """The bounds are INCLUSIVE at both ends, and they move the total with the page.
+async def test_inmemory_creation_window_is_half_open_and_constrains_the_total():
+    """The window is `[created_after, created_before)`, and it moves the total with the page.
 
-    Inclusivity is the half a client cannot discover by experiment: a date
-    picker sends the last instant of the chosen day, so an exclusive upper bound
-    would silently drop every case created in that final microsecond — and more
-    importantly would make "1 Jan to 1 Jan" mean nothing rather than that day.
+    Half-open is the half a client cannot discover by experiment, and it is what
+    makes a calendar day expressible at all: `created_at` keeps microseconds
+    while a browser's clock stops at milliseconds, so an INCLUSIVE upper bound
+    of 23:59:59.999 silently drops a case created at 23:59:59.9997. A client
+    selects one day by sending that day's first instant and the NEXT day's.
     """
     from datetime import datetime, timezone
 
@@ -223,24 +224,24 @@ async def test_inmemory_creation_bounds_are_inclusive_and_constrain_the_total():
     assert total == 3
     assert {c.title for c in rows} == {"Day 11", "Day 12", "Day 13"}
 
-    # Upper bound INCLUDES a case created exactly on it.
+    # Upper bound EXCLUDES a case created exactly on it.
     rows, total = await repo.list(user_id="u1", created_before=days[1])
-    assert total == 2
-    assert {c.title for c in rows} == {"Day 10", "Day 11"}
+    assert total == 1
+    assert {c.title for c in rows} == {"Day 10"}
 
-    # Both ends together, and a single-instant window resolves to one case —
-    # the "one day" case a date picker produces.
+    # Both ends: [day 11, day 13) is days 11 and 12.
     rows, total = await repo.list(
-        user_id="u1", created_after=days[1], created_before=days[2]
+        user_id="u1", created_after=days[1], created_before=days[3]
     )
     assert total == 2
     assert {c.title for c in rows} == {"Day 11", "Day 12"}
 
-    rows, total = await repo.list(
+    # `[x, x)` contains nothing. That is what half-open means, and it is why a
+    # client sends the FOLLOWING day rather than the same one twice.
+    _, total = await repo.list(
         user_id="u1", created_after=days[0], created_before=days[0]
     )
-    assert total == 1
-    assert {c.title for c in rows} == {"Day 10"}
+    assert total == 0
 
     # The total is the BOUNDED count, not the unfiltered one: a page taken from
     # inside the window must be described by a total drawn from the same window,
@@ -250,3 +251,32 @@ async def test_inmemory_creation_bounds_are_inclusive_and_constrain_the_total():
     )
     assert total == 3
     assert len(page) == 1
+
+
+@pytest.mark.unit
+async def test_inmemory_bounds_answer_alike_whatever_offset_they_carry():
+    """One instant, two spellings, one answer.
+
+    The route tells clients to resolve a calendar day to the instants THEIR user
+    means, which is an invitation to send a non-UTC offset. Every other test
+    here is written in UTC, so nothing else would notice a comparison that read
+    the offset wrong — and on SQLite one did.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    repo = InMemoryCaseRepository()
+    case = _make_case(title="Late evening")
+    object.__setattr__(
+        case, "created_at", datetime(2026, 9, 10, 23, 0, tzinfo=timezone.utc)
+    )
+    await repo.save(case)
+
+    utc_form = datetime(2026, 9, 10, 18, 30, tzinfo=timezone.utc)
+    ist_form = datetime(
+        2026, 9, 11, 0, 0, tzinfo=timezone(timedelta(hours=5, minutes=30))
+    )
+    assert utc_form == ist_form  # the same moment, written two ways
+
+    _, via_utc = await repo.list(user_id="u1", created_after=utc_form)
+    _, via_ist = await repo.list(user_id="u1", created_after=ist_form)
+    assert via_utc == via_ist == 1
