@@ -69,26 +69,55 @@ def _mentions(node: ast.AST, name: str) -> bool:
     return any(_mentions(child, name) for child in ast.iter_child_nodes(node))
 
 
+def _root_name(target: ast.AST) -> str | None:
+    """The name a binding ultimately writes through.
+
+    ``d["k"]``, ``d.attr`` and ``d["k"]["j"]`` all write into ``d``. Treating
+    them as bindings of ``d`` is an over-approximation -- the exception reaches
+    one key, not the whole object -- but the object is what gets returned, so
+    the whole object is what carries the text onto the wire.
+    """
+    while isinstance(target, (ast.Subscript, ast.Attribute)):
+        target = target.value
+    return target.id if isinstance(target, ast.Name) else None
+
+
 def _local_assignments(handler: ast.ExceptHandler) -> dict[str, list[ast.AST]]:
-    """Every binding of a plain name inside this except handler.
+    """Every binding made inside this except handler, keyed by the name written.
 
     Covers ``x = ...``, ``x: T = ...``, ``x += ...`` and ``(x := ...)``. The
     last two bind just as effectively as the first, so leaving them out would
     give the alias-following two silent blind spots.
+
+    It also covers writes *through* a name -- ``d["k"] = ...``, ``d.attr = ...``
+    -- keyed on the root name via ``_root_name``. Restricting this to
+    ``ast.Name`` targets was a real blind spot, not a theoretical one::
+
+        except Exception as e:
+            cleanup_results["resource_cleanup"] = {"error": str(e)}
+        ...
+        return cleanup_results
+
+    ``main.py`` had that exact shape, and this analysis reported the file clean
+    while CodeQL's ``py/stack-trace-exposure`` flagged it correctly.
     """
     assigns: dict[str, list[ast.AST]] = {}
+
+    def bind(target: ast.AST, value: ast.AST | None) -> None:
+        if value is None:
+            return
+        name = target.id if isinstance(target, ast.Name) else _root_name(target)
+        if name:
+            assigns.setdefault(name, []).append(value)
+
     for node in ast.walk(handler):
         if isinstance(node, ast.Assign):
             for target in node.targets:
-                if isinstance(target, ast.Name):
-                    assigns.setdefault(target.id, []).append(node.value)
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            if node.value is not None:
-                assigns.setdefault(node.target.id, []).append(node.value)
-        elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
-            assigns.setdefault(node.target.id, []).append(node.value)
-        elif isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
-            assigns.setdefault(node.target.id, []).append(node.value)
+                bind(target, node.value)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            bind(node.target, node.value)
+        elif isinstance(node, ast.NamedExpr):
+            bind(node.target, node.value)
     return assigns
 
 
@@ -181,17 +210,85 @@ def http_exception_leak_sites(path: pathlib.Path) -> list[str]:
     return offenders
 
 
+def _own_nodes(fn: ast.AST):
+    """Every node belonging to ``fn`` itself, not to a function nested inside it.
+
+    A nested ``def``/``lambda`` is its own scope: a name tainted in there cannot
+    be the name the outer function returns. Attributing both to the outer
+    function would make the guard cry wolf, and a guard that cries wolf gets
+    weakened by the next person to hit it.
+    """
+    stack = list(ast.iter_child_nodes(fn))
+    while stack:
+        node = stack.pop()
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+
+
+def _tainted_names(handlers: list[ast.ExceptHandler]) -> set[str]:
+    """Names bound inside these handlers to something carrying the exception."""
+    tainted: set[str] = set()
+    for handler in handlers:
+        assigns = _local_assignments(handler)
+        for name, values in assigns.items():
+            if any(_carries_exception(v, handler.name, assigns) for v in values):
+                tainted.add(name)
+    return tainted
+
+
 def returned_body_leak_sites(path: pathlib.Path) -> list[str]:
-    """``file:line`` for every ``return`` in an except handler carrying the exception.
+    """``file:line`` for every ``return`` carrying a caught exception's text.
 
     The ``HTTPException`` guard structurally cannot see these: a handler that
     degrades to a 200 body — ``GET /auth/health`` did — leaks just as much.
+
+    Two shapes, and only the first is inside the handler:
+
+    * the return is *in* the handler and carries ``e`` (directly or by alias);
+    * the handler stashes the text in a local and the return happens **after**
+      it, back in the enclosing function::
+
+          try:
+              sla_details = sla_tracker.get_component_sla_details(name)
+          except Exception as e:
+              sla_details = {"error": str(e)}
+          return {"sla": sla_details}
+
+      Scoping the walk to the handler missed every site of this shape.
+      ``main.py`` had six, all of which CodeQL's ``py/stack-trace-exposure``
+      flagged while this analysis reported the file clean.
+
+    A ``raise`` outside the handler carrying a tainted local is the same class
+    and is deliberately **not** covered: no such site exists in the tree today,
+    and widening a guard past its evidence is how false positives arrive.
     """
     offenders: list[str] = []
-    for handler in _except_handlers(path):
-        assigns = _local_assignments(handler)
-        for node in ast.walk(handler):
-            if isinstance(node, ast.Return) and node.value is not None:
-                if _carries_exception(node.value, handler.name, assigns):
-                    offenders.append(f"{path.name}:{node.lineno}")
+    tree = ast.parse(path.read_text())
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        own = list(_own_nodes(fn))
+        handlers = [n for n in own if isinstance(n, ast.ExceptHandler) and n.name]
+        if not handlers:
+            continue
+        tainted = _tainted_names(handlers)
+        in_handler = {id(n) for h in handlers for n in ast.walk(h)}
+        for node in own:
+            if not isinstance(node, ast.Return) or node.value is None:
+                continue
+            leaks = any(
+                n.id in tainted for n in ast.walk(node.value) if isinstance(n, ast.Name)
+            )
+            if not leaks and id(node) in in_handler:
+                for handler in handlers:
+                    if id(node) in {id(n) for n in ast.walk(handler)}:
+                        leaks = _carries_exception(
+                            node.value, handler.name, _local_assignments(handler)
+                        )
+                        if leaks:
+                            break
+            if leaks:
+                offenders.append(f"{path.name}:{node.lineno}")
     return offenders
