@@ -71,6 +71,7 @@ from faultmaven.exceptions import (
     PermissionDeniedException,
     ServiceException,
     ServiceUnavailableException,
+    SessionException,
     ValidationException,
 )
 from faultmaven.infrastructure.base_client import CircuitBreakerError
@@ -2696,8 +2697,22 @@ async def create_case_for_session(
     case_service = check_case_service_available(case_service)
 
     try:
-        # Validate session and derive user if not authenticated
-        session = await session_service.get_session(session_id, validate=True)
+        # Validate session and derive user if not authenticated.
+        #
+        # `get_session` RAISES when it cannot answer rather than returning None
+        # — `ServiceException("Session store not configured")` unconfigured,
+        # `SessionStoreException` when a configured store is unreachable — and
+        # the bare handler below would turn either into a 500 for a request the
+        # server could not evaluate. Same 503 as the resume route (#1398).
+        try:
+            session = await session_service.get_session(session_id, validate=True)
+        except (ServiceException, SessionException) as exc:
+            logger.warning(f"Cannot resolve session {session_id}: {exc}")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Session service unavailable",
+            )
+
         if not session:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -2781,15 +2796,26 @@ async def resume_case_in_session(
         # conflating them reported a working resume as an absence (#1390).
         #
         # Owner ∪ shared-to-my-teams, matching `submit_turn` and the service's
-        # own gate: a teammate who may POST a turn into a shared case must be
-        # able to attach a session to it.
+        # own gate. That is a deliberate departure from the method-based rule
+        # in `sessions.py`, which picks `owner_only` from the HTTP method
+        # because "a share grants read visibility, not the right to write"
+        # (ADR-017 D4) — and this is a POST that writes `cases.last_activity`
+        # through `update_activity_timestamp`.
+        #
+        # The exception is bounded: a teammate who may POST a turn into a
+        # shared case already writes messages, turn history AND that same
+        # activity stamp, so refusing the resume while admitting the turn would
+        # leave the extension able to read and write a case it cannot open. The
+        # only row this path touches that a read share does not already cover
+        # is `last_activity`, which is bookkeeping about access rather than
+        # case content, and the teammate's own turn bumps it moments later.
         case = await case_service.get_case(case_id, current_user.user_id)
         if case is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Case not found or resume not permitted",
             )
-        #
+
         # ── 2. The session ───────────────────────────────────────────────
         # Without this, naming SOMEONE ELSE'S session id retargets their
         # `session:{id}:current_case_id` pointer at a case of the caller's
@@ -2815,7 +2841,13 @@ async def resume_case_in_session(
         # evaluated, so nothing is served)".
         try:
             session = await session_service.get_session(session_id, validate=True)
-        except ServiceException as exc:
+        except (ServiceException, SessionException) as exc:
+            # BOTH families. `ServiceException("Session store not configured")`
+            # is the unconfigured case; a store that IS configured and
+            # unreachable raises `SessionStoreException`, which descends from
+            # `SessionException` and NOT from `ServiceException`. Catching one
+            # made two spellings of "the gate could not be evaluated" answer
+            # 503 and 500 respectively — the inconsistency this is fixing.
             logger.warning(f"Cannot evaluate session ownership for {session_id}: {exc}")
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

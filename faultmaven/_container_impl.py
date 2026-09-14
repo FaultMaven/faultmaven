@@ -947,7 +947,11 @@ class DIContainer(BaseDIContainer):
                 # one. Gating this on ``owner_only`` meant every read-arm
                 # caller — which is most of them, including the session resume
                 # (#1393) — got any case from any caller.
-                if case is not None and user_id is not None and case.user_id != user_id:
+                # ``user_id`` truthiness, not ``is not None``: the real
+                # ``CaseService.get_case`` writes ``if user_id and ...``, so an
+                # empty-string caller id takes the unscoped path there. A
+                # stand-in that diverges refuses a read the real service serves.
+                if case is not None and user_id and case.user_id != user_id:
                     return None
                 return case
 
@@ -1194,10 +1198,17 @@ class DIContainer(BaseDIContainer):
 
             async def hard_delete_case(self, case_id: str, user_id: str = None) -> bool:
                 """Permanently delete a case and all associated data (idempotent)"""
-                # For MinimalCaseService, just remove from memory
-                # Always return True for idempotent behavior
+                # Ownership, like ``get_case`` above. This took ``user_id`` and
+                # never read it, so in degraded mode any authenticated caller
+                # could destroy any case — and ``DELETE /cases/{case_id}``
+                # reaches it with no route-level pre-gate. Accepting the
+                # argument and ignoring it is the shape that makes a gate look
+                # present; the real service resolves through ``get_case`` here.
                 if case_id in self.cases:
+                    if user_id and self.cases[case_id].user_id != user_id:
+                        return False
                     del self.cases[case_id]
+                # Idempotent for a case that is already gone.
                 return True
 
             async def get_case_messages(
@@ -1378,6 +1389,12 @@ class DIContainer(BaseDIContainer):
             ) -> bool:
                 """Update a case with new data - Phase 3: Handle manual title flag changes"""
                 if case_id not in self.cases:
+                    return False
+
+                # Ownership, for the same reason as ``hard_delete_case``: this
+                # accepted ``user_id`` and never read it, so a stranger could
+                # rewrite the owner's case in degraded mode.
+                if user_id and self.cases[case_id].user_id != user_id:
                     return False
 
                 case = self.cases[case_id]

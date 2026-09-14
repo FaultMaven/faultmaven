@@ -118,3 +118,45 @@ class TestTheDegradedReadHonoursOwnership:
         case = await self._owned_case(service)
 
         assert await service.get_case(case.case_id) is not None
+
+
+class TestTheDegradedMutatorsHonourOwnership:
+    """``update_case`` and ``hard_delete_case`` read the ``user_id`` they take.
+
+    Both accepted it and ignored it, so in degraded mode any authenticated
+    caller could rewrite or DESTROY another user's case — and
+    ``DELETE /cases/{case_id}`` reaches ``hard_delete_case`` with no
+    route-level pre-gate. Accepting an argument and ignoring it is the shape
+    that makes a gate look present; the real service resolves through
+    ``get_case`` in both.
+    """
+
+    async def _owned_case(self, service):
+        set_current_enterprise_id(ENTERPRISE)
+        set_current_billing_organization_id(None)
+        return await service.create_case(title="Checkout latency", owner_id=OWNER)
+
+    async def test_a_stranger_cannot_rewrite_the_owners_case(self, service):
+        case = await self._owned_case(service)
+
+        assert not await service.update_case(
+            case.case_id, {"description": "pwned"}, "user_stranger"
+        )
+        assert (await service.get_case(case.case_id)).description != "pwned"
+
+    async def test_a_stranger_cannot_destroy_the_owners_case(self, service):
+        case = await self._owned_case(service)
+
+        assert not await service.hard_delete_case(case.case_id, "user_stranger")
+        assert await service.get_case(case.case_id) is not None
+
+    async def test_the_owner_still_updates_and_deletes(self, service):
+        case = await self._owned_case(service)
+
+        assert await service.update_case(case.case_id, {"description": "real"}, OWNER)
+        assert await service.hard_delete_case(case.case_id, OWNER)
+        assert await service.get_case(case.case_id) is None
+
+    async def test_deleting_an_absent_case_is_still_idempotent(self, service):
+        """The contract the stand-in advertises: gone is gone, not an error."""
+        assert await service.hard_delete_case("case_never_existed", OWNER)

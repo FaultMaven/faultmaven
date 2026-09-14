@@ -337,21 +337,60 @@ class CaseService(ICaseService):
             # enterprise there is nothing else standing between them — the
             # tenant admits both rows — so this flag is the whole of the
             # ownership boundary.
-            if user_id and case.user_id != user_id:
-                shared_case_ids = (
-                    [] if owner_only else await self._resolve_shared_case_ids(user_id)
-                )
-                if case_id not in shared_case_ids:
-                    logger.warning(
-                        f"User {user_id} denied access to case {case_id} (owner: {case.user_id})"
-                    )
-                    return None
+            if not await self._may_access(case, user_id, owner_only=owner_only):
+                return None
 
             return case
 
         except Exception as e:
             logger.error(f"Failed to get case {case_id}: {e}")
             return None
+
+    async def _may_access(
+        self, case: Case, user_id: Optional[str], *, owner_only: bool = False
+    ) -> bool:
+        """Whether ``user_id`` may reach ``case`` — owner ∪ shared-to-my-teams.
+
+        Extracted from :meth:`get_case` so a caller that must NOT swallow
+        infrastructure failures can apply the same rule (see
+        :meth:`_resolve_case_for_access`). One predicate, so the two cannot
+        drift apart on the question ADR-013 §D4 / ADR-017 D4 answer.
+        """
+        if not user_id or case.user_id == user_id:
+            return True
+        shared_case_ids = (
+            [] if owner_only else await self._resolve_shared_case_ids(user_id)
+        )
+        if case.case_id in shared_case_ids:
+            return True
+        logger.warning(
+            f"User {user_id} denied access to case {case.case_id} "
+            f"(owner: {case.user_id})"
+        )
+        return False
+
+    async def _resolve_case_for_access(
+        self, case_id: str, user_id: Optional[str]
+    ) -> Case:
+        """Resolve a case for a gate, raising rather than answering ``None``.
+
+        ``get_case`` cannot be used for a gate that reports 404, because it
+        wraps everything in ``except Exception: return None`` — so a repository
+        outage is indistinguishable from "no such case". A gate built on it
+        answers **404 for a case that exists and is reachable** the moment the
+        database blips, which is the half-success-as-absence shape #1390 was
+        about: the client abandons a case that is fine instead of retrying.
+
+        Raises:
+            NotFoundError: the case does not exist, or ``user_id`` cannot reach
+                it. Only these two.
+            Anything the repository raises: propagated untouched, so the caller
+                answers 5xx for an infrastructure failure rather than 404.
+        """
+        case = await self.repository.get(case_id)
+        if not case or not await self._may_access(case, user_id):
+            raise NotFoundError("Case", case_id)
+        return case
 
     @trace("case_service_update_case")
     async def update_case(
@@ -601,7 +640,7 @@ class CaseService(ICaseService):
 
     @trace("case_service_link_session_to_case")
     async def link_session_to_case(
-        self, session_id: str, case_id: str, user_id: Optional[str] = None
+        self, session_id: str, case_id: str, user_id: Optional[str]
     ) -> bool:
         """
         Link a session to an existing case
@@ -609,7 +648,10 @@ class CaseService(ICaseService):
         Args:
             session_id: Session identifier
             case_id: Case identifier
-            user_id: The caller. Required in practice — see below.
+            user_id: The caller. REQUIRED — no default, so a caller cannot
+                omit it and silently resolve unscoped. ``None`` is still
+                accepted for an internal caller with no user, but it has to
+                be passed on purpose.
 
         Returns:
             True if the link was made and persisted
@@ -642,11 +684,12 @@ class CaseService(ICaseService):
             #
             # Owner ∪ shared-to-my-teams, matching ``submit_turn``: a teammate
             # who may POST a turn into a shared case must be able to attach a
-            # session to it. ``user_id=None`` resolves unscoped, which is the
-            # pre-existing behaviour for internal callers that have no user.
-            case = await self.get_case(case_id, user_id)
-            if not case:
-                raise NotFoundError("Case", case_id)
+            # session to it.
+            #
+            # NOT via ``get_case``: that swallows every exception into ``None``,
+            # so a repository outage would raise ``NotFoundError`` here and the
+            # route would answer 404 for a case that exists and is reachable.
+            await self._resolve_case_for_access(case_id, user_id)
 
             # Update last activity timestamp via repository
             await self.repository.update_activity_timestamp(case_id)
@@ -757,7 +800,7 @@ class CaseService(ICaseService):
 
     @trace("case_service_resume_case")
     async def resume_case_in_session(
-        self, case_id: str, session_id: str, user_id: Optional[str] = None
+        self, case_id: str, session_id: str, user_id: Optional[str]
     ) -> bool:
         """
         Resume an existing case in a new session

@@ -32,6 +32,43 @@ from faultmaven.modules.case.api.routes import (
 from faultmaven.modules.case.api.routes import router as case_router
 
 
+def _owner_or_shared_case_service(
+    *, owner: str, shared_to: tuple[str, ...] = (), case_id: str = "case-123", **members
+):
+    """A case service whose ``get_case`` answers owner ∪ shared-to-my-teams.
+
+    One resolver, shared by every module that asserts a case gate: it encodes
+    ADR-013 §D4 / ADR-017 D4, and two hand-written copies of it drift
+    independently — a change to the rule has to land in both, and the module
+    whose copy was missed keeps passing against the old one.
+
+    It HONOURS ``owner_only`` rather than omitting it, so a handler narrowed to
+    the ownership arm asserts "the teammate was refused" instead of surfacing
+    as an incidental TypeError -> 500.
+
+    ``members`` are attached as-is, for whatever else the route under test
+    calls.
+    """
+    service = SimpleNamespace(**members)
+
+    async def get_case(requested_id, user_id=None, *, owner_only=False):
+        if requested_id != case_id:
+            return None
+        if user_id and user_id != owner:
+            if owner_only or user_id not in shared_to:
+                return None
+        return SimpleNamespace(case_id=case_id, user_id=owner)
+
+    service.get_case = get_case
+    return service
+
+
+@pytest.fixture
+def owner_or_shared_case_service():
+    """The shared resolver, as a fixture (this directory is not a package)."""
+    return _owner_or_shared_case_service
+
+
 @pytest.fixture
 def build_app():
     """Mount the real case router with only the dependencies these routes use.
@@ -76,7 +113,12 @@ def build_app():
             ):
                 return case_id
 
-            async def get_case(case_id, user_id=None):
+            async def get_case(case_id, user_id=None, *, owner_only=False):
+                # `owner_only` is on the real signature and two routes under
+                # this scaffolding pass it. Omitting it here raised TypeError
+                # inside the handler, which its bare `except` turned into a
+                # 500 — so a gate test would assert "not 200" and pass for the
+                # wrong reason, which is the failure this fake exists to avoid.
                 return case
 
             return SimpleNamespace(
