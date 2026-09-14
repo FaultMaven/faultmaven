@@ -382,6 +382,8 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
             case.evidence, key=lambda e: e.collected_at, reverse=True
         )[:5]
 
+        # Built once for the loop: the ordinal formula bisects this list.
+        asides = case.out_of_band_turns
         for ev in sorted_evidence:
             file_meta = case.find_uploaded_file(ev.source_file_id)
             source_filename = file_meta.filename if file_meta else None
@@ -397,6 +399,9 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
                     timestamp=ev.collected_at,
                     relevance_score=0.8,  # Could compute from hypothesis links
                     collected_at_turn=ev.collected_at_turn,
+                    investigation_turn=case.investigation_turn_at(
+                        ev.collected_at_turn, asides=asides
+                    ),
                     category=(
                         ev.category.value
                         if hasattr(ev.category, "value")

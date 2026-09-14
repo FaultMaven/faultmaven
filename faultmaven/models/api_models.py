@@ -1137,13 +1137,16 @@ class UploadedFileMetadata(BaseModel):
 
     @classmethod
     def from_uploaded_file(
-        cls, uploaded_file, investigation_turn: Optional[int] = None
+        cls, uploaded_file, *, investigation_turn: Optional[int] = None
     ) -> "UploadedFileMetadata":
         """Convert UploadedFile model to UploadedFileMetadata.
 
         ``investigation_turn`` is passed IN rather than derived: the ordinal
         is a property of the parent case's turn history, which an
-        ``UploadedFile`` does not carry. A caller without the case omits it
+        ``UploadedFile`` does not carry. KEYWORD-ONLY: the subclass override
+        takes ``case_id`` in the same positional slot, so a positional call
+        written for one would land a string in the other's ordinal and fail
+        validation inside a route. A caller without the case omits it
         and the row reads as "did not say" — the answer every client already
         handles for an older server — rather than falling back to the clock
         under the new name.

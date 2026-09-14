@@ -5740,6 +5740,7 @@ Summary of evidence for INVESTIGATING phase UI.
 - `category` (string, optional) — Evidence purpose: SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | SYMPTOM_ABSENCE_EVIDENCE | CAUSAL_ABSENCE_EVIDENCE | OTHER
 - `collected_at_turn` (integer, optional) — Turn number when evidence was collected
 - `evidence_id` (string, required) — Evidence identifier
+- `investigation_turn` (object, optional) — Which turn OF THE INVESTIGATION this row sits on (#1387/#1391): the message clock at that turn minus the out-of-band turns at or before it. An aside does not advance it. `collected_at_turn` keeps its meaning as the message clock and is what anchors and jump-to-turn are keyed on, so ADDRESS a turn with that and DISPLAY this one. Null when the server predates the field.
 - `relevance_score` (number, required) — Relevance to current investigation (0.0-1.0)
 - `source_filename` (object, optional) — Original filename of the source file, if evidence originated from an attachment.
 - `summary` (string, required) — Brief summary of evidence content

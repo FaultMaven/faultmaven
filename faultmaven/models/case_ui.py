@@ -188,6 +188,18 @@ class EvidenceSummary(BaseModel):
     collected_at_turn: int = Field(
         default=0, ge=0, description="Turn number when evidence was collected"
     )
+    investigation_turn: Optional[int] = Field(
+        default=None,
+        description=(
+            "Which turn OF THE INVESTIGATION this row sits on "
+            "(#1387/#1391): the message clock at that turn minus the "
+            "out-of-band turns at or before it. An aside does not advance "
+            "it. `collected_at_turn` keeps its meaning as the message clock "
+            "and is what anchors and jump-to-turn are keyed on, so ADDRESS a "
+            "turn with that and DISPLAY this one. Null when the server "
+            "predates the field."
+        ),
+    )
 
     category: str = Field(
         default="OTHER",

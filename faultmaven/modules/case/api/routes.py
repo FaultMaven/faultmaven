@@ -21,7 +21,7 @@ import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Sequence, Union
 
 from fastapi import (
     APIRouter,
@@ -4264,7 +4264,9 @@ async def get_uploaded_file_details(
         raise HTTPException(status_code=500, detail="Failed to get file details")
 
 
-def _build_evidence_response(case, evidence, case_id: str) -> EvidenceDetailsResponse:
+def _build_evidence_response(
+    case, evidence, case_id: str, asides: Optional[Sequence[int]] = None
+) -> EvidenceDetailsResponse:
     """Build an EvidenceDetailsResponse from a domain Evidence + its parent Case.
 
     Resolves the source-file reference via the canonical FK and walks the
@@ -4279,7 +4281,7 @@ def _build_evidence_response(case, evidence, case_id: str) -> EvidenceDetailsRes
             filename=matched_file.filename,
             uploaded_at_turn=matched_file.uploaded_at_turn,
             investigation_turn=case.investigation_turn_at(
-                matched_file.uploaded_at_turn
+                matched_file.uploaded_at_turn, asides=asides
             ),
         )
         if matched_file
@@ -4310,7 +4312,9 @@ def _build_evidence_response(case, evidence, case_id: str) -> EvidenceDetailsRes
         category=_safe_enum_value(evidence.category),
         primary_purpose=evidence.primary_purpose,
         collected_at_turn=evidence.collected_at_turn,
-        investigation_turn=case.investigation_turn_at(evidence.collected_at_turn),
+        investigation_turn=case.investigation_turn_at(
+            evidence.collected_at_turn, asides=asides
+        ),
         collected_at=evidence.collected_at,
         collected_by=evidence.collected_by,
         source_file=source_file,
@@ -4347,8 +4351,13 @@ async def list_case_evidence(
         if not case:
             raise HTTPException(status_code=404, detail=f"Case {case_id} not found")
 
+        # Built ONCE for the whole list. This endpoint does not paginate, so a
+        # case with many evidence rows would otherwise walk and sort the turn
+        # history twice per row — the cost the two paginated endpoints already
+        # hoist out, skipped on the one where it actually scales.
+        asides = case.out_of_band_turns
         evidence_items = [
-            _build_evidence_response(case, evidence, case_id)
+            _build_evidence_response(case, evidence, case_id, asides=asides)
             for evidence in case.evidence
         ]
 
