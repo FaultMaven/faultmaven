@@ -21,7 +21,7 @@ import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Sequence, Union
 
 from fastapi import (
     APIRouter,
@@ -2738,6 +2738,7 @@ async def resume_case_in_session(
     session_id: str,
     case_id: str,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    session_service: ISessionService = Depends(_di_get_session_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
 ) -> Dict[str, Any]:
     """
@@ -2749,12 +2750,78 @@ async def resume_case_in_session(
     case_service = check_case_service_available(case_service)
 
     try:
-        success = await case_service.resume_case_in_session(case_id, session_id)
-
-        if not success:
+        # TWO gates, because this route names two resources (#1390, #1393).
+        # `faultmaven/api/routes/sessions.py` states the rule its own surface
+        # follows — the case gate "covers the case named in the path and
+        # nothing else … Both halves are needed; neither is sufficient" — and
+        # this route had neither.
+        #
+        # ── 1. The case ──────────────────────────────────────────────────
+        # `resume_case_in_session` -> `link_session_to_case` resolves the case
+        # with a bare `repository.get(case_id)` — no caller, no ownership, no
+        # share — so any authenticated user could attach a session to any case
+        # their tenant could see. It was not exploitable only because the
+        # method always failed on a malformed event row and the route read that
+        # as "not found"; fixing that bug is what makes the gate's absence
+        # reachable, so the two land together.
+        #
+        # Owner ∪ shared-to-my-teams, NOT `owner_only`. That is a deliberate
+        # departure from the method-based rule in `sessions.py` (writes take
+        # `owner_only`), and the reason is coherence with `submit_turn` above,
+        # which resolves the same way: a teammate who may POST a turn into a
+        # shared case — writing messages, turn history and the activity stamp —
+        # must be able to attach a session to it. Refusing the resume while
+        # admitting the turn would leave the extension able to read and write a
+        # case it cannot open. The only row this path writes that a read share
+        # does not already cover is `last_activity`, which is bookkeeping about
+        # access rather than case content, and the teammate's own turn bumps it
+        # a moment later anyway.
+        case = await case_service.get_case(case_id, current_user.user_id)
+        if case is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Case not found or resume not permitted",
+            )
+
+        # ── 2. The session ───────────────────────────────────────────────
+        # Without this, naming SOMEONE ELSE'S session id retargets their
+        # `session:{id}:current_case_id` pointer at a case of the caller's
+        # choosing: the owner's next turn either lands in the caller's case (if
+        # they can reach it) or silently abandons the case they were working —
+        # and the write lands before any of this route's failure paths, so the
+        # pre-fix 404 never prevented it.
+        #
+        # Ordered AFTER the case gate on purpose. Both answer 404, so neither
+        # ordering leaks anything; but the two-enterprise probe drives this
+        # route with a session id belonging to nobody, so checking the session
+        # first would refuse BOTH parties there and the case half would stop
+        # being exercised — the "parametrisation that never reaches the tenant
+        # check asserts nothing" failure that probe's own docstring warns about.
+        session = await session_service.get_session(session_id, validate=True)
+        if session is None or session.user_id != current_user.user_id:
+            # One answer for "no such session" and "not yours": naming
+            # another user's session must not be distinguishable from naming
+            # one that does not exist. 404 rather than 401 — the caller IS
+            # authenticated, and 401 would tell a client to re-authenticate
+            # for a request that will never succeed.
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Session not found or resume not permitted",
+            )
+
+        success = await case_service.resume_case_in_session(case_id, session_id)
+
+        if not success:
+            # NOT a 404. Both gates have just proved the case exists, the
+            # caller may reach it, and the session is theirs — so a failure
+            # here is the link itself failing (a repository error, a session
+            # store that refused the write), which is the server's problem.
+            # Reporting it as "not found or not permitted" is the same
+            # half-success-as-absence shape this endpoint was fixed for: the
+            # client abandons a case that is fine instead of retrying.
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to resume case",
             )
 
         return {
@@ -4049,7 +4116,19 @@ async def list_uploaded_files(
         paginated_files = uploaded_files_list[offset : offset + limit]
 
         # Convert to response models
-        files = [UploadedFileMetadata.from_uploaded_file(f) for f in paginated_files]
+        # One `out_of_band_turns` for the whole page rather than per row: the
+        # formula lives on the Case and bisects this list, and rebuilding it per
+        # file is the only cost that scales with the page size.
+        asides = case.out_of_band_turns
+        files = [
+            UploadedFileMetadata.from_uploaded_file(
+                f,
+                investigation_turn=case.investigation_turn_at(
+                    f.uploaded_at_turn, asides=asides
+                ),
+            )
+            for f in paginated_files
+        ]
 
         # Set pagination header (required by API contract)
         response.headers["X-Total-Count"] = str(total_count)
@@ -4120,6 +4199,8 @@ async def get_uploaded_file_details(
         # eliminated by the schema redesign.
         derived_evidence = []
         first_summary: Optional[str] = None
+        # Built once for the loop below, for the same reason as the file list.
+        asides = case.out_of_band_turns
         for evidence in case.evidence:
             if evidence.source_file_id != uploaded_file.file_id:
                 continue
@@ -4138,6 +4219,9 @@ async def get_uploaded_file_details(
                     summary=evidence.summary,
                     category=_safe_enum_value(evidence.category),
                     collected_at_turn=evidence.collected_at_turn,
+                    investigation_turn=case.investigation_turn_at(
+                        evidence.collected_at_turn, asides=asides
+                    ),
                     source_type=_safe_enum_value(evidence.source_type),
                     primary_purpose=evidence.primary_purpose,
                     related_hypothesis_ids=related_hypothesis_ids,
@@ -4163,6 +4247,9 @@ async def get_uploaded_file_details(
             content_type=uploaded_file.content_type,
             content_hash=uploaded_file.content_hash,
             uploaded_at_turn=uploaded_file.uploaded_at_turn,
+            investigation_turn=case.investigation_turn_at(
+                uploaded_file.uploaded_at_turn, asides=asides
+            ),
             uploaded_at=uploaded_file.uploaded_at,
             upload_source=uploaded_file.upload_source,
             summary=first_summary,
@@ -4177,7 +4264,9 @@ async def get_uploaded_file_details(
         raise HTTPException(status_code=500, detail="Failed to get file details")
 
 
-def _build_evidence_response(case, evidence, case_id: str) -> EvidenceDetailsResponse:
+def _build_evidence_response(
+    case, evidence, case_id: str, asides: Optional[Sequence[int]] = None
+) -> EvidenceDetailsResponse:
     """Build an EvidenceDetailsResponse from a domain Evidence + its parent Case.
 
     Resolves the source-file reference via the canonical FK and walks the
@@ -4191,6 +4280,9 @@ def _build_evidence_response(case, evidence, case_id: str) -> EvidenceDetailsRes
             file_id=matched_file.file_id,
             filename=matched_file.filename,
             uploaded_at_turn=matched_file.uploaded_at_turn,
+            investigation_turn=case.investigation_turn_at(
+                matched_file.uploaded_at_turn, asides=asides
+            ),
         )
         if matched_file
         else None
@@ -4220,6 +4312,9 @@ def _build_evidence_response(case, evidence, case_id: str) -> EvidenceDetailsRes
         category=_safe_enum_value(evidence.category),
         primary_purpose=evidence.primary_purpose,
         collected_at_turn=evidence.collected_at_turn,
+        investigation_turn=case.investigation_turn_at(
+            evidence.collected_at_turn, asides=asides
+        ),
         collected_at=evidence.collected_at,
         collected_by=evidence.collected_by,
         source_file=source_file,
@@ -4256,8 +4351,13 @@ async def list_case_evidence(
         if not case:
             raise HTTPException(status_code=404, detail=f"Case {case_id} not found")
 
+        # Built ONCE for the whole list. This endpoint does not paginate, so a
+        # case with many evidence rows would otherwise walk and sort the turn
+        # history twice per row — the cost the two paginated endpoints already
+        # hoist out, skipped on the one where it actually scales.
+        asides = case.out_of_band_turns
         evidence_items = [
-            _build_evidence_response(case, evidence, case_id)
+            _build_evidence_response(case, evidence, case_id, asides=asides)
             for evidence in case.evidence
         ]
 

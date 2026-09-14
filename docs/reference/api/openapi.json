@@ -2445,6 +2445,18 @@
             "title": "Evidence Id",
             "type": "string"
           },
+          "investigation_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Which turn OF THE INVESTIGATION this row sits on (#1387/#1391): the message clock at that turn minus the out-of-band turns at or before it. An aside does not advance it. `collected_at_turn` keeps its meaning as the message clock and is what anchors and jump-to-turn are keyed on, so ADDRESS a turn with that and DISPLAY this one. Null when the server predates the field.",
+            "title": "Investigation Turn"
+          },
           "primary_purpose": {
             "anyOf": [
               {
@@ -2753,6 +2765,18 @@
             "description": "Optional verbatim quote backing the summary. NULL when the LLM omitted it (the summary is self-contained).",
             "title": "Extract"
           },
+          "investigation_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Which turn OF THE INVESTIGATION this row sits on (#1387/#1391): the message clock at that turn minus the out-of-band turns at or before it. An aside does not advance it. `collected_at_turn` keeps its meaning as the message clock and is what anchors and jump-to-turn are keyed on, so ADDRESS a turn with that and DISPLAY this one. Null when the server predates the field.",
+            "title": "Investigation Turn"
+          },
           "primary_purpose": {
             "title": "Primary Purpose",
             "type": "string"
@@ -2815,6 +2839,18 @@
             "description": "Evidence identifier",
             "title": "Evidence Id",
             "type": "string"
+          },
+          "investigation_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Which turn OF THE INVESTIGATION this row sits on (#1387/#1391): the message clock at that turn minus the out-of-band turns at or before it. An aside does not advance it. `collected_at_turn` keeps its meaning as the message clock and is what anchors and jump-to-turn are keyed on, so ADDRESS a turn with that and DISPLAY this one. Null when the server predates the field.",
+            "title": "Investigation Turn"
           },
           "relevance_score": {
             "description": "Relevance to current investigation (0.0-1.0)",
@@ -5692,6 +5728,18 @@
             "title": "Filename",
             "type": "string"
           },
+          "investigation_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Which turn OF THE INVESTIGATION this row sits on (#1387/#1391): the message clock at that turn minus the out-of-band turns at or before it. An aside does not advance it. `uploaded_at_turn` keeps its meaning as the message clock and is what anchors and jump-to-turn are keyed on, so ADDRESS a turn with that and DISPLAY this one. Null when the server predates the field.",
+            "title": "Investigation Turn"
+          },
           "uploaded_at_turn": {
             "title": "Uploaded At Turn",
             "type": "integer"
@@ -6211,6 +6259,18 @@
             "title": "Filename",
             "type": "string"
           },
+          "investigation_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Which turn OF THE INVESTIGATION this row sits on (#1387/#1391): the message clock at that turn minus the out-of-band turns at or before it. An aside does not advance it. `uploaded_at_turn` keeps its meaning as the message clock and is what anchors and jump-to-turn are keyed on, so ADDRESS a turn with that and DISPLAY this one. Null when the server predates the field.",
+            "title": "Investigation Turn"
+          },
           "size_bytes": {
             "title": "Size Bytes",
             "type": "integer"
@@ -6276,6 +6336,18 @@
             "description": "Original or generated filename",
             "title": "Filename",
             "type": "string"
+          },
+          "investigation_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Which turn OF THE INVESTIGATION this row sits on (#1387/#1391): the message clock at that turn minus the out-of-band turns at or before it. An aside does not advance it. `uploaded_at_turn` keeps its meaning as the message clock and is what anchors and jump-to-turn are keyed on, so ADDRESS a turn with that and DISPLAY this one. Null when the server predates the field.",
+            "title": "Investigation Turn"
           },
           "size_bytes": {
             "description": "File size in bytes",
@@ -6737,7 +6809,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "3.6.0"
+    "version": "3.7.0"
   },
   "openapi": "3.1.0",
   "paths": {

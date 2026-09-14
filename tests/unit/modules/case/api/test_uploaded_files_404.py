@@ -50,7 +50,18 @@ async def test_known_case_still_reaches_the_handler_and_lists_files(
     Proves the 404 above is produced by the handler rather than by routing,
     dependency resolution, or a redirect short-circuiting the request.
     """
-    app = build_app(case=SimpleNamespace(uploaded_files=[]))
+    # `out_of_band_turns` and `investigation_turn_at` are what the handler reads
+    # to label each row with its investigation turn (#1391). The stub stands in
+    # for a Case, so it has to carry what the handler asks a Case for — an empty
+    # history and the identity answer are the right values for a case with no
+    # files, and stubbing them here is what keeps this test about ROUTING.
+    app = build_app(
+        case=SimpleNamespace(
+            uploaded_files=[],
+            out_of_band_turns=[],
+            investigation_turn_at=lambda turn, asides=None: turn,
+        )
+    )
 
     response = await call_api(app, "GET", PATH)
 
