@@ -838,21 +838,31 @@ class TestResumeCaseInSession:
         session re-link would start putting chatter in the transcript that no
         deployment has ever emitted. Nothing reads the event; the log records it.
 
-        Asserted on the CASE, not on a collaborator. This used to stub
-        ``add_message_to_case`` and assert it was never awaited; #1412 retired
-        that method, so the stub would set an attribute nothing has and the
-        assertion would hold for a resume that wrote a row by some other means.
+        Asserted on the REPOSITORY, which is the only thing that can persist a
+        row. This used to stub ``add_message_to_case`` and assert it was never
+        awaited; #1412 retired that method, so the stub set an attribute
+        nothing has and the assertion held vacuously.
+
+        Asserting on a wired-up ``Case`` instead would be just as vacuous, for
+        a second reason: this method never loads the case (it delegates to
+        ``link_session_to_case`` and returns), so a case handed to
+        ``mock_repo.get`` is unreachable from production code and comparing its
+        message list to a snapshot of itself can only ever hold.
+
+        Both repository writes are pinned, because a row can arrive by either:
+        ``add_message`` persists one directly, and ``save`` is what would
+        persist one appended to ``case.messages`` in memory. The resume
+        performs no repository write at all.
         """
-        case = _make_case()
-        mock_repo.get.return_value = case
-        before = list(case.messages)
         service.link_session_to_case = AsyncMock(return_value=True)
 
-        await service.resume_case_in_session(
+        resumed = await service.resume_case_in_session(
             "case_abc123abc123", "sess_abc", "user_123"
         )
 
-        assert case.messages == before
+        assert resumed is True  # the resume ran; not a swallowed failure
+        mock_repo.add_message.assert_not_awaited()
+        mock_repo.save.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_rejects_missing_ids(self, service):

@@ -854,7 +854,7 @@ class TestContractRegistry:
         Every reason in EXCLUDED_INTERFACES asserts the same claim: nothing
         subclasses the port and no class provides ALL of its members. This
         enforces exactly that. Sharing SOME member names is expected and does
-        not trip the gate (CaseService shares 9 of ICaseStore's 15); providing
+        not trip the gate (CaseService shares 7 of ICaseStore's 15); providing
         all of them means the port now has an implementation and belongs in
         the registry.
 

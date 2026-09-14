@@ -52,22 +52,21 @@ from faultmaven.utils.serialization import to_json_compatible
 logger = logging.getLogger(__name__)
 
 
-def _case_messages_from(
-    case: Case, rows: Optional[List[Dict[str, Any]]] = None
-) -> List[CaseMessage]:
+def _case_messages_from(case: Case, rows: List[Dict[str, Any]]) -> List[CaseMessage]:
     """Convert stored message dicts into ``CaseMessage`` objects.
 
-    Shared by ``get_case_messages`` and ``get_case_messages_enhanced`` so the
-    latter can load the case ONCE — it needs ``turn_history`` as well as the
-    rows, to label each row with its investigation turn (#1387), and reading
-    the case twice for the two halves of one answer is how the two come from
+    Takes the case as well as the rows because labelling each row with its
+    investigation turn needs ``turn_history`` (#1387), and the sole caller
+    (``get_case_messages_enhanced``) must therefore load the case ONCE —
+    reading it twice for the two halves of one answer is how the two come from
     different snapshots.
 
-    ``rows`` defaults to the whole case; pass a slice to convert only the page
-    a caller is about to return.
+    ``rows`` is the page to convert, and is required. It was optional while
+    this helper was shared with ``get_case_messages``, which passed the whole
+    case; #1412 retired that method, leaving one caller that always passes a
+    slice — so the default had become unreachable and is gone rather than left
+    as a second, untested way in.
     """
-    if rows is None:
-        rows = case.messages
     # Per case-storage-design.md Section 4.7, use "created_at"
     return [
         CaseMessage(
