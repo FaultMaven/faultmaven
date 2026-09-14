@@ -125,6 +125,7 @@ from faultmaven.models.api_models import (  # Phase 2: Evidence-to-File Linkage
     UploadedFileDetailsResponse,
     UploadedFileMetadata,
     UploadedFilesList,
+    bound_to_utc,
 )
 from faultmaven.models.case_ui import CaseUIResponse
 from faultmaven.models.exceptions import KnowledgeBaseError
@@ -1096,6 +1097,22 @@ async def list_cases(
             "caller belongs to yield results; ignored in standalone (no teams)."
         ),
     ),
+    created_after: Optional[datetime] = Query(
+        None,
+        description=(
+            "Only cases created at or after this instant — INCLUSIVE. ISO-8601 "
+            "with an offset; a value without one is read as UTC."
+        ),
+    ),
+    created_before: Optional[datetime] = Query(
+        None,
+        description=(
+            "Only cases created strictly before this instant — EXCLUSIVE. "
+            "ISO-8601 with an offset; a value without one is read as UTC. To "
+            "select a calendar day, pass that day's first instant as "
+            "created_after and the FOLLOWING day's first instant here."
+        ),
+    ),
     limit: int = Query(50, ge=1, le=100, description="Items per page"),
     offset: int = Query(0, ge=0, description="Number of items to skip"),
     # Changed default to True - new cases should be visible immediately
@@ -1117,6 +1134,21 @@ async def list_cases(
     - INCLUDES closed/resolved cases (frontend categorizes by status)
     - Use include_empty=false to hide cases with no conversation yet
     - Use status filter to further refine results
+
+    Creation-date bounds:
+    - The window is HALF-OPEN, `[created_after, created_before)`, and lives in
+      the same WHERE clause as every other filter, so `total_count` describes
+      the same set as the page.
+    - Half-open because an inclusive upper bound is not expressible by a client
+      whose clock stops at milliseconds — which is every browser — while
+      `created_at` keeps microseconds. A day bounded at 23:59:59.999 silently
+      drops a case created at 23:59:59.9997.
+    - They are INSTANTS, not calendar days. To select one day, send that day's
+      first instant and the FOLLOWING day's first instant, both resolved in the
+      CLIENT's timezone: only the client knows which day the user meant.
+    - Send an offset. A bare naive value is read as UTC, and any offset is
+      normalized to UTC before it reaches the query, so two spellings of one
+      instant always answer alike.
     """
     case_service = check_case_service_available(case_service)
     correlation_id = str(uuid.uuid4())
@@ -1127,6 +1159,36 @@ async def list_cases(
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
 
+    # An inverted window is refused, not served as an empty list. It is
+    # unsatisfiable by construction, so `created_after > created_before` comes
+    # back as "you have no cases in that range" when the truth is "you swapped
+    # the ends" — the same silence this endpoint's date bounds exist to end.
+    # Checked here rather than left to CaseListFilter's own validator because a
+    # ValidationError raised inside the try below lands in the generic handler
+    # and would be served as a 500.
+    if (
+        created_after is not None
+        and created_before is not None
+        and bound_to_utc(created_after) > bound_to_utc(created_before)
+    ):
+        error_response = ErrorResponse(
+            schema_version="3.1.0",
+            error=ErrorDetail(
+                code="VALIDATION_ERROR",
+                message=(
+                    "created_after must not be later than created_before "
+                    "(the window is [created_after, created_before))"
+                ),
+            ),
+        )
+        raise HTTPException(
+            # The non-deprecated spelling, as operator_grants.py already uses.
+            # Same status code; `HTTP_422_UNPROCESSABLE_ENTITY` warns on access.
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=error_response.model_dump(),
+            headers={"x-correlation-id": correlation_id},
+        )
+
     try:
         # Build filter with restored filtering parameters
         filters = CaseListFilter(
@@ -1134,9 +1196,18 @@ async def list_cases(
             state=state,
             source=source,
             team_id=team_id,
+            created_after=created_after,
+            created_before=created_before,
             limit=limit,
             offset=offset,
             include_empty=include_empty,
+            # ⚠️ DEAD PARAMETER. `CaseListFilter` declares no `include_archived`
+            # field and sets no `model_config`, so Pydantic's default
+            # `extra='ignore'` drops this without a word — and no repository has
+            # the predicate either. It is accepted, published in the OpenAPI
+            # document, and does nothing: the same silence the date bounds above
+            # were added to end, one parameter over. Tracked in #1413; left
+            # here rather than removed because a client is sending it today.
             include_archived=include_archived,
         )
 

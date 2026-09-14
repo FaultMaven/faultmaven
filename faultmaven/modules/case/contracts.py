@@ -122,6 +122,8 @@ class ICaseRepository(Protocol):
         shared_case_ids: Optional[List[str]] = None,
         restrict_case_ids: Optional[List[str]] = None,
         include_empty: bool = True,
+        created_after: Optional[datetime] = None,
+        created_before: Optional[datetime] = None,
     ) -> tuple[List["Case"], int]:
         """List cases with optional filters.
 
@@ -139,6 +141,16 @@ class ICaseRepository(Protocol):
         allowlist ANDed onto the visibility scope to narrow results to one team's
         shares (the caller resolves and authorizes the team). ``None`` = no facet;
         a non-``None`` empty list matches nothing.
+
+        ``created_after``/``created_before`` bound ``created_at`` as a HALF-OPEN
+        window, ``[created_after, created_before)`` — inclusive lower, exclusive
+        upper. Implementations normalize both to UTC first; see
+        ``infrastructure/created_bounds.py`` for why each of those is load-
+        bearing rather than a matter of taste.
+
+        Like ``include_empty`` they belong in the query, not in a Python
+        post-filter: a bound applied after pagination would drop rows from an
+        already-sliced page and disagree with the total.
         """
         ...
 

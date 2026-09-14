@@ -8,7 +8,7 @@ They handle:
 - Backward compatibility
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
@@ -296,6 +296,22 @@ class CaseDetail(BaseModel):
 # ============================================================
 
 
+def bound_to_utc(value: Optional[datetime]) -> Optional[datetime]:
+    """Naive -> read as UTC; aware -> converted to UTC. See CaseListFilter below.
+
+    Deliberately a plain function and not a call into
+    ``faultmaven.modules.case.infrastructure``: this is the API model layer, and
+    import-linter forbids it reaching into a module's infrastructure. The rule
+    it implements is stated once, in
+    ``modules/case/infrastructure/created_bounds.py``.
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 class CaseListFilter(BaseModel):
     """Filter criteria for listing cases."""
 
@@ -320,11 +336,27 @@ class CaseListFilter(BaseModel):
     )
 
     created_after: Optional[datetime] = Field(
-        default=None, description="Cases created after this date"
+        default=None,
+        description=(
+            "Lower bound on ``created_at``, INCLUSIVE (``created_at >= "
+            "created_after``)."
+        ),
     )
 
     created_before: Optional[datetime] = Field(
-        default=None, description="Cases created before this date"
+        default=None,
+        description=(
+            "Upper bound on ``created_at``, EXCLUSIVE (``created_at < "
+            "created_before``). The window is half-open, ``[created_after, "
+            "created_before)``: an inclusive upper bound cannot be expressed by "
+            "a client whose clock stops at milliseconds — which is every "
+            "browser — while ``created_at`` keeps microseconds, so a day "
+            "bounded at 23:59:59.999 silently drops a case created at "
+            "23:59:59.9997. To select a calendar day, send that day's first "
+            "instant and the FOLLOWING day's first instant, both in ITS OWN "
+            "timezone: these are instants, not dates, and only the client knows "
+            "which day the user meant."
+        ),
     )
 
     limit: int = Field(
@@ -337,6 +369,48 @@ class CaseListFilter(BaseModel):
         default=True,
         description="Include cases with no conversation (current_turn == 0)",
     )
+
+    @field_validator("created_after", "created_before")
+    @classmethod
+    def _normalize_bounds_to_utc(cls, value: Optional[datetime]) -> Optional[datetime]:
+        """Normalize a bound to UTC — CONVERTING an aware one, not just anchoring a naive one.
+
+        Anchoring naive values alone was the first version of this, and it left
+        the half that actually matters undone. On SQLite ``cases.created_at`` is
+        stored as adapter-rendered TEXT and compared lexicographically, so
+        ``2026-09-11T00:00:00+05:30`` and the identical instant written
+        ``2026-09-10T18:30:00Z`` return DIFFERENT rows — and the route's own
+        description invites the first spelling by telling clients to send the
+        instants their user means.
+
+        This is belt to the repositories' braces: ``created_bounds_where``
+        normalizes again at the boundary that relies on it, because a caller can
+        reach ``repository.list(created_after=...)`` without passing through
+        this model at all.
+        """
+        return bound_to_utc(value)
+
+    @model_validator(mode="after")
+    def _refuse_an_inverted_window(self) -> "CaseListFilter":
+        """An inverted window is a mistake, not an empty result.
+
+        ``created_after > created_before`` is unsatisfiable by construction, so
+        the list comes back empty and reads as "you have no cases in that
+        range" rather than "you swapped the ends". In a filter whose whole point
+        is that a silently-ignored bound is a bug, an unsatisfiable one is the
+        same failure wearing a different hat.
+
+        Compared after normalization, so two spellings of the same instant do
+        not appear inverted to each other.
+        """
+        after = bound_to_utc(self.created_after)
+        before = bound_to_utc(self.created_before)
+        if after is not None and before is not None and after > before:
+            raise ValueError(
+                "created_after must not be later than created_before "
+                f"(got {after.isoformat()} > {before.isoformat()})"
+            )
+        return self
 
 
 class OperatorAccessAuditEntry(BaseModel):

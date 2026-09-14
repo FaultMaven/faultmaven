@@ -79,6 +79,7 @@ from faultmaven.modules.case.contracts import (
 from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.modules.case.infrastructure.case_scope import case_scope_where
+from faultmaven.modules.case.infrastructure.created_bounds import created_bounds_where
 from faultmaven.utils.serialization import to_json_compatible
 
 if TYPE_CHECKING:
@@ -1223,6 +1224,8 @@ class SQLiteCaseRepository(CaseRepository):
         shared_case_ids: list[str] | None = None,
         restrict_case_ids: list[str] | None = None,
         include_empty: bool = True,
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
     ) -> tuple[list[Case], int]:
         """List cases with optional filters and pagination.
 
@@ -1268,6 +1271,14 @@ class SQLiteCaseRepository(CaseRepository):
             # page/total contract sound.
             if not include_empty:
                 where_clauses.append("current_turn > 0")
+
+            # Creation-date window `[created_after, created_before)`. The
+            # normalization to UTC is NOT cosmetic here: this column is stored
+            # as adapter-rendered TEXT, so the comparison is lexicographic and
+            # blind to the offset suffix — see created_bounds.py.
+            where_clauses.extend(
+                created_bounds_where(params, created_after, created_before)
+            )
 
             where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 

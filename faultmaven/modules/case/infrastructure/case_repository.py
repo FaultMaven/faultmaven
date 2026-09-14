@@ -47,6 +47,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+from faultmaven.modules.case.infrastructure.created_bounds import to_utc
+
+
 class CaseRepository(ABC):
     """
     Abstract repository interface for Case persistence.
@@ -153,6 +156,8 @@ class CaseRepository(ABC):
         shared_case_ids: Optional[List[str]] = None,
         restrict_case_ids: Optional[List[str]] = None,
         include_empty: bool = True,
+        created_after: Optional[datetime] = None,
+        created_before: Optional[datetime] = None,
     ) -> tuple[List[Case], int]:
         """
         List cases with optional filters.
@@ -174,6 +179,11 @@ class CaseRepository(ABC):
             restrict_case_ids: Filter-by-team facet — narrows the result to one
                 team's shared case ids (the caller resolves/authorizes the team).
                 ``None`` = no facet; a non-``None`` empty list matches nothing.
+            created_after: INCLUSIVE lower bound on ``created_at``, applied in
+                the query for the same reason ``include_empty`` is.
+            created_before: EXCLUSIVE upper bound on ``created_at``. The window
+                is ``[created_after, created_before)``; see created_bounds.py
+                for why the upper end is half-open.
 
         Returns:
             Tuple of (cases, total_count)
@@ -932,6 +942,8 @@ class InMemoryCaseRepository(CaseRepository):
         shared_case_ids: Optional[List[str]] = None,
         restrict_case_ids: Optional[List[str]] = None,
         include_empty: bool = True,
+        created_after: Optional[datetime] = None,
+        created_before: Optional[datetime] = None,
     ) -> tuple[List[Case], int]:
         """List cases with filters."""
         # Filter cases
@@ -963,6 +975,24 @@ class InMemoryCaseRepository(CaseRepository):
         # (mirrors the SQL WHERE-clause predicate in the DB repositories).
         if not include_empty:
             filtered = [c for c in filtered if c.current_turn > 0]
+
+        # Creation-date window `[created_after, created_before)`, applied before
+        # the count for the same reason as include_empty above.
+        #
+        # BOTH SIDES go through `to_utc`, not just the bound. `Case`'s own
+        # `validate_timestamp_ordering` already refuses a naive `created_at`, so
+        # this is defence in depth rather than the guard — but it is cheap, and
+        # a repository's comparison should not depend on a validator three
+        # modules away staying where it is. Without it, `aware >= naive` raises
+        # TypeError, and this method (unlike the SQL repositories) wraps
+        # nothing, so it would surface at CaseService.list_user_cases' blanket
+        # `except Exception: return [], 0` as an empty window, not an error.
+        after = to_utc(created_after)
+        before = to_utc(created_before)
+        if after is not None:
+            filtered = [c for c in filtered if to_utc(c.created_at) >= after]
+        if before is not None:
+            filtered = [c for c in filtered if to_utc(c.created_at) < before]
 
         # Sort by last_activity_at descending
         filtered.sort(key=lambda c: c.last_activity_at, reverse=True)

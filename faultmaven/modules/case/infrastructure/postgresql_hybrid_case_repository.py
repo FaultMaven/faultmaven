@@ -73,6 +73,7 @@ from faultmaven.modules.case.domain.owned_models.report import CaseReport, Repor
 from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.modules.case.infrastructure.case_scope import case_scope_where
+from faultmaven.modules.case.infrastructure.created_bounds import created_bounds_where
 from faultmaven.utils.datetime import parse_utc_timestamp
 
 # TYPE_CHECKING imports not needed - models imported directly above
@@ -990,6 +991,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         shared_case_ids: Optional[List[str]] = None,
         restrict_case_ids: Optional[List[str]] = None,
         include_empty: bool = True,
+        created_after: Optional[datetime] = None,
+        created_before: Optional[datetime] = None,
     ) -> tuple[List[Case], int]:
         """
         List cases with optional filters and pagination.
@@ -1008,6 +1011,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 widens owner-only scope to ``owned ∪ shared-to-my-teams``.
             restrict_case_ids: Filter-by-team facet — narrows the result to one
                 team's shared case ids (the caller resolves/authorizes the team).
+            created_after: INCLUSIVE lower bound on ``created_at``
+            created_before: EXCLUSIVE upper bound — the window is
+                ``[created_after, created_before)``
 
         Returns:
             Tuple of (cases, total_count)
@@ -1049,6 +1055,15 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             # page/total contract sound (parity with the SQLite repository).
             if not include_empty:
                 where_clauses.append("current_turn > 0")
+
+            # Creation-date window `[created_after, created_before)`. The helper
+            # normalizes to UTC HERE rather than trusting a caller two layers up
+            # to have done it: ``created_at`` is ``timestamptz`` and asyncpg
+            # raises on a naive bound, which CaseService.list_user_cases would
+            # then swallow into an empty list.
+            where_clauses.extend(
+                created_bounds_where(params, created_after, created_before)
+            )
 
             where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 

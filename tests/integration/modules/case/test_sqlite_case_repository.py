@@ -330,6 +330,161 @@ class TestSQLiteCaseRepository:
         assert len(seen) == 4
         assert all(c.current_turn > 0 for c in seen)
 
+    async def test_list_creation_date_bounds_against_real_sqlite(self, sqlite_session):
+        """Real SQLite: the creation-date bounds actually filter, and inclusively.
+
+        This is the test the in-memory one cannot stand in for. The bounds go
+        into raw SQL as bound parameters and are compared against a column the
+        driver wrote — so what is really being asserted is that the value on the
+        way IN and the value on the way OUT are rendered in the same encoding.
+        A Python list comprehension over datetimes would pass while the real
+        query silently matched nothing, which is the whole failure this feature
+        exists to stop repeating.
+        """
+        from faultmaven.modules.case.domain.models import (
+            Case,
+            CaseState,
+            DocumentationData,
+            InquiryData,
+            InvestigationProgress,
+        )
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
+        )
+
+        repo = SQLiteCaseRepository(sqlite_session)
+        user_id = f"user_{uuid4().hex[:8]}"
+        enterprise_id = f"ent_{uuid4().hex[:8]}"
+
+        days = [datetime(2026, 9, d, 12, 0, tzinfo=timezone.utc) for d in (10, 11, 12)]
+        for i, created in enumerate(days):
+            case = Case(
+                case_id=f"case_{uuid4().hex[:12]}",
+                user_id=user_id,
+                enterprise_id=enterprise_id,
+                title=f"Day {10 + i}",
+                state=CaseState.INQUIRY,
+                inquiry=InquiryData(),
+                documentation=DocumentationData(),
+                progress=InvestigationProgress(),
+                created_at=created,
+                updated_at=created,
+            )
+            object.__setattr__(case, "current_turn", 1)
+            await repo.save(case)
+
+        # Sanity: unbounded sees all three, so a later zero is a filter result
+        # and not an empty table.
+        _, total_all = await repo.list(user_id=user_id)
+        assert total_all == 3
+
+        # Lower bound INCLUDES the case created exactly on it.
+        rows, total = await repo.list(user_id=user_id, created_after=days[1])
+        assert total == 2
+        assert {c.title for c in rows} == {"Day 11", "Day 12"}
+
+        # Upper bound EXCLUDES the case created exactly on it — the window is
+        # `[after, before)`.
+        rows, total = await repo.list(user_id=user_id, created_before=days[1])
+        assert total == 1
+        assert {c.title for c in rows} == {"Day 10"}
+
+        # `[x, x)` contains nothing, which is why a client selecting one day
+        # sends the FOLLOWING day as the upper end rather than the same one.
+        _, total = await repo.list(
+            user_id=user_id, created_after=days[1], created_before=days[1]
+        )
+        assert total == 0
+
+        # A window that excludes everything reports zero, not everything: a
+        # dropped predicate would return 3 here and look like a working filter
+        # on every other assertion above.
+        _, total_none = await repo.list(
+            user_id=user_id,
+            created_after=datetime(2026, 9, 20, tzinfo=timezone.utc),
+        )
+        assert total_none == 0
+
+        # The bound constrains the COUNT as well as the page (pagination
+        # soundness): a page of 1 inside a 2-case window reports 2, not 3.
+        page, total = await repo.list(
+            user_id=user_id, created_after=days[1], limit=1, offset=0
+        )
+        assert len(page) == 1
+        assert total == 2
+
+    async def test_a_bound_answers_alike_whatever_offset_it_carries(
+        self, sqlite_session
+    ):
+        """One instant, two spellings, one answer — on the store where it went wrong.
+
+        THIS IS THE TEST THE FIRST VERSION DID NOT HAVE, and the gap was not
+        subtle once seen: `save` writes `created_at` through sqlite3's default
+        datetime adapter, so the column holds the TEXT
+        `'2026-09-10 23:00:00+00:00'` and `created_at >= :created_after` is a
+        LEXICOGRAPHIC compare that knows nothing about the offset suffix it is
+        reading. A bound of `2026-09-11T00:00:00+05:30` — the same moment as
+        `2026-09-10T18:30:00Z` — sorted after the stored row and excluded it.
+
+        Measured, not theorised: before the fix this returned 0 and the UTC
+        spelling returned 1. And the route's own description invites the losing
+        spelling, by telling clients to send the instants THEIR user means.
+        Every other test in this file is written in UTC, which is exactly why
+        the whole suite stayed green over it.
+        """
+        from datetime import timedelta
+
+        from faultmaven.modules.case.domain.models import (
+            Case,
+            CaseState,
+            DocumentationData,
+            InquiryData,
+            InvestigationProgress,
+        )
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
+        )
+
+        repo = SQLiteCaseRepository(sqlite_session)
+        user_id = f"user_{uuid4().hex[:8]}"
+        # 23:00 UTC — late enough that a +05:30 reading lands on the next day.
+        created = datetime(2026, 9, 10, 23, 0, tzinfo=timezone.utc)
+        case = Case(
+            case_id=f"case_{uuid4().hex[:12]}",
+            user_id=user_id,
+            enterprise_id=f"ent_{uuid4().hex[:8]}",
+            title="Late evening",
+            state=CaseState.INQUIRY,
+            inquiry=InquiryData(),
+            documentation=DocumentationData(),
+            progress=InvestigationProgress(),
+            created_at=created,
+            updated_at=created,
+        )
+        object.__setattr__(case, "current_turn", 1)
+        await repo.save(case)
+
+        utc_form = datetime(2026, 9, 10, 18, 30, tzinfo=timezone.utc)
+        ist_form = datetime(
+            2026, 9, 11, 0, 0, tzinfo=timezone(timedelta(hours=5, minutes=30))
+        )
+        assert utc_form == ist_form  # the same moment, written two ways
+
+        _, via_utc = await repo.list(user_id=user_id, created_after=utc_form)
+        _, via_ist = await repo.list(user_id=user_id, created_after=ist_form)
+        assert via_utc == 1
+        assert via_ist == 1, (
+            "the same instant written with a non-UTC offset must match the same "
+            "rows — a lexicographic TEXT compare against the stored value does not"
+        )
+
+        # The upper bound too, and in the direction that EXCLUDES: a window
+        # ending at this instant must contain nothing, in either spelling.
+        _, before_utc = await repo.list(user_id=user_id, created_before=utc_form)
+        _, before_ist = await repo.list(user_id=user_id, created_before=ist_form)
+        assert before_utc == 0
+        assert before_ist == 0
+
     async def test_message_operations_sqlite_compatible(self, sqlite_session):
         """Test that message operations work with SQLite (no ::jsonb)."""
         from faultmaven.modules.case.domain.models import (

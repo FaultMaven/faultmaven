@@ -459,7 +459,7 @@ class ICaseService(ABC):
         Args:
             user_id: User identifier
             filters: Optional filter criteria (state, source, limit, offset,
-                include_empty, team_id)
+                include_empty, team_id, created_after, created_before)
 
         Returns:
             Tuple of (case summaries for the requested page, total match count).

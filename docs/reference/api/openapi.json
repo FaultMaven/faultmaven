@@ -6809,7 +6809,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "3.7.0"
+    "version": "3.8.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -9211,7 +9211,7 @@
     },
     "/api/v1/cases": {
       "get": {
-        "description": "List user's cases with pagination (v2.0 milestone-based)\n\nReturns CaseListResponse with:\n- List of CaseSummary objects (with milestone progress)\n- Total count for pagination\n- has_more flag\n\nDefault Filtering Behavior:\n- INCLUDES empty cases (current_turn == 0) - newly created cases are visible\n- INCLUDES closed/resolved cases (frontend categorizes by status)\n- Use include_empty=false to hide cases with no conversation yet\n- Use status filter to further refine results",
+        "description": "List user's cases with pagination (v2.0 milestone-based)\n\nReturns CaseListResponse with:\n- List of CaseSummary objects (with milestone progress)\n- Total count for pagination\n- has_more flag\n\nDefault Filtering Behavior:\n- INCLUDES empty cases (current_turn == 0) - newly created cases are visible\n- INCLUDES closed/resolved cases (frontend categorizes by status)\n- Use include_empty=false to hide cases with no conversation yet\n- Use status filter to further refine results\n\nCreation-date bounds:\n- The window is HALF-OPEN, `[created_after, created_before)`, and lives in\n  the same WHERE clause as every other filter, so `total_count` describes\n  the same set as the page.\n- Half-open because an inclusive upper bound is not expressible by a client\n  whose clock stops at milliseconds \u2014 which is every browser \u2014 while\n  `created_at` keeps microseconds. A day bounded at 23:59:59.999 silently\n  drops a case created at 23:59:59.9997.\n- They are INSTANTS, not calendar days. To select one day, send that day's\n  first instant and the FOLLOWING day's first instant, both resolved in the\n  CLIENT's timezone: only the client knows which day the user meant.\n- Send an offset. A bare naive value is read as UTC, and any offset is\n  normalized to UTC before it reaches the query, so two spellings of one\n  instant always answer alike.",
         "operationId": "list_cases_api_v1_cases_get",
         "parameters": [
           {
@@ -9271,6 +9271,44 @@
               ],
               "description": "Filter to cases shared with this Team (ADR-013 \u00a7D4). Only Teams the caller belongs to yield results; ignored in standalone (no teams).",
               "title": "Team Id"
+            }
+          },
+          {
+            "description": "Only cases created at or after this instant \u2014 INCLUSIVE. ISO-8601 with an offset; a value without one is read as UTC.",
+            "in": "query",
+            "name": "created_after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only cases created at or after this instant \u2014 INCLUSIVE. ISO-8601 with an offset; a value without one is read as UTC.",
+              "title": "Created After"
+            }
+          },
+          {
+            "description": "Only cases created strictly before this instant \u2014 EXCLUSIVE. ISO-8601 with an offset; a value without one is read as UTC. To select a calendar day, pass that day's first instant as created_after and the FOLLOWING day's first instant here.",
+            "in": "query",
+            "name": "created_before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only cases created strictly before this instant \u2014 EXCLUSIVE. ISO-8601 with an offset; a value without one is read as UTC. To select a calendar day, pass that day's first instant as created_after and the FOLLOWING day's first instant here.",
+              "title": "Created Before"
             }
           },
           {
