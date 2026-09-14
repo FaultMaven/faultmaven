@@ -449,7 +449,7 @@ class APICaseService(BaseService):
         Args:
             enterprise_id: Enterprise ID (optional for single-tenant, required for multi-tenant)
             user_id: Optional filter by reporter
-            state: Optional filter by status
+            state: Optional filter by case state
             severity: Optional filter by severity
             assigned_to: Optional filter by assignee
             limit: Max results (default 50)
