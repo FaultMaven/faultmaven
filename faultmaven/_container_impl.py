@@ -923,12 +923,18 @@ class DIContainer(BaseDIContainer):
                     initial_msg = {
                         "message_id": f"initial_{case_id}",
                         "case_id": case_id,
-                        # `role`, not `message_type` (#1397). This stand-in was
-                        # the last thing reading that key: it wrote it INSTEAD
-                        # of `role` and mapped it back on the way out, so it
-                        # was the only place the second name still carried
-                        # information rather than duplicating `role`.
+                        # `role`, not `message_type` (#1397). This stand-in
+                        # wrote that key INSTEAD of `role` and mapped it back on
+                        # the way out — the last place the second name carried
+                        # information rather than duplicating the first.
                         "role": "user",
+                        # The initial message IS turn 1. Without it every
+                        # `Message(...)` built from this row failed validation
+                        # (`turn_number` is required) and was swallowed by the
+                        # parse handler, so the degraded transcript answered 200
+                        # with an EMPTY list for a case that had a message —
+                        # which is also why the mapping above had no coverage.
+                        "turn_number": 1,
                         "content": initial_message.strip(),
                         "timestamp": current_time,
                         "user_id": final_user_id,
@@ -1277,11 +1283,13 @@ class DIContainer(BaseDIContainer):
                                 message_id = msg.get("message_id")
                                 content = msg.get("content", "")
                                 timestamp = msg.get("timestamp")
+                                turn_number = msg.get("turn_number", 0)
                             else:
                                 role = getattr(msg, "role", None)
                                 message_id = getattr(msg, "message_id", None)
                                 content = getattr(msg, "content", "")
                                 timestamp = getattr(msg, "timestamp", None)
+                                turn_number = getattr(msg, "turn_number", 0)
 
                             # `role` is read directly now (#1397): it used to be
                             # derived from a `message_type` this stand-in was
@@ -1310,6 +1318,7 @@ class DIContainer(BaseDIContainer):
                             messages.append(
                                 Message(
                                     message_id=message_id or f"msg_{len(messages)}",
+                                    turn_number=turn_number,
                                     role=role,
                                     content=content,
                                     created_at=created_at

@@ -13,6 +13,8 @@ from the same places the real service does — the request binding for isolation
 the actor's organization for billing (ADR-017 D1/D2).
 """
 
+from datetime import datetime, timezone
+
 import pytest
 
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
@@ -160,3 +162,76 @@ class TestTheDegradedMutatorsHonourOwnership:
     async def test_deleting_an_absent_case_is_still_idempotent(self, service):
         """The contract the stand-in advertises: gone is gone, not an error."""
         assert await service.hard_delete_case("case_never_existed", OWNER)
+
+
+class TestTheDegradedTranscriptIsReadable:
+    """The stand-in's conversation read returns its rows (#1397 review).
+
+    Every `Message(...)` it built raised `ValidationError` — `turn_number` is
+    required on the API model and neither the stored row nor the constructor
+    supplied it — and the parse handler swallowed it. So
+    `GET /cases/{id}/messages` and the operator transcript read both answered
+    200 with an EMPTY list for a case that had a message, in the mode where a
+    working fallback is the point.
+
+    It is also why the role mapping this issue rewrote had no coverage: its
+    output was discarded 100% of the time.
+    """
+
+    async def _case_with_a_message(self, service):
+        set_current_enterprise_id(ENTERPRISE)
+        set_current_billing_organization_id(None)
+        return await service.create_case(
+            title="Checkout latency", owner_id=OWNER, initial_message="hello world"
+        )
+
+    async def test_the_initial_message_is_actually_returned(self, service):
+        case = await self._case_with_a_message(service)
+
+        response = await service.get_case_messages_enhanced(case.case_id)
+
+        assert response.total_count == 1
+        # The half that was broken: counted, then dropped on the way out.
+        assert response.retrieved_count == 1
+        assert response.messages[0].content == "hello world"
+
+    async def test_the_row_is_read_by_role(self, service):
+        """`role` is read straight off the row now, not derived from a
+        `message_type` this stand-in was the last writer and reader of."""
+        case = await self._case_with_a_message(service)
+
+        message = (await service.get_case_messages_enhanced(case.case_id)).messages[0]
+
+        assert message.role == "user"
+        assert message.turn_number == 1
+
+    async def test_a_row_that_is_neither_participant_is_skipped(self, service):
+        """The behaviour the old `message_type` mapping had, kept verbatim.
+
+        `system` and not `tool`: the API model's `role` is a Literal, so a
+        made-up role fails validation and would be excluded whatever this
+        filter did — the test could not tell the filter from the model. A
+        `system` row is valid on the model, so only the filter excludes it.
+
+        ⚠️ This is a DIVERGENCE from the real service, which returns `system`
+        rows (they are the runbook-conversion notices both clients render). It
+        is preserved rather than fixed because it is what the mapping being
+        replaced did, and nothing writes such a row into this stand-in today —
+        `create_case` is its only writer and it writes `user`. Aligning the two
+        is a separate question from retiring `message_type`.
+        """
+        case = await self._case_with_a_message(service)
+        service.case_messages[case.case_id].append(
+            {
+                "message_id": "m-system",
+                "case_id": case.case_id,
+                "role": "system",
+                "turn_number": 1,
+                "content": "not a participant",
+                "timestamp": datetime.now(timezone.utc),
+            }
+        )
+
+        response = await service.get_case_messages_enhanced(case.case_id)
+
+        assert [m.message_id for m in response.messages] == [f"initial_{case.case_id}"]

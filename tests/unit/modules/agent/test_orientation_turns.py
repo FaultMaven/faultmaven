@@ -128,14 +128,12 @@ def investigating(sample_case, sample_user_id):
             "turn_number": 1,
             "role": "user",
             "content": "here is dmesg",
-            "message_type": "user_query",
             "metadata": {},
         },
         {
             "turn_number": 1,
             "role": "assistant",
             "content": "Postgres was the OOM victim. Could you share free -m from db-01?",
-            "message_type": "agent_response",
             "metadata": {},
         },
     ]
