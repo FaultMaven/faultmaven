@@ -63,6 +63,7 @@ from faultmaven.modules.knowledge.domain.write_scope import (
     metadata_scope_floor,
     require_write_scope,
 )
+from faultmaven.utils.line_endings import normalize_line_endings
 from faultmaven.utils.serialization import decode_json_blob, to_json_compatible
 
 logger = logging.getLogger(__name__)
@@ -1667,6 +1668,24 @@ class KnowledgeService:
                 write_runbook_file,
             )
 
+            # Line endings, before the gate and before any write (#1403). This
+            # is the choke point BOTH publish paths share, which is why the
+            # quality gate was moved here in #1214 — and the same argument
+            # applies: routes multiply, this does not. It is what covers the
+            # suggestion-approval caller, whose content can carry CRLF from the
+            # untyped ``PUT /knowledge/suggestions/{id}`` body and reaches this
+            # method as ``suggestion.suggested_content``.
+            #
+            # Placed here rather than only at the request boundary because this
+            # method owns what gets STORED: ``content`` below becomes the
+            # ``knowledge_items.content`` row, ``size_bytes``, the file on disk
+            # AND the ChromaDB chunks. Normalising only for matching would leave
+            # the authoring gate measuring an LF document while the chunker
+            # chunked a CRLF one — the gate's "measured exactly as the chunker
+            # sees it" claim (``_validate_cause_chunk_boundaries``) would become
+            # false, silently.
+            content = normalize_line_endings(content)
+
             # The quality gate, FIRST — before the id is minted, before the file
             # is written, before any row exists. A refusal must leave nothing
             # behind, which is only free if nothing has happened yet.
@@ -2727,7 +2746,20 @@ class KnowledgeService:
             if kwargs.get("title"):
                 updates["title"] = await self._sanitizer.asanitize(kwargs["title"])
             if kwargs.get("content"):
-                updates["content"] = await self._sanitizer.asanitize(kwargs["content"])
+                # Normalised here too (#1403). This is the ONLY write path that
+                # reaches ChromaDB with caller-supplied content and NO runbook
+                # quality gate: ``PUT /knowledge/documents/{id}`` is
+                # ``require_authentication`` with an untyped ``dict`` body, so
+                # there is no request model to normalise on, and a ``content``
+                # key here sets ``needs_reindex`` and re-chunks the document
+                # below. Under CRLF that put ``\r`` into the embedded text and
+                # moved the chunk boundaries — measured across the shipped
+                # corpus as 16 extra chunks and 1284 of 1297 chunks carrying a
+                # ``\r``. Applied before ``asanitize`` so the sanitiser and the
+                # chunker see the same bytes.
+                updates["content"] = await self._sanitizer.asanitize(
+                    normalize_line_endings(kwargs["content"])
+                )
             if "tags" in kwargs:
                 updates["tags"] = [str(t) for t in (kwargs["tags"] or [])]
             if kwargs.get("category"):

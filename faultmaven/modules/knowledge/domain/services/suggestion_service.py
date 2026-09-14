@@ -37,6 +37,7 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     RunbookValidator,
 )
 from faultmaven.modules.knowledge.exceptions import SuggestionConcurrencyError
+from faultmaven.utils.line_endings import normalize_line_endings
 from faultmaven.utils.runbook_id import (
     is_hash_only_runbook_id,
     runbook_id_from_parts,
@@ -400,7 +401,13 @@ corrected runbook, starting at the opening `---`, and output nothing else.
             case_id=case_id,
             status=SuggestionStatus.PENDING_REVIEW,
             suggested_title=suggested_title,
-            suggested_content=suggested_content,
+            # The model's markdown is stored as-is and then judged by
+            # ``_record_validation``, which normalises before it decides (#1403).
+            # Any CRLF the model emits would make ``validation_passed`` and the
+            # recorded errors describe text this row does not contain, and
+            # ``to_api_response`` would hand that CR back to the editor --
+            # reintroducing what ``update_suggestion`` strips on the way in.
+            suggested_content=normalize_line_endings(suggested_content),
             suggested_type="troubleshooting_guide",
             extracted_by=extracted_by,
             extracted_at=datetime.now(timezone.utc),
@@ -1015,7 +1022,9 @@ level, and the tools needed.]
                     )
                     # Each field back into its own slot. Never the concatenation.
                     suggestion.suggested_title = sanitized_title
-                    suggestion.suggested_content = sanitized_content
+                    suggestion.suggested_content = normalize_line_endings(
+                        sanitized_content
+                    )
                 else:
                     suggestion.mark_pii_scan_complete(
                         status=PIIScanStatus.CLEAN,
@@ -1536,6 +1545,14 @@ level, and the tools needed.]
             return None
 
         if title or content:
+            # ``PUT /knowledge/suggestions/{id}`` takes an untyped ``dict`` body,
+            # so there is no request model a validator could hang off and this
+            # method is the boundary (#1403). What makes it matter is where the
+            # content goes: ``suggested_content`` is re-validated by the review
+            # loop below and then handed to ``upload_document`` verbatim on
+            # approval, so a CRLF edit showed the reviewer six "Missing required
+            # section" errors about a document that had all six.
+            content = normalize_line_endings(content)
             suggestion.update_content(
                 title=title or suggestion.suggested_title,
                 content=content or suggestion.suggested_content,

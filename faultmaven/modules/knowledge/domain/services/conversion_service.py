@@ -74,6 +74,7 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
 )
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 from faultmaven.utils.frontmatter import match_frontmatter
+from faultmaven.utils.line_endings import normalize_line_endings
 from faultmaven.utils.runbook_id import (
     RunbookPathEscape,
     draft_filename,
@@ -2248,6 +2249,17 @@ class ConversionService:
             if not dm or dm.status == DraftStatus.DISCARDED.value:
                 return None
 
+            # Line endings, before the write AND before the re-validate below
+            # (#1403). ``content`` is a JSON body field from
+            # ``PUT /knowledge/conversions/{id}/drafts/{draft_id}``, so nothing
+            # upstream has decoded it through ``Path.read_text``; a CRLF edit
+            # from any non-browser client used to be written to disk and then
+            # scored 15 points lower for its line endings alone. Before the
+            # write specifically, because this method persists first and
+            # validates second — normalising after the write would leave the
+            # file and the verdict disagreeing.
+            content = normalize_line_endings(content)
+
             # Write updated content to disk.
             #
             # ``dm.file_path`` comes straight back out of the database. Every
@@ -2729,6 +2741,19 @@ status: draft
 ## Sources
 - Manually authored runbook
 """
+
+        # Normalised on the COMPOSED document, not per field (#1403). This
+        # method has no document to receive — it has fifteen JSON body values
+        # interpolated into an LF template, so a CRLF client produces a document
+        # with mixed endings. Normalising the named free-text fields was the
+        # first shape of this fix and it was wrong: it covered five of the
+        # fifteen and left ``title``, ``domain``, ``service_name``,
+        # ``symptom_class``, ``severity``, ``tags`` and ``difficulty`` carrying
+        # CR into the frontmatter and the H1, while the validate/score calls
+        # below judged the normalised twin — re-creating the verdict-vs-storage
+        # split this whole change exists to remove. One call on ``content``
+        # cannot be partial, and is less code than five that can.
+        content = normalize_line_endings(content)
 
         # Write to disk through the shared containment-checked helper — same
         # anchor, same before-mkdir ordering as every other runbook write.

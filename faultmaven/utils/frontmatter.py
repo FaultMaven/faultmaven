@@ -39,8 +39,25 @@ _LIST_FIELDS = ("symptom_class",)
 # Trailing blank lines after a delimiter are NOT part of the block (the old
 # `\s*\n` ate them). That ambiguity is exactly what made it quadratic, and YAML
 # tolerates the leading newline landing in the body instead.
+# A leading UTF-8 BOM does not stop a document having frontmatter. Both readers
+# that produce text here preserve it — `Path.read_text(encoding="utf-8")` and a
+# `bytes.decode("utf-8")` alike, since only `utf-8-sig` strips one — and this
+# pattern is `re.match`-anchored at offset 0, so a single invisible character
+# made every REQUIRED_METADATA check fire on a document carrying all of them
+# ("No YAML frontmatter found", score 94.0 -> 80.5, a 422 from
+# `POST /knowledge/documents`). "UTF-8 with BOM" is the default save of several
+# Windows editors, so this is the other half of the Windows-authoring story
+# #1403 is about: that issue fixed the CRLF half, and a BOM+CRLF file — the
+# actual Windows default — was still refused until this.
+#
+# Tolerated here rather than stripped at a boundary because this is the ONE
+# place that decides where frontmatter starts; `document_preprocessor` strips a
+# BOM via `_LEADING_NOISE` but only on the CONVERSION path, which is why the
+# upload path never got it. Optional and zero-width, so it changes nothing for
+# a document without one.
+_BOM = "﻿?"
 _DELIMITER = r"---[ \t]*\r?\n"
-FRONTMATTER_RE = re.compile(rf"^{_DELIMITER}(.*?)\r?\n{_DELIMITER}", re.DOTALL)
+FRONTMATTER_RE = re.compile(rf"^{_BOM}{_DELIMITER}(.*?)\r?\n{_DELIMITER}", re.DOTALL)
 
 
 def match_frontmatter(content: str) -> Optional[re.Match]:
