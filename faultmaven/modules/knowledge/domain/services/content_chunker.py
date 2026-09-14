@@ -10,6 +10,8 @@ This is a pure domain component with no infrastructure dependencies.
 import re
 from typing import List
 
+from faultmaven.utils.frontmatter import strip_frontmatter
+
 # The structural split boundary: a newline immediately followed by an H1–H4 ATX
 # heading line with a non-space payload (``# Foo`` … ``#### Foo``). ``_split_by_structure``
 # breaks the document at every occurrence, so any line matching ``#{1,4}\s+\S`` inside
@@ -18,6 +20,17 @@ from typing import List
 # authoring gate can test the EXACT boundary the chunker enforces (it imports this
 # constant), and the two can never drift.
 HEADER_SPLIT_BOUNDARY_RE = re.compile(r"\n(?=#{1,4}\s+\S)")
+
+# The horizontal-rule boundary, for the same reason the frontmatter grammar has
+# one definition: this regex existed verbatim here and in `ingestion`, and it
+# carried the same `\s`-matches-`\n` quadratic the frontmatter one did. `\n\s*`
+# admits many ways to reach the same rule, so a body of alternating newline and
+# space rescans -- 17.9s at 64 KB, synchronously inside
+# `async def _index_document_in_vector_store`, on content from
+# `POST /knowledge/documents` bounded only by MAX_UPLOAD_SIZE_MB (default 10).
+# Blank lines around a rule are still matched: the `\n` immediately preceding it
+# is the one that anchors.
+HR_SPLIT_BOUNDARY_RE = re.compile(r"\r?\n[ \t]*(?:---+|\*\*\*+|___+)[ \t]*\r?\n")
 
 
 class ContentChunker:
@@ -40,9 +53,7 @@ class ContentChunker:
         3. Fallback: sentence-boundary splitting if no structure detected
         4. Post-process: merge tiny sections, split oversized ones
         """
-        stripped = re.sub(
-            r"^---\s*\n.*?\n---\s*\n", "", content, count=1, flags=re.DOTALL
-        )
+        stripped = strip_frontmatter(content)
         stripped = stripped.strip()
 
         if not stripped:
@@ -64,8 +75,7 @@ class ContentChunker:
         if len(sections) > 1:
             return sections
 
-        hr_pattern = re.compile(r"\n\s*(?:---+|\*\*\*+|___+)\s*\n")
-        parts = hr_pattern.split(content)
+        parts = HR_SPLIT_BOUNDARY_RE.split(content)
         sections = [p.strip() for p in parts if p.strip()]
         if len(sections) > 1:
             return sections

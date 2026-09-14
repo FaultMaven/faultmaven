@@ -65,6 +65,11 @@ from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
     iter_cause_blocks,
     parse_cause_subfields,
 )
+from faultmaven.utils.frontmatter import (
+    match_frontmatter,
+    parse_frontmatter,
+    strip_frontmatter,
+)
 
 # =============================================================================
 # Security hazard detection (same shape as kb-toolkit's validator). Hazards
@@ -522,13 +527,17 @@ class RunbookValidator:
         )
 
     def _extract_metadata(self, content: str) -> Optional[Dict[str, Any]]:
-        match = re.match(r"^---[ \t]*\n(.*?)\n---[ \t]*\n", content, re.DOTALL)
+        match = match_frontmatter(content)
         if not match:
             return None
         try:
-            return yaml.safe_load(match.group(1))
-        except yaml.YAMLError as e:
+            loaded = yaml.safe_load(match.group(1))
+        except yaml.YAMLError:
             return None
+        # None distinguishes "no frontmatter" from "empty frontmatter" here, so
+        # this cannot just call parse_frontmatter. A non-mapping body is still
+        # refused rather than returned: `_validate_metadata` subscripts it.
+        return loaded if isinstance(loaded, dict) else None
 
     def _validate_metadata(
         self, metadata: Dict[str, Any], errors: List[str], warnings: List[str]
@@ -1121,9 +1130,7 @@ class RunbookValidator:
         return not any(p in body_lower for p in non_command_phrases)
 
     def _validate_quality(self, content: str, warnings: List[str]) -> None:
-        content_body = re.sub(
-            r"^---[ \t]*\n.*?\n---[ \t]*\n", "", content, flags=re.DOTALL
-        )
+        content_body = strip_frontmatter(content)
 
         if len(content_body) < MIN_CONTENT_LENGTH:
             warnings.append(
@@ -1356,23 +1363,48 @@ class QualityScorer:
         if causes_section:
             score += 10
 
+        # `[ \t]*` not `\s*`, for the reason in utils.frontmatter: `\s` matches
+        # `\n`, so under MULTILINE `^\s*` can run past the line it anchored to
+        # and rescan the rest of the document from every line start -- quadratic
+        # on caller-supplied content. Measured on the pre-fix code, a body of
+        # nothing but alternating newline and space (no fences at all) cost
+        # 1.4s at 24 KB and 28s at 100 KB of event-loop-blocking CPU, which is
+        # most of what `score_content` spent. Semantics are unchanged: `^` under
+        # MULTILINE already matches at every line start, so a `-` reachable by
+        # crossing newlines is equally reachable anchored to its own line.
+        #
+        # Only the ANCHOR is tightened. The separator between `-` and the bold
+        # quadrant stays `\s*`, because narrowing that one is NOT
+        # semantics-preserving -- it stops matching a bullet whose quadrant sits
+        # on the following line -- and it buys nothing: with the anchor fixed,
+        # the hostile body costs 0.0052s either way. Measured: main 7.62s,
+        # both-narrowed 0.0052s, anchor-only 0.0052s.
         has_fix = re.search(
-            r"(?im)^\s*\*\*Interventions:\*\*"
-            rf"|^\s*-\s*\*\*({QUADRANT_ALTERNATION})\*\*",
+            r"(?im)^[ \t]*\*\*Interventions:\*\*"
+            rf"|^[ \t]*-\s*\*\*({QUADRANT_ALTERNATION})\*\*",
             content,
         )
         if has_fix:
             score += 5
 
-        # Tempered `[^`]*` rather than `.*?` under DOTALL: the lazy form rescans
-        # forward across every other fence in the document, which is quadratic
-        # in the number of fences — 18 KB of ````` ``` ```` repeats took 5.4s of
-        # event-loop-blocking CPU, and this validator runs on CALLER-SUPPLIED
-        # runbook content up to MAX_UPLOAD_SIZE_MB (py/polynomial-redos).
-        # A fence body containing a bare triple-backtick is malformed anyway.
-        # Counts differ on 8 of the 91 shipped runbooks and the SCORE differs on
-        # none: the only consumer is the `>= 3` threshold below.
-        command_explanations = re.findall(r"```[^`]*```[ \t]*\n\s*[A-Z]", content)
+        # Tempered rather than `.*?` under DOTALL: the lazy form rescans forward
+        # across every other fence in the document, which is quadratic in fence
+        # count -- 18 KB of ````` ``` ```` repeats took 5.4s of event-loop-blocking
+        # CPU, on CALLER-SUPPLIED content up to MAX_UPLOAD_SIZE_MB
+        # (py/polynomial-redos).
+        #
+        # `(?:[^`]|`(?!``))*` and NOT the simpler `[^`]*`: that excludes EVERY
+        # backtick, not just the triple that would end the fence, so a bash
+        # fence containing shell command substitution -- `` echo `date` `` --
+        # or any inline code stopped counting. That is idiomatic runbook
+        # content, not a malformed fence. The tempered form stops only at a
+        # backtick that begins a closing fence, which is also what bounds each
+        # star run by the distance to the next fence and keeps it linear.
+        #
+        # `\r?\n` so a CRLF-authored runbook still matches.
+        command_explanations = re.findall(
+            r"```(?:[^`]|`(?!``))*```[ \t]*\r?\n\s*[A-Z]", content
+        )
         if len(command_explanations) >= 3:
             score += 10
 
@@ -1434,10 +1466,4 @@ class QualityScorer:
             return "F"
 
     def _extract_metadata(self, content: str) -> Dict:
-        match = re.match(r"^---[ \t]*\n(.*?)\n---[ \t]*\n", content, re.DOTALL)
-        if match:
-            try:
-                return yaml.safe_load(match.group(1)) or {}
-            except Exception:
-                return {}
-        return {}
+        return parse_frontmatter(content)

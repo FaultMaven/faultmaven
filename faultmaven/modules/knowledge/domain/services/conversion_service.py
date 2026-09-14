@@ -73,6 +73,7 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     RunbookValidator,
 )
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
+from faultmaven.utils.frontmatter import match_frontmatter
 from faultmaven.utils.runbook_id import (
     RunbookPathEscape,
     draft_filename,
@@ -336,12 +337,17 @@ def _force_frontmatter_id(content: str, runbook_id: str) -> str:
     """
     import re as _re
 
-    fm_match = _re.match(r"^(---\s*\n)(.*?)(\n---\s*\n)", content, _re.DOTALL)
+    fm_match = match_frontmatter(content)
     if not fm_match:
         # No frontmatter — caller's downstream validator will catch this;
         # we don't synthesize one here.
         return content
-    head, body, tail = fm_match.groups()
+    # The shared grammar captures only the YAML body, so the delimiter lines
+    # come from its offsets. head + body + tail is the whole block, byte for
+    # byte, which is what lets the reassembly below stay a pure substitution.
+    body = fm_match.group(1)
+    head = content[: fm_match.start(1)]
+    tail = content[fm_match.end(1) : fm_match.end()]
     if _re.search(r"^id:\s*.+$", body, _re.MULTILINE):
         new_body = _re.sub(
             r"^id:\s*.+$", f"id: {runbook_id}", body, count=1, flags=_re.MULTILINE
@@ -2535,11 +2541,9 @@ class ConversionService:
             dm.severity = fm_meta.get("severity")
             dm.document_type = "runbook"
 
-            import re as _re
-
             import yaml
 
-            fm_match = _re.match(r"^---\s*\n(.*?)\n---\s*\n", content, _re.DOTALL)
+            fm_match = match_frontmatter(content)
             if fm_match:
                 try:
                     raw_fm = yaml.safe_load(fm_match.group(1)) or {}
@@ -2851,8 +2855,6 @@ status: draft
         enterprise_id: Optional[str] = None,
         is_platform_admin: bool = False,
     ) -> dict:
-        import re as _re
-
         import yaml
 
         # Whether this caller may mint global-scope drafts. Computed once (the
@@ -3111,7 +3113,7 @@ status: draft
                 continue
 
             # Extract metadata from frontmatter
-            fm_match = _re.match(r"^---\s*\n(.*?)\n---\s*\n", content, _re.DOTALL)
+            fm_match = match_frontmatter(content)
             metadata = {}
             if fm_match:
                 try:

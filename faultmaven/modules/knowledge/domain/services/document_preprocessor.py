@@ -30,10 +30,9 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     RedactionReport,
     TriageResult,
 )
-from faultmaven.modules.knowledge.domain.services.document_parser import (
-    DocumentParser,
-)
+from faultmaven.modules.knowledge.domain.services.document_parser import DocumentParser
 from faultmaven.modules.knowledge.domain.services.runbook_grammar import code_spans
+from faultmaven.utils.frontmatter import match_frontmatter
 
 logger = logging.getLogger(__name__)
 
@@ -424,7 +423,7 @@ def _runbook_frontmatter_fields(text: str) -> frozenset:
     """
     text = text.lstrip(_LEADING_NOISE)
 
-    match = re.match(r"^---[ \t]*\n(.*?)\n---[ \t]*\n", text, re.DOTALL)
+    match = match_frontmatter(text)
     if not match:
         return frozenset()
 
