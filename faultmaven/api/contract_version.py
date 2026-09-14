@@ -30,6 +30,38 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
+# 3.7.0 — MINOR. The investigation turn reaches the EVIDENCE surfaces. 3.5.0
+# gave every schema that publishes a turn for display a nullable
+# `investigation_turn`, and missed the two that name a turn they do not
+# themselves render: evidence rows ("collected at turn N") and uploaded files
+# ("uploaded at turn N"). Both carried only the message clock, so on any case
+# with an aside a client printed `turn 5` beside an evidence row while its own
+# transcript called that same exchange `Turn 4` — the defect #1387 described for
+# history, one surface over (#1391).
+#
+# `SourceFileReference`, `EvidenceDetailsResponse`, `DerivedEvidenceSummary`,
+# `UploadedFileMetadata` and `UploadedFileDetailsResponse` each gain a nullable
+# `investigation_turn`: the per-row ORDINAL for the turn the row was collected
+# or uploaded at, from `Case.investigation_turn_at` — the same function
+# `Message.investigation_turn` uses, so the row and the exchange it belongs to
+# cannot disagree.
+#
+# WHY THE SERVER AND NOT THE CLIENT. A client can only resolve an evidence row's
+# ordinal by finding the conversation row on the same clock turn, which means
+# holding the conversation. The Dashboard's evidence tab holds none — it is a
+# separate fetch on a tab that never loads the transcript — and the copilot's
+# store is capped to a recent suffix, so a file uploaded early in a long case
+# has no local row either. Both clients would have had to render nothing.
+#
+# `collected_at_turn` and `uploaded_at_turn` are unchanged and still the message
+# clock: they are what anchors and jump-to-turn are keyed on. ADDRESS a turn
+# with those, DISPLAY the new one.
+#
+# Numbered 3.7.0, not 3.6.0, for the reason 3.6.0 itself records: #1388 took
+# 3.6.0 while this sat in review and merged first. Two different contracts must
+# never share a version, so this moves rather than collides and both entries
+# stay. They describe unrelated surfaces.
+#
 # 3.5.0 — MINOR. The investigation turn reaches the surfaces that DISPLAY a
 # turn. 2.7.0 put `investigation_turn` on `TurnResponse` (#1329) — the reply to
 # a submitted turn, and the one schema no history read and no header read can
@@ -489,4 +521,4 @@ asked to accept, and it belongs to a person.
 # never share a version — a number that cannot tell two contracts apart is not
 # doing its job — so this moves rather than collides, and both entries stay.
 # They describe unrelated surfaces.
-API_CONTRACT_VERSION = "3.6.0"
+API_CONTRACT_VERSION = "3.7.0"
