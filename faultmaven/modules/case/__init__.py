@@ -4,7 +4,7 @@ Manages case lifecycle, investigation sessions, and case data ingestion.
 
 Public API:
     From domain.models:
-        - Case, CaseState, CaseSeverity, MessageType
+        - Case, CaseState, CaseSeverity
         - InvestigationProgress, Evidence, Hypothesis, Solution
 
     From domain.services (import directly to avoid circular imports):
@@ -27,7 +27,6 @@ from faultmaven.modules.case.domain.models import (  # Core; Investigation; Evid
     HypothesisState,
     InvestigationProgress,
     InvestigationStrategy,
-    MessageType,
     Solution,
     SolutionType,
 )
@@ -41,7 +40,6 @@ __all__ = [
     "Case",
     "CaseState",
     "CaseSeverity",
-    "MessageType",
     # Investigation
     "InvestigationProgress",
     "InvestigationStrategy",

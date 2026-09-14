@@ -168,13 +168,11 @@ def case(sample_case, sample_user_id):
             "turn_number": 1,
             "role": "user",
             "content": "postgres OOM-killed nightly",
-            "message_type": "user_query",
         },
         {
             "turn_number": 1,
             "role": "assistant",
             "content": "Could you share dmesg?",
-            "message_type": "agent_response",
         },
     ]
     return sample_case

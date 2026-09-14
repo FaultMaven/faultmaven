@@ -542,19 +542,15 @@ class CaseService(ICaseService):
                 "message_id": message.message_id,
                 "case_id": case_id,
                 "author_id": message.author_id,
+                # `role` is the only kind a message has (#1397). There used to
+                # be a `message_type` beside it, derived defensively from
+                # `message.message_type` — an attribute `CaseMessage` has never
+                # declared, so every branch of that expression fell through to a
+                # default computed from `role` anyway. Two names for one fact,
+                # one of them written and never read, is what produced #1390's
+                # three call sites screening on the name the rows appeared to
+                # have.
                 "role": message_role,
-                "message_type": (
-                    getattr(message, "message_type", None).value
-                    if getattr(message, "message_type", None)
-                    and hasattr(getattr(message, "message_type", None), "value")
-                    else str(
-                        getattr(
-                            message,
-                            "message_type",
-                            "user_query" if message_role == "user" else "system_event",
-                        )
-                    )
-                ),
                 "content": message.content,
                 "created_at": (
                     message.created_at.isoformat()

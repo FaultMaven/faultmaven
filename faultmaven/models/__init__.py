@@ -35,7 +35,6 @@ from faultmaven.modules.case.domain.models import (
     Case,
     CaseSeverity,
     CaseState,
-    MessageType,
     UrgencyLevel,
 )
 
@@ -148,7 +147,6 @@ __all__ = [
     "Case",
     "CaseState",
     "CaseSeverity",
-    "MessageType",
     "UrgencyLevel",
     # Case API models (from api_models.py)
     "CaseMessage",
