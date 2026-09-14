@@ -16,6 +16,11 @@ on:
         default: 'false'
         type: boolean
 
+# Default-deny for the GITHUB_TOKEN. The benchmarks job overrides this with
+# the writes it needs to post its PR comment; memory-benchmarks only reads.
+permissions:
+  contents: read
+
 jobs:
   benchmarks:
     name: Run Performance Benchmarks

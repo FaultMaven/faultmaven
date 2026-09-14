@@ -10,6 +10,13 @@ on:
       - main
       - develop
 
+# Default-deny for the GITHUB_TOKEN. No job below reads a secret, posts a
+# comment, uploads SARIF or pushes an image -- they check out and run. A job
+# that later needs more declares its own `permissions:` block rather than
+# widening this one.
+permissions:
+  contents: read
+
 jobs:
   # ============================================================================
   # ENVIRONMENT SMOKE CHECK
