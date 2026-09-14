@@ -261,16 +261,12 @@ def test_capabilities_team_flags_gate_on_team_service():
 #: and any cache header either path might grow — so a middleware that keys on
 #: the path and treats the two differently fails here rather than in a client.
 #:
-#: ‼ Every name here must be one something actually WRITES. `x-process-time`
-#: was listed and is emitted nowhere in `faultmaven/`; the header the
-#: performance middleware really writes is `x-response-time`
-#: (`api/middleware/performance.py`). So the filter excluded a header that does
-#: not exist and compared two wall-clock measurements for equality, and this
-#: test failed 6 runs out of 6 on a clean checkout. CI stayed green because
-#: that middleware is conditional and absent under its preset -- which is what
-#: made this a local-developer failure that a green pipeline was not evidence
-#: against. `test_every_per_request_header_is_one_something_emits` now pins the
-#: rule so a renamed header cannot quietly empty the filter again.
+#: ‼ A denylist goes stale in both directions, so both are pinned by tests
+#: rather than by review: `test_every_per_request_header_is_one_something_emits`
+#: catches a name here that nothing writes, and
+#: `test_the_compared_set_is_exactly_the_route_describing_headers` catches a
+#: varying header that is missing from here. Those docstrings carry the history;
+#: it is deliberately not restated in both places.
 _PER_REQUEST_HEADERS = frozenset(
     {
         "date",
@@ -288,6 +284,12 @@ _PER_REQUEST_HEADERS = frozenset(
         # Written only when THAT request crossed the latency threshold, so it
         # can appear on one of the two calls and not the other.
         "x-performance-warning",
+        # Derived from the request PATH (`_categorize_endpoint` dispatches on
+        # `path.startswith`). Both URLs fall through to "root" today, so it
+        # agrees by luck; one added branch would split them over an
+        # observability label that says nothing about whether the two paths are
+        # one handler.
+        "x-performance-category",
     }
 )
 
@@ -323,29 +325,110 @@ def _assert_rate_limit_agrees(alias, canonical) -> None:
             )
 
 
-def test_every_per_request_header_is_one_something_emits():
-    """A name in the filter that nothing writes excludes nothing.
-
-    That is not hypothetical: `x-process-time` sat in this set while the
-    middleware wrote `x-processing-time`, so the filter silently compared two
-    wall-clock values for equality and this module failed 6 runs out of 6 on a
-    clean checkout. A green CI pipeline was not evidence against it -- the
-    middleware is conditional and absent under that preset -- so the rule needs
-    to be checked here rather than inferred from the suite passing.
-
-    `date` is the one exception: Starlette writes it, not us.
-    """
-    import re
-
-    written = {
-        name.lower()
-        for source in (Path(__file__).resolve().parents[2] / "faultmaven").rglob("*.py")
-        for name in re.findall(
-            r"""headers\[["']([A-Za-z][A-Za-z0-9-]*)["']\]\s*=""",
-            source.read_text(encoding="utf-8"),
-        )
+#: What is LEFT to compare once the per-request and rate-limit families are
+#: filtered out: headers that describe the ROUTE, not the request. Every one of
+#: these is the same for both URLs because they are one handler, which is the
+#: whole claim under test.
+_ROUTE_DESCRIBING_HEADERS = frozenset(
+    {
+        "content-type",
+        "content-encoding",
+        "vary",
     }
-    written.add("date")  # emitted by the ASGI server, not by this codebase
+)
+
+
+def test_the_compared_set_is_exactly_the_route_describing_headers():
+    """An ALLOWLIST, because the filter is a denylist and denylists go stale.
+
+    The previous version of this guard checked the wrong direction. It asserted
+    that every name in ``_PER_REQUEST_HEADERS`` is one something writes -- which
+    catches a bogus name, and the defect was the opposite: a header that varies
+    per request being ABSENT from the filter. ``x-response-time`` was written on
+    every response and never listed, and a guard on filter-subset-of-written
+    would have stayed green through all six failing runs.
+
+    Add a fourth timing or trace header to ``performance.py`` tomorrow and the
+    denylist is stale again. This test fails instead, naming it, because it
+    pins what SURVIVES the filter rather than what goes into it.
+
+    ``x-performance-category`` is filtered rather than compared even though it
+    is stable today: ``_categorize_endpoint`` dispatches on ``path.startswith``
+    and both URLs currently fall through to ``"root"``. One added branch would
+    split them over an observability label that says nothing about whether the
+    two paths are one handler.
+    """
+    with TestClient(app) as client:
+        response = client.get("/api/v1/meta/capabilities")
+
+    assert response.status_code == 200
+    surviving = set(_stable_headers(response.headers))
+
+    unexpected = sorted(surviving - _ROUTE_DESCRIBING_HEADERS)
+    assert unexpected == [], (
+        "headers reaching the comparison that are not route-describing. If one "
+        "of these varies per request it will fail the comparison below "
+        "intermittently; add it to _PER_REQUEST_HEADERS. If it really does "
+        f"describe the route, add it to _ROUTE_DESCRIBING_HEADERS: {unexpected}"
+    )
+
+
+def test_every_per_request_header_is_one_something_emits():
+    """The other direction: a name in the filter that nothing writes.
+
+    `x-process-time` sat in this set while the middleware wrote
+    `x-processing-time`, so the filter silently compared two wall-clock values
+    and this module failed 6 runs out of 6 on a clean checkout. CI stayed green
+    because that middleware is conditional and absent under its preset, so a
+    green pipeline was never evidence against it.
+
+    Matched on the AST, not on source text. This repo's sibling guard in
+    ``test_runbook_regex_redos`` records why: its own first draft was a source
+    regex and "had a blind spot the exact shape of the bug it exists to
+    prevent". The same applies here -- a text scan for ``headers["x"] =`` misses
+    ``JSONResponse(headers={...})`` (used in the case and auth routers), misses
+    ``headers.update(...)``, and its ``\s*=`` also matches ``==``, so a header
+    merely COMPARED would register as written.
+
+    `date` is the one exception: the ASGI server emits it, not this codebase.
+    """
+    import ast
+
+    written: set[str] = {"date"}
+    for source in (Path(__file__).resolve().parents[2] / "faultmaven").rglob("*.py"):
+        try:
+            tree = ast.parse(source.read_text(encoding="utf-8"))
+        except SyntaxError:  # pragma: no cover - not our file to fix
+            continue
+        for node in ast.walk(tree):
+            # response.headers["X-Foo"] = ...
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if (
+                        isinstance(target, ast.Subscript)
+                        and isinstance(target.value, ast.Attribute)
+                        and target.value.attr == "headers"
+                        and isinstance(target.slice, ast.Constant)
+                        and isinstance(target.slice.value, str)
+                    ):
+                        written.add(target.slice.value.lower())
+            # ...(headers={"X-Foo": ...}) and headers.update({"X-Foo": ...})
+            elif isinstance(node, ast.Call):
+                mappings = [kw.value for kw in node.keywords if kw.arg == "headers"] + [
+                    arg
+                    for arg in node.args
+                    if isinstance(node.func, ast.Attribute)
+                    and node.func.attr in {"update", "setdefault"}
+                    and isinstance(node.func.value, ast.Attribute)
+                    and node.func.value.attr == "headers"
+                ]
+                for mapping in mappings:
+                    if isinstance(mapping, ast.Dict):
+                        for key in mapping.keys:
+                            if isinstance(key, ast.Constant) and isinstance(
+                                key.value, str
+                            ):
+                                written.add(key.value.lower())
 
     unknown = sorted(_PER_REQUEST_HEADERS - written)
 
