@@ -327,22 +327,6 @@ class ICaseService(ABC):
         pass
 
     @abstractmethod
-    async def add_message_to_case(
-        self, case_id: str, message: CaseMessage, session_id: Optional[str] = None
-    ) -> bool:
-        """Add a message to a case conversation.
-
-        Args:
-            case_id: Case identifier
-            message: Message to add
-            session_id: Optional session ID
-
-        Returns:
-            True if message was added successfully
-        """
-        pass
-
-    @abstractmethod
     async def get_or_create_case_for_session(
         self,
         session_id: str,

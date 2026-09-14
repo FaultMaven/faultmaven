@@ -540,7 +540,6 @@ def _build_registry() -> Dict[str, RegistryEntry]:
             pending_members=tuple(
                 (member, _MINIMAL_CASE_SERVICE_PENDING)
                 for member in (
-                    "add_message_to_case",
                     "get_or_create_case_for_session",
                     "link_session_to_case",
                     "resume_case_in_session",
@@ -634,11 +633,14 @@ EXCLUDED_INTERFACES: Dict[str, str] = {
         "'register' name, which is not this port."
     ),
     "ICaseStore": (
-        "No subclass and no full implementation. CaseService shares 9 of its "
+        "No subclass and no full implementation. CaseService shares 7 of its "
         "15 method names (create_case, get_case, update_case, search_cases, "
-        "add_message_to_case, get_case_messages, get_case_messages_enhanced, "
-        "cleanup_expired_cases, get_case_analytics) but is not a store and "
-        "implements none of the persistence members."
+        "get_case_messages_enhanced, cleanup_expired_cases, get_case_analytics) "
+        "but is not a store and implements none of the persistence members. "
+        "The overlap was 9 until #1412 retired CaseService.add_message_to_case "
+        "and .get_case_messages, which had no callers; this port still declares "
+        "both, and whether IT should exist at all is a separate question from "
+        "whether that dead concrete code should."
     ),
     "ICaseNotificationService": (
         "No subclass and no full implementation — no class provides any of "
