@@ -2749,6 +2749,29 @@ async def resume_case_in_session(
     case_service = check_case_service_available(case_service)
 
     try:
+        # The case-access gate, which this route never had (#1390).
+        #
+        # `resume_case_in_session` -> `link_session_to_case` resolves the case
+        # with a bare `repository.get(case_id)` — no caller, no ownership, no
+        # share — so any authenticated user could attach their session to any
+        # case their tenant could see. It was not exploitable only because the
+        # method always failed on a malformed event row and the route read that
+        # as "not found"; fixing that bug is what makes the missing gate
+        # reachable, so the two have to land together.
+        # `tests/integration/security/test_two_enterprise_surface_probe.py`
+        # covers this route and caught it.
+        #
+        # Owner ∪ shared-to-my-teams, matching `submit_turn` above rather than
+        # the `owner_only` used by the report-mutating routes: a teammate who
+        # may post a turn into a shared case must be able to attach a session
+        # to it, or the extension can read and write a case it cannot resume.
+        case = await case_service.get_case(case_id, current_user.user_id)
+        if case is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Case not found or resume not permitted",
+            )
+
         success = await case_service.resume_case_in_session(case_id, session_id)
 
         if not success:
