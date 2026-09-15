@@ -20,17 +20,20 @@ generating new debt), and how many follow-up issues a fixed issue produced.
 Usage::
 
     python scripts/backlog_metrics.py                  # fetch via gh, print
-    python scripts/backlog_metrics.py --issues i.json  # from a saved dump
+    python scripts/backlog_metrics.py --issues i.json --as-of 2026-09-15T20:00:00Z
     python scripts/backlog_metrics.py --latency        # also blame fix PRs
 
-``--latency`` runs ``git blame`` over every fix PR's diff and is slow (about a
-minute per hundred closed issues); the rest completes in under a second.
-Everything the script prints is derived from GitHub metadata and the git
-history, never from reading issue text. An open issue younger than the
-residue threshold is reported as *pending*, not as residue, so the newest
-week's row is comparable to the same row on a later run. A saved dump is
-replayed with ``--as-of <the time it was taken>``; ages are measured from
-that instant, not from when the file is re-read.
+``--latency`` runs ``git blame`` over every fix PR's diff and is slow (about
+half a minute per hundred fix PRs); the rest completes in seconds. The
+flow, survival and open-set numbers come from GitHub metadata and never from
+reading issue text; the follow-up count is the one section that reads a
+body, and only for the lane marker ("found while working on #N"). An open
+issue younger than the residue threshold is reported as *pending*, not as
+residue, so the newest week's row is comparable to the same row on a later
+run. A saved dump is replayed with ``--as-of <the time it was taken>``; ages
+are measured from that instant, not from when the file is re-read.
+``--offline`` makes a replay a no-network run (parent markers naming a PR
+then stay unresolved).
 """
 
 from __future__ import annotations
@@ -45,6 +48,7 @@ import subprocess
 import sys
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -62,26 +66,29 @@ _DAY = 86400.0
 #: population: from here on only a deliberate pick closes it.
 RESIDUE_THRESHOLD_DAYS = 7
 
-#: The markers a lane writes when it files an issue it found while doing other
-#: work. Matching the marker (rather than any ``#N``) keeps a citation of a
-#: related issue from being read as a parent, and the negative look-behind
-#: refuses ``owner/repo#N`` and ``dashboard#N`` — a cross-repository reference
-#: is not a parent in this repository.
+#: Independent subprocesses per PR (git) and per batch (gh); each releases
+#: the GIL while it waits, so the outer loops run concurrently.
+_WORKERS = 8
+
+#: The markers a lane writes when it files an issue it found while doing
+#: other work. Matching the marker (rather than any ``#N``) keeps a citation
+#: of a related issue from being read as a parent. ``review of`` is bound
+#: tightly to its ``#`` because the bare phrase occurs in ordinary prose.
 _PARENT_MARKER = re.compile(
     r"(?:found while|surfaced (?:while|by|during)|while (?:working on|fixing|"
     r"reviewing)|spun out of|deferred from|follow-?up (?:to|from|of)|"
-    r"out of scope (?:for|of)|split (?:out|from)|during (?:the )?(?:work on|"
-    r"review of)|review of)[^\n#]{0,80}(?<![\w/])#(\d+)",
+    r"out of scope (?:for|of)|split (?:out|from)|during (?:the )?work on)"
+    r"[^\n#]{0,80}?(?P<ref>(?:[\w.-]*[-/][\w.-]*\s*)?#(?P<n>\d+))"
+    r"|review of (?:PR |pull request )?(?P<ref2>(?:[\w.-]*[-/][\w.-]*\s*)?#(?P<n2>\d+))",
     re.IGNORECASE,
 )
 
-_ISSUE_FIELDS = "number,title,state,createdAt,closedAt,labels,body"
+_ISSUE_FIELDS = "number,createdAt,closedAt,labels,body"
 
 
 @dataclass(frozen=True)
 class Issue:
     number: int
-    title: str
     created: dt.datetime
     closed: dt.datetime | None
     labels: tuple[str, ...]
@@ -126,7 +133,6 @@ def load_issues(raw: Iterable[dict]) -> list[Issue]:
         issues.append(
             Issue(
                 number=int(item["number"]),
-                title=item.get("title", ""),
                 created=parse_utc_timestamp(item["createdAt"]),
                 closed=parse_utc_timestamp(closed_at) if closed_at else None,
                 labels=tuple(label["name"] for label in item.get("labels", ())),
@@ -136,9 +142,16 @@ def load_issues(raw: Iterable[dict]) -> list[Issue]:
     return sorted(issues, key=lambda issue: issue.number)
 
 
+def _gh(*args: str) -> subprocess.CompletedProcess:
+    """Run ``gh``; a missing binary is a one-line exit, not a traceback."""
+    try:
+        return subprocess.run(["gh", *args], capture_output=True, text=True)
+    except FileNotFoundError:
+        sys.exit("gh is not installed or not on PATH; pass --offline to skip it")
+
+
 def fetch_issues(repo: str) -> list[Issue]:
-    cmd = [
-        "gh",
+    result = _gh(
         "issue",
         "list",
         "--repo",
@@ -149,8 +162,7 @@ def fetch_issues(repo: str) -> list[Issue]:
         "5000",
         "--json",
         _ISSUE_FIELDS,
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    )
     if result.returncode != 0:
         sys.exit(f"gh issue list failed: {result.stderr.strip() or 'no diagnostic'}")
     return load_issues(json.loads(result.stdout))
@@ -167,6 +179,31 @@ def _week_end(year: int, week: int) -> dt.datetime:
     )
 
 
+def _weeks_between(first: tuple[int, int], last: tuple[int, int]):
+    """Every ISO week from ``first`` to ``last`` inclusive, quiet ones too."""
+    cursor = dt.date.fromisocalendar(first[0], first[1], 1)
+    end = dt.date.fromisocalendar(last[0], last[1], 1)
+    while cursor <= end:
+        iso = cursor.isocalendar()
+        yield (iso[0], iso[1])
+        cursor += dt.timedelta(days=7)
+
+
+def snapshot_at(issues: Sequence[Issue], now: dt.datetime) -> list[Issue]:
+    """The corpus as it stood at ``now``: later filings absent, later
+    closures not yet closed. Makes ``--as-of`` a point-in-time read rather
+    than a mix of ages measured at one instant and events from another.
+    """
+    snapshot = []
+    for issue in issues:
+        if issue.created > now:
+            continue
+        if issue.closed is not None and issue.closed > now:
+            issue = Issue(issue.number, issue.created, None, issue.labels, issue.body)
+        snapshot.append(issue)
+    return snapshot
+
+
 def open_count_at(issues: Sequence[Issue], when: dt.datetime) -> int:
     return sum(
         1
@@ -176,7 +213,8 @@ def open_count_at(issues: Sequence[Issue], when: dt.datetime) -> int:
 
 
 def weekly_flow(issues: Sequence[Issue], now: dt.datetime) -> list[dict]:
-    """Per ISO week: opened, closed, and the residue's own inflow and drain.
+    """Per ISO week, quiet weeks included: opened, closed, and the residue's
+    own inflow and drain.
 
     ``residue_in`` counts issues opened that week that were NOT closed within
     the threshold. ``residue_out`` counts closures that week of issues older
@@ -184,8 +222,11 @@ def weekly_flow(issues: Sequence[Issue], now: dt.datetime) -> list[dict]:
     open issues too young to be residue yet, so the row is provisional by
     exactly that number. The difference ``residue_net`` is what the campaign
     has to drive negative; ``opened - closed`` is dominated by same-lane
-    discovery and says little.
+    discovery and says little. A week with no event is a row of zeros, so
+    "the last N weeks" means calendar weeks and a zero week is visible.
     """
+    if not issues:
+        return []
     opened: Counter = Counter()
     closed: Counter = Counter()
     residue_in: Counter = Counter()
@@ -202,8 +243,9 @@ def weekly_flow(issues: Sequence[Issue], now: dt.datetime) -> list[dict]:
             closed[_week(issue.closed)] += 1
             if issue.is_residue(now):
                 residue_out[_week(issue.closed)] += 1
+    first = min(_week(issue.created) for issue in issues)
     rows = []
-    for week in sorted(set(opened) | set(closed)):
+    for week in _weeks_between(first, _week(now)):
         rows.append(
             {
                 "week": f"{week[0]}-W{week[1]:02d}",
@@ -214,7 +256,8 @@ def weekly_flow(issues: Sequence[Issue], now: dt.datetime) -> list[dict]:
                 "residue_out": residue_out[week],
                 "residue_net": residue_in[week] - residue_out[week],
                 "pending": pending[week],
-                "open_at_week_end": open_count_at(issues, _week_end(*week)),
+                # The newest week is incomplete: its count is "open now".
+                "open_at_week_end": open_count_at(issues, min(_week_end(*week), now)),
             }
         )
     return rows
@@ -229,9 +272,10 @@ def survival(
     """What fraction of issues close within each horizon.
 
     Only issues old enough to have had the full exposure are counted, so a
-    burst of recent filings cannot depress the rates. The second number is the
-    conditional one that matters for the residue: of the issues that survived
-    the threshold, how many closed by the last horizon.
+    burst of recent filings cannot depress the rates. The survivors are then
+    partitioned three ways — closed by the last horizon, closed later (the
+    sweep drain the residue measure is about), still open — so the parts
+    sum to the survivors.
     """
     cohort = [issue for issue in issues if issue.age_days(now) >= min_exposure_days]
     result = {
@@ -258,8 +302,6 @@ def survival(
     result["survivors"] = len(survivors)
     result["survivors_closed"] = sum(closed_within(issue, last) for issue in survivors)
     result["survivors_open"] = sum(1 for issue in survivors if issue.is_open)
-    # The three parts partition the survivors: a closure after the last
-    # horizon is the sweep drain the residue measure is about, not nothing.
     result["survivors_closed_late"] = (
         len(survivors) - result["survivors_closed"] - result["survivors_open"]
     )
@@ -280,24 +322,53 @@ def residue_snapshot(issues: Sequence[Issue], now: dt.datetime) -> dict:
     return {
         "open": len(ages),
         "median_age_days": statistics.median(ages) if ages else 0.0,
-        "older_than_threshold": sum(1 for a in ages if a > RESIDUE_THRESHOLD_DAYS),
+        "older_than_threshold": sum(issue.is_residue(now) for issue in open_issues),
         "older_than_30d": sum(1 for age in ages if age > 30),
         "by_priority": dict(sorted(by_priority.items())),
     }
 
 
+def parent_of(issue: Issue, repo: str) -> int | None:
+    """The number a lane marker in ``issue`` names, or ``None``.
+
+    A reference qualified with this repository's own name
+    (``FaultMaven/faultmaven#N``) is that number; one qualified with any
+    other repository-shaped token — a slash, or a hyphenated name — before
+    the ``#`` (``faultmaven-dashboard#N``, ``faultmaven-dashboard #N``) is a
+    reference elsewhere and is ``None``. An issue never parents itself (a
+    correction note citing the review of its own fix PR would otherwise
+    resolve back to it). This is the ONE place the marker grammar lives;
+    every reader of it calls here.
+    """
+    match = _PARENT_MARKER.search(issue.body)
+    if not match:
+        return None
+    ref = match.group("ref") or match.group("ref2")
+    number = int(match.group("n") or match.group("n2"))
+    qualifier = ref[: ref.index("#")].strip()
+    if qualifier and qualifier.lower() != repo.lower():
+        return None
+    return None if number == issue.number else number
+
+
+def marker_numbers(issues: Sequence[Issue], repo: str) -> list[int]:
+    """Every number a parent marker names that is not an issue here."""
+    known = {issue.number for issue in issues}
+    found = {parent_of(issue, repo) for issue in issues} - known - {None}
+    return sorted(found)
+
+
 def follow_ups(
-    issues: Sequence[Issue], pr_links: dict[int, list[int]] | None = None
+    issues: Sequence[Issue], repo: str, pr_links: dict[int, list[int]] | None = None
 ) -> dict:
     """Issues that name a parent they were found while working on.
 
     A parent is counted only when it is an issue in this corpus. A number
     that is not is usually the PR the lane was working; ``pr_links`` (PR
     number → the issues it closed, from :func:`pr_closing_issues`) resolves
-    those to the issue the PR was for. What still resolves to nothing — a
-    cross-repository reference, a PR that closed no issue — is reported as
-    ``unresolved`` rather than as a parent, because the per-lane rate is a
-    rate per ISSUE.
+    those to the issue the PR was for. What still resolves to nothing — a PR
+    that closed no issue — is reported as ``unresolved`` rather than as a
+    parent, because the per-lane rate is a rate per ISSUE.
 
     The regex reads the lane's own marker, so an issue whose parent is named
     without one is missed; treat the count as a floor. Whether a follow-up
@@ -310,16 +381,17 @@ def follow_ups(
     unresolved = 0
     via_pr = 0
     for issue in issues:
-        match = _PARENT_MARKER.search(issue.body)
-        if not match:
+        parent = parent_of(issue, repo)
+        if parent is None:
             continue
-        parent = int(match.group(1))
         if parent not in known and pr_links:
             closed_here = [n for n in pr_links.get(parent, ()) if n in known]
             if closed_here:
                 parent = min(closed_here)
                 via_pr += 1
-        if parent in known:
+        if parent == issue.number:
+            unresolved += 1  # the PR named closed this very issue
+        elif parent in known:
             children[parent].append(issue.number)
         else:
             unresolved += 1
@@ -331,17 +403,6 @@ def follow_ups(
         "unresolved": unresolved,
         "top": [(parent, kids) for parent, kids in parents[:10]],
     }
-
-
-def marker_numbers(issues: Sequence[Issue]) -> list[int]:
-    """Every number a parent marker names that is not an issue here."""
-    known = {issue.number for issue in issues}
-    found = set()
-    for issue in issues:
-        match = _PARENT_MARKER.search(issue.body)
-        if match and int(match.group(1)) not in known:
-            found.add(int(match.group(1)))
-    return sorted(found)
 
 
 # --------------------------------------------------------------------------
@@ -356,11 +417,41 @@ def _git(*args: str) -> str | None:
     return result.stdout if result.returncode == 0 else None
 
 
+def _graphql_batch(chunk: Sequence[int], repo: str, field: str, label: str) -> dict:
+    owner, name = repo.split("/")
+    fields = " ".join(f"i{n}: " + field.format(n=n) for n in chunk)
+    query = f'{{ repository(owner:"{owner}",name:"{name}"){{ {fields} }} }}'
+    result = _gh("api", "graphql", "-f", f"query={query}")
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        print(f"graphql returned no body: {result.stderr[:200]}", file=sys.stderr)
+        return {}
+    repository = (payload.get("data") or {}).get("repository") or {}
+    if not repository:
+        reason = payload.get("message") or "; ".join(
+            e.get("message", "") for e in payload.get("errors", [])
+        )
+        print(
+            f"graphql batch of {len(chunk)} {label} failed: "
+            f"{reason or result.stderr[:200] or 'no diagnostic'}",
+            file=sys.stderr,
+        )
+        return {}
+    out = {}
+    for alias, value in repository.items():
+        if value is None:
+            print(f"unresolvable {label} {alias[1:]}", file=sys.stderr)
+            continue
+        out[int(alias[1:])] = value
+    return out
+
+
 def _graphql_batches(
     numbers: Sequence[int], repo: str, field: str, label: str
 ) -> dict[int, dict]:
-    """Run ``field`` (an alias-less GraphQL field template with ``{n}``) for
-    every number in batches of 40 and return ``number → node``.
+    """Run ``field`` (a GraphQL field template with ``{n}``) for every number
+    in batches of 40, concurrently, and return ``number → node``.
 
     GitHub answers a batch with partial data plus an ``errors`` array when
     one number cannot be resolved (deleted, transferred, or the wrong kind),
@@ -370,43 +461,16 @@ def _graphql_batches(
     or a rate limit — is reported to stderr with GitHub's own words, so a run
     that dated nothing says why.
     """
-    owner, name = repo.split("/")
+    chunks = [numbers[start : start + 40] for start in range(0, len(numbers), 40)]
     out: dict[int, dict] = {}
-    for start in range(0, len(numbers), 40):
-        chunk = numbers[start : start + 40]
-        fields = " ".join(f"i{n}: " + field.format(n=n) for n in chunk)
-        query = f'{{ repository(owner:"{owner}",name:"{name}"){{ {fields} }} }}'
-        result = subprocess.run(
-            ["gh", "api", "graphql", "-f", f"query={query}"],
-            capture_output=True,
-            text=True,
-        )
-        try:
-            payload = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            print(f"graphql returned no body: {result.stderr[:200]}", file=sys.stderr)
-            continue
-        repository = (payload.get("data") or {}).get("repository") or {}
-        if not repository:
-            reason = payload.get("message") or "; ".join(
-                e.get("message", "") for e in payload.get("errors", [])
-            )
-            print(
-                f"graphql batch of {len(chunk)} {label} failed: "
-                f"{reason or result.stderr[:200] or 'no diagnostic'}",
-                file=sys.stderr,
-            )
-            continue
-        for alias, value in repository.items():
-            if value is None:
-                print(f"unresolvable {label} {alias[1:]}", file=sys.stderr)
-                continue
-            out[int(alias[1:])] = value
+    with ThreadPoolExecutor(max_workers=_WORKERS) as pool:
+        for part in pool.map(lambda c: _graphql_batch(c, repo, field, label), chunks):
+            out.update(part)
     return out
 
 
 def closing_prs(numbers: Sequence[int], repo: str) -> dict[int, list[dict]]:
-    """Which merged PR closed each issue, from GitHub's own linkage."""
+    """Which merged PRs closed each issue, from GitHub's own linkage."""
     nodes = _graphql_batches(
         numbers,
         repo,
@@ -436,28 +500,36 @@ def _is_test_path(path: str) -> bool:
     return path.startswith("tests/") or "/tests/" in path
 
 
-def removed_lines(diff: str) -> list[tuple[str, int]]:
-    """``(path, old line number)`` for every line a unified diff removed.
+_DIFF_HEADER = re.compile(r"^diff --git a/(.*) b/(.*)$")
 
-    The diff must carry the ``a/``/``b/`` prefixes (the caller forces them,
-    because ``diff.noprefix`` would otherwise drop every hunk silently). A
-    new file has no pre-fix lines to date and a test file is not the defect.
-    A pure insertion is recorded as a NEGATIVE anchor at the insertion point;
-    the caller uses the anchors only when nothing was removed.
+
+def removed_lines(diff: str) -> list[tuple[str, int]]:
+    """``(old path, old line number)`` for every line a unified diff removed.
+
+    The file is taken from the ``diff --git`` header (a removed CONTENT line
+    can begin ``-- a/`` and would fool a ``---`` scan), and the diff must
+    carry the ``a/``/``b/`` prefixes — the caller forces them, because
+    ``diff.noprefix`` would otherwise blank every path. A renamed file is
+    dated on its OLD path, so a move-and-edit contributes the lines the fix
+    changed and not the whole moved file. A new file has no pre-fix lines
+    and a test file is not the defect. A pure insertion is recorded as a
+    NEGATIVE anchor at the insertion point; the caller uses the anchors only
+    when nothing was removed.
     """
     lines: list[tuple[str, int]] = []
     path: str | None = None
     for line in diff.split("\n"):
-        if line.startswith("--- a/"):
-            path = line[6:]
+        header = _DIFF_HEADER.match(line)
+        if header:
+            path = header.group(1)
         elif line.startswith("--- /dev/null"):
             path = None
         elif line.startswith("@@") and path and not _is_test_path(path):
-            header = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
-            if header is None:
+            hunk = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
+            if hunk is None:
                 continue
-            start = int(header.group(1))
-            count = int(header.group(2)) if header.group(2) is not None else 1
+            start = int(hunk.group(1))
+            count = int(hunk.group(2)) if hunk.group(2) is not None else 1
             if count == 0:
                 lines.append((path, -max(start, 1)))
             else:
@@ -519,15 +591,64 @@ def latency_days(found: dt.datetime, intro_times: Sequence[int]) -> dict | None:
     }
 
 
+#: The diff a fix PR is dated from. Prefixes forced (``diff.noprefix`` would
+#: blank them), non-ASCII paths unquoted, renames detected so a move-and-edit
+#: is dated on the lines it changed at the OLD path rather than on the whole
+#: moved file, and deleted files kept (their lines are pre-fix lines).
+_DIFF_ARGS = (
+    "-c",
+    "core.quotePath=false",
+    "diff",
+    "-U0",
+    "-M",
+    "--diff-filter=MDR",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+)
+
+
+def _date_pr(pr_number: int, entry: dict, by_number: dict[int, Issue]) -> tuple:
+    """``("row", row)`` or ``("skipped", reason)`` for one fix PR."""
+    oid = entry["oid"]
+    if _git("cat-file", "-e", oid) is None:
+        return "skipped", "merge commit not in local checkout (fetch?)"
+    diff = _git(*_DIFF_ARGS, f"{oid}^", oid, "--", "faultmaven/")
+    if diff is None:
+        return "skipped", "git diff failed (shallow clone?)"
+    if not diff:
+        return "skipped", "no source change under faultmaven/"
+    targets = removed_lines(diff)
+    removed = [(p, n) for p, n in targets if n > 0]
+    anchors = [(p, -n) for p, n in targets if n < 0]
+    cache: dict[str, dict[int, int]] = {}
+    intro = _intro_times(removed, f"{oid}^", cache)
+    method = "removed"
+    if not intro:
+        intro = _intro_times(anchors, f"{oid}^", cache)
+        method = "context"
+    if not intro:
+        return "skipped", "no blameable line"
+    found = min(by_number[n].created for n in entry["issues"])
+    stats = latency_days(found, intro)
+    if stats is None:
+        return "skipped", "every removed line postdates the issue"
+    return "row", {
+        "pr": pr_number,
+        "issues": sorted(entry["issues"]),
+        "method": method,
+        **stats,
+    }
+
+
 def fix_latency(issues: Sequence[Issue], repo: str) -> dict:
     """One row per FIX PR, dated against the earliest issue it closed.
 
     Per PR rather than per issue: a sweep PR closing six issues would
     otherwise contribute six identical medians and weight the distribution by
-    PR size. Returns ``{"rows": [...], "skipped": {reason: count}}`` so the
-    report has a denominator: a PR whose merge commit is not in the local
-    checkout (not fetched yet — the NEWEST PRs, which is the direction that
-    would flatter the under-a-week share) is counted, not silently dropped.
+    PR size; an issue closed by two merged PRs contributes to both rows.
+    Returns ``rows``, ``skipped`` (PRs, by reason) and ``unlinked_issues``
+    (closed issues GitHub links to no merged PR — by hand, by duplicate, by
+    commit message) so the report has its denominator on both axes.
 
     ``mergeCommit`` is the squash commit for a squash merge, which is how
     this repository merges; a rebase merge would name only the PR's last
@@ -537,69 +658,30 @@ def fix_latency(issues: Sequence[Issue], repo: str) -> dict:
     by_number = {issue.number: issue for issue in closed}
     linkage = closing_prs([issue.number for issue in closed], repo)
     per_pr: dict[int, dict] = {}
-    for number, prs in linkage.items():
-        merged = [pr for pr in prs if pr.get("mergeCommit")]
+    unlinked = 0
+    for issue in closed:
+        merged = [pr for pr in linkage.get(issue.number, ()) if pr.get("mergeCommit")]
         if not merged:
+            unlinked += 1
             continue
-        entry = per_pr.setdefault(
-            merged[0]["number"],
-            {"oid": merged[0]["mergeCommit"]["oid"], "issues": []},
-        )
-        entry["issues"].append(number)
+        for pr in merged:
+            entry = per_pr.setdefault(
+                pr["number"], {"oid": pr["mergeCommit"]["oid"], "issues": []}
+            )
+            entry["issues"].append(issue.number)
 
     rows = []
     skipped: Counter = Counter()
-    for pr_number, entry in sorted(per_pr.items()):
-        oid = entry["oid"]
-        if _git("cat-file", "-e", oid) is None:
-            skipped["merge commit not in local checkout (fetch?)"] += 1
-            continue
-        diff = _git(
-            "-c",
-            "core.quotePath=false",
-            "diff",
-            "-U0",
-            "--diff-filter=MD",
-            "--no-renames",
-            "--src-prefix=a/",
-            "--dst-prefix=b/",
-            f"{oid}^",
-            oid,
-            "--",
-            "faultmaven/",
+    with ThreadPoolExecutor(max_workers=_WORKERS) as pool:
+        results = pool.map(
+            lambda item: _date_pr(item[0], item[1], by_number), sorted(per_pr.items())
         )
-        if diff is None:
-            skipped["git diff failed (shallow clone?)"] += 1
-            continue
-        if not diff:
-            skipped["no source change under faultmaven/"] += 1
-            continue
-        targets = removed_lines(diff)
-        removed = [(p, n) for p, n in targets if n > 0]
-        anchors = [(p, -n) for p, n in targets if n < 0]
-        cache: dict[str, dict[int, int]] = {}
-        intro = _intro_times(removed, f"{oid}^", cache)
-        method = "removed"
-        if not intro:
-            intro = _intro_times(anchors, f"{oid}^", cache)
-            method = "context"
-        if not intro:
-            skipped["no blameable line"] += 1
-            continue
-        found = min(by_number[n].created for n in entry["issues"])
-        stats = latency_days(found, intro)
-        if stats is None:
-            skipped["every removed line postdates the issue"] += 1
-            continue
-        rows.append(
-            {
-                "pr": pr_number,
-                "issues": sorted(entry["issues"]),
-                "method": method,
-                **stats,
-            }
-        )
-    return {"rows": rows, "skipped": dict(skipped)}
+        for kind, value in results:
+            if kind == "row":
+                rows.append(value)
+            else:
+                skipped[value] += 1
+    return {"rows": rows, "skipped": dict(skipped), "unlinked_issues": unlinked}
 
 
 def _percentile(values: Sequence[float], pct: float) -> float:
@@ -634,6 +716,10 @@ def _table(headers: Sequence[str], rows: Iterable[Sequence]) -> str:
     return "\n".join(lines)
 
 
+def _skipped_text(skipped: dict) -> str:
+    return ", ".join(f"{v} {k}" for k, v in sorted(skipped.items())) or "none"
+
+
 def compute(
     issues: Sequence[Issue],
     now: dt.datetime,
@@ -642,14 +728,16 @@ def compute(
     resolve_parents: bool = False,
 ) -> dict:
     pr_links = (
-        pr_closing_issues(marker_numbers(issues), repo) if resolve_parents else None
+        pr_closing_issues(marker_numbers(issues, repo), repo)
+        if resolve_parents
+        else None
     )
     return {
         "as_of": now.isoformat(),
         "weekly": weekly_flow(issues, now),
         "survival": survival(issues, now),
         "open": residue_snapshot(issues, now),
-        "follow_ups": follow_ups(issues, pr_links),
+        "follow_ups": follow_ups(issues, repo, pr_links),
         "latency": fix_latency(issues, repo) if latency else None,
     }
 
@@ -689,7 +777,7 @@ def report(results: dict, weeks: int) -> str:
     )
     total_in = sum(row["residue_in"] for row in flow)
     total_out = sum(row["residue_out"] for row in flow)
-    pending = sum(row["pending"] for row in flow)
+    pending = sum(row["pending"] for row in results["weekly"])
     out.append(
         f"\nResidue over the window: in {total_in}, out {total_out}, "
         f"net {total_in - total_out:+d}; {pending} open issues are still too "
@@ -726,8 +814,7 @@ def report(results: dict, weeks: int) -> str:
         f"{fu['attributed']} issues name a parent they were found while working "
         f"on, across {fu['parents']} parent issues ({fu['via_pr']} resolved "
         f"through the PR the marker named); {fu['unresolved']} name a number "
-        "that resolves to no issue here (a PR that closed none, or another "
-        "repository). "
+        "that resolves to no issue here (a PR that closed none). "
         "Most prolific: "
         + ", ".join(f"#{p} ({len(k)})" for p, k in fu["top"][:6])
         + ".\n"
@@ -736,11 +823,13 @@ def report(results: dict, weeks: int) -> str:
     if results["latency"] is not None:
         dist = latency_distribution(results["latency"]["rows"])
         skipped = results["latency"]["skipped"]
+        unlinked = results["latency"]["unlinked_issues"]
         out.append("## Fix latency (blame on the removed lines of each fix PR)\n")
         if dist["n"]:
             out.append(
                 f"{dist['n']} dated fix PRs, {sum(skipped.values())} skipped "
-                f"({', '.join(f'{v} {k}' for k, v in sorted(skipped.items())) or 'none'}). "
+                f"({_skipped_text(skipped)}); {unlinked} closed issues link to no "
+                f"merged PR and are outside this measure. "
                 f"Median latency {dist['median']:.0f}d "
                 f"(p25 {dist['p25']:.0f}d, p75 {dist['p75']:.0f}d); "
                 f"{dist['under_7d']:.0%} under a week (introduced by recent work), "
@@ -748,13 +837,8 @@ def report(results: dict, weeks: int) -> str:
             )
         else:
             out.append(
-                "No fix could be dated"
-                + (
-                    f" ({', '.join(f'{v} {k}' for k, v in sorted(skipped.items()))})"
-                    if skipped
-                    else ""
-                )
-                + ".\n"
+                f"No fix could be dated ({_skipped_text(skipped)}; {unlinked} "
+                "closed issues link to no merged PR).\n"
             )
     return "\n".join(out)
 
@@ -768,7 +852,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--repo", default="FaultMaven/faultmaven")
     parser.add_argument(
-        "--weeks", type=int, default=12, help="most recent weeks of flow to print"
+        "--weeks", type=int, default=12, help="most recent calendar weeks to print"
     )
     parser.add_argument(
         "--latency",
@@ -804,6 +888,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         issues = fetch_issues(args.repo)
     now = args.as_of or dt.datetime.now(dt.UTC)
+    before = len(issues)
+    later_closures = sum(1 for i in issues if i.closed and i.closed > now)
+    issues = snapshot_at(issues, now)
+    if before - len(issues) or later_closures:
+        print(
+            f"note: --as-of precedes the dump's own events: {before - len(issues)} "
+            f"issues filed later are dropped and {later_closures} closures later "
+            "are treated as still open, so the run is a snapshot at that instant",
+            file=sys.stderr,
+        )
     results = compute(
         issues,
         now,

@@ -21,8 +21,8 @@ week were opened and ~22 closed. Five things the count was hiding, from the
    so the rest sit: a P2 issue's median time to close is 17 days, P3 is
    effectively never, and 12 of 15 P3 issues are still open.
 3. **The defects being found are old.** Median latency between the defective
-   line's introduction and the issue is 142 days; 61% are over 90 days and
-   only ~14% under a week, a share that has been stable month to month while
+   line's introduction and the issue is 144 days; 62% are over 90 days and
+   only ~13% under a week, a share that has been stable month to month while
    the over-90-day share rises. That is the signature of draining a fixed pool
    rather than generating new debt.
 4. **Fixes rarely break things; they expose things.** 13 of 193 defects (7%)
