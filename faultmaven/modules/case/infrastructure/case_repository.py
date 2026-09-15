@@ -282,6 +282,12 @@ class CaseRepository(ABC):
             state: Filter by state
             limit: Maximum results
             offset: Pagination offset
+            source: Filter by originating surface (``copilot``/``slack``/
+                ``api``), applied in the same WHERE clause as the count. A
+                FALSY value means no filter: implementations test
+                ``if source:``, so ``None`` and ``""`` both answer unfiltered.
+                See ``ICaseRepository.list`` for why that is a contract rather
+                than a spelling.
             include_empty: When False, exclude empty cases (current_turn == 0)
                 via the query WHERE clause so the predicate constrains both the
                 returned page and the total count.
@@ -1099,10 +1105,13 @@ class InMemoryCaseRepository(CaseRepository):
 
         # Originating surface (copilot / slack / ...), applied here rather than
         # after the slice for the same reason as every predicate around it: the
-        # count and the returned page must describe the same set (#1409). The
-        # truthiness test is `if source:` — not `is not None` — because that is
-        # what the SQL repositories do, so an empty string means "no filter" on
-        # all four implementations rather than "match cases whose source is ''".
+        # count and the returned page must describe the same set (#1409).
+        #
+        # `if source:` — not `is not None` — is the CONTRACT, stated on
+        # `ICaseRepository.list` and matched by the SQL repositories: a falsy
+        # `source` means no filter. Do not tighten this to `is not None`
+        # without changing the contract and the other three implementations
+        # first; see #1424 for what one repository disagreeing costs.
         if source:
             filtered = [c for c in filtered if c.source == source]
 

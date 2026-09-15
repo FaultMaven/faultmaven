@@ -137,6 +137,20 @@ class ICaseRepository(Protocol):
     ) -> tuple[List["Case"], int]:
         """List cases with optional filters.
 
+        ``source`` narrows to the surface a case originated on (``copilot`` /
+        ``slack`` / ``api``). It is applied in the same WHERE clause as the
+        count, like every other predicate here. **A FALSY value means "no
+        filter"** — implementations test ``if source:``, not
+        ``if source is not None:``, so ``None`` and ``""`` both answer
+        unfiltered. That is a contract, not an accident of spelling: the
+        alternative makes ``""`` mean "match cases whose source is the empty
+        string", which matches nothing on a column whose domain is those three
+        values, and an implementation that chose differently would answer the
+        same call differently from its siblings (faultmaven#1424, where
+        ``InMemoryCaseRepository`` accepted ``source`` and applied nothing at
+        all). Pinned by
+        ``tests/unit/modules/case/test_list_applies_declared_source_1424.py``.
+
         ``include_empty`` gates empty cases (``current_turn == 0``): when
         ``False`` the ``current_turn > 0`` predicate is applied in SQL so it
         constrains BOTH the returned page and the total count (keeping the

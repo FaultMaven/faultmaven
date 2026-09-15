@@ -96,12 +96,10 @@ from fastapi.dependencies.utils import get_flat_params
 from fastapi.params import ParamTypes
 from fastapi.routing import APIRoute
 from pydantic import BaseModel
-from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.api.routes import admin_cases
 from faultmaven.infrastructure.persistence import database as database_module
-from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.models.api_models import CaseListFilter, CaseSearchRequest
 from faultmaven.modules.case.api import routes as case_routes
 from faultmaven.modules.case.domain.models import Case, CaseState, InquiryData
@@ -536,62 +534,16 @@ async def _seed(repository: Any) -> None:
         await repository.save(case)
 
 
-def _build_schema_template(path: Path) -> None:
-    """Create the whole schema, plus the tenancy rows, ONCE into ``path``.
-
-    Built with a SYNC engine deliberately. ``Base.metadata.create_all`` issues
-    DDL for 41 tables, and aiosqlite hops to a worker thread per statement:
-    measured at ~0.7s through the async driver against 0.139s synchronously, for
-    identical output. The file is then copied per test (about a millisecond),
-    which is also why the SQLite arm became file-backed rather than
-    ``:memory:`` — a ``:memory:`` database lives in its engine's pooled
-    connection, so it cannot be built once and reused, and a cache keyed on the
-    URL would never hit.
-
-    Isolation gets STRONGER, not weaker: every test now owns a private file, so
-    no row a test writes can reach another. The property under test is the WHERE
-    clause, not the storage medium, and the Sessionless arm was already
-    file-backed.
-
-    The tenancy rows are the parents ``cases`` carries foreign keys to. They are
-    needed wherever foreign keys are enforced — the application engine sets
-    ``PRAGMA foreign_keys=ON`` per connection — and writing them into the
-    template keeps both SQLite arms seeded identically rather than leaving one
-    of them depending on the pragma being off.
-    """
-    engine = create_engine(f"sqlite:///{path}")
-    try:
-        Base.metadata.create_all(engine)
-        with engine.begin() as connection:
-            connection.execute(
-                text(
-                    "INSERT INTO enterprises (enterprise_id, name, slug) "
-                    "VALUES (:eid, 'Guard Enterprise', 'guard-enterprise')"
-                ),
-                {"eid": SEED_ENTERPRISE},
-            )
-            connection.execute(
-                text(
-                    "INSERT INTO users (user_id, enterprise_id, username, "
-                    "email, display_name) "
-                    "VALUES (:uid, :eid, :uid, :email, 'Seed Owner')"
-                ),
-                {
-                    "uid": SEED_OWNER,
-                    "eid": SEED_ENTERPRISE,
-                    "email": f"{SEED_OWNER}@test",
-                },
-            )
-    finally:
-        engine.dispose()
-
-
 @pytest.fixture(scope="session")
-def sqlite_schema_template(tmp_path_factory) -> Path:
-    """The prebuilt database every SQLite-backed arm starts from."""
-    template = tmp_path_factory.mktemp("declared-filters-guard") / "template.db"
-    _build_schema_template(template)
-    return template
+def sqlite_schema_template(case_schema_template) -> Path:
+    """The prebuilt database every SQLite-backed arm starts from.
+
+    The builder lives in ``tests/unit/modules/case/conftest.py`` because a
+    second file needed the same thing and copied it (faultmaven#1424). What it
+    does, why it is sync, and why the arms are file-backed rather than
+    ``:memory:`` are all recorded there.
+    """
+    return case_schema_template(SEED_ENTERPRISE, SEED_OWNER)
 
 
 @asynccontextmanager
@@ -1409,47 +1361,68 @@ def test_the_registry_is_well_formed(surface: ModelSurface, field_name: str) -> 
         )
 
 
-def _every_excuse() -> list[tuple[str, str, str]]:
-    """Every EXCUSE in the file, as (where, what, issue).
+def _excuses_in(where: str, rules: Mapping[str, Rule]) -> list[tuple[str, str, str]]:
+    """Every EXCUSE in one rule map, as (where, what, issue).
 
     An excuse is any entry that says "this does not apply, and that is known":
     a whole-field or whole-parameter exemption, and a per-repository gap. Both
-    arms, both kinds. They were separate before, and the consequence was that
+    kinds. They were collected separately before, and the consequence was that
     ``dropped_by`` notes never reached the citation rule at all — the test
     returned early unless the verdict was EXEMPT, and a gap hangs off a NARROWS
     rule.
+
+    Takes the rules rather than reading the module-level registry, so the
+    synthetic-registry tests below can prove this function still finds both
+    kinds while the real registry happens to carry none. See
+    :data:`_SYNTHETIC_EXCUSES`.
     """
     rows: list[tuple[str, str, str]] = []
-
-    def collect(where: str, rules: Mapping[str, Rule]) -> None:
-        for name, rule in rules.items():
-            if rule.verdict is Verdict.EXEMPT:
-                rows.append((where, name, rule.issue))
-            for repository_name, gap in rule.dropped_by.items():
-                rows.append((where, f"{name} on {repository_name}", gap.issue))
-
-    for route_surface in ROUTE_SURFACES:
-        collect(route_surface.name, route_surface.rules)
-    for model_surface in MODEL_SURFACES:
-        collect(model_surface.name, model_surface.rules)
+    for name, rule in rules.items():
+        if rule.verdict is Verdict.EXEMPT:
+            rows.append((where, name, rule.issue))
+        for repository_name, gap in rule.dropped_by.items():
+            rows.append((where, f"{name} on {repository_name}", gap.issue))
     return rows
+
+
+def _excuse_reasons_in(
+    where: str, rules: Mapping[str, Rule]
+) -> list[tuple[str, str, str]]:
+    """The same walk, carrying the REASON instead of the issue."""
+    rows: list[tuple[str, str, str]] = []
+    for name, rule in rules.items():
+        if rule.verdict is Verdict.EXEMPT:
+            rows.append((where, name, rule.reason))
+        for repository_name, gap in rule.dropped_by.items():
+            rows.append((where, f"{name} on {repository_name}", gap.reason))
+    return rows
+
+
+def _over_every_surface(
+    collector: Callable[[str, Mapping[str, Rule]], list[tuple[str, str, str]]],
+) -> list[tuple[str, str, str]]:
+    rows: list[tuple[str, str, str]] = []
+    for surface in (*ROUTE_SURFACES, *MODEL_SURFACES):
+        rows.extend(collector(surface.name, surface.rules))
+    return rows
+
+
+def _every_excuse() -> list[tuple[str, str, str]]:
+    return _over_every_surface(_excuses_in)
 
 
 def _every_excuse_reason() -> list[tuple[str, str, str]]:
-    rows: list[tuple[str, str, str]] = []
+    return _over_every_surface(_excuse_reasons_in)
 
-    def collect(where: str, rules: Mapping[str, Rule]) -> None:
-        for name, rule in rules.items():
-            if rule.verdict is Verdict.EXEMPT:
-                rows.append((where, name, rule.reason))
-            for repository_name, gap in rule.dropped_by.items():
-                rows.append((where, f"{name} on {repository_name}", gap.reason))
 
-    for route_surface in ROUTE_SURFACES:
-        collect(route_surface.name, route_surface.rules)
-    for model_surface in MODEL_SURFACES:
-        collect(model_surface.name, model_surface.rules)
-    return rows
+def _cites_something_lookupable(issue: str) -> bool:
+    """The citation rule, as a predicate both the real and synthetic arms use."""
+    return bool(_ISSUE_REFERENCE.match(issue))
+
+
+def _says_why(reason: str) -> bool:
+    """The reason rule, likewise."""
+    return bool(reason.strip())
 
 
 @pytest.mark.parametrize(
@@ -1461,12 +1434,18 @@ def test_every_exemption_cites_something_lookupable(
     """An exemption without provenance is indistinguishable from an oversight.
 
     Every arm and every kind: a route parameter can be exempted just as a model
-    field can (``include_archived`` is one), and a per-repository gap excuses
+    field can (``include_archived`` was one), and a per-repository gap excuses
     exactly as much behaviour as a whole-field exemption does. An excuse nobody
     can look up is the failure mode this file exists to end, so none of them
     gets to skip the rule.
+
+    **This test collects nothing today** — the registry carries no excuses at
+    all since faultmaven#1424 removed the last one — so pytest reports it
+    skipped. That is a fact about the registry, not about the rule, and
+    :func:`test_the_excuse_machinery_still_works_on_a_registry_that_has_excuses`
+    below is what keeps the rule itself measured in the meantime.
     """
-    assert _ISSUE_REFERENCE.match(issue), (
+    assert _cites_something_lookupable(issue), (
         f"{where} / {what} is excused citing {issue!r}. Cite a '#NNNN' issue, "
         f"or admit 'UNREPORTED: ...' in the registry itself — an excuse nobody "
         f"can look up is indistinguishable from an oversight."
@@ -1479,8 +1458,113 @@ def test_every_exemption_cites_something_lookupable(
     ids=lambda v: v if isinstance(v, str) else "",
 )
 def test_every_exemption_says_why(where: str, what: str, reason: str) -> None:
-    """The issue says where to look; the reason says what was measured."""
-    assert reason.strip(), f"{where} / {what} is excused with no reason."
+    """The issue says where to look; the reason says what was measured.
+
+    Skipped for the same reason as the citation rule above, and covered in the
+    meantime by the same synthetic-registry test.
+    """
+    assert _says_why(reason), f"{where} / {what} is excused with no reason."
+
+
+# ============================================================
+# Keeping the excuse machinery honest while the registry is empty
+# ============================================================
+#
+# The two tests above went from "the registry's excuses all check out" to "there
+# are no excuses" without either of them changing, and pytest reports both
+# states as a green run. Everything the excuse path is made of — the ``Gap``
+# dataclass, ``dropped_by``, the collectors, the citation and reason rules, the
+# two gap branches in ``_verdict_failures`` — is now reachable only from a
+# registry entry that does not exist. A regression in any of it (a collector
+# that returned ``[]`` for a registry that DOES carry gaps, most obviously)
+# would be indistinguishable from today's green run.
+#
+# So the machinery is exercised against a registry of this file's own making.
+# That is the same rule the timezone matrix follows two hundred lines up: a
+# guard asserts its own discriminating power, or it can go quietly inert.
+
+#: A registry that is NOT the real one. It carries one of each KIND of excuse —
+#: a whole-field exemption and a per-repository gap — so the collectors are
+#: measured on both branches. Deliberately not added to ``MODEL_SURFACES``:
+#: these are not claims about FaultMaven, they are inputs to the machinery.
+_SYNTHETIC_EXCUSES: Mapping[str, Rule] = {
+    "a_whole_field_exemption": field_exempt(
+        {"limit": 2},
+        {"limit": 4},
+        reason="a synthetic exemption, so the EXEMPT branch is exercised",
+        issue="#0000",
+    ),
+    "a_per_repository_gap": narrows(
+        {"limit": 2},
+        {"limit": 4},
+        dropped_by={
+            "InMemoryCaseRepository": Gap(
+                reason="a synthetic gap, so the dropped_by branch is exercised",
+                issue="#0000",
+            )
+        },
+    ),
+    "an_ordinary_rule_with_nothing_to_excuse": narrows({"limit": 2}, {"limit": 4}),
+}
+
+
+def test_the_excuse_machinery_still_works_on_a_registry_that_has_excuses() -> None:
+    """Both collectors find both KINDS, and skip the rule that excuses nothing.
+
+    This is what the two parametrized tests above assert when the registry has
+    something to say. With it empty they assert nothing, and this is the only
+    thing standing between "no excuses" and "the collector is broken".
+    """
+    issues = _excuses_in("a synthetic surface", _SYNTHETIC_EXCUSES)
+    reasons = _excuse_reasons_in("a synthetic surface", _SYNTHETIC_EXCUSES)
+
+    assert [what for _, what, _ in issues] == [
+        "a_whole_field_exemption",
+        "a_per_repository_gap on InMemoryCaseRepository",
+    ], (
+        "the collector must report a whole-field exemption AND a per-repository "
+        "gap, and must not report a rule that excuses nothing"
+    )
+    assert [what for _, what, _ in reasons] == [what for _, what, _ in issues], (
+        "the two collectors must walk the same entries — they differ only in "
+        "which half of the excuse they carry"
+    )
+
+    # And the rules those rows are fed to actually pass on a well-formed excuse.
+    assert all(_cites_something_lookupable(issue) for _, _, issue in issues)
+    assert all(_says_why(reason) for _, _, reason in reasons)
+
+
+@pytest.mark.parametrize(
+    "issue,lookupable",
+    [
+        ("#1424", True),
+        ("UNREPORTED: measured on 2026-09-15, nobody has filed it", True),
+        ("", False),
+        ("see the wiki", False),
+        ("#", False),
+        ("1424", False),
+    ],
+)
+def test_the_citation_rule_rejects_what_it_is_meant_to(
+    issue: str, lookupable: bool
+) -> None:
+    """A rule that accepted everything would pass the registry just as quietly.
+
+    ``test_every_exemption_cites_something_lookupable`` can only be as good as
+    this predicate, and with no rows to run on, nothing else measures it.
+    """
+    assert _cites_something_lookupable(issue) is lookupable
+
+
+@pytest.mark.parametrize(
+    "reason,says_why",
+    [("measured: it returns every case", True), ("", False), ("   ", False)],
+)
+def test_the_reason_rule_rejects_what_it_is_meant_to(
+    reason: str, says_why: bool
+) -> None:
+    assert _says_why(reason) is says_why
 
 
 async def _verdict_failures(
@@ -1806,3 +1890,146 @@ async def test_a_bound_with_no_offset_is_read_as_utc_not_as_process_local(
             f"straddle a seeded instant in BOTH directions: a positive offset "
             f"moves the misreading earlier, a negative one later."
         )
+
+
+# ============================================================
+# The gap branches of _verdict_failures, with the registry carrying no gaps
+# ============================================================
+#
+# `_verdict_failures` has two branches that exist only for a `dropped_by` entry:
+# one SUPPRESSES the "applied to NOTHING" report on a repository the gap names,
+# and one FAILS when such a repository turns out to apply the field after all.
+# Together they are the mechanism that held faultmaven#1424 visible for the life
+# of the defect and then went red the day it was fixed — and with the last gap
+# deleted, neither branch runs against the real registry any more.
+#
+# So both are driven here against a synthetic surface. `state` is the field
+# under both, because it genuinely narrows on every arm: that makes the
+# "applies it after all" branch reachable, and it makes the suppression branch's
+# inert pair obviously deliberate rather than an accident of the corpus.
+
+_A_REPOSITORY_THE_GAP_NAMES = "InMemoryCaseRepository"
+
+
+def _synthetic_surface(rules: Mapping[str, Rule]) -> ModelSurface:
+    """One ``CaseListFilter`` surface over ``list_user_cases``, for the tests
+    below only. Never added to ``MODEL_SURFACES``: it makes no claim about
+    FaultMaven, it is an input to the machinery."""
+    return ModelSurface(
+        name="a synthetic surface",
+        model=CaseListFilter,
+        rules=rules,
+        run=_run_list,
+        publishes_total=True,
+        service_method="list_user_cases",
+    )
+
+
+async def test_a_gap_fails_once_the_repository_it_names_applies_the_field() -> None:
+    """The branch that went red on #1424, driven with the registry empty.
+
+    ``state`` narrows on the in-memory repository, so a gap claiming it does not
+    is a claim about a defect that is gone — exactly the shape the ``source``
+    gap took the moment the fix landed. The report must name the repository and
+    the issue, because that is what tells an author which entry to delete.
+    """
+    surface = _synthetic_surface(
+        {
+            "state": narrows(
+                {"state": CaseState.INQUIRY},
+                {"state": CaseState.INVESTIGATING},
+                dropped_by={
+                    _A_REPOSITORY_THE_GAP_NAMES: Gap(
+                        reason="a synthetic gap, on a field that in fact applies",
+                        issue="#0000",
+                    )
+                },
+            )
+        }
+    )
+
+    async with _in_memory_repository() as repository:
+        failures = await _verdict_failures(
+            _service(repository), _A_REPOSITORY_THE_GAP_NAMES, surface, "state"
+        )
+
+    assert len(failures) == 1, failures
+    assert "now applies the field" in failures[0]
+    assert _A_REPOSITORY_THE_GAP_NAMES in failures[0]
+    assert "#0000" in failures[0]
+
+
+async def test_a_gap_suppresses_the_applied_to_nothing_report_it_excuses() -> None:
+    """The other half: while the defect is real, the gap keeps the arm green.
+
+    Measured with a pair that cannot discriminate — the same ``state`` on both
+    sides — which is what a dropped field looks like from here. Without the gap
+    this is the "declared, accepted and applied to NOTHING" failure; with it,
+    nothing. An exemption that did not actually suppress would have made #1424
+    unrecordable, and one that suppressed the EMPTY-answer check as well would
+    have made it unmeasurable.
+    """
+    inert_pair = ({"state": CaseState.INQUIRY}, {"state": CaseState.INQUIRY})
+
+    unexcused = _synthetic_surface({"state": narrows(*inert_pair)})
+    excused = _synthetic_surface(
+        {
+            "state": narrows(
+                *inert_pair,
+                dropped_by={
+                    _A_REPOSITORY_THE_GAP_NAMES: Gap(
+                        reason="a synthetic gap, on a pair that cannot discriminate",
+                        issue="#0000",
+                    )
+                },
+            )
+        }
+    )
+
+    async with _in_memory_repository() as repository:
+        service = _service(repository)
+        without_gap = await _verdict_failures(
+            service, _A_REPOSITORY_THE_GAP_NAMES, unexcused, "state"
+        )
+        with_gap = await _verdict_failures(
+            service, _A_REPOSITORY_THE_GAP_NAMES, excused, "state"
+        )
+
+    assert len(without_gap) == 1, without_gap
+    assert "applied to NOTHING" in without_gap[0]
+    assert with_gap == [], (
+        "a gap must suppress the report it excuses on the repository it names — "
+        "otherwise the defect it records cannot be held green while it is open"
+    )
+
+
+async def test_a_gap_excuses_only_the_repository_it_names() -> None:
+    """A gap is per-repository, and the other arms must still be held to the rule.
+
+    The whole reason ``dropped_by`` exists rather than a whole-field exemption
+    is that "applied on SQLite, dropped by InMemory" must stay visible as
+    exactly that. A gap that leaked to every arm would have excused the three
+    repositories that were right along with the one that was wrong.
+    """
+    inert_pair = ({"state": CaseState.INQUIRY}, {"state": CaseState.INQUIRY})
+    surface = _synthetic_surface(
+        {
+            "state": narrows(
+                *inert_pair,
+                dropped_by={
+                    _A_REPOSITORY_THE_GAP_NAMES: Gap(
+                        reason="a synthetic gap naming one repository only",
+                        issue="#0000",
+                    )
+                },
+            )
+        }
+    )
+
+    async with _in_memory_repository() as repository:
+        failures = await _verdict_failures(
+            _service(repository), "SomeOtherCaseRepository", surface, "state"
+        )
+
+    assert len(failures) == 1, failures
+    assert "applied to NOTHING" in failures[0]

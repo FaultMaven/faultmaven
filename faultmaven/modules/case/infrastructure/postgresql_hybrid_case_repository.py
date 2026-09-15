@@ -1006,6 +1006,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             state: Filter by state
             limit: Maximum results
             offset: Pagination offset
+            source: Filter by originating surface (``copilot``/``slack``/
+                ``api``). A FALSY value means no filter — see
+                ``ICaseRepository.list``.
             shared_case_ids: Case ids readable via a team share (ADR-013 §D4);
                 widens owner-only scope to ``owned ∪ shared-to-my-teams``.
             restrict_case_ids: Filter-by-team facet — narrows the result to one
