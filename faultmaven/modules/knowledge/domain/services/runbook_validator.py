@@ -1608,10 +1608,17 @@ def validate_and_score(content: str) -> tuple[ValidationResult, QualityScore]:
 #: occupy N workers for their full runtime whether or not the callers are still
 #: there, and queue everything else behind them.
 #:
-#: A semaphore rather than a private executor: the work is already bounded per
-#: call (``MAX_RUNBOOK_BODY_CHARS``), the GIL means extra gate threads buy
-#: little throughput anyway, and a semaphore leaves the default executor's
+#: A semaphore rather than a private executor: the GIL means extra gate threads
+#: buy little throughput anyway, and a semaphore leaves the default executor's
 #: workers free for the I/O-bound users that benefit from them.
+#:
+#: What this bounds is WORKER OCCUPANCY, not per-call duration. Nothing bounds
+#: the body these two JSON routes accept — there is no request-body-size
+#: middleware, and ``MAX_UPLOAD_SIZE_MB`` governs the multipart paths only — so
+#: on a standalone deployment a single call can still run arbitrarily long; on
+#: cloud the ingress' ``proxy-body-size`` is the only ceiling. That gap is
+#: pre-existing and is tracked separately; it is named here rather than implied
+#: so the next reader does not infer a per-call bound this module does not have.
 _GATE_CONCURRENCY = 4
 _gate_slots: Optional["asyncio.Semaphore"] = None
 

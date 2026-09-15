@@ -267,20 +267,9 @@ class ConversionResponse(BaseModel):
 # =============================================================================
 
 
-#: Upper bound on a runbook body submitted as JSON. Matches the 10 MB default
-#: of ``MAX_UPLOAD_SIZE_MB``, which governs MULTIPART evidence uploads and so
-#: never applied to these routes — there is no request-body-size middleware, so
-#: before this the body was unbounded. That matters because the publication gate
-#: is CPU-bound in body size (8.3 s at 10 MB) and, on the draft-edit path, runs
-#: while a pooled database connection is checked out: the cost of that hold is
-#: only acceptable if the gate's runtime is bounded, and nothing else bounds it.
-MAX_RUNBOOK_BODY_CHARS = 10 * 1024 * 1024
-
-
 class DraftUpdateRequest(BaseModel):
     content: str = Field(
         min_length=100,
-        max_length=MAX_RUNBOOK_BODY_CHARS,
         description="Full runbook markdown content including frontmatter",
     )
 

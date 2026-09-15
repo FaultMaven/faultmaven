@@ -2628,7 +2628,6 @@
         "properties": {
           "content": {
             "description": "Full runbook markdown content including frontmatter",
-            "maxLength": 10485760,
             "minLength": 100,
             "title": "Content",
             "type": "string"
