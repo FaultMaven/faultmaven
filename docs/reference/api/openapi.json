@@ -1724,7 +1724,7 @@
         "type": "object"
       },
       "CaseSearchRequest": {
-        "description": "Request to search cases.",
+        "description": "Request to search cases.\n\n``user_id`` and ``organization_id`` used to be declared here, were published\nin ``docs/reference/api/openapi.json``, and were read by nothing. They were\nremoved rather than implemented (#1416): this endpoint is scoped to the\nAUTHENTICATED caller, so a request-supplied user id is either redundant or a\ncross-tenant read, and under ADR-017 the organization bills and is never a\nvisibility predicate.\n\nEvery remaining field does reach the repository query \u2014 and that is stated\nHERE as history rather than as a promise, on purpose. This text is published\nverbatim as the schema's description, and a description is the one part of\nthe contract nothing checks: ``scripts/check_contract_version.py`` strips\nprose before comparing, precisely because no client breaks on a reworded\nsentence. So a blanket guarantee written here could go stale the next time\nsomeone adds a field and forgets to wire it, with every gate still green and\nthe published contract now asserting the very thing #1416 was. The\nguarantee lives where it can fail:\n``tests/unit/modules/case/test_declared_filters_reach_the_query.py``\nclassifies every field on this model and goes red on one that reaches no\nquery.",
         "properties": {
           "limit": {
             "default": 20,
@@ -1733,18 +1733,6 @@
             "minimum": 1.0,
             "title": "Limit",
             "type": "integer"
-          },
-          "organization_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Limit to organization's cases",
-            "title": "Organization Id"
           },
           "query": {
             "description": "Search query",
@@ -1775,18 +1763,6 @@
             ],
             "description": "Filter to cases shared with this Team (ADR-013 \u00a7D4). Only Teams the caller belongs to yield results; ignored in standalone (no teams).",
             "title": "Team Id"
-          },
-          "user_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Limit to user's cases",
-            "title": "User Id"
           }
         },
         "required": [
@@ -6809,7 +6785,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "3.9.0"
+    "version": "4.0.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -9347,18 +9323,6 @@
               "default": true,
               "description": "Include cases with current_turn == 0 (newly created)",
               "title": "Include Empty",
-              "type": "boolean"
-            }
-          },
-          {
-            "description": "Include archived/closed cases",
-            "in": "query",
-            "name": "include_archived",
-            "required": false,
-            "schema": {
-              "default": false,
-              "description": "Include archived/closed cases",
-              "title": "Include Archived",
               "type": "boolean"
             }
           }

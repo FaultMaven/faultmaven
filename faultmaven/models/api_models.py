@@ -313,13 +313,32 @@ def bound_to_utc(value: Optional[datetime]) -> Optional[datetime]:
 
 
 class CaseListFilter(BaseModel):
-    """Filter criteria for listing cases."""
+    """Filter criteria for listing cases.
 
-    user_id: Optional[str] = Field(default=None, description="Filter by user ID")
+    ``user_id`` and ``organization_id`` used to be here and reached no query at
+    all (#1416): the principal is not a filter — it arrives as
+    ``list_user_cases``'s own argument, straight from the authenticated caller —
+    and under ADR-017 the organization BILLS and is never a visibility
+    predicate, so neither had a correct WHERE clause to grow. Both were deleted
+    rather than implemented.
 
-    organization_id: Optional[str] = Field(
-        default=None, description="Filter by organization ID"
-    )
+    WHICH FIELDS ARE READ IS PER READER, and this docstring is not the place
+    that decides it. ``CaseService.list_user_cases`` reads all of them;
+    ``CaseService.list_all_cases`` — the reader behind
+    ``GET /api/v1/admin/cases`` — reads only ``state``, ``source``, ``limit``
+    and ``offset``, and says in its own docstring that it deliberately does not
+    honour ``include_empty``. A flat "every field here is read" would therefore
+    be false on the admin path. What holds each reader to its own list is
+    ``tests/unit/modules/case/test_declared_filters_reach_the_query.py``, which
+    carries a rule table per surface (``LIST_FILTER_RULES`` and
+    ``ADMIN_LIST_FILTER_RULES``) and fails on a field that reaches no query
+    there — an assertion, where a docstring would only be a claim.
+
+    This model is internal: it is not published in
+    ``docs/reference/api/openapi.json``, so a field on it is not something a
+    client can see. It is still something a caller here can set and be misled
+    by, which is why the guard covers it.
+    """
 
     state: Optional[CaseState] = Field(default=None, description="Filter by state")
 
@@ -766,15 +785,30 @@ class AdminCaseMessagesResponse(_OperatorContentEnvelope):
 
 
 class CaseSearchRequest(BaseModel):
-    """Request to search cases."""
+    """Request to search cases.
+
+    ``user_id`` and ``organization_id`` used to be declared here, were published
+    in ``docs/reference/api/openapi.json``, and were read by nothing. They were
+    removed rather than implemented (#1416): this endpoint is scoped to the
+    AUTHENTICATED caller, so a request-supplied user id is either redundant or a
+    cross-tenant read, and under ADR-017 the organization bills and is never a
+    visibility predicate.
+
+    Every remaining field does reach the repository query — and that is stated
+    HERE as history rather than as a promise, on purpose. This text is published
+    verbatim as the schema's description, and a description is the one part of
+    the contract nothing checks: ``scripts/check_contract_version.py`` strips
+    prose before comparing, precisely because no client breaks on a reworded
+    sentence. So a blanket guarantee written here could go stale the next time
+    someone adds a field and forgets to wire it, with every gate still green and
+    the published contract now asserting the very thing #1416 was. The
+    guarantee lives where it can fail:
+    ``tests/unit/modules/case/test_declared_filters_reach_the_query.py``
+    classifies every field on this model and goes red on one that reaches no
+    query.
+    """
 
     query: str = Field(description="Search query", min_length=1, max_length=500)
-
-    user_id: Optional[str] = Field(default=None, description="Limit to user's cases")
-
-    organization_id: Optional[str] = Field(
-        default=None, description="Limit to organization's cases"
-    )
 
     state: Optional[CaseState] = Field(
         default=None,

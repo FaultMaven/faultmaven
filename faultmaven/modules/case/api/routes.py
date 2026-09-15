@@ -1119,7 +1119,6 @@ async def list_cases(
     include_empty: bool = Query(
         True, description="Include cases with current_turn == 0 (newly created)"
     ),
-    include_archived: bool = Query(False, description="Include archived/closed cases"),
 ):
     """
     List user's cases with pagination (v2.0 milestone-based)
@@ -1191,8 +1190,10 @@ async def list_cases(
 
     try:
         # Build filter with restored filtering parameters
+        # The principal is NOT passed here. ``list_user_cases`` takes it as its
+        # own argument, and it is the only one either of them reads; a second
+        # copy on the filter was a settable field that changed no answer.
         filters = CaseListFilter(
-            user_id=current_user.user_id,
             state=state,
             source=source,
             team_id=team_id,
@@ -1201,14 +1202,6 @@ async def list_cases(
             limit=limit,
             offset=offset,
             include_empty=include_empty,
-            # ⚠️ DEAD PARAMETER. `CaseListFilter` declares no `include_archived`
-            # field and sets no `model_config`, so Pydantic's default
-            # `extra='ignore'` drops this without a word — and no repository has
-            # the predicate either. It is accepted, published in the OpenAPI
-            # document, and does nothing: the same silence the date bounds above
-            # were added to end, one parameter over. Tracked in #1413; left
-            # here rather than removed because a client is sending it today.
-            include_archived=include_archived,
         )
 
         # Get case summaries (already converted by service). The service returns

@@ -508,14 +508,31 @@ Accept settings beyond LLM:
 
 ## Case Archival Lifecycle
 
-### Current Implementation (Phase 1)
+> ⚠️ **NONE OF THIS SHIPS TODAY.** Archiving was **dropped in the schema
+> redesign** (commit `7b5a1b93`). There is no storage representation of an
+> archived case: the `cases` table has no `is_archived` or `archived_at` column,
+> `alembic/` contains no archive migration, and
+> `postgresql_hybrid_case_repository._row_to_case` says outright that both are
+> gone. The last surviving trace was the `include_archived` query parameter on
+> `GET /api/v1/cases`, which was accepted, published, and applied to nothing —
+> removed in API contract 4.0.0 (#1413), where the full record of this intent now
+> lives alongside the removal.
+>
+> The section below is kept as the DESIGN, not as a description of the system.
+> `closed_at` and the terminal states are the nearest thing that exists today and
+> they are not the same concept — a case you have finished with is not a case you
+> have put away. Archiving returns as a deliberate epic, with a retention policy,
+> scheduled archival and a list-view filter UI; the "Done" column below describes
+> the Phase-1 implementation that was reverted, and should be read as such.
+
+### Design (Phase 1, reverted)
 
 Cases have an `is_archived: bool` field (default `false`) and `archived_at` timestamp.
 Only terminal cases (RESOLVED or CLOSED) can be archived. Archiving is a user action
 from the dashboard, independent of case state.
 
-| Component | Status |
-|-----------|--------|
+| Component | Status when written (all since reverted) |
+|-----------|------------------------------------------|
 | `is_archived` flag on domain model | Done |
 | `is_archived` column in DB schema (indexed) | Done |
 | `POST /cases/{id}/archive` and `/unarchive` endpoints | Done |
