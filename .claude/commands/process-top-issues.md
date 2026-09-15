@@ -24,8 +24,9 @@ this run. Empty runs the full cycle on the current top five.
 python scripts/backlog_metrics.py --weeks 8
 ```
 
-Keep the output; it goes in the report. Note which seams the residue is
-growing on.
+Keep the output; it goes in the report. It tells you whether the residue is
+growing, by week and by age; WHICH seam it is growing on comes from step 2's
+classification, because the script has no code dimension.
 
 ### 2. Refresh the queue
 

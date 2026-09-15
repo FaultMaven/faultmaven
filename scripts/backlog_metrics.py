@@ -70,16 +70,31 @@ RESIDUE_THRESHOLD_DAYS = 7
 #: the GIL while it waits, so the outer loops run concurrently.
 _WORKERS = 8
 
-#: The markers a lane writes when it files an issue it found while doing
-#: other work. Matching the marker (rather than any ``#N``) keeps a citation
-#: of a related issue from being read as a parent. ``review of`` is bound
-#: tightly to its ``#`` because the bare phrase occurs in ordinary prose.
-_PARENT_MARKER = re.compile(
+#: The phrases a lane writes when it files an issue it found while doing
+#: other work. Matching a marker (rather than any ``#N``) keeps a citation of
+#: a related issue from being read as a parent.
+_MARKER_PHRASE = (
     r"(?:found while|surfaced (?:while|by|during)|while (?:working on|fixing|"
     r"reviewing)|spun out of|deferred from|follow-?up (?:to|from|of)|"
-    r"out of scope (?:for|of)|split (?:out|from)|during (?:the )?work on)"
-    r"[^\n#]{0,80}?(?P<ref>(?:[\w.-]*[-/][\w.-]*\s*)?#(?P<n>\d+))"
-    r"|review of (?:PR |pull request )?(?P<ref2>(?:[\w.-]*[-/][\w.-]*\s*)?#(?P<n2>\d+))",
+    r"out of scope (?:for|of)|split (?:out|from)|during (?:the )?work on|"
+    r"review of)"
+)
+
+#: A marker and the reference it governs. Two properties are measured
+#: against this repository's own corpus rather than guessed:
+#:
+#: * The gap may not cross a sentence boundary (no ``.;:!?``). "Found while
+#:   reviewing the ladder; unrelated background is in #1200" cites, it does
+#:   not parent. No real marker in the corpus spans such a break — the gaps
+#:   that occur end in a letter, ``(`` or a comma.
+#: * A qualifier binds only when ATTACHED (``repo#N``). Every attached token
+#:   in the corpus is a repository (``faultmaven``, ``faultmaven-dashboard``,
+#:   ``infra``, ``FaultMaven/faultmaven-dashboard``) and every SPACED one is
+#:   an ordinary word (``PR``, ``of``, ``fixing``, ``the``), so requiring
+#:   attachment is what separates "another repository" from prose. This is
+#:   also GitHub's own cross-repository syntax.
+_PARENT_MARKER = re.compile(
+    _MARKER_PHRASE + r"[^\n#.;:!?]{0,80}?(?P<qual>[\w./-]*)#(?P<n>\d+)",
     re.IGNORECASE,
 )
 
@@ -331,24 +346,28 @@ def residue_snapshot(issues: Sequence[Issue], now: dt.datetime) -> dict:
 def parent_of(issue: Issue, repo: str) -> int | None:
     """The number a lane marker in ``issue`` names, or ``None``.
 
-    A reference qualified with this repository's own name
-    (``FaultMaven/faultmaven#N``) is that number; one qualified with any
-    other repository-shaped token — a slash, or a hyphenated name — before
-    the ``#`` (``faultmaven-dashboard#N``, ``faultmaven-dashboard #N``) is a
-    reference elsewhere and is ``None``. An issue never parents itself (a
-    correction note citing the review of its own fix PR would otherwise
-    resolve back to it). This is the ONE place the marker grammar lives;
-    every reader of it calls here.
+    A reference attached to this repository's own name (``faultmaven#N`` or
+    ``FaultMaven/faultmaven#N``) is that number; one attached to any other
+    (``faultmaven-dashboard#N``, ``infra#N``) is a reference elsewhere. An
+    issue never parents itself — a correction note citing the review of its
+    own fix PR would otherwise resolve back to it.
+
+    EVERY marker in the body is considered, and the first that resolves to
+    an issue here wins: a body whose first marker names another repository
+    used to suppress a real marker later in the same body, which made the
+    answer depend on the order the two were written in.
+
+    This is the ONE place the marker grammar lives; every reader calls here.
     """
-    match = _PARENT_MARKER.search(issue.body)
-    if not match:
-        return None
-    ref = match.group("ref") or match.group("ref2")
-    number = int(match.group("n") or match.group("n2"))
-    qualifier = ref[: ref.index("#")].strip()
-    if qualifier and qualifier.lower() != repo.lower():
-        return None
-    return None if number == issue.number else number
+    own = {repo.lower(), repo.split("/")[-1].lower()}
+    for match in _PARENT_MARKER.finditer(issue.body):
+        qualifier = match.group("qual").strip("/.").lower()
+        if qualifier and qualifier not in own:
+            continue  # another repository
+        number = int(match.group("n"))
+        if number != issue.number:
+            return number
+    return None
 
 
 def marker_numbers(issues: Sequence[Issue], repo: str) -> list[int]:
@@ -366,9 +385,13 @@ def follow_ups(
     A parent is counted only when it is an issue in this corpus. A number
     that is not is usually the PR the lane was working; ``pr_links`` (PR
     number → the issues it closed, from :func:`pr_closing_issues`) resolves
-    those to the issue the PR was for. What still resolves to nothing — a PR
-    that closed no issue — is reported as ``unresolved`` rather than as a
-    parent, because the per-lane rate is a rate per ISSUE.
+    those to the issue the PR was for. A PR that closed SEVERAL issues
+    attributes to the lowest-numbered one: the marker does not say which of
+    them the lane was on, and attributing to all would count one follow-up
+    several times. What still resolves to nothing — a PR that closed no
+    issue here, or one that closed this very issue — is reported as
+    ``unresolved`` rather than as a parent, because the per-lane rate is a
+    rate per ISSUE.
 
     The regex reads the lane's own marker, so an issue whose parent is named
     without one is missed; treat the count as a floor. Whether a follow-up
@@ -384,16 +407,17 @@ def follow_ups(
         parent = parent_of(issue, repo)
         if parent is None:
             continue
+        resolved_via_pr = False
         if parent not in known and pr_links:
             closed_here = [n for n in pr_links.get(parent, ()) if n in known]
             if closed_here:
                 parent = min(closed_here)
-                via_pr += 1
-        if parent == issue.number:
-            unresolved += 1  # the PR named closed this very issue
-        elif parent in known:
+                resolved_via_pr = True
+        if parent in known and parent != issue.number:
             children[parent].append(issue.number)
+            via_pr += resolved_via_pr
         else:
+            # A PR that closed nothing here, or that closed this very issue.
             unresolved += 1
     parents = sorted(children.items(), key=lambda item: (-len(item[1]), item[0]))
     return {
@@ -500,31 +524,38 @@ def _is_test_path(path: str) -> bool:
     return path.startswith("tests/") or "/tests/" in path
 
 
-_DIFF_HEADER = re.compile(r"^diff --git a/(.*) b/(.*)$")
+_DIFF_START = "diff --git "
 
 
 def removed_lines(diff: str) -> list[tuple[str, int]]:
     """``(old path, old line number)`` for every line a unified diff removed.
 
-    The file is taken from the ``diff --git`` header (a removed CONTENT line
-    can begin ``-- a/`` and would fool a ``---`` scan), and the diff must
-    carry the ``a/``/``b/`` prefixes — the caller forces them, because
-    ``diff.noprefix`` would otherwise blank every path. A renamed file is
-    dated on its OLD path, so a move-and-edit contributes the lines the fix
-    changed and not the whole moved file. A new file has no pre-fix lines
-    and a test file is not the defect. A pure insertion is recorded as a
-    NEGATIVE anchor at the insertion point; the caller uses the anchors only
-    when nothing was removed.
+    The old path is read from the ``--- a/`` line of each file's HEADER, and
+    a ``diff --git`` line is what opens a header: a removed CONTENT line can
+    begin ``-- a/`` (and a path can contain the substring `` b/``), so
+    neither a bare ``---`` scan nor a split of the ``diff --git`` line is
+    safe on its own. The diff must carry the ``a/``/``b/`` prefixes — the
+    caller forces them, because ``diff.noprefix`` would otherwise blank
+    every path. A renamed file is dated on its OLD path, so a move-and-edit
+    contributes the lines the fix changed and not the whole moved file. A
+    new file has no pre-fix lines (the caller's filter excludes added files
+    anyway, so the ``/dev/null`` arm guards other callers) and a test file
+    is not the defect. A pure insertion is recorded as a NEGATIVE anchor at
+    the insertion point; the caller uses the anchors only when nothing was
+    removed.
     """
     lines: list[tuple[str, int]] = []
     path: str | None = None
+    in_header = False
     for line in diff.split("\n"):
-        header = _DIFF_HEADER.match(line)
-        if header:
-            path = header.group(1)
-        elif line.startswith("--- /dev/null"):
-            path = None
-        elif line.startswith("@@") and path and not _is_test_path(path):
+        if line.startswith(_DIFF_START):
+            path, in_header = None, True
+        elif in_header and line.startswith("--- "):
+            path = line[6:] if line.startswith("--- a/") else None
+        elif line.startswith("@@"):
+            in_header = False
+            if not path or _is_test_path(path):
+                continue
             hunk = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
             if hunk is None:
                 continue
@@ -592,12 +623,16 @@ def latency_days(found: dt.datetime, intro_times: Sequence[int]) -> dict | None:
 
 
 #: The diff a fix PR is dated from. Prefixes forced (``diff.noprefix`` would
-#: blank them), non-ASCII paths unquoted, renames detected so a move-and-edit
-#: is dated on the lines it changed at the OLD path rather than on the whole
-#: moved file, and deleted files kept (their lines are pre-fix lines).
+#: blank them), colour off (``color.diff = always`` wraps every header in
+#: escapes and would silently date nothing), non-ASCII paths unquoted,
+#: renames detected so a move-and-edit is dated on the lines it changed at
+#: the OLD path rather than on the whole moved file, and deleted files kept
+#: (their lines are pre-fix lines).
 _DIFF_ARGS = (
     "-c",
     "core.quotePath=false",
+    "-c",
+    "color.ui=never",
     "diff",
     "-U0",
     "-M",
@@ -727,6 +762,13 @@ def compute(
     latency: bool = False,
     resolve_parents: bool = False,
 ) -> dict:
+    """Every section, over the corpus as it stood at ``now``.
+
+    The snapshot is taken HERE rather than at the argv boundary, so a caller
+    that asks for a past instant cannot get ages measured at one time mixed
+    with events from another.
+    """
+    issues = snapshot_at(issues, now)
     pr_links = (
         pr_closing_issues(marker_numbers(issues, repo), repo)
         if resolve_parents
@@ -777,11 +819,11 @@ def report(results: dict, weeks: int) -> str:
     )
     total_in = sum(row["residue_in"] for row in flow)
     total_out = sum(row["residue_out"] for row in flow)
-    pending = sum(row["pending"] for row in results["weekly"])
+    pending = sum(row["pending"] for row in flow)
     out.append(
         f"\nResidue over the window: in {total_in}, out {total_out}, "
-        f"net {total_in - total_out:+d}; {pending} open issues are still too "
-        f"young to count.\n"
+        f"net {total_in - total_out:+d}; {pending} open issues in these weeks "
+        f"are still too young to count.\n"
     )
 
     surv = results["survival"]
@@ -814,10 +856,15 @@ def report(results: dict, weeks: int) -> str:
         f"{fu['attributed']} issues name a parent they were found while working "
         f"on, across {fu['parents']} parent issues ({fu['via_pr']} resolved "
         f"through the PR the marker named); {fu['unresolved']} name a number "
-        "that resolves to no issue here (a PR that closed none). "
-        "Most prolific: "
-        + ", ".join(f"#{p} ({len(k)})" for p, k in fu["top"][:6])
-        + ".\n"
+        "that resolves to no issue here (a PR that closed none)."
+        + (
+            " Most prolific: "
+            + ", ".join(f"#{p} ({len(k)})" for p, k in fu["top"][:6])
+            + "."
+            if fu["top"]
+            else ""
+        )
+        + "\n"
     )
 
     if results["latency"] is not None:
@@ -876,6 +923,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--weeks must be at least 1")
     if args.offline and args.latency:
         parser.error("--latency needs gh; drop --offline")
+    if args.offline and not args.issues:
+        parser.error("--offline needs --issues: there is nothing to read offline")
 
     if args.issues:
         issues = load_issues(json.loads(args.issues.read_text()))
@@ -888,12 +937,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         issues = fetch_issues(args.repo)
     now = args.as_of or dt.datetime.now(dt.UTC)
-    before = len(issues)
+    later_filings = sum(1 for i in issues if i.created > now)
     later_closures = sum(1 for i in issues if i.closed and i.closed > now)
-    issues = snapshot_at(issues, now)
-    if before - len(issues) or later_closures:
+    if later_filings or later_closures:
         print(
-            f"note: --as-of precedes the dump's own events: {before - len(issues)} "
+            f"note: --as-of precedes the dump's own events: {later_filings} "
             f"issues filed later are dropped and {later_closures} closures later "
             "are treated as still open, so the run is a snapshot at that instant",
             file=sys.stderr,

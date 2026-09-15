@@ -95,8 +95,10 @@ will use the result this quarter. Everything else is by age.
    overtaken by a merged PR that touched its seam? Still the kind it was
    filed as? Drop what fails; promote from below.
 2. New issues since the last refresh are classified and ranked in.
-3. Re-rank if `scripts/backlog_metrics.py` shows the residue growing on a
-   seam the top five do not cover.
+3. Re-rank if the residue is growing on a seam the top five do not cover.
+   The seam comes from step 2's own classification — which paths each new
+   issue names — not from `scripts/backlog_metrics.py`, which reports the
+   residue by week, age and priority label and has no code dimension.
 
 ## 2. The lane procedure
 
@@ -231,17 +233,19 @@ the guard is what makes the instance's fix complete.
 
 ### Stopping condition
 
-The campaign ends when all four hold for four consecutive weekly runs of
-`scripts/backlog_metrics.py`:
+The campaign ends when all four hold for four consecutive weekly cycles.
+Each names where it is read from, because only the first is machine-read:
 
-1. **Residue net ≤ 0** every week, and the open set's median age is falling.
-2. **New defects with the duplicated-rule signature under 15%** of defects
-   filed in the window (from 39%). Read from the refresh step's
-   classification of new issues.
-3. **Follow-ups caused by a fix: none** in the window (the caused-per-lane
-   rate is already 0.06; the target is that a change that exposes an old
-   reader is caught by the consumer-enumeration gate, not by a follow-up).
-4. **Every closed duplicated-rule issue has a register row** with a guard.
+| # | Condition | Read from |
+|---|---|---|
+| 1 | **Residue net ≤ 0** every week, and the open set's median age falling | `scripts/backlog_metrics.py` — the weekly table and the open-set line |
+| 2 | **New defects with the duplicated-rule signature under 15%** of defects filed in the window (from 39%) | the refresh step's classification of each new issue |
+| 3 | **Follow-ups caused by a fix: none** in the window | the refresh step, per issue: the script counts follow-ups but cannot read CAUSATION, so a lane marker is read by hand for whether the parent's fix introduced the defect or merely exposed it |
+| 4 | **Every closed duplicated-rule issue has a register row** with a guard | `docs/development/invariants.md`, which campaign item 1 creates; until it exists this condition is not yet evaluable and the cycle report says so |
+
+The caused-per-lane rate is already 0.06; condition 3's target is that a
+change exposing an old reader is caught by the consumer-enumeration gate
+rather than by a follow-up.
 
 When they hold, the campaign's artefacts stay (the harness, the register,
 the metrics script, this procedure) and the queue goes on being processed

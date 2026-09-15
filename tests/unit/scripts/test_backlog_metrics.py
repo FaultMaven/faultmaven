@@ -37,8 +37,14 @@ def metrics():
     # field types through ``sys.modules``, so the module must be registered
     # before it executes.
     sys.modules["backlog_metrics"] = module
+    before = list(sys.path)
     spec.loader.exec_module(module)
-    return module
+    yield module
+    # The script puts the repo root on sys.path at import time. Leaving it
+    # there for the rest of the session is how an editable install gets
+    # shadowed by a worktree in a later test.
+    sys.modules.pop("backlog_metrics", None)
+    sys.path[:] = before
 
 
 _UTC = dt.UTC
@@ -202,14 +208,23 @@ def test_residue_snapshot_uses_the_one_residue_predicate(metrics):
         ("Surfaced by the review of PR #999.", 999),
         ("during the review of #77 this came up", 77),
         ("Found while working on FaultMaven/faultmaven#1440", 1440),
+        ("Deferred from faultmaven#10.", 10),
         # Not a lane marker: ordinary prose citing an issue.
         ("This is a review of the design; compare with #10.", None),
         ("Compare with the shape #10 describes; unrelated origin.", None),
-        # Another repository, in every spelling seen in the corpus.
+        # A marker phrase cannot reach across a sentence boundary. Every
+        # real marker gap in the corpus ends in a letter, "(" or a comma.
+        ("Found while reviewing the ladder; background is in #1200.", None),
+        ("This was found while the suite was red. Compare with #1200.", None),
+        ("Split out of the discussion. The spec lives in #1200.", None),
+        ("Follow-up to the ruling. Background: #1200 and #1201.", None),
+        # Another repository. A qualifier binds only when ATTACHED: every
+        # attached token in the corpus is a repository and every spaced one
+        # is an ordinary word, so a bare attached name is a repository too.
         ("Deferred from faultmaven-dashboard#10.", None),
-        ("Deferred from faultmaven-dashboard #10.", None),
         ("Follow-up to FaultMaven/faultmaven-copilot#10.", None),
-        ("Surfaced by the review of fm-core-lib #4.", None),
+        ("Deferred from copilot#10.", None),
+        ("Surfaced by the review of infra#131.", None),
     ],
 )
 def test_parent_of_reads_the_lane_marker_and_nothing_else(metrics, body, expected):
@@ -222,6 +237,30 @@ def test_parent_of_never_names_the_issue_itself(metrics):
         [_issue(1447, 2, body="> Corrected (review of #1447): the count was wrong.")]
     )[0]
     assert metrics.parent_of(issue, REPO) is None
+
+
+def test_parent_of_reads_every_marker_not_only_the_first(metrics):
+    """A first marker naming elsewhere must not suppress a real one after it.
+
+    The answer used to depend on the order the two sentences were written
+    in, which is not a property of the issue.
+    """
+    elsewhere_first = metrics.load_issues(
+        [
+            _issue(
+                1,
+                2,
+                body="Deferred from faultmaven-dashboard#10.\n"
+                "Also: found while working on #55.",
+            )
+        ]
+    )[0]
+    assert metrics.parent_of(elsewhere_first, REPO) == 55
+
+    self_first = metrics.load_issues(
+        [_issue(7, 2, body="review of #7\nfound while working on #55")]
+    )[0]
+    assert metrics.parent_of(self_first, REPO) == 55
 
 
 def test_follow_ups_resolve_a_pr_parent_to_the_issue_it_closed(metrics):
@@ -249,9 +288,25 @@ def test_follow_ups_resolve_a_pr_parent_to_the_issue_it_closed(metrics):
     result = metrics.follow_ups(issues, REPO, {999: [10], 998: [], 997: [16]})
     assert result["attributed"] == 3
     assert result["parents"] == 1
-    assert result["via_pr"] == 2
+    # ONE marker resolved through a PR (#14 -> PR 999 -> #10). #16's PR
+    # closed #16 itself, which is not a resolution and is not counted as one.
+    assert result["via_pr"] == 1
     assert result["unresolved"] == 2
     assert result["top"] == [(10, [11, 12, 14])]
+
+
+def test_follow_ups_attribute_a_sweep_pr_to_its_lowest_issue(metrics):
+    """A PR that closed several issues has no marker saying which one."""
+    issues = metrics.load_issues(
+        [
+            _issue(1100, 1, 2),
+            _issue(1180, 1, 2),
+            _issue(20, 3, body="Surfaced by the review of PR #500."),
+        ]
+    )
+    result = metrics.follow_ups(issues, REPO, {500: [1180, 1100]})
+    assert result["top"] == [(1100, [20])]
+    assert result["via_pr"] == 1
 
 
 def test_removed_lines_date_the_old_path_and_skip_tests_and_new_files(metrics):
@@ -307,6 +362,19 @@ def test_removed_lines_date_the_old_path_and_skip_tests_and_new_files(metrics):
     assert not any(path.endswith("new.py") for path, _ in lines)
     # The bogus "-- a/" content line did not re-point the later hunk.
     assert not any("looks like" in path for path, _ in lines)
+
+
+def test_removed_lines_survive_a_path_containing_the_b_prefix(metrics):
+    """A greedy split of the ``diff --git`` line mangles such a path."""
+    diff = (
+        "diff --git a/faultmaven/x b/y.py b/faultmaven/x b/y.py\n"
+        "--- a/faultmaven/x b/y.py\n"
+        "+++ b/faultmaven/x b/y.py\n"
+        "@@ -3,1 +3,1 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+    assert metrics.removed_lines(diff) == [("faultmaven/x b/y.py", 3)]
 
 
 def test_blame_times_reads_porcelain_by_final_line_number(metrics, monkeypatch):
@@ -502,6 +570,10 @@ def test_report_renders_on_an_empty_cohort_and_without_latency(metrics):
     issues = metrics.load_issues([_issue(1, 1, 1), _issue(2, 1, 10), _issue(3, 1)])
     two_days_in = dt.datetime(2026, 9, 3, tzinfo=_UTC)
     results = metrics.compute(issues, two_days_in, "o/r")
+    # compute() snapshots: #2's closure is eight days after this "now", so
+    # the report must not show it as closed.
+    assert sum(row["closed"] for row in results["weekly"]) == 1
+    assert results["open"]["open"] == 2
     text = metrics.report(results, weeks=4)
     assert "## Weekly flow" in text
     assert "2026-W36" in text
@@ -523,6 +595,14 @@ def test_report_renders_on_an_empty_cohort_and_without_latency(metrics):
 
     results["latency"] = {"rows": [], "skipped": {}, "unlinked_issues": 3}
     assert "No fix could be dated (none; 3 closed" in metrics.report(results, 4)
+
+
+def test_report_omits_the_prolific_list_when_nothing_was_attributed(metrics):
+    """The state the first cycle runs in, pasted verbatim into the Queue."""
+    issues = metrics.load_issues([_issue(1, 1), _issue(2, 1, 2)])
+    text = metrics.report(metrics.compute(issues, LATER, "o/r"), weeks=4)
+    assert "0 issues name a parent" in text
+    assert "Most prolific" not in text
 
 
 def test_main_replays_a_dump_as_of_the_time_it_was_taken(metrics, tmp_path, capsys):
@@ -549,3 +629,6 @@ def test_main_refuses_contradictory_flags(metrics, tmp_path):
         metrics.main(["--issues", str(dump), "--weeks", "0"])
     with pytest.raises(SystemExit):
         metrics.main(["--issues", str(dump), "--offline", "--latency"])
+    # --offline says "never call gh"; without a dump there is nothing to read.
+    with pytest.raises(SystemExit):
+        metrics.main(["--offline", "--weeks", "2"])
