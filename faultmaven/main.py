@@ -1423,6 +1423,27 @@ def setup_middleware():
         except Exception as e:
             logger.warning(f"Failed to add contract probe middleware: {e}")
 
+    # 10b. Request body size limit — registered immediately before CORS, so it
+    # sits just INSIDE the outermost layer.
+    #
+    # Position is load-bearing in both directions. Inside CORS, so a refused
+    # request still carries the CORS headers and the Dashboard sees a real 413
+    # rather than an opaque network error. Outside `DeduplicationMiddleware` and
+    # `IdempotencyMiddleware`, both of which `await request.body()` — registered
+    # inside them, this would refuse the body only after they had buffered it.
+    #
+    # Unconditional: not behind `_is_test_environment()` or `SKIP_SERVICE_CHECKS`
+    # the way several neighbours are, because a guard the test application does
+    # not mount is a guard with no test.
+    from .api.middleware.body_size import RequestBodySizeLimitMiddleware
+
+    app.add_middleware(RequestBodySizeLimitMiddleware)
+    if logging_enabled:
+        logger.info(
+            "✅ Request body size limit: %sMB",
+            settings.upload.max_upload_size_mb,
+        )
+
     # 11. CORS middleware — registered LAST, which makes it the OUTERMOST layer.
     #
     # Starlette wraps in reverse registration order, so the last middleware
