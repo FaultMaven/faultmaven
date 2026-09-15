@@ -3365,9 +3365,24 @@ class SQLiteCaseRepository(CaseRepository):
         """
         # Upsert each message
         for idx, msg in enumerate(messages_list):
-            # Skip if no message_id (shouldn't happen, but be safe)
+            # A row with no ``message_id`` used to be SKIPPED here, silently:
+            # the aggregate save reported success and the transcript line was
+            # gone. It is the conflict target, so it cannot be NULL — but
+            # dropping the caller's data is not the way to keep it non-null.
+            # Mint one, exactly as ``add_message`` already does for the same
+            # input (#1418). The two writers of this table disagreed on it:
+            # ``add_message({"role": ..., "content": ...})`` wrote the row,
+            # ``case.messages.append({...}); save(case)`` wrote nothing, and
+            # nothing told the caller which one they had used.
+            #
+            # The id is synthetic on every path (the turn path mints
+            # ``msg_<uuid4[:12]>`` itself), so minting here loses no meaning.
+            # Mutating the caller's dict is deliberate: an in-memory
+            # ``case.messages`` that has been persisted must carry the same id
+            # the row does, or the next save inserts a DUPLICATE instead of
+            # conflicting onto it.
             if not msg.get("message_id"):
-                continue
+                msg["message_id"] = f"msg_{uuid4().hex[:16]}"
 
             query = text("""
                 INSERT INTO case_messages (

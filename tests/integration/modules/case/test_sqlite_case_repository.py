@@ -20,6 +20,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
@@ -1258,3 +1259,137 @@ class TestKBContextRoundTrip:
 
         assert reloaded is not None
         assert not reloaded.kb_context
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestMessageWithoutIdIsPersisted:
+    """A transcript row with no ``message_id`` must be written, not dropped.
+
+    ``case_messages`` has two writers and they disagreed (#1418). Handed the
+    same id-less dict, ``add_message`` minted an id and wrote the row, while
+    ``case.messages.append(...)`` + ``save(case)`` silently skipped it — the
+    save reported success and the line was gone. Nothing in the return value,
+    the log, or the exception channel distinguished the two.
+
+    Nothing regressed in production: the live turn path mints its own
+    ``msg_<uuid4>`` before appending, and the two-enterprise security probe
+    seeds its id-less transcript row through ``add_message``, the writer that
+    already minted. The skip was a trap for the NEXT caller rather than a
+    live data loss — and specifically for the one #1418 proposes, which is
+    retiring ``add_message`` and moving its callers onto append + save. Ported
+    naively, the probe's id-less seed would have written nothing, and a
+    security probe that seeds nothing passes vacuously: it would prove a second
+    enterprise cannot read a transcript line that was never stored.
+
+    Read back through a SEPARATE session: the writing session sees its own
+    uncommitted state, so a same-session read stays green against a repository
+    that never persisted anything.
+    """
+
+    def _fresh_session(self, engine):
+        return sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)()
+
+    def _case(self, case_id: str):
+        from faultmaven.modules.case.domain.models import (
+            Case,
+            CaseState,
+            DocumentationData,
+            InquiryData,
+            InvestigationProgress,
+        )
+
+        return Case(
+            case_id=case_id,
+            user_id="user_001",
+            enterprise_id="00000000-0000-0000-0000-000000000001",
+            title="message id minting",
+            state=CaseState.INQUIRY,
+            inquiry=InquiryData(),
+            documentation=DocumentationData(),
+            progress=InvestigationProgress(),
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+
+    async def test_an_id_less_row_survives_save(self, sqlite_session, sqlite_engine):
+        """The regression itself: append without an id, save, read it back."""
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
+        )
+
+        case_id = f"case_{uuid4().hex[:12]}"
+        case = self._case(case_id)
+        case.messages.append(
+            {"role": "user", "content": "disk full on /var", "turn_number": 1}
+        )
+        await SQLiteCaseRepository(sqlite_session).save(case)
+
+        async with self._fresh_session(sqlite_engine) as other:
+            reloaded = await SQLiteCaseRepository(other).get(case_id)
+
+        assert reloaded is not None
+        # Content, not just a count: a placeholder row would satisfy len() == 1.
+        assert [m["content"] for m in reloaded.messages] == ["disk full on /var"]
+        assert reloaded.messages[0]["message_id"]
+
+    async def test_the_minted_id_is_written_back_to_the_caller(self, sqlite_session):
+        """Why the mint mutates the caller's dict rather than a copy.
+
+        The id is the ON CONFLICT target. If the in-memory ``case.messages``
+        kept no id while the row got one, the NEXT save of the same case would
+        mint a SECOND id for the same line and INSERT a duplicate instead of
+        conflicting onto the existing row — one transcript line, two rows,
+        growing by one on every save.
+        """
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
+        )
+
+        repo = SQLiteCaseRepository(sqlite_session)
+        case_id = f"case_{uuid4().hex[:12]}"
+        case = self._case(case_id)
+        case.messages.append({"role": "user", "content": "same line", "turn_number": 1})
+
+        await repo.save(case)
+        minted = case.messages[0]["message_id"]
+        assert minted, "the mint must be visible to the caller, not only to the row"
+
+        await repo.save(case)  # a second save of the same aggregate
+
+        rows = await sqlite_session.execute(
+            text("SELECT message_id FROM case_messages WHERE case_id = :c"),
+            {"c": case_id},
+        )
+        ids = [r[0] for r in rows.fetchall()]
+        assert ids == [minted], f"expected one row conflicting onto itself, got {ids}"
+
+    async def test_a_row_that_brings_its_own_id_keeps_it(
+        self, sqlite_session, sqlite_engine
+    ):
+        """Positive control: minting must not overwrite a supplied id.
+
+        Without this, a mint that ran unconditionally would pass the test
+        above and silently re-key every message the turn path writes.
+        """
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
+        )
+
+        case_id = f"case_{uuid4().hex[:12]}"
+        supplied = f"msg_{uuid4().hex[:12]}"
+        case = self._case(case_id)
+        case.messages.append(
+            {
+                "message_id": supplied,
+                "role": "user",
+                "content": "brought its own",
+                "turn_number": 1,
+            }
+        )
+        await SQLiteCaseRepository(sqlite_session).save(case)
+
+        async with self._fresh_session(sqlite_engine) as other:
+            reloaded = await SQLiteCaseRepository(other).get(case_id)
+
+        assert [m["message_id"] for m in reloaded.messages] == [supplied]

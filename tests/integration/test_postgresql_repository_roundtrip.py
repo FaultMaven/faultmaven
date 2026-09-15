@@ -939,3 +939,45 @@ async def test_message_authorship_is_write_once_but_fillable(pg_repo):
     }
     assert by_content["already attributed"] == teammate_id  # not erased
     assert by_content["not yet attributed"] == owner_id  # filled
+
+
+@pytest.mark.asyncio
+async def test_a_message_with_no_id_is_persisted_not_skipped(pg_repo):
+    """The #1418 fix on the PRODUCTION backend, not only on SQLite.
+
+    ``_upsert_messages`` used to ``continue`` past any row without a
+    ``message_id``, so the aggregate save reported success and the transcript
+    line was gone. The same two lines existed in both backends; a guard that
+    covered only SQLite would leave the cloud one unpinned, which is the half
+    that matters.
+
+    Read back through ``get()`` rather than asserting on the in-memory case:
+    the point is what reached the table.
+    """
+    session = pg_repo.db
+    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    user_id = f"user_{uuid4().hex[:8]}"
+    await seed_enterprises(session, [enterprise_id])
+    await seed_users(session, [user_id])
+    case = _make_case(enterprise_id, user_id)
+
+    # No message_id — the shape add_message has always accepted and minted for.
+    case.messages.append(
+        {"role": "user", "content": "pg id-less line", "turn_number": 1}
+    )
+    await pg_repo.save(case)
+
+    minted = case.messages[0]["message_id"]
+    assert minted, "the mint must be written back to the caller's dict"
+
+    messages = await pg_repo.get_messages(case.case_id)
+    assert [m.get("content") for m in messages] == ["pg id-less line"]
+
+    # A second save must conflict onto that row, not insert a duplicate — the
+    # reason the mint mutates the caller's dict rather than a copy.
+    await pg_repo.save(case)
+    rows = await session.execute(
+        text("SELECT message_id FROM case_messages WHERE case_id = :c"),
+        {"c": case.case_id},
+    )
+    assert [r[0] for r in rows.fetchall()] == [minted]
