@@ -821,8 +821,13 @@ python scripts/generate_api_docs.py --check
 ```
 
 `ruff check .` additionally covers `scripts/`, `alembic/` and `docs/`, which CI
-deliberately does not lint (#179) and which do not currently pass — a wider
-path scope is a separate decision from the rule set above.
+deliberately does not lint (#179). Whether those paths pass is therefore a
+measurement rather than a property of the gate, so it is stamped rather than
+claimed: against the rule set above, with ruff 0.9.10, `ruff check alembic/
+docs/` reports `All checks passed!` and `ruff check .` reports 12 errors —
+every one `I001` in `scripts/`, all auto-fixable (2026-09-15). Nothing holds
+that number anywhere, which is the point: widening the path scope is a separate
+decision from the rule set, and #179's PATH question is still open.
 
 ### API Reference
 

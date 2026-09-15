@@ -44,7 +44,6 @@ except ImportError:
 
 import importlib.machinery
 from types import ModuleType, SimpleNamespace
-from unittest.mock import MagicMock, Mock
 
 # --------------------------------------------------------------------------- #
 # Harness stand-ins (#942)
