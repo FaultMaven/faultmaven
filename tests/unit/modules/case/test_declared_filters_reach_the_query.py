@@ -56,6 +56,16 @@ fixed the guard goes red and asks for the entry to be re-classified, so an
 exemption cannot outlive the thing it excuses. The same holds for a
 per-repository gap, and both must cite an issue.
 
+**A process-zone matrix is decoration unless a NAIVE bound goes through it.**
+Both normalisers read an aware value with ``astimezone(timezone.utc)``, which
+consults no clock — so every aware bound in this file answers the same under
+every ``TZ``, and the matrix around them proved nothing. Measured: breaking
+``to_utc`` into the process-local reading left all of it green. What reads the
+system clock is ``astimezone`` on a NAIVE value, so the promise the route
+actually publishes — "a value without one is read as UTC" — is the one that can
+be tested, and testing it is what makes the zones live. The test also asserts
+its own discriminating power, so the matrix cannot quietly go inert again.
+
 **An empty answer proves nothing, whatever the verdict.**
 ``CaseService.list_user_cases`` ends in ``except Exception: return [], 0``, so
 ``([], 0)`` means "no rows" and "this blew up" at once. That makes an empty pair
@@ -69,12 +79,14 @@ timezone bounds are all interior to the seeded corpus for the same reason.
 from __future__ import annotations
 
 import re
+import shutil
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import Enum
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -84,7 +96,7 @@ from fastapi.dependencies.utils import get_flat_params
 from fastapi.params import ParamTypes
 from fastapi.routing import APIRoute
 from pydantic import BaseModel
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.api.routes import admin_cases
@@ -576,28 +588,62 @@ async def _seed(repository: Any) -> None:
         await repository.save(case)
 
 
-async def _install_tenancy_rows(connection: Any) -> None:
-    """The enterprise and user rows ``cases`` carries foreign keys to.
+def _build_schema_template(path: Path) -> None:
+    """Create the whole schema, plus the tenancy rows, ONCE into ``path``.
 
-    Needed wherever foreign keys are enforced — the application engine turns
-    ``PRAGMA foreign_keys=ON`` on per connection. Written on both SQLite arms so
-    the two are seeded identically rather than one of them depending on the
-    pragma being off.
+    Built with a SYNC engine deliberately. ``Base.metadata.create_all`` issues
+    DDL for 41 tables, and aiosqlite hops to a worker thread per statement:
+    measured at ~0.7s through the async driver against 0.139s synchronously, for
+    identical output. The file is then copied per test (about a millisecond),
+    which is also why the SQLite arm became file-backed rather than
+    ``:memory:`` — a ``:memory:`` database lives in its engine's pooled
+    connection, so it cannot be built once and reused, and a cache keyed on the
+    URL would never hit.
+
+    Isolation gets STRONGER, not weaker: every test now owns a private file, so
+    no row a test writes can reach another. The property under test is the WHERE
+    clause, not the storage medium, and the Sessionless arm was already
+    file-backed.
+
+    The tenancy rows are the parents ``cases`` carries foreign keys to. They are
+    needed wherever foreign keys are enforced — the application engine sets
+    ``PRAGMA foreign_keys=ON`` per connection — and writing them into the
+    template keeps both SQLite arms seeded identically rather than leaving one
+    of them depending on the pragma being off.
     """
-    await connection.execute(
-        text(
-            "INSERT INTO enterprises (enterprise_id, name, slug) "
-            "VALUES (:eid, 'Guard Enterprise', 'guard-enterprise')"
-        ),
-        {"eid": SEED_ENTERPRISE},
-    )
-    await connection.execute(
-        text(
-            "INSERT INTO users (user_id, enterprise_id, username, email, "
-            "display_name) VALUES (:uid, :eid, :uid, :email, 'Seed Owner')"
-        ),
-        {"uid": SEED_OWNER, "eid": SEED_ENTERPRISE, "email": f"{SEED_OWNER}@test"},
-    )
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        Base.metadata.create_all(engine)
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO enterprises (enterprise_id, name, slug) "
+                    "VALUES (:eid, 'Guard Enterprise', 'guard-enterprise')"
+                ),
+                {"eid": SEED_ENTERPRISE},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO users (user_id, enterprise_id, username, "
+                    "email, display_name) "
+                    "VALUES (:uid, :eid, :uid, :email, 'Seed Owner')"
+                ),
+                {
+                    "uid": SEED_OWNER,
+                    "eid": SEED_ENTERPRISE,
+                    "email": f"{SEED_OWNER}@test",
+                },
+            )
+    finally:
+        engine.dispose()
+
+
+@pytest.fixture(scope="session")
+def sqlite_schema_template(tmp_path_factory) -> Path:
+    """The prebuilt database every SQLite-backed arm starts from."""
+    template = tmp_path_factory.mktemp("declared-filters-guard") / "template.db"
+    _build_schema_template(template)
+    return template
 
 
 @asynccontextmanager
@@ -608,12 +654,11 @@ async def _in_memory_repository():
 
 
 @asynccontextmanager
-async def _sqlite_repository():
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+async def _sqlite_repository(template: Path, tmp_path: Path):
+    database = tmp_path / "sqlite-arm.db"
+    shutil.copyfile(template, database)
+    engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
     try:
-        async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all)
-            await _install_tenancy_rows(connection)
         maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         async with maker() as session:
             repository = SQLiteCaseRepository(session)
@@ -624,7 +669,7 @@ async def _sqlite_repository():
 
 
 @asynccontextmanager
-async def _sessionless_repository(tmp_path):
+async def _sessionless_repository(template: Path, tmp_path: Path):
     """The repository a standalone deployment actually runs.
 
     ``create_case_repository`` picks ``SessionlessCaseRepository`` whenever
@@ -634,16 +679,15 @@ async def _sessionless_repository(tmp_path):
     is precisely where this defect class lives, which is why it is worth a real
     round trip rather than a signature check.
     """
+    database = tmp_path / "sessionless-arm.db"
+    shutil.copyfile(template, database)
     previous_engine = database_module._engine
     previous_factory = database_module._session_factory
     database_module.reset_engine()
-    url = f"sqlite+aiosqlite:///{tmp_path}/declared-filters-guard.db"
+    url = f"sqlite+aiosqlite:///{database}"
     engine = None
     try:
         engine = database_module.get_engine(url)
-        async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all)
-            await _install_tenancy_rows(connection)
         database_module.get_session_factory(url)
         repository = SessionlessCaseRepository()
         await _seed(repository)
@@ -661,7 +705,23 @@ async def _sessionless_repository(tmp_path):
             await engine.dispose()
 
 
-TIMEZONES = ("UTC", "Pacific/Auckland", "America/Los_Angeles", "Asia/Kolkata")
+#: PROCESS clocks. One control and one of each sign, which is what a naive bound
+#: can actually distinguish: a positive offset makes a process-local misreading
+#: land EARLIER in UTC, a negative one LATER, and only the side it lands on
+#: decides whether a seeded instant is crossed. Pacific/Auckland is deliberately
+#: NOT here — its date-line property is delivered by the ``as_local`` SPELLING
+#: sub-assertion inside every parametrization, which does not depend on the
+#: process clock, so running it as a process zone as well was duplication.
+#: (America/Los_Angeles's 2026 DST switch is 8 March, one day outside the seeded
+#: window, so nothing here exercises an offset changing mid-window.)
+TIMEZONES = ("UTC", "Asia/Kolkata", "America/Los_Angeles")
+
+#: Hours-of-day for the NAIVE bounds, chosen either side of the seeded 12:00
+#: instants so that one of them is crossed by a positive-offset misreading and
+#: the other by a negative one. The test asserts that at least one of them is
+#: genuinely discriminating under each non-UTC zone, so this pair cannot quietly
+#: stop doing its job.
+_NAIVE_BOUND_HOURS = (6, 15)
 
 
 @pytest.fixture
@@ -710,7 +770,9 @@ class SeededRepository:
 
 
 @pytest.fixture(params=REPOSITORY_ARMS)
-async def seeded_repository(request, tmp_path, process_timezone):
+async def seeded_repository(
+    request, tmp_path, process_timezone, sqlite_schema_template
+):
     """Every repository that can be stood up in-process, already seeded.
 
     It depends on ``process_timezone`` — a real dependency edge, not a hope
@@ -730,10 +792,12 @@ async def seeded_repository(request, tmp_path, process_timezone):
         async with _in_memory_repository() as repository:
             yield SeededRepository(request.param, repository, time.tzname)
     elif request.param == "SQLiteCaseRepository":
-        async with _sqlite_repository() as repository:
+        async with _sqlite_repository(sqlite_schema_template, tmp_path) as repository:
             yield SeededRepository(request.param, repository, time.tzname)
     else:
-        async with _sessionless_repository(tmp_path) as repository:
+        async with _sessionless_repository(
+            sqlite_schema_template, tmp_path
+        ) as repository:
             yield SeededRepository(request.param, repository, time.tzname)
 
 
@@ -880,6 +944,13 @@ def _route(router: Any, name: str) -> APIRoute:
     )
 
 
+#: Resolved once, and shared by the RouteSurface table and the guided-failure
+#: handler — which needs the route to tell "removed" from "moved behind a
+#: Depends()".
+_LIST_ROUTE = _route(case_routes.router, "list_cases")
+_ADMIN_LIST_ROUTE = _route(admin_cases.router, "list_all_cases")
+
+
 class _CapturingListService:
     """Stands in for the case service to capture the filter the route built."""
 
@@ -912,35 +983,51 @@ class _StubAuditRepository:
         return None
 
 
+_UNEXPECTED_KWARG = re.compile(r"unexpected keyword argument '([^']+)'")
+
+
 @asynccontextmanager
-async def _guided_call(route_name: str):
-    """Turn a signature mismatch into a sentence instead of a raw TypeError.
+async def _guided_call(surface_name: str, route: APIRoute):
+    """Turn a signature mismatch into the RIGHT sentence, not just a sentence.
 
     The capture arm invokes the endpoint as a plain function and passes each
-    probe value BY KEYWORD, which requires the parameters to be declared inline
-    on the endpoint. Factor one behind a ``Depends()`` — which the coverage arm
-    handles fine, since it reads the flattened parameter list — and this call
-    raises ``TypeError: got an unexpected keyword argument``, a failure that
-    names the symptom and not the cause.
+    probe value BY KEYWORD, so a parameter that leaves the signature raises
+    ``TypeError: got an unexpected keyword argument`` — a failure that names the
+    symptom and not the cause. There are two causes and they want opposite
+    responses, so the declared list decides which one is reported: a parameter
+    that is GONE means somebody fixed its defect and the exemption should be
+    deleted; one that is still declared has merely moved behind a ``Depends()``,
+    which the coverage arm reads correctly and this arm must be taught to call
+    through. Guessing between them is how a guard sends an author to the wrong
+    file.
     """
     try:
         yield
-    except TypeError as exc:  # pragma: no cover — only on such a refactor
-        if "unexpected keyword argument" not in str(exc):
+    except TypeError as exc:  # pragma: no cover — only on such a change
+        match = _UNEXPECTED_KWARG.search(str(exc))
+        if match is None:
             raise
+        name = match.group(1)
+        if name not in _declared_query_params(route):
+            raise AssertionError(
+                f"{surface_name} no longer declares ?{name}= at all, and this "
+                f"guard is still probing for it. If removing it was the fix for "
+                f"its issue, delete its row from this route's rule table — an "
+                f"exemption must not outlive the defect it excuses."
+            ) from exc
         raise AssertionError(
-            f"{route_name} no longer accepts one of its query parameters as a "
-            f"direct keyword argument ({exc}). It has probably been factored "
-            f"behind a Depends(), which the coverage arm reads correctly but "
-            f"this capture arm cannot call through. Update the capture helper "
-            f"to build that dependency's value and pass it under its own "
-            f"parameter name."
+            f"{surface_name} still declares ?{name}= but no longer accepts it "
+            f"as a direct keyword argument. It has been factored behind a "
+            f"Depends(), which the coverage arm reads correctly but this "
+            f"capture arm cannot call through. Update the capture helper to "
+            f"build that dependency's value and pass it under its own parameter "
+            f"name."
         ) from exc
 
 
 async def _capture_list_filter(probe: Mapping[str, Any]) -> BaseModel:
     service = _CapturingListService()
-    async with _guided_call("GET /api/v1/cases"):
+    async with _guided_call("GET /api/v1/cases", _LIST_ROUTE):
         await case_routes.list_cases(
             response=Response(),
             case_service=service,
@@ -952,7 +1039,7 @@ async def _capture_list_filter(probe: Mapping[str, Any]) -> BaseModel:
 
 async def _capture_admin_list_filter(probe: Mapping[str, Any]) -> BaseModel:
     service = _CapturingListService()
-    async with _guided_call("GET /api/v1/admin/cases"):
+    async with _guided_call("GET /api/v1/admin/cases", _ADMIN_LIST_ROUTE):
         await admin_cases.list_all_cases(
             current_user=_StubPrincipal(),
             case_service=service,
@@ -984,7 +1071,7 @@ class RouteSurface:
 ROUTE_SURFACES = (
     RouteSurface(
         name="GET /api/v1/cases",
-        route=_route(case_routes.router, "list_cases"),
+        route=_LIST_ROUTE,
         target_model=CaseListFilter,
         service_method="list_user_cases",
         rules=LIST_ROUTE_RULES,
@@ -1005,7 +1092,7 @@ ROUTE_SURFACES = (
     ),
     RouteSurface(
         name="GET /api/v1/admin/cases",
-        route=_route(admin_cases.router, "list_all_cases"),
+        route=_ADMIN_LIST_ROUTE,
         target_model=CaseListFilter,
         service_method="list_all_cases",
         rules=ADMIN_LIST_ROUTE_RULES,
@@ -1074,10 +1161,27 @@ def test_every_declared_query_parameter_is_classified(surface: RouteSurface) -> 
         f"published, and filtering nothing."
     )
 
-    stale = sorted(set(surface.rules) - declared)
-    assert not stale, (
-        f"{surface.name} no longer declares {stale}, but this guard still "
-        f"classifies them. Delete the stale rule(s)."
+    # A parameter that has GONE is the other half of the EXEMPT contract, and
+    # the half that is easy to miss: an exemption asserts the defect is still
+    # there, so it must go red both when the parameter starts being applied AND
+    # when it is deleted. Only the second is what fixing #1413 looks like — the
+    # route simply stops declaring `include_archived` — and the "is it still
+    # dropped?" assertion cannot see that, because a parameter that no longer
+    # exists is trivially still dropped.
+    retired = sorted(set(surface.rules) - declared)
+    still_exempt = [n for n in retired if surface.rules[n].verdict is Verdict.EXEMPT]
+    assert not retired, (
+        f"{surface.name} no longer declares {retired}, but this guard still "
+        f"classifies them."
+        + (
+            f"\n{still_exempt} were exempt ("
+            + ", ".join(surface.rules[n].issue for n in still_exempt)
+            + "). If removing the parameter WAS the fix, that is the exemption "
+            "doing its job — delete its row. An exemption must not outlive the "
+            "defect it excuses."
+            if still_exempt
+            else " Delete the stale rule(s)."
+        )
     )
 
     # The probe table must cover every declared parameter, or the capture below
@@ -1121,6 +1225,13 @@ async def test_declared_query_parameters_reach_the_filter_model(
     Captured, never reconstructed. The assertion is made against the very
     ``CaseListFilter`` instance the endpoint handed to the service, so it cannot
     be satisfied by a model this test built from its own assumptions.
+
+    Scope, stated rather than left to be inferred: the endpoint is invoked as a
+    plain Python function, so this exercises the SIGNATURE handoff — does the
+    value the route received reach the filter model intact — and not the wire.
+    Query-string parsing, aliases and ``Literal`` rejection are FastAPI's own
+    and are not covered here. That is the right boundary for this file, whose
+    subject is a value that survives validation and then goes nowhere.
     """
     captured = await surface.capture(surface.probe)
     assert isinstance(captured, surface.target_model), (
@@ -1639,9 +1750,11 @@ async def test_creation_bounds_are_instants_under_any_process_timezone(
         )
         assert seen_before.total == len(expected_before)
 
-        # Asia/Kolkata is a half-hour offset and Pacific/Auckland is the far
-        # side of the date line: between them they break any bound that is
-        # secretly a date, and any comparison that is secretly lexicographic.
+        # Pacific/Auckland is the far side of the date line and Asia/Kolkata a
+        # half-hour offset: between them they break any bound that is secretly
+        # a date, and any comparison that is secretly lexicographic. These are
+        # SPELLINGS of the bound, independent of the process clock — which is
+        # why Auckland does not also need to be a process zone.
         for zone in ("Asia/Kolkata", "Pacific/Auckland"):
             as_local = bound.astimezone(ZoneInfo(zone))
             # The two spellings must differ where it counts — otherwise the
@@ -1662,3 +1775,87 @@ async def test_creation_bounds_are_instants_under_any_process_timezone(
                 f"written {as_local.isoformat()} returned different rows "
                 f"({sorted(seen.ids)} vs {sorted(local_answer.ids)})."
             )
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="time.tzset is POSIX-only")
+@pytest.mark.parametrize("process_timezone", TIMEZONES, indirect=True)
+async def test_a_bound_with_no_offset_is_read_as_utc_not_as_process_local(
+    seeded_repository: SeededRepository, process_timezone
+) -> None:
+    """The one assertion that makes the process-zone matrix mean anything.
+
+    Every OTHER bound in this file is timezone-AWARE, and both normalisers —
+    ``api_models.bound_to_utc`` and ``created_bounds.to_utc`` — handle an aware
+    value with ``astimezone(timezone.utc)``, which consults no clock. So the
+    process zone could not change those answers whatever it was set to, and the
+    matrix around them was decoration. Measured: replacing ``to_utc`` with the
+    process-local reading left every timezone test passing.
+
+    A NAIVE bound is the lever, because ``datetime.astimezone()`` on a naive
+    value reads the SYSTEM zone. The route publishes the promise in as many
+    words — "ISO-8601 with an offset; a value without one is read as UTC" — and
+    nothing tested it. Here it is tested, at both places that make the promise:
+
+    * through ``CaseListFilter``, whose validator anchors the bound before any
+      repository sees it, and
+    * straight at ``repository.list``, which ``created_bounds.to_utc`` guards
+      precisely because a caller can arrive without passing through the model.
+
+    The second is not redundant: the model anchors first, so a defect in
+    ``to_utc`` alone is invisible from the service path.
+    """
+    repository = seeded_repository.repository
+    service = _service(repository)
+    corpus = _corpus()
+
+    assert seeded_repository.tzname_at_seed == time.tzname
+
+    discriminating: list[str] = []
+
+    for day_offset in _INTERIOR_BOUNDS:
+        anchor = _day(day_offset)
+        for hour in _NAIVE_BOUND_HOURS:
+            naive = datetime(anchor.year, anchor.month, anchor.day, hour)
+            assert naive.tzinfo is None  # the whole point of this test
+
+            read_as_utc = naive.replace(tzinfo=UTC)
+            expected = {c.case_id for c in corpus if c.created_at >= read_as_utc}
+
+            # What a process-local misreading WOULD answer. Built with
+            # `astimezone`, the operation the bug actually is, so it reads this
+            # process's clock rather than a zone name we chose.
+            misread = naive.astimezone(UTC)
+            would_be = {c.case_id for c in corpus if c.created_at >= misread}
+            if would_be != expected:
+                discriminating.append(f"{naive.isoformat()} ({hour:02d}:00)")
+
+            through_the_model = await _run_list(
+                service, CaseListFilter(created_after=naive)
+            )
+            assert through_the_model.ids == frozenset(expected), (
+                f"{seeded_repository.name} under TZ={process_timezone}: the "
+                f"offsetless bound {naive.isoformat()} was read as "
+                f"{misread.isoformat()} — this process's local time — instead "
+                f"of {read_as_utc.isoformat()}. The route documents "
+                f"'a value without one is read as UTC', and "
+                f"api_models.bound_to_utc is what keeps that promise."
+            )
+
+            rows, total = await repository.list(user_id=SEED_OWNER, created_after=naive)
+            assert {c.case_id for c in rows} == frozenset(expected), (
+                f"{seeded_repository.name} under TZ={process_timezone}: the "
+                f"offsetless bound {naive.isoformat()} handed STRAIGHT to "
+                f"repository.list was read as process-local. "
+                f"created_bounds.to_utc exists for exactly this caller — one "
+                f"that did not pass through CaseListFilter's validator."
+            )
+            assert total == len(expected)
+
+    if process_timezone != "UTC":
+        assert discriminating, (
+            f"Under TZ={process_timezone} not one probed bound would answer "
+            f"differently if the offsetless value were read as process-local, "
+            f"so this parametrization proves nothing. _NAIVE_BOUND_HOURS must "
+            f"straddle a seeded instant in BOTH directions: a positive offset "
+            f"moves the misreading earlier, a negative one later."
+        )
