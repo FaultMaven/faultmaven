@@ -395,17 +395,6 @@ class DIContainer(BaseDIContainer):
                 self._ensure_initialized_for_getter()
         return getattr(self, "data_service", None)
 
-    def get_preprocessing_service(self):
-        """Get the preprocessing service with all dependencies injected"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            # Only warn if not currently initializing
-            if not getattr(self, "_initializing", False):
-                logger.warning(
-                    "Preprocessing service requested but container not initialized"
-                )
-        return getattr(self, "preprocessing_service", None)
-
     def get_knowledge_service(self):
         """Get the knowledge service with all dependencies injected"""
         if not self._initialized:
@@ -436,60 +425,6 @@ class DIContainer(BaseDIContainer):
         if not self._initialized and not getattr(self, "_initializing", False):
             self._ensure_initialized_for_getter()
         return getattr(self, "suggestion_service", None)
-
-    def get_llm_provider(self):
-        """Get the LLM provider (router) from the container."""
-        if not self._initialized and not getattr(self, "_initializing", False):
-            self._ensure_initialized_for_getter()
-        return getattr(self, "llm_provider", None)
-
-    def get_sanitizer(self):
-        """Get the sanitizer service."""
-        if not self._initialized and not getattr(self, "_initializing", False):
-            self._ensure_initialized_for_getter()
-        return getattr(self, "sanitizer", None)
-
-    def get_tracer(self):
-        """Get the tracer service."""
-        if not self._initialized and not getattr(self, "_initializing", False):
-            self._ensure_initialized_for_getter()
-        return getattr(self, "tracer", None)
-
-    def get_tools(self):
-        """Get the registered tools list."""
-        if not self._initialized and not getattr(self, "_initializing", False):
-            self._ensure_initialized_for_getter()
-        return getattr(self, "tools", [])
-
-    def get_data_classifier(self):
-        """Get the data classifier."""
-        if not self._initialized and not getattr(self, "_initializing", False):
-            self._ensure_initialized_for_getter()
-        return getattr(self, "data_classifier", None)
-
-    def get_log_processor(self):
-        """Get the log processor."""
-        if not self._initialized and not getattr(self, "_initializing", False):
-            self._ensure_initialized_for_getter()
-        return getattr(self, "log_processor", None)
-
-    def get_vector_store(self):
-        """Get the vector store."""
-        if not self._initialized and not getattr(self, "_initializing", False):
-            self._ensure_initialized_for_getter()
-        return getattr(self, "vector_store", None)
-
-    def get_session_store(self):
-        """Get the session store."""
-        if not self._initialized and not getattr(self, "_initializing", False):
-            self._ensure_initialized_for_getter()
-        return getattr(self, "session_store", None)
-
-    def get_session_service(self):
-        """Get the session service."""
-        if not self._initialized and not getattr(self, "_initializing", False):
-            self._ensure_initialized_for_getter()
-        return getattr(self, "session_service", None)
 
     def get_oauth_service(self):
         """Get the OAuth service (if enabled)."""
@@ -725,7 +660,7 @@ class DIContainer(BaseDIContainer):
         degraded deployment must not answer differently from a healthy one.
         """
         import uuid
-        from datetime import datetime, timedelta
+        from datetime import timedelta
 
         # Session TTL, sourced exactly as AuthSessionService.__init__ sources it
         # (settings.session.ttl_hours when present, else the 24h default), so
@@ -864,7 +799,6 @@ class DIContainer(BaseDIContainer):
     def _create_minimal_case_service(self):
         """Create a minimal case service for testing environments"""
         import uuid
-        from datetime import datetime
 
         from faultmaven.config.tenant_context import (
             get_current_billing_organization_id,

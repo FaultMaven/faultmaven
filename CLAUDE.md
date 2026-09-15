@@ -799,14 +799,18 @@ async def test_llm_provider():
 ### Linting and Formatting
 
 ```bash
-# Lint with ruff
-ruff check .
+# Lint with ruff — this is the gate, byte for byte (CI `code-quality` runs the
+# same line). Never add `--select`: it REPLACES [tool.ruff.lint].select in
+# pyproject.toml instead of narrowing it, which is how CI and the committed
+# config spent months enforcing two different policies.
+ruff check faultmaven/ tests/
 
 # Format
 black .
 isort .
 
-# Type check (limited files configured)
+# Type check — NOT a gate. Nothing in CI runs mypy and `ignore_errors = true`
+# in pyproject.toml means it reports nothing; pass paths explicitly.
 mypy faultmaven/
 
 # Architecture validation
@@ -815,6 +819,10 @@ lint-imports
 # API reference drift (same check CI runs)
 python scripts/generate_api_docs.py --check
 ```
+
+`ruff check .` additionally covers `scripts/`, `alembic/` and `docs/`, which CI
+deliberately does not lint (#179) and which do not currently pass — a wider
+path scope is a separate decision from the rule set above.
 
 ### API Reference
 

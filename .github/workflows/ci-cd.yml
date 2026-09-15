@@ -77,11 +77,11 @@ jobs:
 
   # ============================================================================
   # CODE QUALITY CHECKS
-  # Runs pre-commit hooks to ensure CI matches local developer experience.
-  # Covers: formatting (black), linting + import sorting (ruff), secret
-  # Ruff replaces flake8 (syntax errors) and isort (import sorting).
+  # Covers: formatting (black) and linting + import sorting (ruff, which
+  # replaced flake8 and isort here in #179).
   # Pre-commit hooks are available for local dev but not enforced in CI
-  # until the full codebase passes all hooks (docs, scripts, alembic, etc.).
+  # until the full codebase passes all hooks (docs, scripts, alembic, etc.) —
+  # that is a PATH question and it is still open; which RULES run is not.
   # ============================================================================
   code-quality:
     needs: [env-check]
@@ -107,9 +107,14 @@ jobs:
           pip install -e . --no-deps
 
       - name: Run Code Quality Checks
+        # NO `--select` HERE. A CLI `--select` REPLACES [tool.ruff.lint].select
+        # rather than narrowing it, so the flag made this gate and the committed
+        # config two independent policies — and the config's, the one developers
+        # read and `ruff check` runs locally, was the one nobody enforced. Bare
+        # `ruff check` reads pyproject.toml, so the two cannot disagree.
         run: |
           black --check faultmaven/ tests/
-          ruff check faultmaven/ tests/ --select E9,F63,F7,F82,I
+          ruff check faultmaven/ tests/
 
       - name: Lockfiles match pyproject extras (#884)
         # The Docker image installs requirements/cloud.txt, not pyproject — a
