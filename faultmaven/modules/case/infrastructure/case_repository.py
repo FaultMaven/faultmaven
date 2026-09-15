@@ -505,6 +505,7 @@ class CaseRepository(ABC):
         query: str,
         user_id: Optional[str] = None,
         enterprise_id: Optional[str] = None,
+        state: Optional[CaseState] = None,
         limit: int = 20,
         shared_case_ids: Optional[List[str]] = None,
     ) -> tuple[List[Case], int]:
@@ -517,6 +518,11 @@ class CaseRepository(ABC):
             enterprise_id: Retained for interface symmetry; does NOT scope
                 reads (single-tenant standalone; multi-tenant isolation is
                 PostgreSQL RLS keyed on the enterprise, ADR-010/ADR-017)
+            state: Narrow to one lifecycle state. Applied in the same WHERE
+                clause as the text predicate, never after ``limit``: search
+                limits in SQL, so a state applied afterwards would answer
+                "no matching cases" whenever the limit was filled by rows in
+                other states.
             limit: Maximum results
             shared_case_ids: Case ids the requester can read via a team share
                 (ADR-013 §D4). Widens the owner-only scope to
@@ -1286,6 +1292,7 @@ class InMemoryCaseRepository(CaseRepository):
         query: str,
         user_id: Optional[str] = None,
         enterprise_id: Optional[str] = None,
+        state: Optional[CaseState] = None,
         limit: int = 20,
         shared_case_ids: Optional[List[str]] = None,
         restrict_case_ids: Optional[List[str]] = None,
@@ -1312,6 +1319,13 @@ class InMemoryCaseRepository(CaseRepository):
 
                 # Filter-by-team facet: narrow to one team's shares.
                 if restrict is not None and case.case_id not in restrict:
+                    continue
+
+                # Lifecycle state, in the same pass as every other predicate
+                # and BEFORE the slice below — this loop is this repository's
+                # WHERE clause, and `filtered` is what both `total_count` and
+                # the limited page are taken from.
+                if state is not None and case.state != state:
                     continue
 
                 # No tenant filter: single-tenant standalone; multi-tenant

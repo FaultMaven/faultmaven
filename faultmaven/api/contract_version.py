@@ -30,6 +30,96 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
+# 3.9.0 — MINOR. `POST /api/v1/cases/search` applies the `state` it has always
+# declared. `CaseSearchRequest.state` was published in this document, accepted
+# by Pydantic, and read by nothing: `CaseService.search_cases` called
+# `repository.search(query=, user_id=, limit=, shared_case_ids=,
+# restrict_case_ids=)` and looked at no other field, and `ICaseRepository.search`
+# declared no `state` parameter for it to reach. So `{"query": "db", "state":
+# "resolved"}` answered **200 with resolved and unresolved cases alike** — no
+# error, no warning, a highlighted filter chip over an unfiltered list (#1416).
+#
+# DECLARING A FIELD IS NOT APPLYING IT, and this is the third recorded instance
+# of the same defect: faultmaven-dashboard#51 (a date picker that did nothing
+# for months and was eventually deleted as a lie), #1413 (`include_archived` on
+# `GET /cases`), and this one. It came within a review of being the fourth:
+# faultmaven-dashboard#154 proposed sending `state` during a text search
+# BECAUSE THE SCHEMA HAD IT, which would have recreated #51 inside the pull
+# request that was closing it. The schema was checked; the service was not.
+#
+# The predicate lives in the SAME WHERE CLAUSE as the text match and the
+# visibility scope. That is the rule #1409 established for the creation-date
+# bounds, and it is not a matter of taste here: search applies its `limit` in
+# SQL, so a state narrowed afterwards would be narrowing an already-limited
+# page — and would answer "no matching cases" whenever the limit happened to be
+# filled by rows in other states. Note what is NOT available as a cross-check on
+# this surface: search publishes no total (`CaseSearchResponse` is unused; the
+# route is `response_model=List[CaseSummary]`), so there is no count for a
+# misplaced predicate to visibly disagree with. It is the one filter surface
+# where the wrong placement would have stayed silent, which is why the tests
+# assert the placement directly, on every repository that can be stood up
+# (in-memory, SQLite, and PostgreSQL under the `postgres` marker).
+#
+# TWO THINGS SHIP BESIDE THE PREDICATE, both of them the same defect one slot
+# over. `SessionlessCaseRepository` — the wrapper actually wired in at runtime —
+# forwarded to `list` and `search` POSITIONALLY; inserting `state` ahead of
+# `limit` is precisely the edit that makes a positional forward bind the wrong
+# values, and the #405 rename already shipped that failure once (`list(state=…)`
+# against a wrapper still declaring `status`, swallowed into "you have no
+# cases"). Both forwards are now by keyword. And `search`'s second return value,
+# documented as `(cases, total_count)` since the interface was written, was
+# `len(cases)` in three of the four implementations — the page length wearing
+# the name of a total. Nothing reads it (`search_cases` discards it and the
+# route is `response_model=List[CaseSummary]`), which is exactly why it could
+# stay wrong: a DECLARED value that is not the value declared. It is now a true
+# COUNT over the same WHERE clause, as `list` has always computed it. Neither is
+# a contract change — no published shape moves — but both are the shape of thing
+# this version exists to stop.
+#
+# `state` is the only one of `CaseSearchRequest`'s three inert fields worth
+# having. `user_id` and `organization_id` are NOT being implemented: on a
+# caller-scoped endpoint the first is a second, client-supplied user id beside
+# the authenticated one, and the second contradicts ADR-017, where the
+# organization BILLS and is never a visibility predicate. Both are removed in
+# 4.0.0, together with `include_archived`.
+#
+# MINOR, AND THE ARGUMENT FOR MAJOR WAS CONSIDERED. It has to be, because this
+# entry itself quotes the rule that points the other way:
+# `docs/development/api-contract-changes.md` says "a field that keeps its type
+# and changes its meaning breaks clients and no tool will say so", and that is
+# exactly what applying a previously-ignored field does. The MAJOR case is
+# sharper still than for a removal: a REMOVAL reaches a client only when it
+# moves the ref it pins, whereas this reaches every deployed client the moment
+# the server rolls, with no version for them to gate on. If any client were
+# sending `state` and rendering the unfiltered list it got back, this change
+# would silently alter what its users see.
+#
+# It does not bite here, and that is VERIFIED rather than assumed: **no client
+# sends the field.** `POST /cases/search` has exactly one caller in the field,
+# faultmaven-dashboard, and it sends `query`, `limit` and `team_id` only — it
+# deliberately WITHHOLDS `state` behind a comment pointing at #1416
+# (`src/lib/cases/api.ts`), and disables its state chips during a text search
+# rather than send something that gets dropped. faultmaven-copilot and
+# faultmaven-slack-agent never call the route at all: the copilot's three
+# `getUserCases` call sites are the list endpoint, and the slack agent only
+# creates cases and submits turns. So the population whose behaviour could
+# change is empty, and what is left is a surface that grew a working filter.
+#
+# On the mechanical side the published surface does not change shape either —
+# nothing removed, nothing narrowed, nothing made required — so no client can
+# fail to parse, or fail to send what it sent yesterday. Adoption on the
+# dashboard side is the REMOVAL of a workaround.
+#
+# WORTH KNOWING FOR NEXT TIME: `check_contract_version.py` reports this as "no
+# structural change (a re-publication)", and it is right — the only thing in the
+# generated diff besides `info.version` is one reworded description. The version
+# moves anyway, for the reason above: what changed is the MEANING of a field
+# that was already published, and no differ can see that. This is what the
+# tooling deliberately does not decide. A version that stood still here would
+# tell a client nothing had happened on the one endpoint whose answers just
+# changed — and the next person to weigh MINOR against MAJOR on a
+# meaning-change would find no record that the question was asked.
+#
 # 3.8.0 — MINOR. `GET /api/v1/cases` accepts `created_after` and
 # `created_before`. `CaseListFilter` has carried both fields since it was
 # written, and the route never bound them as query params — so a client that
@@ -558,4 +648,4 @@ asked to accept, and it belongs to a person.
 # never share a version — a number that cannot tell two contracts apart is not
 # doing its job — so this moves rather than collides, and both entries stay.
 # They describe unrelated surfaces.
-API_CONTRACT_VERSION = "3.8.0"
+API_CONTRACT_VERSION = "3.9.0"

@@ -414,17 +414,15 @@ SEARCH_REQUEST_RULES: Mapping[str, Rule] = {
         {"query": "widget", "team_id": "team_b"},
     ),
     "limit": pages({"query": "widget", "limit": 1}, {"query": "widget", "limit": 3}),
-    "state": field_exempt(
+    # Was `field_exempt(..., issue="#1416")` — "declared, published, and never
+    # read". Fixed in contract 3.9.0: `CaseService.search_cases` now passes
+    # `state=search_request.state` and every `ICaseRepository.search`
+    # implementation applies it in the SAME WHERE clause as the text predicate,
+    # so it discriminates like any other filter and the exemption became a
+    # claim about a defect that is gone.
+    "state": narrows(
         {"query": "widget", "state": CaseState.INQUIRY},
         {"query": "widget", "state": CaseState.INVESTIGATING},
-        reason=(
-            "Declared on CaseSearchRequest and published in openapi.json, and "
-            "never read. CaseService.search_cases calls repository.search("
-            "query=, user_id=, limit=, shared_case_ids=, restrict_case_ids=) "
-            "and looks at no other field; ICaseRepository.search declares no "
-            "`state` parameter, so there is no query for it to reach."
-        ),
-        issue="#1416",
     ),
     "user_id": field_exempt(
         {"query": "widget", "user_id": SEED_OWNER},
