@@ -477,7 +477,13 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     ) as uploaded_files_data,
 
                     -- Case messages via a correlated subquery with an explicit
-                    -- ORDER BY (matches the SQLite path's `ORDER BY created_at`).
+                    -- ORDER BY. It must stay byte-for-byte the order every
+                    -- other reader uses -- `CaseRepository.message_sort_key`
+                    -- and the three SQLite queries (#1428). This comment used
+                    -- to claim it "matches the SQLite path's ORDER BY
+                    -- created_at"; it did not, it carried a turn_number
+                    -- tiebreaker the others lacked, so the divergence was
+                    -- documented as parity.
                     -- Do NOT fold this back into a `json_agg(DISTINCT ...)` over a
                     -- joined `case_messages`: DISTINCT makes PostgreSQL sort the
                     -- aggregated jsonb objects shortest-key-first — i.e. by `role`
@@ -496,7 +502,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                             'token_count', m.token_count,
                             'metadata', m.metadata,
                             'author_id', m.author_id
-                        ) ORDER BY m.created_at ASC, m.turn_number ASC)
+                        ) ORDER BY m.created_at ASC, m.turn_number ASC, m.message_id ASC)
                         FROM case_messages m
                         WHERE m.case_id = c.case_id
                     ), '[]'::json) as messages_data
@@ -1657,7 +1663,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                        author_id
                 FROM case_messages
                 WHERE case_id = :case_id
-                ORDER BY created_at ASC
+                ORDER BY created_at ASC, turn_number ASC, message_id ASC
                 LIMIT :limit OFFSET :offset
             """)
 

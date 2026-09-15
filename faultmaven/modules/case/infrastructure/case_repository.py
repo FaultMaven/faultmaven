@@ -86,6 +86,32 @@ class CaseRepository(ABC):
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc).isoformat()
 
+    @staticmethod
+    def message_sort_key(msg: Dict[str, Any]) -> tuple:
+        """The total order every reader of ``case_messages`` must use (#1428).
+
+        ``ORDER BY created_at`` alone is not a total order, so it does not
+        merely differ between readers — it is NOT DETERMINISTIC for any one of
+        them: two rows sharing a timestamp can come back in either order, run
+        to run. Measured on PostgreSQL, the aggregate ``get()`` and
+        ``get_messages()`` returned two equal-stamped rows in OPPOSITE orders.
+
+        Transcript order is what the report generator, ``context_builder`` and
+        both clients render, so a non-deterministic one is a narrative that
+        changes when nothing changed.
+
+        ``message_id`` is the tiebreaker of last resort because it is unique,
+        which is what makes the order total. ``created_at`` sorts as text
+        because it is canonicalised to a T-separated UTC ISO-8601 string on the
+        way in (``normalise_message_row``), where lexicographic and temporal
+        order coincide.
+        """
+        return (
+            str(msg.get("created_at") or ""),
+            int(msg.get("turn_number") or 0),
+            str(msg.get("message_id") or ""),
+        )
+
     @classmethod
     def normalise_message_row(
         cls,
@@ -1005,6 +1031,14 @@ class InMemoryCaseRepository(CaseRepository):
         # between two repositories.
         for _msg in case.messages:
             self.normalise_message_row(_msg)
+
+        # Ordered at the same chokepoint, for the same reason (#1428): the
+        # SQL-backed repositories return messages in ``message_sort_key``
+        # order, so a unit test written against this double would otherwise
+        # see insertion order and pass where production would not. Done at
+        # SAVE, not on read — ``get`` hands back the stored object BY
+        # REFERENCE and must not mutate it.
+        case.messages.sort(key=self.message_sort_key)
 
         # P3 chokepoint: refresh denormalized disposition_eligibility from
         # current case content. Same site as the SQL-backed repositories
