@@ -49,21 +49,34 @@ EXCLUDED_PATH_MARKERS = ("/auth/",)
 # Exact paths excluded from idempotency. Kept separate from the substring
 # markers above because the obvious substring is unusable here: ``POST
 # /api/v1/sessions`` mints a session id already bound to a user_id
-# (``modules/auth/api/session.py``), and a bare session id is still accepted as
-# proof of that identity wherever no ``Authorization`` header is present —
-# ``create_case_for_session`` in ``modules/case/api/routes.py`` derives its
-# ``user_id`` from ``session.user_id`` for exactly those callers. That makes the
-# mint response a credential: replaying it serves one caller's identity to
-# whoever presents the key next.
+# (``modules/auth/api/session.py``). That makes the mint response a credential:
+# replaying it serves one caller's identity to whoever presents the key next.
 #
-# The invariant to re-check before dropping this entry is "no route treats a
-# session id alone as identity" — not the continued existence of any single
-# call site. Call sites move; the exclusion stops being necessary only when
-# nothing derives identity from a session id.
+# WHAT A SESSION ID IS STILL WORTH, as of contract 6.0.0. The routing half of
+# this is now closed: no route derives a ``user_id`` from a session id any
+# more. ``create_case_for_session`` did — it read ``session.user_id`` whenever
+# no ``Authorization`` header was present — and the route is gone, along with
+# the ``user_id`` query parameter that let a caller choose whose identity the
+# mint bound in the first place, and ``AuthSessionService.get_user_from_session``,
+# whose whole purpose was to answer this question.
 #
-# A ``/sessions`` substring marker is not an option: it catches fifteen POST
-# routes in this app, including ``/api/v1/cases/sessions/{session_id}/case``,
-# silently disabling idempotency on exactly the route that needs it. Match the
+# The OBSERVABILITY half is not closed, and it is the reason this entry stays.
+# ``api/middleware/logging.py`` reads a client-supplied ``X-Session-ID`` header
+# on every route (``_extract_session_id``) and ``_bound_attribution`` falls back
+# to that session's ``user_id`` whenever the request's principal names none —
+# so a session id alone still decides whose account an unauthenticated request
+# is recorded against. Nothing is authorized by it, but an incident response
+# reads those lines, and a replayed mint hands one caller's identity to another
+# caller's log record.
+#
+# So the invariant to re-check before dropping this entry is "nothing derives
+# identity from a session id alone — not for authorization, and not for
+# attribution" — never the continued existence of any single call site. Call
+# sites move; the routing one already did.
+#
+# A ``/sessions`` substring marker is still not an option: it catches nine POST
+# routes in this app, among them ``/api/v1/cases/sessions/{session_id}/resume/
+# {case_id}``, silently disabling idempotency on routes that need it. Match the
 # minting route and nothing else.
 EXCLUDED_EXACT_PATHS = frozenset({"/api/v1/sessions"})
 

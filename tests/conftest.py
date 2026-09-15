@@ -44,7 +44,6 @@ except ImportError:
 
 import importlib.machinery
 from types import ModuleType, SimpleNamespace
-from unittest.mock import MagicMock, Mock
 
 # --------------------------------------------------------------------------- #
 # Harness stand-ins (#942)
@@ -421,7 +420,7 @@ except ImportError:
 import asyncio
 import os
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -1038,7 +1037,7 @@ def sample_case_summary():
 @pytest.fixture
 def mock_case_store():
     """Mock case store for testing."""
-    from unittest.mock import AsyncMock, Mock
+    from unittest.mock import Mock
 
     store = Mock()
     store.create_case = AsyncMock(return_value=True)
@@ -1061,7 +1060,7 @@ def mock_case_store():
 @pytest.fixture
 def mock_case_service():
     """Mock case service for testing."""
-    from unittest.mock import AsyncMock, Mock
+    from unittest.mock import Mock
 
     service = Mock()
     service.create_case = AsyncMock()

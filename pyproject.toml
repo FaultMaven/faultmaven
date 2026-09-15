@@ -208,6 +208,16 @@ test = [
     "black==26.3.1",  # Pinned for consistent formatting across environments
     "isort==5.13.2",   # Pinned for consistent import sorting across environments
     "ruff==0.9.10",    # Pinned — CI env-check gates on this exact version in the lockfile
+    # Installed, but NOT configured and NOT invoked: ruff replaced flake8 here in
+    # #179, and no CI job, pre-commit hook or script runs it. There is deliberately
+    # no [tool.flake8] section to go with it — flake8 cannot read pyproject.toml
+    # without the Flake8-pyproject plugin, which is in no requirements file, so the
+    # section this file used to carry was read by nothing and drifted accordingly
+    # (it still named two files deleted with faultmaven/agent/). Do not re-add it;
+    # if flake8 is ever wanted again it needs a .flake8 file and a job that runs it.
+    # Dropping the dependency itself means recompiling dev/test/cloud lockfiles
+    # and amending tests/installation/test_pyproject.py, which asserts this extra
+    # holds it — two more decisions, each its own change.
     "flake8>=7.0.0",
 ]
 
@@ -348,16 +358,43 @@ line-length = 88
 target-version = "py311"
 
 [tool.ruff.lint]
+# THIS LIST IS THE GATE. CI (`code-quality` in .github/workflows/ci-cd.yml) and
+# the ruff pre-commit hook both run bare `ruff check faultmaven/ tests/`, with no
+# `--select`, so what is written here is exactly what is enforced. Never pass
+# `--select` on a command line: it REPLACES this list rather than narrowing it,
+# which is how the previously declared set (E, W, F, I, B, C4, UP, G) came to be
+# published for months without ever running — `faultmaven/` and `tests/` carry
+# 10,275 violations of it (ruff 0.9.10, measured at cfbc9e23e).
+#
+# The set below is what `faultmaven/` and `tests/` actually pass today:
+#   E9    syntax / IO errors — the file does not parse
+#   F63   comparison mistakes (`is` on literals, invalid `==` types)
+#   F7    misplaced statements (`break` outside a loop, etc.)
+#   F82   undefined names — a NameError waiting for the right branch
+#   F811  a name redefined before its first use: the earlier definition is dead
+#         and never runs. Added here with the sweep that made it pass, which
+#         turned up four real defects: ten DI getters in `_container_impl.py`
+#         shadowed by later definitions of the same names, and a duplicate
+#         `TitleResponse` whose required `view_state` the live route never
+#         passes — the published one is the second.
+#   I     import sorting (ruff replaced isort here in #179)
+#
+# E9,F63,F7,F82 is not a chosen set: it is GitHub's starter-workflow flake8 line
+# (`flake8 . --count --select=E9,F63,F7,F82`), added in 2025 and translated
+# verbatim into ruff by #179, whose recorded rationale concerns which PATHS are
+# linted, not which rules. Widening it is a correction, not a re-litigation —
+# but widen it one rule at a time, with the sweep that makes the tree pass in
+# the same PR, so this list never again names something that is not enforced.
 select = [
-    "E",   # pycodestyle errors
-    "W",   # pycodestyle warnings
-    "F",   # pyflakes
-    "I",   # isort
-    "B",   # flake8-bugbear
-    "C4",  # flake8-comprehensions
-    "UP",  # pyupgrade
-    "G",   # flake8-logging-format
+    "E9",    # pycodestyle: syntax/IO errors
+    "F63",   # pyflakes: invalid comparisons
+    "F7",    # pyflakes: misplaced statements
+    "F82",   # pyflakes: undefined names
+    "F811",  # pyflakes: redefinition of an unused name (dead definition)
+    "I",     # isort: import sorting
 ]
+# Inert while the set above stays narrow (none of these is selected). Kept so
+# that widening `select` does not also have to rediscover these decisions.
 ignore = [
     "E501",  # line too long (handled by formatter)
     "B008",  # do not perform function calls in argument defaults
@@ -370,11 +407,13 @@ ignore = [
 # See docs/operations/monitoring/logging-policy.md for details
 
 [tool.ruff.lint.per-file-ignores]
+# Every path named here must exist — tests/unit/test_lint_config_is_live.py
+# asserts it. Two entries (faultmaven/agent/doctrine.py,
+# faultmaven/data_processing/log_processor.py) named files deleted long ago and
+# went unnoticed because nothing ever resolved them.
 "__init__.py" = ["F401"]  # Allow unused imports in __init__.py
-"test_*.py" = ["F401", "F811"]  # Allow unused imports and redefinitions in tests
+"test_*.py" = ["F401", "F811"]  # Redefinition is the pytest-fixture idiom
 "conftest.py" = ["F401"]  # Allow unused imports in conftest files
-"faultmaven/agent/doctrine.py" = ["F841"]  # Allow unused variables (placeholders for future features)
-"faultmaven/data_processing/log_processor.py" = ["F841"]  # Allow unused variables (investigation context planned)
 "faultmaven/main.py" = ["F841"]  # Allow unused variables (dependency injection)
 
 
@@ -400,7 +439,16 @@ warn_unreachable = false
 no_implicit_optional = false
 ignore_errors = true
 warn_unused_ignores = false
-files = ["faultmaven/session_management.py", "faultmaven/agent/tools/web_search.py"]
+# No `files` key. It named faultmaven/session_management.py and
+# faultmaven/agent/tools/web_search.py — neither has existed for a long time, so
+# a bare `mypy` could not even start ("cannot read file ... No such file or
+# directory") while the config looked configured. Nothing in CI runs mypy, and
+# `ignore_errors = true` above means it reports nothing anyway (measured: `mypy
+# faultmaven` spends 2m05s to print "no issues found in 472 source files"). So
+# rather than point the key at a real path and publish a second no-op that reads
+# as a gate, the key is removed: run `mypy <paths>` explicitly. Giving mypy
+# teeth — dropping `ignore_errors`, picking a scope, wiring a CI job — is its
+# own change, not this one.
 [[tool.mypy.overrides]]
 module = [
     "pandas.*",
@@ -410,27 +458,3 @@ module = [
     "mcp.*"
 ]
 ignore_missing_imports = true
-
-[tool.flake8]
-max-line-length = 88
-ignore = ["E501", "W291", "W293", "F541", "W503"]
-exclude = [
-    ".git",
-    "__pycache__",
-    ".venv",
-    "build",
-    "dist",
-    "*.egg-info",
-    ".tox",
-    ".coverage",
-    ".pytest_cache",
-    "chroma_db"
-]
-per-file-ignores = [
-    "__init__.py:F401",
-    "test_*.py:F401",
-    "conftest.py:F401",
-    "faultmaven/agent/doctrine.py:F841",
-    "faultmaven/data_processing/log_processor.py:F841",
-    "faultmaven/main.py:F841"
-]

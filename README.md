@@ -471,14 +471,15 @@ pytest --cov=faultmaven
 ### Code Quality
 
 ```bash
-# Linting
-ruff check .
+# Linting — the same line CI runs. Do not add `--select`: it REPLACES
+# [tool.ruff.lint].select in pyproject.toml rather than narrowing it.
+ruff check faultmaven/ tests/
 
 # Formatting
 black .
 isort .
 
-# Type checking
+# Type checking (not a CI gate; `ignore_errors = true` in pyproject.toml)
 mypy faultmaven/
 ```
 

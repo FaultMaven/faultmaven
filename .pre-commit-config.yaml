@@ -66,12 +66,15 @@ repos:
       - id: black
         language_version: python3.11
 
-  # Linting and import sorting (ruff)
+  # Linting and import sorting (ruff). No `--select`: a CLI `--select` REPLACES
+  # [tool.ruff.lint].select in pyproject.toml, which is how this hook and CI
+  # enforced a policy the committed config never named. Bare `ruff check` reads
+  # pyproject, so the hook, CI and a developer's own `ruff check` all agree.
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.9.10
     hooks:
       - id: ruff
-        args: [--select, "E9,F63,F7,F82,I", --fix, --exit-non-zero-on-fix]
+        args: [--fix, --exit-non-zero-on-fix]
 
   # Custom hook to detect API key patterns
   - repo: local
