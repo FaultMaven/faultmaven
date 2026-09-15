@@ -154,7 +154,27 @@ asked to accept, and it belongs to a person.
 # that "Cleanup should run at least as often as session expiration" — a
 # startup constraint enforcing a cadence for a pass nothing schedules, so an
 # operator who tunes this knob can be denied a boot over a loop that does not
-# exist. The deleted v2 route's own description asserted "In production,
+# exist. Measured: `SESSION_CLEANUP_INTERVAL_MINUTES=60` on its own makes
+# `FaultMavenSettings()` raise rather than construct.
+#
+# AND THAT LONE READER MIS-KEYS ITS OWN COMPARISON. `validate_cleanup_interval`
+# falls back to `values.get("timeout_minutes", 180)`, but that field has
+# declared `default=30` for its entire history, and the sibling validator five
+# lines above (`validate_heartbeat_vs_timeout`) reads the same field with 30.
+# The fallback is reached only when `timeout_minutes` is absent from
+# `info.data`, which — Pydantic validating in declaration order, that field
+# declared first — means only when it FAILED its own `ge=1, le=1440` or parsed
+# as a non-integer. Merely leaving it unset delivers the default, so the
+# refusal above is genuinely keyed to `SESSION_TIMEOUT_MINUTES` on every boot
+# that could otherwise have succeeded. What the stray 180 corrupts is the
+# DIAGNOSTIC on a boot already failing for another reason, and it corrupts it
+# in both directions: measured, `SESSION_TIMEOUT_MINUTES=2000` with the
+# interval at 200 reports "should not exceed SESSION_TIMEOUT_MINUTES (180)",
+# naming a timeout the operator never set; at interval 60 the cleanup error
+# vanishes entirely, where the sibling's constant would have raised it. Left
+# alone here deliberately: this entry is prose, and correcting the constant
+# adds errors to runs that today report one — a behaviour change owed its own
+# diff. The deleted v2 route's own description asserted "In production,
 # this runs automatically every 30 minutes", which was false in two ways at
 # once. The project has the machinery (`infrastructure/tasks/case_cleanup.py`
 # runs a `BackgroundScheduler` for cases); it was never wired to sessions, and
