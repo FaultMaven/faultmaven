@@ -5482,38 +5482,6 @@
         "title": "SessionResponse",
         "type": "object"
       },
-      "SessionRestoreRequest": {
-        "description": "Request model for session restoration.",
-        "properties": {
-          "include_data": {
-            "default": true,
-            "title": "Include Data",
-            "type": "boolean"
-          },
-          "restore_point": {
-            "minLength": 1,
-            "title": "Restore Point",
-            "type": "string"
-          },
-          "type": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": "full",
-            "title": "Type"
-          }
-        },
-        "required": [
-          "restore_point"
-        ],
-        "title": "SessionRestoreRequest",
-        "type": "object"
-      },
       "SessionState": {
         "description": "Investigation session status.\n\nTracks the lifecycle of an investigation session from active to completion.",
         "enum": [
@@ -6785,7 +6753,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "4.0.0"
+    "version": "5.0.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -14002,26 +13970,6 @@
         ]
       }
     },
-    "/api/v1/sessions/cleanup": {
-      "post": {
-        "description": "Clean up expired sessions (admin/testing endpoint).\n\nThis endpoint triggers immediate cleanup of expired sessions.\nIn production, this runs automatically every 30 minutes.\n\nReturns:\n    Number of sessions cleaned up",
-        "operationId": "cleanup_expired_sessions_v2",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Cleanup Expired Sessions",
-        "tags": [
-          "session_management"
-        ]
-      }
-    },
     "/api/v1/sessions/search": {
       "post": {
         "description": "Search user's sessions with filters.\n\nImplements microservices parity with fm-session-service.\nSearches only the authenticated user's sessions.\n\nRequest body:\n    {\n        \"query\": \"optional text search\",\n        \"status\": \"optional status filter (active, archived)\",\n        \"limit\": 50\n    }\n\nReturns:\n    {\n        \"sessions\": [...],\n        \"total\": int\n    }",
@@ -14248,111 +14196,6 @@
         ]
       }
     },
-    "/api/v1/sessions/{session_id}/cases": {
-      "get": {
-        "description": "List all cases associated with a session.\n\nCRITICAL: Must return 200 [] for empty results, NOT 404\n\nArgs:\n    session_id: Session identifier\n    limit: Maximum number of cases to return (1-100)\n    offset: Number of cases to skip for pagination\n\nReturns:\n    List of cases (empty list if no cases found)",
-        "operationId": "list_session_cases_api_v1_sessions__session_id__cases_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "session_id",
-            "required": true,
-            "schema": {
-              "title": "Session Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 50,
-              "maximum": 100,
-              "minimum": 1,
-              "title": "Limit",
-              "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "offset",
-            "required": false,
-            "schema": {
-              "default": 0,
-              "minimum": 0,
-              "title": "Offset",
-              "type": "integer"
-            }
-          },
-          {
-            "description": "Include cases with message_count == 0",
-            "in": "query",
-            "name": "include_empty",
-            "required": false,
-            "schema": {
-              "default": false,
-              "description": "Include cases with message_count == 0",
-              "title": "Include Empty",
-              "type": "boolean"
-            }
-          },
-          {
-            "description": "Include terminal state cases (resolved/closed)",
-            "in": "query",
-            "name": "include_terminal",
-            "required": false,
-            "schema": {
-              "default": false,
-              "description": "Include terminal state cases (resolved/closed)",
-              "title": "Include Terminal",
-              "type": "boolean"
-            }
-          },
-          {
-            "description": "Include deleted cases (admin only)",
-            "in": "query",
-            "name": "include_deleted",
-            "required": false,
-            "schema": {
-              "default": false,
-              "description": "Include deleted cases (admin only)",
-              "title": "Include Deleted",
-              "type": "boolean"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "summary": "List Session Cases",
-        "tags": [
-          "session_management"
-        ]
-      }
-    },
     "/api/v1/sessions/{session_id}/heartbeat": {
       "post": {
         "description": "Update session activity timestamp (heartbeat).\n\nArgs:\n    session_id: Session identifier\n\nReturns:\n    Heartbeat confirmation",
@@ -14389,139 +14232,6 @@
           }
         },
         "summary": "Session Heartbeat",
-        "tags": [
-          "session_management"
-        ]
-      }
-    },
-    "/api/v1/sessions/{session_id}/recovery-info": {
-      "get": {
-        "description": "Get session recovery information for restoring lost sessions.\n\nArgs:\n    session_id: Session identifier\n\nReturns:\n    Recovery information",
-        "operationId": "get_session_recovery_info_api_v1_sessions__session_id__recovery_info_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "session_id",
-            "required": true,
-            "schema": {
-              "title": "Session Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Session Recovery Info",
-        "tags": [
-          "session_management"
-        ]
-      }
-    },
-    "/api/v1/sessions/{session_id}/restore": {
-      "post": {
-        "description": "Restore a session from backup or recovery state.\n\nArgs:\n    session_id: Session identifier\n    restore_request: Restoration parameters\n\nReturns:\n    Restoration confirmation",
-        "operationId": "restore_session_api_v1_sessions__session_id__restore_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "session_id",
-            "required": true,
-            "schema": {
-              "title": "Session Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SessionRestoreRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Restore Session",
-        "tags": [
-          "session_management"
-        ]
-      }
-    },
-    "/api/v1/sessions/{session_id}/stats": {
-      "get": {
-        "description": "Get session statistics and activity summary.\n\nArgs:\n    session_id: Session identifier\n\nReturns:\n    Session statistics",
-        "operationId": "get_session_stats_api_v1_sessions__session_id__stats_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "session_id",
-            "required": true,
-            "schema": {
-              "title": "Session Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Session Stats",
         "tags": [
           "session_management"
         ]

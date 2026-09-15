@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 4.0.0
+**Version:** 5.0.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -4157,30 +4157,6 @@ Returns:
 
 ---
 
-### `/api/v1/sessions/cleanup`
-
-#### POST
-
-**Cleanup Expired Sessions**
-
-Clean up expired sessions (admin/testing endpoint).
-
-This endpoint triggers immediate cleanup of expired sessions.
-In production, this runs automatically every 30 minutes.
-
-Returns:
-    Number of sessions cleaned up
-
-**Tags:** `session_management`
-
-**Auth:** None — this operation is reachable unauthenticated.
-
-**Responses:**
-
-- `200` — Successful Response
-
----
-
 ### `/api/v1/sessions/search`
 
 #### POST
@@ -4356,44 +4332,6 @@ Raises:
 
 ---
 
-### `/api/v1/sessions/{session_id}/cases`
-
-#### GET
-
-**List Session Cases**
-
-List all cases associated with a session.
-
-CRITICAL: Must return 200 [] for empty results, NOT 404
-
-Args:
-    session_id: Session identifier
-    limit: Maximum number of cases to return (1-100)
-    offset: Number of cases to skip for pagination
-
-Returns:
-    List of cases (empty list if no cases found)
-
-**Tags:** `session_management`
-
-**Auth:** `HTTPBearer`
-
-**Parameters:**
-
-- `session_id` (path, required)
-- `limit` (query, optional)
-- `offset` (query, optional)
-- `include_empty` (query, optional) — Include cases with message_count == 0
-- `include_terminal` (query, optional) — Include terminal state cases (resolved/closed)
-- `include_deleted` (query, optional) — Include deleted cases (admin only)
-
-**Responses:**
-
-- `200` — Successful Response
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
-
----
-
 ### `/api/v1/sessions/{session_id}/heartbeat`
 
 #### POST
@@ -4407,98 +4345,6 @@ Args:
 
 Returns:
     Heartbeat confirmation
-
-**Tags:** `session_management`
-
-**Auth:** None — this operation is reachable unauthenticated.
-
-**Parameters:**
-
-- `session_id` (path, required)
-
-**Responses:**
-
-- `200` — Successful Response
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
-
----
-
-### `/api/v1/sessions/{session_id}/recovery-info`
-
-#### GET
-
-**Get Session Recovery Info**
-
-Get session recovery information for restoring lost sessions.
-
-Args:
-    session_id: Session identifier
-
-Returns:
-    Recovery information
-
-**Tags:** `session_management`
-
-**Auth:** None — this operation is reachable unauthenticated.
-
-**Parameters:**
-
-- `session_id` (path, required)
-
-**Responses:**
-
-- `200` — Successful Response
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
-
----
-
-### `/api/v1/sessions/{session_id}/restore`
-
-#### POST
-
-**Restore Session**
-
-Restore a session from backup or recovery state.
-
-Args:
-    session_id: Session identifier
-    restore_request: Restoration parameters
-
-Returns:
-    Restoration confirmation
-
-**Tags:** `session_management`
-
-**Auth:** None — this operation is reachable unauthenticated.
-
-**Parameters:**
-
-- `session_id` (path, required)
-
-**Request body** (required):
-
-- `application/json` — [`SessionRestoreRequest`](#sessionrestorerequest)
-
-**Responses:**
-
-- `200` — Successful Response
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
-
----
-
-### `/api/v1/sessions/{session_id}/stats`
-
-#### GET
-
-**Get Session Stats**
-
-Get session statistics and activity summary.
-
-Args:
-    session_id: Session identifier
-
-Returns:
-    Session statistics
 
 **Tags:** `session_management`
 
@@ -6618,18 +6464,6 @@ Response payload for auth session operations - API spec compliance.
 - `session_resumed` (object, optional)
 - `status` (object, optional)
 - `user_id` (object, optional)
-
----
-
-### SessionRestoreRequest
-
-Request model for session restoration.
-
-**Properties:**
-
-- `include_data` (boolean, optional)
-- `restore_point` (string, required)
-- `type` (object, optional)
 
 ---
 

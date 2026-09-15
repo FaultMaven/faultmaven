@@ -30,6 +30,174 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
+# 5.0.0 — MAJOR. Five published operations that do nothing they claim are
+# REMOVED from the session router, along with the request model one of them
+# required (#1425, #1431). One bump, because they are one defect wearing five
+# hats, and a client should adopt the answer once.
+#
+#   * `GET /api/v1/sessions/{session_id}/cases`. CLAIMED: this session's cases,
+#     narrowed by `include_empty`, `include_terminal` and `include_deleted`.
+#     DID: `case_service.list_user_cases(current_user.user_id, filters)` — the
+#     bearer's cases, under its own comment reading `Architecture: Session →
+#     User → User's Cases (indirect relationship)`. The same rows
+#     `GET /api/v1/cases` returns, minus `state`, `source`, `team_id` and the
+#     creation-date window, which this route never accepted.
+#   * `POST /api/v1/sessions/{session_id}/restore`. CLAIMED: `"status":
+#     "restored"`, a message naming the restoration type, and an
+#     `items_restored` count. DID: loaded the session, 404'd if absent, mutated
+#     NOTHING, and reported success (#1425).
+#   * `GET /api/v1/sessions/{session_id}/recovery-info`. CLAIMED:
+#     `can_restore: true`, `backup_available: true`, `data_integrity: "good"`,
+#     three `restoration_options` all true. DID: returned those as literals.
+#     There is no backup.
+#   * `GET /api/v1/sessions/{session_id}/stats`. CLAIMED: per-session query,
+#     upload, heartbeat and stats-request counts, plus a latest confidence
+#     score. DID: counted `session.case_history`, which is always empty (below).
+#   * `POST /api/v1/sessions/cleanup`, BOTH definitions of it — the route was
+#     declared twice in one file, and that is its own entry below.
+#   * `SessionRestoreRequest`, the schema `restore` took. Its `restore_point`
+#     was `Field(..., min_length=1)`: REQUIRED, validated, and read by nothing.
+#
+# `restore` AND `stats` REST ON A LIST THAT IS ALWAYS EMPTY, and this is what
+# turns #1425 from a dead field into a dead endpoint. `AuthSession.case_history`
+# and `.data_uploads` are initialised to `[]` by the Redis store and NOTHING IN
+# THE REPOSITORY EVER APPENDS TO EITHER. There is no `add_case_history` and no
+# `add_data_upload` anywhere — the two call sites that reach for
+# `session_manager.add_case_history` guard with `hasattr` and have always found
+# nothing — and `AuthSessionService.update_session` names both in its
+# `forbidden_fields` set, so a caller cannot write them either. The consequences
+# are worse than the issues report: `items_restored` was not "a count of items
+# the session already had", it was `{0, 0}` on every call in the product's
+# history, and every statistic `/stats` published was likewise always zero. The
+# endpoints did not degrade; they never worked.
+#
+# WHY DELETE RATHER THAN RETURN 501, which #1425 offered as its third option.
+# 501 keeps a promise alive, so it is worth something only if the promise has a
+# referent. Session restoration has none. The nearest thing in the codebase is
+# `CaseCheckpoint`, and it is a different noun: a snapshot of a CASE, keyed
+# `{case_id}:turn:{n}:{trigger}`, with no session dimension at all. It is
+# written (three call sites in `milestone_engine`) and never read — `get_checkpoint`
+# and `get_checkpoints` have no caller outside the repositories that implement
+# them — so it could not restore a session even if a session were the thing it
+# snapshotted. A 501 here would be a promise pointing at nothing, which is the
+# same defect this entry is about with a different status code.
+#
+# THE CASES ROUTE HAD THREE FAULTS, NOT ONE, and each alone would have been a
+# reason to change it:
+#
+#   1. `include_terminal` and `include_deleted` were handed to `CaseListFilter`,
+#      which declares neither and sets no `model_config`, so Pydantic's default
+#      `extra='ignore'` dropped both without a word (#1431) — the identical
+#      mechanism as 4.0.0's `include_archived`, one route over. The seventh
+#      recorded instance of this defect class.
+#   2. It never compared `session.user_id` to `current_user.user_id`. It 404s on
+#      a session that does not exist and answers for one belonging to somebody
+#      else — harmlessly, because it ignores the session entirely, which is the
+#      only reason this is a design smell rather than a disclosure.
+#   3. Its outer handler turned EVERY exception into `200 []` with
+#      `X-Total-Count: 0`, "for robustness per OpenAPI requirement". A failed
+#      case lookup was indistinguishable from an empty account.
+#
+# It also imported `SessionCasesResponse` and never used it — the route carried
+# no `response_model` and returned a bare `JSONResponse` list, so the one schema
+# describing its own shape was dead on arrival. That model is deleted with it;
+# it had no other importer and was never in the published document.
+#
+# `POST /api/v1/sessions/cleanup` WAS DEFINED TWICE, and the two halves of the
+# system disagreed about which one existed. Starlette matches in registration
+# order, so the FIRST definition served every request; FastAPI's OpenAPI
+# generator writes each path once and the LAST writer wins, so the document
+# published the SECOND — its `operationId` (`cleanup_expired_sessions_v2`), its
+# summary and its description ("admin/testing endpoint ... In production, this
+# runs automatically every 30 minutes"). The served handler is the other one,
+# and it returns a `timestamp` the documented one does not. A client generating
+# an operation from this contract named a handler that never ran.
+#
+# `api-contract-drift` COULD NOT SEE THAT, and the reason is structural rather
+# than an oversight: the check regenerates the document and diffs it, and the
+# document IS `app.openapi()`. Both sides of the comparison come from the same
+# generator, which has the same last-writer-wins blind spot, so a shadowed route
+# is invisible to it by construction. `ruff` does flag the shadowing — `F811
+# Redefinition of unused 'cleanup_expired_sessions'` — but CI runs
+# `ruff check --select E9,F63,F7,F82,I`, and F811 is not in that set. The rule
+# that would have caught it was there all along, switched off.
+#
+# BOTH DEFINITIONS GO, rather than one surviving. The operation is
+# unauthenticated, has no client caller in any of the three repositories, and
+# deletes nothing Redis has not already dropped: sessions are stored with a TTL
+# (`redis_session_store`, `ex=ttl`), and `cleanup_expired_sessions` walks the
+# store deleting rows whose `expires_at` has passed — rows the TTL has evicted.
+# Keeping one would mean choosing which of two identical bodies is canonical and
+# publishing an unauthenticated maintenance verb to justify the choice.
+#
+# THE CLIENT-FIRST STEP WAS ALREADY SATISFIED, and here is the evidence rather
+# than the assertion. `docs/development/api-contract-changes.md` orders a REMOVE
+# client-first, so all three client repositories were grepped for every removed
+# path, for `SessionRestoreRequest`, and for `restore_point` / `recovery-info` /
+# `include_terminal` / `include_deleted`, excluding the generated artifacts —
+# `src/types/api.generated.ts` and `faultmaven/api_generated.py` are outputs of
+# this contract, not callers of it:
+#
+#   * faultmaven-dashboard makes NO hand-written call to `/api/v1/sessions` at
+#     all. Its only trace of any removed operation is the generated types file.
+#   * faultmaven-copilot calls exactly two session routes, both of which survive:
+#     `POST /api/v1/sessions` (`packages/copilot-ui/lib/session/client-session-manager.ts`)
+#     and `POST /api/v1/sessions/{id}/heartbeat`
+#     (`packages/copilot-ui/lib/api/services/session-service.ts`). Its e2e mock,
+#     playground stub and API tests mirror those two and nothing else.
+#   * faultmaven-slack-agent makes no session call. `SessionRestoreRequest`
+#     exists in its `api_generated.py` and nowhere else.
+#
+# So each client's adoption PR is a regeneration: five path entries and one
+# schema leave the typed surface, and no hand-written line changes. Both
+# TypeScript clients derive their filter types from the generated `operations`
+# type, which is what makes a removed parameter a COMPILER error there rather
+# than a silent no-op — the property 4.0.0 relied on and the reason MAJOR is the
+# right call even where nothing on the wire moves.
+#
+# ONE INTERNAL FIX SHIPS BESIDE THE REMOVAL, and it is the same defect with its
+# sign reversed. `MinimalCaseService` — the stand-in the DI container falls back
+# to when no case repository is available, so every line of it runs in production
+# the moment the repository is missing — filtered on
+# `getattr(filters, "include_deleted", False)` and
+# `getattr(filters, "include_terminal", False)`. `CaseListFilter` declares
+# neither, so neither `getattr` could ever see anything but its default: the
+# stand-in dropped every RESOLVED and CLOSED case UNCONDITIONALLY, where
+# `CaseService.list_user_cases` excludes no terminal state at all. Its
+# no-filters branch said the same thing without a filter object to blame it on,
+# narrowing to INQUIRY/INVESTIGATING and dropping empty cases where the real
+# service passes `state=None` and `include_empty=True`. Both are gone, from
+# `list_user_cases` and `count_user_cases` together so the page and its count
+# cannot disagree, and
+# `tests/unit/container/test_minimal_case_service_terminal_parity.py` pins it.
+# Not contract surface — `MinimalCaseService` is not published — but the same
+# sweep found it, and a filter nobody asked for is the same lie as a filter
+# nobody applies.
+#
+# ONE DOCUMENT WAS ARGUING WITH ITSELF and is corrected here.
+# `docs/architecture/case-and-session/case-and-session-concepts.md` listed
+# "Cases as session sub-resources" as **ELIMINATED** in its migration section
+# while, 500 lines earlier, requiring that
+# `GET /api/v1/sessions/{session_id}/cases` and `GET /api/v1/cases` "return
+# identical results for the same user", with client code and a test checklist to
+# match. The first statement is now true, and the second is deleted: a route
+# whose entire specification is "answer what another route answers" was the
+# argument for removing it.
+#
+# MAJOR because published operations DISAPPEAR. Five paths and one schema leave
+# `docs/reference/api/openapi.json`; a client generating types from this
+# contract stops being able to name them. Nothing that worked stops working,
+# because none of the five did what it said.
+#
+# Sequencing note, in the spirit of the two this file already carries: this
+# stacks straight on 4.0.0 (#1427) rather than amending it. `check_contract_version.py`
+# refuses a structural change whose version stood still, and two contracts must
+# never share a number. Stacking costs the clients nothing here, because NONE
+# HAS ADOPTED 4.0.0: faultmaven-dashboard and faultmaven-copilot pin 3.8.0 and
+# faultmaven-slack-agent pins 3.0.0, so each adoption PR crosses 4.0.0 and 5.0.0
+# in the same move whether or not they are separate numbers. Amending 4.0.0
+# would buy nothing and cost the record of which change was which.
+#
 # 4.0.0 — MAJOR. Three published filters that were never applied are REMOVED,
 # not implemented. Batched into one bump because they are one defect, and a
 # client should adopt the answer once.
@@ -804,4 +972,4 @@ asked to accept, and it belongs to a person.
 # never share a version — a number that cannot tell two contracts apart is not
 # doing its job — so this moves rather than collides, and both entries stay.
 # They describe unrelated surfaces.
-API_CONTRACT_VERSION = "4.0.0"
+API_CONTRACT_VERSION = "5.0.0"
