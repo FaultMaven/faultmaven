@@ -616,39 +616,6 @@ async def delete_session(
         raise HTTPException(status_code=500, detail="Failed to delete session")
 
 
-@router.post("/cleanup", status_code=200, operation_id="cleanup_expired_sessions_v1")
-async def cleanup_expired_sessions(
-    session_service: AuthSessionService = Depends(get_session_service),
-):
-    """
-    Manually trigger cleanup of expired sessions.
-
-    This endpoint allows manual cleanup of sessions that have exceeded their
-    timeout period. It's useful for maintenance operations and ensuring
-    database hygiene.
-
-    Returns:
-        Cleanup results including number of sessions cleaned up
-    """
-    try:
-        cleaned_count = await session_service.cleanup_expired_sessions()
-
-        logger.info(
-            f"Manual session cleanup completed: {cleaned_count} sessions cleaned"
-        )
-
-        return {
-            "message": f"Successfully cleaned up {cleaned_count} expired sessions",
-            "cleaned_sessions": cleaned_count,
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
-        }
-    except Exception as e:
-        logger.error(f"Failed to cleanup expired sessions: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500, detail="Failed to cleanup expired sessions"
-        )
-
-
 @router.post("/{session_id}/heartbeat")
 async def session_heartbeat(
     session_id: str,
@@ -758,34 +725,6 @@ async def session_heartbeat(
         raise HTTPException(
             status_code=500, detail="Internal server error during heartbeat operation"
         )
-
-
-@router.post("/cleanup", operation_id="cleanup_expired_sessions_v2")
-async def cleanup_expired_sessions(
-    session_service: AuthSessionService = Depends(get_session_service),
-):
-    """
-    Clean up expired sessions (admin/testing endpoint).
-
-    This endpoint triggers immediate cleanup of expired sessions.
-    In production, this runs automatically every 30 minutes.
-
-    Returns:
-        Number of sessions cleaned up
-    """
-    try:
-        cleaned_count = await session_service.cleanup_expired_sessions()
-        logger.info(
-            f"Manual session cleanup completed: {cleaned_count} sessions removed"
-        )
-
-        return {
-            "cleaned_sessions": cleaned_count,
-            "message": f"Successfully cleaned up {cleaned_count} expired sessions",
-        }
-    except Exception as e:
-        logger.error(f"Failed to cleanup sessions: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to cleanup sessions")
 
 
 # =============================================================================

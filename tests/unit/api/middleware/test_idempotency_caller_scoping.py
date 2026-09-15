@@ -758,7 +758,9 @@ def test_exclusions_do_not_over_catch_any_real_post_route():
 
     An exclusion is a silent disabling of idempotency, so it must be shown
     against the real route table rather than against hand-written paths. The
-    tempting ``/sessions`` substring marker catches fifteen POST routes here.
+    tempting ``/sessions`` substring marker catches every POST route whose path
+    merely contains the word — ten of them at the time of writing, only one of
+    which is the session mint.
 
     Enumerated through ``route_policy._post_route_paths`` rather than by walking
     ``real_app.routes`` directly: FastAPI >= 0.139 records an ``_IncludedRouter``
@@ -790,7 +792,13 @@ def test_exclusions_do_not_over_catch_any_real_post_route():
 
     # Every other route whose path merely *contains* 'sessions' must survive.
     session_shaped = {p for p in post_paths if "/sessions" in p}
-    assert len(session_shaped) > 10, "expected many session-shaped POST routes"
+    # A FLOOR, not a pin. It exists so the substring trap is demonstrated
+    # against a non-trivial set rather than against one route; it is not a
+    # count of the surface, and it must not turn red every time a session-
+    # shaped route is added or removed. Contract 5.0.0 took it from twelve to
+    # ten (`POST /sessions/cleanup` and `POST /sessions/{id}/restore`), and a
+    # threshold of `> 10` made that removal look like a broken route table.
+    assert len(session_shaped) > 5, "expected many session-shaped POST routes"
     assert session_shaped - excluded == session_shaped - {"/api/v1/sessions"}
     assert "/api/v1/cases/sessions/{session_id}/case" not in excluded
 
