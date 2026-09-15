@@ -30,6 +30,162 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
+# 4.0.0 — MAJOR. Three published filters that were never applied are REMOVED,
+# not implemented. Batched into one bump because they are one defect, and a
+# client should adopt the answer once.
+#
+#   * `include_archived` on `GET /api/v1/cases` (#1413). The `Query` parameter
+#     and the argument it fed to `CaseListFilter`, which declares no such field
+#     and sets no `model_config` — so Pydantic's default `extra='ignore'` had
+#     been dropping it without a word, and no repository carried the predicate
+#     either.
+#   * `CaseSearchRequest.user_id` and `CaseSearchRequest.organization_id`
+#     (#1416). Both published, both read by nothing.
+#
+# WHY REMOVE RATHER THAN IMPLEMENT, one at a time.
+#
+# `include_archived` has nothing behind it. There is no storage representation
+# of an archived case: the `cases` table has no archived column, `alembic/`
+# contains no archive migration, and
+# `postgresql_hybrid_case_repository._row_to_case` states outright that
+# `is_archived` / `archived_at` are gone. Implementing it is not a bug fix, it
+# is the archival epic — see below, which is where that intent is now recorded
+# in full.
+#
+# `user_id` is worse than dead. `search_cases(self, search_request,
+# user_id=None)` already receives the AUTHENTICATED caller from the route, so
+# `search_request.user_id` is a SECOND, client-supplied user id beside it.
+# Inert, it is merely a lie; honoured, it is a cross-tenant read. There is no
+# version of this field that both works and is safe on a caller-scoped
+# endpoint.
+#
+# `organization_id` contradicts ADR-017. The organization answers "who pays for
+# these accounts" and is never a visibility predicate — the ENTERPRISE is the
+# isolation tenant. So there is no correct WHERE clause to write for it, which
+# makes "implement it" not a smaller version of the same decision but a
+# different and wrong one.
+#
+# THE CLIENT-FIRST STEP WAS ALREADY SATISFIED, and this is how that was
+# established rather than assumed. `docs/development/api-contract-changes.md`
+# orders a REMOVE client-first — never remove something still being read — so
+# all three client repositories were grepped:
+#
+#   * faultmaven-dashboard sends none of them. It has a standing GUARD TEST,
+#     `src/lib/cases/api.test.ts` ("never sends include_archived on the list
+#     endpoint"), and `src/lib/cases/api.ts` sends `{query, limit, team_id}` to
+#     `/cases/search` under a comment explaining that it deliberately omits
+#     `state` because the field was declared and not applied — pointing here.
+#   * faultmaven-copilot sends none of them from production code: all three
+#     `getUserCases` call sites pass only `limit`/`offset`. One nuance worth
+#     stating, because it is what this MAJOR bump exists to surface — its
+#     `CaseListFilters` type is DERIVED from the generated operations type, so
+#     `include_archived` is expressible there and one test
+#     (`src/test/api/services/case-service.test.ts`) passes it explicitly and
+#     asserts it reaches the query string. Nothing on the wire changes for that
+#     client, but its adoption PR has to delete that line, and the compiler will
+#     say so. That is the derived type working exactly as intended.
+#   * faultmaven-slack-agent never lists and never searches: `POST
+#     /api/v1/cases` and `POST /api/v1/cases/{id}/turns`, plus auth and health.
+#
+# WHAT A REMOVED QUERY PARAMETER DOES AND DOES NOT BUY. `?include_archived=true`
+# will still be ACCEPTED after this — FastAPI drops an unknown query parameter
+# silently and there is no way to make it refuse one. Likewise an unknown key in
+# a `CaseSearchRequest` body, which `extra='ignore'` discards. What changes is
+# that the CONTRACT no longer promises anything about them: a client reading this
+# document is no longer told a filter exists, which is the whole of the lie. The
+# request validation is deliberately not tightened alongside — that is a separate
+# decision with its own blast radius, and tightening only the body half would
+# leave the two halves of one removal behaving differently.
+#
+# WHAT THE MODELS' DOCSTRINGS NOW SAY, and deliberately do not say. Both were
+# nearly used to assert the invariant — "every field here reaches the repository
+# query" — and neither says it.
+#
+# For `CaseListFilter` the claim is simply FALSE: it has two readers with
+# different appetites. `list_user_cases` reads every field; `list_all_cases`,
+# behind `GET /api/v1/admin/cases`, reads only `state`, `source`, `limit` and
+# `offset` and says in its own docstring that it deliberately ignores
+# `include_empty`. So the docstring states the invariant PER READER and names
+# the guard's two rule tables.
+#
+# For `CaseSearchRequest` the claim is now TRUE — 3.9.0 landed first and `state`
+# is applied — and it is still not made, for a reason that does not depend on
+# merge order. This text is published verbatim as the schema's description, and
+# a description is the one part of the contract nothing checks:
+# `check_contract_version.py` strips prose before comparing, precisely because
+# no client breaks on a reworded sentence. A blanket guarantee written there
+# would go stale the first time someone adds a field and forgets to wire it,
+# with every gate still green and the published contract asserting exactly the
+# thing #1416 was. So the docstring records what was REMOVED and why — history,
+# which cannot rot — and points at
+# `tests/unit/modules/case/test_declared_filters_reach_the_query.py`, which
+# classifies every field PER SURFACE and goes red on one that reaches no query.
+# An assertion that moves when the code does, rather than a sentence that does
+# not, which is the whole difference this version is about.
+#
+# TWO INTERNAL FIELDS GO WITH THEM, and cost no contract surface at all:
+# `CaseListFilter.user_id` and `CaseListFilter.organization_id`. `CaseListFilter`
+# is NOT in `docs/reference/api/openapi.json` — it is a service-layer model, not
+# a request body — so no client can see either one. They are the same defect,
+# found by the same sweep, and `grep -rn 'filters\.user_id\|filters\.organization_id'
+# faultmaven/` returns nothing. The route stops passing
+# `user_id=current_user.user_id` into the constructor: `list_user_cases` takes
+# the principal as its own argument and reads only `state`, `source`, `team_id`,
+# `limit`, `offset`, `include_empty` and the creation-date window off the filter,
+# so the constructor argument was a second copy that changed no answer.
+#
+# WHAT ARCHIVING WAS, carried forward here because deleting the parameter deletes
+# one of the three places it survived (the other two: a note in the case-service
+# tests, and a design document, both named below). Archiving was a first-class case state
+# with `is_archived` / `archived_at` columns; it was DROPPED in the schema
+# redesign (commit `7b5a1b93`), and the note left in
+# `tests/unit/modules/case/domain/services/test_case_service.py` beside the
+# removed `test_excludes_archived_cases_by_default` records the intent verbatim:
+# it "will be reintroduced as a deliberate epic with retention policy, scheduled
+# archival, and list-view filter UI". That is still the plan and this entry does
+# not cancel it. `closed_at` and the terminal states are the nearest thing today
+# and they are NOT the same concept — a case you have finished with is not a case
+# you have put away. The parameter comes back when there is something behind it,
+# as part of that epic, with a storage representation, a retention policy and a
+# migration; until then an affordance that does nothing is worse than no
+# affordance, and faultmaven-dashboard#51 is the evidence.
+#
+# ONE SECURITY PROBE CHANGES SHAPE, and it is worth saying why that is not a
+# loss. `tests/integration/security/test_two_enterprise_surface_probe.py` injected
+# `user_id` and `organization_id` into a `POST /cases/search` body to prove a
+# request-supplied principal never widens the caller's scope. With the fields
+# gone, that injection sends keys pydantic drops before any handler sees them —
+# which the probe's own guard, `test_the_search_injection_names_only_real_request
+# _fields`, correctly FAILS on: an injection naming an undeclared field measures
+# the parser, not the boundary. (It failed in CI, on the `postgres` lane, which
+# is exactly where a probe like that earns its keep.) So the injection now names
+# only `team_id`, and the boundary those two stood for is closed BY CONSTRUCTION
+# rather than by behaviour — the stronger of the two. The behavioural claim moves
+# to the unit tier, and the guard's BACKWARD half still fails the moment a new
+# tenant-shaped selector appears on the model without someone deciding whether it
+# is attackable.
+#
+# The third trace is the one that was actively wrong, and it is corrected in the
+# same change: `docs/architecture/specifications/llm-configuration-design.md`
+# described the reverted Phase-1 archival implementation in the present tense,
+# with `include_archived` and four other components marked "Done". It now says
+# what is true, and points here. The design text is kept — it is still the plan
+# — but a specification that describes a reverted feature as shipped is the same
+# lie this entry is about, one document over.
+#
+# MAJOR because published surface DISAPPEARS. A request body is validated
+# against a narrower schema and a query parameter leaves the document, so a
+# client generating types from this contract stops being able to name them —
+# which is the point: a name that cannot be typed cannot be sent in the belief
+# that it does something. Nothing that worked stops working, because none of
+# the three ever worked.
+#
+# Sequencing note, because this file has been bitten twice and says so: 3.9.0
+# (#1416's ADD) merged first, as #1426, and this is rebased on top of it. The
+# two entries sit side by side rather than colliding, which is what the ordering
+# was for — 3.9.0 makes `state` work, 4.0.0 removes the three fields that never
+# could.
+#
 # 3.9.0 — MINOR. `POST /api/v1/cases/search` applies the `state` it has always
 # declared. `CaseSearchRequest.state` was published in this document, accepted
 # by Pydantic, and read by nothing: `CaseService.search_cases` called
@@ -648,4 +804,4 @@ asked to accept, and it belongs to a person.
 # never share a version — a number that cannot tell two contracts apart is not
 # doing its job — so this moves rather than collides, and both entries stay.
 # They describe unrelated surfaces.
-API_CONTRACT_VERSION = "3.9.0"
+API_CONTRACT_VERSION = "4.0.0"

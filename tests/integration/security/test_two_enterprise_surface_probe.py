@@ -873,15 +873,28 @@ _JWT_SECRET = "two-enterprise-probe-secret-padded-to-32-bytes"
 #: is what an ``enterprise_id`` in this body would have been, and why it is not
 #: here: the enterprise reaches the endpoint through the verified claim only, and
 #: there is no body field for it to be honoured from.
-INJECTED_SEARCH_KEYS = ("query", "user_id", "organization_id", "team_id", "limit")
+#:
+#: ``user_id`` and ``organization_id`` USED TO BE HERE and are not any more. They
+#: were removed from ``CaseSearchRequest`` in API contract 4.0.0 (#1413/#1416):
+#: declared, published, and read by nothing, so there was no repository that
+#: could have honoured them and no correct behaviour to implement — a
+#: request-supplied user id on a caller-scoped endpoint is either redundant or a
+#: cross-tenant read, and under ADR-017 the organization bills and is never a
+#: visibility predicate. Once the fields are gone, sending them is sending keys
+#: pydantic drops, which is precisely what the guard below forbids: the boundary
+#: they stood for is now closed BY CONSTRUCTION rather than by behaviour, which
+#: is the stronger of the two. That a body carrying them is not honoured is
+#: pinned at the unit tier, in
+#: ``tests/unit/modules/case/api/test_removed_filters_are_gone_1413_1416.py``;
+#: that they cannot come back unnoticed is pinned by the BACKWARD half of the
+#: guard below, which requires every declared tenant-shaped field to be injected.
+INJECTED_SEARCH_KEYS = ("query", "team_id", "limit")
 
 
-def _search_injection_body(*, query, user_id, organization_id, team_id):
+def _search_injection_body(*, query, team_id):
     """The injection body. Its keys are exactly :data:`INJECTED_SEARCH_KEYS`."""
     body = {
         "query": query,
-        "user_id": user_id,
-        "organization_id": organization_id,
         "team_id": team_id,
         "limit": 50,
     }
@@ -2422,21 +2435,26 @@ async def test_case_search_does_not_match_the_other_partys_cases(world):
 
 
 async def test_a_search_body_naming_the_other_party_does_not_widen_the_scope(world):
-    """The body carries tenant-shaped fields. Are they honoured?
+    """The body carries a tenant-shaped field. Is it honoured?
 
-    ``CaseSearchRequest`` lets the caller name another principal, so the attack
-    names B outright, in every DECLARED field that could select a row: the owner,
-    the organization and the team. A filter field that *narrows* within the
-    caller's own scope is harmless; one that *selects* is the boundary, and the
-    scope must come from the verified claim rather than from anything in the body.
+    ``CaseSearchRequest`` lets the caller name another principal's TEAM, so the
+    attack names B's outright. A filter field that *narrows* within the caller's
+    own scope is harmless; one that *selects* is the boundary, and the scope must
+    come from the verified claim rather than from anything in the body.
 
-    ``organization_id`` is the retired key and the sharpest of the three under
-    ADR-017: it is still a declared field, so a Phase-3 repository that kept
-    honouring it as a selector would compile, pass every type check, and hand the
-    caller rows chosen by a value the caller supplied. In these arms no
-    organization exists, so a forged one is what an attacker would have; the
-    shared arm sends a REAL organization that really does stamp the target row,
-    which is the half that could actually leak.
+    This arm used to inject ``user_id`` and ``organization_id`` beside
+    ``team_id``, and those two were the sharpest of the three — a repository that
+    honoured either as a selector would compile, pass every type check, and hand
+    the caller rows chosen by a value the caller supplied. They are not injected
+    any more because the fields no longer EXIST: API contract 4.0.0 removed both
+    from ``CaseSearchRequest`` (#1413/#1416), having established that nothing had
+    ever read them. Sending a key the model does not declare measures pydantic,
+    not the boundary — see :data:`INJECTED_SEARCH_KEYS`. What replaces this arm
+    is not a weaker assertion but a structural one: there is no longer a body
+    field for a scope to be widened from, and the backward half of
+    :func:`test_the_search_injection_names_only_real_request_fields` fails the
+    moment a new tenant-shaped selector appears on the model without someone
+    deciding whether it is attackable.
     """
     attack = await as_a(
         world,
@@ -2444,8 +2462,6 @@ async def test_a_search_body_naming_the_other_party_does_not_widen_the_scope(wor
         "/api/v1/cases/search",
         json=_search_injection_body(
             query=SECRET_B_TITLE,
-            user_id=world.b.user_id,
-            organization_id=f"org_forged_{_RUN}",
             team_id=world.b.team_id,
         ),
     )
@@ -3933,19 +3949,20 @@ async def test_case_search_finds_the_shared_case_and_not_the_private_one(shared_
     assert world.private_case.case_id not in _ids(hunted.json(), "case_id")
     assert_no_private_content(hunted, "POST /api/v1/cases/search (teammate)")
 
-    # The same query with every declared selector naming A: A's own id, A's
-    # BILLING organization (which really does stamp the private case) and A's
-    # own team (which B is not in). This is the arm where those values are real
-    # rather than forged, so a repository that still selected on any of them
-    # would hand B the private case here and nowhere else.
+    # The same query with every declared selector naming A — which, since API
+    # contract 4.0.0 removed `user_id` and `organization_id` from
+    # `CaseSearchRequest` (#1413/#1416), is A's own team, the one B is not in.
+    # This is the arm where that value is REAL rather than forged, so a
+    # repository that still selected on it would hand B the private case here
+    # and nowhere else. See INJECTED_SEARCH_KEYS for why the other two are no
+    # longer sent: a key the model does not declare is dropped before any
+    # handler sees it, so injecting one measures the parser.
     injected = await as_teammate(
         world,
         "POST",
         "/api/v1/cases/search",
         json=_search_injection_body(
             query=PRIVATE_TITLE,
-            user_id=world.user_a,
-            organization_id=world.org_x,
             team_id=world.team_a_own,
         ),
     )

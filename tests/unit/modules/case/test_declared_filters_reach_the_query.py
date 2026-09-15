@@ -306,16 +306,13 @@ LIST_ROUTE_RULES: Mapping[str, Rule] = {
     "limit": reaches(),
     "offset": reaches(),
     "include_empty": reaches(),
-    "include_archived": route_exempt(
-        reason=(
-            "Declared on the route and passed into CaseListFilter(...), which "
-            "declares no such field and sets no model_config — so Pydantic's "
-            "default extra='ignore' drops it without a word, and no repository "
-            "carries the predicate either. Accepted, published in "
-            "docs/reference/api/openapi.json, and applied to nothing."
-        ),
-        issue="#1413",
-    ),
+    # `include_archived` was here, `route_exempt(..., issue="#1413")`: declared
+    # on the route, dropped by CaseListFilter's default extra='ignore', carried
+    # by no repository. REMOVED from the route in API contract 4.0.0 rather than
+    # implemented — there is no archived column to implement it against — so
+    # there is no longer a parameter for a rule to classify, and the probe entry
+    # below went with it. `test_every_declared_query_parameter_is_classified`
+    # fails if it ever comes back unclassified.
 }
 
 # -- Arm 1: GET /api/v1/admin/cases -------------------------------------------
@@ -361,32 +358,14 @@ LIST_FILTER_RULES: Mapping[str, Rule] = {
     "include_empty": narrows({"include_empty": True}, {"include_empty": False}),
     "limit": pages({"limit": 2}, {"limit": 4}),
     "offset": pages({"limit": 2, "offset": 0}, {"limit": 2, "offset": 2}),
-    "user_id": field_exempt(
-        {"user_id": SEED_OWNER},
-        {"user_id": "a-stranger"},
-        reason=(
-            "Never read. CaseService.list_user_cases takes the principal as its "
-            "own `user_id` argument and reads only state, source, team_id, "
-            "limit, offset, include_empty, created_after and created_before off "
-            "the filter; `grep -rn 'filters\\.user_id' faultmaven/` returns "
-            "nothing. Internal only — CaseListFilter is not published in the "
-            "OpenAPI document — but it is a settable field that changes no "
-            "answer. UNREPORTED, found during the #1413/#1416 sweep."
-        ),
-        issue="UNREPORTED: needs an issue; see the PR that added this file",
-    ),
-    "organization_id": field_exempt(
-        {"organization_id": "org_alpha"},
-        {"organization_id": "org_beta"},
-        reason=(
-            "Never read; `grep -rn 'filters\\.organization_id' faultmaven/` "
-            "returns nothing. Under ADR-017 the organization BILLS and is never "
-            "a visibility predicate, so the field has no correct behaviour to "
-            "implement — the honest fix is deletion, not a WHERE clause. "
-            "UNREPORTED, found during the #1413/#1416 sweep."
-        ),
-        issue="UNREPORTED: needs an issue; see the PR that added this file",
-    ),
+    # `user_id` and `organization_id` were here, both `field_exempt` and both
+    # UNREPORTED when this file was written. They are DELETED from
+    # `CaseListFilter` itself in the same change that removed `include_archived`
+    # — the principal reaches `list_user_cases` as its own argument, and under
+    # ADR-017 the organization bills and is never a visibility predicate, so
+    # neither had a correct WHERE clause to grow. A model with no such field has
+    # nothing for a rule to classify; `test_every_request_model_field_is_classified`
+    # fails if either returns.
 }
 
 # -- Arm 2: CaseListFilter, as GET /api/v1/admin/cases drives it --------------
@@ -436,27 +415,13 @@ SEARCH_REQUEST_RULES: Mapping[str, Rule] = {
         {"query": "widget", "state": CaseState.INQUIRY},
         {"query": "widget", "state": CaseState.INVESTIGATING},
     ),
-    "user_id": field_exempt(
-        {"query": "widget", "user_id": SEED_OWNER},
-        {"query": "widget", "user_id": "a-stranger"},
-        reason=(
-            "Declared, published in openapi.json, never read. The principal "
-            "reaches search_cases as its own argument, taken from the "
-            "authenticated user; this field is inert. (Which is the safe "
-            "direction — a read field here would be a request-controlled "
-            "scope — but inert and published is still a lie to the client.)"
-        ),
-        issue="#1416",
-    ),
-    "organization_id": field_exempt(
-        {"query": "widget", "organization_id": "org_alpha"},
-        {"query": "widget", "organization_id": "org_beta"},
-        reason=(
-            "Declared, published in openapi.json, never read. Under ADR-017 the "
-            "organization bills and is never a visibility predicate."
-        ),
-        issue="#1416",
-    ),
+    # `user_id` and `organization_id` were here, both `field_exempt(issue="#1416")`:
+    # declared on `CaseSearchRequest`, published in openapi.json, read by
+    # nothing. REMOVED from the model in API contract 4.0.0 rather than
+    # implemented — this endpoint is scoped to the authenticated caller, so a
+    # request-supplied user id is either redundant or a cross-tenant read, and
+    # the organization is a billing fact — so there is no field left to
+    # classify.
 }
 
 
@@ -1084,7 +1049,6 @@ ROUTE_SURFACES = (
             "limit": 7,
             "offset": 3,
             "include_empty": False,
-            "include_archived": True,
         },
         capture=_capture_list_filter,
     ),

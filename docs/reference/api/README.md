@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 3.9.0
+**Version:** 4.0.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -1509,7 +1509,6 @@ Creation-date bounds:
 - `limit` (query, optional) — Items per page
 - `offset` (query, optional) — Number of items to skip
 - `include_empty` (query, optional) — Include cases with current_turn == 0 (newly created)
-- `include_archived` (query, optional) — Include archived/closed cases
 
 **Responses:**
 
@@ -5468,14 +5467,32 @@ Supports DUAL runbook sources:
 
 Request to search cases.
 
+``user_id`` and ``organization_id`` used to be declared here, were published
+in ``docs/reference/api/openapi.json``, and were read by nothing. They were
+removed rather than implemented (#1416): this endpoint is scoped to the
+AUTHENTICATED caller, so a request-supplied user id is either redundant or a
+cross-tenant read, and under ADR-017 the organization bills and is never a
+visibility predicate.
+
+Every remaining field does reach the repository query — and that is stated
+HERE as history rather than as a promise, on purpose. This text is published
+verbatim as the schema's description, and a description is the one part of
+the contract nothing checks: ``scripts/check_contract_version.py`` strips
+prose before comparing, precisely because no client breaks on a reworded
+sentence. So a blanket guarantee written here could go stale the next time
+someone adds a field and forgets to wire it, with every gate still green and
+the published contract now asserting the very thing #1416 was. The
+guarantee lives where it can fail:
+``tests/unit/modules/case/test_declared_filters_reach_the_query.py``
+classifies every field on this model and goes red on one that reaches no
+query.
+
 **Properties:**
 
 - `limit` (integer, optional) — Maximum results
-- `organization_id` (object, optional) — Limit to organization's cases
 - `query` (string, required) — Search query
 - `state` (object, optional) — Narrow the results to one lifecycle state. Applied in the same query as the text search, so it constrains what the `limit` returns rather than thinning an already-limited page.
 - `team_id` (object, optional) — Filter to cases shared with this Team (ADR-013 §D4). Only Teams the caller belongs to yield results; ignored in standalone (no teams).
-- `user_id` (object, optional) — Limit to user's cases
 
 ---
 
