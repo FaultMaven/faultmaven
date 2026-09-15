@@ -726,3 +726,32 @@ def test_the_two_pass_replace_agrees_with_the_regex_it_replaced():
         assert normalize_line_endings(sample) == reference.sub("\n", sample), repr(
             sample
         )
+
+
+def test_validate_and_score_normalises_too():
+    """#1417 moved four of the six production sites onto ``validate_and_score``,
+    which carries its OWN ``normalize_line_endings`` call — and nothing pinned
+    it, because every guard above drives ``validate_content`` / ``score_content``
+    directly.
+
+    Mutation-verified at the time: replacing that line with ``normalized =
+    content`` and running the whole knowledge suite gave **1057 passed, 0
+    failed**. A CRLF draft submitted to ``PUT /conversions/{id}/drafts/{id}``, or
+    produced by the LLM conversion path, would have been reported as missing all
+    six required sections and scored ~15 points low — the exact #1403 defect —
+    with a green build.
+
+    Mutation: drop the normalisation inside ``validate_and_score``.
+    """
+    from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+        validate_and_score,
+    )
+
+    for path in _runbook_corpus():
+        lf = path.read_text(encoding="utf-8")
+        lf_validation, lf_quality = validate_and_score(lf)
+        crlf_validation, crlf_quality = validate_and_score(_crlf(lf))
+
+        assert crlf_validation.passed == lf_validation.passed, path.name
+        assert sorted(crlf_validation.errors) == sorted(lf_validation.errors), path.name
+        assert crlf_quality.overall == lf_quality.overall, path.name

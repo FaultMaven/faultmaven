@@ -57,7 +57,7 @@ from faultmaven.models.interfaces import (
 from faultmaven.models.vector_metadata import VectorMetadata
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     RunbookQualityError,
-    enforce_runbook_quality,
+    aenforce_runbook_quality,
 )
 from faultmaven.modules.knowledge.domain.write_scope import (
     metadata_scope_floor,
@@ -1697,7 +1697,7 @@ class KnowledgeService:
             # that long stalls every other in-flight request. This is the ONLY
             # place the gate runs now — the upload route's second pass was
             # deleted (#1214 review) — so one hop covers both publish paths.
-            await asyncio.to_thread(enforce_runbook_quality, content)
+            await aenforce_runbook_quality(content)
 
             # 16-hex authored id — must NOT match the 12-hex built-in pattern, or
             # the bootstrap orphan-prune would delete this user runbook on redeploy.

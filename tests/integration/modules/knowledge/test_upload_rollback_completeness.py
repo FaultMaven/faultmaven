@@ -274,17 +274,25 @@ class TestTheGateRunsExactlyOnce:
         again — measured at 31.5 ms per pass on the largest shipped runbook
         (48 KB), so ~63 ms of event-loop-blocking CPU for every upload. The
         route's copy is gone; this pins that the service does not grow a second
-        one either."""
-        import faultmaven.modules.knowledge.domain.services.knowledge_service as ks_mod
+        one either.
+
+        Patched in ``runbook_validator``, where the gate is DEFINED, not in
+        ``knowledge_service``, where it used to be called. #1417 moved the
+        ``asyncio.to_thread`` hop behind ``aenforce_runbook_quality``, which
+        resolves the gate from its own module globals — so a patch applied to
+        the caller's namespace silently stopped being seen, and this test
+        counted zero passes for an upload that ran exactly one. Patching the
+        definition site is what survives the call moving again."""
+        import faultmaven.modules.knowledge.domain.services.runbook_validator as rv_mod
 
         calls = []
-        real = ks_mod.enforce_runbook_quality
+        real = rv_mod.enforce_runbook_quality
 
         def counting(content: str) -> None:
             calls.append(content)
             return real(content)
 
-        monkeypatch.setattr(ks_mod, "enforce_runbook_quality", counting)
+        monkeypatch.setattr(rv_mod, "enforce_runbook_quality", counting)
 
         await _publish(service)
 
