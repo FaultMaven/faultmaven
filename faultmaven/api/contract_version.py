@@ -148,9 +148,13 @@ asked to accept, and it belongs to a person.
 # routes were the only ones. The method was kept rather than deleted with them,
 # because the missing caller is the actual defect: `SessionSettings`
 # declares `cleanup_interval_minutes` (default 15, bound to
-# `SESSION_CLEANUP_INTERVAL_MINUTES`) and **nothing in `faultmaven/` reads it**
-# — a documented, env-var-configurable cleanup interval that has never driven
-# anything. The deleted v2 route's own description asserted "In production,
+# `SESSION_CLEANUP_INTERVAL_MINUTES`) and **no scheduler, task or loop reads
+# it**. Its only reader is a `field_validator` that REFUSES TO START the app
+# when the interval exceeds `SESSION_TIMEOUT_MINUTES`, on the stated ground
+# that "Cleanup should run at least as often as session expiration" — a
+# startup constraint enforcing a cadence for a pass nothing schedules, so an
+# operator who tunes this knob can be denied a boot over a loop that does not
+# exist. The deleted v2 route's own description asserted "In production,
 # this runs automatically every 30 minutes", which was false in two ways at
 # once. The project has the machinery (`infrastructure/tasks/case_cleanup.py`
 # runs a `BackgroundScheduler` for cases); it was never wired to sessions, and
