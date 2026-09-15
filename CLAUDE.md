@@ -665,7 +665,6 @@ python scripts/generate_api_docs.py --check  # Detect API reference drift (CI ga
 # Development & Testing
 python scripts/setup_env.py                # Environment setup
 python scripts/generate_api_docs.py        # Regenerate the API reference (commit the result)
-python scripts/frontend_verification_smoke_test.py  # Frontend smoke test
 ./scripts/run_load_tests.sh                # Run Locust load tests
 ./scripts/test_integration_logging.sh      # Test integration logging
 
