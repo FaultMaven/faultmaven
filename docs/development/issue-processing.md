@@ -41,7 +41,11 @@ week were opened and ~22 closed. Five things the count was hiding, from the
 2. **The residue is mostly not defects.** Of the open set, 16 are decisions,
    11 features and 5 investigations against 15 defects. A lane picks defects,
    so the rest sit: a P2 issue's median time to close is 17 days, P3 is
-   effectively never, and 12 of 15 P3 issues are still open.
+   effectively never, and 12 of 15 P3 issues are still open. Triaging those
+   16 decisions against §2's escalation list put 9 of them genuinely with
+   the owner and 7 within an agent's reach, so kind-typing alone does not
+   drain the residue. Nine rulings do, and they are mostly one-line answers
+   rather than design passes.
 3. **The defects being found are old.** Median latency between the defective
    line's introduction and the issue is 144 days; 62% are over 90 days and
    only ~13% under a week, a share that has been stable month to month while
@@ -61,8 +65,13 @@ week were opened and ~22 closed. Five things the count was hiding, from the
    enumerate what it touched.
 
 Consequences for the procedure: the residue drains only if decisions get
-ruled and features get scheduled or closed, not by fixing defects faster; and
-the class is retired by recording N and checking it, not by fixing instances.
+ruled and features get scheduled or closed, not by fixing defects faster.
+Most of that ruling is the owner's and cannot be delegated away, so the
+procedure's job there is to make each ruling cheap — a memo with the options
+and a recommendation — and to keep the agent from queueing a decision it
+could have made and recorded itself. Whether recording N and checking it
+retires the duplicated-rule class is a separate and weaker claim; §4 states
+what would refute it.
 
 ## 1. The queue
 
