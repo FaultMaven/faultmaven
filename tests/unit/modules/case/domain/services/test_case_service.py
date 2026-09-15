@@ -355,132 +355,6 @@ class TestUpdateCase:
 
 
 # ============================================================
-# add_message_to_case
-# ============================================================
-
-
-class TestAddMessageToCase:
-    """Test message addition: deduplication, turn numbering, persistence."""
-
-    @pytest.mark.asyncio
-    async def test_adds_message_successfully(self, service, mock_repo):
-        case = _make_case(current_turn=0, messages=[])
-        mock_repo.get.return_value = case
-        msg = CaseMessage(
-            message_id="msg_test123",
-            case_id="case_abc123abc123",
-            turn_number=0,
-            role="user",
-            content="Help with my issue",
-            created_at=datetime.now(timezone.utc),
-        )
-        result = await service.add_message_to_case("case_abc123abc123", msg)
-        assert result is True
-        mock_repo.add_message.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_deduplicates_identical_messages(self, service, mock_repo):
-        existing_msg = {
-            "role": "user",
-            "content": "Help with my issue",
-        }
-        case = _make_case(current_turn=1, messages=[existing_msg])
-        mock_repo.get.return_value = case
-        msg = CaseMessage(
-            message_id="msg_test456",
-            case_id="case_abc123abc123",
-            turn_number=1,
-            role="user",
-            content="Help with my issue",
-            created_at=datetime.now(timezone.utc),
-        )
-        result = await service.add_message_to_case("case_abc123abc123", msg)
-        assert result is True
-        # Should NOT call add_message because it's a duplicate
-        mock_repo.add_message.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_identical_content_from_different_author_persists(
-        self, service, mock_repo
-    ):
-        """Dedup is per-principal: on a team-shared case, a second member
-        posting the same adjacent content ("still broken", "+1") is a real
-        turn, not a resubmission (#855)."""
-        existing_msg = {
-            "role": "user",
-            "content": "still broken",
-            "author_id": "user_alice",
-        }
-        case = _make_case(current_turn=1, messages=[existing_msg])
-        mock_repo.get.return_value = case
-        msg = CaseMessage(
-            message_id="msg_test457",
-            case_id="case_abc123abc123",
-            turn_number=1,
-            role="user",
-            content="still broken",
-            author_id="user_bob",
-            created_at=datetime.now(timezone.utc),
-        )
-        result = await service.add_message_to_case("case_abc123abc123", msg)
-        assert result is True
-        mock_repo.add_message.assert_awaited_once()
-        assert case.current_turn == 2  # a real turn increments
-
-    @pytest.mark.asyncio
-    async def test_identical_content_from_same_author_dedupes(self, service, mock_repo):
-        existing_msg = {
-            "role": "user",
-            "content": "still broken",
-            "author_id": "user_alice",
-        }
-        case = _make_case(current_turn=1, messages=[existing_msg])
-        mock_repo.get.return_value = case
-        msg = CaseMessage(
-            message_id="msg_test458",
-            case_id="case_abc123abc123",
-            turn_number=1,
-            role="user",
-            content="still broken",
-            author_id="user_alice",
-            created_at=datetime.now(timezone.utc),
-        )
-        result = await service.add_message_to_case("case_abc123abc123", msg)
-        assert result is True
-        mock_repo.add_message.assert_not_awaited()
-        assert case.current_turn == 1  # deduped turn does not increment
-
-    @pytest.mark.asyncio
-    async def test_increments_turn_for_user_message(self, service, mock_repo):
-        case = _make_case(current_turn=2, messages=[])
-        mock_repo.get.return_value = case
-        msg = CaseMessage(
-            message_id="msg_test789",
-            case_id="case_abc123abc123",
-            turn_number=0,
-            role="user",
-            content="New question",
-            created_at=datetime.now(timezone.utc),
-        )
-        await service.add_message_to_case("case_abc123abc123", msg)
-        assert case.current_turn == 3  # incremented from 2
-
-    @pytest.mark.asyncio
-    async def test_rejects_missing_case(self, service, mock_repo):
-        mock_repo.get.return_value = None
-        msg = CaseMessage(
-            message_id="msg_test000",
-            case_id="case_nonexistent1",
-            turn_number=0,
-            role="user",
-            content="Hello",
-            created_at=datetime.now(timezone.utc),
-        )
-        with pytest.raises(ValidationException, match="not found"):
-            await service.add_message_to_case("case_nonexistent1", msg)
-
-
-# ============================================================
 # get_or_create_case_for_session
 # ============================================================
 
@@ -958,20 +832,37 @@ class TestResumeCaseInSession:
         )
 
     @pytest.mark.asyncio
-    async def test_writes_no_conversation_row(self, service):
+    async def test_writes_no_conversation_row(self, service, mock_repo):
         """Repairing the broken write instead of removing it would post a
         ``role: "system"`` row, which both clients render as a NOTICE — so a
         session re-link would start putting chatter in the transcript that no
-        deployment has ever emitted. Nothing reads the event; the log records
-        it."""
-        service.link_session_to_case = AsyncMock(return_value=True)
-        service.add_message_to_case = AsyncMock(return_value=True)
+        deployment has ever emitted. Nothing reads the event; the log records it.
 
-        await service.resume_case_in_session(
+        Asserted on the REPOSITORY, which is the only thing that can persist a
+        row. This used to stub ``add_message_to_case`` and assert it was never
+        awaited; #1412 retired that method, so the stub set an attribute
+        nothing has and the assertion held vacuously.
+
+        Asserting on a wired-up ``Case`` instead would be just as vacuous, for
+        a second reason: this method never loads the case (it delegates to
+        ``link_session_to_case`` and returns), so a case handed to
+        ``mock_repo.get`` is unreachable from production code and comparing its
+        message list to a snapshot of itself can only ever hold.
+
+        Both repository writes are pinned, because a row can arrive by either:
+        ``add_message`` persists one directly, and ``save`` is what would
+        persist one appended to ``case.messages`` in memory. The resume
+        performs no repository write at all.
+        """
+        service.link_session_to_case = AsyncMock(return_value=True)
+
+        resumed = await service.resume_case_in_session(
             "case_abc123abc123", "sess_abc", "user_123"
         )
 
-        service.add_message_to_case.assert_not_awaited()
+        assert resumed is True  # the resume ran; not a swallowed failure
+        mock_repo.add_message.assert_not_awaited()
+        mock_repo.save.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_rejects_missing_ids(self, service):

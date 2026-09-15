@@ -1282,19 +1282,6 @@ class DIContainer(BaseDIContainer):
                 # Idempotent for a case that is already gone.
                 return True
 
-            async def get_case_messages(
-                self, case_id: str, limit: int = 50, offset: int = 0
-            ):
-                """Get messages for a case"""
-                if case_id not in self.case_messages:
-                    return []
-
-                messages = self.case_messages[case_id]
-                # Apply pagination
-                start = offset
-                end = start + limit
-                return messages[start:end]
-
             async def get_case_messages_enhanced(
                 self,
                 case_id: str,

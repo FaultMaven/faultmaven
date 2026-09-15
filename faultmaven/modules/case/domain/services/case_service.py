@@ -52,22 +52,21 @@ from faultmaven.utils.serialization import to_json_compatible
 logger = logging.getLogger(__name__)
 
 
-def _case_messages_from(
-    case: Case, rows: Optional[List[Dict[str, Any]]] = None
-) -> List[CaseMessage]:
+def _case_messages_from(case: Case, rows: List[Dict[str, Any]]) -> List[CaseMessage]:
     """Convert stored message dicts into ``CaseMessage`` objects.
 
-    Shared by ``get_case_messages`` and ``get_case_messages_enhanced`` so the
-    latter can load the case ONCE — it needs ``turn_history`` as well as the
-    rows, to label each row with its investigation turn (#1387), and reading
-    the case twice for the two halves of one answer is how the two come from
+    Takes the case as well as the rows because labelling each row with its
+    investigation turn needs ``turn_history`` (#1387), and the sole caller
+    (``get_case_messages_enhanced``) must therefore load the case ONCE —
+    reading it twice for the two halves of one answer is how the two come from
     different snapshots.
 
-    ``rows`` defaults to the whole case; pass a slice to convert only the page
-    a caller is about to return.
+    ``rows`` is the page to convert, and is required. It was optional while
+    this helper was shared with ``get_case_messages``, which passed the whole
+    case; #1412 retired that method, leaving one caller that always passes a
+    slice — so the default had become unreachable and is gone rather than left
+    as a second, untested way in.
     """
-    if rows is None:
-        rows = case.messages
     # Per case-storage-design.md Section 4.7, use "created_at"
     return [
         CaseMessage(
@@ -479,102 +478,6 @@ class CaseService(ICaseService):
         except Exception as e:
             logger.error(f"Failed to update case {case_id}: {e}")
             raise ServiceException(f"Case update failed: {str(e)}") from e
-
-    @trace("case_service_add_message")
-    async def add_message_to_case(
-        self, case_id: str, message: CaseMessage, session_id: Optional[str] = None
-    ) -> bool:
-        """
-        Add a message to a case conversation
-
-        Args:
-            case_id: Case identifier
-            message: Message to add
-            session_id: Optional session ID
-
-        Returns:
-            True if message was added successfully
-        """
-        if not case_id or not message:
-            raise ValidationException("Case ID and message are required")
-
-        try:
-            # Verify case exists
-            case = await self.repository.get(case_id)
-            if not case:
-                raise ValidationException(f"Case {case_id} not found")
-
-            # Ensure message belongs to this case
-            message.case_id = case_id
-
-            message_role = getattr(message, "role", "system")
-
-            # Deduplication: Check if identical to last message
-            # This fixes Issue 1: Duplicate Questions When Chat History is Reloaded
-            # A turn is a duplicate only if the SAME principal resubmits the same
-            # content — on team-shared cases two members can legitimately post
-            # identical adjacent turns ("still broken", "+1"), which must both
-            # persist (#855).
-            if case.messages and len(case.messages) > 0:
-                last_msg = case.messages[-1]
-                # Check for identical content, role, and author
-                if (
-                    last_msg.get("role") == message_role
-                    and last_msg.get("content") == message.content
-                    and last_msg.get("author_id") == message.author_id
-                ):
-                    logger.warning(
-                        f"Skipping duplicate message for case {case_id} (content hash match)",
-                        extra={"case_id": case_id, "message_id": message.message_id},
-                    )
-                    return True
-
-            # Increment turn number for new user messages
-            # This fixes Issue 3: Turn number for each turn is always 1
-            if message_role == "user":
-                case.current_turn += 1
-                # Persist the new turn number
-                # Note: We must save the case to persist the turn update before adding the message
-                await self.repository.save(case)
-
-            # Convert CaseMessage to dict format for storage (per case-storage-design.md spec)
-            message_dict = {
-                "message_id": message.message_id,
-                "case_id": case_id,
-                "author_id": message.author_id,
-                # `role` is the only kind a message has (#1397). There used to
-                # be a `message_type` beside it, derived defensively from
-                # `message.message_type` — an attribute `CaseMessage` has never
-                # declared, so every branch of that expression fell through to a
-                # default computed from `role` anyway. Two names for one fact,
-                # one of them written and never read, is what produced #1390's
-                # three call sites screening on the name the rows appeared to
-                # have.
-                "role": message_role,
-                "content": message.content,
-                "created_at": (
-                    message.created_at.isoformat()
-                    if hasattr(message.created_at, "isoformat")
-                    else str(message.created_at)
-                ),
-                "turn_number": case.current_turn,
-                "token_count": getattr(message, "token_count", None),
-                "metadata": message.metadata or {},
-            }
-
-            # Delegate to repository - it handles storage-specific logic
-            success = await self.repository.add_message(case_id, message_dict)
-
-            if success:
-                logger.debug(f"Added message to case {case_id}")
-
-            return success
-
-        except ValidationException:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to add message to case {case_id}: {e}")
-            return False
 
     @trace("case_service_get_or_create_case_for_session")
     async def get_or_create_case_for_session(
@@ -1550,47 +1453,6 @@ class CaseService(ICaseService):
     # Message and Query Management Methods
     # Following design principles: delegate to case_store, proper error handling, interface compliance
 
-    @trace("case_service_get_case_messages")
-    async def get_case_messages(
-        self, case_id: str, limit: int = 50, offset: int = 0
-    ) -> List[CaseMessage]:
-        """
-        Get messages for a case with pagination (FIXED IMPLEMENTATION)
-
-        Args:
-            case_id: Case identifier
-            limit: Maximum number of messages to return
-            offset: Offset for pagination
-
-        Returns:
-            List of case messages ordered by timestamp
-        """
-        if not case_id:
-            raise ValidationException("Case ID is required")
-
-        try:
-            # Get case from repository (messages are stored in Case.messages now)
-            case = await self.repository.get(case_id)
-            if not case:
-                raise ValidationException(f"Case {case_id} not found")
-
-            # DEBUG: Log case.messages length
-            logger.info(
-                f"Case {case_id} has {len(case.messages)} messages in case.messages array, message_count={case.message_count}"
-            )
-
-            # Convert dict messages to CaseMessage objects
-            case_messages = _case_messages_from(case)
-
-            # Log for observability
-            logger.debug(f"Retrieved {len(case_messages)} messages for case {case_id}")
-
-            return case_messages
-
-        except Exception as e:
-            logger.error(f"Failed to get messages for case {case_id}: {e}")
-            raise ServiceException(f"Failed to retrieve case messages: {str(e)}") from e
-
     @trace("case_service_count_user_cases")
     async def count_user_cases(
         self, user_id: str, filters: Optional[CaseListFilter] = None
@@ -1675,9 +1537,11 @@ class CaseService(ICaseService):
             # from the history — and two reads could return two snapshots.
             case = await self.repository.get(case_id)
             if not case:
-                # Same shape the previous ``get_case_messages`` call raised for
-                # a missing case: caught below and answered as an empty
-                # response, not a 500. Both routes 404 before reaching here.
+                # Caught below and answered as an EMPTY response, not a 500 —
+                # the shape this method has always had for a missing case, from
+                # when it delegated to a ``get_case_messages`` that raised the
+                # same thing (retired in #1412). Both routes 404 before
+                # reaching here, so it is defensive rather than reachable.
                 raise ServiceException(f"Case {case_id} not found")
 
             # Count from the stored rows and convert only the PAGE. Converting
