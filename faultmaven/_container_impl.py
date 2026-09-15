@@ -948,8 +948,20 @@ class DIContainer(BaseDIContainer):
                     user_id=final_user_id,
                     enterprise_id=final_enterprise_id,
                     organization_id=final_org_id,
-                    status=CaseState.INQUIRY,
+                    # `state`, the field `Case` declares. This said
+                    # `status=`, which `extra='ignore'` dropped: the INQUIRY it
+                    # appeared to set came from the field DEFAULT, so the kwarg
+                    # was decorative and a different value here would have been
+                    # discarded in silence. #1431's mechanism, inside the class
+                    # this branch sweeps.
+                    state=CaseState.INQUIRY,
                     message_count=message_count,
+                    # `current_turn` moves WITH `message_count`. It did not, so
+                    # a case created with an initial message sat at turn 0 —
+                    # and `include_empty=False`, which the repository applies as
+                    # `current_turn > 0`, hid a case that had content. The two
+                    # fields describe the same fact and must not disagree.
+                    current_turn=message_count,
                     # Mirrors CaseService: an unrecognised source falls back to
                     # "copilot" rather than being stored verbatim.
                     source=(
@@ -1022,7 +1034,7 @@ class DIContainer(BaseDIContainer):
                     for case in self.cases.values()
                     if case.current_session_id == session_id
                     and case.state in [CaseState.INQUIRY, CaseState.INVESTIGATING]
-                    and getattr(case, "message_count", 1) > 0
+                    and case.current_turn > 0
                 ]
 
             async def list_cases_by_session(self, session_id, limit=50, offset=0):
@@ -1088,13 +1100,21 @@ class DIContainer(BaseDIContainer):
                 # service excludes no terminal state at all. Same defect as the
                 # declared-and-never-applied filters, opposite sign.
                 if filters:
-                    if not getattr(filters, "include_empty", False):
-                        # Exclude empty cases (message_count == 0)
-                        # For MinimalCaseService, we'll consider all cases as having at least 1 message unless explicitly marked
+                    # `filters.include_empty`, not `getattr(..., False)`. The
+                    # declared default is **True**, so the getattr default
+                    # contradicted it: rename the field and `not False` becomes
+                    # true, and the stand-in starts dropping every empty case
+                    # with no error — which is the silence this whole branch is
+                    # about. Read the field; let a missing one raise.
+                    #
+                    # And the predicate is `current_turn`, not `message_count`.
+                    # The repository applies `current_turn > 0` and the route
+                    # publishes "Include cases with current_turn == 0", so a
+                    # stand-in keyed on `message_count` returned, in degraded
+                    # mode, a case the real service hides.
+                    if not filters.include_empty:
                         user_cases = [
-                            case
-                            for case in user_cases
-                            if getattr(case, "message_count", 1) > 0
+                            case for case in user_cases if case.current_turn > 0
                         ]
 
                     # Only the fields `CaseListFilter` DECLARES, reached
@@ -1115,9 +1135,7 @@ class DIContainer(BaseDIContainer):
                     # layer it lives in.
                     if filters.source:
                         user_cases = [
-                            case
-                            for case in user_cases
-                            if getattr(case, "source", None) == filters.source
+                            case for case in user_cases if case.source == filters.source
                         ]
                     # `team_id` resolves to NOTHING here, and that is the
                     # faithful mirror rather than a shortcut. The real service
@@ -1146,10 +1164,11 @@ class DIContainer(BaseDIContainer):
                 # case AND every empty one here, which is the #1431 defect once
                 # more with no filter object to blame it on.
 
-                # Extract pagination parameters from filters if available
-                if filters and hasattr(filters, "limit"):
+                # Declared fields, read directly — `hasattr` guards on
+                # `limit`/`offset` could only ever be True, and would have
+                # turned a rename into a silent fall-back to the defaults.
+                if filters:
                     limit = filters.limit
-                if filters and hasattr(filters, "offset"):
                     offset = filters.offset
 
                 # Total match count is computed BEFORE pagination so it agrees
@@ -1158,7 +1177,33 @@ class DIContainer(BaseDIContainer):
                 total = len(user_cases)
                 paginated_cases = user_cases[offset : offset + limit]
 
-                return paginated_cases, total
+                # `CaseSummary`, converted PER CASE and best-effort — what the
+                # real service returns and how it returns it. This handed back
+                # raw `Case` entities, and the route compensated with an
+                # UNGUARDED `CaseSummary.from_case(item)` inside a handler-wide
+                # `except Exception`: one case whose conversion failed turned
+                # `GET /cases` from "one case missing" into 500, no cases at
+                # all. That line was unreachable for terminal cases on this
+                # path until the previous commit stopped hiding them, so the
+                # blast radius grew exactly when the filter was fixed. The real
+                # service catches per case and continues; so does this.
+                from faultmaven.models.api_models import CaseSummary
+
+                summaries = []
+                for case in paginated_cases:
+                    try:
+                        summaries.append(CaseSummary.from_case(case))
+                    except Exception as exc:  # pragma: no cover - defensive
+                        # `logging.getLogger`, not a bare `logger`: this module
+                        # binds its logger inside functions, so a bare name here
+                        # would be a NameError on the one path that needs it.
+                        logging.getLogger(__name__).error(
+                            "Failed to convert case %s to summary: %s",
+                            getattr(case, "case_id", "<unknown>"),
+                            exc,
+                        )
+
+                return summaries, total
 
             async def list_all_cases(self, filters=None):
                 """List all in-memory cases as summaries (admin cross-tenant read; degraded double).
@@ -1181,14 +1226,13 @@ class DIContainer(BaseDIContainer):
                 if filters and filters.state:
                     all_cases = [c for c in all_cases if c.state == filters.state]
                 if filters and filters.source:
-                    all_cases = [
-                        c
-                        for c in all_cases
-                        if getattr(c, "source", None) == filters.source
-                    ]
+                    all_cases = [c for c in all_cases if c.source == filters.source]
                 total = len(all_cases)
-                limit = getattr(filters, "limit", 50) if filters else 50
-                offset = getattr(filters, "offset", 0) if filters else 0
+                # Declared fields read directly; the defaults belong to the
+                # no-filters case, not to a `getattr` fall-back that would
+                # survive the field being renamed away.
+                limit = filters.limit if filters else 50
+                offset = filters.offset if filters else 0
                 summaries = []
                 for case in all_cases[offset : offset + limit]:
                     try:
@@ -1198,62 +1242,32 @@ class DIContainer(BaseDIContainer):
                 return summaries, total
 
             async def count_user_cases(self, user_id: str, filters=None):
-                """Count cases for a user with filters - Phase 1: Mirror filtering from list_user_cases
+                """Count cases for a user — by ASKING list_user_cases, as the real service does.
 
-                ``user_id`` is REQUIRED, matching CaseService.count_user_cases:
-                a call that omitted it bound here and failed on the real service.
+                ``CaseService.count_user_cases`` is ``_, count = await
+                self.list_user_cases(user_id, filters)``. Agreement there is
+                STRUCTURAL: there is no second copy of the predicates to drift.
+
+                This was a hand-maintained duplicate of all six, and every
+                defect the duplicate ever had was one the original did not:
+                it selected on ``case.owner_id``, a field ``Case`` does not
+                declare, for the life of the product; and — the reason this is
+                a delegation now rather than another patch — it answered a
+                FALSY ``user_id`` by counting **every user's cases**, under a
+                comment reading "Return all cases if no user filter", while
+                ``list_user_cases`` twenty lines up raised
+                ``ValidationException`` for the same input and the docstring
+                here claimed ``user_id`` was "REQUIRED, matching
+                CaseService.count_user_cases". Measured before the change:
+                one case for alice and two for bob, and ``count_user_cases("")``
+                returned 3.
+
+                Delegating inherits the guard, the predicates and the
+                page/total contract at once, and leaves nothing to keep in step
+                by hand.
                 """
-                # `case.user_id`, the field `Case` actually declares — and
-                # the one `list_user_cases` selects on. This read
-                # `case.owner_id` and so raised `AttributeError` for any caller
-                # with at least one case; latent only because no route reaches
-                # here yet, and the parity this method is named for was
-                # asserted in prose and never executed.
-                if user_id:
-                    user_cases = [
-                        case for case in self.cases.values() if case.user_id == user_id
-                    ]
-                else:
-                    # Return all cases if no user filter
-                    user_cases = list(self.cases.values())
-
-                # Same filters as list_user_cases, and only those — the page
-                # and the count cannot disagree. The two `include_deleted` /
-                # `include_terminal` blocks went from both at once (#1431).
-                if filters:
-                    if not getattr(filters, "include_empty", False):
-                        # Exclude empty cases (message_count == 0)
-                        user_cases = [
-                            case
-                            for case in user_cases
-                            if getattr(case, "message_count", 1) > 0
-                        ]
-
-                    # The same fields list_user_cases applies, reached the
-                    # same way — see the comments there.
-                    if filters.state:
-                        user_cases = [
-                            case for case in user_cases if case.state == filters.state
-                        ]
-                    if filters.source:
-                        user_cases = [
-                            case
-                            for case in user_cases
-                            if getattr(case, "source", None) == filters.source
-                        ]
-                    if filters.team_id:
-                        return 0
-                    # Creation-date window `[created_after, created_before)`.
-                    # Honoured HERE too: every line of this stand-in runs in
-                    # production the moment the repository is missing, and a
-                    # bound it ignored would answer 200 with the UNFILTERED
-                    # list — the exact silence the date bounds were added to
-                    # end. Both `list_user_cases` and `count_user_cases` apply
-                    # it, so the page and the count cannot disagree.
-                    user_cases = _within_created_window(user_cases, filters)
-                # No `else` branch, matching list_user_cases above.
-
-                return len(user_cases)
+                _, total = await self.list_user_cases(user_id, filters)
+                return total
 
             async def hard_delete_case(self, case_id: str, user_id: str = None) -> bool:
                 """Permanently delete a case and all associated data (idempotent)"""

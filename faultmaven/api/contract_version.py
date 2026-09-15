@@ -71,6 +71,19 @@ asked to accept, and it belongs to a person.
 # history, and every statistic `/stats` published was likewise always zero. The
 # endpoints did not degrade; they never worked.
 #
+# THE ALWAYS-ZERO REPORTING DID NOT STOP AT `/stats`, and the sweep was not
+# finished until it did. `GET /sessions/{session_id}` published
+# `metadata.data_uploads_count` and `metadata.case_history_count`, and
+# `GET /sessions` the same pair per row — `len()` of the same never-appended
+# lists, so always 0, on two operations this change KEEPS. Removing `/stats`
+# for always-zero statistics while leaving those two would have left a client
+# the same wrong conclusion on an endpoint it has more reason to call. They are
+# gone, and no published schema moves with them: `SessionResponse.metadata` is
+# `Optional[Dict[str, Any]]` and the list route declares no `response_model`.
+# The dead `add_case_history` block went from `session_heartbeat` for the same
+# reason — the guard has always been False, and it was doing the work on the
+# busiest route on the router.
+#
 # WHY DELETE RATHER THAN RETURN 501, which #1425 offered as its third option.
 # 501 keeps a promise alive, so it is worth something only if the promise has a
 # referent. Session restoration has none. The nearest thing in the codebase is
@@ -130,6 +143,25 @@ asked to accept, and it belongs to a person.
 # Keeping one would mean choosing which of two identical bodies is canonical and
 # publishing an unauthenticated maintenance verb to justify the choice.
 #
+# WHAT REMOVING THEM EXPOSED, and it is not a regression this change caused.
+# `AuthSessionService.cleanup_expired_sessions` now has NO CALLER — the two
+# routes were the only ones. The method was kept rather than deleted with them,
+# because the missing caller is the actual defect: `SessionSettings`
+# declares `cleanup_interval_minutes` (default 15, bound to
+# `SESSION_CLEANUP_INTERVAL_MINUTES`) and **nothing in `faultmaven/` reads it**
+# — a documented, env-var-configurable cleanup interval that has never driven
+# anything. The deleted v2 route's own description asserted "In production,
+# this runs automatically every 30 minutes", which was false in two ways at
+# once. The project has the machinery (`infrastructure/tasks/case_cleanup.py`
+# runs a `BackgroundScheduler` for cases); it was never wired to sessions, and
+# `cleanup_inactive_sessions` beside it runs only from the lifespan SHUTDOWN.
+# Redis expiry covers the shipped configuration, which is why this is a gap
+# rather than an outage — a non-Redis store would never expire a session. The
+# scheduler is deliberately NOT built here: it is a behaviour change with its
+# own blast radius and belongs in its own change, and the method stays so that
+# change has something to call. This is the same defect class as the rest of
+# this entry, one level up: declared in configuration, accepted, never applied.
+#
 # THE CLIENT-FIRST STEP WAS ALREADY SATISFIED, and here is the evidence rather
 # than the assertion. `docs/development/api-contract-changes.md` orders a REMOVE
 # client-first, so all three client repositories were grepped for every removed
@@ -147,6 +179,27 @@ asked to accept, and it belongs to a person.
 #     playground stub and API tests mirror those two and nothing else.
 #   * faultmaven-slack-agent makes no session call. `SessionRestoreRequest`
 #     exists in its `api_generated.py` and nowhere else.
+#
+# WHAT THIS EVIDENCE IS NOT, stated deliberately rather than left implied.
+# `docs/development/api-contract-changes.md` sets a higher bar for a REMOVE
+# than a grep: "Count arrivals of the old form — a Prometheus counter on
+# requests in the legacy shape — and contract when it reads zero across a full
+# deploy cycle of every client. 'Nobody should still be using it' is not
+# evidence." That was NOT done here, and the gap is widest exactly where it
+# matters: FOUR of the five removed operations were unauthenticated
+# (`restore`, `recovery-info`, `stats`, `cleanup`), so their plausible callers
+# — an operator's cron, a monitoring probe, anything a self-hosted admin wired
+# to a published maintenance verb — are precisely the population a grep of
+# three first-party repositories cannot see.
+#
+# The judgement is that measurement would not change the answer, because the
+# thing being measured cannot work: `restore` mutates nothing, `stats` and the
+# `items_restored` count read lists that are always empty, `recovery-info`
+# returns literals, and `cleanup` deletes what Redis has already evicted. A
+# counter proving somebody calls `/restore` would establish that they are being
+# lied to more often, not that the endpoint should stay. That is the argument
+# for removing without instrumenting, and it is recorded here so a reader can
+# disagree with the reasoning rather than discover the rule was skipped.
 #
 # So each client's adoption PR is a regeneration: five path entries and one
 # schema leave the typed surface, and no hand-written line changes. Both

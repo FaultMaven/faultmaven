@@ -111,19 +111,27 @@ async def one_of_each_source(service):
 
 
 async def _titles(service, filters):
-    """The page, its total, AND the count — the three must describe one set.
+    """The page, its total, AND the count — all three, agreeing.
 
-    ``count_user_cases`` is CALLED, not merely named. It carries the same
-    filtering as ``list_user_cases`` and is documented as its pair, and the
-    only reason a selector on a field ``Case`` does not have could sit in it
-    unnoticed is that nothing ever ran it.
+    ``count_user_cases`` is CALLED, not merely named: it is documented as
+    ``list_user_cases``'s pair, and the only reason a selector on a field
+    ``Case`` does not have could sit in it unnoticed is that nothing ran it.
+
+    The total is compared against ``len(page)``, NOT against the size of the
+    title SET. A set de-duplicates, and the page-versus-total distinction is
+    the very thing this code is about — ``create_case`` defaults the title to
+    "New Chat", so two untitled cases would have collapsed to one and failed a
+    CORRECT implementation. The equality only holds while the page is not
+    truncated, which every fixture here ensures (≤4 cases against a limit of
+    50); the case where they genuinely differ has its own test below, because
+    an assertion that can never see ``total > limit`` is not testing
+    pagination.
     """
     page, total = await service.list_user_cases(OWNER, filters)
-    titles = {c.title for c in page}
-    assert total == len(titles), "the page and its total must describe one set"
+    assert total == len(page), "unpaginated: the page and its total agree"
     counted = await service.count_user_cases(OWNER, filters)
     assert counted == total, "count_user_cases must agree with list_user_cases"
-    return titles
+    return {c.title for c in page}
 
 
 @pytest.mark.asyncio
@@ -255,17 +263,189 @@ async def test_undeclared_filter_fields_are_not_consulted(service, one_of_each_s
     absence rather than the blocks: if either is ever added to
     ``CaseListFilter``, this fails and someone decides deliberately whether the
     stand-in should honour it.
+
+    It does NOT pin the field set as a whole. An equality assertion here would
+    fail on every future field, under a docstring promising to guard two
+    names — a test that goes red for a reason it does not describe teaches
+    people to edit the assertion without reading it.
     """
     declared = set(CaseListFilter.model_fields)
     assert "priority" not in declared
     assert "owner_id" not in declared
-    assert declared == {
-        "state",
-        "source",
-        "team_id",
-        "created_after",
-        "created_before",
-        "limit",
-        "offset",
-        "include_empty",
+
+
+@pytest.mark.asyncio
+async def test_a_falsy_user_id_is_refused_by_both_methods(service, one_of_each_state):
+    """Neither listing counts cases the caller did not ask for.
+
+    ``count_user_cases`` answered a falsy ``user_id`` by counting EVERY user's
+    cases — ``user_cases = list(self.cases.values())``, under a comment reading
+    "Return all cases if no user filter" — while ``list_user_cases`` in the
+    same class raised for the same input, and the real
+    ``CaseService.count_user_cases`` raises ``ValidationException("User ID is
+    required")``. Measured before the fix: one case for alice and two for bob,
+    and ``count_user_cases("")`` returned 3.
+
+    That survived a commit dedicated to the parity of these two methods
+    because no test ever passed a falsy id. This one does.
+    """
+    from faultmaven.exceptions import ValidationException
+
+    other = await service.create_case(title="someone-else", owner_id="other_user")
+    assert other.user_id != OWNER
+
+    for falsy in ("", None):
+        with pytest.raises(ValidationException):
+            await service.count_user_cases(falsy, CaseListFilter())
+        with pytest.raises(ValidationException):
+            await service.list_user_cases(falsy, CaseListFilter())
+
+    # And the owner's own count still excludes the other user's case.
+    assert await service.count_user_cases(OWNER, CaseListFilter()) == 4
+
+
+@pytest.mark.asyncio
+async def test_the_total_is_the_match_count_not_the_page_length(service):
+    """``total`` counts every match; the page is one slice of them.
+
+    The two are equal in every other test here because no fixture makes more
+    cases than the limit — so an assertion comparing them could not, on its
+    own, tell a true total from ``len(page)``. This drives a limit below the
+    match count so they genuinely differ, and checks that
+    ``count_user_cases`` reports the TOTAL rather than the page.
+    """
+    set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
+    set_current_billing_organization_id(None)
+    for i in range(5):
+        await service.create_case(title=f"case-{i}", owner_id=OWNER)
+
+    page, total = await service.list_user_cases(OWNER, CaseListFilter(limit=2))
+    assert len(page) == 2
+    assert total == 5, "the total is every match, not the page"
+    assert await service.count_user_cases(OWNER, CaseListFilter(limit=2)) == 5
+
+    second, total = await service.list_user_cases(
+        OWNER, CaseListFilter(limit=2, offset=2)
+    )
+    assert len(second) == 2 and total == 5
+    assert {c.case_id for c in page}.isdisjoint({c.case_id for c in second})
+
+    tail, total = await service.list_user_cases(
+        OWNER, CaseListFilter(limit=2, offset=4)
+    )
+    assert len(tail) == 1 and total == 5
+
+
+@pytest.mark.asyncio
+async def test_the_page_is_summaries_converted_one_by_one(service, one_of_each_state):
+    """``list_user_cases`` returns ``CaseSummary``, as the real service does.
+
+    It returned raw ``Case`` entities, and the route compensated with an
+    UNGUARDED ``CaseSummary.from_case(item)`` inside a handler-wide
+    ``except Exception`` — so one case whose conversion failed turned
+    ``GET /cases`` from "one case missing" into a 500 with no cases at all.
+    """
+    from faultmaven.models.api_models import CaseSummary
+
+    page, _ = await service.list_user_cases(OWNER, CaseListFilter())
+    assert page and all(isinstance(c, CaseSummary) for c in page)
+
+
+@pytest.mark.asyncio
+async def test_include_empty_keys_on_current_turn(service):
+    """``include_empty`` means ``current_turn > 0`` — the repository's predicate.
+
+    The stand-in keyed on ``message_count`` while the repository applies
+    ``current_turn > 0`` and the route publishes "Include cases with
+    current_turn == 0", so degraded mode returned a case the real service
+    hides. ``create_case`` also left ``current_turn`` at 0 for a case it had
+    given a message, so the two fields disagreed about the same fact.
+    """
+    set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
+    set_current_billing_organization_id(None)
+    empty = await service.create_case(title="no-message", owner_id=OWNER)
+    spoken = await service.create_case(
+        title="has-message", owner_id=OWNER, initial_message="hello"
+    )
+
+    assert empty.current_turn == 0 and empty.message_count == 0
+    assert spoken.current_turn == 1 and spoken.message_count == 1
+
+    assert await _titles(service, CaseListFilter(include_empty=False)) == {
+        "has-message"
     }
+    assert await _titles(service, CaseListFilter()) == {"no-message", "has-message"}
+
+    # Now make the two fields DISAGREE, which is the only way to see which one
+    # the predicate reads. `create_case` keeps them in step, so while it does,
+    # keying on either gives the same answer and a test built only on cases it
+    # made cannot tell them apart — the mutation that swapped the predicate
+    # back to `message_count` passed until this case existed.
+    object.__setattr__(empty, "message_count", 7)  # busy by the wrong measure
+    assert empty.current_turn == 0  # ...and still empty by the right one
+    assert await _titles(service, CaseListFilter(include_empty=False)) == {
+        "has-message"
+    }, "include_empty must follow current_turn, not message_count"
+
+
+@pytest.mark.asyncio
+async def test_create_case_sets_the_state_field_that_exists(service):
+    """``state=``, not ``status=``.
+
+    ``Case`` declares no ``status``, so ``extra='ignore'`` dropped the kwarg
+    and the INQUIRY that appeared to come from it came from the field default
+    — #1431's mechanism inside the class this file guards. Pinned by asking
+    the model, so it fails if ``status`` is ever reintroduced as an alias.
+    """
+    from faultmaven.modules.case.domain.models import Case
+
+    assert "status" not in Case.model_fields
+    assert "state" in Case.model_fields
+
+    # The trap itself, executable: an undeclared `status=` is DROPPED, and the
+    # value that survives is the field default. That is why passing
+    # `status=CaseState.INQUIRY` looked correct — it agreed with the default by
+    # luck. A different value would have vanished.
+    planted = Case(
+        case_id="case_aaaaaaaaaaaa",
+        title="t",
+        user_id="u",
+        enterprise_id=STANDALONE_ENTERPRISE_ID,
+        status=CaseState.RESOLVED,
+    )
+    assert (
+        planted.state is CaseState.INQUIRY
+    ), "`status=` is inert on Case; anything passing it is setting nothing"
+
+    set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
+    set_current_billing_organization_id(None)
+    case = await service.create_case(title="fresh", owner_id=OWNER)
+    assert case.state is CaseState.INQUIRY
+
+
+@pytest.mark.asyncio
+async def test_a_filter_missing_a_declared_field_raises(service, one_of_each_state):
+    """The stand-in reads declared fields directly, so a missing one is an error.
+
+    This is the rule the surrounding commits state — "a field that stops
+    existing becomes an error instead of a silent no-op" — made executable.
+    The reads were ``getattr(filters, "include_empty", False)`` against a
+    field whose declared default is **True**, so renaming the field would have
+    flipped the default and started dropping every empty case with no error at
+    all: the exact silence this file exists to end. A `getattr` default that
+    contradicts the declared one is worse than no default.
+    """
+    from types import SimpleNamespace
+
+    # Everything `list_user_cases` reads, except `include_empty`.
+    crippled = SimpleNamespace(
+        state=None,
+        source=None,
+        team_id=None,
+        created_after=None,
+        created_before=None,
+        limit=50,
+        offset=0,
+    )
+    with pytest.raises(AttributeError):
+        await service.list_user_cases(OWNER, crippled)

@@ -443,10 +443,14 @@ async def get_session(
             user_id=session.user_id,
             status=AuthSessionStatus.ACTIVE,
             created_at=_safe_datetime_to_utc_string(session.created_at),
+            # `last_activity` only. `data_uploads_count` and
+            # `case_history_count` counted lists NOTHING EVER APPENDS TO, so
+            # both were always 0 — the same always-zero reporting `/stats` was
+            # deleted for, on an endpoint that survives. A client reading
+            # `metadata.case_history_count` draws exactly the conclusion the
+            # removal was meant to stop it drawing.
             metadata={
                 "last_activity": _safe_datetime_to_utc_string(session.last_activity),
-                "data_uploads_count": len(session.data_uploads),
-                "case_history_count": len(session.case_history),
             },
         )
     except HTTPException:
@@ -558,8 +562,8 @@ async def list_sessions(
                     ),
                     "status": "inquiry",
                     "session_type": session_type_val,
-                    "data_uploads_count": len(session.data_uploads),
-                    "case_history_count": len(session.case_history),
+                    # The same two always-zero counters as the single-session
+                    # read above, removed for the same reason.
                 }
             )
 
@@ -680,26 +684,13 @@ async def session_heartbeat(
             _log_session_not_found_rate_limited(session_id)
             raise HTTPException(status_code=404, detail="Session not found or expired")
 
-        # Record heartbeat operation in session history (best effort)
-        heartbeat_record = {
-            "action": "heartbeat",
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
-            "endpoint": "heartbeat",
-        }
-
-        try:
-            # Check if session_manager has a real add_case_history method
-            if hasattr(session_service, "session_manager") and hasattr(
-                session_service.session_manager, "add_case_history"
-            ):
-                await session_service.session_manager.add_case_history(
-                    session_id, heartbeat_record
-                )
-        except Exception as e:
-            # Log warning but don't fail the heartbeat if case history fails
-            logger.warning(
-                f"Failed to record heartbeat operation for {session_id}: {e}"
-            )
+        # No heartbeat "history record" is built here any more. It assembled a
+        # dict with a `datetime.now()` + `to_json_compatible` round trip and
+        # handed it to `session_manager.add_case_history` — a method that does
+        # not exist anywhere in this repository, so the `hasattr` guard has
+        # always been False and the record has always been discarded. The
+        # identical block went with `/stats`; this is its twin, on the
+        # highest-frequency route on the router.
 
         # Get updated session to return current last_activity (best effort)
         last_activity = to_json_compatible(datetime.now(timezone.utc))  # fallback
