@@ -73,9 +73,16 @@ def _build_app(redis_client=None):
         route_calls["boom"] += 1
         raise RuntimeError("route exploded")
 
-    @app.post("/api/v1/cases/sessions/{session_id}/case")
-    async def case_from_session(session_id: str, force_new: bool = False):
-        """Mirrors the real route whose behaviour is selected by the query."""
+    @app.post("/api/v1/cases/sessions/{session_id}/resume/{case_id}")
+    async def case_from_session(session_id: str, case_id: str, force_new: bool = False):
+        """A session-shaped case route that is NOT the mint.
+
+        The PATH is real — it is what the substring trap below would
+        over-catch. The ``force_new`` query is synthetic: the real route takes
+        none, and one is needed here to drive the cache-key splitting. It stood
+        at ``/cases/sessions/{id}/case`` until contract 6.0.0 removed that
+        route.
+        """
         route_calls["case_from_session"] += 1
         return {"session_id": session_id, "force_new": force_new}
 
@@ -547,10 +554,14 @@ async def test_query_string_splits_the_bucket():
 
     async with _client(app) as client:
         forced = await client.post(
-            "/api/v1/cases/sessions/s-1/case?force_new=true", headers=headers, json={}
+            "/api/v1/cases/sessions/s-1/resume/c-1?force_new=true",
+            headers=headers,
+            json={},
         )
         not_forced = await client.post(
-            "/api/v1/cases/sessions/s-1/case?force_new=false", headers=headers, json={}
+            "/api/v1/cases/sessions/s-1/resume/c-1?force_new=false",
+            headers=headers,
+            json={},
         )
 
     assert forced.json()["force_new"] is True
@@ -658,7 +669,7 @@ async def test_same_query_still_replays():
     """Splitting on the query must not break retries of the same request."""
     app, _ = _build_app()
     headers = {"Authorization": VICTIM, "Idempotency-Key": KEY}
-    url = "/api/v1/cases/sessions/s-1/case?force_new=true"
+    url = "/api/v1/cases/sessions/s-1/resume/c-1?force_new=true"
 
     async with _client(app) as client:
         first = await client.post(url, headers=headers, json={})
@@ -717,8 +728,8 @@ async def test_session_mint_exclusion_survives_a_trailing_slash():
 async def test_case_session_routes_are_not_excluded():
     """The exclusion must be exact: a '/sessions' substring over-excludes.
 
-    ``/api/v1/cases/sessions/{sid}/case`` contains '/sessions' but is an
-    ordinary idempotent route. A substring marker would silently disable
+    ``/api/v1/cases/sessions/{sid}/resume/{cid}`` contains '/sessions' but is
+    an ordinary idempotent route. A substring marker would silently disable
     idempotency on it — including on the query-scoping behaviour above.
     """
     app, _ = _build_app()
@@ -726,10 +737,10 @@ async def test_case_session_routes_are_not_excluded():
 
     async with _client(app) as client:
         first = await client.post(
-            "/api/v1/cases/sessions/s-1/case", headers=headers, json={}
+            "/api/v1/cases/sessions/s-1/resume/c-1", headers=headers, json={}
         )
         retry = await client.post(
-            "/api/v1/cases/sessions/s-1/case", headers=headers, json={}
+            "/api/v1/cases/sessions/s-1/resume/c-1", headers=headers, json={}
         )
 
     assert not _replayed(first)
@@ -750,7 +761,7 @@ def test_exclusion_predicate_normalises_the_trailing_slash():
     assert middleware._is_excluded_path("/api/v1/sessions")
     assert middleware._is_excluded_path("/api/v1/sessions/")
     assert not middleware._is_excluded_path("/api/v1/sessions/search")
-    assert not middleware._is_excluded_path("/api/v1/cases/sessions/s-1/case")
+    assert not middleware._is_excluded_path("/api/v1/cases/sessions/s-1/resume/c-1")
 
 
 def test_exclusions_do_not_over_catch_any_real_post_route():
@@ -759,7 +770,7 @@ def test_exclusions_do_not_over_catch_any_real_post_route():
     An exclusion is a silent disabling of idempotency, so it must be shown
     against the real route table rather than against hand-written paths. The
     tempting ``/sessions`` substring marker catches every POST route whose path
-    merely contains the word — ten of them at the time of writing, only one of
+    merely contains the word — nine of them at the time of writing, only one of
     which is the session mint.
 
     Enumerated through ``route_policy._post_route_paths`` rather than by walking
@@ -796,11 +807,12 @@ def test_exclusions_do_not_over_catch_any_real_post_route():
     # against a non-trivial set rather than against one route; it is not a
     # count of the surface, and it must not turn red every time a session-
     # shaped route is added or removed. Contract 5.0.0 took it from twelve to
-    # ten (`POST /sessions/cleanup` and `POST /sessions/{id}/restore`), and a
-    # threshold of `> 10` made that removal look like a broken route table.
+    # ten (`POST /sessions/cleanup` and `POST /sessions/{id}/restore`) and
+    # 6.0.0 to nine (`POST /cases/sessions/{id}/case`), and a threshold of
+    # `> 10` made the first of those look like a broken route table.
     assert len(session_shaped) > 5, "expected many session-shaped POST routes"
     assert session_shaped - excluded == session_shaped - {"/api/v1/sessions"}
-    assert "/api/v1/cases/sessions/{session_id}/case" not in excluded
+    assert "/api/v1/cases/sessions/{session_id}/resume/{case_id}" not in excluded
 
 
 @pytest.mark.parametrize("with_key", [True, False], ids=["with-key", "without-key"])

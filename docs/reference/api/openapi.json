@@ -1264,7 +1264,7 @@
                 "type": "null"
               }
             ],
-            "description": "Session ID for authentication and case association (restored from old implementation)",
+            "description": "The caller's OWN session, to associate the new case with. It is NOT how this request is authenticated \u2014 the bearer token is, and a session id naming a session that is not the bearer's is refused (401 SESSION_EXPIRED, the same answer as an expired one, so the two cannot be told apart). The description said 'for authentication' until contract 6.0.0, which is the confusion that PR removed.",
             "title": "Session Id"
           },
           "title": {
@@ -6753,7 +6753,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "5.0.0"
+    "version": "6.0.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -9443,81 +9443,6 @@
           }
         ],
         "summary": "Search Cases",
-        "tags": [
-          "cases"
-        ]
-      }
-    },
-    "/api/v1/cases/sessions/{session_id}/case": {
-      "post": {
-        "description": "Create or get case for a session\n\nAssociates a case with the given session. If no case exists, creates a new one.\nIf force_new is true, always creates a new case.\n\n**Title Auto-Generation**: If title is not provided or empty, the backend\nautomatically generates a unique title in the format: Case-YYMMDD-N\n(e.g., Case-261028-1, Case-261028-2). The sequence counter resets daily.",
-        "operationId": "create_case_for_session_api_v1_cases_sessions__session_id__case_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "session_id",
-            "required": true,
-            "schema": {
-              "title": "Session Id",
-              "type": "string"
-            }
-          },
-          {
-            "description": "Case title (optional, auto-generated if not provided)",
-            "in": "query",
-            "name": "title",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Case title (optional, auto-generated if not provided)",
-              "title": "Title"
-            }
-          },
-          {
-            "description": "Force creation of new case",
-            "in": "query",
-            "name": "force_new",
-            "required": false,
-            "schema": {
-              "default": false,
-              "description": "Force creation of new case",
-              "title": "Force New",
-              "type": "boolean"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Create Case For Session Api V1 Cases Sessions  Session Id  Case Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Create Case For Session",
         "tags": [
           "cases"
         ]
@@ -13840,26 +13765,8 @@
         ]
       },
       "post": {
-        "description": "Create or resume a troubleshooting session.\n\n**Session Creation & Resumption:**\n- If `client_id` is provided and matches an active session, that session is resumed\n- If `client_id` matches an expired session, returns 404/410 error (frontend creates new session)\n- If `client_id` is new or not provided, creates fresh session\n\n**User ID Resolution:**\n- Priority 1: `user_id` query parameter (explicit override)\n- Priority 2: Authenticated user from JWT token (prevents anonymous session creation)\n- Priority 3: Auto-generated anonymous user (development/unauthenticated only)\n\n**Session Timeout:**\n- Sessions automatically expire after `timeout_minutes` of inactivity\n- Default timeout: 180 minutes (3 hours)\n- Min timeout: 60 minutes, Max timeout: 480 minutes\n- Expired sessions cannot be resumed and return 404/410 errors\n\n**Frontend Crash Recovery:**\n- Browser crashes: Session resumes if within timeout window\n- Extended downtime: Session expires, new session created automatically\n\nArgs:\n    request: Session creation parameters including optional client_id and timeout\n    user_id: Optional user identifier (query param)\n    current_user: Optional authenticated user from JWT token\n\nReturns:\n    Session creation/resumption response with expiration information",
+        "description": "Create or resume a troubleshooting session.\n\n**Session Creation & Resumption:**\n- If `client_id` is provided and matches an active session, that session is resumed\n- If `client_id` matches an expired session, returns 404/410 error (frontend creates new session)\n- If `client_id` is new or not provided, creates fresh session\n\n**User ID Resolution:**\n- Authenticated user from the JWT token, when one is presented\n- Auto-generated anonymous user otherwise (development/unauthenticated only)\n\nThe identity minted is the server's answer, never the caller's. A request\ncannot name the user its session is bound to; see the note on the\nresolution below.\n\n**Session Timeout:**\n- Sessions automatically expire after `timeout_minutes` of inactivity\n- Default timeout: 180 minutes (3 hours)\n- Min timeout: 60 minutes, Max timeout: 480 minutes\n- Expired sessions cannot be resumed and return 404/410 errors\n\n**Frontend Crash Recovery:**\n- Browser crashes: Session resumes if within timeout window\n- Extended downtime: Session expires, new session created automatically\n\nArgs:\n    request: Session creation parameters including optional client_id and timeout\n    current_user: Optional authenticated user from JWT token\n\nReturns:\n    Session creation/resumption response with expiration information",
         "operationId": "create_session_api_v1_sessions_post",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "user_id",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "User Id"
-            }
-          }
-        ],
         "requestBody": {
           "content": {
             "application/json": {

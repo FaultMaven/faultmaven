@@ -6,7 +6,7 @@ service did not accept it, so every validating caller raised
 
     TypeError: AuthSessionService.get_session() got an unexpected keyword argument 'validate'
 
-which surfaced as an unconditional HTTP 500 on
+which surfaced as an unconditional HTTP 500 on the since-removed
 `POST /api/v1/cases/sessions/{session_id}/case`, and as a silently swallowed
 fallback in the heartbeat endpoint.
 
@@ -207,26 +207,6 @@ async def test_validate_session_still_enforces_expiry(expired_session):
 
     assert await service.validate_session("sess-1") is False
     assert store.delete_calls == ["sess-1"]
-
-
-@pytest.mark.unit
-@pytest.mark.session
-async def test_get_user_from_session_still_enforces_expiry(expired_session):
-    """get_user_from_session() must not hand out a user_id from an expired session."""
-    store = InMemorySessionStore(expired_session)
-    service = AuthSessionService(session_store=store)
-
-    assert await service.get_user_from_session("sess-1") is None
-    assert store.delete_calls == ["sess-1"]
-
-
-@pytest.mark.unit
-@pytest.mark.session
-async def test_get_user_from_session_returns_user_for_live_session(live_session):
-    store = InMemorySessionStore(live_session)
-    service = AuthSessionService(session_store=store)
-
-    assert await service.get_user_from_session("sess-1") == "user-1"
 
 
 # ============================================================

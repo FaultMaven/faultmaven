@@ -221,19 +221,6 @@ class AuthSessionService:
         session = await self.get_session(session_id)
         return session is not None
 
-    @trace("session_service_get_user_from_session")
-    async def get_user_from_session(self, session_id: str) -> Optional[str]:
-        """Get user_id from session for authorization (spec line 421)
-
-        Args:
-            session_id: Session identifier
-
-        Returns:
-            user_id if session is valid, None otherwise
-        """
-        session = await self.get_session(session_id)
-        return session.user_id if session else None
-
     @trace("session_service_update_session")
     async def update_session(
         self,
