@@ -1078,25 +1078,16 @@ class DIContainer(BaseDIContainer):
                     case for case in self.cases.values() if case.user_id == user_id
                 ]
 
-                # Phase 1: Apply core filtering - exclude deleted/archived/empty by default
+                # Only the filters `CaseListFilter` actually declares, because
+                # the stand-in must answer what `CaseService.list_user_cases`
+                # answers. Two `getattr(filters, "include_deleted"/
+                # "include_terminal", False)` blocks used to sit here (#1431):
+                # `CaseListFilter` declares neither field, so both defaults
+                # always fired and this path DROPPED every RESOLVED and CLOSED
+                # case — a filter applied that nobody requested, while the real
+                # service excludes no terminal state at all. Same defect as the
+                # declared-and-never-applied filters, opposite sign.
                 if filters:
-                    # Phase 1: Default filtering behavior (exclude terminal cases)
-                    if not getattr(filters, "include_deleted", False):
-                        # Exclude closed cases
-                        user_cases = [
-                            case
-                            for case in user_cases
-                            if case.state != CaseState.CLOSED
-                        ]
-
-                    if not getattr(filters, "include_terminal", False):
-                        # Exclude terminal cases (resolved and closed)
-                        user_cases = [
-                            case
-                            for case in user_cases
-                            if case.state not in [CaseState.RESOLVED, CaseState.CLOSED]
-                        ]
-
                     if not getattr(filters, "include_empty", False):
                         # Exclude empty cases (message_count == 0)
                         # For MinimalCaseService, we'll consider all cases as having at least 1 message unless explicitly marked
@@ -1106,23 +1097,40 @@ class DIContainer(BaseDIContainer):
                             if getattr(case, "message_count", 1) > 0
                         ]
 
-                    # Apply other existing filters
-                    if hasattr(filters, "state") and filters.state:
+                    # Only the fields `CaseListFilter` DECLARES, reached
+                    # directly. The `hasattr(filters, "priority")` and
+                    # `hasattr(filters, "owner_id")` blocks that sat here named
+                    # fields the model does not have, so neither could ever
+                    # fire — and four filter blocks in a row is exactly what
+                    # made the MISSING one below easy to miss.
+                    if filters.state:
                         user_cases = [
                             case for case in user_cases if case.state == filters.state
                         ]
-                    if hasattr(filters, "priority") and filters.priority:
+                    # `source`, for the same reason as the date window below:
+                    # the real service forwards `filters.source` to
+                    # `repository.list`, and a stand-in that dropped it answered
+                    # `GET /cases?source=slack` with 200 and EVERY case — the
+                    # #1424 defect one layer up, in the code that replaces the
+                    # layer it lives in.
+                    if filters.source:
                         user_cases = [
                             case
                             for case in user_cases
-                            if case.priority == filters.priority
+                            if getattr(case, "source", None) == filters.source
                         ]
-                    if hasattr(filters, "owner_id") and filters.owner_id:
-                        user_cases = [
-                            case
-                            for case in user_cases
-                            if case.owner_id == filters.owner_id
-                        ]
+                    # `team_id` resolves to NOTHING here, and that is the
+                    # faithful mirror rather than a shortcut. The real service
+                    # turns a team filter into an allowlist of shared case ids
+                    # and short-circuits `return [], 0` when it resolves empty;
+                    # this stand-in cannot consult that allowlist, because
+                    # `resource_shares` lives in the repository it is standing
+                    # in for — so in this mode no share can exist to match, and
+                    # the empty page is the honest answer. Returning the
+                    # caller's OWN cases instead is a filter accepted and
+                    # applied to nothing.
+                    if filters.team_id:
+                        return [], 0
                     # Creation-date window `[created_after, created_before)`.
                     # Honoured HERE too: every line of this stand-in runs in
                     # production the moment the repository is missing, and a
@@ -1131,20 +1139,12 @@ class DIContainer(BaseDIContainer):
                     # end. Both `list_user_cases` and `count_user_cases` apply
                     # it, so the page and the count cannot disagree.
                     user_cases = _within_created_window(user_cases, filters)
-                else:
-                    # Phase 1: No filters provided - apply default exclusions
-                    # Only show active (non-terminal) cases by default
-                    user_cases = [
-                        case
-                        for case in user_cases
-                        if case.state in [CaseState.INQUIRY, CaseState.INVESTIGATING]
-                    ]
-                    # Exclude empty cases by default
-                    user_cases = [
-                        case
-                        for case in user_cases
-                        if getattr(case, "message_count", 1) > 0
-                    ]
+                # No `else` branch: with no filters `CaseService.list_user_cases`
+                # narrows on nothing (state=None, source=None, team=None,
+                # include_empty=True — `CaseListFilter`'s own default), so the
+                # stand-in must not either. It used to exclude every terminal
+                # case AND every empty one here, which is the #1431 defect once
+                # more with no filter object to blame it on.
 
                 # Extract pagination parameters from filters if available
                 if filters and hasattr(filters, "limit"):
@@ -1170,8 +1170,22 @@ class DIContainer(BaseDIContainer):
                 from faultmaven.models.api_models import CaseSummary
 
                 all_cases = list(self.cases.values())
-                if filters and getattr(filters, "state", None):
+                # `state` AND `source` — the two `CaseService.list_all_cases`
+                # forwards to the repository. `GET /api/v1/admin/cases`
+                # declares `source` and builds the filter with it, so a
+                # stand-in reading only `state` answered an operator's
+                # source-filtered cross-tenant list with every case.
+                # `include_empty` stays unhonoured, deliberately and for the
+                # reason the real method gives in its own docstring: filtering
+                # after pagination would make the page and `total` disagree.
+                if filters and filters.state:
                     all_cases = [c for c in all_cases if c.state == filters.state]
+                if filters and filters.source:
+                    all_cases = [
+                        c
+                        for c in all_cases
+                        if getattr(c, "source", None) == filters.source
+                    ]
                 total = len(all_cases)
                 limit = getattr(filters, "limit", 50) if filters else 50
                 offset = getattr(filters, "offset", 0) if filters else 0
@@ -1189,34 +1203,24 @@ class DIContainer(BaseDIContainer):
                 ``user_id`` is REQUIRED, matching CaseService.count_user_cases:
                 a call that omitted it bound here and failed on the real service.
                 """
-                # Filter cases by user_id if provided
+                # `case.user_id`, the field `Case` actually declares — and
+                # the one `list_user_cases` selects on. This read
+                # `case.owner_id` and so raised `AttributeError` for any caller
+                # with at least one case; latent only because no route reaches
+                # here yet, and the parity this method is named for was
+                # asserted in prose and never executed.
                 if user_id:
                     user_cases = [
-                        case for case in self.cases.values() if case.owner_id == user_id
+                        case for case in self.cases.values() if case.user_id == user_id
                     ]
                 else:
                     # Return all cases if no user filter
                     user_cases = list(self.cases.values())
 
-                # Phase 1: Apply same core filtering as list_user_cases
+                # Same filters as list_user_cases, and only those — the page
+                # and the count cannot disagree. The two `include_deleted` /
+                # `include_terminal` blocks went from both at once (#1431).
                 if filters:
-                    # Phase 1: Default filtering behavior (exclude terminal cases)
-                    if not getattr(filters, "include_deleted", False):
-                        # Exclude closed cases
-                        user_cases = [
-                            case
-                            for case in user_cases
-                            if case.state != CaseState.CLOSED
-                        ]
-
-                    if not getattr(filters, "include_terminal", False):
-                        # Exclude terminal cases (resolved and closed)
-                        user_cases = [
-                            case
-                            for case in user_cases
-                            if case.state not in [CaseState.RESOLVED, CaseState.CLOSED]
-                        ]
-
                     if not getattr(filters, "include_empty", False):
                         # Exclude empty cases (message_count == 0)
                         user_cases = [
@@ -1225,23 +1229,20 @@ class DIContainer(BaseDIContainer):
                             if getattr(case, "message_count", 1) > 0
                         ]
 
-                    # Apply other existing filters
-                    if hasattr(filters, "state") and filters.state:
+                    # The same fields list_user_cases applies, reached the
+                    # same way — see the comments there.
+                    if filters.state:
                         user_cases = [
                             case for case in user_cases if case.state == filters.state
                         ]
-                    if hasattr(filters, "priority") and filters.priority:
+                    if filters.source:
                         user_cases = [
                             case
                             for case in user_cases
-                            if case.priority == filters.priority
+                            if getattr(case, "source", None) == filters.source
                         ]
-                    if hasattr(filters, "owner_id") and filters.owner_id:
-                        user_cases = [
-                            case
-                            for case in user_cases
-                            if case.owner_id == filters.owner_id
-                        ]
+                    if filters.team_id:
+                        return 0
                     # Creation-date window `[created_after, created_before)`.
                     # Honoured HERE too: every line of this stand-in runs in
                     # production the moment the repository is missing, and a
@@ -1250,20 +1251,7 @@ class DIContainer(BaseDIContainer):
                     # end. Both `list_user_cases` and `count_user_cases` apply
                     # it, so the page and the count cannot disagree.
                     user_cases = _within_created_window(user_cases, filters)
-                else:
-                    # Phase 1: No filters provided - apply default exclusions (same as list_user_cases)
-                    # Only show active (non-terminal) cases by default
-                    user_cases = [
-                        case
-                        for case in user_cases
-                        if case.state in [CaseState.INQUIRY, CaseState.INVESTIGATING]
-                    ]
-                    # Exclude empty cases by default
-                    user_cases = [
-                        case
-                        for case in user_cases
-                        if getattr(case, "message_count", 1) > 0
-                    ]
+                # No `else` branch, matching list_user_cases above.
 
                 return len(user_cases)
 

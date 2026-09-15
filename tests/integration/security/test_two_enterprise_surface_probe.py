@@ -4843,23 +4843,6 @@ SURFACE_INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
         _EXEMPT,
         "see GET /api/v1/sessions",
     ),
-    ("POST", "/api/v1/sessions/{session_id}/restore"): (
-        _EXEMPT,
-        "see GET /api/v1/sessions",
-    ),
-    ("GET", "/api/v1/sessions/{session_id}/recovery-info"): (
-        _EXEMPT,
-        "see GET /api/v1/sessions",
-    ),
-    ("GET", "/api/v1/sessions/{session_id}/stats"): (
-        _EXEMPT,
-        "see GET /api/v1/sessions",
-    ),
-    ("GET", "/api/v1/sessions/{session_id}/cases"): (
-        _EXEMPT,
-        "the case half resolves through the same allowlist the probed case "
-        "list uses; the session half is Redis (see GET /api/v1/sessions).",
-    ),
     # --- teams and the consent that forms them (ADR-017 D4) -----------------
     #
     # ``POST /api/v1/teams`` and ``GET /api/v1/invitations`` are absent from

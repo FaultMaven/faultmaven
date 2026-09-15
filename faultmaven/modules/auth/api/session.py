@@ -28,37 +28,30 @@ Core Design Principles:
 
 import logging
 import time
-import uuid
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 from faultmaven.api.v1.auth_dependencies import (
     get_current_user_optional,
     require_authentication,
 )
-from faultmaven.api.v1.dependencies import get_case_service, get_session_service
+from faultmaven.api.v1.dependencies import get_session_service
 from faultmaven.config.settings import get_settings
 from faultmaven.exceptions import ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.api import (
     AuthSessionStatus,
     ErrorDetail,
-    ErrorResponse,
-    SessionCasesResponse,
     SessionErrorCode,
     SessionResponse,
 )
-from faultmaven.models.api_models import CaseListFilter
 from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.auth.domain.services.auth_session_service import (
     AuthSessionService,
 )
-from faultmaven.modules.case.domain.services.case_converter import CaseConverter
-from faultmaven.utils.datetime import utc_timestamp
 from faultmaven.utils.serialization import to_json_compatible
 
 router = APIRouter(prefix="/sessions", tags=["session_management"])
@@ -197,14 +190,6 @@ class AuthSessionCreateRequest(BaseModel):
         description="Client/device identifier for session resumption. If provided, existing session for this client will be resumed.",
         examples=["550e8400-e29b-41d4-a716-446655440000"],
     )
-
-
-class SessionRestoreRequest(BaseModel):
-    """Request model for session restoration."""
-
-    restore_point: str = Field(..., min_length=1)
-    include_data: bool = Field(default=True)
-    type: Optional[str] = Field(default="full")
 
 
 @router.post(
@@ -589,129 +574,6 @@ async def list_sessions(
         raise HTTPException(status_code=500, detail="Failed to list sessions")
 
 
-@router.get("/{session_id}/cases")
-async def list_session_cases(
-    session_id: str,
-    response: Response,
-    limit: int = Query(50, le=100, ge=1),
-    offset: int = Query(0, ge=0),
-    # Phase 1: New filtering parameters (default to exclude non-active cases)
-    include_empty: bool = Query(
-        False, description="Include cases with message_count == 0"
-    ),
-    include_terminal: bool = Query(
-        False, description="Include terminal state cases (resolved/closed)"
-    ),
-    include_deleted: bool = Query(
-        False, description="Include deleted cases (admin only)"
-    ),
-    session_service: AuthSessionService = Depends(get_session_service),
-    case_service=Depends(get_case_service),
-    current_user: DevUser = Depends(require_authentication),
-):
-    """
-    List all cases associated with a session.
-
-    CRITICAL: Must return 200 [] for empty results, NOT 404
-
-    Args:
-        session_id: Session identifier
-        limit: Maximum number of cases to return (1-100)
-        offset: Number of cases to skip for pagination
-
-    Returns:
-        List of cases (empty list if no cases found)
-    """
-    try:
-        # First verify session exists (404 if session not found)
-        session = await session_service.get_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-
-        # Get cases for this session (empty list is valid, not an error)
-        cases = []
-        total_count = 0
-
-        try:
-            # Get user's cases with access control, then filter by session
-            if hasattr(case_service, "list_user_cases"):
-                # Create filters for user cases with session filtering
-                filters = CaseListFilter(
-                    include_empty=include_empty,
-                    include_terminal=include_terminal,
-                    include_deleted=include_deleted,
-                    limit=limit,
-                    offset=offset,
-                )
-
-                # Get user's cases (session provides authentication context).
-                # The service applies limit/offset in the repository query and
-                # returns (page, true total), so we must NOT re-slice here — the
-                # page is already paginated and total_count is the full match
-                # count used for the X-Total-Count header.
-                # Architecture: Session → User → User's Cases (indirect relationship)
-                paginated_cases, total_count = await case_service.list_user_cases(
-                    current_user.user_id, filters
-                )
-                logger.debug(
-                    f"Session {session_id} accessing {len(paginated_cases)} cases "
-                    f"(of {total_count}) for user {current_user.user_id}"
-                )
-
-                # Convert Case entities to API objects (consistent with /api/v1/cases)
-                cases = CaseConverter.entities_to_api_list(paginated_cases)
-            else:
-                # Case service not available - return empty list
-                logger.warning(f"Case service not available for session {session_id}")
-                cases = []
-                total_count = 0
-        except Exception as e:
-            logger.error(f"Error fetching cases for session {session_id}: {e}")
-            cases = []
-            total_count = 0
-
-        # Add required pagination headers
-        headers = {"X-Total-Count": str(total_count)}
-
-        # RFC 5988 Link header for pagination
-        base_url = f"/api/v1/sessions/{session_id}/cases"
-        links = []
-
-        if offset > 0:
-            links.append(f'<{base_url}?limit={limit}&offset=0>; rel="first"')
-            prev_offset = max(0, offset - limit)
-            links.append(f'<{base_url}?limit={limit}&offset={prev_offset}>; rel="prev"')
-
-        if offset + limit < total_count:
-            next_offset = offset + limit
-            links.append(f'<{base_url}?limit={limit}&offset={next_offset}>; rel="next"')
-            last_offset = ((total_count - 1) // limit) * limit
-            links.append(f'<{base_url}?limit={limit}&offset={last_offset}>; rel="last"')
-
-        # Set Link header only if there are links (RFC 5988 compliance)
-        if links:
-            headers["Link"] = ", ".join(links)
-
-        logger.info(
-            f"Returning {len(cases)} cases for session {session_id} (total: {total_count})"
-        )
-        # Convert CaseAPI objects to dictionaries for JSON serialization
-        cases_data = [case.dict() for case in cases] if cases else []
-        return JSONResponse(status_code=200, content=cases_data, headers=headers)
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        correlation_id = str(uuid.uuid4())
-        logger.error(
-            f"Failed to list cases for session {session_id}: {e}",
-            extra={"correlation_id": correlation_id},
-        )
-        # Return empty response instead of 500 error for robustness per OpenAPI requirement
-        headers = {"X-Total-Count": "0", "x-correlation-id": correlation_id}
-        return JSONResponse(status_code=200, content=[], headers=headers)
-
-
 @router.delete("/{session_id}", status_code=204)
 async def delete_session(
     session_id: str,
@@ -752,39 +614,6 @@ async def delete_session(
     except Exception as e:
         logger.error(f"Failed to delete session {session_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to delete session")
-
-
-@router.post("/cleanup", status_code=200, operation_id="cleanup_expired_sessions_v1")
-async def cleanup_expired_sessions(
-    session_service: AuthSessionService = Depends(get_session_service),
-):
-    """
-    Manually trigger cleanup of expired sessions.
-
-    This endpoint allows manual cleanup of sessions that have exceeded their
-    timeout period. It's useful for maintenance operations and ensuring
-    database hygiene.
-
-    Returns:
-        Cleanup results including number of sessions cleaned up
-    """
-    try:
-        cleaned_count = await session_service.cleanup_expired_sessions()
-
-        logger.info(
-            f"Manual session cleanup completed: {cleaned_count} sessions cleaned"
-        )
-
-        return {
-            "message": f"Successfully cleaned up {cleaned_count} expired sessions",
-            "cleaned_sessions": cleaned_count,
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
-        }
-    except Exception as e:
-        logger.error(f"Failed to cleanup expired sessions: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500, detail="Failed to cleanup expired sessions"
-        )
 
 
 @router.post("/{session_id}/heartbeat")
@@ -896,252 +725,6 @@ async def session_heartbeat(
         raise HTTPException(
             status_code=500, detail="Internal server error during heartbeat operation"
         )
-
-
-@router.get("/{session_id}/stats")
-async def get_session_stats(
-    session_id: str,
-    session_service: AuthSessionService = Depends(get_session_service),
-):
-    """
-    Get session statistics and activity summary.
-
-    Args:
-        session_id: Session identifier
-
-    Returns:
-        Session statistics
-    """
-    try:
-        # First check if session exists
-        session = await session_service.get_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-
-        # Record stats request operation in session history
-        stats_record = {
-            "action": "stats_request",
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
-            "endpoint": "stats",
-        }
-
-        try:
-            # Check if session_manager has a real add_case_history method
-            if hasattr(session_service, "session_manager") and hasattr(
-                session_service.session_manager, "add_case_history"
-            ):
-                await session_service.session_manager.add_case_history(
-                    session_id, stats_record
-                )
-        except Exception as e:
-            logger.warning(f"Failed to record stats operation: {e}")
-
-        # Re-fetch session to get updated stats
-        session = await session_service.get_session(session_id)
-
-        # Calculate statistics for this specific session
-        total_cases = len(
-            [h for h in session.case_history if h.get("action") == "query_processed"]
-        )
-
-        # Count data upload operations from case history instead of data_uploads list
-        total_upload_operations = len(
-            [h for h in session.case_history if h.get("action") == "data_uploaded"]
-        )
-
-        # Count heartbeat operations
-        total_heartbeat_operations = len(
-            [h for h in session.case_history if h.get("action") == "heartbeat"]
-        )
-
-        # Count stats request operations
-        total_stats_operations = len(
-            [h for h in session.case_history if h.get("action") == "stats_request"]
-        )
-
-        # Count all request operations (this is what tests are looking for)
-        total_requests = (
-            total_cases
-            + total_upload_operations
-            + total_heartbeat_operations
-            + total_stats_operations
-        )
-
-        # Debug: log what's actually in the history
-        logger.debug(
-            f"Session {session_id} case history: {len(session.case_history)} total entries"
-        )
-        for i, h in enumerate(session.case_history):
-            logger.debug(
-                f"  History {i}: action={h.get('action')}, keys={list(h.keys())}"
-            )
-        logger.debug(
-            f"Query operations: {total_cases}, Upload operations: {total_upload_operations}, Heartbeat operations: {total_heartbeat_operations}, Stats operations: {total_stats_operations}"
-        )
-        logger.debug(f"Total requests: {total_requests}")
-
-        # Count unique data uploads as well
-        total_uploads = len(session.data_uploads)
-
-        # Get latest investigation confidence
-        latest_confidence = 0.0
-        for history in reversed(session.case_history):
-            if history.get("action") == "query_processed":
-                latest_confidence = history.get("confidence_score", 0.0)
-                break
-
-        return {
-            "session_id": session_id,
-            "user_id": session.user_id,
-            "created_at": _safe_datetime_to_utc_string(session.created_at),
-            "last_activity": _safe_datetime_to_utc_string(session.last_activity),
-            "statistics": {
-                "total_cases": total_cases,
-                "total_data_uploads": total_uploads,
-                "total_heartbeats": total_heartbeat_operations,
-                "total_stats_requests": total_stats_operations,
-                "latest_confidence_score": latest_confidence,
-                "session_duration_minutes": int(
-                    (session.last_activity - session.created_at).total_seconds() / 60
-                ),
-            },
-            "total_requests": total_requests,  # Count all operations that represent requests
-            "operations_history": session.case_history,  # For test compatibility
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(
-            f"Failed to get session stats for {session_id}: {e}", exc_info=True
-        )
-        raise HTTPException(status_code=500, detail="Failed to get session stats")
-
-
-@router.get("/{session_id}/recovery-info")
-async def get_session_recovery_info(
-    session_id: str,
-    session_service: AuthSessionService = Depends(get_session_service),
-):
-    """
-    Get session recovery information for restoring lost sessions.
-
-    Args:
-        session_id: Session identifier
-
-    Returns:
-        Recovery information
-    """
-    try:
-        session = await session_service.get_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-
-        # Provide recovery information
-        return {
-            "session_id": session_id,
-            "user_id": session.user_id,
-            "created_at": _safe_datetime_to_utc_string(session.created_at),
-            "last_activity": _safe_datetime_to_utc_string(session.last_activity),
-            "state_summary": {
-                "active": True,
-                "data_uploads": len(session.data_uploads),
-                "cases": len(session.case_history),
-            },
-            "metadata": {
-                "test_mode": True,  # For test compatibility
-                "recovery_test": "enabled",  # For test compatibility
-            },
-            "recovery_info": {
-                "can_restore": True,
-                "backup_available": True,
-                "last_backup": _safe_datetime_to_utc_string(session.last_activity),
-                "data_integrity": "good",
-            },
-            "restoration_options": {
-                "full_restore": True,
-                "partial_restore": True,
-                "data_only": True,
-            },
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(
-            f"Failed to get recovery info for session {session_id}: {e}", exc_info=True
-        )
-        raise HTTPException(status_code=500, detail="Failed to get recovery info")
-
-
-@router.post("/cleanup", operation_id="cleanup_expired_sessions_v2")
-async def cleanup_expired_sessions(
-    session_service: AuthSessionService = Depends(get_session_service),
-):
-    """
-    Clean up expired sessions (admin/testing endpoint).
-
-    This endpoint triggers immediate cleanup of expired sessions.
-    In production, this runs automatically every 30 minutes.
-
-    Returns:
-        Number of sessions cleaned up
-    """
-    try:
-        cleaned_count = await session_service.cleanup_expired_sessions()
-        logger.info(
-            f"Manual session cleanup completed: {cleaned_count} sessions removed"
-        )
-
-        return {
-            "cleaned_sessions": cleaned_count,
-            "message": f"Successfully cleaned up {cleaned_count} expired sessions",
-        }
-    except Exception as e:
-        logger.error(f"Failed to cleanup sessions: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to cleanup sessions")
-
-
-@router.post("/{session_id}/restore")
-async def restore_session(
-    session_id: str,
-    restore_request: SessionRestoreRequest,
-    session_service: AuthSessionService = Depends(get_session_service),
-):
-    """
-    Restore a session from backup or recovery state.
-
-    Args:
-        session_id: Session identifier
-        restore_request: Restoration parameters
-
-    Returns:
-        Restoration confirmation
-    """
-    try:
-        session = await session_service.get_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-
-        # Simulate restoration process
-        restore_type = restore_request.type
-
-        return {
-            "session_id": session_id,
-            "status": "restored",
-            "message": f"Session restored successfully ({restore_type} restoration)",
-            "restoration_details": {
-                "type": restore_type,
-                "restored_at": to_json_compatible(datetime.now(timezone.utc)),
-                "items_restored": {
-                    "data_uploads": len(session.data_uploads),
-                    "case_history": len(session.case_history),
-                },
-            },
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to restore session {session_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to restore session")
 
 
 # =============================================================================

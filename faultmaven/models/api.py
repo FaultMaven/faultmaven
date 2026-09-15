@@ -384,14 +384,6 @@ class CaseListResponse(BaseModel):
     cases: List[Case]
 
 
-class SessionCasesResponse(BaseModel):
-    """Response payload for session cases list."""
-
-    schema_version: Literal["3.1.0"] = "3.1.0"
-    cases: List[Case]
-    total: int
-
-
 # --- Authentication Models ---
 
 

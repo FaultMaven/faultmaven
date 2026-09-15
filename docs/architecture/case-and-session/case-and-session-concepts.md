@@ -374,23 +374,29 @@ DELETE /api/v1/cases/{case_id}/data/{data_id}  # Remove data from case
 
 > The `X-Session-ID` header still appears in some legacy examples below. In the current implementation it is read by middleware (deduplication, rate limiting) only. Authentication is JWT Bearer; the auth-related examples below should be read with that in mind.
 
-### API Consistency Requirements
-
-Both case-access endpoints **MUST** return identical results for the same user:
+### There is ONE case-access endpoint
 
 ```http
 GET /api/v1/cases
 Authorization: Bearer <token>
-
-GET /api/v1/sessions/{session_id}/cases
-Authorization: Bearer <token>
 ```
 
-**Expected Behavior**:
-- Both endpoints authenticate the same user
-- Both return the same set of cases (owned by that user)
-- Both return `session_id: null` in case objects (cases not bound to sessions)
-- Both apply the same filtering, pagination, and sorting
+This section used to describe a second one, `GET /api/v1/sessions/{session_id}/cases`,
+and require that the two "return identical results for the same user". That
+requirement is the argument against the endpoint, not for it: a route whose
+specification is "answer exactly what another route answers" carries no
+information, and this one carried less than that. It did not filter by session
+— it called `list_user_cases(current_user.user_id, filters)` under a comment
+reading `Architecture: Session → User → User's Cases (indirect relationship)`
+— it accepted `include_terminal` and `include_deleted` that
+`CaseListFilter` does not declare and Pydantic silently dropped
+(faultmaven#1431), it never compared `session.user_id` to the bearer, and it
+turned every exception into `200 []`. It was REMOVED in contract 5.0.0, which
+makes the "ELIMINATED" line further down this document true for the first time.
+
+Cases are addressed by `case_id`, never as a sub-resource of a session. The
+session is where the *conversation* lives; the case is the record, and it
+outlives every session that touched it.
 
 ---
 
@@ -535,12 +541,9 @@ class FaultMavenClient {
   }
 
   async getUserCases(): Promise<Case[]> {
-    // Both endpoints return identical results
-    const endpoint = this.sessionId
-      ? `/api/v1/sessions/${this.sessionId}/cases`   // Via session auth
-      : '/api/v1/cases';                             // Direct auth
-
-    const response = await fetch(endpoint, {
+    // One endpoint. The bearer token says who is asking; the session says
+    // nothing about which cases they may see.
+    const response = await fetch('/api/v1/cases', {
       headers: { Authorization: `Bearer ${this.token}` }
     });
     return response.json();
@@ -658,21 +661,14 @@ async def create_session(user_id: str):
 
 ```typescript
 describe('Session-Case Relationship', () => {
-  test('should return identical cases from both endpoints', async () => {
-    const directCases = await client.getUserCases();
-    const sessionCases = await client.getSessionCases(sessionId);
-
-    expect(directCases).toEqual(sessionCases);  // ✅ Must be identical
-  });
-
   test('should support multi-device sessions', async () => {
     const session1 = await client1.createSession(); // Device 1
     const session2 = await client2.createSession(); // Device 2
 
     expect(session1.session_id).not.toBe(session2.session_id); // ✅ Different sessions
 
-    const cases1 = await client1.getSessionCases(session1.session_id);
-    const cases2 = await client2.getSessionCases(session2.session_id);
+    const cases1 = await client1.getUserCases();
+    const cases2 = await client2.getUserCases();
 
     expect(cases1).toEqual(cases2);  // ✅ Same user's cases from both devices
   });
@@ -694,8 +690,8 @@ describe('Session-Case Relationship', () => {
     await expireSession(session1.session_id);
 
     // Create new session
-    const session2 = await client.createSession();
-    const cases = await client.getSessionCases(session2.session_id);
+    await client.createSession();
+    const cases = await client.getUserCases();
 
     expect(cases).toContain(case1);  // ✅ Case persists beyond session
   });
@@ -908,7 +904,10 @@ User can switch devices without losing access to any cases.
 
 ### Critical Architectural Changes
 
-- **ELIMINATED**: Cases as session sub-resources (was: `/sessions/{session_id}/cases`)
+- **ELIMINATED**: Cases as session sub-resources (was: `/sessions/{session_id}/cases`).
+  Stated here since the schema redesign and true only from API contract 5.0.0,
+  which removed the route (faultmaven#1431) — until then this document declared
+  the endpoint gone in one section and specified its behaviour in another.
 - **IMPLEMENTED**: Cases as top-level resources (now: `/cases/{case_id}`)
 - **IMPLEMENTED**: X-Session-ID header authentication pattern
 - **IMPLEMENTED**: Client-based session resumption
@@ -979,10 +978,8 @@ session_cases = user_cases  # ✅ Session provides auth, returns user's cases
 
 4. **Update Frontend**:
 ```typescript
-// Ensure consistent API consumption
-const cases = await fetch('/api/v1/cases');  // Direct
-const sessionCases = await fetch(`/api/v1/sessions/${sessionId}/cases`);  // Via session
-// Both should return identical results
+// One call. There is no session-scoped case list to reconcile it with.
+const cases = await fetch('/api/v1/cases');
 ```
 
 5. **Add Client ID Support**:
