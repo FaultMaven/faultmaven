@@ -2114,9 +2114,10 @@ class InvestigationService:
                 # In place: ``turn_meta`` is the ONE binding of this turn's
                 # metadata, aliased with ``result["metadata"]`` (#1270). A
                 # fresh dict severs that and the readers stop seeing each
-                # other.
-                if turn_meta is None:
-                    turn_meta = {}
+                # other — which is why there is no ``or {}`` fallback here. It
+                # is bound by ``result.setdefault("metadata", {})`` far above
+                # and has already been ``.pop()``-ed from by then, so a None
+                # would have raised long before this line.
                 turn_meta[MESSAGE_METADATA_AGENT_EMPTY] = True
 
             agent_message = {

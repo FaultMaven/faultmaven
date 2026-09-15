@@ -56,11 +56,10 @@ MESSAGE_METADATA_AGENT_EMPTY = "agent_response_empty"
 def is_server_written_user_row(msg: dict) -> bool:
     """A USER row whose content the server wrote (#1420, #1434).
 
-    Lives here, beside the key it reads, because there are four readers in
-    three modules and the rule was implemented twice before this — once in
-    ``context_builder`` and once inline in ``case_service`` — and the two
-    copies had already diverged on the one thing that makes it safe: the role
-    check.
+    Lives here, beside the key it reads, because it has four call sites across
+    two modules (``context_builder`` x3, ``case_service`` x1) and the rule was
+    implemented twice before this — once in each module — and the two copies
+    had already diverged on the one thing that makes it safe: the role check.
 
     The role check is not cosmetic. An assistant row's ``metadata`` IS the
     engine's own per-turn metadata dict, which many handlers write into; a

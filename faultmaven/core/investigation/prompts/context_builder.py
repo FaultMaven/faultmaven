@@ -2375,19 +2375,36 @@ def _fence_conversation(body: str, fence: PromptFence) -> str:
 #: invites the model to pick the tangent, or its own recap, back up.
 ASIDE_LINE = "(aside — not part of the investigation)"
 
+#: Truncation for a turn's one-line EARLIER TURNS preview. ONE value: the two
+#: call sites used 100 and 150, so the same turn rendered at two lengths
+#: depending on which branch fired.
+_PREVIEW_CAP = 150
 
-def _preview_turn_from_messages(messages: list, turn_num: Any, cap: int) -> str:
+
+def _preview_turn_from_messages(
+    messages: list, turn_num: Any, asides: set, cap: int = _PREVIEW_CAP
+) -> str:
     """Name a turn by its first user message, for the EARLIER TURNS summary.
 
-    ONE implementation, because there are two call sites and they had already
-    drifted: different truncation caps (100 vs 150) and — the reason this
-    exists — the marker guard applied to only one of them. A turn's preview
-    must not depend on whether ``turn_history`` happened to carry a record for
-    that turn.
+    ONE implementation with ONE cap, because there are two call sites and they
+    had drifted on both: different truncation lengths (100 vs 150) and the
+    marker guard applied to only one of them. A turn's preview must not depend
+    on whether ``turn_history`` happened to carry a record for that turn.
 
-    Rows the SERVER wrote are skipped: naming a turn by a marker tells the
-    model the user said something they did not (#1434).
+    Two kinds of row are never quoted here, and both rules already existed
+    elsewhere in this module — which is exactly why they have to be applied
+    here too:
+
+    - An OUT-OF-BAND turn renders as ``ASIDE_LINE``, the same collapse
+      ``_build_turn_summary`` applies to a recorded aside and the RECENT window
+      applies via ``_aside_turns`` (#1329). Quoting the tangent hands it back
+      as investigation context and invites the model to pick it up.
+    - A row the SERVER wrote is skipped: naming a turn by a marker tells the
+      model the user said something they did not (#1434).
     """
+    if turn_num in asides:
+        return ASIDE_LINE
+
     user_msgs = [
         m
         for m in messages
@@ -2426,6 +2443,11 @@ def _build_graduated_history(case: Case, fence: PromptFence) -> str:
     if not messages:
         return _fence_conversation("No previous conversation.", fence)
 
+    # Computed once and used by BOTH sections: the EARLIER summary collapses an
+    # aside to one line, and the RECENT window elides it. They read the same
+    # set, so the two fidelities cannot disagree about what an aside is.
+    asides = _aside_turns(messages)
+
     # Determine the turn number boundary between "earlier" and "recent"
     # Get all unique turn numbers from messages, sorted
     all_turn_nums = sorted(
@@ -2456,7 +2478,7 @@ def _build_graduated_history(case: Case, fence: PromptFence) -> str:
                 # Turn record missing — minimal fallback from messages
                 result += (
                     f"TURN {turn_num}: "
-                    f"{_preview_turn_from_messages(messages, turn_num, 100)}\n"
+                    f"{_preview_turn_from_messages(messages, turn_num, asides)}\n"
                 )
         result += "\n"
 
@@ -2467,14 +2489,13 @@ def _build_graduated_history(case: Case, fence: PromptFence) -> str:
         for turn_num in summary_turns:
             result += (
                 f"TURN {turn_num}: "
-                f"{_preview_turn_from_messages(messages, turn_num, 150)}\n"
+                f"{_preview_turn_from_messages(messages, turn_num, asides)}\n"
             )
         result += "\n"
 
     # --- RECENT TURNS (verbatim with smart agent truncation) ---
     result += "RECENT TURNS:\n"
     current_turn_num = None
-    asides = _aside_turns(messages)
     for msg in messages:
         turn_num = msg.get("turn_number")
         if turn_num not in recent_turn_nums:

@@ -176,13 +176,79 @@ class TestServerWrittenRowsAreNotQuoted:
 
         # Populated, but with NO record for turn 1 — so the summary falls back
         # to the messages for exactly the turn carrying the marker.
-        record = MagicMock()
-        record.turn_number = 4
+        # A REAL record, not a bare MagicMock: every attribute of a Mock is
+        # truthy, so ``record.is_out_of_band`` made the recorded turn render as
+        # an ASIDE and the record path was never actually exercised. A
+        # hand-rolled stand-in is no better — it drifts from the model the code
+        # is handed.
+        from faultmaven.modules.case.domain.models import TurnOutcome, TurnProgress
+
+        record = TurnProgress(
+            turn_number=4,
+            progress_made=False,
+            outcome=TurnOutcome.DATA_REQUESTED,
+            user_message_summary="user line for turn 4",
+            agent_response_summary="assistant line for turn 4",
+        )
         case = MagicMock()
         case.messages = rows
         case.turn_history = [record]
 
         out = cb._build_graduated_history(case, cb.PromptFence(mint_token()))
+
+        # Positive control: the branch under test actually rendered. Without
+        # it, a change that stopped reaching this path would pass silently —
+        # which is how the fourth channel survived in the first place.
+        assert "EARLIER TURNS:" in out
+        assert "TURN 1:" in out
         assert (
             EMPTY_TURN_TEXT not in out
         ), "the turn_records fallback still names a turn by the server's marker"
+
+    def test_the_earlier_summary_collapses_an_aside_instead_of_quoting_it(self):
+        """The OTHER rule the preview path was missing (#1329).
+
+        A recorded aside collapses to ``ASIDE_LINE`` in ``_build_turn_summary``,
+        and the RECENT window elides one via ``_aside_turns``. Both message
+        fallbacks skipped that rule, so an earlier off-topic turn was quoted
+        VERBATIM into EARLIER TURNS and handed back to the model as
+        investigation context — the same class of unguarded channel as the
+        marker, in the helper extracted to stop exactly that.
+        """
+        from unittest.mock import MagicMock
+
+        rows = []
+        for turn in range(1, 8):
+            aside = turn == 2
+            rows.append(
+                {
+                    "turn_number": turn,
+                    "role": "user",
+                    "content": (
+                        "write me a poem about kubernetes"
+                        if aside
+                        else f"user line for turn {turn}"
+                    ),
+                    "metadata": {"out_of_band": True} if aside else {},
+                }
+            )
+            rows.append(
+                {
+                    "turn_number": turn,
+                    "role": "assistant",
+                    "content": f"assistant line for turn {turn}",
+                    "metadata": {"out_of_band": True} if aside else {},
+                }
+            )
+
+        case = MagicMock()
+        case.messages = rows
+        case.turn_history = []
+
+        out = cb._build_graduated_history(case, cb.PromptFence(mint_token()))
+
+        assert "write me a poem about kubernetes" not in out
+        assert f"TURN 2: {cb.ASIDE_LINE}" in out
+        # Positive control: the surrounding investigation turns still render,
+        # so this is a collapse of one turn and not a blanket drop.
+        assert "user line for turn 1" in out

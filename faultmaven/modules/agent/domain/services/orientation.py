@@ -83,9 +83,12 @@ EMPTY_TURN_TEXT = "(no message)"
 #: understand an incident must not present the second as the first.
 #:
 #: Equally deliberately, it names NO CAUSE. The write site it guards is reached
-#: after all five dispatch kinds converge, and three of them answer without an
-#: LLM at all (orientation, file reclassification, status transition) — so text
-#: blaming "the model" would, on those paths, blame something that never ran.
+#: after every dispatch kind converges, and two SERVICE intents — GREETING and
+#: FILE_RECLASSIFICATION — answer with no LLM call at all, so text blaming "the
+#: model" would, on those paths, blame something that never ran. (The other
+#: SERVICE intents do delegate to ``engine.process_turn``; an earlier version
+#: of this comment claimed otherwise, which is the same kind of unchecked
+#: claim it replaced.)
 #:
 #: It is stored rather than refused because the alternative is worse: the row
 #: is part of an aggregate save, so a blank one aborts the whole thing and
