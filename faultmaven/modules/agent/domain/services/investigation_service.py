@@ -76,6 +76,7 @@ from faultmaven.models.api_models import (
     TurnResponse,
 )
 from faultmaven.modules.agent.domain.services.orientation import (
+    EMPTY_AGENT_RESPONSE_TEXT,
     EMPTY_TURN_TEXT,
     OUT_OF_BAND_MARKER,
     OrientationKind,
@@ -96,6 +97,7 @@ from faultmaven.modules.agent.domain.services.query_classifier import (
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.case.contracts import (
+    MESSAGE_METADATA_USER_EMPTY,
     Case,
     CaseState,
     TurnOutcome,
@@ -1583,7 +1585,7 @@ class InvestigationService:
                     # marker from real content — the orientation path also
                     # tags ``out_of_band``, but the pending-transition path
                     # does not, and both can reach the marker.
-                    "user_message_empty": not (query or "").strip(),
+                    MESSAGE_METADATA_USER_EMPTY: not (query or "").strip(),
                     "intent_metadata": (
                         intent.model_dump(exclude_unset=True, exclude={"type"})
                         if intent
@@ -2077,11 +2079,32 @@ class InvestigationService:
             #    handlers, so they hit Step 7 just like an engine-routed turn.
             #    "Service-dispatched" is NOT a synonym for "no engine save".
             #    See the STEP-2 comment for the full ordering.
+            # An empty ``agent_response`` is a FAILED turn, not a quiet one.
+            # It reaches here unguarded from ``result["agent_response"]``: the
+            # engine's semantic check covers one parse path, and a MAX_TOKENS
+            # or CONTENT_FILTER stop can still deliver "". Blank content aborts
+            # the aggregate save and takes the user's turn with it, for a turn
+            # already charged — so it is recorded, honestly, rather than
+            # dropped or left blank (#1433).
+            agent_failed_silently = not str(agent_response_text or "").strip()
+            if agent_failed_silently:
+                logger.warning(
+                    "Empty agent_response on case %s turn %s; recording the "
+                    "turn as a failed answer rather than aborting the save",
+                    case_id,
+                    updated_case.current_turn,
+                )
+                turn_meta = {**(turn_meta or {}), "agent_response_empty": True}
+
             agent_message = {
                 "message_id": f"msg_{uuid4().hex[:12]}",
                 "turn_number": updated_case.current_turn,
                 "role": "assistant",
-                "content": agent_response_text,
+                "content": (
+                    EMPTY_AGENT_RESPONSE_TEXT
+                    if agent_failed_silently
+                    else agent_response_text
+                ),
                 "created_at": to_json_compatible(datetime.now(timezone.utc)),
                 "author_id": None,
                 "token_count": None,

@@ -75,6 +75,23 @@ class OrientationKind(str, Enum):
 #: beside it, in the message metadata (``orientation: "empty"``).
 EMPTY_TURN_TEXT = "(no message)"
 
+#: Transcript text for an assistant row the model returned EMPTY (#1433).
+#:
+#: Deliberately NOT the same marker as ``EMPTY_TURN_TEXT``, and deliberately
+#: not neutral. An empty user message means the user chose to send nothing; an
+#: empty assistant message means the TURN FAILED — a ``MAX_TOKENS`` or
+#: ``CONTENT_FILTER`` stop can deliver ``agent_response`` as ``""``. Storing a
+#: quiet placeholder would present a failure as the agent having nothing to
+#: say, in a transcript a human reads to understand what happened.
+#:
+#: It is stored rather than refused because the alternative is worse: the row
+#: is part of an aggregate save, so a blank one aborts the whole thing and
+#: takes the user's turn, the evidence and the hypotheses with it — for a turn
+#: already charged against the tenant cap.
+EMPTY_AGENT_RESPONSE_TEXT = (
+    "(no answer — the model returned an empty response for this turn)"
+)
+
 
 def detect_orientation(message: Optional[str]) -> Optional[OrientationKind]:
     """Which orientation a text-only message asks for, or ``None``.
