@@ -234,12 +234,12 @@ sequenceDiagram
 
     Note over L,M: Both sessions active simultaneously
 
-    L->>B: GET /sessions/session_1/cases
-    B->>R: session_1 → user_id → user's cases
+    L->>B: GET /cases (Bearer token)
+    B->>R: user_id → user's cases
     B-->>L: User's cases
 
-    M->>B: GET /sessions/session_2/cases
-    B->>R: session_2 → user_id → user's cases
+    M->>B: GET /cases (Bearer token)
+    B->>R: user_id → user's cases
     B-->>M: Same user's cases
 
     Note over U,R: Same cases accessible from both devices
@@ -458,11 +458,9 @@ class CaseService:
     async def get_case_conversation_history(self, case_id: str, user_id: str) -> List[Dict]:
         """Get conversation history for case with auth check"""
 
-    async def get_session_cases(self, session_id: str) -> List[Case]:
-        """Get user's cases via session authentication"""
-        # Session → User → User's Cases (indirect)
-        user_id = await session_service.get_user_from_session(session_id)
-        return await self.get_user_cases(user_id)
+    # No `get_session_cases`. It resolved session → user → user's cases,
+    # which is `get_user_cases` with an extra hop and no extra information;
+    # the route built on it was removed in API contract 5.0.0.
 ```
 
 ### AgentService
@@ -720,12 +718,11 @@ async def test_session_case_architecture():
         user_id=user_id  # ✅ Direct ownership
     )
 
-    # Both sessions should access the same user's cases
-    cases_via_session1 = await case_service.get_session_cases(session1.session_id)
-    cases_via_session2 = await case_service.get_session_cases(session2.session_id)
+    # Cases belong to the USER, so both devices list them the same way —
+    # there is no session-scoped listing to compare against.
+    user_cases = await case_service.list_user_cases(user_id)
 
-    assert cases_via_session1 == cases_via_session2  # ✅ Identical results
-    assert case.case_id in [c.case_id for c in cases_via_session1]
+    assert case.case_id in [c.case_id for c in user_cases]
 
 async def test_session_resumption():
     """Test client-based session resumption"""
@@ -968,13 +965,12 @@ If you currently have session-bound cases, follow this migration:
 - session filtering in list operations
 ```
 
-3. **Fix API Endpoints**:
-```python
-# Change session cases endpoint from:
-session_cases = filter_cases_by_session(user_cases, session_id)  # ❌
-# To:
-session_cases = user_cases  # ✅ Session provides auth, returns user's cases
-```
+3. **Fix API Endpoints**: there is no session-scoped case endpoint to fix.
+   `GET /sessions/{session_id}/cases` was removed in API contract 5.0.0 —
+   it answered the bearer's cases whatever session was named, so the step
+   this list once described ("return the user's cases instead of filtering
+   by session") ended in a route with no reason to exist. Cases are listed
+   at `GET /api/v1/cases`.
 
 4. **Update Frontend**:
 ```typescript
