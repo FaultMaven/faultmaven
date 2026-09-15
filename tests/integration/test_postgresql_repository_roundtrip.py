@@ -942,22 +942,18 @@ async def test_message_authorship_is_write_once_but_fillable(pg_repo):
 
 
 @pytest.mark.asyncio
-async def test_an_incomplete_message_row_is_normalised_not_skipped(pg_repo):
-    """The #1418 fix on the PRODUCTION backend, not only on SQLite.
+async def test_an_id_less_row_is_completed_not_skipped(pg_repo, pg_engine):
+    """#1418 on the PRODUCTION backend, not only on SQLite.
 
     ``_upsert_messages`` used to ``continue`` past any row without a
     ``message_id``, so the aggregate save reported success and the transcript
-    line was gone. The same two lines existed in both backends; a guard that
-    covered only SQLite would leave the cloud one unpinned, which is the half
-    that matters.
+    line was gone. The same two lines existed in both backends; a guard
+    covering only SQLite would leave the cloud one unpinned.
 
-    Pins three properties, not just persistence: the line keeps its PLACE in
-    the transcript, its ``created_at`` does not drift on later saves, and a
-    second save conflicts onto the row rather than inserting a duplicate.
-    Ordering is a real temporal comparison here (``timestamptz``), so the
-    failure mode differs from SQLite's text sort — a row left to be re-stamped
-    by ``created_at = EXCLUDED.created_at`` on every save drifts FORWARD past
-    messages appended after it.
+    Also pins the two properties the mint is FOR: the id is written back, so a
+    second save conflicts onto the row instead of inserting a duplicate, and
+    the line keeps its place. Ordering is a real temporal comparison here
+    (``timestamptz``), not SQLite's text sort, so this half needs its own test.
     """
     session = pg_repo.db
     enterprise_id = f"ent_{uuid4().hex[:8]}"
@@ -966,7 +962,6 @@ async def test_an_incomplete_message_row_is_normalised_not_skipped(pg_repo):
     await seed_users(session, [user_id])
     case = _make_case(enterprise_id, user_id)
 
-    # A live-path row first, so the id-less one has somewhere to be out of order.
     case.messages.append(
         {
             "message_id": f"msg_{uuid4().hex[:12]}",
@@ -976,30 +971,73 @@ async def test_an_incomplete_message_row_is_normalised_not_skipped(pg_repo):
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
     )
-    # No message_id — the shape add_message has always accepted and minted for.
+    # No message_id — complete in every other respect, so the only thing the
+    # repository supplies is the one field it may invent.
     case.messages.append(
-        {"role": "assistant", "content": "2. id-less row", "turn_number": 1}
+        {
+            "role": "assistant",
+            "content": "2. id-less row",
+            "turn_number": 1,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
     )
     await pg_repo.save(case)
 
     minted = case.messages[1]["message_id"]
-    stamped = case.messages[1]["created_at"]
     assert minted, "the mint must be written back to the caller's dict"
-    assert stamped, "created_at must be written back, or later saves re-stamp it"
 
-    # A second save must conflict onto that row, not insert a duplicate, and
-    # must not move it.
-    await pg_repo.save(case)
+    await pg_repo.save(case)  # must conflict onto the row, not duplicate it
 
-    messages = await pg_repo.get_messages(case.case_id)
+    # Read back through a SEPARATE session: the writing session sees its own
+    # uncommitted state. ``pg_engine`` is the AsyncEngine the fixture was built
+    # from; ``session.get_bind()`` hands back the SYNC engine underneath it.
+    other_session_factory = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with other_session_factory() as other:
+        messages = await PostgreSQLHybridCaseRepository(other).get_messages(
+            case.case_id
+        )
+        rows = await other.execute(
+            text("SELECT message_id FROM case_messages WHERE case_id = :c"),
+            {"c": case.case_id},
+        )
+        ids = [r[0] for r in rows.fetchall()]
+
     assert [m.get("content") for m in messages] == [
         "1. live-path row",
         "2. id-less row",
     ]
-
-    rows = await session.execute(
-        text("SELECT message_id FROM case_messages WHERE case_id = :c"),
-        {"c": case.case_id},
-    )
-    ids = [r[0] for r in rows.fetchall()]
     assert sorted(ids) == sorted([case.messages[0]["message_id"], minted])
+
+
+@pytest.mark.asyncio
+async def test_the_save_refuses_what_it_cannot_know(pg_repo):
+    """The other half of #1418's rule, on PostgreSQL: stamp only what you
+    witnessed.
+
+    ``save(case)`` replays a list assembled at moments the repository never
+    saw, so it refuses a row whose creation time or turn it was not told rather
+    than inventing one — a guessed ``created_at`` was measured placing a row
+    appended FIRST after a row appended SECOND, and ``turn_number`` used to be
+    the row's index in the list, which anchors then key on.
+    """
+    session = pg_repo.db
+    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    user_id = f"user_{uuid4().hex[:8]}"
+    await seed_enterprises(session, [enterprise_id])
+    await seed_users(session, [user_id])
+
+    base = _make_case(enterprise_id, user_id)
+    base.messages.append({"role": "user", "content": "no created_at", "turn_number": 1})
+    with pytest.raises(Exception, match="cannot know when a message was created"):
+        await pg_repo.save(base)
+
+    other = _make_case(enterprise_id, user_id)
+    other.messages.append(
+        {
+            "role": "user",
+            "content": "no turn",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    with pytest.raises(Exception, match="does not know which turn"):
+        await pg_repo.save(other)

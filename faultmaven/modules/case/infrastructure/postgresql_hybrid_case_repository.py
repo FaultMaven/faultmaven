@@ -22,7 +22,6 @@ import json
 import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
-from uuid import uuid4
 
 from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1583,17 +1582,23 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             # ``timestamp`` is an accepted alias for ``created_at`` on this
             # backend; resolve it BEFORE normalising, or the normaliser fills
             # ``created_at`` with ``now()`` and the alias is silently ignored.
-            if not message_dict.get("created_at") and message_dict.get("timestamp"):
-                message_dict["created_at"] = message_dict["timestamp"]
+            # A COPY, unlike the aggregate save's in-place call: this method
+            # does a plain INSERT with no ON CONFLICT, so nothing needs writing
+            # back, and stamping the caller's dict would make a REUSED template
+            # dict carry the first call's id into the second, where it hits the
+            # primary key. ``add_message`` has always been non-mutating.
+            row = dict(message_dict)
             # Shared with ``_upsert_messages`` so the two writers of this table
             # cannot disagree about an incomplete row (#1418).
-            self.normalise_message_row(message_dict)
-            message_id = message_dict["message_id"]
+            self.normalise_message_row(row, stamp_created_at=True)
+            message_id = row["message_id"]
             # Coerce: message dicts may carry an ISO-STRING created_at, which
             # asyncpg rejects for the timestamptz column (see _as_datetime).
+            # ``row`` already carries a created_at (supplied, aliased, or
+            # minted by the normaliser); coerce it because the normaliser mints
+            # an ISO STRING and asyncpg rejects a str for timestamptz.
             created_at = self._as_datetime(
-                message_dict.get("created_at") or message_dict.get("timestamp"),
-                datetime.now(timezone.utc),
+                row["created_at"], datetime.now(timezone.utc)
             )
 
             query = text(f"""
@@ -1616,7 +1621,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 {
                     "message_id": message_id,
                     "case_id": case_id,
-                    "turn_number": message_dict.get("turn_number", 0),
+                    "turn_number": row["turn_number"],
                     "role": message_dict.get("role", "user"),
                     "content": message_dict.get("content", ""),
                     "author_id": message_dict.get("author_id"),
@@ -2966,16 +2971,17 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         Authorship is never overwritten with a blank — see the COALESCE on
         ``author_id`` in the conflict clause below.
         """
-        # Upsert each message
+        # Validate and complete the WHOLE list before any SQL runs. A row with
+        # no ``message_id`` used to be SKIPPED here, silently: the save
+        # reported success and the transcript line was gone (#1418). It is
+        # completed in place now — the id is the conflict target, so the
+        # caller's list must carry what the row carries — and a row the
+        # repository cannot complete honestly is REFUSED by name here rather
+        # than part-written and then aborted by a constraint.
         for idx, msg in enumerate(messages_list):
-            # A row with no ``message_id`` used to be SKIPPED here, silently:
-            # the aggregate save reported success and the transcript line was
-            # gone (#1418). Both fields this fills are read back out of the row
-            # afterwards, which is why it normalises IN PLACE — see
-            # ``CaseRepository.normalise_message_row`` for what each one costs
-            # if it is left absent. Shared with ``add_message`` so the two
-            # writers of this table cannot answer differently again.
-            self.normalise_message_row(msg)
+            self.normalise_message_row(msg, index=idx)
+
+        for idx, msg in enumerate(messages_list):
 
             query = text(f"""
                 INSERT INTO case_messages (
@@ -3006,12 +3012,15 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "case_id": case_id,
                     "enterprise_id": enterprise_id,
                     "organization_id": organization_id,
-                    "turn_number": msg.get("turn_number", idx),
+                    "turn_number": msg["turn_number"],
                     "role": msg.get("role", "user"),
                     "content": msg.get("content", ""),
                     "author_id": msg.get("author_id"),
+                    # Direct subscript: the normaliser above guaranteed it.
+                    # Coerced because it produces an ISO STRING and asyncpg
+                    # rejects a str for timestamptz.
                     "created_at": self._as_datetime(
-                        msg.get("created_at"), datetime.now(timezone.utc)
+                        msg["created_at"], datetime.now(timezone.utc)
                     ),
                     "token_count": msg.get("token_count"),
                     "metadata": json.dumps(msg.get("metadata", {})),
