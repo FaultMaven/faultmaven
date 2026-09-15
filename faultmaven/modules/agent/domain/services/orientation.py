@@ -75,22 +75,23 @@ class OrientationKind(str, Enum):
 #: beside it, in the message metadata (``orientation: "empty"``).
 EMPTY_TURN_TEXT = "(no message)"
 
-#: Transcript text for an assistant row the model returned EMPTY (#1433).
+#: Transcript text for an assistant row that arrived with no content (#1433).
 #:
-#: Deliberately NOT the same marker as ``EMPTY_TURN_TEXT``, and deliberately
-#: not neutral. An empty user message means the user chose to send nothing; an
-#: empty assistant message means the TURN FAILED — a ``MAX_TOKENS`` or
-#: ``CONTENT_FILTER`` stop can deliver ``agent_response`` as ``""``. Storing a
-#: quiet placeholder would present a failure as the agent having nothing to
-#: say, in a transcript a human reads to understand what happened.
+#: Deliberately NOT the same marker as ``EMPTY_TURN_TEXT``: an empty USER
+#: message means the user chose to send nothing, while an empty ASSISTANT
+#: message means the turn produced no answer, and a transcript a human reads to
+#: understand an incident must not present the second as the first.
+#:
+#: Equally deliberately, it names NO CAUSE. The write site it guards is reached
+#: after all five dispatch kinds converge, and three of them answer without an
+#: LLM at all (orientation, file reclassification, status transition) — so text
+#: blaming "the model" would, on those paths, blame something that never ran.
 #:
 #: It is stored rather than refused because the alternative is worse: the row
 #: is part of an aggregate save, so a blank one aborts the whole thing and
 #: takes the user's turn, the evidence and the hypotheses with it — for a turn
 #: already charged against the tenant cap.
-EMPTY_AGENT_RESPONSE_TEXT = (
-    "(no answer — the model returned an empty response for this turn)"
-)
+EMPTY_AGENT_RESPONSE_TEXT = "(this turn produced no answer)"
 
 
 def detect_orientation(message: Optional[str]) -> Optional[OrientationKind]:

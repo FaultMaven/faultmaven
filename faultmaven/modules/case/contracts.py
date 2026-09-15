@@ -47,6 +47,30 @@ if TYPE_CHECKING:
 #: other modules.
 MESSAGE_METADATA_USER_EMPTY = "user_message_empty"
 
+#: Set on an assistant row that arrived with no content (#1433). Same reason
+#: as its sibling above: the row is real and must be saveable, and a reader
+#: needs to tell a server-written placeholder from an answer.
+MESSAGE_METADATA_AGENT_EMPTY = "agent_response_empty"
+
+
+def is_server_written_user_row(msg: dict) -> bool:
+    """A USER row whose content the server wrote (#1420, #1434).
+
+    Lives here, beside the key it reads, because there are four readers in
+    three modules and the rule was implemented twice before this — once in
+    ``context_builder`` and once inline in ``case_service`` — and the two
+    copies had already diverged on the one thing that makes it safe: the role
+    check.
+
+    The role check is not cosmetic. An assistant row's ``metadata`` IS the
+    engine's own per-turn metadata dict, which many handlers write into; a
+    predicate that ignored ``role`` would silently delete the ASSISTANT's
+    answer from the prompt the day anything stamped this key there.
+    """
+    if msg.get("role") != "user":
+        return False
+    return bool((msg.get("metadata") or {}).get(MESSAGE_METADATA_USER_EMPTY))
+
 
 # ============================================================
 # Import and Re-export Case-owned models
@@ -548,7 +572,9 @@ from faultmaven.modules.case.domain.models import (  # noqa: E402
 # ============================================================
 
 __all__ = [
+    "MESSAGE_METADATA_AGENT_EMPTY",
     "MESSAGE_METADATA_USER_EMPTY",
+    "is_server_written_user_row",
     # Repository and Service Contracts
     "ICaseRepository",
     # DTOs

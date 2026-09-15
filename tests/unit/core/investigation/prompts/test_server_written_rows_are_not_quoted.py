@@ -55,16 +55,36 @@ class TestServerWrittenRowsAreNotQuoted:
         rows = [_marker_row(2), _said(2, "assistant", "still waiting")]
         assert cb._aside_turns(rows) == set()
 
+    def test_an_assistant_row_carrying_the_key_is_not_dropped(self):
+        """The role check, which the two former copies of this rule disagreed on.
+
+        An assistant row's ``metadata`` IS the engine's own per-turn metadata
+        dict, which many handlers write into. A predicate that ignored ``role``
+        would silently delete the ASSISTANT's answer from the prompt the day
+        anything stamped this key there — with no log and no other test
+        failing.
+        """
+        poisoned = {
+            "turn_number": 1,
+            "role": "assistant",
+            "content": "the pool was exhausted",
+            "metadata": {MESSAGE_METADATA_USER_EMPTY: True},
+        }
+        assert cb.is_server_written_user_row(poisoned) is False
+
+        out = cb._build_verbatim_history(
+            [_said(1, "user", "why?"), poisoned], cb.PromptFence(mint_token())
+        )
+        assert "the pool was exhausted" in out
+
     def test_the_predicate_reads_the_flag_not_the_text(self):
         """Keyed on the metadata, not on matching the marker string.
 
         A user who literally types "(no message)" said it, and must be quoted.
         """
-        assert cb._is_server_written_user_row(_marker_row(1)) is True
-        assert (
-            cb._is_server_written_user_row(_said(1, "user", EMPTY_TURN_TEXT)) is False
-        )
-        assert cb._is_server_written_user_row({"role": "user"}) is False
+        assert cb.is_server_written_user_row(_marker_row(1)) is True
+        assert cb.is_server_written_user_row(_said(1, "user", EMPTY_TURN_TEXT)) is False
+        assert cb.is_server_written_user_row({"role": "user"}) is False
 
     def test_the_verbatim_history_does_not_quote_it(self):
         """Short-conversation fidelity."""
@@ -91,7 +111,7 @@ class TestServerWrittenRowsAreNotQuoted:
         out = cb._build_verbatim_history(rows, cb.PromptFence(mint_token()))
         assert EMPTY_TURN_TEXT in out
 
-    def _long_case(self, marker_turn: int, marker_in_recent: bool):
+    def _long_case(self, marker_turn: int):
         """A case with enough turns to take the GRADUATED path.
 
         ``_build_graduated_history`` splits at ``HISTORY_VERBATIM_TURNS``: the
@@ -117,7 +137,7 @@ class TestServerWrittenRowsAreNotQuoted:
 
     def test_the_graduated_recent_window_does_not_quote_it(self):
         """The marker in one of the last three turns, rendered verbatim there."""
-        case = self._long_case(marker_turn=7, marker_in_recent=True)
+        case = self._long_case(marker_turn=7)
         out = cb._build_graduated_history(case, cb.PromptFence(mint_token()))
 
         assert EMPTY_TURN_TEXT not in out
@@ -126,9 +146,43 @@ class TestServerWrittenRowsAreNotQuoted:
     def test_the_graduated_earlier_summary_does_not_name_a_turn_by_it(self):
         """The marker in an EARLIER turn, which is summarised by its first
         user message — a different code path from the verbatim window."""
-        case = self._long_case(marker_turn=1, marker_in_recent=False)
+        case = self._long_case(marker_turn=1)
         out = cb._build_graduated_history(case, cb.PromptFence(mint_token()))
 
         assert EMPTY_TURN_TEXT not in out
         # The later turns still render, so this is a skip and not a collapse.
         assert "user line for turn 7" in out
+
+    def test_the_earlier_summary_with_turn_records_does_not_quote_it(self):
+        """The SECOND earlier-turns fallback, which a populated
+        ``turn_history`` selects.
+
+        There are two copies of "name the turn by its first user message": one
+        reached when ``turn_history`` is absent, and one reached when it is
+        present but has no record for that particular turn — the #1264 routes
+        that consume a turn without recording one. Guarding only the first left
+        the marker rendering here, and the sibling test could not see it
+        because it sets ``turn_history = []``, which forces the other branch.
+        """
+        from unittest.mock import MagicMock
+
+        rows = []
+        for turn in range(1, 8):
+            if turn == 1:
+                rows.append(_marker_row(turn))
+            else:
+                rows.append(_said(turn, "user", f"user line for turn {turn}"))
+            rows.append(_said(turn, "assistant", f"assistant line for turn {turn}"))
+
+        # Populated, but with NO record for turn 1 — so the summary falls back
+        # to the messages for exactly the turn carrying the marker.
+        record = MagicMock()
+        record.turn_number = 4
+        case = MagicMock()
+        case.messages = rows
+        case.turn_history = [record]
+
+        out = cb._build_graduated_history(case, cb.PromptFence(mint_token()))
+        assert (
+            EMPTY_TURN_TEXT not in out
+        ), "the turn_records fallback still names a turn by the server's marker"

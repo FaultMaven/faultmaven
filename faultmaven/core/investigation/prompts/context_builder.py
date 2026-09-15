@@ -57,7 +57,6 @@ from faultmaven.core.preprocessing.evidence_metadata import (
     EvidenceMetadata,
 )
 from faultmaven.modules.case.contracts import (
-    MESSAGE_METADATA_USER_EMPTY,
     Case,
     CaseState,
     EntityType,
@@ -68,6 +67,7 @@ from faultmaven.modules.case.contracts import (
     NeedPriority,
     NeedPurpose,
     NeedState,
+    is_server_written_user_row,
 )
 from faultmaven.modules.case.domain.models import CauseState
 
@@ -2376,23 +2376,26 @@ def _fence_conversation(body: str, fence: PromptFence) -> str:
 ASIDE_LINE = "(aside — not part of the investigation)"
 
 
-def _is_server_written_user_row(msg: dict) -> bool:
-    """A user row whose content the SERVER wrote (#1420, #1434).
+def _preview_turn_from_messages(messages: list, turn_num: Any, cap: int) -> str:
+    """Name a turn by its first user message, for the EARLIER TURNS summary.
 
-    The user sent no message at all — a bare ``@FaultMaven``. The row is real
-    (the turn is charged and advances the message clock) and ``case_messages``
-    requires non-blank content, so a marker is stored rather than nothing.
+    ONE implementation, because there are two call sites and they had already
+    drifted: different truncation caps (100 vs 150) and — the reason this
+    exists — the marker guard applied to only one of them. A turn's preview
+    must not depend on whether ``turn_history`` happened to carry a record for
+    that turn.
 
-    Nothing that presents a user row as something the USER SAID may quote it.
-    On the pending-transition path especially: that turn is routed to the
-    engine rather than to orientation, so it never carries the ``out_of_band``
-    tag the aside elision keys on, and the marker would read to the model as an
-    answer to its own gate question.
-
-    Skipping restores what happened before the marker existed — the row was
-    blank, and every renderer here dropped it on ``if not content``.
+    Rows the SERVER wrote are skipped: naming a turn by a marker tells the
+    model the user said something they did not (#1434).
     """
-    return bool((msg.get("metadata") or {}).get(MESSAGE_METADATA_USER_EMPTY))
+    user_msgs = [
+        m
+        for m in messages
+        if m.get("turn_number") == turn_num
+        and m.get("role") == "user"
+        and not is_server_written_user_row(m)
+    ]
+    return user_msgs[0].get("content", "")[:cap] if user_msgs else "..."
 
 
 def _aside_turns(messages: list) -> set:
@@ -2451,15 +2454,10 @@ def _build_graduated_history(case: Case, fence: PromptFence) -> str:
                 result += _build_turn_summary(turn_index[turn_num]) + "\n"
             else:
                 # Turn record missing — minimal fallback from messages
-                user_msgs = [
-                    m
-                    for m in messages
-                    if m.get("turn_number") == turn_num and m.get("role") == "user"
-                ]
-                user_preview = (
-                    user_msgs[0].get("content", "")[:100] if user_msgs else "..."
+                result += (
+                    f"TURN {turn_num}: "
+                    f"{_preview_turn_from_messages(messages, turn_num, 100)}\n"
                 )
-                result += f"TURN {turn_num}: {user_preview}\n"
         result += "\n"
 
     elif earlier_turn_nums:
@@ -2467,16 +2465,10 @@ def _build_graduated_history(case: Case, fence: PromptFence) -> str:
         result += "EARLIER TURNS:\n"
         summary_turns = earlier_turn_nums[-HISTORY_SUMMARY_MAX_TURNS:]
         for turn_num in summary_turns:
-            user_msgs = [
-                m
-                for m in messages
-                if m.get("turn_number") == turn_num and m.get("role") == "user"
-                # A turn summarised by its first user message must not be
-                # summarised by a marker the server wrote.
-                and not _is_server_written_user_row(m)
-            ]
-            user_preview = user_msgs[0].get("content", "")[:150] if user_msgs else "..."
-            result += f"TURN {turn_num}: {user_preview}\n"
+            result += (
+                f"TURN {turn_num}: "
+                f"{_preview_turn_from_messages(messages, turn_num, 150)}\n"
+            )
         result += "\n"
 
     # --- RECENT TURNS (verbatim with smart agent truncation) ---
@@ -2490,7 +2482,7 @@ def _build_graduated_history(case: Case, fence: PromptFence) -> str:
 
         role = msg.get("role", "unknown").upper()
         content = msg.get("content", "")
-        if not content or _is_server_written_user_row(msg):
+        if not content or is_server_written_user_row(msg):
             continue
 
         if turn_num != current_turn_num:
@@ -2524,7 +2516,7 @@ def _build_verbatim_history(messages: list, fence: PromptFence) -> str:
         turn_num = msg.get("turn_number", "?")
         role = msg.get("role", "unknown").upper()
         content = msg.get("content", "")
-        if not content or _is_server_written_user_row(msg):
+        if not content or is_server_written_user_row(msg):
             continue
 
         if turn_num != current_turn_num:

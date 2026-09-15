@@ -43,6 +43,7 @@ from faultmaven.modules.agent.domain.services.investigation_service import (
 from faultmaven.modules.agent.domain.services.orientation import (
     EMPTY_AGENT_RESPONSE_TEXT,
 )
+from faultmaven.modules.case.contracts import MESSAGE_METADATA_AGENT_EMPTY
 from faultmaven.modules.case.domain.models import Case, CaseState, InquiryData
 from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
     SQLiteCaseRepository,
@@ -158,9 +159,15 @@ class TestBlankAgentResponsePersists:
         case = _case()
         await service.repository.save(case)
 
-        await service.process_turn(
+        response = await service.process_turn(
             case_id=case.case_id, user_id=USER_ID, payload=TurnPayload(query="why?")
         )
+
+        # The LIVE answer and the STORED row must agree. Writing the marker
+        # only into the row left the client rendering an empty bubble while a
+        # reload showed text that was never delivered — and Slack rejects an
+        # empty message outright.
+        assert response.agent_response == EMPTY_AGENT_RESPONSE_TEXT
 
         reloaded = await service.repository.get(case.case_id)
         assert reloaded is not None, "a blank answer must not destroy the case"
@@ -172,19 +179,7 @@ class TestBlankAgentResponsePersists:
         assert assistant, "the failed turn must be recorded, not dropped"
         assert assistant[-1]["content"] == EMPTY_AGENT_RESPONSE_TEXT
         # And it says the turn FAILED, rather than reading as a quiet answer.
-        assert assistant[-1]["metadata"].get("agent_response_empty") is True
-
-    async def test_a_real_answer_is_untouched(self):
-        """Positive control, asserted without a database.
-
-        Without it, a guard that replaced every answer would pass the tests
-        above.
-        """
-        from faultmaven.modules.agent.domain.services.orientation import (
-            EMPTY_AGENT_RESPONSE_TEXT as marker,
-        )
-
-        assert marker != "the pool was exhausted"
+        assert assistant[-1]["metadata"].get(MESSAGE_METADATA_AGENT_EMPTY) is True
 
     async def test_a_real_answer_is_stored_verbatim(self, session):
         service = _service(session, "the connection pool was exhausted")
@@ -198,4 +193,53 @@ class TestBlankAgentResponsePersists:
         reloaded = await service.repository.get(case.case_id)
         assistant = [m for m in reloaded.messages if m["role"] == "assistant"]
         assert assistant[-1]["content"] == "the connection pool was exhausted"
-        assert not assistant[-1]["metadata"].get("agent_response_empty")
+        assert not assistant[-1]["metadata"].get(MESSAGE_METADATA_AGENT_EMPTY)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestCreateCaseRejectsBlankInitialMessage:
+    """A whitespace ``initial_message`` must not 500 case creation.
+
+    Same shape as #1420 on the turn path, in a third writer:
+    ``if initial_message:`` is truthiness while the content beside it is
+    ``initial_message.strip()``, so ``"   "`` passed the check and produced a
+    blank row. Blank content is refused by the repository, and because this is
+    an AGGREGATE save the refusal takes the whole case creation with it.
+    ``CaseCreateRequest.initial_message`` has no ``min_length``, so the input
+    is reachable over HTTP.
+
+    Run against the real repository, because the refusal lives there.
+    """
+
+    def _service(self, session):
+        from faultmaven.modules.case.domain.services.case_service import CaseService
+
+        # Constructed, not ``__new__``-ed: the service reads configured
+        # attributes (``max_cases_per_user`` among them) that bypassing
+        # ``__init__`` would leave missing, and the failure would look like a
+        # defect in the code under test.
+        return CaseService(case_repository=SQLiteCaseRepository(session))
+
+    @pytest.mark.parametrize("blank", ["   ", "\t", "\n"], ids=["spaces", "tab", "nl"])
+    async def test_a_whitespace_initial_message_creates_the_case(self, session, blank):
+        service = self._service(session)
+
+        case = await service.create_case(
+            title="disk full", owner_id=USER_ID, initial_message=blank
+        )
+
+        reloaded = await service.repository.get(case.case_id)
+        assert reloaded is not None, f"case creation 500'd on {blank!r}"
+        assert reloaded.messages == [], "a blank initial message must write no row"
+
+    async def test_a_real_initial_message_is_still_written(self, session):
+        """Positive control: the guard must not drop real content."""
+        service = self._service(session)
+
+        case = await service.create_case(
+            title="disk full", owner_id=USER_ID, initial_message="  /var is at 100%  "
+        )
+
+        reloaded = await service.repository.get(case.case_id)
+        assert [m["content"] for m in reloaded.messages] == ["/var is at 100%"]
