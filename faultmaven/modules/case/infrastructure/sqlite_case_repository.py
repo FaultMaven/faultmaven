@@ -1730,6 +1730,7 @@ class SQLiteCaseRepository(CaseRepository):
         query: str,
         user_id: str | None = None,
         enterprise_id: str | None = None,
+        state: CaseState | None = None,
         limit: int = 20,
         shared_case_ids: builtins.list[str] | None = None,
         restrict_case_ids: builtins.list[str] | None = None,
@@ -1762,7 +1763,29 @@ class SQLiteCaseRepository(CaseRepository):
             # The enterprise_id param is retained for interface symmetry with
             # the write-path signatures; it does not scope reads.
 
+            # Lifecycle state — spelled exactly as `list` spells it, in the
+            # same WHERE clause as the text predicate and therefore ahead of
+            # the LIMIT below.
+            if state:
+                where_clauses.append("state = :state")
+                params["state"] = state.value
+
             where_sql = "WHERE " + " AND ".join(where_clauses)
+
+            # The TRUE match count, from the same WHERE clause and BEFORE the
+            # LIMIT — as ``list`` above computes it, and for the reason the
+            # interface has always stated: this method's contract is
+            # ``(cases, total_count)``, and returning ``len(cases)`` made the
+            # second value the page length instead. Nothing consumes it today
+            # (``search_cases`` discards it and the route is
+            # ``response_model=List[CaseSummary]``), which is exactly why it
+            # could stay wrong unnoticed — a declared value that is not the
+            # value declared, one return slot over from the field #1416 is
+            # about. Same safe-direction divergence ``list`` documents: this is
+            # a raw COUNT(*), so a row that fails to hydrate below makes it
+            # over-report rather than hide a result.
+            count_query = text(f"SELECT COUNT(*) FROM cases {where_sql}")
+            total_count = (await self.db.execute(count_query, params)).scalar() or 0
 
             # Search query using LIKE (SQLite-compatible)
             search_query = text(f"""
@@ -1783,7 +1806,7 @@ class SQLiteCaseRepository(CaseRepository):
                 if case:
                     cases.append(case)
 
-            return cases, len(cases)
+            return cases, total_count
 
         except Exception as e:
             raise RepositoryException(f"Failed to search cases: {e}") from e

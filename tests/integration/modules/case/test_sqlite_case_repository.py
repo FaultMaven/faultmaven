@@ -1589,3 +1589,231 @@ class TestMessageRowNormalisation:
         case.messages.append(dict(turnless))
         with pytest.raises(Exception, match="does not know which turn"):
             await repo.save(case)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestSearchStateReachesTheWhereClause:
+    """``search(state=...)`` is a SQL predicate, not a Python post-filter (#1416).
+
+    ``CaseSearchRequest.state`` was declared and published for as long as the
+    endpoint has existed, and ``ICaseRepository.search`` had no parameter for it
+    to reach — so ``POST /cases/search`` answered 200 with every state. The
+    companion unit test
+    (``tests/unit/modules/case/test_search_applies_declared_state_1416.py``)
+    makes the same assertions through ``CaseService`` against the in-memory
+    repository; this one makes them against real SQL, where the ``LIMIT`` is
+    applied by the database and a predicate outside the ``WHERE`` clause is
+    therefore a predicate applied to an already-shortened list.
+    """
+
+    TOKEN = "widget"
+    OWNER = "sqlite_state_owner"
+
+    def _case(self, index: int, *, title: str, state):
+        from faultmaven.modules.case.domain.models import (
+            Case,
+            CaseState,
+            DocumentationData,
+            InquiryData,
+            InvestigationProgress,
+        )
+
+        inquiry = InquiryData()
+        if state is CaseState.INVESTIGATING:
+            # Case's own validators: INVESTIGATING needs a confirmed problem
+            # statement and a commitment to investigate.
+            inquiry = InquiryData(
+                proposed_problem_statement="seeded problem statement",
+                problem_statement_confirmed=True,
+                decided_to_investigate=True,
+            )
+        now = datetime.now(timezone.utc)
+        return Case(
+            case_id=f"case_{index:012d}",
+            user_id=self.OWNER,
+            enterprise_id="sqlite_state_ent",
+            title=title,
+            description="seeded for the search-state predicate",
+            state=state,
+            inquiry=inquiry,
+            documentation=DocumentationData(),
+            progress=InvestigationProgress(),
+            created_at=now,
+            updated_at=now,
+        )
+
+    async def _seed(self, session):
+        """Four cases, all matching ``widget``, two per state.
+
+        ``updated_at`` is stamped AFTERWARDS with an explicit UPDATE, because
+        ``save`` overwrites it with ``now()`` — and the ordering is the whole
+        point: ``search`` orders by ``updated_at DESC``, so the two INQUIRY rows
+        are made the newest. A ``LIMIT 2`` therefore selects two INQUIRY rows,
+        and a search for INVESTIGATING can only find anything if the state
+        reached the WHERE clause.
+        """
+        from sqlalchemy import text
+
+        from faultmaven.modules.case.domain.models import CaseState
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
+        )
+
+        repo = SQLiteCaseRepository(session)
+        seeds = [
+            (1, "alpha widget", CaseState.INQUIRY),
+            (2, "beta widget", CaseState.INQUIRY),
+            (3, "gamma widget", CaseState.INVESTIGATING),
+            (4, "delta widget", CaseState.INVESTIGATING),
+        ]
+        for index, title, state in seeds:
+            await repo.save(self._case(index, title=title, state=state))
+
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        for index, _, _ in seeds:
+            await session.execute(
+                # ``created_at`` moves with it: Case refuses a row whose
+                # creation is later than its last update.
+                text(
+                    "UPDATE cases SET updated_at = :ts, created_at = :ts "
+                    "WHERE case_id = :cid"
+                ),
+                {
+                    # Newest first: case 1 (INQUIRY) is the newest, case 4
+                    # (INVESTIGATING) the oldest.
+                    "ts": base - timedelta(days=index),
+                    "cid": f"case_{index:012d}",
+                },
+            )
+        await session.commit()
+        return repo
+
+    async def test_state_narrows_the_result(self, sqlite_session):
+        from faultmaven.modules.case.domain.models import CaseState
+
+        repo = await self._seed(sqlite_session)
+
+        everything, _ = await repo.search(self.TOKEN, user_id=self.OWNER)
+        investigating, _ = await repo.search(
+            self.TOKEN, user_id=self.OWNER, state=CaseState.INVESTIGATING
+        )
+        inquiry, _ = await repo.search(
+            self.TOKEN, user_id=self.OWNER, state=CaseState.INQUIRY
+        )
+
+        assert {c.case_id for c in everything} == {
+            f"case_{i:012d}" for i in (1, 2, 3, 4)
+        }
+        assert {c.case_id for c in investigating} == {
+            "case_000000000003",
+            "case_000000000004",
+        }
+        assert {c.case_id for c in inquiry} == {
+            "case_000000000001",
+            "case_000000000002",
+        }
+
+    async def test_the_ordering_this_test_relies_on(self, sqlite_session):
+        """Captured, not assumed: the two rows a ``LIMIT 2`` takes are INQUIRY.
+
+        Without this, the test below could keep passing while proving nothing —
+        if the seeded ordering ever changed so that an INVESTIGATING row landed
+        in the top two, a post-LIMIT filter would find it and look correct.
+        """
+        from faultmaven.modules.case.domain.models import CaseState
+
+        repo = await self._seed(sqlite_session)
+
+        top_two, _ = await repo.search(self.TOKEN, user_id=self.OWNER, limit=2)
+
+        assert [c.state for c in top_two] == [CaseState.INQUIRY, CaseState.INQUIRY]
+
+    async def test_state_survives_a_limit_the_other_state_would_fill(
+        self, sqlite_session
+    ):
+        """``LIMIT 2`` on a corpus whose two newest rows are both INQUIRY.
+
+        In the WHERE clause this returns the two INVESTIGATING cases. Applied
+        after the query it returns nothing — SQL has already handed back two
+        INQUIRY rows and the filter deletes both, so the endpoint answers 200
+        with an empty list about a corpus that holds two matches.
+        """
+        from faultmaven.modules.case.domain.models import CaseState
+
+        repo = await self._seed(sqlite_session)
+
+        result, _ = await repo.search(
+            self.TOKEN, user_id=self.OWNER, state=CaseState.INVESTIGATING, limit=2
+        )
+
+        assert {c.case_id for c in result} == {
+            "case_000000000003",
+            "case_000000000004",
+        }
+
+    async def test_state_ands_with_the_owner_scope(self, sqlite_session):
+        """A new predicate composes with the existing ones; it does not replace
+        them. A stranger's INVESTIGATING case stays invisible."""
+        from faultmaven.modules.case.domain.models import CaseState
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
+        )
+
+        repo = await self._seed(sqlite_session)
+        stranger = self._case(5, title="epsilon widget", state=CaseState.INVESTIGATING)
+        stranger.user_id = "a-stranger"
+        await SQLiteCaseRepository(sqlite_session).save(stranger)
+
+        result, _ = await repo.search(
+            self.TOKEN, user_id=self.OWNER, state=CaseState.INVESTIGATING
+        )
+
+        assert {c.case_id for c in result} == {
+            "case_000000000003",
+            "case_000000000004",
+        }
+
+    async def test_state_does_not_replace_the_text_predicate(self, sqlite_session):
+        from faultmaven.modules.case.domain.models import CaseState
+
+        repo = await self._seed(sqlite_session)
+
+        result, _ = await repo.search(
+            "gadget", user_id=self.OWNER, state=CaseState.INVESTIGATING
+        )
+
+        assert result == []
+
+    async def test_the_total_is_the_match_count_not_the_page_length(
+        self, sqlite_session
+    ):
+        """``search`` returns ``(page, total_count)`` and the total is a TOTAL.
+
+        Discriminating on purpose: four matches under ``limit=2``. This
+        repository returned ``len(cases)`` — the page length wearing the name of
+        a total — until this change, which is indistinguishable from a true
+        count on any corpus smaller than the limit. Nothing reads the value
+        today (``search_cases`` discards it, and the route is
+        ``response_model=List[CaseSummary]``), which is exactly how it stayed
+        wrong.
+        """
+        repo = await self._seed(sqlite_session)
+
+        page, total = await repo.search(self.TOKEN, user_id=self.OWNER, limit=2)
+
+        assert len(page) == 2
+        assert total == 4
+
+    async def test_the_total_moves_with_the_state_predicate(self, sqlite_session):
+        """The count comes from the same WHERE clause as the page."""
+        from faultmaven.modules.case.domain.models import CaseState
+
+        repo = await self._seed(sqlite_session)
+
+        page, total = await repo.search(
+            self.TOKEN, user_id=self.OWNER, state=CaseState.INVESTIGATING
+        )
+
+        assert len(page) == 2
+        assert total == 2

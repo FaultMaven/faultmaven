@@ -1041,3 +1041,94 @@ async def test_the_save_refuses_what_it_cannot_know(pg_repo):
     )
     with pytest.raises(Exception, match="does not know which turn"):
         await pg_repo.save(other)
+
+
+@pytest.mark.asyncio
+async def test_search_state_is_a_where_clause_not_a_post_filter(pg_repo):
+    """``search(state=...)`` narrows in SQL, ahead of the LIMIT (#1416).
+
+    ``CaseSearchRequest.state`` was declared and published for as long as the
+    endpoint existed and ``ICaseRepository.search`` had no parameter for it to
+    reach, so ``POST /cases/search`` answered 200 with every state — the
+    declared-accepted-never-applied shape of faultmaven-dashboard#51 and #1413.
+
+    Placement is the half that needs a real database. ``search`` limits in SQL
+    and orders by ``ts_rank DESC, updated_at DESC``, so a state applied after
+    the query is a state applied to an already-shortened list. The corpus below
+    puts both INQUIRY rows at the top of that ordering: a ``LIMIT 2`` asking for
+    INVESTIGATING therefore comes back EMPTY unless the predicate is in the
+    WHERE clause.
+    """
+    session = pg_repo.db
+    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    user_id = f"user_{uuid4().hex[:8]}"
+    await seed_enterprises(session, [enterprise_id])
+    await seed_users(session, [user_id])
+
+    # Four cases, identically shaped titles so ts_rank ties and ``updated_at``
+    # decides the order. States alternate two and two.
+    seeds = []
+    for word, state in (
+        ("alpha", CaseState.INQUIRY),
+        ("beta", CaseState.INQUIRY),
+        ("gamma", CaseState.INVESTIGATING),
+        ("delta", CaseState.INVESTIGATING),
+    ):
+        case = _make_case(enterprise_id, user_id)
+        object.__setattr__(case, "title", f"{word} widget")
+        object.__setattr__(case, "state", state)
+        await pg_repo.save(case)
+        seeds.append((case, state))
+
+    # Stamp the ordering explicitly: ``save`` writes ``updated_at = now()``, and
+    # which rows a LIMIT takes is the whole point of the assertion below.
+    # ``created_at`` moves with it — Case refuses a row created after its last
+    # update.
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    for offset, (case, _) in enumerate(seeds):
+        await session.execute(
+            text(
+                "UPDATE cases SET updated_at = :ts, created_at = :ts "
+                "WHERE case_id = :cid"
+            ),
+            {"ts": base.replace(day=28 - offset), "cid": case.case_id},
+        )
+    await session.commit()
+
+    inquiry_ids = {c.case_id for c, s in seeds if s is CaseState.INQUIRY}
+    investigating_ids = {c.case_id for c, s in seeds if s is CaseState.INVESTIGATING}
+
+    # It narrows at all.
+    everything, _ = await pg_repo.search(query="widget", user_id=user_id)
+    assert {c.case_id for c in everything} == inquiry_ids | investigating_ids
+
+    narrowed, _ = await pg_repo.search(
+        query="widget", user_id=user_id, state=CaseState.INVESTIGATING
+    )
+    assert {c.case_id for c in narrowed} == investigating_ids
+
+    # The arrangement the next assertion depends on, CAPTURED rather than
+    # assumed: the two rows a LIMIT 2 takes are both INQUIRY.
+    top_two, _ = await pg_repo.search(query="widget", user_id=user_id, limit=2)
+    assert {c.case_id for c in top_two} == inquiry_ids
+
+    # …and so the predicate has to be upstream of the LIMIT to find anything.
+    under_limit, _ = await pg_repo.search(
+        query="widget", user_id=user_id, state=CaseState.INVESTIGATING, limit=2
+    )
+    assert {c.case_id for c in under_limit} == investigating_ids
+
+    # The second return value is a TOTAL, not the page length. This repository
+    # returned `len(cases)` until this change, which is indistinguishable from a
+    # true count on any corpus smaller than the limit — so the assertion is made
+    # under a limit the corpus exceeds. Nothing reads the value today, which is
+    # how it stayed wrong.
+    page, total = await pg_repo.search(query="widget", user_id=user_id, limit=2)
+    assert len(page) == 2
+    assert total == 4
+
+    narrowed_page, narrowed_total = await pg_repo.search(
+        query="widget", user_id=user_id, state=CaseState.INVESTIGATING
+    )
+    assert len(narrowed_page) == 2
+    assert narrowed_total == 2

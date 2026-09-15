@@ -1465,6 +1465,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         query: str,
         user_id: Optional[str] = None,
         enterprise_id: Optional[str] = None,
+        state: Optional[CaseState] = None,
         limit: int = 20,
         shared_case_ids: Optional[List[str]] = None,
         restrict_case_ids: Optional[List[str]] = None,
@@ -1484,6 +1485,10 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             enterprise_id: Retained for interface symmetry; does NOT scope
                 reads (single-tenant standalone; multi-tenant isolation is
                 PostgreSQL RLS keyed on the enterprise, ADR-010/ADR-017)
+            state: Narrow to one lifecycle state, in the same WHERE clause as
+                the full-text predicate — and so ahead of the LIMIT, which
+                ranks by ts_rank and would otherwise decide which states the
+                filter ever gets to see.
             limit: Maximum results
             shared_case_ids: Case ids readable via a team share (ADR-013 §D4);
                 widens owner-only scope to ``owned ∪ shared-to-my-teams``.
@@ -1518,7 +1523,24 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             # No per-query org filter: multi-tenant isolation is in-core
             # PostgreSQL RLS (ADR-010); standalone is single-tenant.
 
+            # Lifecycle state — spelled as `list` spells it, qualified with the
+            # `c.` alias this query uses, and in the same WHERE clause as the
+            # text predicate so it constrains what the LIMIT ranks.
+            if state:
+                where_clauses.append("c.state = :state")
+                params["state"] = state.value
+
             where_sql = "WHERE " + " AND ".join(where_clauses)
+
+            # The TRUE match count, from the same WHERE clause and BEFORE the
+            # LIMIT — as ``list`` above computes it. This method's contract is
+            # ``(cases, total_count)`` and it was returning ``len(cases)``, the
+            # page length. Nothing consumes it today, which is precisely why it
+            # could stay wrong unnoticed. Same safe-direction divergence
+            # ``list`` documents: a raw COUNT(*) over-reports if a row fails to
+            # hydrate below, and never hides a result.
+            count_query = text(f"SELECT COUNT(*) FROM cases c {where_sql}")
+            total_count = (await self.db.execute(count_query, params)).scalar() or 0
 
             # Search query with relevance ranking.
             # Evidence JOIN removed per Principle 3 (Database Boundaries), so
@@ -1548,7 +1570,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 if case:
                     cases.append(case)
 
-            return cases, len(cases)
+            return cases, total_count
 
         except Exception as e:
             raise RepositoryException(f"Failed to search cases: {e}") from e

@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 3.8.0
+**Version:** 3.9.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -5473,7 +5473,7 @@ Request to search cases.
 - `limit` (integer, optional) — Maximum results
 - `organization_id` (object, optional) — Limit to organization's cases
 - `query` (string, required) — Search query
-- `state` (object, optional) — Filter by state
+- `state` (object, optional) — Narrow the results to one lifecycle state. Applied in the same query as the text search, so it constrains what the `limit` returns rather than thinning an already-limited page.
 - `team_id` (object, optional) — Filter to cases shared with this Team (ADR-013 §D4). Only Teams the caller belongs to yield results; ignored in standalone (no teams).
 - `user_id` (object, optional) — Limit to user's cases
 

@@ -1762,7 +1762,7 @@
                 "type": "null"
               }
             ],
-            "description": "Filter by state"
+            "description": "Narrow the results to one lifecycle state. Applied in the same query as the text search, so it constrains what the `limit` returns rather than thinning an already-limited page."
           },
           "team_id": {
             "anyOf": [
@@ -6809,7 +6809,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "3.8.0"
+    "version": "3.9.0"
   },
   "openapi": "3.1.0",
   "paths": {
