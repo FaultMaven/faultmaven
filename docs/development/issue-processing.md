@@ -196,7 +196,36 @@ issue: each item's state (PR opened / memo posted / measurement posted /
 blocked, with the link), what was escalated, what the refresh changed, and
 the current `backlog_metrics` summary.
 
-## 4. The campaign
+## 4. The campaign: a hypothesis and its test
+
+**Read this section as a bet, not a plan.** The evaluation established that
+the duplicated-rule shape is the most COMMON defect shape, at 39% of
+defects. It did not establish that retiring it lowers the defect rate, and
+one measurement points the other way: lanes on duplicated-rule issues
+produce fewer follow-ups than other lanes (0.43 against 0.73) and N does
+not predict how much a fix will spawn. Prevalence is not leverage.
+
+Nor can the bet be settled from the existing corpus. The guards that would
+be the evidence are too new to have a track record:
+
+| guard | landed |
+|---|---|
+| config purity | 2026-01-09 |
+| single JWT mint surface | 2026-08-06 |
+| the other four | 2026-09-02 or later |
+
+The one guard with history is not encouraging on its own. It coexists with
+42 environment reads outside the config package, because its reach is three
+directories, and issue #1332 is open because a sibling compliance gate went
+**vacuous** — it scans a directory that does not exist, and nothing noticed
+until an audit. Guards rot, and their reach is where the leverage is.
+
+So the order below is a sequence to TEST, not a commitment to deliver.
+Item 2 is the test: it sits on the seam that produced six issues in three
+weeks, so it is the fastest to answer, and a seam that keeps producing
+issues after its guard refutes the bet. Items 3 to 6 are contingent on
+that answer, and the campaign is abandoned rather than continued if the
+seam stays noisy.
 
 ### The class
 
@@ -239,7 +268,11 @@ that makes a guard cheap:
 
 ### Ordering
 
-Retire a class before fixing an instance. In order:
+Retire a class before fixing an instance. Item 1 is worth doing whatever
+the bet turns out to be, because it makes a guard cheap and every guard
+here needs the positive controls it carries (#1332 is what an uncontrolled
+guard becomes). Item 2 is the experiment. Items 3 onward run only if item
+2's seam goes quiet:
 
 | # | Item | Retires | Instances waiting |
 |---|---|---|---|
@@ -250,8 +283,11 @@ Retire a class before fixing an instance. In order:
 | 5 | Consumer enumeration as a PR rule (section 2) | the exposed-old-reader regression class | procedural |
 | 6 | A single decoder for JSON metadata columns, with a scan on `json.loads(...metadata...)` (12 sites today) | the copied-decoder family (#928, #1107) | — |
 
-Items 2–4 each close their waiting instances in the same PR as their guard;
-the guard is what makes the instance's fix complete.
+Items 2 to 4 each close their waiting instances in the same PR as their
+guard; the guard is what makes the instance's fix complete. That is also
+what keeps the experiment honest: item 2 pays for itself in closed issues
+whether or not the bet holds, so running it costs nothing beyond the
+guard.
 
 ### Stopping condition
 
@@ -284,5 +320,10 @@ instead of the count.
 
 When they hold, the campaign's artefacts stay (the harness, the register,
 the metrics script, this procedure) and the queue goes on being processed
-as ordinary work. If after eight weeks condition 2 has not moved, the class
-was misidentified and this document is revised, not extended.
+as ordinary work.
+
+There are two ways this ends early, and both are acceptable outcomes rather
+than failures to argue with. If item 2's seam keeps producing issues after
+its guard, the bet is refuted and items 3 onward are not run. If after eight
+weeks condition 2 has not moved, the class was misidentified. In either case
+this document is revised, not extended.
