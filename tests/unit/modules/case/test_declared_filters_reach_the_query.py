@@ -326,28 +326,16 @@ ADMIN_LIST_ROUTE_RULES: Mapping[str, Rule] = {
 
 # -- Arm 2: CaseListFilter ----------------------------------------------------
 
-#: Named, because BOTH ``CaseListFilter`` surfaces hit it: ``list_user_cases``
-#: and ``list_all_cases`` reach the same ``repository.list`` underneath, so the
-#: gap belongs to the repository rather than to either route.
-_IN_MEMORY_DROPS_SOURCE = Gap(
-    reason=(
-        "InMemoryCaseRepository.list accepts `source` and never reads it — the "
-        "method filters on user_id, restrict_case_ids, state, include_empty and "
-        "the creation-date window, and nothing else. This repository is not "
-        "test-only: create_case_repository selects it whenever DATABASE_URL is "
-        "unset or :memory:, so in that deployment `GET /api/v1/cases?"
-        "source=slack` answers 200 with every case."
-    ),
-    issue="#1424",
-)
-
 LIST_FILTER_RULES: Mapping[str, Rule] = {
     "state": narrows({"state": CaseState.INQUIRY}, {"state": CaseState.INVESTIGATING}),
-    "source": narrows(
-        {"source": "copilot"},
-        {"source": "slack"},
-        dropped_by={"InMemoryCaseRepository": _IN_MEMORY_DROPS_SOURCE},
-    ),
+    # Carried `dropped_by={"InMemoryCaseRepository": ...}` citing #1424 —
+    # "accepts `source` and never reads it", on BOTH CaseListFilter surfaces,
+    # because `list_user_cases` and `list_all_cases` reach the same
+    # `repository.list` underneath. Fixed in #1424: the in-memory `list` now
+    # applies the predicate where the SQL repositories put it in the WHERE
+    # clause, before `total_count` is computed, so all three arms of this
+    # guard narrow alike and the gap became a claim about a defect that is gone.
+    "source": narrows({"source": "copilot"}, {"source": "slack"}),
     "team_id": narrows({"team_id": "team_a"}, {"team_id": "team_b"}),
     "created_after": narrows(
         {"created_after": lambda: _day(2)}, {"created_after": lambda: _day(4)}
@@ -386,11 +374,8 @@ LIST_FILTER_RULES: Mapping[str, Rule] = {
 
 ADMIN_LIST_FILTER_RULES: Mapping[str, Rule] = {
     "state": narrows({"state": CaseState.INQUIRY}, {"state": CaseState.INVESTIGATING}),
-    "source": narrows(
-        {"source": "copilot"},
-        {"source": "slack"},
-        dropped_by={"InMemoryCaseRepository": _IN_MEMORY_DROPS_SOURCE},
-    ),
+    # Same gap, same fix — see the note on the `list_user_cases` surface above.
+    "source": narrows({"source": "copilot"}, {"source": "slack"}),
     "limit": pages({"limit": 2}, {"limit": 4}),
     "offset": pages({"limit": 2, "offset": 0}, {"limit": 2, "offset": 2}),
 }

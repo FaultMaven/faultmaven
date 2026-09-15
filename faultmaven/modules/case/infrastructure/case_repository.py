@@ -1097,6 +1097,15 @@ class InMemoryCaseRepository(CaseRepository):
         if state:
             filtered = [c for c in filtered if c.state == state]
 
+        # Originating surface (copilot / slack / ...), applied here rather than
+        # after the slice for the same reason as every predicate around it: the
+        # count and the returned page must describe the same set (#1409). The
+        # truthiness test is `if source:` — not `is not None` — because that is
+        # what the SQL repositories do, so an empty string means "no filter" on
+        # all four implementations rather than "match cases whose source is ''".
+        if source:
+            filtered = [c for c in filtered if c.source == source]
+
         # Exclude empty cases (current_turn == 0) when requested, BEFORE the
         # total count is computed so the count and the returned page agree
         # (mirrors the SQL WHERE-clause predicate in the DB repositories).
