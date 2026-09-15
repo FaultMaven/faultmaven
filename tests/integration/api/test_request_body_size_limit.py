@@ -61,9 +61,10 @@ _GUARDED_ROUTES = [
 def test_an_oversize_body_is_refused_before_any_consumer_reads_it(
     client, method, path, field
 ):
-    """The refusal half. Note the spies: 413 alone would not distinguish this
-    middleware from a route that happened to reject the request for its own
-    reasons."""
+    """413 rather than the 401 this unauthenticated request would otherwise get.
+
+    That difference is the whole assertion — see the module docstring for why a
+    consumer spy cannot discriminate here."""
     payload = json.dumps({field: "x" * (_cap_bytes() + 1)})
 
     response = client.request(
@@ -102,9 +103,13 @@ def test_the_cap_is_measured_in_bytes_not_characters(client):
     """A four-byte code point counts as four.
 
     The bound this replaces was a pydantic ``max_length`` in CHARACTERS, where
-    ``"漢" * 10_485_760`` is 30.0 MB of UTF-8 and passed. This body is comfortably
-    under the cap counted as characters and over it counted as bytes, so it
-    fails if anyone reintroduces a character-based count.
+    ``"漢" * 10_485_760`` is 30.0 MB of UTF-8 and passed.
+
+    Scope, because an earlier docstring here overclaimed: this exercises the
+    ``Content-Length`` arm, where the declared length is ALREADY a byte count,
+    so it cannot detect a character-based count in the streaming arm — verified
+    by mutation, which left it green. The streaming arm's units are pinned by
+    the real-server test below, which sends multibyte chunks.
     """
     # `ensure_ascii=False`, or `json.dumps` escapes each CJK char to a 6-byte
     # ASCII `\uXXXX` and the body is no longer multibyte at all — the first
@@ -145,8 +150,13 @@ def test_a_chunked_body_with_no_content_length_is_refused_by_a_real_server():
     import httpx
     import uvicorn
     from fastapi import FastAPI
+    from starlette.middleware.base import BaseHTTPMiddleware
 
     from faultmaven.api.middleware.body_size import RequestBodySizeLimitMiddleware
+
+    class PassThroughMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            return await call_next(request)
 
     probe = FastAPI()
 
@@ -154,20 +164,35 @@ def test_a_chunked_body_with_no_content_length_is_refused_by_a_real_server():
     async def echo(body: dict):  # pragma: no cover - reached only if unrefused
         return {"received": len(str(body))}
 
+    # A BaseHTTPMiddleware BENEATH the limiter, because that is what the real
+    # application has — five of them — and because without one this test cannot
+    # see the defect it exists for. The first version of the streaming arm
+    # raised an HTTPException from inside `receive`; BaseHTTPMiddleware runs the
+    # inner app in an anyio TaskGroup, so it re-emerged as an ExceptionGroup and
+    # FastAPI answered 400 "There was an error parsing the body". A probe app
+    # holding only the limiter answered 413 and certified a broken middleware.
+    probe.add_middleware(PassThroughMiddleware)
     probe.add_middleware(RequestBodySizeLimitMiddleware)
 
-    config = uvicorn.Config(probe, host="127.0.0.1", port=8137, log_level="error")
+    from tests.integration.mock_servers import get_free_port
+
+    port = get_free_port()
+    config = uvicorn.Config(probe, host="127.0.0.1", port=port, log_level="error")
     server = uvicorn.Server(config)
     threading.Thread(target=server.run, daemon=True).start()
     try:
         for _ in range(80):
             try:
-                httpx.get("http://127.0.0.1:8137/docs", timeout=0.5)
+                httpx.get(f"http://127.0.0.1:{port}/docs", timeout=0.5)
                 break
             except Exception:
                 time.sleep(0.25)
         else:  # pragma: no cover
-            pytest.skip("probe server did not start")
+            raise AssertionError(
+                "the probe server never came up — this used to `pytest.skip`, "
+                "which turned the only test of the streaming arm into a silent "
+                "pass whenever the port was busy or uvicorn failed to start"
+            )
 
         cap = _cap_bytes()
 
@@ -189,7 +214,7 @@ def test_a_chunked_body_with_no_content_length_is_refused_by_a_real_server():
             yield b'"}'
 
         response = httpx.put(
-            "http://127.0.0.1:8137/echo",
+            f"http://127.0.0.1:{port}/echo",
             content=oversize_stream(),
             headers={"content-type": "application/json"},
             timeout=30,
@@ -268,16 +293,64 @@ def test_the_limiter_is_mounted_regardless_of_environment():
     mounted = [m.cls for m in app.user_middleware]
     assert RequestBodySizeLimitMiddleware in mounted
 
-    names = [getattr(m.cls, "__name__", "") for m in app.user_middleware]
-    limiter = names.index("RequestBodySizeLimitMiddleware")
+    # Only what this app actually mounts: under SKIP_SERVICE_CHECKS — which both
+    # CI jobs set — IdempotencyMiddleware is absent. The test below rebuilds the
+    # app with the flag off so that one is asserted somewhere rather than
+    # silently skipped, which is what an `if name in names` guard did here.
+    _assert_ordering(
+        [getattr(m.cls, "__name__", "") for m in app.user_middleware],
+        body_readers=("DeduplicationMiddleware",),
+    )
 
-    # Starlette wraps in reverse registration order, so a LOWER index is further
-    # out. Inside CORS (a refusal keeps its CORS headers, so the Dashboard sees a
-    # real 413) and outside the two middlewares that read the body themselves.
+
+def test_the_ordering_holds_with_the_full_protection_stack_mounted():
+    """The ordering assertions must not be conditional on what happens to be
+    mounted.
+
+    ``IdempotencyMiddleware`` is gated on ``not skip_service_checks``, and BOTH
+    CI jobs set ``SKIP_SERVICE_CHECKS=true`` — so an ``if name in names:`` guard
+    around that assertion silently checks nothing exactly where it is checked.
+    The app is rebuilt with the flag off instead, the way
+    ``test_rate_limit_wire_refusal`` already does it, so the assertion has
+    something to assert against.
+    """
+    import os
+
+    from faultmaven.config.settings import reset_settings
+    from tests.integration._app_rebuild import rebuild_app
+
+    previous = os.environ.get("SKIP_SERVICE_CHECKS")
+    os.environ["SKIP_SERVICE_CHECKS"] = "false"
+    reset_settings()
+    try:
+        rebuilt = rebuild_app()
+        names = [getattr(m.cls, "__name__", "") for m in rebuilt.user_middleware]
+        assert "IdempotencyMiddleware" in names, (
+            "the rebuild did not mount the body-buffering middleware this test "
+            "exists to order against"
+        )
+        _assert_ordering(
+            names,
+            body_readers=("DeduplicationMiddleware", "IdempotencyMiddleware"),
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("SKIP_SERVICE_CHECKS", None)
+        else:
+            os.environ["SKIP_SERVICE_CHECKS"] = previous
+        reset_settings()
+
+
+def _assert_ordering(names: list[str], body_readers: tuple[str, ...]) -> None:
+    """Starlette wraps in reverse registration order, so a LOWER index is
+    further out. The limiter must sit inside CORS (a refusal keeps its CORS
+    headers, so the Dashboard sees a real 413) and outside every middleware that
+    reads the body itself."""
+    limiter = names.index("RequestBodySizeLimitMiddleware")
     assert names.index("CORSMiddleware") < limiter, "the limiter escaped CORS"
-    for reads_the_body in ("DeduplicationMiddleware", "IdempotencyMiddleware"):
-        if reads_the_body in names:
-            assert limiter < names.index(reads_the_body), (
-                f"{reads_the_body} buffers the body and now sits outside the "
-                "limiter, so it reads an over-size body before it is refused"
-            )
+    for reads_the_body in body_readers:
+        assert reads_the_body in names, f"{reads_the_body} is not mounted"
+        assert limiter < names.index(reads_the_body), (
+            f"{reads_the_body} buffers the body and now sits outside the "
+            "limiter, so it reads an over-size body before it is refused"
+        )

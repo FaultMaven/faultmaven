@@ -1435,13 +1435,14 @@ def setup_middleware():
     # Unconditional: not behind `_is_test_environment()` or `SKIP_SERVICE_CHECKS`
     # the way several neighbours are, because a guard the test application does
     # not mount is a guard with no test.
-    from faultmaven.api.middleware.body_size import RequestBodySizeLimitMiddleware
+    from .api.middleware.body_size import RequestBodySizeLimitMiddleware
 
     app.add_middleware(RequestBodySizeLimitMiddleware)
-    logger.info(
-        "✅ Request body size limit: %sMB",
-        settings.upload.max_upload_size_mb,
-    )
+    if logging_enabled:
+        logger.info(
+            "✅ Request body size limit: %sMB",
+            settings.upload.max_upload_size_mb,
+        )
 
     # 11. CORS middleware — registered LAST, which makes it the OUTERMOST layer.
     #

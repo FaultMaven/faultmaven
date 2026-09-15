@@ -1,11 +1,9 @@
 """Refuse an over-size request body at the HTTP boundary (#1436).
 
 ``runbook_validator`` documents its own input contract, three times, as
-caller-supplied content "up to ``MAX_UPLOAD_SIZE_MB``". On the multipart paths
-that was true — each part is bounded by ``max_part_size`` and an explicit
-``UploadFile.size`` check. On the JSON routes it was false: nothing bounded them
-at all, so the statement the validator's ReDoS work was sized against did not
-hold for four of its callers.
+caller-supplied content "up to ``MAX_UPLOAD_SIZE_MB``", and #1395's ReDoS work
+was sized against that. On the JSON routes it was false: nothing bounded them at
+all.
 
 WHY A MIDDLEWARE, AND NOT A CHECK ON THOSE ROUTES. Two reasons, and the first is
 decisive.
@@ -16,7 +14,7 @@ decisive.
 route-level check, or a ``Depends`` on one, executes only after the process has
 already buffered and JSON-parsed the whole thing, for a caller who has not yet
 been authenticated. A guard that runs after the cost it exists to avoid is not a
-guard. Only something wrapping the ASGI ``receive`` can refuse first.
+guard.
 
 **And the enumeration would have been wrong again.** The issue that asked for
 this named two routes. There are four — ``PUT /knowledge/conversions/{id}/drafts/{id}``,
@@ -26,75 +24,94 @@ so they have no request model a field bound could even attach to. The gate is
 not the worst consumer either: on the suggestion route Presidio scans the body
 BEFORE the gate sees it, and on the document route a ``content`` key re-chunks
 and re-embeds through BGE-M3, which costs minutes rather than seconds and runs
-for any authenticated user. A per-route list would have had to find all four and
-stay correct as routes are added; a choke point does not.
+for any authenticated user.
 
-PURE ASGI, NOT ``BaseHTTPMiddleware``: the class has to wrap ``receive`` to
-count a chunked body, which ``BaseHTTPMiddleware``'s own stream re-wrapping
-makes unreliable.
+NEITHER ARM RAISES. Both refuse by sending the 413 themselves, BEFORE the
+downstream application is called, and that is not a style choice. The obvious
+implementation of the streaming arm raises an ``HTTPException`` from inside a
+``receive`` wrapper, and it does not survive this application's middleware
+stack: ``BaseHTTPMiddleware`` runs the inner app inside an anyio TaskGroup, so
+the exception re-emerges as an ``ExceptionGroup``, which is not an
+``HTTPException``, so FastAPI's body read takes its ``except Exception -> 400
+"There was an error parsing the body"`` branch. ``main.py`` mounts five
+``BaseHTTPMiddleware`` beneath this one, so that was unconditional in
+production — while a probe application holding only this middleware answered 413
+and looked correct. Refusing before dispatch removes the exception path
+entirely.
 
-THE TWO ARMS REFUSE DIFFERENTLY, and each has to. The ``Content-Length`` arm
-refuses BEFORE the application is called, so there is no handler beneath it —
-Starlette's ``ExceptionMiddleware`` is mounted inside the user stack, so an
-exception raised there would reach nothing and surface as a 500. It therefore
-builds the 413 itself. The counting arm raises from inside ``receive`` while the
-application IS running, so ``ExceptionMiddleware`` is beneath it and renders the
-house envelope; see ``_too_large`` for why that exception must be an
-``HTTPException`` and not a private sentinel. Both were verified against a real
-uvicorn server, not only ``TestClient`` — the first version of the counting arm
-answered 400 there.
+WHAT IT DOES NOT BOUND, stated because the first version of this docstring
+overstated it:
 
-``multipart/form-data`` IS DELIBERATELY EXEMPT. Those paths are already bounded
-per part, and bounding the whole body would be wrong in both directions: a
-``POST /cases/{id}/turns`` legitimately carries a file, a ``pasted_content`` and
-a ``query``, each separately allowed up to the cap, so one whole-body cap at the
-cap would refuse a legal request — and a cap loose enough to admit it would let a
-30 MB JSON body reach the gate, leaving the contract false at three times the
-limit. The residual is a JSON payload mislabelled ``multipart/form-data``: it is
-read into memory, fails to parse as a form, and is refused 422 by pydantic
-without reaching Presidio, the gate or the embedder. Memory only, and bounded on
-cloud by the ingress.
+* ``multipart/form-data`` is exempt. NOT because it is already bounded — it is
+  not; ``main.py`` says so itself ("file parts are unbounded at the parser"),
+  and the routes enforce ``MAX_UPLOAD_SIZE_MB`` per file only AFTER the parse,
+  by which point the part is already spooled. It is exempt because a whole-body
+  cap is the wrong instrument: ``POST /cases/{id}/turns`` legitimately carries a
+  file AND a ``pasted_content`` AND a ``query``, each separately allowed up to
+  the cap, so one whole-body cap at the cap would refuse a legal request, and a
+  cap loose enough to admit it would let a 30 MB JSON body through. Bounding
+  multipart properly means bounding the PARTS, which is the parser's job and a
+  separate change.
+* ``application/x-www-form-urlencoded`` is deliberately NOT exempt: Starlette
+  buffers a urlencoded body whole, so it carries JSON's hazard and gets JSON's
+  cap. Nothing legitimate loses — every client posts ``/turns`` as ``FormData``,
+  and the only urlencoded consumers are the OAuth token and revoke routes, whose
+  RFC 6749 bodies are a few hundred bytes.
+* A JSON payload mislabelled ``multipart/form-data`` is read into memory, fails
+  to parse as a form, and is refused 422 by pydantic without reaching Presidio,
+  the gate or the embedder. Memory only, and bounded on cloud by the ingress.
+* A refusal happens OUTSIDE the protection stack — rate limiting, request-id
+  injection and the structured request log all sit beneath this middleware — so
+  a flood of over-size requests is counted by none of them and appears only in
+  this module's own warning. That follows from having to sit outside the two
+  middlewares that buffer the body, and is the price of refusing before they do.
 """
 
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
-from fastapi import HTTPException
 from starlette.datastructures import Headers
+from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 logger = logging.getLogger(__name__)
 
-#: Body content types that own their own per-part bounds. See the module
-#: docstring for why a whole-body cap is the wrong instrument for these.
-_EXEMPT_CONTENT_TYPE_PREFIXES = ("multipart/form-data",)
+#: Body content types whose size is the PARSER's business, not this
+#: middleware's. See the module docstring — this is about the right instrument,
+#: not about multipart already being safe.
+_EXEMPT_CONTENT_TYPES = frozenset({"multipart/form-data"})
 
-#: Methods that carry no body worth bounding. GET/HEAD/OPTIONS with a body is
-#: legal but meaningless, and every health and metrics probe is one of these.
-_BODYLESS_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "DELETE"})
+#: Methods with no request body to bound. ``DELETE`` is NOT here: a DELETE body
+#: is unusual but legal, FastAPI will bind a request model to one, and a choke
+#: point whose whole argument is that it cannot go stale as routes are added
+#: must not carry a method-shaped hole. An earlier version listed it while the
+#: comment beside it named only these three.
+_BODYLESS_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
-def _too_large(size: int, cap: int) -> HTTPException:
-    """The refusal raised from inside the counting ``receive`` wrapper.
+def _declared_length(scope: Scope) -> Optional[int]:
+    """``Content-Length`` as an int, or ``None`` when absent or unparseable.
 
-    An ``HTTPException`` SPECIFICALLY, and this is not a style choice. FastAPI's
-    body read is wrapped in ``except HTTPException: raise`` / ``except Exception:
-    -> 400 "There was an error parsing the body"``. A private sentinel therefore
-    never reaches this middleware at all — it is swallowed and an over-size body
-    is reported to the caller as a malformed one. Measured against a real uvicorn
-    server before this was corrected: the chunked arm answered **400**, not 413.
-
-    Raising ``HTTPException`` instead lets FastAPI re-raise it, and Starlette's
-    ``ExceptionMiddleware`` — mounted INSIDE the user middleware stack — renders
-    it into the house ``{"detail": ...}`` envelope. So this path needs no
-    hand-built response, unlike the Content-Length path, which refuses before the
-    application is ever called and so has no handler beneath it.
+    The parse is isolated so its ``except`` cannot swallow anything else. An
+    earlier version wrapped the refusal call in the same ``try``, where a
+    ``ValueError`` raised while SENDING the response would have fallen through
+    to dispatching the application after a response had already started — which
+    the ASGI server answers with ``RuntimeError: Unexpected ASGI message``.
     """
-    return HTTPException(
-        status_code=413,
-        detail=f"Request body exceeds the {cap // (1024 * 1024)}MB limit.",
-    )
+    raw = Headers(scope=scope).get("content-length")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+async def _unused_receive() -> Message:  # pragma: no cover - never awaited
+    """A ``receive`` for a response with a fixed body, which never reads one."""
+    return {"type": "http.disconnect"}
 
 
 class RequestBodySizeLimitMiddleware:
@@ -108,12 +125,16 @@ class RequestBodySizeLimitMiddleware:
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
-    def _cap_bytes(self) -> int:
-        # Read per request from settings rather than captured at construction:
-        # the cloud deployment hot-reloads configuration, and a cap frozen at
-        # import time would silently keep the old value. Read from settings and
-        # not from `os.environ` — `main.py` does the latter for `max_part_size`
-        # and only agrees with settings by way of `load_dotenv` having run first.
+    @staticmethod
+    def _cap_bytes() -> int:
+        # Read per request rather than captured in ``__init__`` so a test can
+        # change the setting and see it take effect without rebuilding the app.
+        #
+        # NOT for hot reload: ``get_settings()`` returns a module-level
+        # singleton that changes only on an explicit ``reset_settings()``, and
+        # ``UploadSettings`` has no override path. An earlier version of this
+        # comment claimed hot reload and would have had the next reader size a
+        # change against behaviour the code does not have.
         from faultmaven.config.settings import get_settings
 
         return get_settings().upload.max_upload_size_mb * 1024 * 1024
@@ -123,80 +144,77 @@ class RequestBodySizeLimitMiddleware:
             await self.app(scope, receive, send)
             return
 
-        headers = Headers(scope=scope)
-        content_type = headers.get("content-type", "")
-        if content_type.startswith(_EXEMPT_CONTENT_TYPE_PREFIXES):
+        # Media types are case-insensitive (RFC 9110 §8.3.1) and carry
+        # parameters and surrounding space. Compared the way ``idempotency.py``
+        # already compares one: an earlier ``startswith`` on the raw header
+        # refused ``Multipart/Form-Data; boundary=x`` with a spurious 413.
+        content_type = Headers(scope=scope).get("content-type", "")
+        if content_type.split(";")[0].strip().lower() in _EXEMPT_CONTENT_TYPES:
             await self.app(scope, receive, send)
             return
 
         cap = self._cap_bytes()
 
         # (a) The declared length, when there is one. This is the path every
-        # real client takes — a browser `fetch` with a string body sets it, and
-        # nginx re-emits a buffered request with one — and it refuses before a
-        # single byte of body is read. h11 delivers exactly the declared count,
-        # so the header is a trustworthy upper bound rather than a hint.
-        declared = headers.get("content-length")
-        if declared is not None:
-            try:
-                if int(declared) > cap:
-                    await self._refuse(scope, send, int(declared), cap)
-                    return
-            except ValueError:
-                # Unparseable: fall through to counting. A malformed header is
-                # not a reason to skip the check.
-                pass
+        # real client takes — a browser ``fetch`` with a string body sets it,
+        # and nginx re-emits a buffered request with one — and it refuses before
+        # a single byte of body is read. h11 delivers exactly the declared
+        # count, so the header is a trustworthy upper bound, not a hint.
+        declared = _declared_length(scope)
+        if declared is not None and declared > cap:
+            await self._refuse(scope, send, declared, cap)
+            return
 
-        # (b) No usable Content-Length (`Transfer-Encoding: chunked`). Count as
-        # the body arrives and stop at the cap. Without this the check is
-        # bypassable with a single curl flag; with only this, a declared
-        # over-size body would be streamed in full before being refused.
+        # (b) No usable ``Content-Length`` (``Transfer-Encoding: chunked``).
+        # Read the body HERE, bounded, and only then dispatch — replaying what
+        # was read. See the module docstring for why this cannot raise from a
+        # ``receive`` wrapper instead. Buffering up to the cap is what the
+        # application does anyway, and it is bounded by the cap, which is the
+        # point.
+        buffered: list[Message] = []
         counted = 0
-
-        async def counting_receive() -> Message:
-            nonlocal counted
+        while True:
             message = await receive()
-            if message["type"] == "http.request":
-                counted += len(message.get("body", b""))
-                if counted > cap:
-                    logger.warning(
-                        "Request body refused: streamed past the %s byte cap (%s %s)",
-                        cap,
-                        scope.get("method"),
-                        scope.get("path"),
-                    )
-                    raise _too_large(counted, cap)
-            return message
+            buffered.append(message)
+            if message["type"] != "http.request":
+                break
+            counted += len(message.get("body", b""))
+            if counted > cap:
+                await self._refuse(scope, send, counted, cap)
+                return
+            if not message.get("more_body", False):
+                break
 
-        await self.app(scope, counting_receive, send)
+        replayed = iter(buffered)
+
+        async def replay_receive() -> Message:
+            try:
+                return next(replayed)
+            except StopIteration:
+                return await receive()
+
+        await self.app(scope, replay_receive, send)
 
     async def _refuse(self, scope: Scope, send: Send, size: int, cap: int) -> None:
-        """Emit the house 413 envelope directly.
+        """Answer 413 directly, without calling the application.
 
-        Directly, because Starlette's ``ExceptionMiddleware`` — which turns an
-        ``HTTPException`` into that envelope — is mounted INSIDE the user
+        Directly, because Starlette's ``ExceptionMiddleware`` — which renders an
+        ``HTTPException`` into the house envelope — is mounted INSIDE the user
         middleware stack, so nothing out here would catch one.
         """
-        import json
-
         logger.warning(
-            "Request body refused: %s bytes exceeds the %s byte cap (%s %s)",
+            "Request body refused: %d bytes exceeds the %d byte cap (%s %r)",
             size,
             cap,
             scope.get("method"),
+            # Repr'd: a percent-decoded path can contain a newline, and an
+            # unescaped one forges a log line.
             scope.get("path"),
         )
-        body = json.dumps(
-            {"detail": (f"Request body exceeds the {cap // (1024 * 1024)}MB limit.")}
-        ).encode("utf-8")
-        await send(
-            {
-                "type": "http.response.start",
-                "status": 413,
-                "headers": [
-                    (b"content-type", b"application/json"),
-                    (b"content-length", str(len(body)).encode("ascii")),
-                ],
-            }
+        response = JSONResponse(
+            status_code=413,
+            content={
+                "detail": f"Request body exceeds the {cap // (1024 * 1024)}MB limit."
+            },
         )
-        await send({"type": "http.response.body", "body": body})
+        await response(scope, _unused_receive, send)

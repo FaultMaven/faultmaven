@@ -1612,13 +1612,16 @@ def validate_and_score(content: str) -> tuple[ValidationResult, QualityScore]:
 #: buy little throughput anyway, and a semaphore leaves the default executor's
 #: workers free for the I/O-bound users that benefit from them.
 #:
-#: What this bounds is WORKER OCCUPANCY. Per-call duration is bounded
-#: separately, and now actually is: ``RequestBodySizeLimitMiddleware``
-#: (#1436) refuses a request body over ``MAX_UPLOAD_SIZE_MB`` at the HTTP
-#: boundary, so the "caller-supplied content up to MAX_UPLOAD_SIZE_MB" this
-#: module states elsewhere is true of the JSON routes as well as the multipart
-#: ones. It was not when this comment was first written — it then said "these
-#: two JSON routes", and there are four.
+#: What this bounds is WORKER OCCUPANCY, not per-call duration.
+#:
+#: Body size is bounded separately and, for the JSON routes, now actually is:
+#: ``RequestBodySizeLimitMiddleware`` (#1436) refuses a non-multipart request
+#: body over ``MAX_UPLOAD_SIZE_MB`` at the HTTP boundary. Stated precisely,
+#: because an earlier draft of this comment claimed the whole contract was now
+#: true and it is not: MULTIPART bodies are still bounded only after the parse
+#: (``main.py``: "file parts are unbounded at the parser"), so a caller reaching
+#: this gate through an upload route is bounded per file rather than at the
+#: wire. The comment this replaces said "these two JSON routes"; there are four.
 _GATE_CONCURRENCY = 4
 _gate_slots: Optional["asyncio.Semaphore"] = None
 
