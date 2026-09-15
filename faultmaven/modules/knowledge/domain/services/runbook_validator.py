@@ -1612,13 +1612,13 @@ def validate_and_score(content: str) -> tuple[ValidationResult, QualityScore]:
 #: buy little throughput anyway, and a semaphore leaves the default executor's
 #: workers free for the I/O-bound users that benefit from them.
 #:
-#: What this bounds is WORKER OCCUPANCY, not per-call duration. Nothing bounds
-#: the body these two JSON routes accept — there is no request-body-size
-#: middleware, and ``MAX_UPLOAD_SIZE_MB`` governs the multipart paths only — so
-#: on a standalone deployment a single call can still run arbitrarily long; on
-#: cloud the ingress' ``proxy-body-size`` is the only ceiling. That gap is
-#: pre-existing and is tracked separately; it is named here rather than implied
-#: so the next reader does not infer a per-call bound this module does not have.
+#: What this bounds is WORKER OCCUPANCY. Per-call duration is bounded
+#: separately, and now actually is: ``RequestBodySizeLimitMiddleware``
+#: (#1436) refuses a request body over ``MAX_UPLOAD_SIZE_MB`` at the HTTP
+#: boundary, so the "caller-supplied content up to MAX_UPLOAD_SIZE_MB" this
+#: module states elsewhere is true of the JSON routes as well as the multipart
+#: ones. It was not when this comment was first written — it then said "these
+#: two JSON routes", and there are four.
 _GATE_CONCURRENCY = 4
 _gate_slots: Optional["asyncio.Semaphore"] = None
 
