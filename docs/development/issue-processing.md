@@ -5,6 +5,28 @@ defect class that generates most of them. Written for #1453; the numbers it
 rests on are in that issue's evaluation comment and are re-derivable with
 `python scripts/backlog_metrics.py`.
 
+## Words used here
+
+Two words do a lot of work below, and one of them means two different
+things in this repository.
+
+**Seam.** The set of places in the code where one rule has to hold. Every
+place that writes a conversation row is one seam; every place that reads
+that table in order is another. A seam is not a file or a module, it is
+"all the copies of one rule", which is why a defect on a seam tends to have
+siblings. A finding is **on-seam** for a pull request when it lives in code
+that pull request is already changing, and **off-seam** when it does not.
+That is the whole test for whether it gets fixed there or filed as its own
+issue: the pull request already owns the code, so fixing it costs nothing
+extra and leaves no second instance behind.
+
+**Head.** The newest commit on a branch. A pull request's head moves every
+time a new commit is pushed to it, so "the final head" means the code as it
+stands after the last fix, not as it was when the pull request was opened.
+The distinction matters because a fix written to answer a review is itself
+new code that nobody has reviewed. Note the collision: **alembic head**,
+further down, is an unrelated term meaning the newest database migration.
+
 ## Why this exists
 
 The open-issue count sat between 50 and 63 for ten weeks while ~25 issues a
@@ -246,6 +268,19 @@ Each names where it is read from, because only the first is machine-read:
 The caused-per-lane rate is already 0.06; condition 3's target is that a
 change exposing an old reader is caught by the consumer-enumeration gate
 rather than by a follow-up.
+
+**None of the four may be read from a window in which the looking fell
+off.** A review does not create a defect, it records one that was already
+there, so the number of issues filed is partly a measure of how hard the
+period looked. Review is the largest single channel, at just under a third
+of everything filed since July. A cycle that skipped reviews would show a
+smaller residue inflow with the defect mass untouched, and would satisfy
+condition 1 by going blind. So the cycle report states what share of merged
+pull requests were reviewed, and a window where that share fell is not a
+window the conditions can be read from. The same caution applies to the
+open count generally: it moves with attention as well as with health, which
+is the whole reason this document measures the residue and the fix latency
+instead of the count.
 
 When they hold, the campaign's artefacts stay (the harness, the register,
 the metrics script, this procedure) and the queue goes on being processed

@@ -7,7 +7,10 @@ allow_all_tools: true
 
 One cycle of `docs/development/issue-processing.md`. Read that document
 first; this file is the procedure's runnable form and does not restate its
-reasoning. You are the **owning agent**: you refresh, dispatch, verify and
+reasoning. It also defines the two words used throughout both files: a
+**seam** is all the places one rule has to hold, and a **head** is the
+newest commit on a branch (distinct from the alembic head, which is the
+newest database migration). You are the **owning agent**: you refresh, dispatch, verify and
 report. Subagents work individual items. Nobody merges.
 
 ## Argument
@@ -142,6 +145,9 @@ Post one comment on the `Queue` issue:
 
 ### Refresh
 Dropped: … (why). Promoted: … . New issues classified: N (dup-rule: M).
+Merged PRs reviewed this window: N of M. (The stopping condition cannot be
+read from a window where this share fell: fewer reviews means fewer
+filings without meaning fewer defects.)
 
 ### Escalations
 - <what, which item, the two options>
