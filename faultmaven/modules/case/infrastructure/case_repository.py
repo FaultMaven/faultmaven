@@ -87,6 +87,51 @@ class CaseRepository(ABC):
         return dt.astimezone(timezone.utc).isoformat()
 
     @classmethod
+    def message_sort_key(cls, msg: Dict[str, Any]) -> tuple:
+        """The order every reader of ``case_messages`` uses (#1428).
+
+        ``(created_at, turn_number)`` — and deliberately NOT a
+        ``message_id`` tiebreaker, which is the mistake an earlier revision of
+        this made. A minted id is a uuid4: it carries no ordering information,
+        so using it to break a tie picks a WINNER AT RANDOM. Measured on a
+        same-turn pair sharing a timestamp, it rendered the assistant's answer
+        before the user's question, where the partial order had been returning
+        them correctly.
+
+        What actually orders a transcript is INSERTION order, and nothing in
+        the row records it. The SQL engines fall back to storage order for a
+        tie, which is insertion order in practice; Python's ``list.sort`` is
+        STABLE, so sorting on this key leaves tied rows in the order they were
+        appended. That is why the two agree, and why the key stops where it
+        does: a partial order that defers to insertion beats a total order
+        that overrules it.
+
+        A genuinely total AND correct order needs a monotonic sequence column
+        — see the follow-up issue. Until then this does not claim to be one.
+
+        ``created_at`` is canonicalised rather than ``str()``-ed, because
+        ``str(datetime)`` uses a SPACE separator that sorts before every
+        ISO-8601 row — the #1429 defect, which this method would otherwise
+        reintroduce for any caller applying it to rows it did not just write.
+        """
+        created = msg.get("created_at")
+        try:
+            created_key = cls._canonical_created_at(created) if created else ""
+        except (TypeError, ValueError):
+            # Unsortable is not worth raising from inside a sort: a row that
+            # got this far was accepted by ``normalise_message_row``.
+            created_key = str(created or "")
+        turn = msg.get("turn_number")
+        try:
+            turn_key = int(turn)
+        except (TypeError, ValueError):
+            # A non-numeric turn must not detonate inside ``list.sort`` and
+            # take the whole aggregate save down with it — the opaque failure
+            # ``normalise_message_row`` exists to replace with a named one.
+            turn_key = 0
+        return (created_key, turn_key)
+
+    @classmethod
     def normalise_message_row(
         cls,
         msg: Dict[str, Any],
@@ -1353,14 +1398,28 @@ class InMemoryCaseRepository(CaseRepository):
         return limited, total_count
 
     async def add_message(self, case_id: str, message_dict: dict) -> bool:
-        """Add message to case in memory."""
+        """Add message to case in memory.
+
+        Normalises exactly as the SQL backends' ``add_message`` does. Without
+        it this double accepted a row they would reject — and worse, stored it
+        incomplete, so the NEXT ``save()`` of that case raised on a row this
+        method had already reported success for, wedging the case for any test
+        that mixes the two writers.
+
+        A COPY, for the same reason as the SQL ones: this appends a new row
+        rather than conflicting onto an existing one, so nothing needs writing
+        back, and stamping the caller's dict would carry the first call's id
+        into a reused template.
+        """
         from datetime import timezone
 
         case = self._cases.get(case_id)
         if not case:
             return False
 
-        case.messages.append(message_dict)
+        case.messages.append(
+            self.normalise_message_row(dict(message_dict), stamp_created_at=True)
+        )
         case.message_count += 1
         case.last_activity_at = datetime.now(timezone.utc)
         return True
@@ -1368,12 +1427,20 @@ class InMemoryCaseRepository(CaseRepository):
     async def get_messages(
         self, case_id: str, limit: int = 50, offset: int = 0
     ) -> List[dict]:
-        """Get messages from case in memory."""
+        """Get messages from case in memory, in the readers' order (#1428).
+
+        Sorted on a COPY: ``get`` hands back the stored object by reference
+        and must not be mutated by a read, so the ordering lives here rather
+        than at ``save``. ``list.sorted`` is stable, so tied rows keep their
+        insertion order — which is what the SQL engines fall back to for a
+        tie, and what a transcript actually means.
+        """
         case = self._cases.get(case_id)
         if not case:
             return []
 
-        return case.messages[offset : offset + limit]
+        ordered = sorted(case.messages, key=self.message_sort_key)
+        return ordered[offset : offset + limit]
 
     async def update_activity_timestamp(self, case_id: str) -> bool:
         """Update last activity timestamp in memory."""
