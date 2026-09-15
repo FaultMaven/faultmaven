@@ -214,11 +214,20 @@ be the evidence are too new to have a track record:
 | single JWT mint surface | 2026-08-06 |
 | the other four | 2026-09-02 or later |
 
-The one guard with history is not encouraging on its own. It coexists with
-42 environment reads outside the config package, because its reach is three
-directories, and issue #1332 is open because a sibling compliance gate went
-**vacuous** — it scans a directory that does not exist, and nothing noticed
-until an audit. Guards rot, and their reach is where the leverage is.
+The one guard with history is actively discouraging, and it is worth being
+exact about why. It enforces "only the config package and the composition
+root read the environment". It watches `faultmaven/services`, `core` and
+`api`. Those three directories contain **zero** environment reads. All
+thirteen files that do read the environment sit in `infrastructure`,
+`modules`, `jobs` and `bootstrap`, which it never looks at, and they are
+reading real deployment config (`JOB_RUNNER_TYPE`, `ENVIRONMENT`,
+`ENABLE_TRACING`). The guard has been green for eight months because it
+looks only where there is nothing to find.
+
+Issue #1332 is the same failure one step further on: a sibling compliance
+gate scans a directory that does not exist, and nothing noticed until an
+audit. So a guard's REACH is the whole of its value, and a guard that is
+green tells you nothing until you know what it looked at.
 
 So the order below is a sequence to TEST, not a commitment to deliver.
 Item 2 is the test: it sits on the seam that produced six issues in three
@@ -248,9 +257,13 @@ campaign's first deliverable therefore is not another guard but the thing
 that makes a guard cheap:
 
 1. **A shared scan harness** (`tests/unit/architecture/_scan.py`): walk the
-   package and `tests/`, apply a regex or AST predicate, and assert both a
-   **floor** (the scan visited at least this many modules) and an
-   **identity control** (it visited this one). A guard becomes the predicate,
+   package and `tests/`, apply a regex or AST predicate, and assert a
+   **floor** (the scan visited at least this many modules), an **identity
+   control** (it visited this one), and — the requirement the config-purity
+   guard's eight green months argue for — **coverage**: the scan must
+   declare where the rule CAN be violated and fail if it did not look
+   there. A guard whose reach excludes every live violation is worse than
+   no guard, because it reports safety. A guard becomes the predicate,
    the expected N, and a docstring naming the issue: ~30 lines. It grows out
    of what exists — `tests/import_guard_ast.py` already holds the AST
    predicates for one family, and two tests carry a private `_scan(paths)`
