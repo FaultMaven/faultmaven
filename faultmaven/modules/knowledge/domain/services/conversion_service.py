@@ -71,6 +71,7 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     VALID_SYMPTOM_CLASSES,
     QualityScorer,
     RunbookValidator,
+    avalidate_and_score,
 )
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 from faultmaven.utils.frontmatter import match_frontmatter
@@ -1398,11 +1399,11 @@ class ConversionService:
                 root=self._data_dir,
             )
 
-            # Validate
-            validation = self._validator.validate_content(runbook_content)
-
-            # Score quality
-            quality = self._scorer.score_content(runbook_content)
+            # Off the event loop, and validating ONCE (#1417). This runs
+            # inside the conversion request, so the several seconds this costs
+            # on a large draft were paid by every other request the process was
+            # serving, not just this one.
+            validation, quality = await avalidate_and_score(runbook_content)
 
             quality_warning = None
             if quality.overall < QUALITY_WARNING_THRESHOLD:
@@ -2280,9 +2281,21 @@ class ConversionService:
             except RunbookPathEscape as exc:
                 raise self._refuse_escaping_draft(dm.id, exc) from exc
 
-            # Re-validate and re-score
-            validation = self._validator.validate_content(content)
-            quality = self._scorer.score_content(content)
+            # Off the event loop, and validating ONCE (#1417).
+            #
+            # NOTE the transaction. Alone among these call sites this one is
+            # inside ``async with self._db_session_factory()``, open since the
+            # authorization SELECT above, so the hop hands the loop back while
+            # still holding a connection — idle-in-transaction for as long as
+            # the gate runs. That is a deliberate trade and still a strict
+            # improvement: today the whole event loop stalls, which stops every
+            # request in the process; after this, one pooled connection is held
+            # and everything else keeps serving. Moving the gate out of the
+            # transaction entirely means authorize-close-compute-reopen, which
+            # adds a TOCTOU window on the draft row and rewrites the
+            # compensation ordering this method documents below — a separate
+            # change, deliberately not folded in here.
+            validation, quality = await avalidate_and_score(content)
 
             # Update database
             dm.validation_passed = validation.passed
@@ -2776,9 +2789,8 @@ status: draft
             root=self._data_dir,
         )
 
-        # Validate and score
-        validation_result = self._validator.validate_content(content)
-        quality = self._scorer.score_content(content)
+        # Off the event loop, and validating ONCE (#1417).
+        validation_result, quality = await avalidate_and_score(content)
 
         draft_id = generate_draft_id()
 
@@ -3183,9 +3195,10 @@ status: draft
                 skipped += 1
                 continue
 
-            # Validate
-            validation = self._validator.validate_content(content)
-            quality = self._scorer.score_content(content)
+            # Off the event loop, and validating ONCE (#1417). The scan
+            # walks every runbook on disk, so this is the site where the
+            # duplicated validation pass cost the most in aggregate.
+            validation, quality = await avalidate_and_score(content)
 
             draft_id = generate_draft_id()
             quality_warning = None
