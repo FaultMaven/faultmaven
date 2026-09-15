@@ -4666,14 +4666,6 @@ SURFACE_INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
         _PROBED,
         "case-addressed battery",
     ),
-    ("POST", "/api/v1/cases/sessions/{session_id}/case"): (
-        _EXEMPT,
-        "the handler resolves the session from the Redis-backed auth session "
-        "store before touching a case; with no store it 500s for the OWNER "
-        "too, so no positive control exists in-process. Its case-side effect "
-        "is the same allowlist the probed /cases/{case_id}/sessions battery "
-        "exercises.",
-    ),
     # --- reports -----------------------------------------------------------
     ("GET", "/api/v1/cases/{case_id}/reports"): (_PROBED, "case-nested listing"),
     ("GET", "/api/v1/cases/{case_id}/reports/{report_id}/download"): (
@@ -4831,7 +4823,13 @@ SURFACE_INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
         "carrying no organization column; with no store the listing answers "
         "the same empty page to every caller, so no control exists.",
     ),
-    ("POST", "/api/v1/sessions"): (_EXEMPT, "see GET /api/v1/sessions"),
+    # `POST /api/v1/sessions` is DELIBERATELY ABSENT, and its absence is the
+    # security property rather than an oversight. It was derived here on
+    # `query:user_id` — a parameter that let a caller name the identity the
+    # mint bound. Contract 6.0.0 removed it, so the route now takes no
+    # tenant-addressed identifier in its path, body or query and the
+    # classifier no longer derives it; an entry would fail the stale half of
+    # the inventory test. The same reasoning the teams note below records.
     ("GET", "/api/v1/sessions/{session_id}"): (_EXEMPT, "see GET /api/v1/sessions"),
     ("PUT", "/api/v1/sessions/{session_id}"): (_EXEMPT, "see GET /api/v1/sessions"),
     ("DELETE", "/api/v1/sessions/{session_id}"): (_EXEMPT, "see GET /api/v1/sessions"),
@@ -4964,8 +4962,8 @@ def test_every_tenant_scoped_route_is_in_the_inventory(probe_app):
 def _resolve_reason(reason: str) -> str:
     """Follow a ``see <METHOD> <path>`` cross-reference to the stated reason.
 
-    The Redis session routes share one reason between eleven entries. Repeating
-    it eleven times invites the copies to drift; pointing at it keeps one text
+    The Redis session routes share one reason between several entries.
+    Repeating it invites the copies to drift; pointing at it keeps one text
     and still forces that text to exist — a dangling pointer resolves to itself
     and fails the length rule below.
     """

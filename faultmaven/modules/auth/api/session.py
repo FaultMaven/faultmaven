@@ -283,7 +283,6 @@ class AuthSessionCreateRequest(BaseModel):
 @trace("api_create_session")
 async def create_session(
     request: Optional[AuthSessionCreateRequest] = Body(None),
-    user_id: Optional[str] = Query(None),
     session_service: AuthSessionService = Depends(get_session_service),
     response: Response = Response(),
     current_user: Optional["DevUser"] = Depends(get_current_user_optional),
@@ -297,9 +296,12 @@ async def create_session(
     - If `client_id` is new or not provided, creates fresh session
 
     **User ID Resolution:**
-    - Priority 1: `user_id` query parameter (explicit override)
-    - Priority 2: Authenticated user from JWT token (prevents anonymous session creation)
-    - Priority 3: Auto-generated anonymous user (development/unauthenticated only)
+    - Authenticated user from the JWT token, when one is presented
+    - Auto-generated anonymous user otherwise (development/unauthenticated only)
+
+    The identity minted is the server's answer, never the caller's. A request
+    cannot name the user its session is bound to; see the note on the
+    resolution below.
 
     **Session Timeout:**
     - Sessions automatically expire after `timeout_minutes` of inactivity
@@ -313,7 +315,6 @@ async def create_session(
 
     Args:
         request: Session creation parameters including optional client_id and timeout
-        user_id: Optional user identifier (query param)
         current_user: Optional authenticated user from JWT token
 
     Returns:
@@ -335,28 +336,38 @@ async def create_session(
         # Always set validated timeout in metadata
         metadata["timeout_minutes"] = validated_timeout_minutes
 
-        # Determine user_id priority:
-        # 1. Query parameter (explicit override)
-        # 2. Authenticated user (from JWT token)
-        # 3. Auto-generated anonymous user (development only)
-        if not user_id:
-            if current_user:
-                # Use authenticated user's ID from JWT token
-                user_id = current_user.user_id
-                logger.info(
-                    f"Using authenticated user_id for session: {user_id} (from JWT)"
-                )
-            else:
-                # Auto-generate anonymous user_id for development
-                import uuid
+        # WHOSE identity this session is minted for is the SERVER's answer.
+        #
+        # It used to be the caller's: a `user_id` query parameter took priority
+        # over the bearer token, so a request could name any identity and the
+        # authenticated user was never consulted or compared. That parameter is
+        # gone (contract 6.0.0). There are two answers left and no way for a
+        # request to choose between them:
+        #
+        #   1. the bearer token's subject, when one is presented;
+        #   2. a freshly generated anonymous id, when none is.
+        #
+        # The order matters more than it looks, because a session id is still
+        # accepted as proof of this identity in places (see the note in
+        # `api/middleware/idempotency.py`). Minting is therefore a credential
+        # operation, and a credential operation must not take dictation.
+        if current_user:
+            # Use authenticated user's ID from JWT token
+            user_id = current_user.user_id
+            logger.info(
+                f"Using authenticated user_id for session: {user_id} (from JWT)"
+            )
+        else:
+            # Auto-generate anonymous user_id for development
+            import uuid
 
-                user_id = f"user_{str(uuid.uuid4())[:8]}"
-                logger.warning(
-                    f"⚠️ Creating anonymous session (user_id={user_id}) without JWT token. "
-                    f"If user just logged in, frontend should pass JWT token in Authorization header. "
-                    f"This will cause cases to be invisible after re-login. "
-                    f"Client ID: {request.client_id if request else 'none'}"
-                )
+            user_id = f"user_{str(uuid.uuid4())[:8]}"
+            logger.warning(
+                f"⚠️ Creating anonymous session (user_id={user_id}) without JWT token. "
+                f"If user just logged in, frontend should pass JWT token in Authorization header. "
+                f"This will cause cases to be invisible after re-login. "
+                f"Client ID: {request.client_id if request else 'none'}"
+            )
 
         # Create session with metadata and client_id
         session_result = await session_service.create_session(

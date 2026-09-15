@@ -75,11 +75,12 @@ def build_app():
 
     ``session`` is what the session service resolves any id to (``None`` models
     an invalid/expired session); ``case`` is what the case service resolves any
-    id to (``None`` models an unknown or inaccessible case). ``case_id`` is the
-    id returned by ``get_or_create_case_for_session``.
+    id to (``None`` models an unknown or inaccessible case). ``case_service``
+    replaces the default fake outright, for a module asserting on a failure
+    inside the service.
     """
 
-    def _build(*, session=None, case=None, case_id="case-123", case_service=None):
+    def _build(*, session=None, case=None, case_service=None):
         app = FastAPI()
         # The app's own handlers, so a DOMAIN exception reaching a route here
         # is mapped the way production maps it. Without them a `NotFoundError`
@@ -108,11 +109,6 @@ def build_app():
                 return case_service
 
             # Signatures mirror CaseService exactly (see module docstring).
-            async def get_or_create_case_for_session(
-                session_id, user_id=None, force_new=False, title=None
-            ):
-                return case_id
-
             async def get_case(case_id, user_id=None, *, owner_only=False):
                 # `owner_only` is on the real signature and two routes under
                 # this scaffolding pass it. Omitting it here raised TypeError
@@ -121,10 +117,7 @@ def build_app():
                 # wrong reason, which is the failure this fake exists to avoid.
                 return case
 
-            return SimpleNamespace(
-                get_or_create_case_for_session=get_or_create_case_for_session,
-                get_case=get_case,
-            )
+            return SimpleNamespace(get_case=get_case)
 
         async def _current_user_optional():
             return None

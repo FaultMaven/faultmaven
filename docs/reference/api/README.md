@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 5.0.0
+**Version:** 6.0.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -1586,38 +1586,6 @@ for the specified query terms.
 **Responses:**
 
 - `200` — Successful Response (array of [`CaseSummary`](#casesummary))
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
-
----
-
-### `/api/v1/cases/sessions/{session_id}/case`
-
-#### POST
-
-**Create Case For Session**
-
-Create or get case for a session
-
-Associates a case with the given session. If no case exists, creates a new one.
-If force_new is true, always creates a new case.
-
-**Title Auto-Generation**: If title is not provided or empty, the backend
-automatically generates a unique title in the format: Case-YYMMDD-N
-(e.g., Case-261028-1, Case-261028-2). The sequence counter resets daily.
-
-**Tags:** `cases`
-
-**Auth:** None — this operation is reachable unauthenticated.
-
-**Parameters:**
-
-- `session_id` (path, required)
-- `title` (query, optional) — Case title (optional, auto-generated if not provided)
-- `force_new` (query, optional) — Force creation of new case
-
-**Responses:**
-
-- `200` — Successful Response (`object`)
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -4114,9 +4082,12 @@ Create or resume a troubleshooting session.
 - If `client_id` is new or not provided, creates fresh session
 
 **User ID Resolution:**
-- Priority 1: `user_id` query parameter (explicit override)
-- Priority 2: Authenticated user from JWT token (prevents anonymous session creation)
-- Priority 3: Auto-generated anonymous user (development/unauthenticated only)
+- Authenticated user from the JWT token, when one is presented
+- Auto-generated anonymous user otherwise (development/unauthenticated only)
+
+The identity minted is the server's answer, never the caller's. A request
+cannot name the user its session is bound to; see the note on the
+resolution below.
 
 **Session Timeout:**
 - Sessions automatically expire after `timeout_minutes` of inactivity
@@ -4130,7 +4101,6 @@ Create or resume a troubleshooting session.
 
 Args:
     request: Session creation parameters including optional client_id and timeout
-    user_id: Optional user identifier (query param)
     current_user: Optional authenticated user from JWT token
 
 Returns:
@@ -4139,10 +4109,6 @@ Returns:
 **Tags:** `session_management`
 
 **Auth:** None — this operation is reachable unauthenticated.
-
-**Parameters:**
-
-- `user_id` (query, optional)
 
 **Request body** (optional):
 

@@ -30,6 +30,103 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
+# 6.0.0 — MAJOR. Two REMOVALS that together close one gap: a caller could name
+# the identity a session was minted for, and then spend that session id as
+# proof of it.
+#
+#   * `POST /api/v1/sessions` loses its `user_id` QUERY PARAMETER. It resolved
+#     FIRST — the handler read `if not user_id: <consult the bearer>`, so a
+#     supplied value won unconditionally and the authenticated user was never
+#     looked at, let alone compared. The docstring called it "Priority 1:
+#     `user_id` query parameter (explicit override)" one line above a comment
+#     claiming Priority 2 "prevents anonymous session creation"; both were
+#     published, and the first was true.
+#   * `POST /api/v1/cases/sessions/{session_id}/case` is REMOVED. It took
+#     `get_current_user_optional` and resolved
+#     `user_id = current_user.user_id if current_user else session.user_id`, so
+#     with no `Authorization` header the owner of the created case came from
+#     the session id in the path. Its 401/503/500 arms are gone with it
+#     (#1398), as is `AuthSessionService.get_user_from_session`, which had zero
+#     callers in `faultmaven/` and a docstring advertising exactly this use.
+#
+# ONE bump, because they are one chain. Separately each is a smell; together
+# they are a two-step to writing cases under a chosen identity with no
+# credential at all — mint a session naming the victim, then present that
+# session id. Severity is HIGH self-hosted, where the API publishes 8090 on
+# 0.0.0.0 with no proxy in front of it; MEDIUM in cloud. It is
+# write-with-forged-attribution and identity confusion, NOT exfiltration:
+# there is no unauthenticated path to READ another user's case or KB content,
+# because every read route scopes at the repository layer.
+#
+# WHY REMOVE THE PARAMETER RATHER THAN CONSTRAIN IT. The obvious repair is to
+# keep `user_id` and reject it when it disagrees with the bearer. But then its
+# only legal value is one the server already holds, so every accepted request
+# carries redundant information and every rejected one carries wrong
+# information — the parameter can no longer say anything. That is not a
+# hardening, it is a parameter with no remaining purpose, kept alive to be
+# validated. It is also how this got here: the parameter was presumably added
+# when the server could not yet see the bearer, and it outlived the reason.
+# The same argument does not reach the ROUTE, which had a purpose; see below.
+#
+# WHY REMOVE THE ROUTE RATHER THAN REPAIR IT. Repairing it means
+# `require_authentication` plus dropping the session fallback — and what
+# remains then does nothing `POST /api/v1/cases` does not already do: that
+# route accepts the same `session_id`, validates it against the same session
+# service, requires a bearer, and creates the case with
+# `owner_id=current_user.user_id`, writing the same
+# `session:{id}:current_case_id` pointer. What the removed route added over it
+# was get-or-create and `force_new` — reachable only by a caller who already
+# holds the session id, and called by nothing. A second door to case creation
+# that no client opens is what 4.0.0 and 5.0.0 have been closing.
+#
+# Repair would also have left the route half-gated. With a bearer required but
+# no `session.user_id != current_user.user_id` check, an authenticated caller
+# naming somebody else's session still retargets that session's
+# `current_case_id` pointer — the identical defect #1390/#1393 fixed one route
+# over, on `POST /cases/sessions/{id}/resume/{case_id}`. Removing the route
+# answers that without adding a third copy of the two-gate rule.
+#
+# THE CLIENT-FIRST EVIDENCE, gathered before either removal rather than assumed
+# (`docs/development/api-contract-changes.md`: "Never remove something still
+# being read"; "Nobody should still be using it" is not evidence). What was
+# checked, in all four client repositories:
+#
+#   * The `user_id` query parameter. faultmaven-copilot posts to
+#     `/api/v1/sessions` from ONE place,
+#     `packages/copilot-ui/lib/session/client-session-manager.ts`, with a JSON
+#     body and NO query string; the Dashboard reaches the same code through the
+#     shared package. Both repositories' `api.generated.ts` DECLARE the
+#     parameter (`create_session_api_v1_sessions_post.parameters.query.user_id`)
+#     and nothing populates it — a declaration is what a generator emits, not
+#     what a client sends. Neither faultmaven-slack-agent nor
+#     faultmaven-website posts to the route at all — the slack agent's
+#     `faultmaven/client.py` reaches `/api/v1/cases` and
+#     `/api/v1/cases/{id}/turns` and no session route.
+#     It is not a field on `AuthSessionCreateRequest`, so no body
+#     carries it either: `tests/load/locustfile.py` puts `user_id` in the JSON,
+#     where Pydantic's default `extra='ignore'` has always dropped it. No test
+#     in this repository passes it as a query parameter.
+#   * The removed route. Case creation goes through `POST /api/v1/cases` in
+#     both clients that create cases — `packages/copilot-ui/lib/api/services/
+#     case-service.ts` and faultmaven-slack-agent's `faultmaven/client.py`. The
+#     only occurrences of `cases/sessions` in either frontend are the generated
+#     type declarations; there is no runtime caller in any of the four repos.
+#
+# WHAT IS DELIBERATELY NOT IN THIS CHANGE. `POST /api/v1/sessions` still does
+# not require authentication, and that is not an oversight — adding it is a
+# COORDINATED two-repository release, not a server fix. `getAuthHeaders()` in
+# faultmaven-copilot (`packages/copilot-ui/lib/api/fetch-utils.ts`) catches a
+# failed `transport.accessToken()`, logs a warning and returns headers WITHOUT
+# `Authorization` — "the request goes out unauthenticated", in its own comment
+# — so a signed-in user whose token refresh stumbles mints header-less today
+# and the server rescues them anonymously. `client.ts` then treats a 401 with
+# no credential as the RECOVERABLE path and re-mints rather than signing out,
+# deliberately, citing copilot issue #99. Requiring auth at the mint converts
+# that silent rescue into a retry loop in the field. The remaining
+# unauthenticated session routes, and the `GET /sessions` enumeration they
+# would become the day `RedisSessionStore.list_sessions()` stops being a stub,
+# are filed as their own issue.
+#
 # 5.0.0 — MAJOR. Five published operations that do nothing they claim are
 # REMOVED from the session router, along with the request model one of them
 # required (#1425, #1431). One bump, because they are one defect wearing five
@@ -1025,4 +1122,4 @@ asked to accept, and it belongs to a person.
 # never share a version — a number that cannot tell two contracts apart is not
 # doing its job — so this moves rather than collides, and both entries stay.
 # They describe unrelated surfaces.
-API_CONTRACT_VERSION = "5.0.0"
+API_CONTRACT_VERSION = "6.0.0"

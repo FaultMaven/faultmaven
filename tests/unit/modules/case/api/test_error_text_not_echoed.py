@@ -52,7 +52,8 @@ _INTERNAL_ERROR = (
 )
 
 SESSION_ID = "sess-leak-0001"
-PATH = f"/api/v1/cases/sessions/{SESSION_ID}/case"
+CASE_ID = "case-123"
+PATH = f"/api/v1/cases/sessions/{SESSION_ID}/resume/{CASE_ID}"
 
 
 def _assert_no_leak(body_text: str) -> None:
@@ -68,19 +69,26 @@ def _assert_no_leak(body_text: str) -> None:
 async def test_500_body_does_not_echo_the_exception(build_app, call_api):
     """A representative bare-except 500 arm, driven end to end.
 
-    ``create_case_for_session`` is the stand-in: its ``except Exception`` arm
-    is reached by any failure inside the handler body, here a service that
-    raises ``ServiceException``.
+    ``resume_case_in_session`` is the stand-in: its ``except Exception`` arm is
+    reached by any failure inside the handler body after both gates pass, here
+    a service that raises ``ServiceException``.
+
+    It replaced ``create_case_for_session``, which was the stand-in until
+    contract 6.0.0 removed that route. The choice of route is incidental — the
+    two class guards below are the load-bearing assertions; this one exists to
+    prove the class guards are asserting about a body a client really receives.
     """
     from types import SimpleNamespace
 
-    async def get_or_create_case_for_session(
-        session_id, user_id=None, force_new=False, title=None
-    ):
+    async def get_case(case_id, user_id=None, *, owner_only=False):
+        return SimpleNamespace(case_id=CASE_ID, user_id="user-1")
+
+    async def resume_case_in_session(case_id, session_id, user_id):
         raise ServiceException(_INTERNAL_ERROR)
 
     failing_service = SimpleNamespace(
-        get_or_create_case_for_session=get_or_create_case_for_session
+        get_case=get_case,
+        resume_case_in_session=resume_case_in_session,
     )
     app = build_app(
         session=SimpleNamespace(user_id="user-1"), case_service=failing_service
@@ -91,7 +99,7 @@ async def test_500_body_does_not_echo_the_exception(build_app, call_api):
     assert response.status_code == 500, response.text
     _assert_no_leak(response.text)
     # The generic replacement still tells the caller which operation failed.
-    assert response.json()["detail"] == "Failed to manage session case"
+    assert response.json()["detail"] == "Failed to resume case (unexpected error)"
 
 
 def _routes_source() -> pathlib.Path:
