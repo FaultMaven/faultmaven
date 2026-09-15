@@ -54,7 +54,15 @@ class CaseCreateRequest(BaseModel):
 
     session_id: Optional[str] = Field(
         default=None,
-        description="Session ID for authentication and case association (restored from old implementation)",
+        description=(
+            "The caller's OWN session, to associate the new case with. It is "
+            "NOT how this request is authenticated — the bearer token is, and "
+            "a session id naming a session that is not the bearer's is "
+            "refused (401 SESSION_EXPIRED, the same answer as an expired one, "
+            "so the two cannot be told apart). The description said 'for "
+            "authentication' until contract 6.0.0, which is the confusion "
+            "that PR removed."
+        ),
     )
 
     # Note: user_id and organization_id are derived from authentication context

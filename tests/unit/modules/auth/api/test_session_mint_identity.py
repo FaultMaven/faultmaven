@@ -43,29 +43,65 @@ from faultmaven.api.v1.auth_dependencies import get_current_user_optional
 from faultmaven.api.v1.dependencies import get_session_service
 from faultmaven.modules.auth.api.session import create_session
 from faultmaven.modules.auth.api.session import router as session_router
+from faultmaven.modules.auth.domain.services.auth_session_service import (
+    AuthSessionService,
+)
 
 BEARER_USER = "user-authenticated-01"
 NAMED_BY_CALLER = "user-someone-else-99"
 
 
+#: What the stand-in reports as the second half of its return. Named so a test
+#: can assert the route read the SERVICE's answer rather than the value its own
+#: fallback invents — which is False, and therefore indistinguishable from a
+#: real one if the fake reports False too.
+RESUMED = True
+
+
+async def _create_session_fake(user_id, client_id=None, metadata=None):
+    """Stands in for ``AuthSessionService.create_session``.
+
+    Signature-faithful, and both halves of that are load-bearing:
+
+    * **The parameter ORDER is the real one** — ``(user_id, client_id,
+      metadata)``. Spelled ``(user_id, metadata, client_id)`` it binds
+      correctly only for as long as the route keeps passing the last two by
+      keyword; the day someone passes them positionally, ``metadata`` lands in
+      ``client_id`` and every test here stays green.
+    * **It returns the real SHAPE**, ``(SessionContext, resumed)``. The handler
+      unpacks a tuple and falls back to ``(result, False)`` for anything else,
+      so a bare object sent every assertion in this module through the FALLBACK
+      arm — a branch production never takes, on a route whose ``session_resumed``
+      is read from the value that fallback invents.
+
+    ``test_the_stand_in_matches_the_real_service_signature`` keeps the first of
+    those true as the real service changes; ``session_resumed`` in the vacuity
+    control keeps the second true.
+    """
+    session = SimpleNamespace(
+        session_id="sess-minted-0001",
+        user_id=user_id,
+        created_at=datetime.now(timezone.utc),
+    )
+    return session, RESUMED
+
+
 def _build_app(*, current_user):
     """Mount the real session router; capture what the service is asked for.
 
-    ``app.state.minted`` collects the positional ``user_id`` of every
-    ``create_session`` call — the artifact these tests read, rather than a value
-    reconstructed from the same inputs the route saw.
+    ``app.state.minted`` collects the ``user_id`` of every ``create_session``
+    call — the artifact these tests read, rather than a value reconstructed
+    from the same inputs the route saw.
     """
     app = FastAPI()
     app.include_router(session_router, prefix="/api/v1")
     app.state.minted = []
 
     async def _session_service():
-        async def create_session_impl(user_id, metadata=None, client_id=None):
+        async def create_session_impl(user_id, client_id=None, metadata=None):
             app.state.minted.append(user_id)
-            return SimpleNamespace(
-                session_id="sess-minted-0001",
-                user_id=user_id,
-                created_at=datetime.now(timezone.utc),
+            return await _create_session_fake(
+                user_id, client_id=client_id, metadata=metadata
             )
 
         return SimpleNamespace(create_session=create_session_impl)
@@ -142,6 +178,30 @@ async def test_the_authenticated_mint_still_binds_the_bearer():
 
     assert response.status_code == 201, response.text
     assert app.state.minted == [BEARER_USER]
+    # And that the route read the SERVICE's answer rather than the one its
+    # `else: was_resumed = False` fallback invents — which is what a stand-in
+    # returning a bare object silently exercised instead.
+    assert response.json()["session_resumed"] is RESUMED
+
+
+@pytest.mark.unit
+def test_the_stand_in_matches_the_real_service_signature():
+    """The fake takes what the real ``create_session`` takes, in that order.
+
+    Kept as an assertion rather than as a comment because the failure it
+    guards against is invisible at the call site: the route passes
+    ``client_id`` and ``metadata`` by keyword, so a stand-in with them
+    transposed binds correctly today and mis-binds the moment anybody passes
+    them positionally — with these tests still green, still asserting about a
+    ``user_id`` that happens to be first either way.
+
+    ``self`` is dropped: the fake is a plain function and the real one is a
+    method, and that difference is not drift.
+    """
+    real = inspect.signature(AuthSessionService.create_session)
+    fake = inspect.signature(_create_session_fake)
+
+    assert list(fake.parameters) == [name for name in real.parameters if name != "self"]
 
 
 @pytest.mark.unit

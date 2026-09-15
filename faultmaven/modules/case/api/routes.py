@@ -1003,14 +1003,86 @@ async def create_case(
     case_service = check_case_service_available(case_service)
 
     try:
-        # Validate session if provided (restored from old implementation)
+        # The session named in the BODY is an ARGUMENT, not a licence over
+        # somebody else's (#1390, #1393, #1398).
+        #
+        # Without this, naming SOMEONE ELSE'S session id retargets their
+        # `session:{id}:current_case_id` pointer at a case of the caller's
+        # choosing: the owner's next turn either lands in the caller's case (if
+        # they can reach it) or silently abandons the case they were working.
+        # That is the identical defect fixed one route over on
+        # `POST /cases/sessions/{id}/resume/{case_id}`, reached through a
+        # different parameter — the session id arrives in the request body
+        # here rather than in the path, which changes nothing about what it
+        # buys. The route required a bearer all along and still asked only
+        # whether the session EXISTED; existence is not ownership.
+        #
+        # ORDERING. The pointer write is inside `CaseService.create_case`, and
+        # inside it BEFORE `repository.save`, so it lands ahead of every
+        # failure path this route has — exactly as the pre-fix 404 on the
+        # resume route never prevented the retarget there. The gate therefore
+        # has to be resolved HERE, before the service is called at all, and
+        # cannot be folded into a later check. Unlike the resume route this one
+        # names a single resource — the case does not exist yet — so there is
+        # no second gate to order against and no ambiguity about which refusal
+        # a cross-tenant probe is exercising.
         if request.session_id:
-            session = await session_service.get_session(
-                request.session_id, validate=True
-            )
-            if not session:
+            # `get_session` RAISES rather than returning None when it cannot
+            # answer — `ServiceException("Session store not configured")` is
+            # the shipped case. Treating it as a nullable return let that reach
+            # this handler's own `except ServiceException` arm and answer 500
+            # "Failed to create case" on a request the server simply could not
+            # evaluate. An unevaluable gate is a 503, which is the rule
+            # `faultmaven/api/routes/sessions.py` already states for its own:
+            # "503 if the case service is unavailable (the gate cannot be
+            # evaluated, so nothing is served)".
+            try:
+                session = await session_service.get_session(
+                    request.session_id, validate=True
+                )
+            except (ServiceException, SessionException) as exc:
+                # BOTH families. `ServiceException("Session store not
+                # configured")` is the unconfigured case; a store that IS
+                # configured and unreachable raises `SessionStoreException`,
+                # which descends from `SessionException` and NOT from
+                # `ServiceException`. Catching one made two spellings of "the
+                # gate could not be evaluated" answer 503 and 500 respectively
+                # — and here the second spelling escaped the handler entirely,
+                # because `SessionException` has no exception handler
+                # registered and nothing below catches it.
                 logger.warning(
-                    f"Invalid or expired session: {request.session_id}",
+                    f"Cannot evaluate session ownership for {request.session_id}: {exc}",
+                    extra={"correlation_id": correlation_id},
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Session service unavailable",
+                    headers={"x-correlation-id": correlation_id},
+                )
+
+            if session is None or session.user_id != current_user.user_id:
+                # ONE answer for "no such session" and "not yours", for the
+                # reason the resume route gives: naming another user's session
+                # must not be distinguishable from naming one that does not
+                # exist. The answer is this route's EXISTING 401
+                # `SESSION_EXPIRED` rather than the resume route's 404,
+                # because the first half of that pair is already published
+                # here and the two have to stay indistinguishable. Its
+                # remediation fits both: the session id the caller is holding
+                # is no good to them and a fresh one will work, which is what
+                # "refresh the page to continue" already tells them to get.
+                #
+                # The LOG distinguishes them, because an operator needs to see
+                # an attempt and the log is not published to the caller.
+                logger.warning(
+                    "Refusing case creation on session %s for %s: %s",
+                    request.session_id,
+                    current_user.user_id,
+                    (
+                        "invalid or expired session"
+                        if session is None
+                        else "session belongs to another user"
+                    ),
                     extra={"correlation_id": correlation_id},
                 )
                 error_response = ErrorResponse(

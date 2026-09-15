@@ -83,8 +83,33 @@ asked to accept, and it belongs to a person.
 # no `session.user_id != current_user.user_id` check, an authenticated caller
 # naming somebody else's session still retargets that session's
 # `current_case_id` pointer — the identical defect #1390/#1393 fixed one route
-# over, on `POST /cases/sessions/{id}/resume/{case_id}`. Removing the route
-# answers that without adding a third copy of the two-gate rule.
+# over, on `POST /cases/sessions/{id}/resume/{case_id}`.
+#
+# AND POINTING CALLERS AT `POST /api/v1/cases` DID NOT ANSWER THAT, because
+# that route HAD THE SAME DEFECT. It took `session_id` from the body, asked
+# only `if not session: 401`, and handed the id to `CaseService.create_case`,
+# which writes the pointer — so the argument above ("what remains does nothing
+# `POST /api/v1/cases` does not already do") was true of the retarget as well.
+# Removing one door while the surviving one stands open is not a fix, it is a
+# relocation. So the gate is ADDED to `create_case` in this same change, and
+# only then does the removal answer the half-gating without a third copy of
+# the two-gate rule. The gate mirrors the resume route's: `get_session` may
+# RAISE rather than return None (`ServiceException("Session store not
+# configured")`, or `SessionStoreException` for a configured-but-unreachable
+# store — two families, one meaning), and an unevaluable gate answers 503
+# rather than the 500 it used to; "no such session" and "not yours" answer
+# identically, as this route's existing 401 SESSION_EXPIRED, because the first
+# was already published here and the two must not be distinguishable. It is
+# resolved BEFORE the service is called, because the pointer write is inside
+# `create_case` and ahead of its own `repository.save`, so a later refusal
+# would leave the retarget done.
+#
+# `CaseCreateRequest.session_id`'s DESCRIPTION changes with it: it said
+# "Session ID for authentication and case association", which is the exact
+# claim this entry exists to retire. Prose only — `check_contract_version.py`
+# strips descriptions before comparing, so it moves no version — but it is
+# published to every client that regenerates its types, and leaving it would
+# have shipped the contradiction inside the fix.
 #
 # THE CLIENT-FIRST EVIDENCE, gathered before either removal rather than assumed
 # (`docs/development/api-contract-changes.md`: "Never remove something still
@@ -122,10 +147,27 @@ asked to accept, and it belongs to a person.
 # and the server rescues them anonymously. `client.ts` then treats a 401 with
 # no credential as the RECOVERABLE path and re-mints rather than signing out,
 # deliberately, citing copilot issue #99. Requiring auth at the mint converts
-# that silent rescue into a retry loop in the field. The remaining
-# unauthenticated session routes, and the `GET /sessions` enumeration they
-# would become the day `RedisSessionStore.list_sessions()` stops being a stub,
-# are filed as their own issue.
+# that silent rescue into a retry loop in the field.
+#
+# The remaining unauthenticated session routes are filed as #1447, and ONE of
+# them is not a future hazard. `GET /api/v1/sessions` declares no auth
+# dependency at all and accepts a `user_id` FILTER, and the enumeration it
+# performs is already live — not, as this entry first claimed, pending "the day
+# `RedisSessionStore.list_sessions()` stops being a stub". That store's stub is
+# only one of two implementations. `MinimalSessionService`
+# (`_container_impl._create_minimal_session_service`) ships a WORKING
+# `list_sessions`, filtered by `user_id`, and `create_session_service` installs
+# it whenever the real service cannot be constructed — "Reachable in
+# PRODUCTION, not only under test", in its own docstring — as does
+# `_create_minimal_container()` outright. Measured on that path with no
+# `Authorization` header: `GET /api/v1/sessions?user_id=<victim>` returns that
+# user's session ids, and the unfiltered call returns EVERY session id with the
+# user it is bound to. By this entry's own thesis a session id is worth
+# something on its own, so that is a list of credentials and of the identities
+# they carry. Cloud fails the boot rather than degrading
+# (`settings.must_not_degrade`), so the exposure is self-hosted. Re-filed at
+# that severity in #1447 rather than fixed here: it is a different route on a
+# different router, and it needs the same coordinated release the mint does.
 #
 # 5.0.0 — MAJOR. Five published operations that do nothing they claim are
 # REMOVED from the session router, along with the request model one of them
