@@ -645,7 +645,7 @@ class SQLiteCaseRepository(CaseRepository):
                    author_id
             FROM case_messages
             WHERE case_id = :case_id
-            ORDER BY created_at ASC
+            ORDER BY created_at ASC, turn_number ASC
         """)
         result = await self.db.execute(query, {"case_id": case_id})
         rows = result.fetchall()
@@ -1108,7 +1108,7 @@ class SQLiteCaseRepository(CaseRepository):
                    created_at, token_count, metadata, author_id
             FROM case_messages
             WHERE case_id IN ({placeholders})
-            ORDER BY case_id, created_at ASC
+            ORDER BY created_at ASC, turn_number ASC
         """)
         rows = (await self.db.execute(query, params)).fetchall()
 
@@ -2051,7 +2051,7 @@ class SQLiteCaseRepository(CaseRepository):
                        author_id
                 FROM case_messages
                 WHERE case_id = :case_id
-                ORDER BY created_at ASC
+                ORDER BY created_at ASC, turn_number ASC
                 LIMIT :limit OFFSET :offset
             """)
 

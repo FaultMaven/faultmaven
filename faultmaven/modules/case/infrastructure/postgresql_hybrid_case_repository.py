@@ -477,7 +477,19 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     ) as uploaded_files_data,
 
                     -- Case messages via a correlated subquery with an explicit
-                    -- ORDER BY (matches the SQLite path's `ORDER BY created_at`).
+                    -- ORDER BY. Every reader of case_messages orders by
+                    -- (created_at, turn_number) and defers ties to insertion
+                    -- order; `tests/unit/architecture/
+                    -- test_message_read_order_is_uniform.py` enforces that
+                    -- across all five, which is the relation a comment cannot
+                    -- hold on its own (#1428). Do NOT add a message_id
+                    -- tiebreaker: it is a uuid4, so it orders ties at random
+                    -- and inverts same-turn exchanges.
+                    --
+                    -- This comment used to claim it "matches the SQLite path's
+                    -- ORDER BY created_at". It did not -- it carried a
+                    -- turn_number tiebreaker the others lacked -- so the
+                    -- divergence was documented as parity.
                     -- Do NOT fold this back into a `json_agg(DISTINCT ...)` over a
                     -- joined `case_messages`: DISTINCT makes PostgreSQL sort the
                     -- aggregated jsonb objects shortest-key-first — i.e. by `role`
@@ -1679,7 +1691,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                        author_id
                 FROM case_messages
                 WHERE case_id = :case_id
-                ORDER BY created_at ASC
+                ORDER BY created_at ASC, turn_number ASC
                 LIMIT :limit OFFSET :offset
             """)
 

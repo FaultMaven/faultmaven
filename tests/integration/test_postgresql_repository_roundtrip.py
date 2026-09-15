@@ -1132,3 +1132,57 @@ async def test_search_state_is_a_where_clause_not_a_post_filter(pg_repo):
     )
     assert len(narrowed_page) == 2
     assert narrowed_total == 2
+
+
+@pytest.mark.asyncio
+async def test_message_read_order_is_total_and_agreed(pg_repo, pg_engine):
+    """The #1428 divergence, on the backend where it was measured.
+
+    PostgreSQL reads messages two ways: ``get()`` aggregates them inside the
+    big case query, ``get_messages()`` runs a plain SELECT. They carried
+    DIFFERENT order-bys — the aggregate had a ``turn_number`` tiebreaker and
+    the plain one did not — so two rows sharing a ``created_at`` came back in
+    OPPOSITE orders depending on which reader a caller used.
+
+    Unlike SQLite this is a real temporal comparison (``timestamptz``), so it
+    needs its own test: equal timestamps here are equal instants, not equal
+    strings.
+    """
+    session = pg_repo.db
+    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    user_id = f"user_{uuid4().hex[:8]}"
+    await seed_enterprises(session, [enterprise_id])
+    await seed_users(session, [user_id])
+    case = _make_case(enterprise_id, user_id)
+
+    same = "2026-06-13T10:15:30.123456+00:00"
+    for mid, turn, content in [
+        ("msg_ccc", 2, "turn 2 second"),
+        ("msg_aaa", 1, "turn 1 first"),
+        ("msg_bbb", 2, "turn 2 first"),
+    ]:
+        case.messages.append(
+            {
+                "message_id": mid,
+                "role": "user",
+                "content": content,
+                "turn_number": turn,
+                "created_at": same,
+            }
+        )
+    await pg_repo.save(case)
+
+    other_session_factory = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with other_session_factory() as other:
+        repo = PostgreSQLHybridCaseRepository(other)
+        via_get = [m.get("content") for m in (await repo.get(case.case_id)).messages]
+        via_get_messages = [
+            m.get("content") for m in await repo.get_messages(case.case_id)
+        ]
+
+    expected = ["turn 1 first", "turn 2 first", "turn 2 second"]
+    assert via_get == expected
+    assert via_get_messages == expected, (
+        f"the two readers disagree: get()={via_get} "
+        f"get_messages()={via_get_messages}"
+    )

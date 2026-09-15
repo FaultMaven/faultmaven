@@ -1817,3 +1817,300 @@ class TestSearchStateReachesTheWhereClause:
 
         assert len(page) == 2
         assert total == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestMessageReadOrderAgrees:
+    """Every reader of ``case_messages`` returns the same order (#1428).
+
+    The reported defect was that the readers disagreed: only PostgreSQL's
+    aggregate ``get()`` had a ``turn_number`` tiebreaker, so two rows sharing a
+    ``created_at`` came back one way through ``get()`` and the other way
+    through ``get_messages()``. All five now use ``(created_at, turn_number)``.
+
+    **Why the order stops there.** An earlier revision added ``message_id`` as
+    a final tiebreaker to make the order *total*. That was worse than the bug:
+    a minted id is a uuid4, so it breaks ties AT RANDOM, and a same-turn pair
+    sharing a timestamp rendered assistant-before-user about half the time —
+    where the partial order had been returning them correctly, because the
+    engines fall back to storage (insertion) order for a tie.
+
+    Insertion order is what a transcript actually means, and no column records
+    it. So the key defers to it rather than overruling it, and the in-memory
+    double uses a STABLE sort to match. A genuinely total *and* correct order
+    needs a monotonic sequence column; that is filed, not faked here.
+    """
+
+    def _fresh_session(self, engine):
+        return sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)()
+
+    def _case(self, case_id: str):
+        from faultmaven.modules.case.domain.models import (
+            Case,
+            CaseState,
+            DocumentationData,
+            InquiryData,
+            InvestigationProgress,
+        )
+
+        return Case(
+            case_id=case_id,
+            user_id="user_001",
+            enterprise_id="00000000-0000-0000-0000-000000000001",
+            title="read order",
+            state=CaseState.INQUIRY,
+            inquiry=InquiryData(),
+            documentation=DocumentationData(),
+            progress=InvestigationProgress(),
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+
+    def _repo(self, session):
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
+        )
+
+        return SQLiteCaseRepository(session)
+
+    #: One timestamp for every row, so ``created_at`` decides nothing.
+    SAME = "2026-06-13T10:15:30.123456+00:00"
+
+    #: A same-turn exchange whose ids sort AGAINST the conversation: the user
+    #: asks first but its id is higher. Any id-based tiebreaker inverts this
+    #: pair, which is exactly the regression an earlier revision shipped — and
+    #: which its tests could not see, because they had picked ids that happened
+    #: to agree with the intended order.
+    EXCHANGE = [
+        ("msg_zzz_user", "user", 1, "1. user asks"),
+        ("msg_aaa_asst", "assistant", 1, "2. assistant answers"),
+    ]
+
+    def _seed(self, case, rows):
+        for mid, role, turn, content in rows:
+            case.messages.append(
+                {
+                    "message_id": mid,
+                    "role": role,
+                    "content": content,
+                    "turn_number": turn,
+                    "created_at": self.SAME,
+                }
+            )
+
+    async def test_a_same_turn_exchange_keeps_its_conversational_order(
+        self, sqlite_session, sqlite_engine
+    ):
+        """The regression guard: the question must precede the answer.
+
+        Both rows share a turn and a timestamp, so only the fallback decides —
+        and the fallback must be insertion order, not the ids.
+        """
+        case_id = f"case_{uuid4().hex[:12]}"
+        case = self._case(case_id)
+        self._seed(case, self.EXCHANGE)
+        await self._repo(sqlite_session).save(case)
+
+        async with self._fresh_session(sqlite_engine) as other:
+            repo = self._repo(other)
+            via_get = [m["role"] for m in (await repo.get(case_id)).messages]
+            via_get_messages = [m["role"] for m in await repo.get_messages(case_id)]
+
+        assert via_get == ["user", "assistant"], f"inverted exchange: {via_get}"
+        assert via_get_messages == ["user", "assistant"]
+
+    async def test_the_two_readers_agree_on_equal_timestamps(
+        self, sqlite_session, sqlite_engine
+    ):
+        """The reported divergence: ``get()`` vs ``get_messages()``.
+
+        Rows appended in neither turn order nor id order, so neither can
+        satisfy the assertion by accident.
+        """
+        case_id = f"case_{uuid4().hex[:12]}"
+        case = self._case(case_id)
+        self._seed(
+            case,
+            [
+                ("msg_ccc", "user", 2, "turn 2 first"),
+                ("msg_aaa", "user", 1, "turn 1"),
+                ("msg_bbb", "user", 2, "turn 2 second"),
+            ],
+        )
+        await self._repo(sqlite_session).save(case)
+
+        async with self._fresh_session(sqlite_engine) as other:
+            repo = self._repo(other)
+            via_get = [m["content"] for m in (await repo.get(case_id)).messages]
+            via_get_messages = [m["content"] for m in await repo.get_messages(case_id)]
+
+        # Turn decides across turns; insertion decides within one.
+        expected = ["turn 1", "turn 2 first", "turn 2 second"]
+        assert via_get == expected
+        assert (
+            via_get_messages == expected
+        ), f"readers disagree: get()={via_get} get_messages()={via_get_messages}"
+
+    async def test_time_still_dominates_the_turn_number(
+        self, sqlite_session, sqlite_engine
+    ):
+        """Positive control: ``turn_number`` must not outrank ``created_at``.
+
+        Without it, ordering by turn first would satisfy every equal-timestamp
+        test above while reordering every real transcript, where time is what
+        orders the conversation.
+        """
+        case_id = f"case_{uuid4().hex[:12]}"
+        case = self._case(case_id)
+        case.messages.append(
+            {
+                "message_id": "msg_early",
+                "role": "user",
+                "content": "earlier in time, higher turn",
+                "turn_number": 9,
+                "created_at": "2026-06-13T10:00:00+00:00",
+            }
+        )
+        case.messages.append(
+            {
+                "message_id": "msg_late",
+                "role": "user",
+                "content": "later in time, lower turn",
+                "turn_number": 1,
+                "created_at": "2026-06-13T11:00:00+00:00",
+            }
+        )
+        await self._repo(sqlite_session).save(case)
+
+        async with self._fresh_session(sqlite_engine) as other:
+            got = [m["content"] for m in await self._repo(other).get_messages(case_id)]
+
+        assert got == ["earlier in time, higher turn", "later in time, lower turn"]
+
+    async def test_the_bulk_list_loader_agrees_too(self, sqlite_session, sqlite_engine):
+        """``list()`` loads messages through a THIRD query.
+
+        ``_load_messages_bulk`` fetches every listed case's messages in one
+        SELECT and had its own ORDER BY, so a fix applied to the two
+        single-case readers would leave the case LIST rendering a different
+        transcript from the case detail. Caught by mutation: reverting only
+        this query left every other guard green.
+        """
+        case_id = f"case_{uuid4().hex[:12]}"
+        case = self._case(case_id)
+        self._seed(case, self.EXCHANGE)
+        await self._repo(sqlite_session).save(case)
+
+        async with self._fresh_session(sqlite_engine) as other:
+            listed, _ = await self._repo(other).list(user_id="user_001")
+
+        mine = [c for c in listed if c.case_id == case_id]
+        assert mine, "the case must appear in the list"
+        assert [m["role"] for m in mine[0].messages] == ["user", "assistant"]
+
+    async def test_the_in_memory_double_agrees_and_does_not_reorder_the_caller(self):
+        """The double must match the backends AND leave its argument alone.
+
+        ``save`` used to sort the caller's live ``case.messages`` in place — a
+        side effect no SQL repository has, and it ran before the optimistic
+        concurrency check, so a stale save reordered the caller's list and then
+        threw. The ordering lives on the read instead.
+        """
+        from faultmaven.modules.case.infrastructure.case_repository import (
+            InMemoryCaseRepository,
+        )
+
+        repo = InMemoryCaseRepository()
+        case = self._case(f"case_{uuid4().hex[:12]}")
+        self._seed(case, self.EXCHANGE)
+        appended = list(case.messages)
+
+        await repo.save(case)
+
+        assert case.messages == appended, "save must not reorder the caller's list"
+        assert [m["role"] for m in await repo.get_messages(case.case_id)] == [
+            "user",
+            "assistant",
+        ]
+
+    async def test_the_in_memory_add_message_normalises_like_the_sql_ones(self):
+        """Otherwise the double accepts a row the backends reject.
+
+        It stored the dict verbatim, so a row with no ``created_at`` was
+        reported as written and then made the NEXT ``save()`` raise — wedging
+        the case for any test that mixes the two writers.
+        """
+        from faultmaven.modules.case.infrastructure.case_repository import (
+            InMemoryCaseRepository,
+        )
+
+        repo = InMemoryCaseRepository()
+        case = self._case(f"case_{uuid4().hex[:12]}")
+        await repo.save(case)
+
+        template = {"role": "user", "content": "C", "turn_number": 2}
+        assert await repo.add_message(case.case_id, template)
+        assert "message_id" not in template, "add_message must not stamp its argument"
+
+        stored = (await repo.get(case.case_id)).messages[-1]
+        assert stored["message_id"] and stored["created_at"]
+        # The row is complete, so a later save does not raise on it.
+        await repo.save(case)
+
+    async def test_the_in_memory_key_puts_time_first_and_save_leaves_the_list(self):
+        """Two properties one shape can separate, which equal timestamps cannot.
+
+        The rows are chosen so that insertion order, ``(created_at, turn)``
+        order and ``(turn, created_at)`` order are all DIFFERENT:
+
+        ===============  ============  ====
+        appended         created_at    turn
+        ===============  ============  ====
+        1st "later"      11:00          1
+        2nd "earlier"    10:00          9
+        ===============  ============  ====
+
+        - Reading must give ``[earlier, later]`` — time dominates. A key that
+          sorted by turn first would give ``[later, earlier]`` and still pass
+          every same-timestamp test in this class, which is how that mutation
+          survived the first matrix.
+        - ``save`` must leave the caller's list as appended. A sort there is
+          invisible when every row shares a key, so the earlier version of this
+          guard could not see it either.
+        """
+        from faultmaven.modules.case.infrastructure.case_repository import (
+            InMemoryCaseRepository,
+        )
+
+        repo = InMemoryCaseRepository()
+        case = self._case(f"case_{uuid4().hex[:12]}")
+        case.messages.append(
+            {
+                "message_id": "msg_later",
+                "role": "user",
+                "content": "later in time, lower turn",
+                "turn_number": 1,
+                "created_at": "2026-06-13T11:00:00+00:00",
+            }
+        )
+        case.messages.append(
+            {
+                "message_id": "msg_earlier",
+                "role": "user",
+                "content": "earlier in time, higher turn",
+                "turn_number": 9,
+                "created_at": "2026-06-13T10:00:00+00:00",
+            }
+        )
+        appended = [m["content"] for m in case.messages]
+
+        await repo.save(case)
+
+        assert [
+            m["content"] for m in case.messages
+        ] == appended, "save must not reorder the caller's list"
+        assert [m["content"] for m in await repo.get_messages(case.case_id)] == [
+            "earlier in time, higher turn",
+            "later in time, lower turn",
+        ]
