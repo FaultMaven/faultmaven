@@ -97,6 +97,7 @@ from faultmaven.modules.agent.domain.services.query_classifier import (
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.case.contracts import (
+    MESSAGE_METADATA_AGENT_EMPTY,
     MESSAGE_METADATA_USER_EMPTY,
     Case,
     CaseState,
@@ -2086,25 +2087,44 @@ class InvestigationService:
             # the aggregate save and takes the user's turn with it, for a turn
             # already charged — so it is recorded, honestly, rather than
             # dropped or left blank (#1433).
-            agent_failed_silently = not str(agent_response_text or "").strip()
-            if agent_failed_silently:
+            # A LAST-RESORT backstop, not a policy. ``MilestoneEngine`` owns
+            # the degradation ladder and decides deliberately that a
+            # model-supplied "" is the model's own choice and is never
+            # overwritten — see its comment on the placeholder rung. That
+            # decision predates the constraint that makes it unsurvivable:
+            # blank content is refused by the repository, and because this row
+            # is part of an AGGREGATE save the refusal takes the user's turn,
+            # the evidence and the hypotheses with it, for a turn already
+            # charged. Reconciling the two policies in the engine — which knows
+            # the stop reason — is filed separately; this only stops the crash.
+            agent_response_empty = not str(agent_response_text or "").strip()
+            if agent_response_empty:
                 logger.warning(
                     "Empty agent_response on case %s turn %s; recording the "
-                    "turn as a failed answer rather than aborting the save",
+                    "turn as answerless rather than aborting the save",
                     case_id,
                     updated_case.current_turn,
                 )
-                turn_meta = {**(turn_meta or {}), "agent_response_empty": True}
+                # Reassigned, not branched at the row: ``TurnResponse`` below
+                # reads this same name, and writing the marker only into the
+                # stored row would leave the live client rendering an empty
+                # bubble while a reload showed text that was never delivered.
+                # (Slack rejects an empty message outright.)
+                agent_response_text = EMPTY_AGENT_RESPONSE_TEXT
+                # In place: ``turn_meta`` is the ONE binding of this turn's
+                # metadata, aliased with ``result["metadata"]`` (#1270). A
+                # fresh dict severs that and the readers stop seeing each
+                # other — which is why there is no ``or {}`` fallback here. It
+                # is bound by ``result.setdefault("metadata", {})`` far above
+                # and has already been ``.pop()``-ed from by then, so a None
+                # would have raised long before this line.
+                turn_meta[MESSAGE_METADATA_AGENT_EMPTY] = True
 
             agent_message = {
                 "message_id": f"msg_{uuid4().hex[:12]}",
                 "turn_number": updated_case.current_turn,
                 "role": "assistant",
-                "content": (
-                    EMPTY_AGENT_RESPONSE_TEXT
-                    if agent_failed_silently
-                    else agent_response_text
-                ),
+                "content": agent_response_text,
                 "created_at": to_json_compatible(datetime.now(timezone.utc)),
                 "author_id": None,
                 "token_count": None,

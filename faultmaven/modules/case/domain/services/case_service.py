@@ -44,7 +44,7 @@ from faultmaven.models.api_models import (
 from faultmaven.models.interfaces import ISessionStore
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.auth.contracts import is_team_member
-from faultmaven.modules.case.contracts import MESSAGE_METADATA_USER_EMPTY
+from faultmaven.modules.case.contracts import is_server_written_user_row
 from faultmaven.modules.case.domain.models import Case, CaseState
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.utils.datetime import parse_utc_timestamp
@@ -250,8 +250,15 @@ class CaseService(ICaseService):
                 source=source if source in ("copilot", "slack", "api") else "copilot",
             )
 
-            # Add initial message if provided (restored from old implementation)
-            if initial_message:
+            # Add initial message if provided (restored from old implementation).
+            #
+            # ``strip()``, not truthiness: ``"   "`` is a TRUE Python value but
+            # a blank row, and the content below is stripped — so the check and
+            # the value it guards would disagree. Blank content is refused by
+            # the repository, and because this is an AGGREGATE save the refusal
+            # 500s case creation outright. Same shape as #1420 on the turn
+            # path; this is a third writer with it.
+            if initial_message and initial_message.strip():
                 message_dict = {
                     "message_id": f"msg_{uuid.uuid4().hex[:12]}",
                     "case_id": case.case_id,
@@ -674,9 +681,7 @@ class CaseService(ICaseService):
                         # message is not user content, and this context feeds
                         # the auto-titler's signal extraction — a case would
                         # otherwise be named after a placeholder (#1434).
-                        if (msg_dict.get("metadata") or {}).get(
-                            MESSAGE_METADATA_USER_EMPTY
-                        ):
+                        if is_server_written_user_row(msg_dict):
                             continue
                         context_lines.append(f"{i}. [{timestamp}] User: {content}")
                     elif role == "assistant":
