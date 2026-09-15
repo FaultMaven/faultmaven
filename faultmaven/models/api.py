@@ -279,14 +279,6 @@ class TitleGenerateRequest(BaseModel):
     max_words: Optional[int] = 8
 
 
-class TitleResponse(BaseModel):
-    """Response payload for title generation."""
-
-    schema_version: Literal["3.1.0"] = "3.1.0"
-    title: str
-    view_state: ViewState
-
-
 class SessionErrorCode(str, Enum):
     """Session-specific error codes for better frontend error handling."""
 
