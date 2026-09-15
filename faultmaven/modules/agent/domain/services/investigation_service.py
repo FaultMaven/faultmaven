@@ -76,6 +76,7 @@ from faultmaven.models.api_models import (
     TurnResponse,
 )
 from faultmaven.modules.agent.domain.services.orientation import (
+    EMPTY_TURN_TEXT,
     OUT_OF_BAND_MARKER,
     OrientationKind,
     back_to_investigation_follow_up,
@@ -1553,7 +1554,13 @@ class InvestigationService:
                 "message_id": f"msg_{uuid4().hex[:12]}",
                 "turn_number": next_turn,
                 "role": "user",
-                "content": query or "",
+                # ``query`` is falsy here ONLY for a genuinely empty turn: a
+                # paste becomes an attachment, and any attachment has already
+                # replaced ``query`` with ``generate_implicit_query`` above. So
+                # this is the bare-mention case, and it needs honest non-blank
+                # text — ``""`` fails case_messages' CHECK and aborts the whole
+                # aggregate save (#1420).
+                "content": query or EMPTY_TURN_TEXT,
                 "created_at": to_json_compatible(datetime.now(timezone.utc)),
                 "author_id": user_id,
                 "token_count": None,
@@ -1568,6 +1575,20 @@ class InvestigationService:
                     ),
                 },
             }
+            # Appended UNCONDITIONALLY, and deliberately so (#1419).
+            #
+            # Resubmission is not this layer's problem: ``DeduplicationMiddleware``
+            # has already collapsed a duplicate POST by content hash and answered
+            # it 409 + Retry-After. That hash is keyed on the SESSION as well as
+            # the body, which is what makes it correct where a content comparison
+            # here would not be — two members of a team-shared case posting the
+            # same adjacent text ("still broken", "+1") are two real turns, and
+            # they keep their own sessions.
+            #
+            # A repository-layer guard on role+content was tried, in
+            # ``CaseService.add_message_to_case``. It had no callers, so it never
+            # ran; #855 then "fixed" it to compare ``author_id`` and that never
+            # ran either. Both were retired in #1412. Do not reintroduce one here.
             case.messages.append(user_message_obj)
             case.message_count += 1
             case.current_turn = next_turn

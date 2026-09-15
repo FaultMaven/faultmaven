@@ -62,6 +62,20 @@ class OrientationKind(str, Enum):
     EMPTY = "empty"
 
 
+#: Transcript text for a turn carrying no message at all — a bare
+#: ``@FaultMaven``. The row is the user's half of a turn that really happened:
+#: it is charged against the tenant cap and it advances the message clock, so
+#: it is not something to omit. But ``case_messages`` requires non-blank
+#: content, and writing ``""`` made the whole aggregate save fail its CHECK
+#: constraint — taking the case row, its evidence and its hypotheses with it
+#: (#1420).
+#:
+#: A marker rather than first-person prose, because the user said nothing and
+#: the row must not pretend otherwise. What the turn WAS is already recorded
+#: beside it, in the message metadata (``orientation: "empty"``).
+EMPTY_TURN_TEXT = "(no message)"
+
+
 def detect_orientation(message: Optional[str]) -> Optional[OrientationKind]:
     """Which orientation a text-only message asks for, or ``None``.
 
