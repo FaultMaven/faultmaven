@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
+from uuid import uuid4
 
 from faultmaven.modules.case.domain.models import (
     Case,
@@ -59,6 +60,56 @@ class CaseRepository(ABC):
     - PostgreSQLHybridCaseRepository: Cloud deployment (PostgreSQL)
     - InMemoryCaseRepository: Testing and development
     """
+
+    #: Shape of a minted message id. Matches what the turn path mints
+    #: (``investigation_service`` builds ``msg_<uuid4 hex[:12]>``), so a row
+    #: minted here is indistinguishable from one the live path wrote.
+    _MESSAGE_ID_HEX = 12
+
+    @classmethod
+    def normalise_message_row(cls, msg: Dict[str, Any]) -> Dict[str, Any]:
+        """Fill the two fields a ``case_messages`` row cannot be written
+        without, IN PLACE, and return the same dict.
+
+        There are two writers of this table — ``add_message`` and the aggregate
+        save's ``_upsert_messages`` — and they used to disagree about what an
+        incomplete row meant (#1418). ``add_message`` minted an id and wrote
+        the row; the aggregate save ``continue``\ d past it, reported success,
+        and the transcript line was gone. One normaliser, called by both, is
+        what makes the answer the same whichever writer a caller reaches.
+
+        **In place, not on a copy.** Both fields are read back out of the row
+        afterwards, so the caller's ``case.messages`` must end up carrying what
+        the row carries:
+
+        - ``message_id`` is the ``ON CONFLICT`` target. An in-memory list that
+          kept no id would make the NEXT save mint a second one and INSERT a
+          duplicate rather than conflict onto the existing row — one transcript
+          line growing by one row per save.
+        - ``created_at`` is what every read orders by. Left absent, each save
+          re-stamps the row with a fresh ``now()`` through
+          ``created_at = EXCLUDED.created_at``, so a line drifts forward past
+          messages appended after it.
+
+        ``created_at`` is minted as an **ISO-8601 string**, which is what the
+        turn path supplies and what SQLite must have: the column is TEXT there
+        and compared as text, and ``datetime``'s own ``str()`` uses a space
+        separator — ``'2026-09-15 02:26:29'`` sorts BEFORE
+        ``'2026-09-15T02:26:29'`` because ``' '`` (0x20) precedes ``'T'``
+        (0x54). A row stamped with a ``datetime`` therefore jumps to the FRONT
+        of the transcript on reload.
+
+        Falsy is treated as absent, for ``None`` and ``""`` alike. That is the
+        stricter reading on purpose: an empty-string id is accepted by the
+        column (it is not NULL) but can never be conflicted onto, so a row
+        carrying one would be re-minted and re-inserted on every reload. Since
+        both writers normalise, no falsy id can be written in the first place.
+        """
+        if not msg.get("message_id"):
+            msg["message_id"] = f"msg_{uuid4().hex[: cls._MESSAGE_ID_HEX]}"
+        if not msg.get("created_at"):
+            msg["created_at"] = datetime.now(timezone.utc).isoformat()
+        return msg
 
     @abstractmethod
     async def save(self, case: Case) -> Case:
@@ -884,6 +935,15 @@ class InMemoryCaseRepository(CaseRepository):
         # Self-heal any turn-sequence anomaly before storing, matching the
         # SQL-backed repositories so the in-memory path can't wedge or drift.
         case.reconcile_turn_sequence()
+
+        # Same reason, same shape: the SQL-backed repositories complete an
+        # incomplete message row on the way to the table (#1418), and a caller
+        # that reads ``msg["message_id"]`` back after ``save`` must not get a
+        # KeyError on whichever backend a test happens to use. Without this the
+        # fix for two writers disagreeing would simply reappear one tier up,
+        # between two repositories.
+        for _msg in case.messages:
+            self.normalise_message_row(_msg)
 
         # P3 chokepoint: refresh denormalized disposition_eligibility from
         # current case content. Same site as the SQL-backed repositories

@@ -1818,8 +1818,16 @@ class SQLiteCaseRepository(CaseRepository):
             if probe.fetchone() is None:
                 return False
 
-            message_id = message_dict.get("message_id", f"msg_{uuid4().hex[:16]}")
-            created_at = message_dict.get("created_at") or datetime.now(UTC)
+            # Shared with the aggregate save's ``_upsert_messages`` so the two
+            # writers of this table cannot disagree about an incomplete row
+            # (#1418). Note this also fixes a defect of its own here: the old
+            # default was a ``datetime``, whose ``str()`` uses a SPACE
+            # separator, and the column is compared as TEXT — a row stamped
+            # that way sorted before every ISO-8601 row and jumped to the front
+            # of the transcript.
+            self.normalise_message_row(message_dict)
+            message_id = message_dict["message_id"]
+            created_at = message_dict["created_at"]
 
             # SQLite-compatible: no ::jsonb type cast
             # Both tenancy columns derived from the parent case (already
@@ -3367,22 +3375,12 @@ class SQLiteCaseRepository(CaseRepository):
         for idx, msg in enumerate(messages_list):
             # A row with no ``message_id`` used to be SKIPPED here, silently:
             # the aggregate save reported success and the transcript line was
-            # gone. It is the conflict target, so it cannot be NULL — but
-            # dropping the caller's data is not the way to keep it non-null.
-            # Mint one, exactly as ``add_message`` already does for the same
-            # input (#1418). The two writers of this table disagreed on it:
-            # ``add_message({"role": ..., "content": ...})`` wrote the row,
-            # ``case.messages.append({...}); save(case)`` wrote nothing, and
-            # nothing told the caller which one they had used.
-            #
-            # The id is synthetic on every path (the turn path mints
-            # ``msg_<uuid4[:12]>`` itself), so minting here loses no meaning.
-            # Mutating the caller's dict is deliberate: an in-memory
-            # ``case.messages`` that has been persisted must carry the same id
-            # the row does, or the next save inserts a DUPLICATE instead of
-            # conflicting onto it.
-            if not msg.get("message_id"):
-                msg["message_id"] = f"msg_{uuid4().hex[:16]}"
+            # gone (#1418). Both fields this fills are read back out of the row
+            # afterwards, which is why it normalises IN PLACE — see
+            # ``CaseRepository.normalise_message_row`` for what each one costs
+            # if it is left absent. Shared with ``add_message`` so the two
+            # writers of this table cannot answer differently again.
+            self.normalise_message_row(msg)
 
             query = text("""
                 INSERT INTO case_messages (
