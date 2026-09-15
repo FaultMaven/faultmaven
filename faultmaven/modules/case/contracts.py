@@ -29,6 +29,26 @@ if TYPE_CHECKING:
 
 
 # ============================================================
+# case_messages row metadata keys
+# ============================================================
+
+#: Set on a user row whose content the SERVER wrote because the user sent no
+#: message at all — a bare ``@FaultMaven`` (#1420). The row is real: the turn
+#: is charged and it advances the message clock, and ``case_messages`` requires
+#: non-blank content, so it can neither be omitted nor left empty.
+#:
+#: Anything that presents a user row as something the USER SAID must skip a row
+#: carrying this. Quoting it back to the model reads as a reply the user never
+#: made; counting it as title signal names the case after a placeholder
+#: (#1434).
+#:
+#: It lives here rather than beside the writer because it is part of the shape
+#: of a ``case_messages`` row, which this module owns, and its readers are in
+#: other modules.
+MESSAGE_METADATA_USER_EMPTY = "user_message_empty"
+
+
+# ============================================================
 # Import and Re-export Case-owned models
 # ============================================================
 
@@ -514,6 +534,7 @@ from faultmaven.modules.case.domain.models import (  # noqa: E402
 # ============================================================
 
 __all__ = [
+    "MESSAGE_METADATA_USER_EMPTY",
     # Repository and Service Contracts
     "ICaseRepository",
     # DTOs

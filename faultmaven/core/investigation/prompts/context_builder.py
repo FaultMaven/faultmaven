@@ -57,6 +57,7 @@ from faultmaven.core.preprocessing.evidence_metadata import (
     EvidenceMetadata,
 )
 from faultmaven.modules.case.contracts import (
+    MESSAGE_METADATA_USER_EMPTY,
     Case,
     CaseState,
     EntityType,
@@ -2375,6 +2376,25 @@ def _fence_conversation(body: str, fence: PromptFence) -> str:
 ASIDE_LINE = "(aside — not part of the investigation)"
 
 
+def _is_server_written_user_row(msg: dict) -> bool:
+    """A user row whose content the SERVER wrote (#1420, #1434).
+
+    The user sent no message at all — a bare ``@FaultMaven``. The row is real
+    (the turn is charged and advances the message clock) and ``case_messages``
+    requires non-blank content, so a marker is stored rather than nothing.
+
+    Nothing that presents a user row as something the USER SAID may quote it.
+    On the pending-transition path especially: that turn is routed to the
+    engine rather than to orientation, so it never carries the ``out_of_band``
+    tag the aside elision keys on, and the marker would read to the model as an
+    answer to its own gate question.
+
+    Skipping restores what happened before the marker existed — the row was
+    blank, and every renderer here dropped it on ``if not content``.
+    """
+    return bool((msg.get("metadata") or {}).get(MESSAGE_METADATA_USER_EMPTY))
+
+
 def _aside_turns(messages: list) -> set:
     """Turn numbers whose rows are tagged out-of-band (#1329).
 
@@ -2451,6 +2471,9 @@ def _build_graduated_history(case: Case, fence: PromptFence) -> str:
                 m
                 for m in messages
                 if m.get("turn_number") == turn_num and m.get("role") == "user"
+                # A turn summarised by its first user message must not be
+                # summarised by a marker the server wrote.
+                and not _is_server_written_user_row(m)
             ]
             user_preview = user_msgs[0].get("content", "")[:150] if user_msgs else "..."
             result += f"TURN {turn_num}: {user_preview}\n"
@@ -2467,7 +2490,7 @@ def _build_graduated_history(case: Case, fence: PromptFence) -> str:
 
         role = msg.get("role", "unknown").upper()
         content = msg.get("content", "")
-        if not content:
+        if not content or _is_server_written_user_row(msg):
             continue
 
         if turn_num != current_turn_num:
@@ -2501,7 +2524,7 @@ def _build_verbatim_history(messages: list, fence: PromptFence) -> str:
         turn_num = msg.get("turn_number", "?")
         role = msg.get("role", "unknown").upper()
         content = msg.get("content", "")
-        if not content:
+        if not content or _is_server_written_user_row(msg):
             continue
 
         if turn_num != current_turn_num:

@@ -44,6 +44,7 @@ from faultmaven.models.api_models import (
 from faultmaven.models.interfaces import ISessionStore
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.auth.contracts import is_team_member
+from faultmaven.modules.case.contracts import MESSAGE_METADATA_USER_EMPTY
 from faultmaven.modules.case.domain.models import Case, CaseState
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.utils.datetime import parse_utc_timestamp
@@ -669,6 +670,14 @@ class CaseService(ICaseService):
                     content = msg_dict.get("content", "")
 
                     if role == "user":
+                        # A marker the SERVER wrote for a turn carrying no user
+                        # message is not user content, and this context feeds
+                        # the auto-titler's signal extraction — a case would
+                        # otherwise be named after a placeholder (#1434).
+                        if (msg_dict.get("metadata") or {}).get(
+                            MESSAGE_METADATA_USER_EMPTY
+                        ):
+                            continue
                         context_lines.append(f"{i}. [{timestamp}] User: {content}")
                     elif role == "assistant":
                         # Truncate long assistant responses
