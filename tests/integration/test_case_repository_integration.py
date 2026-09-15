@@ -533,6 +533,11 @@ async def test_concurrent_message_addition(test_engine):
                     "message_id": f"msg_{uuid4().hex[:12]}",
                     "role": "user" if index % 2 == 0 else "assistant",
                     "content": f"Message {index}",
+                    "turn_number": index,
+                    # A DATETIME under the ``timestamp`` alias. The repository
+                    # canonicalises it to a T-separated UTC string, because
+                    # SQLite ORDERs BY this column as TEXT and a space
+                    # separator sorts ahead of every ISO-8601 row (#1418).
                     "timestamp": datetime.now(timezone.utc),
                 },
             )

@@ -524,6 +524,9 @@ class TestSQLiteCaseRepository:
                 "role": "user",
                 "current_phase": "inquiry",
                 "content": "This is a test message",
+                # turn_number is required: the repository will not invent which
+                # turn a message belongs to (#1418).
+                "turn_number": 1,
                 "metadata": {"source": "test"},
             },
         )
@@ -1263,30 +1266,27 @@ class TestKBContextRoundTrip:
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-class TestIncompleteMessageRowIsNormalised:
-    """An incomplete transcript row must be completed, not dropped — and the
-    completion must not corrupt the transcript it joins (#1418).
+class TestMessageRowNormalisation:
+    """What the repository completes, and what it refuses to invent (#1418).
 
-    ``case_messages`` has two writers. Handed the same id-less dict,
-    ``add_message`` minted an id and wrote the row, while
-    ``case.messages.append(...)`` + ``save(case)`` silently skipped it: the
-    save reported success and the line was gone. Nothing in the return value,
-    the log, or the exception channel distinguished the two.
+    The defect: ``case_messages`` has two writers, and handed a dict with no
+    ``message_id`` the aggregate save did ``continue`` — reported success and
+    dropped the transcript line, while ``add_message`` minted an id and wrote
+    it. The silence was the bug.
 
-    Nothing regressed in production — the live turn path mints its own
-    ``msg_<uuid4>`` before appending, and the two-enterprise security probe
-    seeds through ``add_message``, the writer that already minted. The skip was
-    a trap for the NEXT caller, and specifically for the one #1418 proposes:
-    retiring ``add_message`` and moving its callers onto append + save. Ported
-    naively, the probe's id-less seed would have written nothing, and a
-    security probe that seeds nothing passes vacuously.
+    The rule the fix installs is **stamp only what you witnessed**. A writer
+    supplies a value only when its own call is the event that produced it:
 
-    Both writers now share ``CaseRepository.normalise_message_row``. These
-    tests pin what it fills and what it must NOT disturb — the second half is
-    the one a narrower fix got wrong: minting only ``message_id`` left
-    ``created_at`` to a ``datetime`` default whose ``str()`` uses a space
-    separator, and since the column is compared as TEXT the new line sorted
-    ahead of every ISO-8601 row and jumped to the FRONT of the transcript.
+    - ``message_id`` is minted by both. It is opaque and synthetic on every
+      path, so inventing it asserts nothing that can be wrong.
+    - ``created_at`` is stamped by ``add_message`` (that call IS the write, so
+      "now" is the fact) and REFUSED by the aggregate save, which replays a
+      list assembled at moments it never saw. Guessing there was measured
+      placing a row appended FIRST after one appended SECOND.
+    - ``turn_number`` is invented by neither. It used to default to ``0`` in
+      one writer and to the row's INDEX IN THE LIST in the other.
+    - ``content`` is checked up front so a blank one is named, instead of
+      reaching the CHECK constraint and aborting the whole aggregate save.
 
     Read back through a SEPARATE session throughout: the writing session sees
     its own uncommitted state, so a same-session read stays green against a
@@ -1318,143 +1318,56 @@ class TestIncompleteMessageRowIsNormalised:
             updated_at=datetime.now(timezone.utc),
         )
 
-    def _live_row(self, content: str, turn: int, role: str = "user"):
-        """A row shaped exactly as ``investigation_service`` writes one:
-        ``message_id`` minted by the caller, ``created_at`` an ISO string."""
-        return {
-            "message_id": f"msg_{uuid4().hex[:12]}",
+    def _row(self, content, turn=1, role="user", **over):
+        """A complete row, as every production writer builds one."""
+        row = {
             "role": role,
             "content": content,
             "turn_number": turn,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
+        row.update(over)
+        return row
+
+    def _repo(self, session):
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
+        )
+
+        return SQLiteCaseRepository(session)
+
+    # ---------- what it completes ----------
 
     async def test_an_id_less_row_survives_save(self, sqlite_session, sqlite_engine):
-        """The regression itself: append without an id, save, read it back."""
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-            SQLiteCaseRepository,
-        )
-
+        """The regression itself: no id, but a real created_at and turn."""
         case_id = f"case_{uuid4().hex[:12]}"
         case = self._case(case_id)
-        case.messages.append(
-            {"role": "user", "content": "disk full on /var", "turn_number": 1}
-        )
-        await SQLiteCaseRepository(sqlite_session).save(case)
+        case.messages.append(self._row("disk full on /var"))
+        await self._repo(sqlite_session).save(case)
 
         async with self._fresh_session(sqlite_engine) as other:
-            reloaded = await SQLiteCaseRepository(other).get(case_id)
+            reloaded = await self._repo(other).get(case_id)
 
         assert reloaded is not None
-        # Content, not just a count: a placeholder row would satisfy len() == 1.
         assert [m["content"] for m in reloaded.messages] == ["disk full on /var"]
         assert reloaded.messages[0]["message_id"]
-
-    async def test_the_normalised_row_keeps_its_place_in_the_transcript(
-        self, sqlite_session, sqlite_engine
-    ):
-        """The completion must not reorder the conversation.
-
-        A single-message case cannot show this — its one-element list is
-        order-insensitive by construction — so the case here already carries
-        live-path rows and the id-less line is appended LAST.
-
-        This is the test that fails against a fix that mints only
-        ``message_id``: the row lands with a ``datetime`` ``created_at``,
-        ``'2026-09-15 02:26:29'`` sorts before ``'2026-09-15T02:26:29'``
-        because ``' '`` (0x20) precedes ``'T'`` (0x54), and both
-        ``_load_messages`` and ``get_messages`` are ``ORDER BY created_at``.
-        """
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-            SQLiteCaseRepository,
-        )
-
-        case_id = f"case_{uuid4().hex[:12]}"
-        case = self._case(case_id)
-        case.messages.append(self._live_row("1. user asks", 1))
-        case.messages.append(self._live_row("2. agent answers", 1, role="assistant"))
-        await SQLiteCaseRepository(sqlite_session).save(case)
-
-        async with self._fresh_session(sqlite_engine) as second:
-            case = await SQLiteCaseRepository(second).get(case_id)
-            case.messages.append(
-                {"role": "user", "content": "3. appended LAST", "turn_number": 2}
-            )
-            await SQLiteCaseRepository(second).save(case)
-
-        async with self._fresh_session(sqlite_engine) as third:
-            reloaded = await SQLiteCaseRepository(third).get(case_id)
-
-        assert reloaded is not None
-        assert [m["content"] for m in reloaded.messages] == [
-            "1. user asks",
-            "2. agent answers",
-            "3. appended LAST",
-        ]
-
-    async def test_a_normalised_row_does_not_drift_on_later_saves(
-        self, sqlite_session, sqlite_engine
-    ):
-        """``created_at`` is written back, so re-saving does not re-stamp it.
-
-        The upsert sets ``created_at = EXCLUDED.created_at``. If the mint were
-        not written back into the caller's dict, every later save of the same
-        aggregate would supply a fresh ``now()`` and the line would drift
-        forward past messages appended after it — visible as a transcript that
-        silently reorders itself the longer a case stays open.
-        """
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-            SQLiteCaseRepository,
-        )
-
-        case_id = f"case_{uuid4().hex[:12]}"
-        case = self._case(case_id)
-        case.messages.append(
-            {"role": "user", "content": "first line", "turn_number": 1}
-        )
-        repo = SQLiteCaseRepository(sqlite_session)
-        await repo.save(case)
-        stamped = case.messages[0]["created_at"]
-        assert stamped, "created_at must be written back, not only bound"
-
-        case.messages.append(self._live_row("second line", 2))
-        await repo.save(case)
-        await repo.save(case)
-
-        async with self._fresh_session(sqlite_engine) as other:
-            reloaded = await SQLiteCaseRepository(other).get(case_id)
-
-        assert [m["content"] for m in reloaded.messages] == [
-            "first line",
-            "second line",
-        ]
-        assert reloaded.messages[0]["created_at"] == stamped
 
     async def test_the_minted_id_is_written_back_to_the_caller(
         self, sqlite_session, sqlite_engine
     ):
-        """Why the mint mutates the caller's dict rather than a copy.
-
-        ``message_id`` is the ``ON CONFLICT`` target. If the in-memory
-        ``case.messages`` kept no id while the row got one, the NEXT save of
-        the same case would mint a SECOND id for the same line and INSERT a
-        duplicate instead of conflicting onto the existing row — one transcript
-        line, two rows, growing by one on every save.
-        """
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-            SQLiteCaseRepository,
-        )
-
-        repo = SQLiteCaseRepository(sqlite_session)
+        """The id is the ``ON CONFLICT`` target, so the caller's list must
+        carry it — otherwise the next save mints a second one and INSERTs a
+        duplicate instead of conflicting onto the existing row."""
+        repo = self._repo(sqlite_session)
         case_id = f"case_{uuid4().hex[:12]}"
         case = self._case(case_id)
-        case.messages.append({"role": "user", "content": "same line", "turn_number": 1})
+        case.messages.append(self._row("same line"))
 
         await repo.save(case)
         minted = case.messages[0]["message_id"]
-        assert minted, "the mint must be visible to the caller, not only to the row"
+        assert minted
 
-        await repo.save(case)  # a second save of the same aggregate
+        await repo.save(case)
 
         async with self._fresh_session(sqlite_engine) as other:
             rows = await other.execute(
@@ -1467,35 +1380,18 @@ class TestIncompleteMessageRowIsNormalised:
     async def test_a_row_that_brings_its_own_id_keeps_it(
         self, sqlite_session, sqlite_engine
     ):
-        """Positive control: normalising must not overwrite what was supplied.
-
-        Pins the ``if not ...`` in the normaliser. A mint that ran
-        unconditionally would re-key every row the turn path writes — and,
-        because the re-key happens on each save, would also break the
-        conflict-onto-itself property the previous test pins. Both guards fail
-        under that mutation; this one names the reason.
-        """
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-            SQLiteCaseRepository,
-        )
-
+        """Positive control: completing must not overwrite what was supplied."""
         case_id = f"case_{uuid4().hex[:12]}"
         supplied = f"msg_{uuid4().hex[:12]}"
         stamp = "2026-06-13T10:15:30.123456+00:00"
         case = self._case(case_id)
         case.messages.append(
-            {
-                "message_id": supplied,
-                "role": "user",
-                "content": "brought its own",
-                "turn_number": 1,
-                "created_at": stamp,
-            }
+            self._row("brought its own", message_id=supplied, created_at=stamp)
         )
-        await SQLiteCaseRepository(sqlite_session).save(case)
+        await self._repo(sqlite_session).save(case)
 
         async with self._fresh_session(sqlite_engine) as other:
-            reloaded = await SQLiteCaseRepository(other).get(case_id)
+            reloaded = await self._repo(other).get(case_id)
 
         assert reloaded is not None
         assert [m["message_id"] for m in reloaded.messages] == [supplied]
@@ -1505,45 +1401,191 @@ class TestIncompleteMessageRowIsNormalised:
     async def test_both_writers_agree_on_a_falsy_id(
         self, sqlite_session, sqlite_engine, falsy
     ):
-        """The divergence closed at its root, not only for the absent key.
+        """Falsy is absent, for both spellings and both writers.
 
-        The first fix tested truthiness in the upsert while ``add_message``
-        tested key-PRESENCE (``.get("message_id", default)``), so the two still
-        disagreed on the two falsy spellings: ``None`` made ``add_message``
-        raise a NOT NULL violation while append + save minted, and ``""`` made
-        it write a row whose PRIMARY KEY was the empty string — which can never
-        be conflicted onto, so every later save re-minted and INSERTed the line
-        again, unboundedly. One shared normaliser is what makes both spellings
-        mean the same thing to both writers.
+        Testing key-PRESENCE instead would leave them disagreeing: ``None``
+        made ``add_message`` raise NOT NULL while the save minted, and ``""``
+        wrote a row whose PRIMARY KEY was the empty string — which can never be
+        conflicted onto, so every later save re-minted and INSERTed the line
+        again, unboundedly.
         """
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-            SQLiteCaseRepository,
-        )
+        repo = self._repo(sqlite_session)
 
-        repo = SQLiteCaseRepository(sqlite_session)
-
-        # Arm A: through add_message.
         case_a = self._case(f"case_{uuid4().hex[:12]}")
         await repo.save(case_a)
-        assert await repo.add_message(
-            case_a.case_id,
-            {"message_id": falsy, "role": "user", "content": "A", "turn_number": 1},
-        )
+        assert await repo.add_message(case_a.case_id, self._row("A", message_id=falsy))
 
-        # Arm B: through the aggregate save.
         case_b = self._case(f"case_{uuid4().hex[:12]}")
-        case_b.messages.append(
-            {"message_id": falsy, "role": "user", "content": "B", "turn_number": 1}
-        )
+        case_b.messages.append(self._row("B", message_id=falsy))
         await repo.save(case_b)
-        await repo.save(case_b)  # a stored falsy id would re-mint and duplicate here
+        await repo.save(case_b)  # a stored falsy id would re-mint and duplicate
 
         async with self._fresh_session(sqlite_engine) as other:
-            other_repo = SQLiteCaseRepository(other)
+            other_repo = self._repo(other)
             a = await other_repo.get(case_a.case_id)
             b = await other_repo.get(case_b.case_id)
 
         assert [m["content"] for m in a.messages] == ["A"]
         assert [m["content"] for m in b.messages] == ["B"]
-        assert a.messages[0]["message_id"], "add_message must not store a falsy id"
-        assert b.messages[0]["message_id"], "the upsert must not store a falsy id"
+        assert a.messages[0]["message_id"] and b.messages[0]["message_id"]
+
+    # ---------- what it refuses to invent ----------
+
+    async def test_the_save_refuses_a_row_with_no_created_at(self, sqlite_session):
+        """The inversion, refused instead of guessed.
+
+        Stamping "now" here put a row appended FIRST after one appended
+        SECOND, because the second carried its own append-time stamp. The
+        repository cannot know when a message happened, so it says so.
+        """
+        case = self._case(f"case_{uuid4().hex[:12]}")
+        case.messages.append(self._row("1. appended FIRST", created_at=None))
+        case.messages.append(self._row("2. appended SECOND"))
+
+        with pytest.raises(Exception, match="cannot know when a message was created"):
+            await self._repo(sqlite_session).save(case)
+
+    async def test_the_save_refuses_a_row_with_no_turn_number(self, sqlite_session):
+        """``turn_number`` used to be the row's INDEX IN THE LIST here and
+        ``0`` in ``add_message``. Anchors and ``ix_case_messages_case_turn``
+        key on it, so an invented value is worse than a refusal."""
+        case = self._case(f"case_{uuid4().hex[:12]}")
+        case.messages.append(self._row("no turn", turn=None))
+
+        with pytest.raises(Exception, match="does not know which turn"):
+            await self._repo(sqlite_session).save(case)
+
+    async def test_a_blank_content_row_is_named_not_left_to_the_constraint(
+        self, sqlite_session, sqlite_engine
+    ):
+        """Blank content aborts the aggregate save either way — this makes it
+        diagnosable, and keeps the abort clean by validating the whole list
+        before any SQL runs."""
+        case_id = f"case_{uuid4().hex[:12]}"
+        case = self._case(case_id)
+        case.messages.append(self._row("a real line"))
+        case.messages.append(self._row("   "))
+
+        with pytest.raises(Exception, match="content is blank"):
+            await self._repo(sqlite_session).save(case)
+
+        # Nothing partial: the case is not half-written either.
+        async with self._fresh_session(sqlite_engine) as other:
+            assert await self._repo(other).get(case_id) is None
+
+    # ---------- what it canonicalises ----------
+
+    async def test_a_datetime_timestamp_sorts_in_place_not_first(
+        self, sqlite_session, sqlite_engine
+    ):
+        """The alias must be canonicalised, not merely honoured.
+
+        SQLite compares this column as TEXT, and ``str(datetime)`` uses a SPACE
+        separator — ``'2026-09-15 04:47'`` sorts before ``'2026-09-15T04:47'``
+        because ``' '`` (0x20) precedes ``'T'`` (0x54). A caller passing
+        ``timestamp`` as a ``datetime`` (which
+        tests/integration/test_case_repository_integration.py does) therefore
+        put its row at the FRONT of the transcript. Read-side repair cannot fix
+        it: ``_load_messages`` normalises the separator, but ORDER BY has
+        already run.
+        """
+        repo = self._repo(sqlite_session)
+        case_id = f"case_{uuid4().hex[:12]}"
+        case = self._case(case_id)
+        case.messages.append(self._row("1. live"))
+        case.messages.append(self._row("2. live"))
+        await repo.save(case)
+
+        assert await repo.add_message(
+            case_id,
+            {
+                "role": "user",
+                "content": "3. alias-datetime LAST",
+                "turn_number": 2,
+                "timestamp": datetime.now(timezone.utc),
+            },
+        )
+
+        async with self._fresh_session(sqlite_engine) as other:
+            reloaded = await self._repo(other).get(case_id)
+
+        assert [m["content"] for m in reloaded.messages] == [
+            "1. live",
+            "2. live",
+            "3. alias-datetime LAST",
+        ]
+
+    async def test_the_timestamp_alias_is_honoured_by_both_writers(
+        self, sqlite_session, sqlite_engine
+    ):
+        """``timestamp`` used to be read only by PostgreSQL's ``add_message``,
+        so the same dict was stamped at its supplied time by one writer and at
+        ``now()`` by the other, and SQLite honoured it nowhere."""
+        stamp = "2020-01-02T03:04:05+00:00"
+        repo = self._repo(sqlite_session)
+
+        case_a = self._case(f"case_{uuid4().hex[:12]}")
+        await repo.save(case_a)
+        assert await repo.add_message(
+            case_a.case_id,
+            {"role": "user", "content": "A", "turn_number": 1, "timestamp": stamp},
+        )
+
+        case_b = self._case(f"case_{uuid4().hex[:12]}")
+        case_b.messages.append(
+            {"role": "user", "content": "B", "turn_number": 1, "timestamp": stamp}
+        )
+        await repo.save(case_b)
+
+        async with self._fresh_session(sqlite_engine) as other:
+            other_repo = self._repo(other)
+            a = await other_repo.get(case_a.case_id)
+            b = await other_repo.get(case_b.case_id)
+
+        assert a.messages[0]["created_at"] == stamp
+        assert b.messages[0]["created_at"] == stamp
+
+    # ---------- what the two writers must answer identically ----------
+
+    async def test_add_message_does_not_stamp_the_caller_dict(self, sqlite_session):
+        """``add_message`` completes a COPY: it does a plain INSERT with no
+        ``ON CONFLICT``, so nothing needs writing back, and stamping the
+        caller's dict would carry the first call's id into a reused template
+        dict, where it hits the primary key with no recovery."""
+        repo = self._repo(sqlite_session)
+        case = self._case(f"case_{uuid4().hex[:12]}")
+        await repo.save(case)
+
+        template = {"role": "user", "content": "reused template", "turn_number": 1}
+        assert await repo.add_message(case.case_id, template)
+        assert "message_id" not in template
+        assert "created_at" not in template
+        assert await repo.add_message(case.case_id, template)
+
+        rows = await sqlite_session.execute(
+            text("SELECT message_id FROM case_messages WHERE case_id = :c"),
+            {"c": case.case_id},
+        )
+        ids = [r[0] for r in rows.fetchall()]
+        assert len(ids) == 2 and len(set(ids)) == 2
+
+    async def test_both_writers_refuse_a_missing_turn_number(self, sqlite_session):
+        """The third invented field, and the one with real consequences: one
+        writer defaulted it to ``0``, the other to the row's list index, so the
+        same turnless dict landed on two different turns depending on which
+        writer took it."""
+        repo = self._repo(sqlite_session)
+        case = self._case(f"case_{uuid4().hex[:12]}")
+        await repo.save(case)
+
+        turnless = {
+            "role": "user",
+            "content": "no turn",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        with pytest.raises(Exception, match="does not know which turn"):
+            await repo.add_message(case.case_id, dict(turnless))
+
+        case.messages.append(dict(turnless))
+        with pytest.raises(Exception, match="does not know which turn"):
+            await repo.save(case)

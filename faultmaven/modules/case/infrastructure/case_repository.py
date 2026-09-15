@@ -66,49 +66,110 @@ class CaseRepository(ABC):
     #: minted here is indistinguishable from one the live path wrote.
     _MESSAGE_ID_HEX = 12
 
-    @classmethod
-    def normalise_message_row(cls, msg: Dict[str, Any]) -> Dict[str, Any]:
-        """Fill the two fields a ``case_messages`` row cannot be written
-        without, IN PLACE, and return the same dict.
+    @staticmethod
+    def _canonical_created_at(value: Any) -> str:
+        """Return ``value`` as a ``T``-separated UTC ISO-8601 string.
 
-        There are two writers of this table — ``add_message`` and the aggregate
-        save's ``_upsert_messages`` — and they used to disagree about what an
-        incomplete row meant (#1418). ``add_message`` minted an id and wrote
-        the row; the aggregate save ``continue``\ d past it, reported success,
-        and the transcript line was gone. One normaliser, called by both, is
-        what makes the answer the same whichever writer a caller reaches.
-
-        **In place, not on a copy.** Both fields are read back out of the row
-        afterwards, so the caller's ``case.messages`` must end up carrying what
-        the row carries:
-
-        - ``message_id`` is the ``ON CONFLICT`` target. An in-memory list that
-          kept no id would make the NEXT save mint a second one and INSERT a
-          duplicate rather than conflict onto the existing row — one transcript
-          line growing by one row per save.
-        - ``created_at`` is what every read orders by. Left absent, each save
-          re-stamps the row with a fresh ``now()`` through
-          ``created_at = EXCLUDED.created_at``, so a line drifts forward past
-          messages appended after it.
-
-        ``created_at`` is minted as an **ISO-8601 string**, which is what the
-        turn path supplies and what SQLite must have: the column is TEXT there
-        and compared as text, and ``datetime``'s own ``str()`` uses a space
-        separator — ``'2026-09-15 02:26:29'`` sorts BEFORE
-        ``'2026-09-15T02:26:29'`` because ``' '`` (0x20) precedes ``'T'``
-        (0x54). A row stamped with a ``datetime`` therefore jumps to the FRONT
-        of the transcript on reload.
-
-        Falsy is treated as absent, for ``None`` and ``""`` alike. That is the
-        stricter reading on purpose: an empty-string id is accepted by the
-        column (it is not NULL) but can never be conflicted onto, so a row
-        carrying one would be re-minted and re-inserted on every reload. Since
-        both writers normalise, no falsy id can be written in the first place.
+        SQLite stores this column as TEXT and ORDERs BY it as text, so the
+        SPELLING decides the transcript order: ``str(datetime)`` uses a space
+        separator and ``' '`` (0x20) sorts before ``'T'`` (0x54), putting the
+        row ahead of every ISO-8601 row in the case. Read-side repair cannot
+        fix it — ``_load_messages`` normalises the separator, but ORDER BY has
+        already run. So the canonical form is produced HERE, before the bind,
+        whatever the caller supplied.
         """
+        if isinstance(value, datetime):
+            dt = value
+        else:
+            dt = datetime.fromisoformat(str(value).strip().replace(" ", "T"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat()
+
+    @classmethod
+    def normalise_message_row(
+        cls,
+        msg: Dict[str, Any],
+        *,
+        index: Optional[int] = None,
+        stamp_created_at: bool = False,
+    ) -> Dict[str, Any]:
+        """Complete and validate a ``case_messages`` row IN PLACE.
+
+        One rule: **stamp only what you witnessed.** A writer supplies a value
+        only when its own call is the event that produced it; anything else it
+        was not told, it refuses rather than invents.
+
+        - ``message_id`` is minted when absent. It is opaque and synthetic on
+          every path (the turn path mints ``msg_<uuid4 hex[:12]>`` itself), so
+          inventing it asserts nothing that could be wrong. It is written back
+          because it is the upsert's ``ON CONFLICT`` target: a caller list that
+          kept no id would make the next save mint a second one and INSERT a
+          duplicate rather than conflict onto the row.
+        - ``created_at`` is **canonicalised, never guessed**, unless
+          ``stamp_created_at`` says this call IS the creation event.
+          ``add_message`` writes one row at the moment it is called, so "now"
+          there is the fact — the same answer the column's own server default
+          gives. ``save(case)`` replays a list assembled at moments the
+          repository never saw; "now" there is a guess, and the guess was
+          measured placing a row appended FIRST after a row appended SECOND.
+          This is not the two writers disagreeing: it is the same rule
+          answering differently because they witness different things. Do not
+          "fix" it by making the aggregate save stamp — the inversion returns.
+        - ``turn_number`` is never invented by either writer. It used to
+          default to ``0`` in ``add_message`` and to the row's INDEX IN THE
+          LIST in the aggregate save, so one turnless dict became turn 0 or
+          turn N depending on which writer took it — and the index is a
+          fabrication that ``ix_case_messages_case_turn`` and every
+          conversation anchor then key on.
+        - ``content`` is checked here so a blank one is named, rather than
+          arriving as an opaque ``CHECK constraint failed`` that rolls back the
+          whole aggregate save — the case row, its evidence and its hypotheses
+          with it.
+
+        ``timestamp`` is an accepted alias for ``created_at``; it is resolved
+        here so every writer and backend honours it identically. It used to be
+        read only by the PostgreSQL ``add_message``.
+        """
+        where = f"messages[{index}]" if index is not None else "message"
+
         if not msg.get("message_id"):
             msg["message_id"] = f"msg_{uuid4().hex[: cls._MESSAGE_ID_HEX]}"
+        ident = f"{where} ({msg['message_id']})"
+
+        if not msg.get("created_at") and msg.get("timestamp"):
+            msg["created_at"] = msg["timestamp"]
         if not msg.get("created_at"):
+            if not stamp_created_at:
+                raise ValueError(
+                    f"{ident}: no created_at. The aggregate save cannot know "
+                    "when a message was created and will not guess — a guessed "
+                    "stamp reorders the transcript. Set created_at when the "
+                    "message is appended."
+                )
             msg["created_at"] = datetime.now(timezone.utc).isoformat()
+        try:
+            msg["created_at"] = cls._canonical_created_at(msg["created_at"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{ident}: created_at {msg['created_at']!r} is not a datetime "
+                f"or an ISO-8601 string ({exc})"
+            ) from exc
+
+        if msg.get("turn_number") is None:
+            raise ValueError(
+                f"{ident}: no turn_number. The repository does not know which "
+                "turn a message belongs to; its position in the list is not "
+                "the turn."
+            )
+
+        if not str(msg.get("content") or "").strip():
+            raise ValueError(
+                f"{ident}: content is blank. case_messages requires non-blank "
+                "content, and letting it reach the CHECK constraint aborts the "
+                "entire aggregate save."
+            )
+
         return msg
 
     @abstractmethod

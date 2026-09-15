@@ -27,7 +27,6 @@ import json
 import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
-from uuid import uuid4
 
 from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1825,9 +1824,15 @@ class SQLiteCaseRepository(CaseRepository):
             # separator, and the column is compared as TEXT — a row stamped
             # that way sorted before every ISO-8601 row and jumped to the front
             # of the transcript.
-            self.normalise_message_row(message_dict)
-            message_id = message_dict["message_id"]
-            created_at = message_dict["created_at"]
+            # A COPY, unlike the aggregate save's in-place call. This method
+            # does a plain INSERT with no ON CONFLICT, so nothing needs to be
+            # written back — and stamping the caller's dict would make a
+            # REUSED template dict carry the first call's id into the second,
+            # where it hits the primary key. ``add_message`` has always been
+            # non-mutating; it stays that way.
+            row = self.normalise_message_row(dict(message_dict), stamp_created_at=True)
+            message_id = row["message_id"]
+            created_at = row["created_at"]
 
             # SQLite-compatible: no ::jsonb type cast
             # Both tenancy columns derived from the parent case (already
@@ -1846,7 +1851,7 @@ class SQLiteCaseRepository(CaseRepository):
                 {
                     "message_id": message_id,
                     "case_id": case_id,
-                    "turn_number": message_dict.get("turn_number", 0),
+                    "turn_number": row["turn_number"],
                     "role": message_dict.get("role", "user"),
                     "content": message_dict.get("content", ""),
                     "author_id": message_dict.get("author_id"),
@@ -3371,16 +3376,17 @@ class SQLiteCaseRepository(CaseRepository):
         Authorship is never overwritten with a blank — see the COALESCE on
         ``author_id`` in the conflict clause below.
         """
-        # Upsert each message
+        # Validate and complete the WHOLE list before any SQL runs. A row with
+        # no ``message_id`` used to be SKIPPED here, silently: the save
+        # reported success and the transcript line was gone (#1418). It is
+        # completed in place now — the id is the conflict target, so the
+        # caller's list must carry what the row carries — and a row the
+        # repository cannot complete honestly is REFUSED by name here rather
+        # than part-written and then aborted by a constraint.
         for idx, msg in enumerate(messages_list):
-            # A row with no ``message_id`` used to be SKIPPED here, silently:
-            # the aggregate save reported success and the transcript line was
-            # gone (#1418). Both fields this fills are read back out of the row
-            # afterwards, which is why it normalises IN PLACE — see
-            # ``CaseRepository.normalise_message_row`` for what each one costs
-            # if it is left absent. Shared with ``add_message`` so the two
-            # writers of this table cannot answer differently again.
-            self.normalise_message_row(msg)
+            self.normalise_message_row(msg, index=idx)
+
+        for idx, msg in enumerate(messages_list):
 
             query = text("""
                 INSERT INTO case_messages (
@@ -3407,15 +3413,15 @@ class SQLiteCaseRepository(CaseRepository):
             await self.db.execute(
                 query,
                 {
-                    "message_id": msg.get("message_id"),
+                    "message_id": msg["message_id"],
                     "case_id": case_id,
                     "enterprise_id": enterprise_id,
                     "organization_id": organization_id,
-                    "turn_number": msg.get("turn_number", idx),
+                    "turn_number": msg["turn_number"],
                     "role": msg.get("role", "user"),
                     "content": msg.get("content", ""),
                     "author_id": msg.get("author_id"),
-                    "created_at": msg.get("created_at") or datetime.now(UTC),
+                    "created_at": msg["created_at"],
                     "token_count": msg.get("token_count"),
                     "metadata": json.dumps(msg.get("metadata", {})),
                 },
