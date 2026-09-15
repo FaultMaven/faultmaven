@@ -22,7 +22,6 @@ import json
 import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
-from uuid import uuid4
 
 from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1466,6 +1465,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         query: str,
         user_id: Optional[str] = None,
         enterprise_id: Optional[str] = None,
+        state: Optional[CaseState] = None,
         limit: int = 20,
         shared_case_ids: Optional[List[str]] = None,
         restrict_case_ids: Optional[List[str]] = None,
@@ -1485,6 +1485,10 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             enterprise_id: Retained for interface symmetry; does NOT scope
                 reads (single-tenant standalone; multi-tenant isolation is
                 PostgreSQL RLS keyed on the enterprise, ADR-010/ADR-017)
+            state: Narrow to one lifecycle state, in the same WHERE clause as
+                the full-text predicate — and so ahead of the LIMIT, which
+                ranks by ts_rank and would otherwise decide which states the
+                filter ever gets to see.
             limit: Maximum results
             shared_case_ids: Case ids readable via a team share (ADR-013 §D4);
                 widens owner-only scope to ``owned ∪ shared-to-my-teams``.
@@ -1519,7 +1523,24 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             # No per-query org filter: multi-tenant isolation is in-core
             # PostgreSQL RLS (ADR-010); standalone is single-tenant.
 
+            # Lifecycle state — spelled as `list` spells it, qualified with the
+            # `c.` alias this query uses, and in the same WHERE clause as the
+            # text predicate so it constrains what the LIMIT ranks.
+            if state:
+                where_clauses.append("c.state = :state")
+                params["state"] = state.value
+
             where_sql = "WHERE " + " AND ".join(where_clauses)
+
+            # The TRUE match count, from the same WHERE clause and BEFORE the
+            # LIMIT — as ``list`` above computes it. This method's contract is
+            # ``(cases, total_count)`` and it was returning ``len(cases)``, the
+            # page length. Nothing consumes it today, which is precisely why it
+            # could stay wrong unnoticed. Same safe-direction divergence
+            # ``list`` documents: a raw COUNT(*) over-reports if a row fails to
+            # hydrate below, and never hides a result.
+            count_query = text(f"SELECT COUNT(*) FROM cases c {where_sql}")
+            total_count = (await self.db.execute(count_query, params)).scalar() or 0
 
             # Search query with relevance ranking.
             # Evidence JOIN removed per Principle 3 (Database Boundaries), so
@@ -1549,7 +1570,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 if case:
                     cases.append(case)
 
-            return cases, len(cases)
+            return cases, total_count
 
         except Exception as e:
             raise RepositoryException(f"Failed to search cases: {e}") from e
@@ -1580,12 +1601,26 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             if probe.fetchone() is None:
                 return False
 
-            message_id = message_dict.get("message_id", f"msg_{uuid4().hex[:16]}")
+            # ``timestamp`` is an accepted alias for ``created_at`` on this
+            # backend; resolve it BEFORE normalising, or the normaliser fills
+            # ``created_at`` with ``now()`` and the alias is silently ignored.
+            # A COPY, unlike the aggregate save's in-place call: this method
+            # does a plain INSERT with no ON CONFLICT, so nothing needs writing
+            # back, and stamping the caller's dict would make a REUSED template
+            # dict carry the first call's id into the second, where it hits the
+            # primary key. ``add_message`` has always been non-mutating.
+            row = dict(message_dict)
+            # Shared with ``_upsert_messages`` so the two writers of this table
+            # cannot disagree about an incomplete row (#1418).
+            self.normalise_message_row(row, stamp_created_at=True)
+            message_id = row["message_id"]
             # Coerce: message dicts may carry an ISO-STRING created_at, which
             # asyncpg rejects for the timestamptz column (see _as_datetime).
+            # ``row`` already carries a created_at (supplied, aliased, or
+            # minted by the normaliser); coerce it because the normaliser mints
+            # an ISO STRING and asyncpg rejects a str for timestamptz.
             created_at = self._as_datetime(
-                message_dict.get("created_at") or message_dict.get("timestamp"),
-                datetime.now(timezone.utc),
+                row["created_at"], datetime.now(timezone.utc)
             )
 
             query = text(f"""
@@ -1608,7 +1643,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 {
                     "message_id": message_id,
                     "case_id": case_id,
-                    "turn_number": message_dict.get("turn_number", 0),
+                    "turn_number": row["turn_number"],
                     "role": message_dict.get("role", "user"),
                     "content": message_dict.get("content", ""),
                     "author_id": message_dict.get("author_id"),
@@ -2958,11 +2993,17 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         Authorship is never overwritten with a blank — see the COALESCE on
         ``author_id`` in the conflict clause below.
         """
-        # Upsert each message
+        # Validate and complete the WHOLE list before any SQL runs. A row with
+        # no ``message_id`` used to be SKIPPED here, silently: the save
+        # reported success and the transcript line was gone (#1418). It is
+        # completed in place now — the id is the conflict target, so the
+        # caller's list must carry what the row carries — and a row the
+        # repository cannot complete honestly is REFUSED by name here rather
+        # than part-written and then aborted by a constraint.
         for idx, msg in enumerate(messages_list):
-            # Skip if no message_id (shouldn't happen, but be safe)
-            if not msg.get("message_id"):
-                continue
+            self.normalise_message_row(msg, index=idx)
+
+        for idx, msg in enumerate(messages_list):
 
             query = text(f"""
                 INSERT INTO case_messages (
@@ -2993,12 +3034,15 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "case_id": case_id,
                     "enterprise_id": enterprise_id,
                     "organization_id": organization_id,
-                    "turn_number": msg.get("turn_number", idx),
+                    "turn_number": msg["turn_number"],
                     "role": msg.get("role", "user"),
                     "content": msg.get("content", ""),
                     "author_id": msg.get("author_id"),
+                    # Direct subscript: the normaliser above guaranteed it.
+                    # Coerced because it produces an ISO STRING and asyncpg
+                    # rejects a str for timestamptz.
                     "created_at": self._as_datetime(
-                        msg.get("created_at"), datetime.now(timezone.utc)
+                        msg["created_at"], datetime.now(timezone.utc)
                     ),
                     "token_count": msg.get("token_count"),
                     "metadata": json.dumps(msg.get("metadata", {})),

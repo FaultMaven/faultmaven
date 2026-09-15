@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
+from uuid import uuid4
 
 from faultmaven.modules.case.domain.models import (
     Case,
@@ -59,6 +60,117 @@ class CaseRepository(ABC):
     - PostgreSQLHybridCaseRepository: Cloud deployment (PostgreSQL)
     - InMemoryCaseRepository: Testing and development
     """
+
+    #: Shape of a minted message id. Matches what the turn path mints
+    #: (``investigation_service`` builds ``msg_<uuid4 hex[:12]>``), so a row
+    #: minted here is indistinguishable from one the live path wrote.
+    _MESSAGE_ID_HEX = 12
+
+    @staticmethod
+    def _canonical_created_at(value: Any) -> str:
+        """Return ``value`` as a ``T``-separated UTC ISO-8601 string.
+
+        SQLite stores this column as TEXT and ORDERs BY it as text, so the
+        SPELLING decides the transcript order: ``str(datetime)`` uses a space
+        separator and ``' '`` (0x20) sorts before ``'T'`` (0x54), putting the
+        row ahead of every ISO-8601 row in the case. Read-side repair cannot
+        fix it — ``_load_messages`` normalises the separator, but ORDER BY has
+        already run. So the canonical form is produced HERE, before the bind,
+        whatever the caller supplied.
+        """
+        if isinstance(value, datetime):
+            dt = value
+        else:
+            dt = datetime.fromisoformat(str(value).strip().replace(" ", "T"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat()
+
+    @classmethod
+    def normalise_message_row(
+        cls,
+        msg: Dict[str, Any],
+        *,
+        index: Optional[int] = None,
+        stamp_created_at: bool = False,
+    ) -> Dict[str, Any]:
+        """Complete and validate a ``case_messages`` row IN PLACE.
+
+        One rule: **stamp only what you witnessed.** A writer supplies a value
+        only when its own call is the event that produced it; anything else it
+        was not told, it refuses rather than invents.
+
+        - ``message_id`` is minted when absent. It is opaque and synthetic on
+          every path (the turn path mints ``msg_<uuid4 hex[:12]>`` itself), so
+          inventing it asserts nothing that could be wrong. It is written back
+          because it is the upsert's ``ON CONFLICT`` target: a caller list that
+          kept no id would make the next save mint a second one and INSERT a
+          duplicate rather than conflict onto the row.
+        - ``created_at`` is **canonicalised, never guessed**, unless
+          ``stamp_created_at`` says this call IS the creation event.
+          ``add_message`` writes one row at the moment it is called, so "now"
+          there is the fact — the same answer the column's own server default
+          gives. ``save(case)`` replays a list assembled at moments the
+          repository never saw; "now" there is a guess, and the guess was
+          measured placing a row appended FIRST after a row appended SECOND.
+          This is not the two writers disagreeing: it is the same rule
+          answering differently because they witness different things. Do not
+          "fix" it by making the aggregate save stamp — the inversion returns.
+        - ``turn_number`` is never invented by either writer. It used to
+          default to ``0`` in ``add_message`` and to the row's INDEX IN THE
+          LIST in the aggregate save, so one turnless dict became turn 0 or
+          turn N depending on which writer took it — and the index is a
+          fabrication that ``ix_case_messages_case_turn`` and every
+          conversation anchor then key on.
+        - ``content`` is checked here so a blank one is named, rather than
+          arriving as an opaque ``CHECK constraint failed`` that rolls back the
+          whole aggregate save — the case row, its evidence and its hypotheses
+          with it.
+
+        ``timestamp`` is an accepted alias for ``created_at``; it is resolved
+        here so every writer and backend honours it identically. It used to be
+        read only by the PostgreSQL ``add_message``.
+        """
+        where = f"messages[{index}]" if index is not None else "message"
+
+        if not msg.get("message_id"):
+            msg["message_id"] = f"msg_{uuid4().hex[: cls._MESSAGE_ID_HEX]}"
+        ident = f"{where} ({msg['message_id']})"
+
+        if not msg.get("created_at") and msg.get("timestamp"):
+            msg["created_at"] = msg["timestamp"]
+        if not msg.get("created_at"):
+            if not stamp_created_at:
+                raise ValueError(
+                    f"{ident}: no created_at. The aggregate save cannot know "
+                    "when a message was created and will not guess — a guessed "
+                    "stamp reorders the transcript. Set created_at when the "
+                    "message is appended."
+                )
+            msg["created_at"] = datetime.now(timezone.utc).isoformat()
+        try:
+            msg["created_at"] = cls._canonical_created_at(msg["created_at"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{ident}: created_at {msg['created_at']!r} is not a datetime "
+                f"or an ISO-8601 string ({exc})"
+            ) from exc
+
+        if msg.get("turn_number") is None:
+            raise ValueError(
+                f"{ident}: no turn_number. The repository does not know which "
+                "turn a message belongs to; its position in the list is not "
+                "the turn."
+            )
+
+        if not str(msg.get("content") or "").strip():
+            raise ValueError(
+                f"{ident}: content is blank. case_messages requires non-blank "
+                "content, and letting it reach the CHECK constraint aborts the "
+                "entire aggregate save."
+            )
+
+        return msg
 
     @abstractmethod
     async def save(self, case: Case) -> Case:
@@ -393,6 +505,7 @@ class CaseRepository(ABC):
         query: str,
         user_id: Optional[str] = None,
         enterprise_id: Optional[str] = None,
+        state: Optional[CaseState] = None,
         limit: int = 20,
         shared_case_ids: Optional[List[str]] = None,
     ) -> tuple[List[Case], int]:
@@ -405,6 +518,11 @@ class CaseRepository(ABC):
             enterprise_id: Retained for interface symmetry; does NOT scope
                 reads (single-tenant standalone; multi-tenant isolation is
                 PostgreSQL RLS keyed on the enterprise, ADR-010/ADR-017)
+            state: Narrow to one lifecycle state. Applied in the same WHERE
+                clause as the text predicate, never after ``limit``: search
+                limits in SQL, so a state applied afterwards would answer
+                "no matching cases" whenever the limit was filled by rows in
+                other states.
             limit: Maximum results
             shared_case_ids: Case ids the requester can read via a team share
                 (ADR-013 §D4). Widens the owner-only scope to
@@ -885,6 +1003,15 @@ class InMemoryCaseRepository(CaseRepository):
         # SQL-backed repositories so the in-memory path can't wedge or drift.
         case.reconcile_turn_sequence()
 
+        # Same reason, same shape: the SQL-backed repositories complete an
+        # incomplete message row on the way to the table (#1418), and a caller
+        # that reads ``msg["message_id"]`` back after ``save`` must not get a
+        # KeyError on whichever backend a test happens to use. Without this the
+        # fix for two writers disagreeing would simply reappear one tier up,
+        # between two repositories.
+        for _msg in case.messages:
+            self.normalise_message_row(_msg)
+
         # P3 chokepoint: refresh denormalized disposition_eligibility from
         # current case content. Same site as the SQL-backed repositories
         # so all tests using the in-memory repo also exercise the
@@ -1165,6 +1292,7 @@ class InMemoryCaseRepository(CaseRepository):
         query: str,
         user_id: Optional[str] = None,
         enterprise_id: Optional[str] = None,
+        state: Optional[CaseState] = None,
         limit: int = 20,
         shared_case_ids: Optional[List[str]] = None,
         restrict_case_ids: Optional[List[str]] = None,
@@ -1191,6 +1319,13 @@ class InMemoryCaseRepository(CaseRepository):
 
                 # Filter-by-team facet: narrow to one team's shares.
                 if restrict is not None and case.case_id not in restrict:
+                    continue
+
+                # Lifecycle state, in the same pass as every other predicate
+                # and BEFORE the slice below — this loop is this repository's
+                # WHERE clause, and `filtered` is what both `total_count` and
+                # the limited page are taken from.
+                if state is not None and case.state != state:
                     continue
 
                 # No tenant filter: single-tenant standalone; multi-tenant

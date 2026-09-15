@@ -28,6 +28,9 @@ from faultmaven.models.api_models import IntentType, QueryIntent
 from faultmaven.modules.agent.domain.services.investigation_service import (
     InvestigationService,
 )
+from faultmaven.modules.agent.domain.services.orientation import (
+    EMPTY_TURN_TEXT,
+)
 from faultmaven.modules.case.domain.models import CaseState, TurnOutcome, TurnProgress
 
 pytestmark = pytest.mark.unit
@@ -232,7 +235,13 @@ class TestEmptyMessage:
         engine.process_turn.assert_not_called()
         assert saved.current_turn == 2
         assert saved.turn_history[-1].turn_number == 2
-        assert saved.messages[-2]["content"] == ""
+        # NOT "": a blank row fails ``case_messages_content_not_empty`` and
+        # aborts the whole aggregate save, so this turn could never persist
+        # (#1420). It passed here only because this suite runs against a
+        # repository DOUBLE, which enforces no constraints — the reason the
+        # defect stayed invisible. What the turn WAS is recorded beside it, in
+        # the metadata asserted on the next line.
+        assert saved.messages[-2]["content"] == EMPTY_TURN_TEXT
         assert saved.messages[-1]["metadata"]["orientation"] == "empty"
 
     async def test_whitespace_counts_as_empty(

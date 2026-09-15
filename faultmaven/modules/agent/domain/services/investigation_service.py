@@ -76,6 +76,7 @@ from faultmaven.models.api_models import (
     TurnResponse,
 )
 from faultmaven.modules.agent.domain.services.orientation import (
+    EMPTY_TURN_TEXT,
     OUT_OF_BAND_MARKER,
     OrientationKind,
     back_to_investigation_follow_up,
@@ -1553,7 +1554,23 @@ class InvestigationService:
                 "message_id": f"msg_{uuid4().hex[:12]}",
                 "turn_number": next_turn,
                 "role": "user",
-                "content": query or "",
+                # Emptiness is decided by ``strip()``, not by truthiness, and
+                # the difference is the whole bug (#1420). ``"   "`` is a TRUE
+                # Python value but a blank row: SQL ``TRIM`` reduces it to
+                # length 0 and ``case_messages_content_not_empty`` rejects it,
+                # aborting the whole aggregate save. ``detect_orientation``
+                # already calls every whitespace spelling ``EMPTY``, so this is
+                # the same turn, not an edge case.
+                #
+                # ``"\t"`` is the mirror hazard: one-argument SQL ``TRIM``
+                # strips only SPACES, so a tab PASSES the constraint and
+                # persists as a blank-looking bubble and a blank ``User:`` line
+                # in the LLM history. Both spellings become the marker here.
+                #
+                # ``query`` is non-blank for every turn carrying data: a paste
+                # becomes an attachment, and any attachment has already
+                # replaced ``query`` via ``generate_implicit_query`` above.
+                "content": query if (query or "").strip() else EMPTY_TURN_TEXT,
                 "created_at": to_json_compatible(datetime.now(timezone.utc)),
                 "author_id": user_id,
                 "token_count": None,
@@ -1561,6 +1578,12 @@ class InvestigationService:
                     "has_attachments": payload.has_attachments,
                     "attachment_count": len(payload.attachments),
                     "intent_type": intent_type.value,
+                    # The row carries ``EMPTY_TURN_TEXT`` rather than anything
+                    # the user wrote. Recorded so a consumer can tell the
+                    # marker from real content — the orientation path also
+                    # tags ``out_of_band``, but the pending-transition path
+                    # does not, and both can reach the marker.
+                    "user_message_empty": not (query or "").strip(),
                     "intent_metadata": (
                         intent.model_dump(exclude_unset=True, exclude={"type"})
                         if intent
@@ -1568,6 +1591,26 @@ class InvestigationService:
                     ),
                 },
             }
+            # Appended unconditionally. NOTHING upstream de-duplicates this
+            # route, and an earlier version of this comment claimed otherwise
+            # (#1419) — read that claim before trusting it:
+            #
+            # ``DeduplicationMiddleware`` skips ``multipart/form-data``
+            # outright (``_should_skip``), and this route is declared with
+            # ``Form(...)``/``File(...)``, so its content hash is never
+            # computed for a turn. ``IdempotencyMiddleware`` only engages when
+            # the client sends an ``Idempotency-Key`` header. So two identical
+            # back-to-back submissions from a client that sends neither are
+            # both processed and both charged.
+            #
+            # That is the open question in #1419, not a settled one. What IS
+            # settled is that a role+content comparison here is the wrong
+            # answer: it cannot tell a resubmission from two members of a
+            # team-shared case posting the same adjacent text ("still broken",
+            # "+1"), which are two real turns. Such a guard was tried in
+            # ``CaseService.add_message_to_case``, had no callers so never ran,
+            # was "fixed" by #855 to compare ``author_id`` and still never ran,
+            # and both were retired in #1412.
             case.messages.append(user_message_obj)
             case.message_count += 1
             case.current_turn = next_turn

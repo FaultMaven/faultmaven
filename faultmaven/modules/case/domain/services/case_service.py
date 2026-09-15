@@ -1259,7 +1259,10 @@ class CaseService(ICaseService):
         Search cases with access control
 
         Args:
-            search_request: Search criteria
+            search_request: Search criteria — ``query``, ``state``, ``team_id``
+                and ``limit``. Every one of them reaches the repository query;
+                a field read here and dropped below is the defect #1416
+                records, and #1413 and faultmaven-dashboard#51 before it.
             user_id: Optional user ID for access control
 
         Returns:
@@ -1286,9 +1289,17 @@ class CaseService(ICaseService):
             shared_case_ids = await self._resolve_shared_case_ids(
                 user_id, team_ids=team_ids
             )
+            # `state` goes down the same path as the scope, and for the same
+            # reason: search applies its LIMIT in SQL, so a state narrowed here
+            # would be narrowing an already-limited page — and would answer
+            # "no matching cases" whenever the limit was filled by rows in other
+            # states. It was declared on CaseSearchRequest and read by nothing
+            # until #1416; the field being accepted was never the same thing as
+            # the filter being applied.
             cases_list, total = await self.repository.search(
                 query=search_request.query,
                 user_id=user_id,
+                state=search_request.state,
                 limit=search_request.limit,
                 shared_case_ids=shared_case_ids,
                 restrict_case_ids=restrict_case_ids,

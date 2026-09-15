@@ -83,7 +83,17 @@ class ICaseRepository(Protocol):
     """
 
     async def save(self, case: "Case") -> "Case":
-        """Save case to persistence layer."""
+        """Save case to persistence layer.
+
+        MUTATES ``case.messages``: a row missing ``message_id`` or
+        ``created_at`` is completed in place, so the in-memory list carries
+        what the stored rows carry (#1418). Both fields are read back — the id
+        is the upsert's conflict target and the timestamp is what every read
+        orders by — so a row left incomplete in memory would be re-minted and
+        re-inserted, or re-stamped and reordered, on the next save. Every
+        implementation does this, including the in-memory one, so a caller may
+        read either field back after ``save`` on any backend.
+        """
         ...
 
     async def get(self, case_id: str) -> Optional["Case"]:
@@ -163,15 +173,32 @@ class ICaseRepository(Protocol):
         query: str,
         user_id: Optional[str] = None,
         enterprise_id: Optional[str] = None,
+        state: Optional["CaseState"] = None,
         limit: int = 20,
         shared_case_ids: Optional[List[str]] = None,
         restrict_case_ids: Optional[List[str]] = None,
     ) -> tuple[List["Case"], int]:
         """Search cases by text query.
 
+        ``state`` narrows the result to one lifecycle state, as ``list`` does,
+        and belongs in the same WHERE clause as the text predicate for the same
+        reason ``list``'s filters do: search applies its ``limit`` in SQL, so a
+        state applied in Python afterwards would thin an already-limited page —
+        and would answer "no matching cases" whenever the limit happened to be
+        filled by rows in other states.
+
         ``shared_case_ids`` widens the owner-only scope to
         ``owned ∪ shared-to-my-teams`` (ADR-013 §D4); ``restrict_case_ids`` is the
         filter-by-team facet that narrows to one team's shares. See ``list``.
+
+        Returns ``(page, total_count)``, where the total is the count of ALL
+        matches — computed from the same WHERE clause, before the ``limit``,
+        exactly as ``list`` computes it. Three implementations used to return
+        ``len(page)`` here, which is the page length wearing the name of a
+        total; nothing reads the value today (``search_cases`` discards it and
+        the route is ``response_model=List[CaseSummary]``), which is why it
+        stayed wrong. Same safe-direction divergence ``list`` documents: a raw
+        COUNT over-reports if a row fails to hydrate, and never hides one.
         """
         ...
 

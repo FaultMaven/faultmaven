@@ -776,7 +776,14 @@ class CaseSearchRequest(BaseModel):
         default=None, description="Limit to organization's cases"
     )
 
-    state: Optional[CaseState] = Field(default=None, description="Filter by state")
+    state: Optional[CaseState] = Field(
+        default=None,
+        description=(
+            "Narrow the results to one lifecycle state. Applied in the same "
+            "query as the text search, so it constrains what the `limit` "
+            "returns rather than thinning an already-limited page."
+        ),
+    )
 
     team_id: Optional[str] = Field(
         default=None,

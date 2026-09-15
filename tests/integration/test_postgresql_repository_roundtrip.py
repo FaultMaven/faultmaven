@@ -939,3 +939,196 @@ async def test_message_authorship_is_write_once_but_fillable(pg_repo):
     }
     assert by_content["already attributed"] == teammate_id  # not erased
     assert by_content["not yet attributed"] == owner_id  # filled
+
+
+@pytest.mark.asyncio
+async def test_an_id_less_row_is_completed_not_skipped(pg_repo, pg_engine):
+    """#1418 on the PRODUCTION backend, not only on SQLite.
+
+    ``_upsert_messages`` used to ``continue`` past any row without a
+    ``message_id``, so the aggregate save reported success and the transcript
+    line was gone. The same two lines existed in both backends; a guard
+    covering only SQLite would leave the cloud one unpinned.
+
+    Also pins the two properties the mint is FOR: the id is written back, so a
+    second save conflicts onto the row instead of inserting a duplicate, and
+    the line keeps its place. Ordering is a real temporal comparison here
+    (``timestamptz``), not SQLite's text sort, so this half needs its own test.
+    """
+    session = pg_repo.db
+    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    user_id = f"user_{uuid4().hex[:8]}"
+    await seed_enterprises(session, [enterprise_id])
+    await seed_users(session, [user_id])
+    case = _make_case(enterprise_id, user_id)
+
+    case.messages.append(
+        {
+            "message_id": f"msg_{uuid4().hex[:12]}",
+            "role": "user",
+            "content": "1. live-path row",
+            "turn_number": 1,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    # No message_id — complete in every other respect, so the only thing the
+    # repository supplies is the one field it may invent.
+    case.messages.append(
+        {
+            "role": "assistant",
+            "content": "2. id-less row",
+            "turn_number": 1,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    await pg_repo.save(case)
+
+    minted = case.messages[1]["message_id"]
+    assert minted, "the mint must be written back to the caller's dict"
+
+    await pg_repo.save(case)  # must conflict onto the row, not duplicate it
+
+    # Read back through a SEPARATE session: the writing session sees its own
+    # uncommitted state. ``pg_engine`` is the AsyncEngine the fixture was built
+    # from; ``session.get_bind()`` hands back the SYNC engine underneath it.
+    other_session_factory = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with other_session_factory() as other:
+        messages = await PostgreSQLHybridCaseRepository(other).get_messages(
+            case.case_id
+        )
+        rows = await other.execute(
+            text("SELECT message_id FROM case_messages WHERE case_id = :c"),
+            {"c": case.case_id},
+        )
+        ids = [r[0] for r in rows.fetchall()]
+
+    assert [m.get("content") for m in messages] == [
+        "1. live-path row",
+        "2. id-less row",
+    ]
+    assert sorted(ids) == sorted([case.messages[0]["message_id"], minted])
+
+
+@pytest.mark.asyncio
+async def test_the_save_refuses_what_it_cannot_know(pg_repo):
+    """The other half of #1418's rule, on PostgreSQL: stamp only what you
+    witnessed.
+
+    ``save(case)`` replays a list assembled at moments the repository never
+    saw, so it refuses a row whose creation time or turn it was not told rather
+    than inventing one — a guessed ``created_at`` was measured placing a row
+    appended FIRST after a row appended SECOND, and ``turn_number`` used to be
+    the row's index in the list, which anchors then key on.
+    """
+    session = pg_repo.db
+    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    user_id = f"user_{uuid4().hex[:8]}"
+    await seed_enterprises(session, [enterprise_id])
+    await seed_users(session, [user_id])
+
+    base = _make_case(enterprise_id, user_id)
+    base.messages.append({"role": "user", "content": "no created_at", "turn_number": 1})
+    with pytest.raises(Exception, match="cannot know when a message was created"):
+        await pg_repo.save(base)
+
+    other = _make_case(enterprise_id, user_id)
+    other.messages.append(
+        {
+            "role": "user",
+            "content": "no turn",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    with pytest.raises(Exception, match="does not know which turn"):
+        await pg_repo.save(other)
+
+
+@pytest.mark.asyncio
+async def test_search_state_is_a_where_clause_not_a_post_filter(pg_repo):
+    """``search(state=...)`` narrows in SQL, ahead of the LIMIT (#1416).
+
+    ``CaseSearchRequest.state`` was declared and published for as long as the
+    endpoint existed and ``ICaseRepository.search`` had no parameter for it to
+    reach, so ``POST /cases/search`` answered 200 with every state — the
+    declared-accepted-never-applied shape of faultmaven-dashboard#51 and #1413.
+
+    Placement is the half that needs a real database. ``search`` limits in SQL
+    and orders by ``ts_rank DESC, updated_at DESC``, so a state applied after
+    the query is a state applied to an already-shortened list. The corpus below
+    puts both INQUIRY rows at the top of that ordering: a ``LIMIT 2`` asking for
+    INVESTIGATING therefore comes back EMPTY unless the predicate is in the
+    WHERE clause.
+    """
+    session = pg_repo.db
+    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    user_id = f"user_{uuid4().hex[:8]}"
+    await seed_enterprises(session, [enterprise_id])
+    await seed_users(session, [user_id])
+
+    # Four cases, identically shaped titles so ts_rank ties and ``updated_at``
+    # decides the order. States alternate two and two.
+    seeds = []
+    for word, state in (
+        ("alpha", CaseState.INQUIRY),
+        ("beta", CaseState.INQUIRY),
+        ("gamma", CaseState.INVESTIGATING),
+        ("delta", CaseState.INVESTIGATING),
+    ):
+        case = _make_case(enterprise_id, user_id)
+        object.__setattr__(case, "title", f"{word} widget")
+        object.__setattr__(case, "state", state)
+        await pg_repo.save(case)
+        seeds.append((case, state))
+
+    # Stamp the ordering explicitly: ``save`` writes ``updated_at = now()``, and
+    # which rows a LIMIT takes is the whole point of the assertion below.
+    # ``created_at`` moves with it — Case refuses a row created after its last
+    # update.
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    for offset, (case, _) in enumerate(seeds):
+        await session.execute(
+            text(
+                "UPDATE cases SET updated_at = :ts, created_at = :ts "
+                "WHERE case_id = :cid"
+            ),
+            {"ts": base.replace(day=28 - offset), "cid": case.case_id},
+        )
+    await session.commit()
+
+    inquiry_ids = {c.case_id for c, s in seeds if s is CaseState.INQUIRY}
+    investigating_ids = {c.case_id for c, s in seeds if s is CaseState.INVESTIGATING}
+
+    # It narrows at all.
+    everything, _ = await pg_repo.search(query="widget", user_id=user_id)
+    assert {c.case_id for c in everything} == inquiry_ids | investigating_ids
+
+    narrowed, _ = await pg_repo.search(
+        query="widget", user_id=user_id, state=CaseState.INVESTIGATING
+    )
+    assert {c.case_id for c in narrowed} == investigating_ids
+
+    # The arrangement the next assertion depends on, CAPTURED rather than
+    # assumed: the two rows a LIMIT 2 takes are both INQUIRY.
+    top_two, _ = await pg_repo.search(query="widget", user_id=user_id, limit=2)
+    assert {c.case_id for c in top_two} == inquiry_ids
+
+    # …and so the predicate has to be upstream of the LIMIT to find anything.
+    under_limit, _ = await pg_repo.search(
+        query="widget", user_id=user_id, state=CaseState.INVESTIGATING, limit=2
+    )
+    assert {c.case_id for c in under_limit} == investigating_ids
+
+    # The second return value is a TOTAL, not the page length. This repository
+    # returned `len(cases)` until this change, which is indistinguishable from a
+    # true count on any corpus smaller than the limit — so the assertion is made
+    # under a limit the corpus exceeds. Nothing reads the value today, which is
+    # how it stayed wrong.
+    page, total = await pg_repo.search(query="widget", user_id=user_id, limit=2)
+    assert len(page) == 2
+    assert total == 4
+
+    narrowed_page, narrowed_total = await pg_repo.search(
+        query="widget", user_id=user_id, state=CaseState.INVESTIGATING
+    )
+    assert len(narrowed_page) == 2
+    assert narrowed_total == 2

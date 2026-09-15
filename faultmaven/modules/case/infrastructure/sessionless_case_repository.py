@@ -268,13 +268,22 @@ class SessionlessCaseRepository(CaseRepository):
         """
         async with get_db_session() as session:
             repo = get_repository_for_session(session)
+            # EVERY argument by keyword, and that is load-bearing rather than
+            # tidy. This wrapper is what is wired in at runtime, and a
+            # positional forward binds by POSITION: inserting one parameter
+            # into the underlying `list` ahead of `source` — exactly what this
+            # change did to `search` — would silently bind `offset` to
+            # `source` and `limit` to `offset`. `list_user_cases` wraps the
+            # call in `except Exception: return [], 0`, so the endpoint would
+            # answer "you have no cases" with nothing in the log. That is the
+            # #405 failure, and it reached production once already.
             return await repo.list(
-                user_id,
-                enterprise_id,
-                state,
-                limit,
-                offset,
-                source,
+                user_id=user_id,
+                enterprise_id=enterprise_id,
+                state=state,
+                limit=limit,
+                offset=offset,
+                source=source,
                 shared_case_ids=shared_case_ids,
                 restrict_case_ids=restrict_case_ids,
                 include_empty=include_empty,
@@ -287,6 +296,7 @@ class SessionlessCaseRepository(CaseRepository):
         query: str,
         user_id: str | None = None,
         enterprise_id: str | None = None,
+        state: CaseState | None = None,
         limit: int = 20,
         shared_case_ids: builtins.list[str] | None = None,
         restrict_case_ids: builtins.list[str] | None = None,
@@ -295,16 +305,22 @@ class SessionlessCaseRepository(CaseRepository):
 
         enterprise_id is forwarded but does NOT scope reads — multi-tenant
         isolation is PostgreSQL RLS (ADR-010); see the underlying repositories.
+        ``state`` narrows to one lifecycle state, applied in the underlying
+        repository's WHERE clause rather than here (see ``ICaseRepository``).
         ``shared_case_ids`` widens owner-only scope to ``owned ∪ shared`` (§D4);
         ``restrict_case_ids`` narrows to one team's shares (filter-by-team).
         """
         async with get_db_session() as session:
             repo = get_repository_for_session(session)
+            # By keyword throughout — see the note on ``list`` above; the two
+            # forwards have the same hazard and must not differ in how they
+            # guard against it.
             return await repo.search(
-                query,
-                user_id,
-                enterprise_id,
-                limit,
+                query=query,
+                user_id=user_id,
+                enterprise_id=enterprise_id,
+                state=state,
+                limit=limit,
                 shared_case_ids=shared_case_ids,
                 restrict_case_ids=restrict_case_ids,
             )
