@@ -1078,25 +1078,16 @@ class DIContainer(BaseDIContainer):
                     case for case in self.cases.values() if case.user_id == user_id
                 ]
 
-                # Phase 1: Apply core filtering - exclude deleted/archived/empty by default
+                # Only the filters `CaseListFilter` actually declares, because
+                # the stand-in must answer what `CaseService.list_user_cases`
+                # answers. Two `getattr(filters, "include_deleted"/
+                # "include_terminal", False)` blocks used to sit here (#1431):
+                # `CaseListFilter` declares neither field, so both defaults
+                # always fired and this path DROPPED every RESOLVED and CLOSED
+                # case — a filter applied that nobody requested, while the real
+                # service excludes no terminal state at all. Same defect as the
+                # declared-and-never-applied filters, opposite sign.
                 if filters:
-                    # Phase 1: Default filtering behavior (exclude terminal cases)
-                    if not getattr(filters, "include_deleted", False):
-                        # Exclude closed cases
-                        user_cases = [
-                            case
-                            for case in user_cases
-                            if case.state != CaseState.CLOSED
-                        ]
-
-                    if not getattr(filters, "include_terminal", False):
-                        # Exclude terminal cases (resolved and closed)
-                        user_cases = [
-                            case
-                            for case in user_cases
-                            if case.state not in [CaseState.RESOLVED, CaseState.CLOSED]
-                        ]
-
                     if not getattr(filters, "include_empty", False):
                         # Exclude empty cases (message_count == 0)
                         # For MinimalCaseService, we'll consider all cases as having at least 1 message unless explicitly marked
@@ -1131,20 +1122,12 @@ class DIContainer(BaseDIContainer):
                     # end. Both `list_user_cases` and `count_user_cases` apply
                     # it, so the page and the count cannot disagree.
                     user_cases = _within_created_window(user_cases, filters)
-                else:
-                    # Phase 1: No filters provided - apply default exclusions
-                    # Only show active (non-terminal) cases by default
-                    user_cases = [
-                        case
-                        for case in user_cases
-                        if case.state in [CaseState.INQUIRY, CaseState.INVESTIGATING]
-                    ]
-                    # Exclude empty cases by default
-                    user_cases = [
-                        case
-                        for case in user_cases
-                        if getattr(case, "message_count", 1) > 0
-                    ]
+                # No `else` branch: with no filters `CaseService.list_user_cases`
+                # narrows on nothing (state=None, source=None, team=None,
+                # include_empty=True — `CaseListFilter`'s own default), so the
+                # stand-in must not either. It used to exclude every terminal
+                # case AND every empty one here, which is the #1431 defect once
+                # more with no filter object to blame it on.
 
                 # Extract pagination parameters from filters if available
                 if filters and hasattr(filters, "limit"):
@@ -1198,25 +1181,10 @@ class DIContainer(BaseDIContainer):
                     # Return all cases if no user filter
                     user_cases = list(self.cases.values())
 
-                # Phase 1: Apply same core filtering as list_user_cases
+                # Same filters as list_user_cases, and only those — the page
+                # and the count cannot disagree. The two `include_deleted` /
+                # `include_terminal` blocks went from both at once (#1431).
                 if filters:
-                    # Phase 1: Default filtering behavior (exclude terminal cases)
-                    if not getattr(filters, "include_deleted", False):
-                        # Exclude closed cases
-                        user_cases = [
-                            case
-                            for case in user_cases
-                            if case.state != CaseState.CLOSED
-                        ]
-
-                    if not getattr(filters, "include_terminal", False):
-                        # Exclude terminal cases (resolved and closed)
-                        user_cases = [
-                            case
-                            for case in user_cases
-                            if case.state not in [CaseState.RESOLVED, CaseState.CLOSED]
-                        ]
-
                     if not getattr(filters, "include_empty", False):
                         # Exclude empty cases (message_count == 0)
                         user_cases = [
@@ -1250,20 +1218,7 @@ class DIContainer(BaseDIContainer):
                     # end. Both `list_user_cases` and `count_user_cases` apply
                     # it, so the page and the count cannot disagree.
                     user_cases = _within_created_window(user_cases, filters)
-                else:
-                    # Phase 1: No filters provided - apply default exclusions (same as list_user_cases)
-                    # Only show active (non-terminal) cases by default
-                    user_cases = [
-                        case
-                        for case in user_cases
-                        if case.state in [CaseState.INQUIRY, CaseState.INVESTIGATING]
-                    ]
-                    # Exclude empty cases by default
-                    user_cases = [
-                        case
-                        for case in user_cases
-                        if getattr(case, "message_count", 1) > 0
-                    ]
+                # No `else` branch, matching list_user_cases above.
 
                 return len(user_cases)
 
