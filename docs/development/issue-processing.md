@@ -21,8 +21,8 @@ week were opened and ~22 closed. Five things the count was hiding, from the
    so the rest sit: a P2 issue's median time to close is 17 days, P3 is
    effectively never, and 12 of 15 P3 issues are still open.
 3. **The defects being found are old.** Median latency between the defective
-   line's introduction and the issue is 121 days; 55% are over 90 days and
-   only ~20% under a week, a share that has been stable month to month while
+   line's introduction and the issue is 142 days; 61% are over 90 days and
+   only ~14% under a week, a share that has been stable month to month while
    the over-90-day share rises. That is the signature of draining a fixed pool
    rather than generating new debt.
 4. **Fixes rarely break things; they expose things.** 13 of 193 defects (7%)
@@ -184,13 +184,15 @@ finding all N; miss one and the follow-up issue is guaranteed.
 
 ### Making N machine-checkable
 
-The repository already does this, unsystematically: nine scan-style
-guards under `tests/unit/architecture/` and thirty-nine test files in all
-that walk the package with `ast` or a regex. They work (`#1428`'s reader-order
-scan, `#1397`'s one-kind-field scan, the JWT single-mint-surface test). What
-they cost is 120–230 lines each, because every one re-implements the walk,
-the floor, and the identity control. The campaign's first deliverable
-therefore is not another guard but the thing that makes a guard cheap:
+The repository already does this, unsystematically: a dozen scan-style
+guards under `tests/unit/architecture/` and several dozen test files in all
+that walk the package with `ast` or a regex (the exact counts are what the
+register below will hold; a count quoted here would drift). They work
+(`#1428`'s reader-order scan, `#1397`'s one-kind-field scan, the JWT
+single-mint-surface test). What they cost is 120–230 lines each, because
+every one re-implements the walk, the floor, and the identity control. The
+campaign's first deliverable therefore is not another guard but the thing
+that makes a guard cheap:
 
 1. **A shared scan harness** (`tests/unit/architecture/_scan.py`): walk the
    package and `tests/`, apply a regex or AST predicate, and assert both a
@@ -198,8 +200,12 @@ therefore is not another guard but the thing that makes a guard cheap:
    **identity control** (it visited this one). A guard becomes the predicate,
    the expected N, and a docstring naming the issue: ~30 lines. It grows out
    of what exists — `tests/import_guard_ast.py` already holds the AST
-   predicates for one family, and three architecture tests carry an
-   identical private `_scan(paths)` walker that the harness retires.
+   predicates for one family, and two tests carry a private `_scan(paths)`
+   walker with different contracts (`test_swallowed_first_party_imports`
+   tolerates absent paths and reports unreadable files;
+   `test_optional_dependency_detection` does neither) that the harness
+   unifies. Item 1's lane starts by counting these with a scan, not from
+   this paragraph.
 2. **An invariant register** (`docs/development/invariants.md`): one row per
    rule the codebase has been bitten by, naming the *owner* (the single
    implementation every call site goes through), N today, the guard that

@@ -28,7 +28,9 @@ minute per hundred closed issues); the rest completes in under a second.
 Everything the script prints is derived from GitHub metadata and the git
 history, never from reading issue text. An open issue younger than the
 residue threshold is reported as *pending*, not as residue, so the newest
-week's row is comparable to the same row on a later run.
+week's row is comparable to the same row on a later run. A saved dump is
+replayed with ``--as-of <the time it was taken>``; ages are measured from
+that instant, not from when the file is re-read.
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import math
 import re
 import statistics
 import subprocess
@@ -147,8 +150,10 @@ def fetch_issues(repo: str) -> list[Issue]:
         "--json",
         _ISSUE_FIELDS,
     ]
-    out = subprocess.run(cmd, check=True, capture_output=True, text=True).stdout
-    return load_issues(json.loads(out))
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        sys.exit(f"gh issue list failed: {result.stderr.strip() or 'no diagnostic'}")
+    return load_issues(json.loads(result.stdout))
 
 
 def _week(when: dt.datetime) -> tuple[int, int]:
@@ -234,6 +239,7 @@ def survival(
         "closed_within": {},
         "survivors": 0,
         "survivors_closed": 0,
+        "survivors_closed_late": 0,
         "survivors_open": 0,
     }
     if not cohort:
@@ -252,6 +258,11 @@ def survival(
     result["survivors"] = len(survivors)
     result["survivors_closed"] = sum(closed_within(issue, last) for issue in survivors)
     result["survivors_open"] = sum(1 for issue in survivors if issue.is_open)
+    # The three parts partition the survivors: a closure after the last
+    # horizon is the sweep drain the residue measure is about, not nothing.
+    result["survivors_closed_late"] = (
+        len(survivors) - result["survivors_closed"] - result["survivors_open"]
+    )
     return result
 
 
@@ -275,13 +286,18 @@ def residue_snapshot(issues: Sequence[Issue], now: dt.datetime) -> dict:
     }
 
 
-def follow_ups(issues: Sequence[Issue]) -> dict:
+def follow_ups(
+    issues: Sequence[Issue], pr_links: dict[int, list[int]] | None = None
+) -> dict:
     """Issues that name a parent they were found while working on.
 
     A parent is counted only when it is an issue in this corpus. A number
-    that is not — usually the PR the lane was working, or a cross-repository
-    reference — is reported separately as ``unresolved`` rather than as a
-    parent, because the per-lane rate is a rate per ISSUE.
+    that is not is usually the PR the lane was working; ``pr_links`` (PR
+    number → the issues it closed, from :func:`pr_closing_issues`) resolves
+    those to the issue the PR was for. What still resolves to nothing — a
+    cross-repository reference, a PR that closed no issue — is reported as
+    ``unresolved`` rather than as a parent, because the per-lane rate is a
+    rate per ISSUE.
 
     The regex reads the lane's own marker, so an issue whose parent is named
     without one is missed; treat the count as a floor. Whether a follow-up
@@ -292,11 +308,17 @@ def follow_ups(issues: Sequence[Issue]) -> dict:
     known = {issue.number for issue in issues}
     children: dict[int, list[int]] = defaultdict(list)
     unresolved = 0
+    via_pr = 0
     for issue in issues:
         match = _PARENT_MARKER.search(issue.body)
         if not match:
             continue
         parent = int(match.group(1))
+        if parent not in known and pr_links:
+            closed_here = [n for n in pr_links.get(parent, ()) if n in known]
+            if closed_here:
+                parent = min(closed_here)
+                via_pr += 1
         if parent in known:
             children[parent].append(issue.number)
         else:
@@ -305,9 +327,21 @@ def follow_ups(issues: Sequence[Issue]) -> dict:
     return {
         "attributed": sum(len(kids) for kids in children.values()),
         "parents": len(children),
+        "via_pr": via_pr,
         "unresolved": unresolved,
         "top": [(parent, kids) for parent, kids in parents[:10]],
     }
+
+
+def marker_numbers(issues: Sequence[Issue]) -> list[int]:
+    """Every number a parent marker names that is not an issue here."""
+    known = {issue.number for issue in issues}
+    found = set()
+    for issue in issues:
+        match = _PARENT_MARKER.search(issue.body)
+        if match and int(match.group(1)) not in known:
+            found.add(int(match.group(1)))
+    return sorted(found)
 
 
 # --------------------------------------------------------------------------
@@ -322,23 +356,25 @@ def _git(*args: str) -> str | None:
     return result.stdout if result.returncode == 0 else None
 
 
-def closing_prs(numbers: Sequence[int], repo: str) -> dict[int, list[dict]]:
-    """Which merged PR closed each issue, from GitHub's own linkage.
+def _graphql_batches(
+    numbers: Sequence[int], repo: str, field: str, label: str
+) -> dict[int, dict]:
+    """Run ``field`` (an alias-less GraphQL field template with ``{n}``) for
+    every number in batches of 40 and return ``number → node``.
 
     GitHub answers a batch with partial data plus an ``errors`` array when
-    one number cannot be resolved (deleted, transferred, or a PR number), and
-    ``gh`` exits non-zero on that. The body is still parsed, the resolvable
-    aliases are kept, and the failed numbers are reported to stderr.
+    one number cannot be resolved (deleted, transferred, or the wrong kind),
+    and ``gh`` exits non-zero on that. The body is still parsed and the
+    resolvable aliases kept. A whole-batch failure — ``data: null`` with
+    ``errors``, or a REST-style ``{"message": ...}`` such as a bad credential
+    or a rate limit — is reported to stderr with GitHub's own words, so a run
+    that dated nothing says why.
     """
     owner, name = repo.split("/")
-    out: dict[int, list[dict]] = {}
+    out: dict[int, dict] = {}
     for start in range(0, len(numbers), 40):
         chunk = numbers[start : start + 40]
-        fields = " ".join(
-            f"i{n}: issue(number:{n}){{ number closedByPullRequestsReferences(first:5)"
-            f"{{ nodes {{ number mergedAt mergeCommit {{ oid }} }} }} }}"
-            for n in chunk
-        )
+        fields = " ".join(f"i{n}: " + field.format(n=n) for n in chunk)
         query = f'{{ repository(owner:"{owner}",name:"{name}"){{ {fields} }} }}'
         result = subprocess.run(
             ["gh", "api", "graphql", "-f", f"query={query}"],
@@ -351,12 +387,49 @@ def closing_prs(numbers: Sequence[int], repo: str) -> dict[int, list[dict]]:
             print(f"graphql returned no body: {result.stderr[:200]}", file=sys.stderr)
             continue
         repository = (payload.get("data") or {}).get("repository") or {}
+        if not repository:
+            reason = payload.get("message") or "; ".join(
+                e.get("message", "") for e in payload.get("errors", [])
+            )
+            print(
+                f"graphql batch of {len(chunk)} {label} failed: "
+                f"{reason or result.stderr[:200] or 'no diagnostic'}",
+                file=sys.stderr,
+            )
+            continue
         for alias, value in repository.items():
             if value is None:
-                print(f"unresolvable issue {alias[1:]}", file=sys.stderr)
+                print(f"unresolvable {label} {alias[1:]}", file=sys.stderr)
                 continue
-            out[value["number"]] = value["closedByPullRequestsReferences"]["nodes"]
+            out[int(alias[1:])] = value
     return out
+
+
+def closing_prs(numbers: Sequence[int], repo: str) -> dict[int, list[dict]]:
+    """Which merged PR closed each issue, from GitHub's own linkage."""
+    nodes = _graphql_batches(
+        numbers,
+        repo,
+        "issue(number:{n}){{ closedByPullRequestsReferences(first:5)"
+        "{{ nodes {{ number mergedAt mergeCommit {{ oid }} }} }} }}",
+        "issue",
+    )
+    return {n: v["closedByPullRequestsReferences"]["nodes"] for n, v in nodes.items()}
+
+
+def pr_closing_issues(numbers: Sequence[int], repo: str) -> dict[int, list[int]]:
+    """Which issues each PR closed — the inverse linkage, for parent markers."""
+    nodes = _graphql_batches(
+        numbers,
+        repo,
+        "pullRequest(number:{n}){{ closingIssuesReferences(first:10)"
+        "{{ nodes {{ number }} }} }}",
+        "pull request",
+    )
+    return {
+        n: [node["number"] for node in v["closingIssuesReferences"]["nodes"]]
+        for n, v in nodes.items()
+    }
 
 
 def _is_test_path(path: str) -> bool:
@@ -423,29 +496,42 @@ def _intro_times(
     return found
 
 
-def latency_days(found: dt.datetime, intro_times: Sequence[int]) -> dict:
+def latency_days(found: dt.datetime, intro_times: Sequence[int]) -> dict | None:
     """Latency of one defect from the introduction times of its removed lines.
 
     The median is the headline: a fix usually touches lines of several ages
     and the median resists both a reformatting commit and one ancient import.
+    A line authored AFTER the issue was filed cannot have caused it (a peer
+    PR reflowed the file in between), so such lines are dropped before the
+    median is taken; a fix with no pre-issue line at all is undatable and
+    answers ``None``.
     """
     found_ts = found.timestamp()
+    dated = [t for t in intro_times if t <= found_ts]
+    if not dated:
+        return None
     return {
-        "n_lines": len(intro_times),
-        "median": (found_ts - statistics.median(intro_times)) / _DAY,
-        "oldest": (found_ts - min(intro_times)) / _DAY,
-        "newest": (found_ts - max(intro_times)) / _DAY,
+        "n_lines": len(dated),
+        "n_dropped": len(intro_times) - len(dated),
+        "median": (found_ts - statistics.median(dated)) / _DAY,
+        "oldest": (found_ts - min(dated)) / _DAY,
+        "newest": (found_ts - max(dated)) / _DAY,
     }
 
 
-def fix_latency(issues: Sequence[Issue], repo: str) -> list[dict]:
+def fix_latency(issues: Sequence[Issue], repo: str) -> dict:
     """One row per FIX PR, dated against the earliest issue it closed.
 
     Per PR rather than per issue: a sweep PR closing six issues would
     otherwise contribute six identical medians and weight the distribution by
-    PR size. A PR whose removed lines were all authored AFTER the issue was
-    filed (a peer PR landed in between) is dropped as undatable rather than
-    reported as a fast regression.
+    PR size. Returns ``{"rows": [...], "skipped": {reason: count}}`` so the
+    report has a denominator: a PR whose merge commit is not in the local
+    checkout (not fetched yet — the NEWEST PRs, which is the direction that
+    would flatter the under-a-week share) is counted, not silently dropped.
+
+    ``mergeCommit`` is the squash commit for a squash merge, which is how
+    this repository merges; a rebase merge would name only the PR's last
+    commit and date a partial diff.
     """
     closed = [issue for issue in issues if issue.closed is not None]
     by_number = {issue.number: issue for issue in closed}
@@ -462,11 +548,15 @@ def fix_latency(issues: Sequence[Issue], repo: str) -> list[dict]:
         entry["issues"].append(number)
 
     rows = []
+    skipped: Counter = Counter()
     for pr_number, entry in sorted(per_pr.items()):
         oid = entry["oid"]
         if _git("cat-file", "-e", oid) is None:
+            skipped["merge commit not in local checkout (fetch?)"] += 1
             continue
         diff = _git(
+            "-c",
+            "core.quotePath=false",
             "diff",
             "-U0",
             "--diff-filter=MD",
@@ -478,7 +568,11 @@ def fix_latency(issues: Sequence[Issue], repo: str) -> list[dict]:
             "--",
             "faultmaven/",
         )
+        if diff is None:
+            skipped["git diff failed (shallow clone?)"] += 1
+            continue
         if not diff:
+            skipped["no source change under faultmaven/"] += 1
             continue
         targets = removed_lines(diff)
         removed = [(p, n) for p, n in targets if n > 0]
@@ -490,10 +584,12 @@ def fix_latency(issues: Sequence[Issue], repo: str) -> list[dict]:
             intro = _intro_times(anchors, f"{oid}^", cache)
             method = "context"
         if not intro:
+            skipped["no blameable line"] += 1
             continue
         found = min(by_number[n].created for n in entry["issues"])
         stats = latency_days(found, intro)
-        if stats["oldest"] < 0:
+        if stats is None:
+            skipped["every removed line postdates the issue"] += 1
             continue
         rows.append(
             {
@@ -503,7 +599,13 @@ def fix_latency(issues: Sequence[Issue], repo: str) -> list[dict]:
                 **stats,
             }
         )
-    return rows
+    return {"rows": rows, "skipped": dict(skipped)}
+
+
+def _percentile(values: Sequence[float], pct: float) -> float:
+    """Nearest-rank percentile over an ascending sequence (rank = ⌈p·n⌉)."""
+    rank = max(1, math.ceil(pct / 100 * len(values)))
+    return values[rank - 1]
 
 
 def latency_distribution(rows: Sequence[dict]) -> dict:
@@ -512,9 +614,9 @@ def latency_distribution(rows: Sequence[dict]) -> dict:
         return {"n": 0}
     return {
         "n": len(values),
-        "p25": values[len(values) // 4],
+        "p25": _percentile(values, 25),
         "median": statistics.median(values),
-        "p75": values[(3 * len(values)) // 4],
+        "p75": _percentile(values, 75),
         "under_7d": sum(1 for v in values if v < 7) / len(values),
         "over_90d": sum(1 for v in values if v > 90) / len(values),
     }
@@ -532,13 +634,22 @@ def _table(headers: Sequence[str], rows: Iterable[Sequence]) -> str:
     return "\n".join(lines)
 
 
-def compute(issues: Sequence[Issue], now: dt.datetime, latency: bool, repo: str):
+def compute(
+    issues: Sequence[Issue],
+    now: dt.datetime,
+    repo: str,
+    latency: bool = False,
+    resolve_parents: bool = False,
+) -> dict:
+    pr_links = (
+        pr_closing_issues(marker_numbers(issues), repo) if resolve_parents else None
+    )
     return {
-        "generated": now.isoformat(),
+        "as_of": now.isoformat(),
         "weekly": weekly_flow(issues, now),
         "survival": survival(issues, now),
         "open": residue_snapshot(issues, now),
-        "follow_ups": follow_ups(issues),
+        "follow_ups": follow_ups(issues, pr_links),
         "latency": fix_latency(issues, repo) if latency else None,
     }
 
@@ -588,11 +699,13 @@ def report(results: dict, weeks: int) -> str:
     surv = results["survival"]
     out.append("## Survival\n")
     if surv["cohort"]:
+        last = max(surv["closed_within"])
         out.append(
             f"Cohort with ≥30 days exposure: {surv['cohort']}. Closed within "
             + ", ".join(f"{d}d: {p:.0%}" for d, p in surv["closed_within"].items())
-            + f". Survived {RESIDUE_THRESHOLD_DAYS}d: {surv['survivors']}, of which "
-            f"closed by 30d: {surv['survivors_closed']}, still open: "
+            + f". Survived {RESIDUE_THRESHOLD_DAYS}d: {surv['survivors']} = "
+            f"closed by {last}d: {surv['survivors_closed']} + closed later: "
+            f"{surv['survivors_closed_late']} + still open: "
             f"{surv['survivors_open']}.\n"
         )
     else:
@@ -610,31 +723,46 @@ def report(results: dict, weeks: int) -> str:
     fu = results["follow_ups"]
     out.append("## Follow-ups (regex floor)\n")
     out.append(
-        f"{fu['attributed']} issues name a parent issue they were found while "
-        f"working on, across {fu['parents']} parents; {fu['unresolved']} more name "
-        "a number that is not an issue here (a PR, or another repository). "
+        f"{fu['attributed']} issues name a parent they were found while working "
+        f"on, across {fu['parents']} parent issues ({fu['via_pr']} resolved "
+        f"through the PR the marker named); {fu['unresolved']} name a number "
+        "that resolves to no issue here (a PR that closed none, or another "
+        "repository). "
         "Most prolific: "
         + ", ".join(f"#{p} ({len(k)})" for p, k in fu["top"][:6])
         + ".\n"
     )
 
     if results["latency"] is not None:
-        dist = latency_distribution(results["latency"])
+        dist = latency_distribution(results["latency"]["rows"])
+        skipped = results["latency"]["skipped"]
         out.append("## Fix latency (blame on the removed lines of each fix PR)\n")
         if dist["n"]:
             out.append(
-                f"{dist['n']} dated fix PRs. Median latency {dist['median']:.0f}d "
+                f"{dist['n']} dated fix PRs, {sum(skipped.values())} skipped "
+                f"({', '.join(f'{v} {k}' for k, v in sorted(skipped.items())) or 'none'}). "
+                f"Median latency {dist['median']:.0f}d "
                 f"(p25 {dist['p25']:.0f}d, p75 {dist['p75']:.0f}d); "
                 f"{dist['under_7d']:.0%} under a week (introduced by recent work), "
                 f"{dist['over_90d']:.0%} over 90 days (old pool).\n"
             )
         else:
-            out.append("No fix could be dated.\n")
+            out.append(
+                "No fix could be dated"
+                + (
+                    f" ({', '.join(f'{v} {k}' for k, v in sorted(skipped.items()))})"
+                    if skipped
+                    else ""
+                )
+                + ".\n"
+            )
     return "\n".join(out)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(
+        description=(__doc__ or "").split("\n\n")[0] or "backlog metrics"
+    )
     parser.add_argument(
         "--issues", type=Path, help="saved `gh issue list --json` output"
     )
@@ -647,15 +775,42 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="also date every fix via git blame (slow)",
     )
+    parser.add_argument(
+        "--as-of",
+        type=parse_utc_timestamp,
+        help="measure ages from this instant (the time a --issues dump was taken); "
+        "default: now",
+    )
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="never call gh: parent markers naming a PR stay unresolved",
+    )
     parser.add_argument("--json", type=Path, help="write every computed row here")
     args = parser.parse_args(argv)
+    if args.weeks < 1:
+        parser.error("--weeks must be at least 1")
+    if args.offline and args.latency:
+        parser.error("--latency needs gh; drop --offline")
 
     if args.issues:
         issues = load_issues(json.loads(args.issues.read_text()))
+        if args.as_of is None:
+            print(
+                "note: replaying a dump without --as-of measures ages from now; "
+                "pass the time the dump was taken for a reproducible run",
+                file=sys.stderr,
+            )
     else:
         issues = fetch_issues(args.repo)
-    now = dt.datetime.now(dt.UTC)
-    results = compute(issues, now, args.latency, args.repo)
+    now = args.as_of or dt.datetime.now(dt.UTC)
+    results = compute(
+        issues,
+        now,
+        args.repo,
+        latency=args.latency,
+        resolve_parents=not args.offline,
+    )
     print(report(results, args.weeks))
     if args.json:
         args.json.write_text(json.dumps(results, indent=1, default=str))

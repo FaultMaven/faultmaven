@@ -32,8 +32,13 @@ growing on.
 Find the pinned issue titled `Queue`:
 
 ```bash
-gh issue list --state open --label tracking --search "Queue in:title" --json number,title
+gh issue list --state open --label tracking --search "Queue in:title" \
+  --json number,title --jq 'map(select(.title == "Queue"))'
 ```
+
+The exact-title filter matters: `in:title` is a token match, and a later
+tracking issue whose title merely contains "Queue" would otherwise be the
+one whose body gets rewritten.
 
 If none exists, create it so the next cycle finds it by the same predicate,
 and say so in the report:
@@ -49,10 +54,13 @@ refresh touched its seam (`gh pr list --state merged --search <seam
 keyword>`); still the kind it was filed as. Promote from below the line.
 
 Classify every issue opened since the last refresh: kind (`defect`,
-`decision`, `investigation`, `feature`, `chore`); whether it is an instance
-of a rule already in `docs/development/invariants.md`; N and the scan that
-produced it if it is a duplicated-rule item. Rank it in by the rule in the
-procedure's §1.
+`decision`, `investigation`, `feature`, `chore`); N and the scan that
+produced it if it is a duplicated-rule item; and, once campaign item 1 has
+landed `docs/development/invariants.md`, whether it is an instance of a
+rule already in the register (until then, say in the report that the
+register does not exist yet and classify from the issue text alone). Rank
+it in by the rule in the procedure's §1, and re-rank if step 1's output
+shows the residue growing on a seam the top five do not cover.
 
 Rewrite the `Queue` body. Every top-five entry carries rank-and-why, kind,
 done-when, N (if applicable) and blocked-by. Write the body with
@@ -146,7 +154,7 @@ the owner's.
 - **Never merge.** Not with green CI, not with an addressed review. Only an
   explicit per-PR instruction from the owner delegates a merge, and it
   covers that PR alone.
-- **Never stack.** A lane whose PR depends on another unmerged PR states
-  the merge order in its body and waits.
+- **Never stack.** A PR that would depend on another unmerged PR is not
+  opened; the lane waits and says so in its report.
 - **Never relay an unverified finding** as a defect.
 - **Never edit a queue entry's rank without recording why** in the entry.
