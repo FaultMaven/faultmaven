@@ -69,8 +69,6 @@ from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
 )
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     VALID_SYMPTOM_CLASSES,
-    QualityScorer,
-    RunbookValidator,
     avalidate_and_score,
 )
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
@@ -532,8 +530,6 @@ class ConversionService:
         # refused rather than silently minting an unresolvable share target.
         self._team_service = team_service
         self._preprocessor = DocumentPreprocessor(llm_router, settings)
-        self._validator = RunbookValidator()
-        self._scorer = QualityScorer()
         self._scan_lock = asyncio.Lock()
         # In-flight case-conversion dedup. Keyed by case_id; the value is
         # the running asyncio.Task that other concurrent callers can await.
@@ -2239,6 +2235,9 @@ class ConversionService:
 
             if job.scope == "global":
                 ensure_global_authoring_allowed(is_platform_admin)
+            # Captured before the session closes: ``job`` is bound to it, and
+            # the response below is built after the gate, outside it.
+            job_scope = job.scope
 
             draft_result = await session.execute(
                 select(ConversionDraftModel).where(
@@ -2271,9 +2270,76 @@ class ConversionService:
             # moment it is used, not of the code that happened to create it.
             # Refuses as a typed 409 naming the row; the resolved paths go to
             # the log, never to the client (#1213 follow-up, see #866).
+            # Containment is CHECKED here and the file WRITTEN in session two,
+            # below. Checking early keeps an escaping row from costing a full
+            # gate run before it is refused; writing late is what keeps the file
+            # and the row in step (see the ordering note before the gate).
+            try:
+                resolve_runbook_path(
+                    dm.file_path,
+                    source=f"conversion_drafts.file_path (draft_id={dm.id})",
+                    root=self._data_dir,
+                )
+            except RunbookPathEscape as exc:
+                raise self._refuse_escaping_draft(dm.id, exc) from exc
+            draft_file_path = dm.file_path
+
+            # The gate runs OUTSIDE the transaction. Deliberately, and the
+            # reason it is worth the restructure below (#1417 review).
+            #
+            # Holding the session across the hop looked like a strict
+            # improvement — the loop is freed, one connection is held — and it
+            # is not. Inline, the blocked loop made a SECOND concurrent
+            # ``update_draft`` impossible, so exactly one connection was ever
+            # held; freeing the loop makes concurrent holds possible for the
+            # first time. The pool is ``database_pool_size=5`` plus
+            # ``database_max_overflow=10``, so fifteen concurrent edits of large
+            # drafts check out every slot for the gate's duration and every other
+            # database operation in the process then blocks for
+            # ``database_pool_timeout=30`` s and raises. The hop would have
+            # converted a loop stall into pool exhaustion.
+            #
+            # Same shape and same remedy as ``KnowledgeService.update_document``,
+            # which holds no transaction across its re-index for exactly this
+            # reason and re-reads the row in the write session.
+
+        # --- outside the session: no connection is held while the gate runs ---
+        #
+        # And BEFORE the write, which is the other half of the ordering. This
+        # ``await`` is a cancellation point that did not exist on main: there the
+        # write, the gate and the commit sat in one synchronous stretch, so the
+        # loop could not interleave and the window was zero. Put the write ahead
+        # of the gate and a client disconnect, a timeout or a shutdown during
+        # those 0.7-8.3 s leaves the file rewritten while the row keeps the
+        # PREVIOUS verdict — permanently, and a reviewer then reads a green
+        # verdict about text the gate never saw. Gating first makes a
+        # cancellation here change nothing at all, and puts the write back
+        # beside the commit with no await between them, which is the property
+        # main had.
+        validation, quality = await avalidate_and_score(content)
+
+        async with self._db_session_factory() as session:
+            # RE-READ rather than reusing ``dm``: splitting the sessions widened
+            # the read-modify-write window to cover the whole gate, so the row is
+            # re-fetched and the verdict applied to that fresh copy. Without this
+            # a concurrent discard would be overwritten by a stale snapshot.
+            draft_result = await session.execute(
+                select(ConversionDraftModel).where(
+                    ConversionDraftModel.id == draft_id,
+                    ConversionDraftModel.conversion_id == conversion_id,
+                )
+            )
+            dm = draft_result.scalar_one_or_none()
+            if not dm or dm.status == DraftStatus.DISCARDED.value:
+                # Discarded while we were scoring. The file on disk has already
+                # been rewritten — that was true before this split too, since
+                # the write preceded the gate and a failed commit never unwrote
+                # it — but no verdict is recorded for a draft nobody wants.
+                return None
+
             try:
                 write_runbook_file(
-                    dm.file_path,
+                    draft_file_path,
                     content,
                     source=f"conversion_drafts.file_path (draft_id={dm.id})",
                     root=self._data_dir,
@@ -2281,23 +2347,6 @@ class ConversionService:
             except RunbookPathEscape as exc:
                 raise self._refuse_escaping_draft(dm.id, exc) from exc
 
-            # Off the event loop, and validating ONCE (#1417).
-            #
-            # NOTE the transaction. Alone among these call sites this one is
-            # inside ``async with self._db_session_factory()``, open since the
-            # authorization SELECT above, so the hop hands the loop back while
-            # still holding a connection — idle-in-transaction for as long as
-            # the gate runs. That is a deliberate trade and still a strict
-            # improvement: today the whole event loop stalls, which stops every
-            # request in the process; after this, one pooled connection is held
-            # and everything else keeps serving. Moving the gate out of the
-            # transaction entirely means authorize-close-compute-reopen, which
-            # adds a TOCTOU window on the draft row and rewrites the
-            # compensation ordering this method documents below — a separate
-            # change, deliberately not folded in here.
-            validation, quality = await avalidate_and_score(content)
-
-            # Update database
             dm.validation_passed = validation.passed
             dm.validation_errors = validation.errors
             dm.validation_warnings = validation.warnings
@@ -2316,7 +2365,7 @@ class ConversionService:
                 draft_id=dm.id,
                 runbook_id=dm.runbook_id,
                 title=dm.title,
-                scope=job.scope,
+                scope=job_scope,
                 status=DraftStatus(dm.status),
                 validation=validation,
                 quality_score=quality,

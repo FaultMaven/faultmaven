@@ -403,7 +403,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
             status=SuggestionStatus.PENDING_REVIEW,
             suggested_title=suggested_title,
             # The model's markdown is stored as-is and then judged by
-            # ``_record_validation``, which normalises before it decides (#1403).
+            # ``_arecord_validation``, which normalises before it decides (#1403).
             # Any CRLF the model emits would make ``validation_passed`` and the
             # recorded errors describe text this row does not contain, and
             # ``to_api_response`` would hand that CR back to the editor --
@@ -881,28 +881,31 @@ level, and the tools needed.]
         await self._arecord_validation(suggestion)
 
     async def _arecord_validation(self, suggestion: KnowledgeSuggestion) -> None:
-        """:meth:`_record_validation`, off the event loop (#1417).
+        """Run the publication gate over a suggestion's CURRENT content and
+        record the verdict on it, off the event loop (#1417).
 
-        The blocking here was TRANSITIVE and is the reason the guard scans for
-        it: the await chain reached the gate through a synchronous helper, so a
-        scan for `validate_content` inside an `async def` did not see it.
+        THE single place the verdict is computed, so extraction and the review
+        edit cannot disagree about what "passes" means, and so both ask the same
+        ``RunbookValidator`` that ``upload_document`` will ask on approval.
+
+        The blocking this replaces was TRANSITIVE, which is why the guard
+        computes a reach set rather than scanning for the gate directly: the
+        await chain reached it through a synchronous ``_record_validation``, so
+        looking for ``validate_content`` inside an ``async def`` saw nothing.
+        That sync method is gone rather than kept beside this one — its last
+        caller was this path, and two copies of the recording rule can diverge
+        silently (a field added to one ``set_validation`` call and not the
+        other yields suggestions whose verdict differs by which path wrote it).
         """
-        result = await avalidate_content(suggestion.suggested_content)
-        suggestion.set_validation(
-            passed=result.passed,
-            errors=result.errors,
-            warnings=result.warnings,
+        self._apply_validation(
+            suggestion, await avalidate_content(suggestion.suggested_content)
         )
 
-    def _record_validation(self, suggestion: KnowledgeSuggestion) -> None:
-        """Run the publication gate over a suggestion's CURRENT content and
-        record the verdict on it.
-
-        The single place the verdict is computed, so extraction and the review
-        edit cannot disagree about what "passes" means, and so both ask the same
-        ``RunbookValidator`` ``upload_document`` will ask on approval.
-        """
-        result = self._validator.validate_content(suggestion.suggested_content)
+    @staticmethod
+    def _apply_validation(
+        suggestion: KnowledgeSuggestion, result: ValidationResult
+    ) -> None:
+        """Copy a verdict onto a suggestion. The only writer of that mapping."""
         suggestion.set_validation(
             passed=result.passed,
             errors=result.errors,
@@ -1223,7 +1226,7 @@ level, and the tools needed.]
             # Through the paired helper, not a bare scan: this re-scan can
             # REDACT, and a redaction rewrites the text the recorded verdict
             # describes. Left unpaired it was the one mutation site of three
-            # that skipped ``_record_validation``, so a suggestion could reach
+            # that skipped ``_arecord_validation``, so a suggestion could reach
             # the reviewer reading ``validation_passed=True`` about content that
             # no longer existed (#1226 rework).
             await self._scan_and_record(suggestion)

@@ -1336,7 +1336,17 @@ class QualityScorer:
         result to belong to ``content``. Passing a mismatched pair scores a
         document against another document's errors, which is silent —
         ``_score_completeness`` only reads ``passed`` and ``len(errors)``.
+
+        Normalises too, rather than trusting its callers to (#1403). Both
+        in-repo callers already do, so this is a ``memchr`` for them — but it
+        was the ONLY gate entry point that did not, which made "the score is
+        computed over LF text" an invariant held by the callers instead of by
+        the scorer. A third caller passing raw CRLF would score ~15 points low,
+        persisted to ``conversion_drafts.quality_score`` and driving the
+        user-visible warning, with nothing raised. Same silence argument as the
+        mismatched-pair one above.
         """
+        content = normalize_line_endings(content)
         completeness = self._score_completeness(content, validation)
         clarity = self._score_clarity(content)
         actionability = self._score_actionability(content)
@@ -1576,9 +1586,47 @@ def validate_and_score(content: str) -> tuple[ValidationResult, QualityScore]:
     event loop.
     """
     validator, scorer = RunbookValidator(), QualityScorer()
-    normalized = normalize_line_endings(content)
-    validation = validator.validate_content(normalized)
-    return validation, scorer.score_validated(normalized, validation)
+    # No normalisation HERE. Both callees own it — ``validate_content`` since
+    # #1403 and ``score_validated`` as of the #1417 review — so a third call
+    # would be a live line that no mutation can kill: removing it changes
+    # nothing observable, which a mutation run proved. The cost of leaving it
+    # out is two `memchr`s instead of one on a body that is already LF, and the
+    # benefit is that each remaining normalisation is load-bearing and therefore
+    # testable. Normalising is idempotent, so the two agree by construction.
+    validation = validator.validate_content(content)
+    return validation, scorer.score_validated(content, validation)
+
+
+#: Concurrency bound for the gate's off-loop hops.
+#:
+#: ``asyncio.to_thread`` uses the loop's DEFAULT executor, which this process
+#: shares with BGE-M3 ``encode`` (``infrastructure/model_cache.py``), Presidio
+#: redaction (``infrastructure/security/redaction.py``), S3 and filesystem
+#: storage, and SSO code exchange — two of those sit on the evidence-upload
+#: request path. A ``to_thread`` future cancelled by a client disconnect does
+#: NOT stop the thread, so without a bound, N concurrent large conversions
+#: occupy N workers for their full runtime whether or not the callers are still
+#: there, and queue everything else behind them.
+#:
+#: A semaphore rather than a private executor: the work is already bounded per
+#: call (``MAX_RUNBOOK_BODY_CHARS``), the GIL means extra gate threads buy
+#: little throughput anyway, and a semaphore leaves the default executor's
+#: workers free for the I/O-bound users that benefit from them.
+_GATE_CONCURRENCY = 4
+_gate_slots: Optional["asyncio.Semaphore"] = None
+
+
+def _gate_semaphore() -> "asyncio.Semaphore":
+    """Lazily created, because a ``Semaphore`` binds to the running loop.
+
+    Built at import time it would attach to whichever loop happened to be
+    current — under pytest-asyncio, a loop that is closed by the time a later
+    test awaits it.
+    """
+    global _gate_slots
+    if _gate_slots is None:
+        _gate_slots = asyncio.Semaphore(_GATE_CONCURRENCY)
+    return _gate_slots
 
 
 async def avalidate_and_score(content: str) -> tuple[ValidationResult, QualityScore]:
@@ -1612,7 +1660,8 @@ async def avalidate_and_score(content: str) -> tuple[ValidationResult, QualitySc
     seventh from appearing, because an enumeration of call sites has now been
     wrong twice.
     """
-    return await asyncio.to_thread(validate_and_score, content)
+    async with _gate_semaphore():
+        return await asyncio.to_thread(validate_and_score, content)
 
 
 async def avalidate_content(content: str) -> ValidationResult:
@@ -1622,9 +1671,11 @@ async def avalidate_content(content: str) -> ValidationResult:
     score should use :func:`avalidate_and_score` rather than awaiting both,
     which validates twice.
     """
-    return await asyncio.to_thread(RunbookValidator().validate_content, content)
+    async with _gate_semaphore():
+        return await asyncio.to_thread(RunbookValidator().validate_content, content)
 
 
 async def aenforce_runbook_quality(content: str) -> None:
     """:func:`enforce_runbook_quality`, off the event loop. See above."""
-    await asyncio.to_thread(enforce_runbook_quality, content)
+    async with _gate_semaphore():
+        await asyncio.to_thread(enforce_runbook_quality, content)

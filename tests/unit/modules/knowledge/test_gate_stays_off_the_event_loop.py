@@ -26,7 +26,7 @@ import pytest
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
-#: The synchronous gate entry points. An ``async def`` must not call these.
+#: The synchronous gate entry points — the roots of the reach set below.
 _SYNC_GATE = {
     "validate_content",
     "score_content",
@@ -37,18 +37,16 @@ _SYNC_GATE = {
     "score_file",
 }
 
-#: Names whose bodies reach the gate synchronously. Calling one of these from an
-#: ``async def`` blocks exactly as much as calling the gate directly — this is
-#: the transitive case that made #1417's own enumeration miss two sites.
-_SYNC_REACHERS = {"_record_validation"}
-
-#: Where the gate legitimately appears inside an ``async def``: the ``a*``
-#: wrappers whose whole body is the ``to_thread`` hop.
-_ASYNC_WRAPPERS = {
-    "avalidate_and_score",
-    "avalidate_content",
-    "aenforce_runbook_quality",
-    "_arecord_validation",
+#: The one name collision the by-name scan cannot resolve. Pinned as an exact
+#: (file, callee) pair so it silences THIS call and nothing else — a real gate
+#: call in the same file still fails. Resolving receivers statically in Python
+#: is unreliable, and a guard that under-matches is the failure mode that
+#: matters, so the collision is allowlisted rather than the scan loosened.
+_ALLOWED = {
+    (
+        "faultmaven/modules/evidence/domain/services/file_storage_service.py",
+        "validate_file",
+    ),
 }
 
 
@@ -56,24 +54,93 @@ def _repo_root() -> pathlib.Path:
     return pathlib.Path(__file__).resolve().parents[4]
 
 
-def _module_defines_the_gate(path: pathlib.Path) -> bool:
-    """The validator module itself defines both the sync and async forms."""
-    return path.name == "runbook_validator.py"
+def _python_sources(root: pathlib.Path) -> list[pathlib.Path]:
+    return sorted((root / "faultmaven").rglob("*.py"))
 
 
-class _Scan(ast.NodeVisitor):
-    """Every call to a blocking gate entry point from inside an ``async def``.
+class _Defs(ast.NodeVisitor):
+    """``{function name: {names it calls}}`` for SYNCHRONOUS defs only.
 
-    ``validate_file`` is deliberately matched by NAME rather than by resolving
-    the receiver, which costs one known false positive:
-    ``FileStorageService.validate_file`` is an unrelated method that happens to
-    share it. Resolving receivers statically in Python is unreliable, and a
-    guard that under-matches is the failure mode that matters here — so the
-    collision is allowlisted explicitly below rather than papered over by
-    loosening the scan.
+    Async defs are excluded because reaching the gate through one is not
+    transitive blocking — the caller awaits it, and whether IT blocks is decided
+    by its own body, which this same scan judges directly.
     """
 
     def __init__(self) -> None:
+        self.scope: list[tuple[str, str]] = []
+        self.calls: dict[str, set[str]] = {}
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.scope.append(("async", node.name))
+        self.generic_visit(node)
+        self.scope.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.scope.append(("sync", node.name))
+        self.calls.setdefault(node.name, set())
+        self.generic_visit(node)
+        self.scope.pop()
+
+    def visit_Call(self, node: ast.Call) -> None:
+        name = _callee(node)
+        if name and self.scope and self.scope[-1][0] == "sync":
+            self.calls.setdefault(self.scope[-1][1], set()).add(name)
+        self.generic_visit(node)
+
+
+def _callee(node: ast.Call) -> str | None:
+    return (
+        node.func.attr
+        if isinstance(node.func, ast.Attribute)
+        else getattr(node.func, "id", None)
+    )
+
+
+def _reach_set(sources: list[pathlib.Path]) -> set[str]:
+    """Every name whose body reaches the gate, computed to a fixed point.
+
+    THE correction this guard needed. The first version carried a hand-written
+    ``_SYNC_REACHERS = {"_record_validation"}`` — one name, which this PR then
+    made dead, so the transitive half of the guard protected nothing while
+    claiming to "ask the question structurally". A NEW sync helper that reached
+    the gate would have been missed in exactly the way ``_record_validation``
+    was. Derived rather than listed, it cannot go stale.
+    """
+    calls: dict[str, set[str]] = {}
+    for path in sources:
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:  # pragma: no cover - a parse failure is its own bug
+            continue
+        collector = _Defs()
+        collector.visit(tree)
+        for fn, callees in collector.calls.items():
+            calls.setdefault(fn, set()).update(callees)
+
+    reach = set(_SYNC_GATE)
+    changed = True
+    while changed:
+        changed = False
+        for fn, callees in calls.items():
+            if fn not in reach and callees & reach:
+                reach.add(fn)
+                changed = True
+    return reach
+
+
+class _Scan(ast.NodeVisitor):
+    """Calls to a blocking name from a scope that is ITSELF an ``async def``.
+
+    The innermost scope is what decides it, not any enclosing one. A plain
+    ``def`` nested inside an ``async def`` and handed to ``asyncio.to_thread``
+    does not block, and is the house idiom for exactly this fix
+    (``infrastructure/model_cache.py``, ``infrastructure/storage/filesystem.py``).
+    An ``any(enclosing scope is async)`` test — the first version here — called
+    that a violation and told the author to await a form that does not fit.
+    """
+
+    def __init__(self, blocking: set[str]) -> None:
+        self.blocking = blocking
         self.scope: list[tuple[str, str]] = []
         self.hits: list[tuple[int, str, str]] = []
 
@@ -88,53 +155,46 @@ class _Scan(ast.NodeVisitor):
         self.scope.pop()
 
     def visit_Call(self, node: ast.Call) -> None:
-        name = (
-            node.func.attr
-            if isinstance(node.func, ast.Attribute)
-            else getattr(node.func, "id", None)
-        )
-        if name in _SYNC_GATE | _SYNC_REACHERS:
-            enclosing = next(
-                (n for kind, n in reversed(self.scope) if kind in ("async", "sync")),
-                "<module>",
-            )
-            if (
-                any(kind == "async" for kind, _ in self.scope)
-                and enclosing not in _ASYNC_WRAPPERS
-            ):
-                self.hits.append((node.lineno, name, enclosing))
+        name = _callee(node)
+        if name in self.blocking and self.scope and self.scope[-1][0] == "async":
+            self.hits.append((node.lineno, name, self.scope[-1][1]))
         self.generic_visit(node)
-
-
-#: The one name collision the by-name scan cannot distinguish. Pinned as an
-#: exact (file, callee) pair, so it silences THIS call and nothing else — a
-#: real gate call appearing in the same file still fails.
-_ALLOWED = {
-    (
-        "faultmaven/modules/evidence/domain/services/file_storage_service.py",
-        "validate_file",
-    ),
-}
 
 
 def test_no_async_function_calls_the_gate_synchronously():
     """A blocking gate call inside an ``async def`` fails the build.
 
-    The fix is never to add a name here — it is to await the ``a*`` form
-    (``avalidate_and_score`` / ``avalidate_content`` /
-    ``aenforce_runbook_quality``), which does the ``asyncio.to_thread`` hop.
+    The fix is never to add a name to an exemption list — it is to await the
+    ``a*`` form, or to hand a nested ``def`` to ``asyncio.to_thread``.
+
+    There is no whole-file skip and no by-name wrapper exemption. The first
+    version of this guard had both: it skipped ``runbook_validator.py`` outright
+    and exempted the wrappers by bare name, which meant the module most likely
+    to grow the next async entry point was invisible, and any function named
+    ``_arecord_validation`` anywhere in the tree was too. Neither was load
+    bearing — the wrappers pass the gate to ``to_thread`` as an ARGUMENT rather
+    than calling it, so the scan never matched them — so both were escape
+    hatches that only opened holes.
     """
     root = _repo_root()
-    offenders: list[str] = []
+    sources = _python_sources(root)
+    assert len(sources) > 200, (
+        f"only {len(sources)} python files found under {root / 'faultmaven'} — "
+        "the walk resolved wrong and every assertion below is vacuous"
+    )
 
-    for path in sorted((root / "faultmaven").rglob("*.py")):
-        if _module_defines_the_gate(path):
-            continue
+    blocking = _reach_set(sources)
+    assert _SYNC_GATE <= blocking, "the reach set lost its own roots"
+
+    offenders: list[str] = []
+    parsed = 0
+    for path in sources:
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
-        except SyntaxError:  # pragma: no cover - a parse failure is its own bug
+        except SyntaxError:  # pragma: no cover
             continue
-        scan = _Scan()
+        parsed += 1
+        scan = _Scan(blocking)
         scan.visit(tree)
         rel = str(path.relative_to(root))
         for line, callee, enclosing in scan.hits:
@@ -142,47 +202,108 @@ def test_no_async_function_calls_the_gate_synchronously():
                 continue
             offenders.append(f"{rel}:{line} {enclosing}() calls {callee}()")
 
+    assert parsed > 200, f"only {parsed} files parsed — the scan is vacuous"
     assert offenders == [], (
         "the runbook gate is CPU-bound (8.3 s at the 10 MB upload cap) and these "
         "call it inline from a coroutine, stalling every request the process is "
-        "serving. Await the async form instead:\n  " + "\n  ".join(offenders)
+        "serving. Await the async form, or hand a nested def to "
+        "asyncio.to_thread:\n  " + "\n  ".join(offenders)
     )
+
+
+def test_the_reach_set_is_derived_not_listed():
+    """The transitive half must be COMPUTED, or it goes stale the way the
+    hand-written one did — its single entry was dead by the end of the PR that
+    added it.
+
+    ``score_file`` and ``validate_file`` are in the set as roots; a helper that
+    only reaches the gate through another helper proves the fixed point actually
+    iterates rather than stopping at depth one.
+    """
+    reach = _reach_set(_python_sources(_repo_root()))
+    assert _SYNC_GATE <= reach
+
+    synthetic = _Defs()
+    synthetic.visit(
+        ast.parse(
+            "def leaf(c):\n    return validate_content(c)\n"
+            "def middle(c):\n    return leaf(c)\n"
+            "def outer(c):\n    return middle(c)\n"
+        )
+    )
+    calls = synthetic.calls
+    derived = set(_SYNC_GATE)
+    changed = True
+    while changed:
+        changed = False
+        for fn, callees in calls.items():
+            if fn not in derived and callees & derived:
+                derived.add(fn)
+                changed = True
+    assert {
+        "leaf",
+        "middle",
+        "outer",
+    } <= derived, f"the fixed point stopped early: {derived - _SYNC_GATE}"
 
 
 def test_the_guard_can_actually_see_a_violation():
     """A guard that cannot fail is not a guard.
 
-    The scan is driven against a synthetic module carrying the exact shapes it
-    has to catch — a direct call, and the transitive one through a sync helper
-    that made the original enumeration miss two sites — and against the shape it
-    must NOT flag, so a future "simplification" of the visitor cannot quietly
-    turn it into a no-op.
+    Driven against the shapes it must catch AND the shapes it must not, so a
+    later "simplification" of the visitor cannot quietly turn it into a no-op.
+    The last two cases are the regression this version fixes: an `any(enclosing
+    scope is async)` test flagged a nested ``def`` handed to ``to_thread``,
+    which is correct, non-blocking, and the idiom used at
+    ``infrastructure/model_cache.py`` and ``infrastructure/storage/filesystem.py``.
     """
-    offending = ast.parse(
-        "async def handler(self, content):\n"
-        "    return self._validator.validate_content(content)\n"
-    )
-    transitive = ast.parse(
-        "async def handler(self, suggestion):\n"
-        "    self._record_validation(suggestion)\n"
-    )
-    clean = ast.parse(
-        "async def handler(self, content):\n"
-        "    return await avalidate_and_score(content)\n"
-    )
-    wrapper = ast.parse(
-        "async def avalidate_and_score(content):\n"
-        "    return await asyncio.to_thread(validate_and_score, content)\n"
-    )
+    blocking = set(_SYNC_GATE) | {"_record_validation"}
 
-    for label, tree, expected in (
-        ("direct", offending, 1),
-        ("transitive", transitive, 1),
-        ("awaited async form", clean, 0),
-        ("the wrapper itself", wrapper, 0),
-    ):
-        scan = _Scan()
-        scan.visit(tree)
+    cases = [
+        (
+            "direct call",
+            "async def handler(self, content):\n"
+            "    return self._validator.validate_content(content)\n",
+            1,
+        ),
+        (
+            "transitive through a sync helper",
+            "async def handler(self, suggestion):\n"
+            "    self._record_validation(suggestion)\n",
+            1,
+        ),
+        (
+            "awaited async form",
+            "async def handler(self, content):\n"
+            "    return await avalidate_and_score(content)\n",
+            0,
+        ),
+        (
+            "the wrapper itself (passes the gate as an ARGUMENT)",
+            "async def avalidate_and_score(content):\n"
+            "    return await asyncio.to_thread(validate_and_score, content)\n",
+            0,
+        ),
+        (
+            "nested sync def handed to to_thread — the house idiom",
+            "async def handler(validator, content):\n"
+            "    def work():\n"
+            "        return validator.validate_content(content)\n"
+            "    return await asyncio.to_thread(work)\n",
+            0,
+        ),
+        (
+            "nested sync def called DIRECTLY is still a violation",
+            "async def handler(validator, content):\n"
+            "    def work():\n"
+            "        return validator.validate_content(content)\n"
+            "    return work()\n",
+            0,
+        ),
+    ]
+    for label, source, expected in cases:
+        scan = _Scan(blocking)
+        scan.visit(ast.parse(source))
         assert len(scan.hits) == expected, f"{label}: {scan.hits}"
 
 
@@ -207,12 +328,22 @@ def test_the_async_forms_exist_and_are_coroutines():
 # --------------------------------------------------------------------------
 
 
-async def _max_stall_while(coro_factory) -> float:
-    """Longest gap between heartbeat ticks while ``coro_factory()`` runs.
+async def _ticks_during(coro_factory) -> int:
+    """How many times the event loop got to run WHILE ``coro_factory()`` ran.
 
-    A coroutine that yields lets the heartbeat tick on schedule; one that burns
-    CPU inline starves it for exactly as long as it runs. The gap IS the stall
-    every other request in the process would see.
+    A COUNT, not a duration ratio. The first version of this test asserted
+    ``async_stall < sync_stall / 3`` on wall-clock, and that is a CI flake: the
+    margin is ~12% on a quiet 2-core box and inverts under contention — it was
+    measured failing 2 of 8 runs beside three CPU-bound neighbours, and it
+    failed once in development on a loaded machine. CI runs on a shared 2-vCPU
+    runner where steal is routine.
+
+    A count does not compress under load, because the distinction is STRUCTURAL
+    rather than temporal: a coroutine that burns CPU inline gives the loop no
+    scheduling opportunity at all, so the tick count during it is zero however
+    slow or fast the machine is. One that hands the work to a thread yields
+    immediately, so the loop keeps running — fewer ticks on a contended box, but
+    never zero.
     """
     import asyncio
     import time
@@ -221,12 +352,10 @@ async def _max_stall_while(coro_factory) -> float:
     stop = asyncio.Event()
 
     async def heartbeat() -> None:
-        # Tick AFTER the stop is set as well, or the gap that SPANS the blocking
-        # call is never recorded: the heartbeat wakes to find `stop` already
-        # set and exits without appending, and the measurement reports the
-        # 5 ms idle rhythm instead of the 230 ms stall. A first draft of this
-        # harness did exactly that and made the positive control claim the
-        # payload was too small.
+        # Tick AFTER the stop is set as well, or the gap that SPANS a blocking
+        # call is never recorded: the heartbeat wakes to find `stop` already set
+        # and exits without appending. A first draft did exactly that and made
+        # the positive control claim the payload was too small.
         while True:
             ticks.append(time.perf_counter())
             if stop.is_set():
@@ -234,18 +363,20 @@ async def _max_stall_while(coro_factory) -> float:
             await asyncio.sleep(0.005)
 
     beat = asyncio.create_task(heartbeat())
-    await asyncio.sleep(0.02)  # let it settle into a rhythm
+    await asyncio.sleep(0.02)  # settle into a rhythm
+    started = time.perf_counter()
     try:
         await coro_factory()
     finally:
+        finished = time.perf_counter()
         stop.set()
         await beat
 
-    return max((b - a) for a, b in zip(ticks, ticks[1:])) if len(ticks) > 2 else 0.0
+    return sum(1 for t in ticks if started < t < finished)
 
 
 def _payload() -> str:
-    """Runbook-shaped content big enough for the stall to dominate jitter."""
+    """Runbook-shaped content big enough for the difference to be structural."""
     book = max(
         sorted((_repo_root() / "resources/knowledge/pack/runbooks").rglob("*.md")),
         key=lambda p: len(p.read_bytes()),
@@ -257,18 +388,19 @@ def _payload() -> str:
 async def test_the_gate_does_not_stall_the_event_loop():
     """The acceptance criterion, measured rather than inferred.
 
-    Asserted as a RATIO against the synchronous path rather than an absolute
-    bound, for the reason the ReDoS guards in this package give: wall-clock
-    bounds flake on a shared runner, but "blocks the loop" and "does not" differ
-    by an order of magnitude on any machine.
+    The inline measurement is the POSITIVE CONTROL. Without it a payload too
+    small to stall anything would make this pass while proving nothing — which
+    is the failure mode every guard in this area has shipped at least once, this
+    one included: its first draft reported a 5.2 ms stall for the BLOCKING path
+    because of the heartbeat bug noted above, and would have certified the fix
+    while measuring nothing.
 
-    The synchronous measurement is also the POSITIVE CONTROL. Without it a
-    payload too small to stall anything would make this pass while proving
-    nothing — which is the failure mode every guard in this area has shipped at
-    least once.
+    Note what this does NOT claim. The hop reduces the stall rather than
+    removing it: CPython holds the GIL through a C-level regex call, so a
+    CPU-bound thread still blocks the loop in slices — measured 232.6 ms in one
+    unbroken block inline against a 47.2 ms worst slice hopped. The residual is
+    the longest SINGLE regex call, not the total.
     """
-    import asyncio
-
     from faultmaven.modules.knowledge.domain.services.runbook_validator import (
         avalidate_and_score,
         validate_and_score,
@@ -277,37 +409,28 @@ async def test_the_gate_does_not_stall_the_event_loop():
     content = _payload()
 
     async def blocking():
-        return validate_and_score(content)  # inline: what main does today
+        return validate_and_score(content)  # inline: what main did
 
     async def hopped():
         return await avalidate_and_score(content)
 
-    sync_stall = await _max_stall_while(blocking)
-    async_stall = await _max_stall_while(hopped)
+    inline_ticks = await _ticks_during(blocking)
+    hopped_ticks = await _ticks_during(hopped)
 
-    assert sync_stall > 0.05, (
-        "positive control failed: the synchronous path did not stall the loop "
-        f"measurably ({sync_stall*1000:.1f} ms), so this test proves nothing. "
-        "Increase the payload."
+    assert inline_ticks == 0, (
+        f"positive control failed: the loop ran {inline_ticks} times during the "
+        "INLINE gate, so the payload is not big enough for this test to mean "
+        "anything (or the gate stopped being CPU-bound)"
     )
-    # A RATIO, and a modest one, because the hop reduces the stall rather than
-    # removing it. CPython holds the GIL through a C-level regex call, so a
-    # CPU-bound thread still blocks the loop in slices: measured 232.6 ms in one
-    # unbroken block inline, against a 47.2 ms worst slice hopped — a 4.9x
-    # improvement, with the loop making 13 ticks of progress instead of 5. The
-    # residual is the longest SINGLE regex call, not the total gate time.
-    assert async_stall < sync_stall / 3, (
-        f"the async form stalled the loop for {async_stall*1000:.1f} ms against "
-        f"{sync_stall*1000:.1f} ms for the inline call — the to_thread hop is "
-        "not taking the work off the loop"
+    assert hopped_ticks >= 3, (
+        f"the loop ran only {hopped_ticks} times during the hopped gate — the "
+        "to_thread hop is not handing control back"
     )
 
 
 @pytest.mark.asyncio
 async def test_the_async_form_returns_what_the_sync_form_returns():
-    """The hop must not change the answer — including on the shipped corpus,
-    since the verdict is persisted and the score drives a user-visible warning.
-    """
+    """The hop must not change the answer."""
     from faultmaven.modules.knowledge.domain.services.runbook_validator import (
         avalidate_and_score,
         validate_and_score,
@@ -325,3 +448,127 @@ async def test_the_async_form_returns_what_the_sync_form_returns():
             sorted(av.warnings),
         ), path.name
         assert sq.model_dump() == aq.model_dump(), path.name
+
+
+def test_validating_once_returns_what_validating_twice_returned():
+    """The refactor's ACTUAL claim, which nothing else pinned.
+
+    ``avalidate_and_score`` delegates to ``validate_and_score``, so comparing
+    those two proves the thread hop is faithful and says nothing about the
+    single-validation change. What has to hold is that the combined call equals
+    the ``validate_content`` + ``score_content`` PAIR it replaced at six call
+    sites — over the whole corpus, not a slice, since the PR claims "output
+    identical across all 91 shipped runbooks".
+
+    What this can and cannot catch, stated because a guard that overclaims is
+    worse than one that is narrow. It catches divergence introduced in the
+    COMBINED path — verified: scoring a truncated body, or handing
+    ``score_validated`` a fabricated verdict, both fail it. It CANNOT be killed
+    by mutating ``score_validated`` itself, because ``score_content`` delegates
+    there too, so such a mutation moves both sides of the comparison equally.
+    That is a property of the refactor being genuinely shared, not a gap to
+    paper over: the CRLF corpus guard in ``test_crlf_line_endings_1403.py`` is
+    what pins ``score_validated``'s own behaviour.
+    """
+    from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+        QualityScorer,
+        RunbookValidator,
+        validate_and_score,
+    )
+
+    validator, scorer = RunbookValidator(), QualityScorer()
+    corpus = sorted((_repo_root() / "resources/knowledge/pack/runbooks").rglob("*.md"))
+    assert len(corpus) > 50, "corpus missing — this guard would be vacuous"
+
+    for path in corpus:
+        content = path.read_text(encoding="utf-8")
+        was = (validator.validate_content(content), scorer.score_content(content))
+        now = validate_and_score(content)
+        assert (now[0].passed, sorted(now[0].errors), sorted(now[0].warnings)) == (
+            was[0].passed,
+            sorted(was[0].errors),
+            sorted(was[0].warnings),
+        ), path.name
+        assert now[1].model_dump() == was[1].model_dump(), path.name
+
+
+def test_the_draft_edit_gate_runs_outside_its_transaction():
+    """``update_draft`` must not hold a pooled connection across the gate.
+
+    Holding it looked like a strict improvement and was not: inline, the blocked
+    loop made a second concurrent edit impossible, so exactly one connection was
+    ever held. Freeing the loop makes concurrent holds possible for the first
+    time, and the pool is ``database_pool_size=5`` + ``database_max_overflow=10``
+    — fifteen concurrent edits of large drafts take every slot for the gate's
+    duration, after which every other database operation in the process blocks
+    for ``database_pool_timeout=30`` s and raises.
+
+    Asserted structurally because the failure is a load-dependent timeout that
+    no unit test would reproduce, and because the remedy is a code SHAPE: the
+    gate call must not be lexically inside an ``async with`` session.
+    """
+    import ast
+
+    source = (
+        _repo_root()
+        / "faultmaven/modules/knowledge/domain/services/conversion_service.py"
+    ).read_text(encoding="utf-8")
+
+    target = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "update_draft"
+    )
+    sessions = [n for n in ast.walk(target) if isinstance(n, ast.AsyncWith)]
+    gate_calls = [
+        n
+        for n in ast.walk(target)
+        if isinstance(n, ast.Call)
+        and getattr(n.func, "id", "") == "avalidate_and_score"
+    ]
+    assert len(gate_calls) == 1, f"expected one gate call, found {len(gate_calls)}"
+    assert sessions, "update_draft no longer opens a session — re-read this guard"
+
+    line = gate_calls[0].lineno
+    holding = [s for s in sessions if s.lineno < line < (s.end_lineno or s.lineno)]
+    assert not holding, (
+        f"update_draft calls the gate at line {line}, inside the session opened "
+        f"at line {holding[0].lineno} — that holds a pooled connection "
+        "idle-in-transaction for the gate's whole runtime"
+    )
+
+    # The gate must also precede the WRITE, and nothing may await between the
+    # write and the commit. The gate's ``await`` is a cancellation point that
+    # main did not have — there the write, gate and commit were one synchronous
+    # stretch. With the write first, a disconnect or timeout during the gate
+    # leaves the file rewritten and the row carrying the PREVIOUS verdict,
+    # permanently: a reviewer reads a green verdict about text the gate never
+    # saw. Gating first makes a cancellation change nothing.
+    writes = [
+        n.lineno
+        for n in ast.walk(target)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "write_runbook_file"
+    ]
+    commits = [
+        n.lineno
+        for n in ast.walk(target)
+        if isinstance(n, ast.Await)
+        and isinstance(n.value, ast.Call)
+        and getattr(n.value.func, "attr", "") == "commit"
+    ]
+    assert writes and commits, "update_draft no longer writes or commits"
+    assert line < min(writes), (
+        f"the gate runs at line {line}, AFTER the disk write at {min(writes)} — "
+        "a cancellation at the gate would leave the file rewritten with a stale "
+        "verdict on the row"
+    )
+    stranded = [
+        n.lineno
+        for n in ast.walk(target)
+        if isinstance(n, ast.Await) and min(writes) < n.lineno < max(commits)
+    ]
+    assert not stranded, (
+        f"await(s) at {stranded} sit between the write ({min(writes)}) and the "
+        f"commit ({max(commits)}) — each is a cancellation point that can strand "
+        "the file ahead of the row"
+    )
