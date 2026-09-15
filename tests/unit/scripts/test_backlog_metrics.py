@@ -2,11 +2,12 @@
 
 The script exists because the open-issue count could not tell the owner
 whether the backlog was converging. Each test here pins one distinction the
-count hides: an issue closed inside its lane is not residue, a residue closure
-is counted in the week it closed rather than the week it opened, survival is
-measured only over issues that had the full exposure, and a fix's latency is
-the median age of the lines it removed rather than the oldest import in the
-file.
+count hides: an issue closed inside its lane is not residue, an open issue
+too young to have left the fast population is pending rather than residue,
+a residue closure is counted in the week it closed rather than the week it
+opened, survival is measured only over issues that had the full exposure,
+and a fix's latency is the median age of the lines it removed rather than
+the oldest import in the file.
 """
 
 from __future__ import annotations
@@ -37,6 +38,9 @@ def metrics():
 
 _UTC = dt.UTC
 
+#: A "now" well after every fixture issue has had 30 days of exposure.
+LATER = dt.datetime(2026, 10, 2, tzinfo=_UTC)
+
 
 def _ts(day: int, hour: int = 12) -> str:
     """An ISO timestamp on the given day of September 2026."""
@@ -57,43 +61,55 @@ def _issue(number, created_day, closed_day=None, labels=(), body=""):
     }
 
 
-def test_a_same_lane_closure_is_not_residue(metrics):
+def test_residue_is_decided_by_age_not_by_being_open(metrics):
     # Opened Tuesday 2026-09-01 (ISO week 36), closed the same day: churn.
-    fast = metrics.load_issues([_issue(1, 1, 1)])[0]
-    # Opened the same day, closed nine days later (week 37): residue, drained.
-    slow = metrics.load_issues([_issue(2, 1, 10)])[0]
-    still_open = metrics.load_issues([_issue(3, 1)])[0]
+    fast, slow, still_open = metrics.load_issues(
+        [_issue(1, 1, 1), _issue(2, 1, 10), _issue(3, 1)]
+    )
+    two_days_in = dt.datetime(2026, 9, 3, tzinfo=_UTC)
 
-    assert not fast.is_residue()
-    assert slow.is_residue()
-    assert still_open.is_residue()
+    assert not fast.is_residue(two_days_in)
+    # Closed nine days later: residue, drained (whatever "now" is).
+    assert slow.is_residue(two_days_in)
+    # An open issue two days old has not left the fast population yet.
+    assert not still_open.is_residue(two_days_in)
+    assert still_open.is_pending(two_days_in)
+    # The same open issue, a month on, is residue.
+    assert still_open.is_residue(LATER)
+    assert not still_open.is_pending(LATER)
+
+
+def test_weekly_flow_reports_young_open_issues_as_pending(metrics):
+    issues = metrics.load_issues([_issue(1, 1, 1), _issue(2, 1, 10), _issue(3, 1)])
+    two_days_in = dt.datetime(2026, 9, 3, tzinfo=_UTC)
+    rows = {row["week"]: row for row in metrics.weekly_flow(issues, two_days_in)}
+
+    opened_week = rows["2026-W36"]
+    assert opened_week["opened"] == 3
+    # Only the nine-day closure is known residue; the open one is pending.
+    assert opened_week["residue_in"] == 1
+    assert opened_week["pending"] == 1
+
+    rows = {row["week"]: row for row in metrics.weekly_flow(issues, LATER)}
+    assert rows["2026-W36"]["residue_in"] == 2
+    assert rows["2026-W36"]["pending"] == 0
 
 
 def test_weekly_flow_books_residue_drain_in_the_week_it_closed(metrics):
     issues = metrics.load_issues([_issue(1, 1, 1), _issue(2, 1, 10), _issue(3, 1)])
-    rows = {row["week"]: row for row in metrics.weekly_flow(issues)}
+    rows = {row["week"]: row for row in metrics.weekly_flow(issues, LATER)}
 
     opened_week = rows["2026-W36"]
-    assert opened_week["opened"] == 3
     assert opened_week["closed"] == 1
-    # Two of the three joined the residue; the same-day closure did not.
-    assert opened_week["residue_in"] == 2
     assert opened_week["residue_out"] == 0
+    assert opened_week["open_at_week_end"] == 2
 
     drained_week = rows["2026-W37"]
     assert drained_week["opened"] == 0
     assert drained_week["closed"] == 1
     assert drained_week["residue_out"] == 1
     assert drained_week["residue_net"] == -1
-
-
-def test_open_count_is_a_point_in_time_read(metrics):
-    issues = metrics.load_issues([_issue(1, 1, 1), _issue(2, 1, 10), _issue(3, 1)])
-    at_day_5 = dt.datetime(2026, 9, 5, tzinfo=_UTC)
-    at_day_20 = dt.datetime(2026, 9, 20, tzinfo=_UTC)
-
-    assert metrics.open_count_at(issues, at_day_5) == 2
-    assert metrics.open_count_at(issues, at_day_20) == 1
+    assert drained_week["open_at_week_end"] == 1
 
 
 def test_survival_excludes_issues_without_full_exposure(metrics):
@@ -106,9 +122,10 @@ def test_survival_excludes_issues_without_full_exposure(metrics):
     )
     result = metrics.survival(issues, now, horizons=(1, 7, 30), min_exposure_days=30)
     assert result["cohort"] == 0
+    # The empty answer carries every key the report reads.
+    assert result["survivors_open"] == 0
 
-    later = dt.datetime(2026, 10, 2, tzinfo=_UTC)
-    result = metrics.survival(issues, later, horizons=(1, 7, 30), min_exposure_days=30)
+    result = metrics.survival(issues, LATER, horizons=(1, 7, 30))
     assert result["cohort"] == 2
     assert result["closed_within"][1] == pytest.approx(0.5)
     assert result["closed_within"][30] == pytest.approx(1.0)
@@ -133,7 +150,7 @@ def test_residue_snapshot_reads_priority_from_labels(metrics):
     assert snap["by_priority"] == {"P2": 1, "unranked": 1}
 
 
-def test_follow_ups_read_the_lane_marker_not_any_reference(metrics):
+def test_follow_ups_count_only_parents_that_are_issues_here(metrics):
     issues = metrics.load_issues(
         [
             _issue(10, 1, 1),
@@ -142,11 +159,17 @@ def test_follow_ups_read_the_lane_marker_not_any_reference(metrics):
             _issue(
                 13, 2, body="Compare with the shape #10 describes; unrelated origin."
             ),
+            # The PR the lane was working, not an issue: unresolved, not a parent.
+            _issue(14, 2, body="Surfaced by the review of PR #999."),
+            # A cross-repository reference is never a parent here.
+            _issue(15, 2, body="Deferred from faultmaven-dashboard#10."),
+            _issue(16, 2, body="Follow-up to FaultMaven/faultmaven-copilot#10."),
         ]
     )
     result = metrics.follow_ups(issues)
     assert result["attributed"] == 2
     assert result["parents"] == 1
+    assert result["unresolved"] == 1
     assert result["top"] == [(10, [11, 12])]
 
 
@@ -160,6 +183,14 @@ def test_removed_lines_skip_tests_and_mark_pure_insertions(metrics):
         "+new\n"
         "@@ -40,0 +41,1 @@\n"
         "+inserted\n"
+        "--- a/faultmaven/modules/case/gone.py\n"
+        "+++ /dev/null\n"
+        "@@ -1,1 +0,0 @@\n"
+        "-deleted module line\n"
+        "--- /dev/null\n"
+        "+++ b/faultmaven/modules/case/new.py\n"
+        "@@ -0,0 +1,1 @@\n"
+        "+brand new\n"
         "--- a/tests/unit/test_repo.py\n"
         "+++ b/tests/unit/test_repo.py\n"
         "@@ -1,1 +1,1 @@\n"
@@ -171,12 +202,14 @@ def test_removed_lines_skip_tests_and_mark_pure_insertions(metrics):
     assert ("faultmaven/modules/case/repo.py", 11) in lines
     # A pure insertion is recorded as a negative anchor at the insertion point.
     assert ("faultmaven/modules/case/repo.py", -40) in lines
+    # A deleted file's lines are pre-fix lines and are dated.
+    assert ("faultmaven/modules/case/gone.py", 1) in lines
     assert not any(path.startswith("tests/") for path, _ in lines)
+    assert not any(path.endswith("new.py") for path, _ in lines)
 
 
 def test_latency_is_the_median_age_of_the_removed_lines(metrics):
     found = dt.datetime(2026, 9, 15, tzinfo=_UTC)
-    day = 86400
     intro = [
         int((found - dt.timedelta(days=200)).timestamp()),  # an old import
         int((found - dt.timedelta(days=30)).timestamp()),
@@ -187,7 +220,6 @@ def test_latency_is_the_median_age_of_the_removed_lines(metrics):
     assert stats["median"] == pytest.approx(31, abs=0.01)
     assert stats["oldest"] == pytest.approx(200, abs=0.01)
     assert stats["newest"] == pytest.approx(30, abs=0.01)
-    assert day  # the unit the fields are expressed in
 
 
 def test_latency_distribution_reports_the_two_tails(metrics):
@@ -200,15 +232,71 @@ def test_latency_distribution_reports_the_two_tails(metrics):
     assert metrics.latency_distribution([]) == {"n": 0}
 
 
-def test_report_renders_without_latency(metrics):
-    now = dt.datetime(2026, 10, 2, tzinfo=_UTC)
+def test_fix_latency_is_one_row_per_pr_and_drops_negative_latency(metrics, monkeypatch):
+    issues = metrics.load_issues([_issue(1, 1, 5), _issue(2, 2, 5), _issue(3, 3, 6)])
+    # One sweep PR closes #1 and #2; PR 20 closes #3 with lines newer than #3.
+    linkage = {
+        1: [{"number": 10, "mergeCommit": {"oid": "a" * 40}}],
+        2: [{"number": 10, "mergeCommit": {"oid": "a" * 40}}],
+        3: [{"number": 20, "mergeCommit": {"oid": "b" * 40}}],
+    }
+    monkeypatch.setattr(metrics, "closing_prs", lambda numbers, repo: linkage)
+    diff = "--- a/faultmaven/x.py\n+++ b/faultmaven/x.py\n@@ -1,1 +1,1 @@\n-old\n+new\n"
+    monkeypatch.setattr(
+        metrics, "_git", lambda *args: "" if args[0] == "cat-file" else diff
+    )
+    old = int(dt.datetime(2026, 8, 1, tzinfo=_UTC).timestamp())
+    after = int(dt.datetime(2026, 9, 4, tzinfo=_UTC).timestamp())
+    monkeypatch.setattr(
+        metrics,
+        "_blame_times",
+        lambda commit, path: {1: old} if commit.startswith("a") else {1: after},
+    )
+
+    rows = metrics.fix_latency(issues, "o/r")
+    assert [row["pr"] for row in rows] == [10]
+    assert rows[0]["issues"] == [1, 2]
+    # Dated against the EARLIEST issue the PR closed.
+    assert rows[0]["median"] == pytest.approx(31.5, abs=0.01)
+    assert rows[0]["method"] == "removed"
+
+
+def test_closing_prs_keeps_the_resolvable_aliases_on_a_partial_error(
+    metrics, monkeypatch
+):
+    payload = {
+        "data": {
+            "repository": {
+                "i1": {"number": 1, "closedByPullRequestsReferences": {"nodes": []}},
+                "i2": None,
+            }
+        },
+        "errors": [{"message": "Could not resolve to an Issue"}],
+    }
+
+    class Result:
+        returncode = 1
+        stdout = __import__("json").dumps(payload)
+        stderr = "gh: Could not resolve"
+
+    monkeypatch.setattr(metrics.subprocess, "run", lambda *a, **k: Result())
+    linkage = metrics.closing_prs([1, 2], "o/r")
+    assert linkage == {1: []}
+
+
+def test_report_renders_on_an_empty_cohort_and_without_latency(metrics):
     issues = metrics.load_issues([_issue(1, 1, 1), _issue(2, 1, 10), _issue(3, 1)])
-    text = metrics.report(issues, now, None, weeks=4)
+    two_days_in = dt.datetime(2026, 9, 3, tzinfo=_UTC)
+    results = metrics.compute(issues, two_days_in, latency=False, repo="o/r")
+    text = metrics.report(results, weeks=4)
     assert "## Weekly flow" in text
     assert "2026-W36" in text
-    assert "## Survival" in text
+    assert "No issue has had 30 days of exposure yet." in text
     assert "## Open set" in text
     assert "Fix latency" not in text
 
-    with_latency = metrics.report(issues, now, [{"median": 12.0}], weeks=4)
-    assert "1 dated fixes" in with_latency
+    results = metrics.compute(issues, LATER, latency=False, repo="o/r")
+    results["latency"] = [{"median": 12.0}]
+    with_latency = metrics.report(results, weeks=4)
+    assert "Cohort with ≥30 days exposure: 3." in with_latency
+    assert "1 dated fix PRs" in with_latency

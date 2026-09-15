@@ -26,8 +26,9 @@ Usage::
 ``--latency`` runs ``git blame`` over every fix PR's diff and is slow (about a
 minute per hundred closed issues); the rest completes in under a second.
 Everything the script prints is derived from GitHub metadata and the git
-history, never from reading issue text, so a re-run is comparable to the
-last one.
+history, never from reading issue text. An open issue younger than the
+residue threshold is reported as *pending*, not as residue, so the newest
+week's row is comparable to the same row on a later run.
 """
 
 from __future__ import annotations
@@ -44,6 +45,14 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+#: The checkout this script lives in. Every git call is anchored here so the
+#: script measures the same tree from any working directory.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+sys.path.insert(0, str(REPO_ROOT))
+
+from faultmaven.utils.datetime import parse_utc_timestamp  # noqa: E402
+
 _DAY = 86400.0
 
 #: An issue that is still open after this many days has left the fast
@@ -52,27 +61,32 @@ RESIDUE_THRESHOLD_DAYS = 7
 
 #: The markers a lane writes when it files an issue it found while doing other
 #: work. Matching the marker (rather than any ``#N``) keeps a citation of a
-#: related issue from being read as a parent.
+#: related issue from being read as a parent, and the negative look-behind
+#: refuses ``owner/repo#N`` and ``dashboard#N`` — a cross-repository reference
+#: is not a parent in this repository.
 _PARENT_MARKER = re.compile(
     r"(?:found while|surfaced (?:while|by|during)|while (?:working on|fixing|"
     r"reviewing)|spun out of|deferred from|follow-?up (?:to|from|of)|"
     r"out of scope (?:for|of)|split (?:out|from)|during (?:the )?(?:work on|"
-    r"review of)|review of)[^\n#]{0,80}#(\d+)",
+    r"review of)|review of)[^\n#]{0,80}(?<![\w/])#(\d+)",
     re.IGNORECASE,
 )
 
-_ISSUE_FIELDS = "number,title,state,createdAt,closedAt,labels,body,author,url"
+_ISSUE_FIELDS = "number,title,state,createdAt,closedAt,labels,body"
 
 
 @dataclass(frozen=True)
 class Issue:
     number: int
     title: str
-    state: str
     created: dt.datetime
     closed: dt.datetime | None
     labels: tuple[str, ...]
     body: str
+
+    @property
+    def is_open(self) -> bool:
+        return self.closed is None
 
     @property
     def age_at_close_days(self) -> float | None:
@@ -80,27 +94,38 @@ class Issue:
             return None
         return (self.closed - self.created).total_seconds() / _DAY
 
-    def is_residue(self) -> bool:
-        """Still open past the threshold, whether or not it closed later."""
+    def age_days(self, now: dt.datetime) -> float:
+        return (now - self.created).total_seconds() / _DAY
+
+    def is_residue(self, now: dt.datetime) -> bool:
+        """Open past the threshold as of ``now``, whether or not it closed later.
+
+        An open issue younger than the threshold is NOT residue yet: it is
+        still inside the window in which most issues close. Counting it would
+        inflate the newest week by exactly the population this measure exists
+        to exclude, and the same row would shrink on the next run.
+        """
         age = self.age_at_close_days
-        return age is None or age > RESIDUE_THRESHOLD_DAYS
+        if age is not None:
+            return age > RESIDUE_THRESHOLD_DAYS
+        return self.age_days(now) > RESIDUE_THRESHOLD_DAYS
 
-
-def _parse_ts(value: str) -> dt.datetime:
-    return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    def is_pending(self, now: dt.datetime) -> bool:
+        """Open, and too young to be called residue."""
+        return self.is_open and not self.is_residue(now)
 
 
 def load_issues(raw: Iterable[dict]) -> list[Issue]:
     """Build ``Issue`` rows from ``gh issue list --json`` output."""
     issues = []
     for item in raw:
+        closed_at = item.get("closedAt")
         issues.append(
             Issue(
                 number=int(item["number"]),
                 title=item.get("title", ""),
-                state=item["state"],
-                created=_parse_ts(item["createdAt"]),
-                closed=_parse_ts(item["closedAt"]) if item.get("closedAt") else None,
+                created=parse_utc_timestamp(item["createdAt"]),
+                closed=parse_utc_timestamp(closed_at) if closed_at else None,
                 labels=tuple(label["name"] for label in item.get("labels", ())),
                 body=item.get("body") or "",
             )
@@ -108,20 +133,20 @@ def load_issues(raw: Iterable[dict]) -> list[Issue]:
     return sorted(issues, key=lambda issue: issue.number)
 
 
-def fetch_issues(repo: str | None) -> list[Issue]:
+def fetch_issues(repo: str) -> list[Issue]:
     cmd = [
         "gh",
         "issue",
         "list",
+        "--repo",
+        repo,
         "--state",
         "all",
         "--limit",
-        "1000",
+        "5000",
         "--json",
         _ISSUE_FIELDS,
     ]
-    if repo:
-        cmd += ["--repo", repo]
     out = subprocess.run(cmd, check=True, capture_output=True, text=True).stdout
     return load_issues(json.loads(out))
 
@@ -131,27 +156,46 @@ def _week(when: dt.datetime) -> tuple[int, int]:
     return (iso[0], iso[1])
 
 
-def weekly_flow(issues: Sequence[Issue]) -> list[dict]:
+def _week_end(year: int, week: int) -> dt.datetime:
+    return dt.datetime.fromisocalendar(year, week, 7).replace(
+        hour=23, minute=59, second=59, tzinfo=dt.UTC
+    )
+
+
+def open_count_at(issues: Sequence[Issue], when: dt.datetime) -> int:
+    return sum(
+        1
+        for issue in issues
+        if issue.created <= when and (issue.closed is None or issue.closed > when)
+    )
+
+
+def weekly_flow(issues: Sequence[Issue], now: dt.datetime) -> list[dict]:
     """Per ISO week: opened, closed, and the residue's own inflow and drain.
 
     ``residue_in`` counts issues opened that week that were NOT closed within
-    the threshold (they joined the residue, or are on their way to it).
-    ``residue_out`` counts closures that week of issues older than the
-    threshold. The difference is the number the campaign has to drive
-    negative; ``opened - closed`` is dominated by same-lane discovery and says
-    little.
+    the threshold. ``residue_out`` counts closures that week of issues older
+    than the threshold. ``pending`` is what the newest rows carry instead:
+    open issues too young to be residue yet, so the row is provisional by
+    exactly that number. The difference ``residue_net`` is what the campaign
+    has to drive negative; ``opened - closed`` is dominated by same-lane
+    discovery and says little.
     """
     opened: Counter = Counter()
     closed: Counter = Counter()
     residue_in: Counter = Counter()
     residue_out: Counter = Counter()
+    pending: Counter = Counter()
     for issue in issues:
-        opened[_week(issue.created)] += 1
-        if issue.is_residue():
-            residue_in[_week(issue.created)] += 1
+        week = _week(issue.created)
+        opened[week] += 1
+        if issue.is_pending(now):
+            pending[week] += 1
+        elif issue.is_residue(now):
+            residue_in[week] += 1
         if issue.closed is not None:
             closed[_week(issue.closed)] += 1
-            if issue.is_residue():
+            if issue.is_residue(now):
                 residue_out[_week(issue.closed)] += 1
     rows = []
     for week in sorted(set(opened) | set(closed)):
@@ -164,17 +208,11 @@ def weekly_flow(issues: Sequence[Issue]) -> list[dict]:
                 "residue_in": residue_in[week],
                 "residue_out": residue_out[week],
                 "residue_net": residue_in[week] - residue_out[week],
+                "pending": pending[week],
+                "open_at_week_end": open_count_at(issues, _week_end(*week)),
             }
         )
     return rows
-
-
-def open_count_at(issues: Sequence[Issue], when: dt.datetime) -> int:
-    return sum(
-        1
-        for issue in issues
-        if issue.created <= when and (issue.closed is None or issue.closed > when)
-    )
 
 
 def survival(
@@ -190,43 +228,39 @@ def survival(
     conditional one that matters for the residue: of the issues that survived
     the threshold, how many closed by the last horizon.
     """
-    cohort = [
-        issue
-        for issue in issues
-        if (now - issue.created).total_seconds() / _DAY >= min_exposure_days
-    ]
+    cohort = [issue for issue in issues if issue.age_days(now) >= min_exposure_days]
+    result = {
+        "cohort": len(cohort),
+        "closed_within": {},
+        "survivors": 0,
+        "survivors_closed": 0,
+        "survivors_open": 0,
+    }
     if not cohort:
-        return {"cohort": 0, "closed_within": {}, "survivors": 0, "survivors_closed": 0}
+        return result
 
     def closed_within(issue: Issue, days: int) -> bool:
         age = issue.age_at_close_days
         return age is not None and age <= days
 
-    survivors = [issue for issue in cohort if issue.is_residue()]
+    survivors = [issue for issue in cohort if issue.is_residue(now)]
     last = max(horizons)
-    return {
-        "cohort": len(cohort),
-        "closed_within": {
-            days: sum(closed_within(issue, days) for issue in cohort) / len(cohort)
-            for days in horizons
-        },
-        "survivors": len(survivors),
-        "survivors_closed": sum(closed_within(issue, last) for issue in survivors),
-        "survivors_open": sum(1 for issue in survivors if issue.state == "OPEN"),
+    result["closed_within"] = {
+        days: sum(closed_within(issue, days) for issue in cohort) / len(cohort)
+        for days in horizons
     }
+    result["survivors"] = len(survivors)
+    result["survivors_closed"] = sum(closed_within(issue, last) for issue in survivors)
+    result["survivors_open"] = sum(1 for issue in survivors if issue.is_open)
+    return result
 
 
 def residue_snapshot(issues: Sequence[Issue], now: dt.datetime) -> dict:
     """The open set by age and by priority label."""
-    ages = sorted(
-        (now - issue.created).total_seconds() / _DAY
-        for issue in issues
-        if issue.state == "OPEN"
-    )
+    open_issues = [issue for issue in issues if issue.is_open]
+    ages = sorted(issue.age_days(now) for issue in open_issues)
     by_priority: Counter = Counter()
-    for issue in issues:
-        if issue.state != "OPEN":
-            continue
+    for issue in open_issues:
         priority = next(
             (label for label in issue.labels if re.fullmatch(r"P[0-3]", label)),
             "unranked",
@@ -235,7 +269,7 @@ def residue_snapshot(issues: Sequence[Issue], now: dt.datetime) -> dict:
     return {
         "open": len(ages),
         "median_age_days": statistics.median(ages) if ages else 0.0,
-        "older_than_threshold": sum(1 for age in ages if age > RESIDUE_THRESHOLD_DAYS),
+        "older_than_threshold": sum(1 for a in ages if a > RESIDUE_THRESHOLD_DAYS),
         "older_than_30d": sum(1 for age in ages if age > 30),
         "by_priority": dict(sorted(by_priority.items())),
     }
@@ -244,20 +278,34 @@ def residue_snapshot(issues: Sequence[Issue], now: dt.datetime) -> dict:
 def follow_ups(issues: Sequence[Issue]) -> dict:
     """Issues that name a parent they were found while working on.
 
+    A parent is counted only when it is an issue in this corpus. A number
+    that is not — usually the PR the lane was working, or a cross-repository
+    reference — is reported separately as ``unresolved`` rather than as a
+    parent, because the per-lane rate is a rate per ISSUE.
+
     The regex reads the lane's own marker, so an issue whose parent is named
-    without one is missed; treat the count as a floor. Whether a follow-up was
-    CAUSED by the parent's fix (a regression) or merely found during it cannot
-    be read from metadata and is classified by hand in the campaign report.
+    without one is missed; treat the count as a floor. Whether a follow-up
+    was CAUSED by the parent's fix (a regression) or merely found during it
+    cannot be read from metadata and is classified by hand in the campaign
+    report.
     """
+    known = {issue.number for issue in issues}
     children: dict[int, list[int]] = defaultdict(list)
+    unresolved = 0
     for issue in issues:
         match = _PARENT_MARKER.search(issue.body)
-        if match:
-            children[int(match.group(1))].append(issue.number)
+        if not match:
+            continue
+        parent = int(match.group(1))
+        if parent in known:
+            children[parent].append(issue.number)
+        else:
+            unresolved += 1
     parents = sorted(children.items(), key=lambda item: (-len(item[1]), item[0]))
     return {
         "attributed": sum(len(kids) for kids in children.values()),
         "parents": len(children),
+        "unresolved": unresolved,
         "top": [(parent, kids) for parent, kids in parents[:10]],
     }
 
@@ -267,13 +315,21 @@ def follow_ups(issues: Sequence[Issue]) -> dict:
 # --------------------------------------------------------------------------
 
 
-def _git(*args: str, cwd: Path | None = None) -> str | None:
-    result = subprocess.run(["git", *args], capture_output=True, text=True, cwd=cwd)
+def _git(*args: str) -> str | None:
+    result = subprocess.run(
+        ["git", *args], capture_output=True, text=True, cwd=REPO_ROOT
+    )
     return result.stdout if result.returncode == 0 else None
 
 
 def closing_prs(numbers: Sequence[int], repo: str) -> dict[int, list[dict]]:
-    """Which merged PR closed each issue, from GitHub's own linkage."""
+    """Which merged PR closed each issue, from GitHub's own linkage.
+
+    GitHub answers a batch with partial data plus an ``errors`` array when
+    one number cannot be resolved (deleted, transferred, or a PR number), and
+    ``gh`` exits non-zero on that. The body is still parsed, the resolvable
+    aliases are kept, and the failed numbers are reported to stderr.
+    """
     owner, name = repo.split("/")
     out: dict[int, list[dict]] = {}
     for start in range(0, len(numbers), 40):
@@ -289,11 +345,16 @@ def closing_prs(numbers: Sequence[int], repo: str) -> dict[int, list[dict]]:
             capture_output=True,
             text=True,
         )
-        if result.returncode != 0:
-            print(f"graphql failed: {result.stderr[:200]}", file=sys.stderr)
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            print(f"graphql returned no body: {result.stderr[:200]}", file=sys.stderr)
             continue
-        data = json.loads(result.stdout)["data"]["repository"]
-        for value in data.values():
+        repository = (payload.get("data") or {}).get("repository") or {}
+        for alias, value in repository.items():
+            if value is None:
+                print(f"unresolvable issue {alias[1:]}", file=sys.stderr)
+                continue
             out[value["number"]] = value["closedByPullRequestsReferences"]["nodes"]
     return out
 
@@ -305,9 +366,11 @@ def _is_test_path(path: str) -> bool:
 def removed_lines(diff: str) -> list[tuple[str, int]]:
     """``(path, old line number)`` for every line a unified diff removed.
 
-    Only modified files count (a new file has no pre-fix lines to date) and a
-    test file is not the defect. Pure insertions contribute nothing here; the
-    caller falls back to the insertion point's neighbours for those.
+    The diff must carry the ``a/``/``b/`` prefixes (the caller forces them,
+    because ``diff.noprefix`` would otherwise drop every hunk silently). A
+    new file has no pre-fix lines to date and a test file is not the defect.
+    A pure insertion is recorded as a NEGATIVE anchor at the insertion point;
+    the caller uses the anchors only when nothing was removed.
     """
     lines: list[tuple[str, int]] = []
     path: str | None = None
@@ -323,14 +386,14 @@ def removed_lines(diff: str) -> list[tuple[str, int]]:
             start = int(header.group(1))
             count = int(header.group(2)) if header.group(2) is not None else 1
             if count == 0:
-                lines.append((path, -max(start, 1)))  # insertion anchor, negative
+                lines.append((path, -max(start, 1)))
             else:
                 lines.extend((path, n) for n in range(start, start + count))
     return lines
 
 
-def _blame_times(commit: str, path: str, cwd: Path | None) -> dict[int, int]:
-    out = _git("blame", "--porcelain", "-w", commit, "--", path, cwd=cwd)
+def _blame_times(commit: str, path: str) -> dict[int, int]:
+    out = _git("blame", "--porcelain", "-w", commit, "--", path)
     times: dict[int, int] = {}
     if not out:
         return times
@@ -348,16 +411,13 @@ def _blame_times(commit: str, path: str, cwd: Path | None) -> dict[int, int]:
 
 
 def _intro_times(
-    pairs: Sequence[tuple[str, int]],
-    commit: str,
-    cache: dict[str, dict[int, int]],
-    cwd: Path | None,
+    pairs: Sequence[tuple[str, int]], commit: str, cache: dict[str, dict[int, int]]
 ) -> list[int]:
     """Author times of the given ``(path, line)`` pairs at ``commit``."""
     found = []
     for path, line in pairs:
         if path not in cache:
-            cache[path] = _blame_times(commit, path, cwd)
+            cache[path] = _blame_times(commit, path)
         if line in cache[path]:
             found.append(cache[path][line])
     return found
@@ -378,29 +438,45 @@ def latency_days(found: dt.datetime, intro_times: Sequence[int]) -> dict:
     }
 
 
-def fix_latency(
-    issues: Sequence[Issue], repo: str, cwd: Path | None = None
-) -> list[dict]:
+def fix_latency(issues: Sequence[Issue], repo: str) -> list[dict]:
+    """One row per FIX PR, dated against the earliest issue it closed.
+
+    Per PR rather than per issue: a sweep PR closing six issues would
+    otherwise contribute six identical medians and weight the distribution by
+    PR size. A PR whose removed lines were all authored AFTER the issue was
+    filed (a peer PR landed in between) is dropped as undatable rather than
+    reported as a fast regression.
+    """
     closed = [issue for issue in issues if issue.closed is not None]
     by_number = {issue.number: issue for issue in closed}
     linkage = closing_prs([issue.number for issue in closed], repo)
-    rows = []
+    per_pr: dict[int, dict] = {}
     for number, prs in linkage.items():
         merged = [pr for pr in prs if pr.get("mergeCommit")]
         if not merged:
             continue
-        oid = merged[0]["mergeCommit"]["oid"]
-        if _git("cat-file", "-e", oid, cwd=cwd) is None:
+        entry = per_pr.setdefault(
+            merged[0]["number"],
+            {"oid": merged[0]["mergeCommit"]["oid"], "issues": []},
+        )
+        entry["issues"].append(number)
+
+    rows = []
+    for pr_number, entry in sorted(per_pr.items()):
+        oid = entry["oid"]
+        if _git("cat-file", "-e", oid) is None:
             continue
         diff = _git(
             "diff",
             "-U0",
-            "--diff-filter=M",
+            "--diff-filter=MD",
+            "--no-renames",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
             f"{oid}^",
             oid,
             "--",
             "faultmaven/",
-            cwd=cwd,
         )
         if not diff:
             continue
@@ -408,16 +484,24 @@ def fix_latency(
         removed = [(p, n) for p, n in targets if n > 0]
         anchors = [(p, -n) for p, n in targets if n < 0]
         cache: dict[str, dict[int, int]] = {}
-        intro = _intro_times(removed, f"{oid}^", cache, cwd)
+        intro = _intro_times(removed, f"{oid}^", cache)
         method = "removed"
-        if len(intro) < 2:
-            intro = _intro_times(anchors, f"{oid}^", cache, cwd)
+        if not intro:
+            intro = _intro_times(anchors, f"{oid}^", cache)
             method = "context"
         if not intro:
             continue
-        stats = latency_days(by_number[number].created, intro)
+        found = min(by_number[n].created for n in entry["issues"])
+        stats = latency_days(found, intro)
+        if stats["oldest"] < 0:
+            continue
         rows.append(
-            {"number": number, "pr": merged[0]["number"], "method": method, **stats}
+            {
+                "pr": pr_number,
+                "issues": sorted(entry["issues"]),
+                "method": method,
+                **stats,
+            }
         )
     return rows
 
@@ -448,14 +532,20 @@ def _table(headers: Sequence[str], rows: Iterable[Sequence]) -> str:
     return "\n".join(lines)
 
 
-def report(
-    issues: Sequence[Issue],
-    now: dt.datetime,
-    latency_rows: Sequence[dict] | None,
-    weeks: int,
-) -> str:
+def compute(issues: Sequence[Issue], now: dt.datetime, latency: bool, repo: str):
+    return {
+        "generated": now.isoformat(),
+        "weekly": weekly_flow(issues, now),
+        "survival": survival(issues, now),
+        "open": residue_snapshot(issues, now),
+        "follow_ups": follow_ups(issues),
+        "latency": fix_latency(issues, repo) if latency else None,
+    }
+
+
+def report(results: dict, weeks: int) -> str:
     out = []
-    flow = weekly_flow(issues)[-weeks:]
+    flow = results["weekly"][-weeks:]
     out.append(f"## Weekly flow (residue = open past {RESIDUE_THRESHOLD_DAYS} days)\n")
     out.append(
         _table(
@@ -467,6 +557,7 @@ def report(
                 "residue in",
                 "residue out",
                 "residue net",
+                "pending",
                 "open at week end",
             ],
             (
@@ -478,12 +569,8 @@ def report(
                     row["residue_in"],
                     row["residue_out"],
                     f"{row['residue_net']:+d}",
-                    open_count_at(
-                        issues,
-                        dt.datetime.fromisocalendar(
-                            int(row["week"][:4]), int(row["week"][-2:]), 7
-                        ).replace(hour=23, minute=59, tzinfo=dt.UTC),
-                    ),
+                    row["pending"],
+                    row["open_at_week_end"],
                 )
                 for row in flow
             ),
@@ -491,44 +578,55 @@ def report(
     )
     total_in = sum(row["residue_in"] for row in flow)
     total_out = sum(row["residue_out"] for row in flow)
+    pending = sum(row["pending"] for row in flow)
     out.append(
-        f"\nResidue over the window: in {total_in}, out {total_out}, net {total_in - total_out:+d}.\n"
+        f"\nResidue over the window: in {total_in}, out {total_out}, "
+        f"net {total_in - total_out:+d}; {pending} open issues are still too "
+        f"young to count.\n"
     )
 
-    surv = survival(issues, now)
+    surv = results["survival"]
     out.append("## Survival\n")
-    out.append(
-        f"Cohort with ≥30 days exposure: {surv['cohort']}. Closed within "
-        + ", ".join(f"{d}d: {p:.0%}" for d, p in surv["closed_within"].items())
-        + f". Survived {RESIDUE_THRESHOLD_DAYS}d: {surv['survivors']}, of which closed by 30d: "
-        f"{surv['survivors_closed']}, still open: {surv['survivors_open']}.\n"
-    )
+    if surv["cohort"]:
+        out.append(
+            f"Cohort with ≥30 days exposure: {surv['cohort']}. Closed within "
+            + ", ".join(f"{d}d: {p:.0%}" for d, p in surv["closed_within"].items())
+            + f". Survived {RESIDUE_THRESHOLD_DAYS}d: {surv['survivors']}, of which "
+            f"closed by 30d: {surv['survivors_closed']}, still open: "
+            f"{surv['survivors_open']}.\n"
+        )
+    else:
+        out.append("No issue has had 30 days of exposure yet.\n")
 
-    snap = residue_snapshot(issues, now)
+    snap = results["open"]
     out.append("## Open set\n")
     out.append(
         f"Open: {snap['open']}; median age {snap['median_age_days']:.0f}d; "
         f"{snap['older_than_threshold']} older than {RESIDUE_THRESHOLD_DAYS}d, "
-        f"{snap['older_than_30d']} older than 30d. By priority label: {snap['by_priority']}.\n"
+        f"{snap['older_than_30d']} older than 30d. By priority label: "
+        f"{snap['by_priority']}.\n"
     )
 
-    fu = follow_ups(issues)
+    fu = results["follow_ups"]
     out.append("## Follow-ups (regex floor)\n")
     out.append(
-        f"{fu['attributed']} issues name a parent they were found while working on, "
-        f"across {fu['parents']} parents. Most prolific: "
+        f"{fu['attributed']} issues name a parent issue they were found while "
+        f"working on, across {fu['parents']} parents; {fu['unresolved']} more name "
+        "a number that is not an issue here (a PR, or another repository). "
+        "Most prolific: "
         + ", ".join(f"#{p} ({len(k)})" for p, k in fu["top"][:6])
         + ".\n"
     )
 
-    if latency_rows is not None:
-        dist = latency_distribution(latency_rows)
+    if results["latency"] is not None:
+        dist = latency_distribution(results["latency"])
         out.append("## Fix latency (blame on the removed lines of each fix PR)\n")
         if dist["n"]:
             out.append(
-                f"{dist['n']} dated fixes. Median latency {dist['median']:.0f}d "
-                f"(p25 {dist['p25']:.0f}d, p75 {dist['p75']:.0f}d); {dist['under_7d']:.0%} under a week "
-                f"(introduced by recent work), {dist['over_90d']:.0%} over 90 days (old pool).\n"
+                f"{dist['n']} dated fix PRs. Median latency {dist['median']:.0f}d "
+                f"(p25 {dist['p25']:.0f}d, p75 {dist['p75']:.0f}d); "
+                f"{dist['under_7d']:.0%} under a week (introduced by recent work), "
+                f"{dist['over_90d']:.0%} over 90 days (old pool).\n"
             )
         else:
             out.append("No fix could be dated.\n")
@@ -541,40 +639,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--issues", type=Path, help="saved `gh issue list --json` output"
     )
     parser.add_argument("--repo", default="FaultMaven/faultmaven")
-    parser.add_argument("--weeks", type=int, default=12, help="weeks of flow to print")
+    parser.add_argument(
+        "--weeks", type=int, default=12, help="most recent weeks of flow to print"
+    )
     parser.add_argument(
         "--latency",
         action="store_true",
         help="also date every fix via git blame (slow)",
     )
-    parser.add_argument(
-        "--json", type=Path, help="write every computed row here as well"
-    )
+    parser.add_argument("--json", type=Path, help="write every computed row here")
     args = parser.parse_args(argv)
 
-    issues = (
-        load_issues(json.loads(args.issues.read_text()))
-        if args.issues
-        else fetch_issues(args.repo)
-    )
+    if args.issues:
+        issues = load_issues(json.loads(args.issues.read_text()))
+    else:
+        issues = fetch_issues(args.repo)
     now = dt.datetime.now(dt.UTC)
-    latency_rows = fix_latency(issues, args.repo) if args.latency else None
-    print(report(issues, now, latency_rows, args.weeks))
+    results = compute(issues, now, args.latency, args.repo)
+    print(report(results, args.weeks))
     if args.json:
-        args.json.write_text(
-            json.dumps(
-                {
-                    "generated": now.isoformat(),
-                    "weekly": weekly_flow(issues),
-                    "survival": survival(issues, now),
-                    "open": residue_snapshot(issues, now),
-                    "follow_ups": follow_ups(issues),
-                    "latency": latency_rows,
-                },
-                indent=1,
-                default=str,
-            )
-        )
+        args.json.write_text(json.dumps(results, indent=1, default=str))
     return 0
 
 

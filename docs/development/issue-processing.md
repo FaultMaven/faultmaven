@@ -21,8 +21,8 @@ week were opened and ~22 closed. Five things the count was hiding, from the
    so the rest sit: a P2 issue's median time to close is 17 days, P3 is
    effectively never, and 12 of 15 P3 issues are still open.
 3. **The defects being found are old.** Median latency between the defective
-   line's introduction and the issue is 121 days; 56% are over 90 days and
-   only ~18% under a week, a share that has been stable month to month while
+   line's introduction and the issue is 121 days; 55% are over 90 days and
+   only ~20% under a week, a share that has been stable month to month while
    the over-90-day share rises. That is the signature of draining a fixed pool
    rather than generating new debt.
 4. **Fixes rarely break things; they expose things.** 13 of 193 defects (7%)
@@ -77,7 +77,9 @@ lacks one fills it in before touching code):
   method, the numbers, and what they change. Numbers are produced by a
   script that is committed, so the measurement can be repeated.
 - `feature` — needs a spec before a lane; the queue entry says who writes
-  it. A feature with no spec and no date is closed with a comment, not
+  it. The spec is an issue comment, like the memo (`docs/working/` is
+  gitignored, and a spec nobody has accepted is not a permanent document
+  yet). A feature with no spec and no date is closed with a comment, not
   carried.
 - `chore` — a PR, no test required beyond what the change itself needs.
 
@@ -184,7 +186,10 @@ therefore is not another guard but the thing that makes a guard cheap:
    package and `tests/`, apply a regex or AST predicate, and assert both a
    **floor** (the scan visited at least this many modules) and an
    **identity control** (it visited this one). A guard becomes the predicate,
-   the expected N, and a docstring naming the issue: ~30 lines.
+   the expected N, and a docstring naming the issue: ~30 lines. It grows out
+   of what exists — `tests/import_guard_ast.py` already holds the AST
+   predicates for one family, and three architecture tests carry an
+   identical private `_scan(paths)` walker that the harness retires.
 2. **An invariant register** (`docs/development/invariants.md`): one row per
    rule the codebase has been bitten by, naming the *owner* (the single
    implementation every call site goes through), N today, the guard that

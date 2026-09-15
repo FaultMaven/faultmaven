@@ -29,9 +29,19 @@ growing on.
 
 ### 2. Refresh the queue
 
-Find the pinned issue titled `Queue` (`gh issue list --label tracking
---search "Queue in:title"`). If none exists, create it with an empty table
-and say so in the report.
+Find the pinned issue titled `Queue`:
+
+```bash
+gh issue list --state open --label tracking --search "Queue in:title" --json number,title
+```
+
+If none exists, create it so the next cycle finds it by the same predicate,
+and say so in the report:
+
+```bash
+gh issue create --title "Queue" --label tracking --body "<empty table>"
+gh issue pin <number>
+```
 
 For each entry in the top five, check in this order and drop on the first
 failure: still open; not closed as a duplicate; no PR merged since the last
@@ -59,26 +69,23 @@ the alembic head do not run together. Sequence them and say so in the report.
 
 Each subagent gets a self-contained prompt (it inherits nothing from this
 conversation) that contains: the issue number and its full text; the queue
-entry (kind, done-when, N, blocked-by); the lane procedure from
-`docs/development/issue-processing.md` §2 verbatim; and the exit for its
-kind:
+entry (kind, done-when, N, blocked-by); and `docs/development/issue-processing.md`
+§1 "Kinds and their exits" and §2 "The lane procedure" **verbatim** — the
+exits are defined there once and are not restated here. The mechanics the
+prompt adds:
 
-- **defect** → a PR from a fresh worktree on `origin/main` fetched now
-  (`git worktree add -b fix/<n>-<slug> .claude/worktrees/<n> origin/main`),
-  containing the fix, the reproducing test, and for a duplicated-rule item
-  the guard with a positive-control floor. PR body states N and the scan
-  that found it, and lists the consumers of anything whose meaning changed.
-  Runs `black`, `ruff`, `lint-imports`, `pytest tests/` (not unit-only), and
-  `python scripts/check_contract_version.py` if `docs/reference/api/` moved.
-  `Closes #<n>` only if the issue as written is delivered.
-- **decision** → a decision memo as a comment on the issue: options, what
-  each changes, which documented design each overrides, a recommendation.
-  No code.
-- **investigation** → a measurement as a comment on the issue, produced by
-  a committed script under `scripts/` with a unit test, opened as a PR.
-- **feature** → a spec under `docs/working/DRAFT-<slug>.md` opened as a PR,
-  or a recommendation to close with reasons. No implementation.
-- **chore** → a PR.
+- A defect or chore lane works in a fresh worktree on `origin/main` fetched
+  now (`git worktree add -b fix/<n>-<slug> .claude/worktrees/<n>
+  origin/main`), and before pushing runs `black`, `ruff`, `lint-imports`,
+  `pytest tests/` (not unit-only), and `python scripts/check_contract_version.py`
+  if `docs/reference/api/` moved. `Closes #<n>` only if the issue as written
+  is delivered.
+- A decision or feature lane writes no code: its memo or spec is a comment
+  on the issue (`gh issue comment <n> --body-file …`). `docs/working/` is
+  gitignored and is not a place a PR can carry a spec.
+- An investigation lane commits its measurement script under `scripts/`
+  with a unit test and opens a PR for that; the numbers go in an issue
+  comment.
 
 The subagent reports back with: the PR or comment URL, the exact commands
 it ran with their tail output, `git status --short` of its worktree, and
