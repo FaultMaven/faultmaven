@@ -19,12 +19,52 @@ anything defined in an auth module must be explicitly classified, and an
 unclassified one fails rather than being silently treated as harmless. A new
 mandatory dependency that repeats the #880 mistake would otherwise make both
 sides agree at "no auth" and pass.
+
+Reading ``app.routes`` is also what makes this file the right home for the two
+route-table gates at the bottom, which have nothing to do with authentication.
+Every *other* route-level guard in this repository is downstream of
+``app.openapi()`` — the surface inventories, the API-reference drift job, the
+schema-naming and response-declaration gates — so the whole family is blind by
+construction to a route that is *served* but not *documented*. That is not a
+hypothetical either: ``POST /api/v1/sessions/cleanup`` was defined twice in
+``modules/auth/api/session.py``, Starlette served the first definition and
+FastAPI's generator documented the second, and the published contract described
+a response the server never returned until #1440 removed it. The drift gate
+could not see it, because the document it diffs *is* ``app.openapi()``.
+
+So the last two tests compare the route table against the document, which is
+only possible somewhere that holds both.
 """
 
 import inspect
+import os
+import sys
+from collections import Counter, defaultdict
+from pathlib import Path
 
 import pytest
 from fastapi.routing import APIRoute
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+# The environment the published reference is generated under, imported rather
+# than copied so it cannot go stale — see scripts/generation_environment.py.
+# ``scripts/generate_api_docs.py`` applies it through
+# ``_pin_generation_environment()``, which cannot be called from inside pytest
+# because it empties ``os.environ`` and monkeypatches dotenv permanently; the
+# ``published_app`` fixture applies the same two steps reversibly.
+sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+from generation_environment import (  # noqa: E402, I001
+    PINNED_ENVIRONMENT,
+    _SYSTEM_ENVIRONMENT_KEYS,
+)
+
+# The verbs an OpenAPI path item may key an operation on. Everything else a
+# path item can carry (``parameters``, ``summary``, ``x-`` extensions) is not an
+# operation and must not be counted as one.
+HTTP_METHODS = frozenset(
+    {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
+)
 
 # Dependencies that refuse an anonymous caller. A route whose tree contains one
 # of these must carry `security` in the spec.
@@ -268,4 +308,232 @@ def test_declared_security_schemes_are_resolvable(app):
     assert referenced <= declared, (
         f"operations reference security schemes that components.securitySchemes "
         f"does not define: {sorted(referenced - declared)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The route table itself: served-vs-documented parity.
+#
+# Everything above compares one property of a route against how the spec
+# describes it. The two tests below compare how many routes there ARE against
+# how many the spec describes — a question no gate downstream of
+# ``app.openapi()`` can ask, because a duplicate route is invisible in the
+# document it would have to read.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def published_app():
+    """The app this project publishes, built the way the generator builds it.
+
+    ``scripts/generate_api_docs.py`` empties the environment down to
+    ``_SYSTEM_ENVIRONMENT_KEYS`` and applies ``PINNED_ENVIRONMENT`` before
+    importing the app, because several routers mount conditionally — OAuth, SSO,
+    ``/metrics``, debug. The published document is therefore a function of that
+    environment as well as of the code, and a gate that compares served routes
+    against documented ones has to evaluate the *same* app or it is comparing
+    two different surfaces.
+
+    That is why this is not the ``app`` fixture above: that one sets only
+    ``OAUTH_ENABLED``, so it mounts neither the SSO router nor ``/metrics``, and
+    a route defined twice in either would be invisible to it.
+
+    The generator's own ``_pin_generation_environment()`` cannot be called from
+    inside pytest — it clears ``os.environ`` and replaces dotenv's loaders for
+    the life of the process — so the same two steps are applied here and undone
+    before the fixture hands the app back.
+    """
+    import dotenv
+
+    from faultmaven.config.settings import reset_settings
+    from tests.integration._app_rebuild import rebuild_app
+
+    saved_environ = dict(os.environ)
+    saved_dotenv = (dotenv.load_dotenv, dotenv.dotenv_values)
+
+    # A local .env is exactly the ambient state that makes a document
+    # irreproducible; the generator neutralises it for the same reason.
+    dotenv.load_dotenv = lambda *args, **kwargs: None
+    dotenv.dotenv_values = lambda *args, **kwargs: {}
+
+    preserved = {
+        key: value
+        for key, value in os.environ.items()
+        if key in _SYSTEM_ENVIRONMENT_KEYS
+    }
+    os.environ.clear()
+    os.environ.update(preserved)
+    os.environ.update(PINNED_ENVIRONMENT)
+    reset_settings()
+    try:
+        return rebuild_app()
+    finally:
+        dotenv.load_dotenv, dotenv.dotenv_values = saved_dotenv
+        os.environ.clear()
+        os.environ.update(saved_environ)
+        reset_settings()
+
+
+def _served_operations(app):
+    """Every operation the router will match, as ``(method, route)`` pairs.
+
+    A list, in registration order, and never a set: a second registration of a
+    ``(method, path)`` that already exists is the whole subject here, and it is
+    only visible as a repeat.
+
+    Both callers below key these on ``route.path_format`` rather than
+    ``route.path``, because ``path_format`` is what the document keys its path
+    items on — which makes the comparison apples-to-apples, and is also the more
+    exact statement of the defect: two routes sharing a ``path_format`` are
+    precisely the pair the document has no way to describe separately.
+    """
+    return [
+        (method, route)
+        for route in _schema_routes(app)
+        for method in sorted(route.methods)
+    ]
+
+
+def _definition_site(route: APIRoute) -> str:
+    """Where a route's handler is written, as ``path/to/file.py:line``."""
+    endpoint = inspect.unwrap(route.endpoint)
+    try:
+        source_file = inspect.getsourcefile(endpoint)
+        line = inspect.getsourcelines(endpoint)[1]
+    except (OSError, TypeError):  # pragma: no cover - C-implemented endpoint
+        return "<source unavailable>"
+    if source_file is None:  # pragma: no cover - C-implemented endpoint
+        return "<source unavailable>"
+    path = Path(source_file)
+    try:
+        path = path.relative_to(PROJECT_ROOT)
+    except ValueError:  # pragma: no cover - installed rather than in-tree
+        pass
+    return f"{path}:{line}"
+
+
+@pytest.mark.integration
+def test_no_operation_is_registered_twice(published_app):
+    """One handler per ``(method, path)``. The second one is unreachable.
+
+    Python's last-definition-wins makes a duplicated route silent in the source:
+    two ``@router.post("/cleanup")`` decorators in one module both register, and
+    the module exports only the second function. Nothing in the file looks
+    wrong, and the two halves of the framework then disagree about which one
+    exists — see the failure message.
+
+    ``F811`` catches this only when the *function name* is duplicated too, and
+    FastAPI's own ``Duplicate Operation ID`` warning only when the derived
+    operation id collides. Both were true of the ``/sessions/cleanup`` pair, and
+    both were silenced by renaming rather than by deleting one (commit
+    d53e5d3a1 gave them ``operation_id="..._v1"`` / ``"..._v2"`` and added an
+    ``ignore`` filter for the warning). This asserts the property instead of the
+    symptom: it holds however the handlers are named.
+    """
+    by_operation = defaultdict(list)
+    for method, route in _served_operations(published_app):
+        by_operation[(method, route.path_format)].append(route)
+
+    duplicates = {
+        operation: routes
+        for operation, routes in by_operation.items()
+        if len(routes) > 1
+    }
+
+    report = []
+    for (method, path), routes in sorted(duplicates.items()):
+        report.append(f"  {method} {path}")
+        for position, route in enumerate(routes, start=1):
+            name = getattr(route.endpoint, "__name__", "<unnamed endpoint>")
+            if position == 1:
+                verdict = "SERVED — the router matches this one"
+            elif position == len(routes):
+                verdict = "DOCUMENTED — the spec describes this one"
+            else:
+                verdict = "SHADOWED — neither served nor documented"
+            report.append(f"      {name}  ({_definition_site(route)})  <- {verdict}")
+
+    assert not duplicates, (
+        "These operations are registered more than once:\n"
+        + "\n".join(report)
+        + "\n\nThe two halves of FastAPI resolve that disagreement differently, "
+        "and neither one errors:\n"
+        "  - Starlette walks app.routes in order and serves the FIRST match.\n"
+        "  - get_openapi() merges path items with dict.update(), so the "
+        "document describes the LAST one.\n"
+        "\nSo the published contract describes a handler nobody can reach, and "
+        "`api-contract-drift` cannot see it: the document that job diffs IS "
+        "app.openapi(), which already contains the wrong half.\n"
+        "\nDelete one of the definitions. Do NOT rename the function or set "
+        "`operation_id=` to quiet the linter or FastAPI's Duplicate Operation "
+        "ID warning — that silences the detector and leaves the shadowed route "
+        "in place, which is exactly how this shipped twice."
+    )
+
+
+@pytest.mark.integration
+def test_served_and_documented_operation_counts_agree(published_app):
+    """As many operations in the document as the router will match.
+
+    This is the same defect seen from the other side, and it is the assertion
+    that survives a future variant the uniqueness check above does not
+    anticipate — a router mounted twice under one prefix, say, or a path
+    rewritten to collide with one registered elsewhere.
+
+    It has to be a COUNT. The *sets* agree in the duplicate case: both contain
+    ``('POST', '/api/v1/sessions/cleanup')`` exactly because the extra
+    registration collapsed into the same path item. Measured on the commit
+    before #1440: 154 served, 153 documented, sets identical. A set comparison —
+    and every gate downstream of ``app.openapi()`` — reads that as clean.
+    """
+    spec = published_app.openapi()
+
+    served = Counter(
+        (method, route.path_format)
+        for method, route in _served_operations(published_app)
+    )
+    documented = Counter(
+        (method.upper(), path)
+        for path, path_item in spec.get("paths", {}).items()
+        for method, operation in path_item.items()
+        if method.lower() in HTTP_METHODS and isinstance(operation, dict)
+    )
+
+    served_total = sum(served.values())
+    documented_total = sum(documented.values())
+
+    # Counter subtraction keeps only the positive side, which is what names the
+    # offender: an operation served twice and documented once appears here as
+    # one surplus registration.
+    surplus = served - documented
+    missing = documented - served
+
+    detail = []
+    if surplus:
+        detail.append("  Served more often than documented:")
+        detail += [
+            f"      {method} {path}  — served {served[(method, path)]}x, "
+            f"documented {documented[(method, path)]}x"
+            for method, path in sorted(surplus)
+        ]
+    if missing:
+        detail.append("  Documented more often than served:")
+        detail += [
+            f"      {method} {path}  — documented {documented[(method, path)]}x, "
+            f"served {served[(method, path)]}x"
+            for method, path in sorted(missing)
+        ]
+
+    assert served_total == documented_total, (
+        f"The app serves {served_total} in-schema operations but the document "
+        f"describes {documented_total}.\n" + "\n".join(detail) + "\n\n"
+        "A path item is a dict keyed by method, so a second handler on a "
+        "(method, path) that is already registered overwrites the first in the "
+        "document while Starlette goes on serving the first. The counts are the "
+        "only place that shows: the sets of (method, path) still agree, which "
+        "is why the API-reference drift gate — and every other guard built on "
+        "app.openapi() — reads it as clean.\n"
+        "\nIf the numbers differ for some other reason, the route table and the "
+        "generator have stopped agreeing about what an operation is, which is "
+        "worth understanding before either side is changed."
     )
