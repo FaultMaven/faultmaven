@@ -83,7 +83,17 @@ class ICaseRepository(Protocol):
     """
 
     async def save(self, case: "Case") -> "Case":
-        """Save case to persistence layer."""
+        """Save case to persistence layer.
+
+        MUTATES ``case.messages``: a row missing ``message_id`` or
+        ``created_at`` is completed in place, so the in-memory list carries
+        what the stored rows carry (#1418). Both fields are read back — the id
+        is the upsert's conflict target and the timestamp is what every read
+        orders by — so a row left incomplete in memory would be re-minted and
+        re-inserted, or re-stamped and reordered, on the next save. Every
+        implementation does this, including the in-memory one, so a caller may
+        read either field back after ``save`` on any backend.
+        """
         ...
 
     async def get(self, case_id: str) -> Optional["Case"]:

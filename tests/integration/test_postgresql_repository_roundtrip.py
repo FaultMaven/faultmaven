@@ -939,3 +939,67 @@ async def test_message_authorship_is_write_once_but_fillable(pg_repo):
     }
     assert by_content["already attributed"] == teammate_id  # not erased
     assert by_content["not yet attributed"] == owner_id  # filled
+
+
+@pytest.mark.asyncio
+async def test_an_incomplete_message_row_is_normalised_not_skipped(pg_repo):
+    """The #1418 fix on the PRODUCTION backend, not only on SQLite.
+
+    ``_upsert_messages`` used to ``continue`` past any row without a
+    ``message_id``, so the aggregate save reported success and the transcript
+    line was gone. The same two lines existed in both backends; a guard that
+    covered only SQLite would leave the cloud one unpinned, which is the half
+    that matters.
+
+    Pins three properties, not just persistence: the line keeps its PLACE in
+    the transcript, its ``created_at`` does not drift on later saves, and a
+    second save conflicts onto the row rather than inserting a duplicate.
+    Ordering is a real temporal comparison here (``timestamptz``), so the
+    failure mode differs from SQLite's text sort — a row left to be re-stamped
+    by ``created_at = EXCLUDED.created_at`` on every save drifts FORWARD past
+    messages appended after it.
+    """
+    session = pg_repo.db
+    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    user_id = f"user_{uuid4().hex[:8]}"
+    await seed_enterprises(session, [enterprise_id])
+    await seed_users(session, [user_id])
+    case = _make_case(enterprise_id, user_id)
+
+    # A live-path row first, so the id-less one has somewhere to be out of order.
+    case.messages.append(
+        {
+            "message_id": f"msg_{uuid4().hex[:12]}",
+            "role": "user",
+            "content": "1. live-path row",
+            "turn_number": 1,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    # No message_id — the shape add_message has always accepted and minted for.
+    case.messages.append(
+        {"role": "assistant", "content": "2. id-less row", "turn_number": 1}
+    )
+    await pg_repo.save(case)
+
+    minted = case.messages[1]["message_id"]
+    stamped = case.messages[1]["created_at"]
+    assert minted, "the mint must be written back to the caller's dict"
+    assert stamped, "created_at must be written back, or later saves re-stamp it"
+
+    # A second save must conflict onto that row, not insert a duplicate, and
+    # must not move it.
+    await pg_repo.save(case)
+
+    messages = await pg_repo.get_messages(case.case_id)
+    assert [m.get("content") for m in messages] == [
+        "1. live-path row",
+        "2. id-less row",
+    ]
+
+    rows = await session.execute(
+        text("SELECT message_id FROM case_messages WHERE case_id = :c"),
+        {"c": case.case_id},
+    )
+    ids = [r[0] for r in rows.fetchall()]
+    assert sorted(ids) == sorted([case.messages[0]["message_id"], minted])
