@@ -74,6 +74,12 @@ entry (kind, done-when, N, blocked-by); and `docs/development/issue-processing.m
 exits are defined there once and are not restated here. The mechanics the
 prompt adds:
 
+- Every lane traces to the root cause before deciding what it ships, and
+  designs the fix for the class, not the reported copy (procedure §2, "Root
+  before scope"). A lane that reports a symptom fixed with the root
+  ticketed as "investigate later" is sent back; a lane that reports the root
+  found, one part of its fix shipped, and the rest ticketed with the design
+  is complete.
 - A defect or chore lane works in a fresh worktree on `origin/main` fetched
   now (`git worktree add -b fix/<n>-<slug> .claude/worktrees/<n>
   origin/main`), and before pushing runs `black`, `ruff`, `lint-imports`,

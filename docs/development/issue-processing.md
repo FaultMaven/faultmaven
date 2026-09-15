@@ -141,6 +141,16 @@ unmerged branch.
   is adopted. After any rework the lane's own mutation matrix is re-run.
 - **The whole tree is ported.** Before a lane's PR is reported, `git status`
   in its worktree is clean or every remaining file is named in the report.
+- **Root before scope; scope by ticket, never by depth.** A lane investigates
+  to the root cause before deciding what it ships, and designs the fix for
+  the class the instance belongs to: a defect that is one of N
+  implementations is fixed by giving the rule an owner and a guard, not by
+  correcting the copy that was reported. When the root's fix is larger than
+  one PR, scope is managed by filing a ticket that names the root and the
+  design, and the lane's PR states which part of the root it closes. What a
+  ticket may never do is stand in for the investigation: "look deeper later"
+  is an unfinished lane, not a scope decision. Related work uncovered on the
+  way is folded in when it shares the root and filed only when it does not.
 
 **What escalates to a human** (everything else the owning agent decides and
 records in the PR or issue):
