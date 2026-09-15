@@ -1135,18 +1135,25 @@ async def test_search_state_is_a_where_clause_not_a_post_filter(pg_repo):
 
 
 @pytest.mark.asyncio
-async def test_message_read_order_is_total_and_agreed(pg_repo, pg_engine):
+async def test_message_read_order_agrees_and_defers_ties_to_insertion(
+    pg_repo, pg_engine
+):
     """The #1428 divergence, on the backend where it was measured.
 
-    PostgreSQL reads messages two ways: ``get()`` aggregates them inside the
-    big case query, ``get_messages()`` runs a plain SELECT. They carried
-    DIFFERENT order-bys — the aggregate had a ``turn_number`` tiebreaker and
-    the plain one did not — so two rows sharing a ``created_at`` came back in
+    PostgreSQL reads messages two ways — ``get()`` aggregates them inside the
+    big case query, ``get_messages()`` runs a plain SELECT — and they carried
+    DIFFERENT order-bys: the aggregate had a ``turn_number`` tiebreaker and the
+    plain one did not. Two rows sharing a ``created_at`` therefore came back in
     OPPOSITE orders depending on which reader a caller used.
 
-    Unlike SQLite this is a real temporal comparison (``timestamptz``), so it
-    needs its own test: equal timestamps here are equal instants, not equal
-    strings.
+    Ordering here is a real temporal comparison (``timestamptz``), not
+    SQLite's text sort, so this half needs its own test.
+
+    Ties go to INSERTION order, and the fixture is built to prove it: the
+    same-turn pair is appended second-then-first by content, and the ids sort
+    AGAINST the conversation, so an id tiebreaker — which an earlier revision
+    of this change added — would flip them. It broke ties at random, since a
+    minted id is a uuid4.
     """
     session = pg_repo.db
     enterprise_id = f"ent_{uuid4().hex[:8]}"
@@ -1156,10 +1163,15 @@ async def test_message_read_order_is_total_and_agreed(pg_repo, pg_engine):
     case = _make_case(enterprise_id, user_id)
 
     same = "2026-06-13T10:15:30.123456+00:00"
+    # Appended OUT of turn order, which is what makes the missing tiebreaker
+    # observable: with only ``created_at`` all three tie and the engine returns
+    # them in insertion order, putting turn 2 ahead of turn 1. And the ids
+    # (aaa < bbb < zzz) disagree with both orders, so an id tiebreaker cannot
+    # satisfy the assertion either.
     for mid, turn, content in [
-        ("msg_ccc", 2, "turn 2 second"),
-        ("msg_aaa", 1, "turn 1 first"),
-        ("msg_bbb", 2, "turn 2 first"),
+        ("msg_bbb", 2, "2. turn 2 appended first"),
+        ("msg_zzz", 1, "1. turn 1"),
+        ("msg_aaa", 2, "3. turn 2 appended second"),
     ]:
         case.messages.append(
             {
@@ -1180,9 +1192,61 @@ async def test_message_read_order_is_total_and_agreed(pg_repo, pg_engine):
             m.get("content") for m in await repo.get_messages(case.case_id)
         ]
 
-    expected = ["turn 1 first", "turn 2 first", "turn 2 second"]
+    # Turn decides across turns; insertion decides within one.
+    expected = [
+        "1. turn 1",
+        "2. turn 2 appended first",
+        "3. turn 2 appended second",
+    ]
     assert via_get == expected
-    assert via_get_messages == expected, (
-        f"the two readers disagree: get()={via_get} "
-        f"get_messages()={via_get_messages}"
+    assert (
+        via_get_messages == expected
+    ), f"readers disagree: get()={via_get} get_messages()={via_get_messages}"
+
+
+@pytest.mark.asyncio
+async def test_time_still_dominates_the_turn_number_on_postgres(pg_repo, pg_engine):
+    """Positive control on the production backend.
+
+    Without it, ordering by ``turn_number`` first would satisfy the
+    equal-timestamp test above while reordering every real transcript. The
+    SQLite class pins this too, but ``timestamptz`` compares differently from
+    text and the two clauses are written separately.
+    """
+    session = pg_repo.db
+    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    user_id = f"user_{uuid4().hex[:8]}"
+    await seed_enterprises(session, [enterprise_id])
+    await seed_users(session, [user_id])
+    case = _make_case(enterprise_id, user_id)
+
+    case.messages.append(
+        {
+            "message_id": "msg_early",
+            "role": "user",
+            "content": "earlier in time, higher turn",
+            "turn_number": 9,
+            "created_at": "2026-06-13T10:00:00+00:00",
+        }
     )
+    case.messages.append(
+        {
+            "message_id": "msg_late",
+            "role": "user",
+            "content": "later in time, lower turn",
+            "turn_number": 1,
+            "created_at": "2026-06-13T11:00:00+00:00",
+        }
+    )
+    await pg_repo.save(case)
+
+    other_session_factory = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with other_session_factory() as other:
+        got = [
+            m.get("content")
+            for m in await PostgreSQLHybridCaseRepository(other).get_messages(
+                case.case_id
+            )
+        ]
+
+    assert got == ["earlier in time, higher turn", "later in time, lower turn"]
