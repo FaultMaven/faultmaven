@@ -333,7 +333,7 @@ Cloud is a cloud-native deployment architecture — orchestrated, elastic, and s
 | **Case Management** | Full (with archive) | Full (with archive + org-wide view) |
 | **User Management** | Not applicable (single user) | Full CRUD, invite, roles |
 | **Infrastructure** | Fixed defaults (SQLite, FakeRedis, embedded ChromaDB) | Fully Managed (Postgres, Redis, S3) |
-| **Security** | Local Auth | SSO (SAML/OIDC), organizations, teams, roles |
+| **Security** | Local Auth | SSO (SAML/OIDC), enterprise isolation (RLS), teams |
 | **Session Persistence** | **Ephemeral** (FakeRedis, resets on restart) | **Persistent** (Redis, saved across sessions) |
 | **Access** | `http://localhost:3333` (localhost only) | `https://app.faultmaven.ai` |
 
