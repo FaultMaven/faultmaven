@@ -150,13 +150,29 @@ jobs:
   test-standalone:
     needs: [code-quality]
     runs-on: ubuntu-latest
-    # Anchored to the measured healthy cost, like Test Cloud below. The last
-    # three green main runs took 18m31s, 18m39s and 17m18s, so 20 left only
-    # 7-13% of margin — the same position Test Cloud was in when a slow runner
-    # cancelled it at 98% with every test passed (PR #1025). 30 clears the
-    # measured cost by ~60%. Standalone is the slower of the two jobs despite
-    # running the smaller selection (`not cloud`), so it reaches its cap first.
-    timeout-minutes: 30
+    # Anchored to the measured healthy cost, like Test Cloud below, and RAISED
+    # when the suite grew into the previous anchor. History (#1450):
+    #
+    #   20  set when green runs took 18m31s / 18m39s / 17m18s
+    #   30  set when that left only 7-13% of margin
+    #   45  set 2026-09-15, after green runs reached 25m15s / 25m32s / 25m51s
+    #       / 28m11s and then CANCELLED at 30m — on main, not only on a branch
+    #
+    # A cancelled job reports as a FAILED required check with no diagnostic, so
+    # it reads as "this branch broke something" and costs an investigation per
+    # occurrence. Raising the cap buys margin; it does not make the job faster,
+    # and the trend is still upward.
+    #
+    # What actually costs the time, measured with --durations on this exact
+    # selection: tests/integration/test_main_app.py is ~9 minutes of it — 25
+    # tests, each opening `with TestClient(app)`, so each pays a full lifespan
+    # (container composition, migrations, KB bootstrap). Several of those tests
+    # are ABOUT startup and legitimately need their own; the rest could share
+    # one. That is the real lever and it is tracked in #1450, not done here.
+    #
+    # Standalone is the slower of the two jobs despite running the smaller
+    # selection (`not cloud`), so it reaches its cap first.
+    timeout-minutes: 45
     name: Test Standalone
 
     steps:
