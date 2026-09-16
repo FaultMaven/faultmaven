@@ -24,6 +24,26 @@ options and a recommendation, and then builds only what has an answer. The
 owner's part is short and happens at two moments: answer the questions, and
 merge. Everything between is autonomous and asks nothing.
 
+## What the owner tracks
+
+Nothing. Two actions arrive as ordinary GitHub notifications, and neither
+needs you to know where the work has got to:
+
+- **Answer questions.** A proposal comment lists them, each with options and
+  a recommendation, so answering is a word. Answer any, ignore any: an
+  unanswered question returns in the next proposal and nothing stalls
+  waiting on it.
+- **Merge pull requests.** A result comment lists them with their CI state.
+
+Everything else — which issues are ranked where, what is built, what is
+being reviewed, what is waiting — is the agent's bookkeeping. The command
+locates itself, so `/process-top-issues` with no arguments is always the
+right thing to type, whatever happened last.
+
+"Round" below is the unit of that bookkeeping: one batch of work from
+proposal to merge. It is a word for reading this document, not something to
+hold in your head.
+
 ## The round
 
 A **round** is a batch of issues worked together. One round runs at a time.
@@ -86,7 +106,7 @@ pile with the ruling recorded on it as its spec.
 One lane per approved item, in its own worktree, autonomous. The gates under
 *Building* are not optional.
 
-**No question is asked during this phase.** If a lane discovers its item
+**No question is asked while building.** If a lane discovers its item
 actually needs a ruling, the item is **pulled**: the lane stops, the question
 is recorded on the issue, the item returns to the blocked pile, and it
 appears in the next proposal. The other lanes carry on. Half-built work is

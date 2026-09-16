@@ -17,16 +17,16 @@ the rest is autonomous.
 
 ## Argument
 
-`$ARGUMENTS` — optional, and usually unnecessary. **Bare invocation works
-from any point in the cycle**: step 0 reads where the round is and continues
-from there.
+`$ARGUMENTS` — optional, and usually unnecessary. **Bare invocation is
+always correct**: step 0 reads where the round has got to and continues from
+there, so the operator never has to know.
 
 - empty — continue from wherever the round is.
 - a list of numbers (`1452 1447`) — **pin** these into the next round
   whatever their rank; the ranking fills the rest of the capacity. A pinned
   item that needs a ruling is reported as blocked rather than built.
 - `propose` — force a fresh proposal even if one is outstanding.
-- `build` — force the build phase.
+- `build` — force the building step.
 
 ## 0. Locate the round
 
