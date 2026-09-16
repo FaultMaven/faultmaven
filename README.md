@@ -20,23 +20,49 @@ Traditional observability tools tell you **what** broke. Generic LLMs guess **wh
 
 ---
 
+## Try it
+
+This repository is the engine. Self-hosting it is free and always will be — the [Quick Start](#quick-start) below is one command. If you would rather not run it, there are two other ways in.
+
+| | |
+|---|---|
+| **Run it yourself** | [Quick Start](#quick-start) — free, fair-source (FSL-1.1-ALv2), no usage limits, runs air-gapped |
+| **Let us run it** | **[app.faultmaven.ai](https://app.faultmaven.ai/)** — Cloud beta is open. Sign up with your email; no waiting list, nothing to install, free while it is in beta |
+| **Just look** | [A complete investigation transcript](https://www.faultmaven.ai/investigation), unedited — or join the [Community Slack](https://join.slack.com/t/faultmaven-community/shared_invite/zt-493fv3w3o-mPBBI2v3mMYQKS4649mY1A) and @mention FaultMaven. Neither needs an account |
+
+<details>
+<summary><strong>What "beta" means →</strong></summary>
+
+- **Check its work.** FaultMaven runs on large language models. Its hypotheses, the data it asks for and the fixes it proposes can be incomplete, misleading or simply wrong — and it can be wrong confidently. FaultMaven proposes; you approve and execute. It has no access to your infrastructure and takes no action on your systems.
+- **It is beta software.** Expect rough edges and occasional downtime. Provided as is, without warranty — see the [Terms](https://www.faultmaven.ai/terms).
+- **Mind what you paste.** FaultMaven stores the cases and files you give it, because reusing them is how it improves. Do not paste production secrets or customer data you would not want stored. The Community Slack is a shared, public workspace and runs under a FaultMaven-managed account rather than one of your own.
+- **Accounts do not merge.** Sign up with a personal address now and move to a company one later, and that is a new account — there is no migration, and your beta cases do not follow you.
+- **Free during beta.** Pricing will be announced before general availability.
+
+Self-hosting is subject to none of this except the first point, which is a property of language models rather than of the deployment.
+
+</details>
+
+---
+
 ## System Components
 
-FaultMaven consists of three components that work together:
+FaultMaven consists of an API and three ways to reach it:
 
 | Component | Repository | Purpose |
 |-----------|------------|---------|
 | **FaultMaven API** | This repo | Backend server: investigation engine, knowledge base, AI orchestration |
 | **FaultMaven Dashboard** | [faultmaven-dashboard](https://github.com/FaultMaven/faultmaven-dashboard) | Web UI: knowledge base management, case history, settings |
 | **FaultMaven Copilot** | [faultmaven-copilot](https://github.com/FaultMaven/faultmaven-copilot) · [Chrome Web Store](https://chromewebstore.google.com/detail/faultmaven-copilot/fghoagggojmkdopidfopijfnlmchjcng) | Browser extension: in-context troubleshooting overlay |
+| **FaultMaven Slack Agent** | [faultmaven-slack-agent](https://github.com/FaultMaven/faultmaven-slack-agent) · [Community Slack](https://join.slack.com/t/faultmaven-community/shared_invite/zt-493fv3w3o-mPBBI2v3mMYQKS4649mY1A) | Answers in the incident thread |
 
-**Typical usage:** The Copilot extension is your primary interface during incidents. The Dashboard manages your knowledge base and reviews past cases. Both connect to the API backend.
+**Typical usage:** the Dashboard is the full product in a browser tab, and works end to end on its own. The Copilot extension puts the same investigation beside whatever page you are reading. The Slack agent answers where the incident is already being discussed. All three talk to the API backend.
 
 ---
 
 ## Quick Start
 
-Get the full FaultMaven stack running in under 5 minutes.
+One command. Budget 10–20 minutes on a first run — most of it pulling a 2.3 GB image that carries its own embedding model, which is what lets FaultMaven index and retrieve with no network at all. Subsequent starts take seconds.
 
 ### Prerequisites
 
@@ -307,11 +333,11 @@ Cloud is a cloud-native deployment architecture — orchestrated, elastic, and s
 | **Case Management** | Full (with archive) | Full (with archive + org-wide view) |
 | **User Management** | Not applicable (single user) | Full CRUD, invite, roles |
 | **Infrastructure** | Fixed defaults (SQLite, FakeRedis, embedded ChromaDB) | Fully Managed (Postgres, Redis, S3) |
-| **Security** | Local Auth | SSO (SAML/OIDC), SOC 2 Ready |
+| **Security** | Local Auth | SSO (SAML/OIDC), organizations, teams, roles |
 | **Session Persistence** | **Ephemeral** (FakeRedis, resets on restart) | **Persistent** (Redis, saved across sessions) |
 | **Access** | `http://localhost:3333` (localhost only) | `https://app.faultmaven.ai` |
 
-**Subscribe:** [https://cloud.faultmaven.ai](https://cloud.faultmaven.ai)
+**Cloud beta is open** — sign up at [app.faultmaven.ai](https://app.faultmaven.ai/) with your email. Free while it is in beta; pricing will be announced before general availability.
 
 ---
 
