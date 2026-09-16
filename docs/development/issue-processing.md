@@ -37,10 +37,18 @@ ageing in the background.
 
 ### 1. Propose
 
-Sort every issue filed since the last round into two piles:
+Sort every issue filed since the last round into three piles:
 
 - **ready** — the answer is known; it needs work, not a call.
 - **blocked** — it needs a ruling before anyone can build it.
+- **yours** — the work itself is the owner's and no agent can do it: a
+  live-deployment check, or anything needing a credential or console an
+  agent does not have.
+
+The third pile exists because running this procedure on 2026-09-16 found two
+beta gates that were neither ready nor blocked on a ruling. Calling them
+ready would have had them proposed every round and never built. They are
+listed in the proposal and never ranked into a round.
 
 Rank the ready pile (see *Picking*), then post **one** comment, the round
 proposal, with three parts:
@@ -51,7 +59,9 @@ proposal, with three parts:
    than only the new ones. Each gets the question in one sentence, the
    options, a recommendation, and what it unblocks. Answering should take
    one word.
-3. **Measurement** — the output of `python scripts/backlog_metrics.py`.
+3. **Yours to run** — the third pile, listed so it is visible, never
+   ranked.
+4. **Measurement** — the output of `python scripts/backlog_metrics.py`.
 
 ### 2. Owner answers
 

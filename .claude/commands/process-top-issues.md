@@ -56,8 +56,10 @@ Read what arrived since the last round's timestamp:
 gh issue list --state open --limit 500 --json number,title,labels,createdAt,body
 ```
 
-Sort each new issue into **ready** or **blocked** using *What escalates* in
-the procedure. Compare it against the current candidates and place it; do not
+Sort each new issue into **ready**, **blocked** or **yours** using *What
+escalates* in the procedure. The third pile is work no agent can do — a live
+deployment check, a console or credential an agent lacks. List it, never
+rank it into a round. Compare it against the current candidates and place it; do not
 re-sort the backlog. Re-rank an old loser only if a trigger fired: a new
 priority label, another issue on the same seam, a citation, an age
 threshold.
@@ -72,6 +74,9 @@ Post one comment on `Queue`:
 
 ### Needs your call (every blocked item, not only the new ones)
 | # | the question | options | my recommendation | unblocks |
+
+### Yours to run (never ranked into a round)
+| # | what only you can do |
 
 ### Measurement
 <python scripts/backlog_metrics.py --weeks 8>
