@@ -1854,11 +1854,15 @@ class TestSuggestionLiveness:
         )
 
     def test_a_follow_up_dies_one_turn_after_it_was_offered(self):
-        """fm#918 exposure 2: the engine appends ``turn_history`` at Step 6
-        and saves at Step 7, so a row committed when the final assignment
-        never ran carries turn N in the persisted counter beside a stamp of
-        N-1. On the retry turn that ages to 2 — out of window — so a typed
-        "yes" cannot consent to a proposal that no longer exists."""
+        """The window itself: offered on turn 5, answerable on 6, gone on 7.
+
+        This used to be labelled as fm#918 exposure 2's guard, on the reading
+        that a mid-turn save commits turn N in the persisted counter beside a
+        stamp of N-1 and so ages to 2. It does not — the two saves that commit
+        mid-turn run BEFORE the turn is recorded, so both numbers read N-1 and
+        the age is 1. What covers that window is
+        ``TestATerminalCaseAnswersNothingStored``; this pins the window and
+        nothing else."""
         case = _case_holding(self._A)
         follow_up = _stored_entry(
             self._A, intent_type=IntentType.CONFIRMATION.value, offered_turn=5
@@ -2378,3 +2382,361 @@ class TestSourceTypeMapExhaustiveness:
         default stays (a miss must not crash a turn), this pin moves the
         failure to CI."""
         assert data_type in _DATA_TYPE_TO_SOURCE_TYPE
+
+
+# =============================================================================
+# fm#918 exposure 1 — the out-of-band writer of ``UploadedFile.data_type``
+# =============================================================================
+
+
+def _reextraction_as(dt: DataType):
+    """A PreprocessingResult as ``reclassify_evidence`` returns under an
+    override to *dt* — the fine-grained type is what the file row is derived
+    from, so the probe has to carry the requested one, not a fixed default."""
+    from faultmaven.core.preprocessing.models import PreprocessingResult
+
+    return PreprocessingResult(
+        data_type=_UNIFIED_FOR_PROBE[dt],
+        detailed_data_type=dt,
+        summary="re-extracted summary",
+        structural_index="re-extracted index",
+        content_ref=None,
+        content_size_bytes=100,
+        content_type="text/plain",
+        extraction_method="crime_scene",
+        compression_ratio=0.1,
+        extraction_metadata={"evidence_metadata": {}},
+        content_hash="a" * 64,
+        processing_time_ms=5,
+    )
+
+
+_UNIFIED_FOR_PROBE = {
+    DataType.LOGS_AND_ERRORS: UnifiedDataType.LOGS,
+    DataType.COMMAND_OUTPUT: UnifiedDataType.LOGS,
+    DataType.STRUCTURED_CONFIG: UnifiedDataType.CONFIGURATION,
+}
+
+
+class TestOutOfBandReclassificationRetiresTheQuestion:
+    """fm#918 exposure 1, end to end.
+
+    ``PATCH /evidence/{id}/classification`` writes ``UploadedFile.data_type``
+    without going through the turn seam, so nothing rewrites
+    ``last_suggestions`` and the file's clarification choices stay armed. The
+    referent check (``OFFERED_DATA_TYPE_KEY``) catches that only when the
+    COARSE value moves: ``data_type`` holds an ``EvidenceSourceType``, a 12→6
+    projection, so ``logs_and_errors`` → ``command_output`` (both ``logs``)
+    left the question live and a typed "Application logs (…)" on the next turn
+    overwrote the answer the user had just given.
+
+    Both directions are asserted from one driver, because the cross-source-type
+    case is the control: if it also failed, the test would be measuring the
+    plumbing rather than the projection.
+    """
+
+    _FAILED_AS_LOGS_SUGGESTIONS = ["logs_and_errors", "structured_config"]
+
+    @staticmethod
+    def _failed_as_logs():
+        """The classifier's best-effort arm: ``classification_failed`` at 0.50
+        WITH a concrete type, so the row lands at ``logs`` rather than at
+        ``text``. That is what makes a within-source-type reclassification
+        reachable at all — the stamp has to already read ``logs``."""
+        result = MagicMock()
+        result.summary = "preview summary"
+        result.structural_index = "index"
+        result.data_type = UnifiedDataType.LOGS
+        result.detailed_data_type = DataType.LOGS_AND_ERRORS
+        result.content_hash = "d" * 64
+        result.extraction_method = "classification_failed"
+        result.extraction_metadata = {
+            "suggested_types": TestOutOfBandReclassificationRetiresTheQuestion._FAILED_AS_LOGS_SUGGESTIONS  # noqa: E501
+        }
+        result.coverage_start_ts = None
+        result.coverage_end_ts = None
+        return result
+
+    async def _armed_case(self, preprocessing_service, file_storage):
+        repo = RecordingCaseRepository()
+        case = create_sample_case(user_id="user_owner")
+        case.uploaded_files = []
+        case.evidence = []
+        repo._storage[case.case_id] = case
+
+        preprocessing_service.classify_and_extract = AsyncMock(
+            side_effect=lambda *a, **k: self._failed_as_logs()
+        )
+        preprocessing_service.reclassify_evidence = AsyncMock(
+            side_effect=lambda **k: _reextraction_as(k["user_override"])
+        )
+        file_storage.store_file = AsyncMock(
+            return_value={"storage_key": "evidence/case_x/mystery.log"}
+        )
+        file_storage.mark_linked = AsyncMock(return_value=True)
+        file_storage.retrieve_file = AsyncMock(return_value=b"line1\nline2\n")
+
+        service = InvestigationService(
+            milestone_engine=MockMilestoneEngine(),
+            case_repository=repo,
+            preprocessing_service=preprocessing_service,
+            file_storage_service=file_storage,
+        )
+        await service.process_turn(
+            case_id=case.case_id,
+            user_id="user_owner",
+            payload=TurnPayload(
+                query="what is this?",
+                attachments=[
+                    Attachment(
+                        content=b"ambiguous bytes",
+                        filename="mystery.log",
+                        content_type="text/plain",
+                        source_metadata={"source_type": "file_upload"},
+                    )
+                ],
+            ),
+        )
+        saved = await repo.get(case.case_id)
+        uploaded = saved.uploaded_files[0]
+        assert uploaded.data_type == "logs", (
+            "the premise of this suite: the armed question was minted while "
+            "the file already read 'logs', so a reclassification within that "
+            "source type cannot move the stamp"
+        )
+        assert self._clarified_file_ids(saved.last_suggestions) == [uploaded.file_id]
+        # The LLM anchors a claim on the file later (post-010: Evidence is born
+        # from evidence_to_add). That row is what the PATCH endpoint addresses.
+        saved.evidence = [
+            make_evidence(source_file_id=uploaded.file_id, data_type="logs")
+        ]
+        return service, repo, saved, uploaded.file_id
+
+    _clarified_file_ids = staticmethod(
+        TestRecoveryLoopSurvivesResolvingOneAttachment._clarified_file_ids
+    )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "override",
+        [DataType.COMMAND_OUTPUT, DataType.STRUCTURED_CONFIG],
+        ids=["within_source_type", "across_source_types"],
+    )
+    async def test_the_question_is_retired(
+        self, preprocessing_service, file_storage, override
+    ):
+        service, repo, case, file_id = await self._armed_case(
+            preprocessing_service, file_storage
+        )
+
+        await service.reclassify_evidence(
+            case_id=case.case_id,
+            evidence_id="ev_aaaaaaaaaaaa",
+            user_id="user_owner",
+            data_type=override,
+            trigger="api",
+        )
+
+        saved = await repo.get(case.case_id)
+        on_offer = live_suggestions(
+            saved.last_suggestions, saved, as_of_turn=saved.effective_current_turn + 1
+        )
+        assert self._clarified_file_ids(on_offer) == [], (
+            "the file has been classified out of band — the resolver must not "
+            "still be offered its choices, whether or not the coarse "
+            "data_type moved"
+        )
+
+        response = await service.process_turn(
+            case_id=case.case_id,
+            user_id="user_owner",
+            payload=TurnPayload(query="Application logs (mystery.log)"),
+        )
+        assert "Got it" not in response.agent_response, (
+            "typing a retired choice must not mint a file_reclassification "
+            "that overwrites the answer the user just gave out of band"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_stored_set_is_cleaned_not_merely_filtered(
+        self, preprocessing_service, file_storage
+    ):
+        """The writer's own half, stated separately from the reader's.
+
+        ``suggestion_is_live`` would hide an across-source-type answer at READ
+        time even if nothing cleaned the row, so the two defences have to be
+        measured apart or a mutation of one is masked by the other. This is
+        the write side: after the out-of-band reclassification the stored
+        field no longer carries the file's choices at all.
+        """
+        service, repo, case, file_id = await self._armed_case(
+            preprocessing_service, file_storage
+        )
+        await service.reclassify_evidence(
+            case_id=case.case_id,
+            evidence_id="ev_aaaaaaaaaaaa",
+            user_id="user_owner",
+            data_type=DataType.STRUCTURED_CONFIG,
+            trigger="api",
+        )
+        saved = await repo.get(case.case_id)
+        assert self._clarified_file_ids(saved.last_suggestions) == []
+
+
+def test_every_data_type_writer_retires_the_question():
+    """State N: how many places write ``UploadedFile.data_type``, and where.
+
+    ``OFFERED_DATA_TYPE_KEY`` rests on "the ONLY writer after intake is
+    ``_file_row_with_reclassification``". That is a claim about the whole
+    package, so the scan reads the whole package rather than the one module
+    the writers happen to live in today — a guard that looks only where the
+    violations are not is the failure mode this repository already has one of.
+
+    The expected set is written out, so a new writer fails here and its author
+    has to decide whether it retires the question (call
+    ``drop_clarifications_for_file``, as ``reclassify_evidence`` does) or is
+    the turn seam (which retires by ``resolved_file_id``).
+    """
+    import ast
+    from pathlib import Path
+
+    import faultmaven
+
+    package = Path(faultmaven.__file__).parent
+    assert package.name == "faultmaven", package
+
+    found: set[tuple[str, str, str]] = set()
+    for path in package.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        scopes: list[str] = []
+
+        class _Walk(ast.NodeVisitor):
+            def _named(self, node):
+                scopes.append(node.name)
+                self.generic_visit(node)
+                scopes.pop()
+
+            visit_FunctionDef = _named
+            visit_AsyncFunctionDef = _named
+            visit_ClassDef = _named
+
+            def visit_Call(self, node):
+                fn = node.func
+                name = getattr(fn, "id", None) or getattr(fn, "attr", None)
+                if name == "_file_row_with_reclassification":
+                    found.add(
+                        (
+                            path.relative_to(package).as_posix(),
+                            scopes[-1] if scopes else "<module>",
+                            "reclassification",
+                        )
+                    )
+                self.generic_visit(node)
+
+            def visit_Assign(self, node):
+                for target in node.targets:
+                    if (
+                        isinstance(target, ast.Attribute)
+                        and target.attr == "data_type"
+                        and isinstance(target.value, ast.Name)
+                        and target.value.id == "uploaded_file"
+                    ):
+                        found.add(
+                            (
+                                path.relative_to(package).as_posix(),
+                                scopes[-1] if scopes else "<module>",
+                                "intake",
+                            )
+                        )
+                self.generic_visit(node)
+
+        _Walk().visit(tree)
+
+    service_module = "modules/agent/domain/services/investigation_service.py"
+    assert found == {
+        # Mints the question; does not answer one.
+        (service_module, "_preprocess_attachment", "intake"),
+        # The turn seam — retires by ``resolved_file_id``.
+        (service_module, "_handle_file_reclassification", "reclassification"),
+        # Out of band — retires by ``drop_clarifications_for_file`` (fm#918).
+        (service_module, "reclassify_evidence", "reclassification"),
+    }, f"an unexpected writer of UploadedFile.data_type: {sorted(found)}"
+
+
+class TestATerminalCaseAnswersNothingStored:
+    """fm#918 exposure 2 — the mid-turn save that commits a TERMINAL row.
+
+    Two saves inside ``_process_turn_impl`` run BEFORE the turn is recorded
+    (both "persist terminal state before synthesis", ahead of
+    ``_finish_deterministic_turn``), so a crash in report generation commits
+    turn N's terminal state with the persisted counter and the stored stamp
+    both reading N-1. The retry asks at N, the age is exactly 1, and
+    ``FOLLOW_UP_CARRY_TURNS`` does NOT expire it — the comment there used to
+    claim it did. What expires it is that the committed case is terminal.
+    """
+
+    _A = "file_aaaaaaaaaaaa"
+
+    def test_a_follow_up_is_dead_on_a_terminal_case(self):
+        case = _case_holding(self._A, state=CaseState.INQUIRY)
+        follow_up = _stored_entry(
+            self._A, intent_type=IntentType.CONFIRMATION.value, offered_turn=4
+        )
+        # Positive control: in window, and live while the case is open.
+        assert live_suggestions([follow_up], case, as_of_turn=5) == [follow_up]
+
+        terminal = case.model_copy(
+            update={
+                "state": CaseState.RESOLVED,
+                "resolved_at": datetime.now(UTC),
+                "closed_at": datetime.now(UTC),
+                "closure_reason": "resolved",
+            }
+        )
+        assert terminal.is_terminal
+        assert live_suggestions([follow_up], terminal, as_of_turn=5) == [], (
+            "the mid-turn save commits a TERMINAL row, and the age bound does "
+            "not catch it — this guard is what does"
+        )
+
+    def test_terminal_follow_ups_carry_no_intent(self):
+        """What the terminal guard above costs: nothing.
+
+        A terminal turn's own affordances (regenerate summary, generate
+        runbook) carry no ``intent``, so ``_stored_suggestions`` never stores
+        one and there is no terminal card for the resolver to match. Scanned
+        rather than sampled, because the claim is about every builder on that
+        path and a builder added later is exactly what would break it.
+        """
+        import ast
+        import inspect
+
+        from faultmaven.core.investigation import milestone_engine as me
+
+        builders = [
+            "_resolved_ack_suggestions",
+            "_resolved_suggestions",
+            "_closed_suggestions",
+            "_runbook_suggestion",
+            "_regenerate_resolution_summary_suggestion",
+            "_select_ack_follow_ups",
+        ]
+        literals = 0
+        for name in builders:
+            tree = ast.parse(inspect.getsource(getattr(me, name)))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Dict):
+                    continue
+                keys = {k.value for k in node.keys if isinstance(k, ast.Constant)}
+                if "label" not in keys:
+                    continue
+                literals += 1
+                assert "intent" not in keys, (
+                    f"{name} builds a terminal follow-up carrying an intent; "
+                    "the terminal guard in suggestion_is_live would now drop "
+                    "it and typing that card would stop working"
+                )
+        assert literals >= 3, (
+            "positive control: the scan found almost no suggestion literals, "
+            f"so it is measuring nothing (found {literals})"
+        )

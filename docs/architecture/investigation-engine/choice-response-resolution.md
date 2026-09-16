@@ -78,9 +78,11 @@ What the stored entries do carry is a **liveness stamp** — the turn that offer
 - A clarification has to outlive its turn. A user who ignores the question and comes back to it two turns later must still be able to answer, so the set cannot simply be "last turn's output" — but an offer that never expires accumulates, and this resolver picks among the stored choices, so an unbounded set is an unbounded chance of resolving an answer onto the wrong file.
 - `last_suggestions` is rewritten **only** on `process_turn`'s success path. A mid-turn engine save that is never followed by the final one commits turn *N*'s state beside turn *N-1*'s suggestions; the standalone close/transition endpoints move the case without touching the list at all. "It is in the row" is therefore not evidence that a turn put it there *for now*.
 
-So the adoption site matches against the **live** entries, not the raw field: a `file_reclassification` choice is live for 3 turns, capped at 3 attachments (newest first), and only while its file is still present, unreclassified, and the case is open; every other intent is live for exactly one turn. An entry with no stamp is not live — it was not written by the turn seam, so nothing knows what turn it belongs to. See `core/investigation/suggestion_liveness.py`.
+So the adoption site matches against the **live** entries, not the raw field: a `file_reclassification` choice is live for 3 turns, capped at 3 attachments (newest first), and only while its file is still present and unreclassified; every other intent is live for exactly one turn. **Nothing stored is live once the case is terminal**, follow-ups included — the reclassification handler refuses on a closed case (422) and the engine routes every turn on one to `_process_terminal_turn` before it reads `intent_type`, so a match there could only produce an error or be discarded. Nothing is lost by it: a terminal turn's own affordances (regenerate summary, generate runbook) carry no `intent`, so they are never stored. An entry with no stamp is not live — it was not written by the turn seam, so nothing knows what turn it belongs to. See `core/investigation/suggestion_liveness.py`.
 
-Both sides of that seam filter at the same number, and the number is `effective_current_turn + 1` — the counter both repositories persist. It is **not** the in-flight `case.current_turn`: only the engine appends `turn_history` (milestone_engine Step 6), so across a SERVICE-dispatched turn (a clarification click, a greeting) the stored counter stands still (#1264), and a writer using the in-flight value ages every entry one turn further than the next read will.
+The terminal rule is also what covers the mid-turn-save window above, and the age bound is **not**: the two saves that can commit a row mid-turn (`milestone_engine`'s "persist terminal state before synthesis", at both confirm branches) run *before* `_finish_deterministic_turn` records the turn, so such a row carries N-1 in the persisted counter **and** a stamp of N-1 — the retry asks at N, the age is 1, and a one-turn window does not expire it. What those two saves do have in common is that both commit a **terminal** case (fm#918).
+
+Both sides of that seam filter at the same number, and the number is `effective_current_turn + 1` — the counter both repositories persist. Since #1264 that agrees with the in-flight `case.current_turn` on every route, because `investigation_service._backfill_consumed_turn` records a turn for every route that consumes one; before it, only the engine appended `turn_history` (milestone_engine Step 6) and the stored counter stood still across a SERVICE-dispatched turn (a clarification click, a greeting). The writer keeps deriving from the persisted counter anyway, so the seam stays correct by construction rather than by the two happening to match — and a route that stops recording again shows up as a clock bug rather than as silently dropped questions.
 
 ### P7: An answer that could mean two things means neither
 
@@ -185,17 +187,22 @@ Single token: `1`, `2`, ..., `N`, or `none`.
 - User message has file attachments (evidence submission, not a choice answer)
 - Intent metadata already present (user clicked — no classification needed)
 
-### Terminal-Consent Guard at the Adoption Site (#721, INV-26)
+### Gate-Consent Guard at the Adoption Site (#721, INV-26; widened by fm#918)
 
 A resolver match is an **inference** from typed text, not a deterministic click — but the engine treats adopted intents as click-equivalent consent and consults them *before* its INV-26 bare-token guards. Unguarded, the classifier could match `"yes but what about the replication lag?"` to "Yes, mark as resolved" and irreversibly resolve the case — consuming substantive input as consent, exactly what INV-26 forbids.
 
-So the adoption site (`InvestigationService._minted_intent_swallows_terminal_consent`) rejects a minted intent when **all three** hold:
+So the adoption site (`InvestigationService._minted_intent_swallows_gate_consent`) rejects a minted intent when it **would commit a gate** and the message is **substantive** per `terminal_transitions.is_substantive_reply` — the same predicate `_user_confirms_transition` uses (>100 chars, contains `?`, or a contrastive `" but "`), so the confirm lanes cannot drift.
 
-1. the case has a `pending_transition` (always terminal: `resolved`/`closed`),
-2. the minted intent would confirm it (`confirmation` with `confirmation_value=True`, or a `status_transition` matching the pending target), and
-3. the message is substantive per `terminal_transitions.is_substantive_reply` — the **same predicate** `_user_confirms_transition` uses (>100 chars, contains `?`, or a contrastive `" but "`), so the two confirm lanes cannot drift.
+There are two gates, and #721 guarded only the first:
 
-The rejected message falls back to conversation and flows through the pending-gate escape lane: the proposal is withdrawn, the message is processed as a normal turn, and the engine can re-propose from fresher state. Declines, non-pending confirmations (Gate 1), and contradicting status transitions adopt as before — none can execute a terminal transition. DECIDE clicks are untouched: a click is deterministic consent.
+| Gate | "Would commit" means |
+|---|---|
+| The pending terminal transition | the case has a `pending_transition` (always `resolved`/`closed`) AND the mint is a `confirmation` with `confirmation_value=True`, or a `status_transition` matching the pending target |
+| **Gate 1** (problem statement) | no `pending_transition`, the case is INQUIRY with a `proposed_problem_statement`, and the mint is a `confirmation` — whereupon the engine's section 0c sets `problem_statement_confirmed` + `decided_to_investigate` and `_check_automatic_transitions` fires INQUIRY → INVESTIGATING |
+
+#721 scoped this to the first gate on the reasoning that a mint with no pending transition "cannot execute a terminal transition". True, and beside the point: it can still commit Gate 1, so `"correct — is the problem statement about the replica or the primary?"` started investigations off a statement the user was questioning (fm#918 exposure 3). The Gate-1 arm deliberately does **not** read `confirmation_value`, because the engine's 0c branch does not read it either — a minted `confirmation_value=False` commits Gate 1 exactly as `True` does.
+
+The rejected message falls back to conversation: where a pending transition exists it flows through the pending-gate escape lane (the proposal is withdrawn, the message is processed as a normal turn, and the engine can re-propose from fresher state); at Gate 1 the LLM simply reads the text. Declines over a pending transition and contradicting status transitions adopt as before — neither commits anything, both only cancel a standing proposal. DECIDE clicks are untouched: a click is deterministic consent.
 
 ---
 

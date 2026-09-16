@@ -8,8 +8,10 @@ compliance) from a message that doesn't carry it.
 - #722: no same-turn confirm — pinned in ``test_lifecycle_invariants.py``
   (INV-06 tests). This file covers the shared substance predicate the
   handshake's confirm lanes rely on.
-- #721: the IntentResolver classifier tier must not mint terminal consent
-  from substantive typed text (``_minted_intent_swallows_terminal_consent``).
+- #721 (widened by fm#918): the IntentResolver classifier tier must not mint
+  GATE consent from substantive typed text
+  (``_minted_intent_swallows_gate_consent``) — the pending terminal
+  transition, and INQUIRY's Gate 1.
 - #787: user-confirmed resolution must not stamp never-run pending
   ProposedActions as executed.
 """
@@ -140,7 +142,7 @@ def _pending_resolve(case: Case) -> None:
 
 
 class TestMintedIntentTerminalConsentGuard:
-    GUARD = staticmethod(InvestigationService._minted_intent_swallows_terminal_consent)
+    GUARD = staticmethod(InvestigationService._minted_intent_swallows_gate_consent)
 
     def test_substantive_confirmation_mint_is_rejected(self):
         """The #721 reproducer: typed contrastive text classifier-matched
@@ -160,10 +162,13 @@ class TestMintedIntentTerminalConsentGuard:
         minted = QueryIntent(type=IntentType.CONFIRMATION, confirmation_value=True)
         assert self.GUARD(case, minted, "affirmative") is False
 
-    def test_no_pending_transition_never_guards(self):
-        """Gate 1 (problem-statement) confirmations and other non-terminal
-        mints are out of scope — nothing irreversible can execute."""
+    def test_no_pending_transition_and_no_gate_one_adopts(self):
+        """With no pending transition AND no Gate 1 to commit, a minted
+        confirmation reaches the engine's section 0c and does nothing there
+        (it logs "status is investigating" and falls through). Nothing to
+        guard."""
         case = _make_investigating_case()
+        assert case.state == CaseState.INVESTIGATING
         minted = QueryIntent(type=IntentType.CONFIRMATION, confirmation_value=True)
         assert (
             self.GUARD(case, minted, "yes but what about the replication lag?") is False
@@ -195,6 +200,99 @@ class TestMintedIntentTerminalConsentGuard:
         (reversible) — the guard must not block it."""
         case = _make_investigating_case()
         _pending_resolve(case)
+        minted = QueryIntent(
+            type=IntentType.STATUS_TRANSITION, to_state=CaseState.INVESTIGATING
+        )
+        assert (
+            self.GUARD(case, minted, "keep investigating? I found new errors") is False
+        )
+
+
+class TestMintedIntentGateOneConsentGuard:
+    """fm#918 exposure 3 — the SECOND gate a minted confirmation can commit.
+
+    #721 scoped this guard to a pending TERMINAL transition and recorded the
+    reason: a mint with no pending transition "cannot execute a terminal
+    transition". True, and it is not the whole question. With no pending
+    transition the minted ``confirmation`` reaches the engine's section 0c,
+    which on an INQUIRY case carrying a proposed problem statement sets
+    ``problem_statement_confirmed`` + ``decided_to_investigate`` — Gate 1 —
+    and ``_check_automatic_transitions`` then fires INQUIRY → INVESTIGATING.
+
+    The suggestions that reach this are the engine's own
+    ``_investigation_confirmation_suggestions`` pair, so the classifier is
+    choosing between "Yes, let's investigate" and "Not quite, let me clarify"
+    against whatever the user typed — which is how a question about the
+    problem statement started the investigation off it.
+    """
+
+    GUARD = staticmethod(InvestigationService._minted_intent_swallows_gate_consent)
+
+    @staticmethod
+    def _inquiry_awaiting_gate_one() -> Case:
+        case = _make_investigating_case()
+        case.state = CaseState.INQUIRY
+        case.inquiry.problem_statement_confirmed = False
+        case.inquiry.problem_statement_confirmed_at = None
+        case.inquiry.decided_to_investigate = False
+        case.inquiry.decision_made_at = None
+        case.pending_transition = None
+        return case
+
+    def test_bare_consent_still_commits_gate_one(self):
+        """The positive control. A bare "yes" is what the affordance is FOR;
+        if this were guarded the tier would be dead rather than corrected."""
+        case = self._inquiry_awaiting_gate_one()
+        minted = QueryIntent(type=IntentType.CONFIRMATION, confirmation_value=True)
+        assert self.GUARD(case, minted, "yes") is False
+        assert self.GUARD(case, minted, "affirmative") is False
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            # Noun-sharing negatives first: each reuses the vocabulary of the
+            # case and of the two offered choices, which is where the
+            # classifier's false positives live.
+            "yes but the errors started after the deploy, not before",
+            "correct — is the problem statement about the replica or the primary?",
+            "let's investigate, but is the symptom the lag or the errors?",
+            "that's right about the deploy — but which replica?",
+        ],
+    )
+    def test_substantive_reply_does_not_commit_gate_one(self, message):
+        case = self._inquiry_awaiting_gate_one()
+        minted = QueryIntent(type=IntentType.CONFIRMATION, confirmation_value=True)
+        assert is_substantive_reply(message) is True, (
+            "the shared predicate must read this as substantive, or this test "
+            "is asserting the guard for a reason the guard does not have"
+        )
+        assert self.GUARD(case, minted, message) is True
+
+    def test_the_decline_arm_is_guarded_too(self):
+        """``confirmation_value`` is not consulted on this arm, because the
+        ENGINE does not consult it: section 0c commits Gate 1 for a minted
+        ``confirmation`` whatever the value says. Pinned so that if the engine
+        learns to decline, this test is what says the guard may narrow."""
+        case = self._inquiry_awaiting_gate_one()
+        minted = QueryIntent(type=IntentType.CONFIRMATION, confirmation_value=False)
+        assert (
+            self.GUARD(case, minted, "not quite — is it the replica or the primary?")
+            is True
+        )
+
+    def test_a_case_with_no_proposed_statement_has_no_gate_to_commit(self):
+        case = self._inquiry_awaiting_gate_one()
+        case.inquiry.proposed_problem_statement = None
+        minted = QueryIntent(type=IntentType.CONFIRMATION, confirmation_value=True)
+        assert (
+            self.GUARD(case, minted, "yes but what about the replication lag?") is False
+        )
+
+    def test_a_minted_status_transition_is_not_a_gate_one_commit(self):
+        """Only ``confirmation`` reaches the 0c branch that commits Gate 1;
+        a status_transition with no pending goes to the transition handler,
+        which is a different question and not widened here."""
+        case = self._inquiry_awaiting_gate_one()
         minted = QueryIntent(
             type=IntentType.STATUS_TRANSITION, to_state=CaseState.INVESTIGATING
         )

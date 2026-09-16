@@ -37,6 +37,7 @@ from faultmaven.core.investigation.suggestion_liveness import (
     CLARIFICATION_SPAN_CAP,
     OFFERED_DATA_TYPE_KEY,
     OFFERED_TURN_KEY,
+    drop_clarifications_for_file,
     entry_file_id,
     entry_match_keys,
     file_data_types,
@@ -1710,26 +1711,25 @@ class InvestigationService:
                 if resolved_intent:
                     try:
                         resolved_qi = QueryIntent(**resolved_intent)
-                        if self._minted_intent_swallows_terminal_consent(
+                        if self._minted_intent_swallows_gate_consent(
                             case, resolved_qi, query
                         ):
-                            # INV-26 guard (#721): the resolver's classifier
-                            # tier matched substantive typed text ("yes but
-                            # what about the replication lag?") to a
-                            # suggestion whose intent would confirm the
-                            # pending TERMINAL transition. Substantive input
-                            # is never consent to an irreversible action —
-                            # drop the minted intent so the message flows
-                            # through the pending-gate escape lane as a
-                            # normal turn (the engine withdraws the proposal
-                            # and processes the message; it can re-propose
-                            # from fresher state).
+                            # INV-26 guard (#721, widened by fm#918): the
+                            # resolver's classifier tier matched substantive
+                            # typed text ("yes but what about the replication
+                            # lag?") to a suggestion whose intent would COMMIT
+                            # A GATE — the pending TERMINAL transition, or
+                            # INQUIRY's Gate 1. Substantive input is never
+                            # consent — drop the minted intent so the message
+                            # flows through as a normal turn (where a pending
+                            # transition exists its own escape lane withdraws
+                            # the proposal and processes the message; the
+                            # engine can re-propose from fresher state).
                             logger.info(
                                 "Discarded classifier-minted intent "
                                 f"{resolved_qi.type.value} for case "
                                 f"{case.case_id}: substantive reply must not "
-                                "confirm a pending terminal transition "
-                                "(INV-26, #721)"
+                                "commit a gate (INV-26, #721/fm#918)"
                             )
                         else:
                             intent = resolved_qi
@@ -2837,47 +2837,83 @@ class InvestigationService:
         return result
 
     @staticmethod
-    def _minted_intent_swallows_terminal_consent(
+    def _minted_intent_swallows_gate_consent(
         case: "Case", minted: QueryIntent, user_message: str
     ) -> bool:
-        """INV-26 guard for resolver-minted intents (#721).
+        """INV-26 guard for resolver-minted intents (#721, widened by fm#918).
 
         True when adopting ``minted`` would let a SUBSTANTIVE typed message
-        confirm the case's pending TERMINAL transition. The IntentResolver's
-        classifier tier semantically matches typed text against the previous
-        turn's DECIDE suggestions and can mint ``confirmation``/
-        ``status_transition`` intents — but the engine treats those intents
-        as deterministic consent (the DECIDE-click path) and consults them
-        BEFORE its INV-26 bare-token guards. A click IS deterministic
-        consent; an inference from typed text is not. So a minted intent
-        that would confirm a pending RESOLVED/CLOSED must pass the same
-        substance test the typed-confirmation matcher applies
-        (``is_substantive_reply`` — shared single source of truth): "yes but
-        what about the replication lag?" is substantive input, never consent
-        to an irreversible transition.
+        COMMIT A GATE. The IntentResolver's classifier tier semantically
+        matches typed text against the previous turn's DECIDE suggestions and
+        can mint ``confirmation``/``status_transition`` intents — but the
+        engine treats those intents as deterministic consent (the DECIDE-click
+        path) and consults them BEFORE its INV-26 bare-token guards. A click
+        IS deterministic consent; an inference from typed text is not. So a
+        minted intent that would commit a gate must pass the same substance
+        test the typed-confirmation matcher applies (``is_substantive_reply``
+        — shared single source of truth): "yes but what about the replication
+        lag?" is substantive input, never consent.
 
-        Only confirm-shaped mints over a pending terminal transition are
-        guarded. Declines, mints with no pending transition (e.g. Gate 1
-        problem-statement confirmation), and contradicting status
-        transitions (which merely cancel the pending) adopt as before —
-        none of them can execute a terminal transition.
+        **Two gates, not one.** Until fm#918 this returned False whenever the
+        case had no ``pending_transition``, justified as "mints with no
+        pending transition (e.g. Gate 1 problem-statement confirmation) …
+        adopt as before — none of them can execute a terminal transition".
+        The premise holds; the conclusion did not follow. A minted
+        ``confirmation`` with no pending transition reaches the engine's
+        section 0c, which on an INQUIRY case carrying a proposed problem
+        statement commits **Gate 1** (``problem_statement_confirmed`` +
+        ``decided_to_investigate``), and ``_check_automatic_transitions`` then
+        fires INQUIRY → INVESTIGATING. Measured: "correct — is the problem
+        statement about the replica or the primary?" started the
+        investigation off a statement the user was in the middle of
+        questioning. Gate 1 is reversible where RESOLVED is not, which is why
+        it is a P1 and not a P0 — but INV-26 is a rule about what an
+        INFERENCE may answer, not about which gate it lands on.
+
+        What is deliberately NOT guarded stays unguarded, because neither
+        commits anything: a **decline**, and a **contradicting** status
+        transition. Both only cancel a standing proposal, and the message is
+        processed as a normal turn either way.
+
+        The Gate-1 arm does not read ``confirmation_value``, and that is not
+        an oversight: the engine's 0c branch does not read it either, so a
+        minted ``confirmation_value=False`` commits Gate 1 exactly as True
+        does. Guarding both arms is therefore what "would commit a gate"
+        means TODAY. If that engine branch is ever taught to decline, this
+        arm becomes over-broad by one case — and over-broad here costs only a
+        normal LLM turn, which is the direction to err in.
         """
         from faultmaven.core.investigation.terminal_transitions import (
             is_substantive_reply,
         )
 
         pending = getattr(case, "pending_transition", None)
-        if not pending:
-            return False
-
-        confirms_pending = (
-            minted.type == IntentType.CONFIRMATION and minted.confirmation_value is True
-        ) or (
-            minted.type == IntentType.STATUS_TRANSITION
-            and minted.to_state is not None
-            and minted.to_state.value == pending.get("to_state")
-        )
-        return confirms_pending and is_substantive_reply(user_message)
+        if pending:
+            commits_gate = (
+                minted.type == IntentType.CONFIRMATION
+                and minted.confirmation_value is True
+            ) or (
+                minted.type == IntentType.STATUS_TRANSITION
+                and minted.to_state is not None
+                and minted.to_state.value == pending.get("to_state")
+            )
+        else:
+            # The same three conditions the engine's 0c branch checks before
+            # it commits Gate 1, read in the same order — a fourth condition
+            # added there without one here would make this guard silently
+            # miss the commit it exists to intercept.
+            commits_gate = (
+                minted.type == IntentType.CONFIRMATION
+                and case.state == CaseState.INQUIRY
+                and bool(
+                    getattr(
+                        getattr(case, "inquiry", None),
+                        "proposed_problem_statement",
+                        None,
+                    )
+                )
+            )
+        return commits_gate and is_substantive_reply(user_message)
 
     async def _handle_confirmation(
         self,
@@ -3464,6 +3500,18 @@ class InvestigationService:
             update={
                 "evidence": new_evidence_list,
                 "uploaded_files": new_files_list,
+                # fm#918 exposure 1: this path writes ``UploadedFile.data_type``
+                # without going through the turn seam, so nothing else rewrites
+                # ``last_suggestions`` and the file's clarification choices stay
+                # armed. Answering the question here is exact; the referent
+                # check in ``suggestion_is_live`` compares the 12→6 projection
+                # and cannot see a reclassification WITHIN a source type
+                # (logs_and_errors → command_output, both ``logs``), which is
+                # how a typed "Application logs (x.log)" on the next turn
+                # overwrote the answer the user had just given here.
+                "last_suggestions": drop_clarifications_for_file(
+                    case.last_suggestions, evidence.source_file_id
+                ),
             },
             deep=True,
         )

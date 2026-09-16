@@ -70,6 +70,7 @@ __all__ = [
     "FOLLOW_UP_CARRY_TURNS",
     "OFFERED_DATA_TYPE_KEY",
     "OFFERED_TURN_KEY",
+    "drop_clarifications_for_file",
     "entry_file_id",
     "entry_match_keys",
     "entry_offered_turn",
@@ -102,10 +103,23 @@ OFFERED_TURN_KEY = "offered_turn"
 #: Deliberately lossy in one direction and never the other. ``data_type`` holds
 #: an ``EvidenceSourceType``, a 12→6 projection of ``DataType``, so a
 #: reclassification WITHIN a source type (logs_and_errors → command_output,
-#: both ``logs``) leaves it unchanged and the question stays live. That is a
-#: missed drop, never a wrong one: the value cannot change except by
-#: reclassification, so this can never retire a question the user has not
-#: answered.
+#: both ``logs``) leaves it unchanged. That is a missed drop, never a wrong
+#: one: the value cannot change except by reclassification, so this can never
+#: retire a question the user has not answered.
+#:
+#: The missed drop is REACHABLE, and is fm#918's exposure 1 rather than a
+#: theoretical edge: a file that failed classification as ``logs_and_errors``
+#: (the classifier's best-effort arm fails at 0.50 with a concrete type, so
+#: the row lands at ``logs``) is reclassified through
+#: ``PATCH /evidence/{id}/classification`` to ``command_output``, the stamp
+#: still reads ``logs``, and typing "Application logs (x.log)" next turn mints
+#: a reclassification that overwrites the answer the user just gave. So this
+#: check is NOT the whole defence for a cooperative writer; it is the backstop
+#: for writers that cannot cooperate. The out-of-band reclassification path
+#: drops the file's choices itself, via ``drop_clarifications_for_file``, which
+#: is exact because it names the file rather than comparing a projection of its
+#: type. Which writers must call it is pinned by
+#: ``test_every_data_type_writer_retires_the_question``.
 OFFERED_DATA_TYPE_KEY = "offered_data_type"
 
 #: Turns after the offering turn that a clarification choice stays answerable
@@ -128,11 +142,19 @@ CLARIFICATION_CARRY_TURNS = 3
 #: action) stays answerable: exactly the next one, which is the window the
 #: system has always had. A follow-up is about the turn that produced it —
 #: "Yes, mark as resolved" means nothing once the proposal it belonged to is
-#: gone — so it must NOT inherit the clarification window. This is also the half
-#: that closes fm#918's mid-turn-save exposure: the engine appends
-#: ``turn_history`` at its Step 6 and saves at Step 7, so a row committed by a
-#: save whose final assignment never ran carries turn N in the persisted counter
-#: and a stamp of N-1, which is out of window on the retry turn.
+#: gone — so it must NOT inherit the clarification window.
+#:
+#: It does NOT, on its own, close fm#918's mid-turn-save exposure, and this
+#: comment used to claim it did — "the engine appends ``turn_history`` at its
+#: Step 6 and saves at Step 7, so a row committed by a save whose final
+#: assignment never ran carries turn N in the persisted counter and a stamp of
+#: N-1, which is out of window on the retry turn". Measured: two saves inside
+#: ``_process_turn_impl`` run BEFORE the turn is recorded (both "persist
+#: terminal state before synthesis", ahead of ``_finish_deterministic_turn``),
+#: so such a row carries N-1 in the persisted counter AND a stamp of N-1. The
+#: retry asks at N, the age is exactly 1, and the follow-up is inside this
+#: window rather than outside it. What closes that window is the terminal
+#: guard in ``suggestion_is_live``: both of those saves commit a TERMINAL case.
 FOLLOW_UP_CARRY_TURNS = 1
 
 #: Distinct attachments whose clarification choices may be on offer at once. A
@@ -262,15 +284,37 @@ def suggestion_is_live(
     if age > window:
         return False
 
-    if not is_clarification:
-        return True
-
-    # A clarification click mutates files and evidence, so
-    # ``_handle_file_reclassification`` refuses on a terminal case (422).
-    # Minting the intent anyway would turn an ordinary typed message on a
-    # closed case into an error response; drop the choice instead.
+    # NOTHING stored is answerable once the case is terminal, and that applies
+    # to follow-ups as well as to clarifications (fm#918 exposure 2). The two
+    # halves of the argument are different and both hold:
+    #
+    # - A clarification click mutates files and evidence, so
+    #   ``_handle_file_reclassification`` refuses on a terminal case (422).
+    #   Minting the intent anyway would turn an ordinary typed message on a
+    #   closed case into an error response.
+    # - A follow-up on a terminal case cannot execute anything either: the
+    #   engine routes every turn on such a case to ``_process_terminal_turn``
+    #   before it reads ``intent_type``, so a minted ``confirmation`` is
+    #   discarded there. Matching one costs a classifier call to reach a
+    #   result the engine throws away.
+    #
+    # This is also the arm that covers the only mid-turn window that can
+    # actually commit a row: the two saves that precede the turn record
+    # (``milestone_engine`` "persist terminal state before synthesis") both
+    # write a TERMINAL case, and because they run BEFORE the turn is recorded
+    # the stamp is NOT out of window on the retry. The age bound does not
+    # catch that one — see ``FOLLOW_UP_CARRY_TURNS``. This does.
+    #
+    # Nothing is lost: the follow-ups a terminal turn itself emits
+    # (regenerate summary, generate runbook) carry no ``intent``, so
+    # ``_stored_suggestions`` never stores them and there is no terminal
+    # affordance for the resolver to match. Pinned by
+    # ``test_terminal_follow_ups_carry_no_intent``.
     if case_is_terminal:
         return False
+
+    if not is_clarification:
+        return True
 
     file_id = entry_file_id(entry)
     if file_id is None or file_id not in file_data_types:
@@ -281,6 +325,37 @@ def suggestion_is_live(
 def file_data_types(case: "Case") -> Dict[str, Optional[str]]:
     """``file_id`` → current ``data_type``, for the referent check."""
     return {uf.file_id: uf.data_type for uf in (case.uploaded_files or [])}
+
+
+def drop_clarifications_for_file(
+    stored: Optional[List[Dict[str, Any]]], file_id: Optional[str]
+) -> Optional[List[Dict[str, Any]]]:
+    """``stored`` without the clarification choices that target *file_id*.
+
+    What a writer of ``UploadedFile.data_type`` outside the turn seam calls to
+    retire the question it has just answered (fm#918 exposure 1). The turn path
+    already does this by name — ``_carry_forward_unresolved_clarifications``
+    takes ``resolved_file_id`` — and this is the same act for the paths that
+    load-mutate-save without rebuilding the list.
+
+    Exact where ``OFFERED_DATA_TYPE_KEY`` is a proxy: it names the attachment
+    rather than comparing a 12→6 projection of its type, so it retires a
+    within-source-type reclassification (logs_and_errors → command_output) that
+    the referent check cannot see. The referent check stays as the backstop for
+    any future writer that does not call this.
+
+    Follow-ups are untouched — they are not about a file — and ``None`` is
+    returned for an empty result, which is the value the write site stores
+    (``stored or None``) so the field has one empty state rather than two.
+    """
+    if not stored or not file_id:
+        return stored
+    kept = [
+        entry
+        for entry in stored
+        if not (is_clarification_entry(entry) and entry_file_id(entry) == file_id)
+    ]
+    return kept or None
 
 
 def live_suggestions(
