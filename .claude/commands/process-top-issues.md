@@ -17,26 +17,47 @@ the rest is autonomous.
 
 ## Argument
 
-`$ARGUMENTS` — optional.
+`$ARGUMENTS` — optional, and usually unnecessary. **Bare invocation works
+from any point in the cycle**: step 0 reads where the round is and continues
+from there.
 
-- empty — run the round.
-- `propose` — stop after step 2, so the owner can answer before anything is
-  built.
-- `build` — the proposal was already answered; resume at step 4.
-- a list of numbers (`1452 1447`) — **pin** these into the round whatever
-  their rank; the ranking fills the rest of the capacity. Step 1 still runs:
-  pinning chooses what goes in, never whether the last round is checked. A
-  pinned item that needs a ruling is reported as blocked rather than built.
+- empty — continue from wherever the round is.
+- a list of numbers (`1452 1447`) — **pin** these into the next round
+  whatever their rank; the ranking fills the rest of the capacity. A pinned
+  item that needs a ruling is reported as blocked rather than built.
+- `propose` — force a fresh proposal even if one is outstanding.
+- `build` — force the build phase.
+
+## 0. Locate the round
+
+Read the last comment on the `Queue` issue and continue from what it is:
+
+| last comment | state | do |
+|---|---|---|
+| none, or a round **result** | between rounds | step 1 |
+| a **proposal**, no owner reply after it | waiting on the owner | report what it is waiting for, and stop. Do not re-propose |
+| a **proposal** with an owner reply after it | answered | step 3, take the answers |
+
+Never re-post a proposal that is merely unanswered. An unanswered question
+is not a failure and repeating it is noise; it already appears in the next
+proposal by construction.
 
 ## 1. Check the last round landed
 
+The previous round's **result comment names the pull requests it opened**.
+Those are the ones that must be merged before another round starts:
+
 ```bash
-gh pr list --state open --json number,title,url
+gh pr view <n> --json state,mergedAt      # for each PR that round named
 ```
 
-Anything from the previous round still open means this round does not start.
-Report what is outstanding and stop. Do not begin a second round over an
-unfinished one.
+Anything still open there means this round does not start: report what is
+outstanding and stop. An open pull request from anything else — a change to
+this procedure, another person's branch — is not this check's business. Do
+not run a bare `gh pr list` and refuse on whatever it finds.
+
+Before the first round there is no result comment, so there is nothing to
+check and the round starts.
 
 ## 2. Propose
 
