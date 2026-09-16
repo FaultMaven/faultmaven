@@ -16,8 +16,9 @@ FaultMaven is an **AI-powered troubleshooting copilot**. It correlates the logs,
 | Component | Purpose |
 |-----------|---------|
 | FaultMaven API (this repo) | Backend investigation engine, knowledge base, AI orchestration |
-| FaultMaven Dashboard | Web UI for KB management and case history |
+| FaultMaven Dashboard | Web UI — the full product in a browser tab, and the surface a Cloud beta account lands on. Works end to end on its own |
 | FaultMaven Copilot | Browser extension for in-context troubleshooting |
+| FaultMaven Slack Agent | Answers in the incident thread. **No self-serve install during beta** — workspaces are connected by hand (fm#1457), and the Community Slack is where anyone can try it with no account |
 
 ## Architecture
 
