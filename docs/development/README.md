@@ -26,6 +26,7 @@ Documentation for FaultMaven contributors.
 | [Token Estimation](./token-estimation.md)                   | LLM token counting                                      |
 | [Structured Output Guide](./structured-output-guide.md)     | LLM structured output implementation (json_schema mode) |
 | [API Contract Changes](./api-contract-changes.md)           | Changing the contract the frontends are written against |
+| [Issue Processing](./issue-processing.md)                   | How issues are queued, worked and closed; the campaign against duplicated rules (#1453) |
 
 ## Getting Started as a Contributor
 

@@ -262,5 +262,7 @@ certs/
 private/
 coverage.json
 
-# local worktrees (shared-tree isolation)
+# local worktrees (shared-tree isolation); .claude/worktrees/ is where the
+# issue-processing procedure puts a lane's checkout
 .worktrees/
+.claude/worktrees/
