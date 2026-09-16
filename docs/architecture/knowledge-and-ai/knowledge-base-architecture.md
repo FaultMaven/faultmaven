@@ -252,6 +252,44 @@ For the canonical implementation status of the retrieval pipeline (hybrid search
 
 The old per-scope KB tools (`global_kb_qa`, `user_kb_qa`) and the alternate `answer_from_knowledge_base` name have been replaced with the single unified `answer_from_kb` tool — scope filtering is automatic based on user context resolved by `KBToolAdapter`.
 
+### Two channels: the push and the pull
+
+Knowledge reaches the model two ways, and they have different economics and different
+controls.
+
+| Channel | Mechanism | Who decides | Governed by |
+| ------- | --------- | ----------- | ----------- |
+| **Pull** | The `answer_from_kb` tool (`kb_qa.py`) | The model elects it, per turn | Always available |
+| **Push** | `MilestoneEngine._prefetch_kb_context` — a deterministic hybrid search fired at case transitions, whose top hits are written to `case.kb_context` and rendered into every subsequent prompt as `<knowledge_context>` | Nobody; it fires on the trigger | `KB_PREFETCH_ENABLED` (default `true`) |
+
+**`KB_PREFETCH_ENABLED=false` turns off the push only.** The tool stays registered and
+electable, so the model can still retrieve a runbook whenever it judges one useful;
+what stops is knowledge arriving *unasked* in every prompt. A single switch covering
+both channels is deliberately not offered — it would remove the model's ability to ask
+even where asking helps. The measurement behind the split (fm#1360) is recorded on the
+setting itself in `config/settings.py`: across 86 consumed turns the model elected the
+tool on roughly two thirds of the turns where it was on the table, and in every case of
+the sample. "Push off" is therefore not "no knowledge", and it is not "no RAG".
+
+Two properties of the gate are worth knowing:
+
+- **It is enforced at both ends.** The pre-fetch skips the search and clears
+  `case.kb_context`; `visible_kb_context` (`core/investigation/kb_push.py`) additionally
+  returns `[]` whatever a reloaded case still carries, because `kb_context` is persisted
+  and outlives the flag being turned off.
+- **It fails open, on purpose.** `kb_push_enabled()` returns `True` when settings cannot
+  be read. This gate decides whether retrieved knowledge is *removed*, so an unreadable
+  configuration must leave behaviour as it was rather than silently strip a runbook out
+  of a prompt.
+
+**Operating it.** Set `KB_PREFETCH_ENABLED=false` in `.env` locally, or in the
+deployment's ConfigMap on Kubernetes. `GET /admin/config/status` reports a `kb_prefetch`
+entry, and reports whether the push is *effective* rather than merely configured — a
+deployment with no knowledge service shows it off regardless of the flag. Client-visible
+consequence, published in API contract 3.3.0: `TurnResponse.sources` is empty for every
+turn in a deployment with the push disabled, and a client must read that as "no citation
+to show", never as a retrieval failure.
+
 ### Design Principles
 
 Three principles govern KB retrieval. The retrieval-pipeline mechanics are canonical in [vector-retrieval-architecture.md](./vector-retrieval-architecture.md); KB-arch describes the storage-layer surface only.
