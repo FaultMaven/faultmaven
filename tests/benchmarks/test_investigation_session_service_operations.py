@@ -44,6 +44,16 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
 # ============================================================
 
 
+#: Every sibling in ``tests/benchmarks/`` marks itself; this module did not,
+#: so its 9 tests ran in the standalone CI job despite that job's
+#: ``-m "not benchmark"`` selection — 65s of a 30-minute budget, in a
+#: directory documented as excluded from CI (#1450).
+#:
+#: Module-level rather than per-class: there are eight classes here, and a
+#: ninth added later would otherwise reintroduce the same gap silently.
+pytestmark = pytest.mark.benchmark
+
+
 @pytest.fixture(scope="function")
 async def async_engine():
     """Create in-memory SQLite engine for benchmarks."""
