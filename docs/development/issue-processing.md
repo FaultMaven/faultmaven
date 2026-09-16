@@ -81,47 +81,47 @@ would need a PR per re-rank. Labels stay as they are (`P0`–`P3`, `bug`,
 `tech-debt`); they were a parking lot, not a queue, and this does not try to
 make them one.
 
-**Size.** The top **five** are what is being worked. They are not the whole
-queue, and the difference is the thing that decides whether this procedure
-drains the backlog or reproduces it.
+**Size.** A project is **up to five** issues. Fewer when fewer are worth
+doing. The number is a ceiling on work in progress, not a quota to fill, and
+a backlog of three open issues means a project of three.
 
-**The ranking is recomputed from every open issue on every cycle. There is
-no stored list below the line.** An earlier draft ranked once and re-checked
-only the top five each cycle. With sixty-three open issues that leaves
-fifty-eight in a blind spot no step revisits: they cannot be promoted by
-anything except a slot opening, they are never re-read when the corpus
-changes, and nothing notices when one is fixed, duplicated or turns urgent.
-A procedure that maintains five items out of sixty-three does not drain a
-residue, it formalises one. Re-ranking the whole open set costs one
-classification pass, which is the same pass the refresh already does for new
-issues.
+**One project at a time, and it ends when its pull requests are merged.** A
+new project does not start while the previous one has an unmerged pull
+request or an unanswered ruling. That is what bounds work in progress, and
+it is why nothing here tracks pull requests ageing in the background:
+merging is part of finishing a project, not something that happens to a
+finished project afterwards. It also removes the way the same issue could be
+worked twice, because an item cannot be reconsidered while its own project
+is still running.
 
-**Every open issue carries a state, and only one state is dispatchable.**
+**One valve.** If a ruling stays unanswered and the rest of the project is
+done, that item is returned to the candidate pool and named in the report,
+and the project completes without it. Otherwise one unanswered question
+halts all work, which is a worse failure than carrying the question.
 
-| state | meaning | what moves it on | may a lane be dispatched? |
-|---|---|---|---|
-| `queued` | classified and ranked, nothing started | a cycle promoting it | **yes** |
-| `in flight` | a lane is working it now | the lane returning | no |
-| `awaiting merge` | its PR is open; done on our side | the owner merging | no |
-| `awaiting ruling` | a memo or escalation is posted and unanswered | the owner replying | no |
-| `blocked` | waiting on another item or an external fact | that thing resolving | no |
-| `decided` | an agent decided it under the escalation list and recorded why | the cycle closing the issue | n/a |
+**Ranking is incremental.** A new issue is evaluated once, when it arrives,
+against the current candidates: does it beat any of them by the rule below?
+That is work proportional to what changed. Re-sorting every open issue on
+every cycle is work proportional to the backlog and buys nothing, because
+most of those comparisons were already made and nothing about them moved.
 
-Three consequences, each closing a way work used to escape:
+The winners are picked from the candidate pool **immediately before a
+project starts**, so the selection uses what is known then rather than what
+was known when the last project began. While a project runs, arriving issues
+keep being evaluated into the pool for the next one.
 
-- **A waiting item does not hold a top-five slot.** `awaiting merge`,
-  `awaiting ruling` and `blocked` items leave the five and a `queued` item
-  is promoted. Otherwise an unmerged pull request parks a slot for as long
-  as it takes the owner to look at it, and the cycle does four items.
-- **A waiting item is never re-dispatched.** Without this the next refresh
-  sees an issue that is "still open", dispatches a second lane at it, and
-  the same defect gets a second worktree and a second pull request. The
-  guard is mechanical: an issue with an open pull request that names it, or
-  with an unanswered memo from a previous cycle, is not dispatchable.
-- **`decided` is a real exit.** An agent that decides an item under §2's
-  escalation list records the decision on the issue and closes it. Without
-  that the issue stays open as a decision, the next refresh re-reads it as
-  a decision, and it is decided again every cycle forever.
+**What brings a loser back.** An issue that did not win is reconsidered when
+something changes that would change its rank, not on a timer: it gains a
+priority label, another issue names the same seam, a new issue cites it, or
+it passes an age threshold the queue records. Anything that never triggers
+is genuinely not competitive, and the pool keeps it ranked rather than
+losing it.
+
+**Within a running project** an item is `in flight`, `in review`, `awaiting
+merge` or `awaiting ruling`. Those are progress labels for the report, not a
+lifecycle: every one of them resolves before the project ends, which is what
+"one project at a time" buys. An item is never dispatched twice, because a
+project is dispatched once.
 
 **What an entry carries** (all required; a lane starting on an entry that
 lacks one fills it in before touching code):
@@ -159,25 +159,24 @@ its rule has an owner); a decision that blocks two or more other items; the
 oldest residue item with a stated done-when. Features rank by whether someone
 will use the result this quarter. Everything else is by age.
 
-**Refresh** (the first step of every run):
+**Refresh** (before a project starts):
 
-1. Read **every** open issue, not only the top five. Set each one's state
-   from GitHub: an open pull request naming it is `awaiting merge`, an
-   unanswered memo or escalation is `awaiting ruling`, an explicit
-   dependency is `blocked`, anything else is `queued`.
-2. Classify every issue that has not been classified before: kind, and N
-   with the scan that produced it if it is a duplicated-rule item.
-3. Rank the whole `queued` set. The seam a re-rank turns on comes from
-   step 2's classification — which paths an issue names — not from
-   `scripts/backlog_metrics.py`, which reports the residue by week, age
-   and priority label and has no code dimension.
-4. Take the top five `queued` items. A top-five item whose state has moved
-   to a waiting one leaves the five; the next `queued` item is promoted.
-5. Anything `awaiting ruling` carries an age in cycles, and every one of
-   them appears in the report until it is answered. This is the only
-   mechanism that makes the owner's queue visible, and the triage in #1453
-   found nine such items on day one, so it is the dominant path rather than
-   an edge case.
+1. Confirm the previous project finished: no unmerged pull request, no
+   unanswered ruling except one deliberately returned to the pool. If it
+   did not, report what is outstanding and stop. Nothing else in this
+   procedure is as load-bearing as not starting a second project on top of
+   an unfinished one.
+2. Classify each issue filed since the last refresh: kind, and N with the
+   scan that produced it if it is a duplicated-rule item. Evaluate it
+   against the current candidates and place it.
+3. Re-rank only the losers whose trigger fired: a new priority label,
+   another issue on the same seam, a citation from a new issue, an age
+   threshold passed.
+4. Pick this project's items from the pool, now, by the rule in §1.
+
+The seam a re-rank turns on comes from step 2's classification, which paths
+an issue names, and not from `scripts/backlog_metrics.py`, which reports the
+residue by week, age and priority label and has no code dimension.
 
 ## 2. The lane procedure
 
@@ -222,9 +221,9 @@ unmerged branch.
   is adopted. After any rework the lane's own mutation matrix is re-run.
 - **The whole tree is ported.** Before a lane's PR is reported, `git status`
   in its worktree is clean or every remaining file is named in the report.
-- **The same item does not fail twice in silence.** A lane that returns
-  `blocked` for the same reason on two consecutive cycles is escalated with
-  the reason, not dispatched a third time. A loop that keeps producing no
+- **The same item does not fail twice in silence.** A lane that cannot
+  finish is escalated with the reason rather than retried, and the project
+  does not end by quietly dropping it. A loop that keeps producing no
   result is a defect in the queue entry or in the procedure, and the third
   attempt will not find that out.
 - **Root before scope; scope by ticket, never by depth.** A lane investigates

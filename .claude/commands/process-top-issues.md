@@ -1,5 +1,5 @@
 ---
-description: Run one cycle of the issue-processing procedure — refresh the queue, work the top five in isolated lanes, review, report. Opens PRs; never merges.
+description: Run one project of the issue-processing procedure — check the last one finished, pick up to five issues, work them in isolated lanes, review, report. Opens PRs; never merges.
 allow_all_tools: true
 ---
 
@@ -13,17 +13,21 @@ newest commit on a branch (distinct from the alembic head, which is the
 newest database migration). You are the **owning agent**: you refresh, dispatch, verify and
 report. Subagents work individual items. Nobody merges.
 
+A **project** is up to five issues worked together. One runs at a time, and
+it ends when its pull requests are merged, so this command starts by
+checking that the last one did.
+
 ## Argument
 
 `$ARGUMENTS` — optional. `refresh-only` stops after step 2 and posts the
 refreshed queue. An issue number list (`1452 1447`) overrides **which items
-are dispatched** this run. Empty runs the full cycle on the current top five.
+are dispatched** this run. Empty picks the project in step 2.
 
 **Step 2 always runs, including under an override.** The override chooses
-what to work on; it does not skip setting states. An overridden item that is
-`awaiting merge`, `awaiting ruling` or `blocked` is refused and said so in
-the report, exactly as a promoted one would be. Otherwise the override is a
-side door back into dispatching work that is already done.
+this project's items; it does not skip the check that the previous project
+finished. An override while a project is still running is refused and said
+so in the report. Otherwise the override is a side door into starting a
+second project on top of an unfinished one.
 
 ## Procedure
 
@@ -37,7 +41,7 @@ Keep the output; it goes in the report. It tells you whether the residue is
 growing, by week and by age; WHICH seam it is growing on comes from step 2's
 classification, because the script has no code dimension.
 
-### 2. Refresh the queue
+### 2. Check the last project finished, then pick this one
 
 Find the pinned issue titled `Queue`:
 
@@ -58,24 +62,23 @@ gh issue create --title "Queue" --label tracking --body "<empty table>"
 gh issue pin <number>
 ```
 
-**Read every open issue, not only the top five** (procedure §1: the ranking
-is recomputed each cycle, so nothing sits below a line where it can rot):
+**First confirm the previous project finished** (procedure §1: one project
+at a time, and it ends when its pull requests are merged):
 
 ```bash
-gh issue list --state open --limit 500 --json number,title,labels,updatedAt
-gh pr list --state open --json number,title,body,headRefName   # for state
+gh pr list --state open --json number,title,headRefName   # must be empty
 ```
 
-Set each issue's state. The three waiting states are read from GitHub, not
-remembered:
+An unmerged pull request from the last project, or a ruling it asked for and
+never got, means this cycle reports what is outstanding and stops. The one
+exception is an item deliberately returned to the pool because its ruling
+never came; §1's valve.
 
-- **`awaiting merge`** — an open pull request names it (`Closes #N`, or a
-  `fix/N-` branch). Do not dispatch it; the work is done on our side.
-- **`awaiting ruling`** — the last cycle posted a memo or an escalation on
-  it and the owner has not replied since. Do not dispatch it. Carry its age
-  in cycles.
-- **`blocked`** — its queue entry names a dependency that has not resolved.
-- **`queued`** — everything else, and the only dispatchable state.
+Then read what arrived since the last refresh, not the whole backlog:
+
+```bash
+gh issue list --state open --limit 500 --json number,title,labels,createdAt
+```
 
 Classify every issue not classified before: kind (`defect`, `decision`,
 `investigation`, `feature`, `chore`); N and the scan that produced it if it
@@ -84,13 +87,15 @@ is a duplicated-rule item; and, once campaign item 1 has landed
 already in the register (until then, say in the report that the register
 does not exist yet and classify from the issue text alone).
 
-Rank the whole `queued` set by the rule in the procedure's §1 and take the
-top five. A previous top-five item now in a waiting state leaves the five
-and the next `queued` item is promoted.
+Evaluate each new issue against the current candidates and place it, and
+re-rank a previous loser only if its trigger fired (§1: a new priority
+label, another issue on the same seam, a citation, an age threshold). Then
+pick this project's items from the pool — up to five, fewer if fewer are
+worth doing.
 
-Rewrite the `Queue` body: the five in flight, every waiting item with its
-state and age, and the timestamp of this refresh (the next cycle reads it
-to know what "since the last refresh" means). Every top-five entry carries
+Rewrite the `Queue` body: this project's items, the candidate pool in rank
+order, and the timestamp of this refresh (the next cycle reads it to know
+what "since the last refresh" means). Every top-five entry carries
 rank-and-why, kind, done-when, N (if applicable) and blocked-by. Write the
 body with `gh api -X PATCH` and read it back — `gh issue edit` can fail
 silently.
@@ -104,10 +109,9 @@ the alembic head do not run together. Sequence them and say so in the report.
 
 ### 4. Dispatch one subagent per item
 
-**Before dispatching any item, re-check its state.** Do not dispatch one
-that is `awaiting merge`, `awaiting ruling` or `blocked`. Without this the
-same defect gets a second worktree and a second pull request, because the
-issue is still open and looks dispatchable.
+A project is dispatched once, so no item is worked twice. The guard that
+makes that true is step 2's: a new project does not start while the
+previous one has an unmerged pull request.
 
 Each subagent gets a self-contained prompt (it inherits nothing from this
 conversation) that contains: the issue number and its full text; the queue
@@ -131,9 +135,12 @@ prompt adds:
 - A decision or feature lane writes no code: its memo or spec is a comment
   on the issue (`gh issue comment <n> --body-file …`). `docs/working/` is
   gitignored and is not a place a PR can carry a spec.
-- A decision the escalation list leaves to you is **decided, recorded and
-  closed** in the same cycle, not queued as a memo. A decision an agent may
-  make and does not make is a decision that will be made again next cycle.
+- A decision the escalation list leaves to you is **decided and recorded**
+  in the same cycle rather than queued as a memo for the owner. Recording
+  it takes the same exit an owner ruling takes: the issue is re-filed as a
+  defect or feature with the ruling as its spec, and it closes when that
+  work lands. Deciding is not the same as finishing, so a decision that
+  implies code does not close on being decided.
 - An investigation lane commits its measurement script under `scripts/`
   with a unit test and opens a PR for that; the numbers go in an issue
   comment.
@@ -183,28 +190,23 @@ Post one comment on the `Queue` issue:
 | # | kind | outcome | link | review | escalated |
 |---|---|---|---|---|---|
 
-### Refresh
-Dropped: … (why). Promoted: … . New issues classified: N (dup-rule: M).
+### Selection
+Picked: … (why each). New issues classified: N (dup-rule: M). Losers
+re-ranked because a trigger fired: … . Returned to the pool for want of a
+ruling: … .
 Merged PRs reviewed this window: N of M. (The stopping condition cannot be
 read from a window where this share fell: fewer reviews means fewer
 filings without meaning fewer defects.)
 
-### Awaiting you (every cycle, until it moves)
-| # | state | waiting since | what is being asked | the options |
-|---|---|---|---|---|
-
-### Escalations new this cycle
-- <what, which item, the two options>
+### Waiting on you (what is stopping this project finishing)
+| # | what is being asked | the options | asked on |
+|---|---|---|---|
 ```
 
-The **Awaiting you** table is not optional and is not trimmed. It repeats
-every item in a state only the owner can move — `awaiting ruling` **and**
-`awaiting merge` — with its age in cycles, on every cycle until it moves. A
-pull request waiting to be merged is as much the owner's queue as a ruling
-is, and an earlier draft of this table listed only rulings, so unmerged work
-would have aged out of sight. It is the only thing in this procedure that makes the
-owner's own queue visible, and the #1453 triage found nine items in that
-state before the first cycle had run.
+This table is what the project is blocked on, so it is short by
+construction and empty when the project is done. There is no separate
+register of things ageing in the background, because a project that has not
+finished has not been replaced by another one.
 
 Then stop. Merging, and every item on the procedure's escalation list, is
 the owner's.
@@ -218,14 +220,17 @@ compound. Two checks, both cheap:
   file an issue against the procedure** and name the gate that missed it.
   The gates are only worth what they catch, and nothing else in this cycle
   notices when one is inert.
-- **Every fifth cycle, read `docs/development/issue-processing.md` as a
+- **Every fifth project, read `docs/development/issue-processing.md` as a
   state machine, not as prose.** For each state, name what moves an item
   out of it and who does that. A state with no exit is a leak, and it is
   invisible when the document is read as description. The four leaks fixed
   in this file's history — a ranking that maintained five items of
-  sixty-three, a waiting item re-dispatched into a second pull request, an
+  sixty-three, an item re-dispatched into a second pull request, an
   escalation with no return path, and an agent-decided decision with no
-  terminal state — were all found that way and by nothing else.
+  exit — were all found that way and by nothing else. Two of the four
+  turned out on review to be over-stated, and the fix for one of them was
+  itself wrong, which is the other half of the argument for the check:
+  read the machine, then read the fix as a machine too.
 
 ## Rules
 
@@ -236,9 +241,8 @@ compound. Two checks, both cheap:
   opened; the lane waits and says so in its report.
 - **Never relay an unverified finding** as a defect.
 - **Never edit a queue entry's rank without recording why** in the entry.
-- **Never dispatch a waiting item.** An open pull request or an unanswered
-  memo means the work is with someone else.
-- **Never let a ruling age out of sight.** Every unanswered escalation is
-  repeated in every report until it is answered.
+- **Never start a project over an unfinished one.** An unmerged pull
+  request means the last project has not ended.
 - **Never leave an agent-decidable decision undecided.** Decide it, record
-  why on the issue, close it.
+  why on the issue, and re-file it as the work the ruling implies. Do not
+  close it unless deciding was the whole of it.
