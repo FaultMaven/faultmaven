@@ -26,7 +26,18 @@ merge. Everything between is autonomous and asks nothing.
 
 ## The round
 
-A **round** is up to five issues worked together. One round runs at a time.
+A **round** is a batch of issues worked together. One round runs at a time.
+
+**Five is a working size, not a rule.** It exists to keep one round's
+resource draw reasonable — a batch job, not a sprint that consumes
+everything at once. Judge by the work rather than the count: three large
+interdependent items can be a whole round, seven small independent ones can
+be another. The proposal says why the round is the size it is.
+
+**The owner can pin items.** Any issue named by the owner goes into the round
+whatever its rank, and the remaining capacity is filled by the ranking. A
+pinned item that turns out to need a ruling is reported as such rather than
+built on a guess.
 
 ### 0. Check the last round ended
 
@@ -103,8 +114,8 @@ Rank the ready pile by the first rule that applies:
    because that seam will keep producing them until its rule has one owner.
 4. It is the oldest ready item.
 
-Five is a ceiling, not a quota. Three worthwhile issues means a round of
-three.
+The ranking fills whatever capacity the pinned items leave. It decides
+*order*, not size; size is the judgement above.
 
 **Ranking is incremental.** A new issue is compared against the current
 candidates when it arrives, and that is the only comparison it gets. Nothing

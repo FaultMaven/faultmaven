@@ -23,9 +23,10 @@ the rest is autonomous.
 - `propose` — stop after step 2, so the owner can answer before anything is
   built.
 - `build` — the proposal was already answered; resume at step 4.
-- a list of numbers (`1452 1447`) — propose these instead of the ranked
-  picks. Step 1 still runs: the override chooses what to propose, never
-  whether the last round is checked.
+- a list of numbers (`1452 1447`) — **pin** these into the round whatever
+  their rank; the ranking fills the rest of the capacity. Step 1 still runs:
+  pinning chooses what goes in, never whether the last round is checked. A
+  pinned item that needs a ruling is reported as blocked rather than built.
 
 ## 1. Check the last round landed
 
@@ -69,8 +70,11 @@ Post one comment on `Queue`:
 ```
 ## Round <N> — proposal
 
-### Building (up to five)
-| # | kind | why ranked here | done when |
+### Building
+| # | kind | why in this round | done when |
+
+One line on why the round is this size: five is a working batch size, not a
+rule, and complexity and dependency move it either way.
 
 ### Needs your call (every blocked item, not only the new ones)
 | # | the question | options | my recommendation | unblocks |
