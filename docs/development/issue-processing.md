@@ -81,8 +81,47 @@ would need a PR per re-rank. Labels stay as they are (`P0`–`P3`, `bug`,
 `tech-debt`); they were a parking lot, not a queue, and this does not try to
 make them one.
 
-**Size.** The top **five** are the project. Below them the list is ranked but
-not committed to; an item enters the top five only when one leaves.
+**Size.** The top **five** are what is being worked. They are not the whole
+queue, and the difference is the thing that decides whether this procedure
+drains the backlog or reproduces it.
+
+**The ranking is recomputed from every open issue on every cycle. There is
+no stored list below the line.** An earlier draft ranked once and re-checked
+only the top five each cycle. With sixty-three open issues that leaves
+fifty-eight in a blind spot no step revisits: they cannot be promoted by
+anything except a slot opening, they are never re-read when the corpus
+changes, and nothing notices when one is fixed, duplicated or turns urgent.
+A procedure that maintains five items out of sixty-three does not drain a
+residue, it formalises one. Re-ranking the whole open set costs one
+classification pass, which is the same pass the refresh already does for new
+issues.
+
+**Every open issue carries a state, and only one state is dispatchable.**
+
+| state | meaning | what moves it on | may a lane be dispatched? |
+|---|---|---|---|
+| `queued` | classified and ranked, nothing started | a cycle promoting it | **yes** |
+| `in flight` | a lane is working it now | the lane returning | no |
+| `awaiting merge` | its PR is open; done on our side | the owner merging | no |
+| `awaiting ruling` | a memo or escalation is posted and unanswered | the owner replying | no |
+| `blocked` | waiting on another item or an external fact | that thing resolving | no |
+| `decided` | an agent decided it under the escalation list and recorded why | the cycle closing the issue | n/a |
+
+Three consequences, each closing a way work used to escape:
+
+- **A waiting item does not hold a top-five slot.** `awaiting merge`,
+  `awaiting ruling` and `blocked` items leave the five and a `queued` item
+  is promoted. Otherwise an unmerged pull request parks a slot for as long
+  as it takes the owner to look at it, and the cycle does four items.
+- **A waiting item is never re-dispatched.** Without this the next refresh
+  sees an issue that is "still open", dispatches a second lane at it, and
+  the same defect gets a second worktree and a second pull request. The
+  guard is mechanical: an issue with an open pull request that names it, or
+  with an unanswered memo from a previous cycle, is not dispatchable.
+- **`decided` is a real exit.** An agent that decides an item under §2's
+  escalation list records the decision on the issue and closes it. Without
+  that the issue stays open as a decision, the next refresh re-reads it as
+  a decision, and it is decided again every cycle forever.
 
 **What an entry carries** (all required; a lane starting on an entry that
 lacks one fills it in before touching code):
@@ -122,14 +161,23 @@ will use the result this quarter. Everything else is by age.
 
 **Refresh** (the first step of every run):
 
-1. For each of the top five: still open? Not closed as a duplicate? Not
-   overtaken by a merged PR that touched its seam? Still the kind it was
-   filed as? Drop what fails; promote from below.
-2. New issues since the last refresh are classified and ranked in.
-3. Re-rank if the residue is growing on a seam the top five do not cover.
-   The seam comes from step 2's own classification — which paths each new
-   issue names — not from `scripts/backlog_metrics.py`, which reports the
-   residue by week, age and priority label and has no code dimension.
+1. Read **every** open issue, not only the top five. Set each one's state
+   from GitHub: an open pull request naming it is `awaiting merge`, an
+   unanswered memo or escalation is `awaiting ruling`, an explicit
+   dependency is `blocked`, anything else is `queued`.
+2. Classify every issue that has not been classified before: kind, and N
+   with the scan that produced it if it is a duplicated-rule item.
+3. Rank the whole `queued` set. The seam a re-rank turns on comes from
+   step 2's classification — which paths an issue names — not from
+   `scripts/backlog_metrics.py`, which reports the residue by week, age
+   and priority label and has no code dimension.
+4. Take the top five `queued` items. A top-five item whose state has moved
+   to a waiting one leaves the five; the next `queued` item is promoted.
+5. Anything `awaiting ruling` carries an age in cycles, and every one of
+   them appears in the report until it is answered. This is the only
+   mechanism that makes the owner's queue visible, and the triage in #1453
+   found nine such items on day one, so it is the dominant path rather than
+   an edge case.
 
 ## 2. The lane procedure
 
@@ -174,6 +222,11 @@ unmerged branch.
   is adopted. After any rework the lane's own mutation matrix is re-run.
 - **The whole tree is ported.** Before a lane's PR is reported, `git status`
   in its worktree is clean or every remaining file is named in the report.
+- **The same item does not fail twice in silence.** A lane that returns
+  `blocked` for the same reason on two consecutive cycles is escalated with
+  the reason, not dispatched a third time. A loop that keeps producing no
+  result is a defect in the queue entry or in the procedure, and the third
+  attempt will not find that out.
 - **Root before scope; scope by ticket, never by depth.** A lane investigates
   to the root cause before deciding what it ships, and designs the fix for
   the class the instance belongs to: a defect that is one of N

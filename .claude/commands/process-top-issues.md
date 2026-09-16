@@ -52,23 +52,42 @@ gh issue create --title "Queue" --label tracking --body "<empty table>"
 gh issue pin <number>
 ```
 
-For each entry in the top five, check in this order and drop on the first
-failure: still open; not closed as a duplicate; no PR merged since the last
-refresh touched its seam (`gh pr list --state merged --search <seam
-keyword>`); still the kind it was filed as. Promote from below the line.
+**Read every open issue, not only the top five** (procedure §1: the ranking
+is recomputed each cycle, so nothing sits below a line where it can rot):
 
-Classify every issue opened since the last refresh: kind (`defect`,
-`decision`, `investigation`, `feature`, `chore`); N and the scan that
-produced it if it is a duplicated-rule item; and, once campaign item 1 has
-landed `docs/development/invariants.md`, whether it is an instance of a
-rule already in the register (until then, say in the report that the
-register does not exist yet and classify from the issue text alone). Rank
-it in by the rule in the procedure's §1, and re-rank if step 1's output
-shows the residue growing on a seam the top five do not cover.
+```bash
+gh issue list --state open --limit 500 --json number,title,labels,updatedAt
+gh pr list --state open --json number,title,body,headRefName   # for state
+```
 
-Rewrite the `Queue` body. Every top-five entry carries rank-and-why, kind,
-done-when, N (if applicable) and blocked-by. Write the body with
-`gh api -X PATCH` and read it back — `gh issue edit` can fail silently.
+Set each issue's state. The three waiting states are read from GitHub, not
+remembered:
+
+- **`awaiting merge`** — an open pull request names it (`Closes #N`, or a
+  `fix/N-` branch). Do not dispatch it; the work is done on our side.
+- **`awaiting ruling`** — the last cycle posted a memo or an escalation on
+  it and the owner has not replied since. Do not dispatch it. Carry its age
+  in cycles.
+- **`blocked`** — its queue entry names a dependency that has not resolved.
+- **`queued`** — everything else, and the only dispatchable state.
+
+Classify every issue not classified before: kind (`defect`, `decision`,
+`investigation`, `feature`, `chore`); N and the scan that produced it if it
+is a duplicated-rule item; and, once campaign item 1 has landed
+`docs/development/invariants.md`, whether it is an instance of a rule
+already in the register (until then, say in the report that the register
+does not exist yet and classify from the issue text alone).
+
+Rank the whole `queued` set by the rule in the procedure's §1 and take the
+top five. A previous top-five item now in a waiting state leaves the five
+and the next `queued` item is promoted.
+
+Rewrite the `Queue` body: the five in flight, every waiting item with its
+state and age, and the timestamp of this refresh (the next cycle reads it
+to know what "since the last refresh" means). Every top-five entry carries
+rank-and-why, kind, done-when, N (if applicable) and blocked-by. Write the
+body with `gh api -X PATCH` and read it back — `gh issue edit` can fail
+silently.
 
 If `$ARGUMENTS` is `refresh-only`, post the report (step 6) and stop.
 
@@ -78,6 +97,11 @@ Two top-five items that touch the same files, the API contract version or
 the alembic head do not run together. Sequence them and say so in the report.
 
 ### 4. Dispatch one subagent per item
+
+**Before dispatching any item, re-check its state.** Do not dispatch one
+that is `awaiting merge`, `awaiting ruling` or `blocked`. Without this the
+same defect gets a second worktree and a second pull request, because the
+issue is still open and looks dispatchable.
 
 Each subagent gets a self-contained prompt (it inherits nothing from this
 conversation) that contains: the issue number and its full text; the queue
@@ -101,6 +125,9 @@ prompt adds:
 - A decision or feature lane writes no code: its memo or spec is a comment
   on the issue (`gh issue comment <n> --body-file …`). `docs/working/` is
   gitignored and is not a place a PR can carry a spec.
+- A decision the escalation list leaves to you is **decided, recorded and
+  closed** in the same cycle, not queued as a memo. A decision an agent may
+  make and does not make is a decision that will be made again next cycle.
 - An investigation lane commits its measurement script under `scripts/`
   with a unit test and opens a PR for that; the numbers go in an issue
   comment.
@@ -149,9 +176,19 @@ Merged PRs reviewed this window: N of M. (The stopping condition cannot be
 read from a window where this share fell: fewer reviews means fewer
 filings without meaning fewer defects.)
 
-### Escalations
+### Awaiting you (every cycle, until answered)
+| # | waiting since | what is being asked | the options |
+|---|---|---|---|
+
+### Escalations new this cycle
 - <what, which item, the two options>
 ```
+
+The **Awaiting you** table is not optional and is not trimmed. It repeats
+every outstanding ruling, with its age in cycles, on every cycle until the
+owner answers. It is the only thing in this procedure that makes the
+owner's own queue visible, and the #1453 triage found nine items in that
+state before the first cycle had run.
 
 Then stop. Merging, and every item on the procedure's escalation list, is
 the owner's.
@@ -165,3 +202,9 @@ the owner's.
   opened; the lane waits and says so in its report.
 - **Never relay an unverified finding** as a defect.
 - **Never edit a queue entry's rank without recording why** in the entry.
+- **Never dispatch a waiting item.** An open pull request or an unanswered
+  memo means the work is with someone else.
+- **Never let a ruling age out of sight.** Every unanswered escalation is
+  repeated in every report until it is answered.
+- **Never leave an agent-decidable decision undecided.** Decide it, record
+  why on the issue, close it.
