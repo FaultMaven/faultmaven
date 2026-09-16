@@ -189,17 +189,20 @@ Merged PRs reviewed this window: N of M. (The stopping condition cannot be
 read from a window where this share fell: fewer reviews means fewer
 filings without meaning fewer defects.)
 
-### Awaiting you (every cycle, until answered)
-| # | waiting since | what is being asked | the options |
-|---|---|---|---|
+### Awaiting you (every cycle, until it moves)
+| # | state | waiting since | what is being asked | the options |
+|---|---|---|---|---|
 
 ### Escalations new this cycle
 - <what, which item, the two options>
 ```
 
 The **Awaiting you** table is not optional and is not trimmed. It repeats
-every outstanding ruling, with its age in cycles, on every cycle until the
-owner answers. It is the only thing in this procedure that makes the
+every item in a state only the owner can move — `awaiting ruling` **and**
+`awaiting merge` — with its age in cycles, on every cycle until it moves. A
+pull request waiting to be merged is as much the owner's queue as a ruling
+is, and an earlier draft of this table listed only rulings, so unmerged work
+would have aged out of sight. It is the only thing in this procedure that makes the
 owner's own queue visible, and the #1453 triage found nine items in that
 state before the first cycle had run.
 
