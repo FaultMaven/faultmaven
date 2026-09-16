@@ -16,8 +16,14 @@ report. Subagents work individual items. Nobody merges.
 ## Argument
 
 `$ARGUMENTS` — optional. `refresh-only` stops after step 2 and posts the
-refreshed queue. An issue number list (`1452 1447`) overrides the top five for
-this run. Empty runs the full cycle on the current top five.
+refreshed queue. An issue number list (`1452 1447`) overrides **which items
+are dispatched** this run. Empty runs the full cycle on the current top five.
+
+**Step 2 always runs, including under an override.** The override chooses
+what to work on; it does not skip setting states. An overridden item that is
+`awaiting merge`, `awaiting ruling` or `blocked` is refused and said so in
+the report, exactly as a promoted one would be. Otherwise the override is a
+side door back into dispatching work that is already done.
 
 ## Procedure
 
@@ -136,6 +142,13 @@ The subagent reports back with: the PR or comment URL, the exact commands
 it ran with their tail output, `git status --short` of its worktree, and
 anything it could not resolve.
 
+**A lane that has not returned when the cycle ends is not lost.** Report it
+as `in flight`, leave its item in that state, and do not dispatch it again
+next cycle. A lane still `in flight` two cycles later is escalated with
+whatever it last reported: a lane that cannot finish is a defect in the
+queue entry or in the lane procedure, and a third attempt will not discover
+which.
+
 ### 5. Verify, review, rework
 
 For each returned lane, in order:
@@ -192,6 +205,24 @@ state before the first cycle had run.
 
 Then stop. Merging, and every item on the procedure's escalation list, is
 the owner's.
+
+### 7. Check this procedure for leaks
+
+The cycle is the thing that runs again, so it is the thing whose faults
+compound. Two checks, both cheap:
+
+- **If a defect reached `main` that one of §2's gates should have caught,
+  file an issue against the procedure** and name the gate that missed it.
+  The gates are only worth what they catch, and nothing else in this cycle
+  notices when one is inert.
+- **Every fifth cycle, read `docs/development/issue-processing.md` as a
+  state machine, not as prose.** For each state, name what moves an item
+  out of it and who does that. A state with no exit is a leak, and it is
+  invisible when the document is read as description. The four leaks fixed
+  in this file's history — a ranking that maintained five items of
+  sixty-three, a waiting item re-dispatched into a second pull request, an
+  escalation with no return path, and an agent-decided decision with no
+  terminal state — were all found that way and by nothing else.
 
 ## Rules
 

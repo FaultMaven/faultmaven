@@ -366,8 +366,11 @@ guard.
 
 ### Stopping condition
 
-The campaign ends when all four hold for four consecutive weekly cycles.
-Each names where it is read from, because only the first is machine-read:
+The campaign ends when all four hold for four consecutive cycles spanning
+at least four calendar weeks. The span matters: four cycles run in an
+afternoon would all report the same unchanged residue and satisfy the
+condition without a week of evidence behind it. Each condition names where
+it is read from, because only the first is machine-read:
 
 | # | Condition | Read from |
 |---|---|---|
