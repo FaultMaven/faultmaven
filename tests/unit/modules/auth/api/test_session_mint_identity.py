@@ -233,3 +233,55 @@ def test_the_published_operation_declares_no_query_parameters():
     operation = app.openapi()["paths"]["/api/v1/sessions"]["post"]
 
     assert operation.get("parameters", []) == []
+
+
+# =============================================================================
+# The listing, which lost the same parameter one contract later (#1447 §1)
+# =============================================================================
+#
+# These two mirror the pair above, onto ``GET /api/v1/sessions``. The mint's
+# entry exists because FastAPI drops an undeclared query parameter silently, so
+# a route that still DECLARES ``user_id`` while ignoring its value passes every
+# request-level test and republishes the parameter to every client regenerating
+# its types. That argument does not belong to the mint; it belongs to the
+# parameter, and the listing carried the identical one — as a FILTER, on a route
+# that took no auth dependency at all.
+
+
+@pytest.mark.unit
+@pytest.mark.security
+def test_the_listing_handler_declares_no_user_id_parameter():
+    """Gone from the signature, not merely unread.
+
+    Re-adding it unread would keep the request-level tests green: they assert
+    the listing answers with the caller's own sessions, which stays true while
+    the parameter is ignored — right up until somebody wires it back up.
+    """
+    from faultmaven.modules.auth.api.session import list_sessions
+
+    assert "user_id" not in inspect.signature(list_sessions).parameters
+
+
+@pytest.mark.unit
+@pytest.mark.security
+def test_the_published_listing_declares_no_user_id_query_parameter():
+    """And it is not published, which is what a client actually reads.
+
+    Not ``parameters == []`` as on the mint: the listing legitimately publishes
+    ``session_type``, ``limit`` and ``offset``. What must never come back is a
+    parameter naming WHOSE sessions are listed, so the assertion names that and
+    carries the survivors with it — a listing that published nothing would
+    otherwise pass this while having lost its pagination.
+    """
+    app = FastAPI()
+    app.include_router(session_router, prefix="/api/v1")
+
+    operation = app.openapi()["paths"]["/api/v1/sessions"]["get"]
+    published = {
+        parameter["name"]
+        for parameter in operation.get("parameters", [])
+        if parameter.get("in") == "query"
+    }
+
+    assert "user_id" not in published
+    assert published == {"session_type", "limit", "offset"}

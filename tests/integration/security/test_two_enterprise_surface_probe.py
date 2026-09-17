@@ -224,6 +224,7 @@ from tests.integration.security.conftest import (
     drop_limited_role,
     limited_url,
 )
+from tests.utils import minimal_session_service
 
 pytestmark = [
     pytest.mark.integration,
@@ -1038,9 +1039,6 @@ def _wire_services(app, chroma) -> None:
     )
     from faultmaven.infrastructure.security.redaction import DataSanitizer
     from faultmaven.modules.auth.domain.services.auth_service import AuthService
-    from faultmaven.modules.auth.domain.services.auth_session_service import (
-        AuthSessionService,
-    )
     from faultmaven.modules.auth.domain.services.team_service import TeamService
     from faultmaven.modules.auth.domain.services.user_service import UserService
     from faultmaven.modules.case.domain.services.case_service import CaseService
@@ -1105,7 +1103,31 @@ def _wire_services(app, chroma) -> None:
         share_repository=share_repository,
     )
     app.state.team_service = team_service
-    app.state.session_service = AuthSessionService(settings=settings)
+    # A session service that can actually HOLD a session, which this app did
+    # not have. ``AuthSessionService(settings=settings)`` takes
+    # ``session_store=None`` happily: ``create_session`` mints an id and
+    # persists nothing, while ``get_session`` raises ``ServiceException`` — so
+    # the auth-session routes answered 201 and then 500, and six of them were
+    # exempted from the inventory on a rationale about the ROUTE ("with no
+    # store the listing answers the same empty page to every caller") when the
+    # real obstacle was this line. They are probed now, so the service is one
+    # that works.
+    #
+    # ``MinimalSessionService`` rather than a Redis-backed
+    # ``AuthSessionService``, and the reason is the fixture's scope rather than
+    # a preference. This app is module-scoped on purpose — "building the app is
+    # loop-free" — while each test runs on its own event loop, and a FakeRedis
+    # client binds its queues to the loop that first touches it, so the second
+    # test to reach the store dies on ``bound to a different event loop``.
+    # (Measured: the mint 500s with exactly that.) The minimal service is a
+    # plain dict and is loop-free, so it survives module scope.
+    #
+    # It is not a test double. ``create_session_service`` installs it in
+    # PRODUCTION whenever the session store cannot be constructed, and its
+    # docstring says so; its contract is to answer as ``AuthSessionService``
+    # does. It is also the implementation that made #1447 §1 live rather than
+    # theoretical, since it ships a working ``list_sessions``.
+    app.state.session_service = minimal_session_service()
     app.state.investigation_service = _Tripwire("investigation_service")
     app.state.share_repository = share_repository
     app.state.knowledge_service = knowledge_service
@@ -2950,6 +2972,140 @@ async def test_the_team_listing_never_names_the_other_partys_team(world):
     assert _ids(mine.json(), "team_id") == {world.a.team_id}
     assert _ids(theirs.json(), "team_id") == {world.b.team_id}
     assert _ids(mine.json(), "enterprise_id") == {world.a.enterprise_id}
+
+
+@asynccontextmanager
+async def _auth_sessions(world):
+    """One session per party, removed however the battery exits.
+
+    A FIXTURE-shaped cleanup rather than a trailing statement. As a trailing
+    statement it ran only on the happy path, so the first failing assertion
+    leaked both sessions into a store that is MODULE-scoped and shared with
+    every later test in this file — and ``test_the_probe_left_no_rows_behind``
+    watches SQL, so nothing would have said so.
+
+    Each party mints with its own token, so ownership is established by the
+    server rather than asserted by the fixture.
+    """
+    minted_b = await as_b(world, "POST", "/api/v1/sessions", json={})
+    assert minted_b.status_code == 201, (
+        "the positive control failed before it began: B cannot mint a session, "
+        f"so every assertion below is vacuous: {minted_b.text[:300]}"
+    )
+    assert minted_b.json()["user_id"] == world.b.user_id, (
+        "the mint bound the session to somebody other than the caller, so "
+        "'B owns this row' is not established"
+    )
+
+    minted_a = await as_a(world, "POST", "/api/v1/sessions", json={})
+    assert minted_a.status_code == 201, minted_a.text
+
+    b_session = minted_b.json()["session_id"]
+    a_session = minted_a.json()["session_id"]
+    try:
+        yield a_session, b_session
+    finally:
+        # Each party removes its own; a failure to clean up must not mask the
+        # assertion that actually failed, so neither is asserted here.
+        await as_b(world, "DELETE", f"/api/v1/sessions/{b_session}")
+        await as_a(world, "DELETE", f"/api/v1/sessions/{a_session}")
+
+
+async def test_b_reaches_no_auth_session_of_a(world):
+    """The auth-session battery, and the arm this module used to exempt.
+
+    Auth sessions are not a SQL tenant surface — they live in the session store
+    and carry no enterprise column — so RLS guards nothing here and the
+    application's own ownership check is the whole of the control. That is
+    exactly why it is worth probing: of the five ``{session_id}`` routes, two
+    carried ``session.user_id != current_user.user_id`` from the start and
+    three did not, and nothing said so until someone read the file (#1447 §2).
+
+    B mints a session with B's own token, so the row's owner is B by
+    construction rather than by a fixture's say-so. Every attack is A, holding
+    a valid token for A.
+
+    ``heartbeat`` is the ``_FINDING``: asserted AS IT BEHAVES, with the issue
+    that tracks it, so the day #1460 closes it this test goes red and the
+    inventory entry has to move with it. It is the first use of a disposition
+    this module has defined since it was written.
+    """
+    async with _auth_sessions(world) as (a_session_id, session_id):
+        await _b_reaches_no_auth_session_of_a(world, a_session_id, session_id)
+
+
+async def _b_reaches_no_auth_session_of_a(world, a_session_id, session_id):
+    """The battery itself. Split out so the cleanup above cannot be skipped."""
+    # --- read ------------------------------------------------------------
+    control = await as_b(world, "GET", f"/api/v1/sessions/{session_id}")
+    assert (
+        control.status_code == 200
+    ), f"control: B cannot read B's own session: {control.text[:300]}"
+    assert world.b.user_id in control.text
+
+    attack = await as_a(world, "GET", f"/api/v1/sessions/{session_id}")
+    assert_refused(attack, "GET /api/v1/sessions/{session_id}")
+    assert world.b.user_id not in attack.text, (
+        "the refusal published the session's bound user_id, which is the "
+        f"disclosure the route was closed for: {attack.text[:300]}"
+    )
+
+    # --- the listing, which is scoped rather than refused -----------------
+    #
+    # A holds a session of A's own here, and that is the whole point: without
+    # it "B's id is absent from A's listing" holds because A's listing is
+    # EMPTY, which is true of a route that returns nothing to anybody. The
+    # control is what makes the absence a measurement. (It is also non-vacuous
+    # only because the wired service implements ``list_sessions`` at all;
+    # against ``RedisSessionStore``'s stub every page is empty, which is the
+    # mistake the exemption this battery replaces actually made.)
+    listing = await as_a(world, "GET", "/api/v1/sessions")
+    assert listing.status_code == 200, listing.text
+    assert a_session_id in listing.text, (
+        "the positive control failed: A's own session is missing from A's "
+        f"listing, so its silence about B's proves nothing: {listing.text[:300]}"
+    )
+    assert _ids(listing.json(), "session_id") == {a_session_id}, (
+        "A's listing carries a session that is not A's — the listing is no "
+        f"longer forced to the caller's own identity: {listing.text[:300]}"
+    )
+    assert session_id not in listing.text
+    assert world.b.user_id not in listing.text
+
+    # --- the write, with the row checked afterwards -----------------------
+    #
+    # DELETE only. ``PUT`` and ``POST /archive`` are NOT probed here and are
+    # exempted in the inventory with the reason: the wired stand-in implements
+    # neither method, so B's own call would 500 and A's 403 could not be
+    # attributed to the ownership check rather than to a broken route. An entry
+    # green against a route that never functions is the failure this module
+    # exists to avoid, so the claim is withdrawn rather than dressed up.
+    refused = await as_a(world, "DELETE", f"/api/v1/sessions/{session_id}")
+    assert_refused(refused, "DELETE /sessions/{id}")
+
+    survived = await as_b(world, "GET", f"/api/v1/sessions/{session_id}")
+    assert survived.status_code == 200, (
+        "DELETE /sessions/{id}: the call was refused and B's session is gone "
+        f"anyway — the refusal happened after the effect: {survived.text[:300]}"
+    )
+
+    # --- the finding ------------------------------------------------------
+    #
+    # Not a refusal, and not asserted as one. `heartbeat` takes no auth
+    # dependency at all, so A extends B's session and so would a caller with no
+    # token whatsoever. See tests/integration/security/
+    # test_unauthenticated_session_surface.py for the anonymous half.
+    beat = await as_a(world, "POST", f"/api/v1/sessions/{session_id}/heartbeat")
+    assert beat.status_code == 200, (
+        "POST /sessions/{id}/heartbeat now refuses a foreign caller — #1460 "
+        "has landed. Assert the refusal here, and move the inventory entry "
+        f"from _FINDING to _PROBED: {beat.text[:300]}"
+    )
+
+    # Cleanup is the fixture's job, not a trailing statement: see
+    # ``auth_sessions`` below. As a trailing statement it ran only on the happy
+    # path, so the first failing assertion above leaked both sessions into a
+    # MODULE-scoped in-memory store that every later test in this file shares.
 
 
 async def test_a_tenant_admin_reaches_no_admin_route_at_all(world):
@@ -4817,29 +4973,58 @@ SURFACE_INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
         "check afterwards is what says the account survived (#1318)",
     ),
     # --- auth sessions (Redis-backed, not a SQL tenant surface) ------------
-    ("GET", "/api/v1/sessions"): (
-        _EXEMPT,
-        "auth sessions live in the Redis session store, keyed per user and "
-        "carrying no organization column; with no store the listing answers "
-        "the same empty page to every caller, so no control exists.",
+    #
+    # `GET /api/v1/sessions` and `POST /api/v1/sessions` are both DELIBERATELY
+    # ABSENT, and for the same reason: neither takes a tenant-addressed
+    # identifier in its path, body or query any more, so the classifier does
+    # not derive them and an entry would fail the stale half of the inventory
+    # test. The mint lost its `user_id` query parameter — which let a caller
+    # name the identity it bound — in contract 6.0.0; the listing lost the
+    # identical parameter in 7.0.0 (#1447 §1), where it had been a FILTER on a
+    # route that took no auth dependency at all. Whose sessions the listing
+    # answers with is now the caller's own id and nothing else.
+    #
+    # The exemption that used to sit here claimed the listing was unprobeable
+    # because "with no store the listing answers the same empty page to every
+    # caller, so no control exists". That is a property of `RedisSessionStore`,
+    # whose `list_sessions()` is a stub, and not of the route:
+    # `MinimalSessionService` ships a working one and `create_session_service`
+    # installs it in production whenever the real service cannot be
+    # constructed. Both routes ARE probed —
+    # `tests/integration/security/test_unauthenticated_session_surface.py`
+    # drives them against that service, anonymously and as a foreign
+    # authenticated caller, which is the arm this module has never had.
+    ("GET", "/api/v1/sessions/{session_id}"): (
+        _PROBED,
+        "auth-session battery: A reads B's session, B's own read is the control",
     ),
-    # `POST /api/v1/sessions` is DELIBERATELY ABSENT, and its absence is the
-    # security property rather than an oversight. It was derived here on
-    # `query:user_id` — a parameter that let a caller name the identity the
-    # mint bound. Contract 6.0.0 removed it, so the route now takes no
-    # tenant-addressed identifier in its path, body or query and the
-    # classifier no longer derives it; an entry would fail the stale half of
-    # the inventory test. The same reasoning the teams note below records.
-    ("GET", "/api/v1/sessions/{session_id}"): (_EXEMPT, "see GET /api/v1/sessions"),
-    ("PUT", "/api/v1/sessions/{session_id}"): (_EXEMPT, "see GET /api/v1/sessions"),
-    ("DELETE", "/api/v1/sessions/{session_id}"): (_EXEMPT, "see GET /api/v1/sessions"),
+    ("PUT", "/api/v1/sessions/{session_id}"): (
+        _EXEMPT,
+        "the session service this module wires implements no `update_session` "
+        "(nor `archive_session`, `search_sessions`, `get_user_sessions`), so "
+        "B's own call — the positive control — would 500 and A's 403 cannot be "
+        "attributed to the ownership check rather than to a broken route. The "
+        "gap is in the degraded stand-in, not in the route; probing it needs "
+        "that stand-in completed first.",
+    ),
+    ("DELETE", "/api/v1/sessions/{session_id}"): (
+        _PROBED,
+        "auth-session battery, row-checked: a refused delete leaves B's "
+        "session alive",
+    ),
     ("POST", "/api/v1/sessions/{session_id}/archive"): (
         _EXEMPT,
-        "see GET /api/v1/sessions",
+        "no `archive_session` on the wired stand-in either — see the PUT entry "
+        "above for why a probe without a working positive control would be an "
+        "entry that stays green against a route that never functions.",
     ),
     ("POST", "/api/v1/sessions/{session_id}/heartbeat"): (
-        _EXEMPT,
-        "see GET /api/v1/sessions",
+        _FINDING,
+        "the boundary does NOT hold: this route takes no auth dependency at "
+        "all, so A — or nobody at all — can extend B's session lifetime. "
+        "Asserted as it behaves in the battery above; it is coupled to the "
+        "mint, which cannot require auth in this repository alone, and both "
+        "close together under #1460.",
     ),
     # --- teams and the consent that forms them (ADR-017 D4) -----------------
     #
@@ -4959,24 +5144,6 @@ def test_every_tenant_scoped_route_is_in_the_inventory(probe_app):
     )
 
 
-def _resolve_reason(reason: str) -> str:
-    """Follow a ``see <METHOD> <path>`` cross-reference to the stated reason.
-
-    The Redis session routes share one reason between several entries.
-    Repeating it invites the copies to drift; pointing at it keeps one text
-    and still forces that text to exist — a dangling pointer resolves to itself
-    and fails the length rule below.
-    """
-    if not reason.startswith("see "):
-        return reason
-    target = reason[len("see ") :].strip()
-    method, _, path = target.partition(" ")
-    referenced = SURFACE_INVENTORY.get((method, path))
-    if referenced is None or referenced[0] != _EXEMPT:
-        return reason
-    return referenced[1]
-
-
 def test_the_inventory_states_a_reason_for_every_unprobed_surface():
     """An exemption without a reason is an unprobed surface with a nice name."""
     for (method, path), (disposition, reason) in SURFACE_INVENTORY.items():
@@ -4987,8 +5154,15 @@ def test_the_inventory_states_a_reason_for_every_unprobed_surface():
         ), f"{method} {path}: unknown disposition {disposition!r}"
         assert reason.strip(), f"{method} {path}: no reason given"
         if disposition == _EXEMPT:
-            resolved = _resolve_reason(reason)
-            assert len(resolved) > 40, (
+            # Read literally. A ``see <METHOD> <path>`` cross-reference used to
+            # be resolved here, because the six Redis session rows shared one
+            # reason; #1447 replaced those rows and no entry cross-references
+            # any more, so the resolver was guarding a form nothing used and
+            # describing rows that no longer exist. Dropping it also makes the
+            # rule STRICTER: a re-introduced ``"see GET /api/v1/sessions"`` is
+            # 24 characters and fails this outright, where resolving it would
+            # have let a pointer stand in for a reason.
+            assert len(reason) > 40, (
                 f"{method} {path}: an exemption reason has to say what about "
                 f"the route makes it unprobeable, not {reason!r}"
             )

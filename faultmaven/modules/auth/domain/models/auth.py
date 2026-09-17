@@ -381,8 +381,47 @@ class AuthenticatedUser:
         # some entrypoints and a module-level import would make that a cycle.
         from faultmaven.config.tenant_context import get_current_enterprise_id
 
+        # ``sub`` is read with no default, and a blank one is refused rather
+        # than carried. It used to be ``claims.get("sub", "")``, so a claim set
+        # with no subject — or a blank one — produced a principal whose
+        # ``user_id`` is ``""``, and ``""`` is not a narrower identity: it is
+        # the value every ``if user_id:`` scope check in this repository treats
+        # as "no owner predicate". This is the SECOND of the two constructors
+        # that build a principal from claims, and it is guarded even though
+        # ``AuthService.verify_token`` now refuses such a token upstream,
+        # because this is a public classmethod and nothing stops a future
+        # caller handing it claims from somewhere else (#1447 review).
+        subject = claims.get("sub")
+        if not isinstance(subject, str) or not subject.strip():
+            # ``AuthenticationError``, not ``ValueError``, because that is the
+            # contract the two methods ending in this call publish:
+            # ``AuthService.extract_user_from_token`` and
+            # ``…_with_revocation_check`` both document ``Raises:
+            # AuthenticationError``. A ``ValueError`` landed closed only
+            # because two middleware callers happen to catch ``Exception``; a
+            # caller written to the documented contract would have got a 500
+            # where it asked for a 401. Same class and the same
+            # ``error_code`` the verifier's own subject refusal uses, so the
+            # two are indistinguishable to a handler (#1447 review).
+            #
+            # From the auth module's own exceptions LEAF, not from
+            # ``auth_service``. Reaching for the service's class — which is
+            # what the two documented methods raise — makes
+            # ``auth_service -> models.auth -> auth_service``, and
+            # ``test_no_circular_imports`` catches it even when the import is
+            # function-scoped (measured: it did). The service translates this
+            # into its own class at the two call sites that publish
+            # ``Raises: AuthenticationError``, so the documented contract is
+            # exact and the cycle does not exist.
+            from faultmaven.modules.auth.exceptions import AuthenticationError
+
+            raise AuthenticationError(
+                "Token subject is empty",
+                error_code="INVALID_TOKEN_SUBJECT",
+            )
+
         return cls(
-            user_id=claims.get("sub", ""),
+            user_id=subject,
             enterprise_id=get_current_enterprise_id(),
             organization_id=claims.get("organization_id", ""),
             email=claims.get("email", ""),

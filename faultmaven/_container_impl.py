@@ -764,8 +764,13 @@ class DIContainer(BaseDIContainer):
                 return await self.get_session(session_id) is not None
 
             async def list_sessions(self, user_id=None):
+                """Mirrors ``AuthSessionService.list_sessions``, fail-closed half
+                included: ``is not None``, not truthiness, so a blank caller id
+                yields nothing rather than every session (#1447 review). This is
+                the implementation the enumeration was measured against, so the
+                two must not differ here of all places."""
                 sessions = list(self.sessions.values())
-                if user_id:
+                if user_id is not None:
                     return [s for s in sessions if s.user_id == user_id]
                 return sessions
 
