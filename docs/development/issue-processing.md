@@ -21,24 +21,31 @@ nobody has said which way.
 
 So the round below puts the questions **first**, in one batch, each with
 options and a recommendation, and then builds only what has an answer. The
-owner's part is short and happens at two moments: answer the questions, and
-merge. Everything between is autonomous and asks nothing.
+owner's part is short: answer the questions, merge, and run the few things
+no agent can. The first two are the round's two moments; the third stands
+outside it and holds nothing up. Everything between is autonomous and asks
+nothing.
 
 ## What the owner tracks
 
-Nothing. Two actions arrive as ordinary GitHub notifications, and neither
-needs you to know where the work has got to:
+Nothing. Three actions are yours, and none of them needs you to know where
+the work has got to:
 
 - **Answer questions.** A proposal comment lists them, each with options and
   a recommendation, so answering is a word. Answer any, ignore any: an
   unanswered question returns in the next proposal and nothing stalls
   waiting on it.
 - **Merge pull requests.** A result comment lists them with their CI state.
+- **Run what only you can run, and close it.** The *yours* pile is work no
+  agent can do — a live-deployment check, a console or credential an agent
+  lacks — and a ruling can route work into it. It is listed in every
+  proposal because nothing else will remind anyone it exists; closing an
+  item is what takes it off the list, and that close is the one exit here
+  the agent can neither perform nor see. Nothing is ranked or held up while
+  it sits there, which is why this is the action that can wait.
 
-The **yours** pile is not a third action. It is listed in every proposal
-because nothing else will remind anyone it exists; close an item once you
-have run it and it drops off the next one, leave it and it is listed again.
-It is never ranked into a round either way, so it holds nothing up.
+The first two arrive as ordinary GitHub notifications. The third does not
+arrive at all — it is listed, every round, until you close it.
 
 Everything else — which issues are ranked where, what is built, what is
 being reviewed, what is waiting — is the agent's bookkeeping. The command
@@ -77,10 +84,14 @@ every issue the last round's pull requests named has to end up somewhere
 definite.
 
 **The check is per pull request; the settlement is per issue.** One pull
-request routinely names several — round 2 delivers #1465, #1470 and #1471
-in one — so a rule keyed on the pull request has no answer for a merge that
-closed two of the three and left the other open. Collect the issues those
-pull requests cited, and settle each on its own state:
+request routinely carries several — a lane given three issues on one seam
+delivers them together — so a rule keyed on the pull request has no answer
+for a merge that closed two of the three and left the other open. The pairs
+come from the round's own **result table**, which lists every item beside
+the pull request that carried it, and not from what the pull requests cited:
+a lane that cited nothing would contribute no issue and never be settled,
+which is the hazard the first case below exists for. Settle each issue on
+its own state:
 
 - **Closed** — whatever closed it, nothing to do. The state is read off the
   issue rather than off the pull request's body, because a lane that cited
@@ -106,17 +117,24 @@ pull requests cited, and settle each on its own state:
   at the rank that selected it with nothing to move it, so the next round
   dispatches a lane to build the same fix again.
 
-**Every one of those ends by writing a note on the issue, and a note already
-there ends the matter.** Settling mutates issues, and until the note exists
-the only record that it ran is the proposal, which is written later — so an
-invocation that settles and then stops re-applies the whole thing next time,
-editing the same parent down a second time and re-ranking it again. The note
-is also what tells a pull request the **agent** closed, in a pull, from one
-the owner abandoned: a pull writes the same note whenever it closes a pull
-request, so the abandonment case never fires on it, and a pull mid-build has
-no pull request to close and never reaches here at all. Reading the round's
-result prose for that instead would rest on a format this pass introduced,
-which round 1's result, written before it, does not carry.
+**Every one of those ends by writing a note on the issue naming the pull
+request it settled, and a note naming that pull request ends the matter.**
+Settling mutates issues, and until the note exists the only record that it
+ran is the proposal, which is written later — so an invocation that settles
+and then stops re-applies the whole thing next time, editing the same parent
+down a second time and re-ranking it again. **The note has to name the pull
+request, not merely exist:** an issue is settled once per pull request that
+carries it, and a parent edited down is built again later under another one.
+A guard that fires on any note at all would skip that second settlement, and
+every settlement after it, leaving the issue open at a stale rank forever —
+which is the `Refs`-merged parent again, re-created permanently by the
+mechanism meant to prevent re-application. The note is also what tells a
+pull request the **agent** closed, in a pull, from one the owner abandoned:
+a pull writes the same note whenever it closes a pull request, so the
+abandonment case never fires on it, and a pull mid-build has no pull request
+to close and never reaches here at all. Reading the round's result prose for
+that instead would rest on a format this pass introduced, which round 1's
+result, written before it, does not carry.
 
 ### 1. Propose
 
@@ -252,8 +270,11 @@ Rules 1-3 outrank the tier every time, so without a reserved place the drain
 rate is exactly zero and every item in it is back where the missing rank
 left it. The slot is also what reaches the already-fixed issues the premise
 check cannot: that check runs on the items about to be built, so an issue
-whose fix landed months ago and is ranked nowhere is never checked against
-`main` at all. #907 was open 49 days after its fix.
+whose fix landed long ago and is ranked nowhere is never checked against
+`main` at all, and nothing else in the round would look at it. No round has
+produced an instance yet — both dead premises round 1 found were P1 defects,
+ranked far above the tier and caught by the check itself — so this one
+stands on the mechanism rather than on a case.
 
 **One slot makes the drain non-zero. It does not bound the wait, and this
 document's own figures say so:** round 1 filed thirteen issues and five of
@@ -330,8 +351,10 @@ Gates for a lane, each from a failure that cost real time:
   mid-build:** a blocking finding **the lane cannot clear** is pulled — the
   owning agent closes the pull request, records on the issue either the
   question, if it needs a ruling, or simply that the lane could not clear
-  it, returns the item to the blocked pile, and the result reports it as not
-  delivered. The condition is "cannot clear", not "needs a ruling": a
+  it, adds the settlement note naming that pull request so the next round
+  reads the close as a pull rather than as the owner's abandonment, returns
+  the item to the blocked pile, and the result reports it as not delivered.
+  The condition is "cannot clear", not "needs a ruling": a
   finding that is merely too hard trips none of the four escalation
   triggers, so gating the exit on a ruling would leave that case with no
   exit at all — the same shape as the leak this rule exists to close. "The
@@ -368,9 +391,10 @@ Gates for a lane, each from a failure that cost real time:
 
 ## What escalates
 
-The round asks the owner for exactly two things: the answers in *Owner
-answers* and the merges in *Land*. Between those, decide and record rather
-than ask.
+A round asks the owner for exactly two things: the answers in *Owner
+answers* and the merges in *Land*. The third owner action, the *yours* pile,
+is not a round's to ask for — it is standing, and holds nothing up. Between
+those two, decide and record rather than ask.
 
 A question belongs in the blocked pile, and therefore in a proposal, when any
 of these holds. Everything else an agent decides and records.

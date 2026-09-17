@@ -12,8 +12,9 @@ You are the **owning agent**. You propose, dispatch, verify and report.
 Subagents work single items. Nobody merges.
 
 The round's shape, and the reason for it: **every question is asked before
-the work starts, never during it.** The owner is touched twice, briefly, and
-the rest is autonomous.
+the work starts, never during it.** A round touches the owner twice —
+answers, then merges — beside one standing action outside it, the *yours*
+pile. The rest is autonomous.
 
 ## Argument
 
@@ -57,10 +58,11 @@ this procedure, another person's branch — is not this check's business. Do
 not run a bare `gh pr list` and refuse on whatever it finds.
 
 Then settle. That check is per pull request; **the settlement is per
-issue** — one pull request may name several — so collect every issue those
-pull requests cited and settle each on its own state. Read the issue, not
-the pull request's body: a lane that cited nothing leaves the same open
-issue as one that wrote `Refs`.
+issue** — one pull request may carry several. Take the issue↔pull-request
+pairs from **the result table itself**, which lists every item beside the
+pull request that carried it; do not derive them from what the pull requests
+cited, or a lane that cited nothing contributes no issue and is never
+settled. Read each issue's own state, not the pull request's body.
 
 ```bash
 gh issue view <n> --json state,title,body,comments   # each cited issue
@@ -68,7 +70,7 @@ gh issue view <n> --json state,title,body,comments   # each cited issue
 
 | the issue | its pull request | what you do |
 |---|---|---|
-| carries a `Settled by #<pr>` note | any | nothing; this step or the pull that closed that PR already did it |
+| carries a `Settled by #<pr>` note **naming this pull request** | any | nothing; this step or the pull that closed that PR already did it. Match the number — a note from an earlier pull request means the issue was settled once and built again, not that this one is done |
 | closed | any | nothing |
 | open | merged | close #<n> if every part it named is now delivered or re-filed, citing this pull request and the re-filings; otherwise edit #<n> down to the part that still stands — title and body — and put it back in **ready** as a fresh arrival, ranked against the current candidates and never left at its old rank. There is no third outcome |
 | open | closed unmerged | the owner abandoned it. Comment that the work was built and the pull request closed unmerged, link it, and move #<n> to **blocked**; the next proposal asks the owner whether to build it another way or close it. Do not guess why |
@@ -261,9 +263,10 @@ Then per returned lane, in order:
    escalating it would hand the owner a pull request you know is broken. **If
    the lane cannot clear it — for any reason, not only a ruling — pull it**:
    close the pull request, record on the issue either the question or that
-   the lane could not clear it, add the `Settled by #<pr>: pulled` note so
-   the next round does not read your close as the owner's, return the item
-   to the blocked pile, and report it as not delivered. That is the loop's
+   the lane could not clear it, add the `Settled by #<pr>: pulled` note
+   naming the pull request you closed so the next round does not read the
+   close as the owner's, return the item to the blocked pile, and report it
+   as not delivered. That is the loop's
    only other exit, and without it the round cannot reach step 5 at all.
    Blocking means the change is worse than the bug it fixes for someone who
    has not hit it. Say in the result how many findings you filed rather
@@ -278,6 +281,10 @@ Comment on the round's proposal:
 ## Round <N> — result
 
 | # | outcome | link | CI | review rounds |
+
+One row per **issue**, even where one lane delivered several under one pull
+request: the next round's *Settle the last round* reads this table for its
+issue-to-pull-request pairs, and an issue missing from it is never settled.
 
 Pulled: #N — <the question, or what stopped the lane>
 Filed on the way: …
