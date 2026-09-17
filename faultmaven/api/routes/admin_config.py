@@ -927,9 +927,19 @@ async def get_env_config_status(
                 "unenforceable — not merely non-durable (#767)."
             )
         elif storage_fault is not None:
+            # The exception TYPE and a fixed sentence — never the driver's
+            # message. SQLAlchemy's carries the full statement and its bound
+            # parameters, and an API response body is not where a schema and
+            # live parameter values belong (#828 delta review). The detail is
+            # logged by the probe, which is where an operator can read it.
             detail = (
                 "The store cannot read its storage, so revocation is NOT in "
-                f"force: {storage_fault}"
+                f"force ({storage_fault.kind}); see the server log for the "
+                "driver error. If this deployment was upgraded rather than "
+                "re-provisioned, the token_revocations table is missing and "
+                "`alembic upgrade head` will not create it — re-provision the "
+                "database (delete data/faultmaven.db on SQLite; DROP + CREATE "
+                "+ migrate on PostgreSQL)."
             )
         elif is_database_store:
             detail = (
@@ -950,7 +960,9 @@ async def get_env_config_status(
                 "the only store read on the authenticated request path. False "
                 "on a STANDALONE deployment means revocation is not in force — "
                 "either no store was composed, or its table is missing because "
-                "the deployment was upgraded rather than re-provisioned (#828)."
+                "the deployment was upgraded rather than re-provisioned. Note "
+                "`fm-wipe-deployment --wipe` does NOT fix that: it covers "
+                "vectors, object storage and Redis, not the database (#828)."
             ),
         )
 

@@ -73,7 +73,13 @@ class TestTheGateRefusesWhatFailsOpen:
         # no-op: this database is already stamped with the only migration.
         assert "fails OPEN" in message
         assert "alembic upgrade head" in message
-        assert "fm-wipe-deployment --wipe" in message
+        # And it must name something that WORKS. This said
+        # `fm-wipe-deployment --wipe`, whose own docstring is headed "What it
+        # does NOT do: the database" — an operator would follow it, see success,
+        # restart, and hit the identical refusal (#828 delta review).
+        assert "fm-wipe-deployment" not in message
+        assert "data/faultmaven.db" in message
+        assert "DROP DATABASE" in message
 
     async def test_a_present_table_passes(self, tmp_path):
         store, engine = _store(tmp_path, with_table=True)

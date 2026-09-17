@@ -165,13 +165,15 @@ async def _revocation_store_unusable(store) -> str | None:
         # has gone (#828 delta review).
         fault = await probe_revocation_storage(store)
         if fault is not None:
+            from faultmaven.config.revocation_storage import REMEDIATION
+
             return (
                 "the token revocation store cannot read its storage, so writing "
-                f"the watermark would fail after the membership had already "
-                f"been deleted: {fault}\n"
-                "   If this deployment was upgraded rather than wiped, the "
-                "token_revocations table is missing and `alembic upgrade head` "
-                "will not create it — re-provision on the current baseline"
+                "the watermark would fail after the membership had already been "
+                f"deleted: {fault.detail}\n"
+                "   If this deployment was upgraded rather than re-provisioned, "
+                "the token_revocations table is missing and `alembic upgrade "
+                "head` will not create it.\n" + REMEDIATION
             )
         return None
 

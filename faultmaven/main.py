@@ -315,21 +315,6 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
 
     logger.info("✅ DI container initialized successfully with authentication services")
 
-    # The store exists — but can it reach its storage? Presence was never the
-    # whole question, and for the database arm (#828) the answer is no on any
-    # standalone deployment that upgraded its image instead of wiping: the
-    # table lives in the single in-place-edited baseline, so `alembic upgrade
-    # head` is a no-op there and `token_revocations` never appears. Revocation
-    # would then be silently OFF, because `AuthService._is_revoked` fails open.
-    #
-    # Skipped in test environments, like the credential and investigation
-    # gates beside it, which boot the app against databases that were never
-    # migrated.
-    if not _is_test_environment(settings):
-        from .config.revocation_storage import validate_revocation_storage
-
-        await validate_revocation_storage(token_revocation_store)
-
     # Make container available to app for access by other components
     app.extra["di_container"] = container
 
@@ -396,6 +381,24 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
     await assert_app_db_role_enforces_rls(
         is_multi_tenant=(requested_tenant_provider() == BUILTIN_MULTI)
     )
+
+    # Can the resolved revocation store reach its storage? Presence was checked
+    # at composition; this asks whether the table is there (#828). Revocation
+    # fails OPEN — `AuthService._is_revoked` swallows a read error into "not
+    # revoked" — so a missing `token_revocations` is a security control silently
+    # off, which is why it refuses the boot rather than warning.
+    #
+    # AFTER bootstrap, for the same reason the RLS guard above is: bootstrap is
+    # what runs the migrations (and creates `data/` in the first place), so a
+    # probe before it fails on every FIRST-EVER install — a brand-new Quick
+    # Start would refuse to boot, advised to re-provision a deployment that had
+    # never run (#828 delta review). Ordering is the whole of this gate's
+    # correctness, which is why it has a startup-sequence test and not only a
+    # direct-call one.
+    if not _is_test_environment(settings):
+        from .config.revocation_storage import validate_revocation_storage
+
+        await validate_revocation_storage(token_revocation_store)
 
     # ============================================================
     # Composition Root: Attach all services to app.state

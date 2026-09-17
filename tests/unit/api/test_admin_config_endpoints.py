@@ -1274,6 +1274,15 @@ class TestTokenRevocationDurableAnswersWhetherRevocationIsInForce:
         assert feature.enabled is False
         assert "cannot read its storage" in feature.description
         assert "token_revocations" in feature.description
+        # The exception TYPE, never the driver's message. SQLAlchemy's carries
+        # the full statement and its bound parameters, and this endpoint's body
+        # is not where a schema and live parameter values belong (#828 delta
+        # review). The detail is logged instead.
+        assert "OperationalError" in feature.description
+        for leaked in ("SELECT", "FROM token_revocations WHERE", "[parameters:"):
+            assert (
+                leaked not in feature.description
+            ), f"the driver message reached the API response body: {leaked!r}"
 
     @pytest.mark.asyncio
     async def test_a_cache_backed_store_reports_not_durable(
@@ -1966,22 +1975,32 @@ def _scenario_token_revocation_durable(settings, app, monkeypatch, reality):
     process whose store is the cache — or on one that composed no store at all,
     where revocation is not merely non-durable but unenforceable (#767).
     """
+    import tempfile
+    from pathlib import Path
+
     import fakeredis.aioredis as fakeredis_aio
 
     from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
         RedisTokenRevocationStore,
-        SqlTokenRevocationStore,
     )
 
     settings.deployment_mode = "standalone"
-    app.state.token_revocation_store = (
-        SqlTokenRevocationStore()
-        if reality
-        else RedisTokenRevocationStore(
+    if reality:
+        # A store over a REAL schema. A bare ``SqlTokenRevocationStore()`` binds
+        # the process-global ``get_db_session``, so under this file's mocked
+        # settings the engine is built from a MagicMock URL and the field's live
+        # probe correctly reports the store unreadable — which failed this
+        # scenario's own "capability present" arm (#828 delta review). The field
+        # now asserts readability, so the fixture has to supply it.
+        store, _engine = _store_over_a_real_schema(
+            Path(tempfile.mkdtemp(prefix="fm-scenario-")), with_table=True
+        )
+        app.state.token_revocation_store = store
+    else:
+        app.state.token_revocation_store = RedisTokenRevocationStore(
             fakeredis_aio.FakeRedis(decode_responses=True),
             key_prefix="revoked:token:",
         )
-    )
 
 
 FEATURE_SCENARIOS = {
