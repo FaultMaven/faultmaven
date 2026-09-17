@@ -26,8 +26,12 @@ Nothing here may have import side effects — that is the whole point.
 #
 # The reference documents the **maximal deployed surface**: every route the
 # product can serve, so one generated client covers every deployment. Debug
-# endpoints are the exception — they are development-only and are never part of
-# a deployed API. Excluding OAuth and SSO would leave the document advertising
+# endpoints are the exception — they are excluded because this pins
+# `ENVIRONMENT=production`, where they mount only if an operator sets
+# `ENABLE_DEBUG_ENDPOINTS`, so they are not part of the surface a generated
+# client should assume. (They are not "development-only": that flag mounts them
+# anywhere. They require the platform administrator role — #1474.) Excluding
+# OAuth and SSO would leave the document advertising
 # `/auth/oauth/authorize` and `/auth/sso/login` from `GET /auth/config` while
 # describing neither.
 PINNED_ENVIRONMENT = {

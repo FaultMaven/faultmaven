@@ -1683,10 +1683,14 @@ except Exception as e:
     )
 
 
-# Debug endpoints - mounted outside production, or in production behind the
-# ENABLE_DEBUG_ENDPOINTS operator switch. They expose internal state, so every
-# one of them requires the platform administrator role (#1474); the block at
-# the mount below says why that is the layer the gate sits at.
+# Debug endpoints - mounted when ENVIRONMENT is development/testing/test, or in
+# ANY environment when the ENABLE_DEBUG_ENDPOINTS operator switch is set. Note
+# what that leaves out: `Environment` is development/staging/production, so
+# `staging` does NOT mount them by default — "outside production" would be the
+# same kind of wrong as the claim this comment replaced. They expose internal
+# state, so every route on the router requires an authenticated caller and the
+# four #1474 gated require the platform administrator role; the block at the
+# mount below says why that is the layer the gate sits at.
 def _is_debug_enabled(settings=None) -> bool:
     """Check if debug endpoints should be enabled based on environment."""
     # Get settings if not provided
@@ -1735,9 +1739,19 @@ except Exception:
 # The flag is left alone. Debugging a production deployment is presumably why an
 # operator switch exists, and taking that away is the owner's call, not a
 # security fix's. What changes is that the flag now governs MOUNTING rather than
-# EXPOSURE: every route below carries ``require_platform_admin``, matching
-# ``/debug/cases/{case_id}/causal-graph``, which already required auth and made
-# this router internally inconsistent rather than deliberately open.
+# EXPOSURE: the four routes below carry ``require_platform_admin``, so no route
+# on this router is reachable without a credential.
+#
+# The router is NOT uniform, and saying "every route here is platform-admin"
+# would be the next version of the claim this change exists to correct.
+# ``/debug/cases/{case_id}/causal-graph`` carries ``require_authentication``
+# only — any signed-in caller of the deployment may reach it, bounded by the
+# owner ∪ shared-to-my-teams check it applies to the case. #1474 scoped itself
+# to the four that took NO dependency at all and said that route "is not part
+# of this". Whether the most data-revealing route on the router should also be
+# operator-only, while ``/debug/health`` (a static ``{"status": "ok"}``) is,
+# is a real question and a separate decision — it is recorded on the pull
+# request rather than taken here.
 #
 # The gate is declared on the DECORATOR (``dependencies=[...]``) rather than as a
 # handler parameter, which is the shape #1467 established for

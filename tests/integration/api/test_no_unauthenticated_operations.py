@@ -547,23 +547,35 @@ def _debug_routes(app) -> list[str]:
     )
 
 
-def _open_served_operations(app, prefix: str) -> set[tuple[str, str]]:
-    """Served operations under ``prefix`` whose tree contains no mandatory auth."""
+def _qualified(call) -> str:
+    """``module.name`` for a dependency callable — the spelling both predicates use."""
     import inspect
 
+    module = getattr(inspect.getmodule(call), "__name__", "")
+    name = getattr(call, "__name__", type(call).__name__)
+    return f"{module}.{name}" if module else name
+
+
+def _dependency_names(dependant, seen=None) -> set[str]:
+    """Every dependency in ``dependant``'s SUBTREE, qualified.
+
+    One walk, used by both :func:`_open_served_operations` ("is this route
+    gated at all?") and :func:`_gate_failure` ("does the gate resolve first?").
+    They were two copies that disagreed about depth: the first recursed, the
+    second read only the top level, so a route gated through a composite
+    dependency was "authenticated" to one and "no auth at all" to the other, on
+    the same app in the same run.
+    """
+    seen = seen if seen is not None else set()
+    for dependency in dependant.dependencies:
+        seen.add(_qualified(dependency.call))
+        _dependency_names(dependency, seen)
+    return seen
+
+
+def _open_served_operations(app, prefix: str) -> set[tuple[str, str]]:
+    """Served operations under ``prefix`` whose tree contains no mandatory auth."""
     from fastapi.routing import APIRoute
-
-    def qualified(call) -> str:
-        module = getattr(inspect.getmodule(call), "__name__", "")
-        name = getattr(call, "__name__", type(call).__name__)
-        return f"{module}.{name}" if module else name
-
-    def dependencies(dependant, seen=None):
-        seen = seen if seen is not None else set()
-        for dependency in dependant.dependencies:
-            seen.add(qualified(dependency.call))
-            dependencies(dependency, seen)
-        return seen
 
     # Spelled as ``test_openapi_documents_auth.py`` spells it, and IMPORTED
     # from it rather than copied, so the two cannot drift about what
@@ -578,7 +590,7 @@ def _open_served_operations(app, prefix: str) -> set[tuple[str, str]]:
         if isinstance(route, APIRoute) and route.path.startswith(prefix)
         for method in route.methods
         if method not in {"HEAD", "OPTIONS"}
-        and not (MANDATORY_AUTH_DEPENDENCIES & dependencies(route.dependant))
+        and not (MANDATORY_AUTH_DEPENDENCIES & _dependency_names(route.dependant))
     }
 
 
@@ -682,11 +694,35 @@ def test_the_debug_router_in_production_is_an_explicit_opt_in():
         + _format(open_in_production)
     )
 
+    # Both structural guarantees, on the flag path, because the flag path is
+    # the one that cannot have an HTTP round trip: an app built under
+    # ``ENVIRONMENT=production`` selects the production protection preset, which
+    # refuses every rate-limited request when it has no Redis client
+    # (``fail_open_on_redis_error=False``, and no bypass headers), so the
+    # request-path test below runs under development only and says why. "A gate
+    # is present" and "the gate resolves first" are separate claims, and this is
+    # the only place the second one is made about the routes AS MOUNTED BY THE
+    # FLAG rather than as mounted by the environment.
+    from fastapi.routing import APIRoute
 
-#: The four routes #1474 gated. ``/debug/cases/{case_id}/causal-graph`` is the
-#: fifth on that router and is deliberately absent: it already required auth,
-#: and it takes a path parameter and a case service, so it cannot be driven by
-#: a bare GET the way these four can.
+    mis_ordered = {
+        route.path: failure
+        for route in opted_in_app.routes
+        if isinstance(route, APIRoute)
+        and route.path in _ALL_DEBUG_PATHS
+        and (failure := _gate_failure(route)) is not None
+    }
+    assert not mis_ordered, (
+        "the operator flag mounted these debug routes in PRODUCTION with "
+        "something resolving ahead of their auth gate:\n"
+        + "\n".join(f"{path}: {reason}" for path, reason in mis_ordered.items())
+    )
+
+
+#: The four routes #1474 gated: the ones a bare anonymous GET can drive, which
+#: is what :func:`test_the_debug_routes_refuse_anonymous_and_non_operator_callers`
+#: needs. ``/debug/cases/{case_id}/causal-graph`` is absent from THIS tuple for
+#: that reason alone — it takes a path parameter and a case service.
 #:
 #: Named rather than derived from the served app, because a route silently
 #: dropped from the router is a thing this module should notice: a derived list
@@ -698,72 +734,82 @@ _DEBUG_PATHS = (
     "/debug/llm-providers",
 )
 
+#: Every route on the debug router, which is what the ORDERING guard quantifies
+#: over. It reads ``route.dependant`` and issues no request, so "cannot be
+#: driven by a bare GET" is no reason to exclude anything — and excluding the
+#: causal-graph route would have left the one route on this router that DOES
+#: use the condemned trailing-parameter shape as the only one never inspected.
+_ALL_DEBUG_PATHS = _DEBUG_PATHS + ("/debug/cases/{case_id}/causal-graph",)
+
+
+#: The only dependency permitted to resolve ahead of an auth gate.
+#:
+#: ``bind_request_enterprise_context`` is declared as a GLOBAL on ``app`` — the
+#: module docstring's "the app's only global dependency is the tenant binder,
+#: not authentication" — and FastAPI puts app-level dependencies at the front of
+#: every route's dependant. So it is index 0 on every route in the application
+#: and no route can be written that does not have it first.
+#:
+#: Naming it rather than discriminating structurally is deliberate. The obvious
+#: structural rule — "ignore anything FastAPI built without a parameter name" —
+#: measured WRONG: a collaborator listed in the same ``dependencies=[...]`` as
+#: the gate also has ``name is None``, so
+#: ``dependencies=[Depends(service), Depends(require_platform_admin)]`` passed a
+#: rule written to forbid exactly that, while an anonymous GET answered 500.
+#: An allowlist of one cannot make that mistake: everything not named here is
+#: reported, wherever it was declared.
+_PERMITTED_BEFORE_A_GATE = frozenset(
+    {
+        "faultmaven.api.middleware.tenant_scope.bind_request_enterprise_context",
+    }
+)
+
 
 def _gate_failure(route) -> str | None:
-    """``None`` if an auth gate resolves before anything the HANDLER declares.
+    """``None`` if an auth gate resolves before every other dependency.
 
-    "First" is not the same as "index 0". The application carries one global
-    dependency — ``bind_request_enterprise_context``, the tenant binder — and
-    FastAPI inserts app-level and decorator-level dependencies at the front of
-    every route's dependant, so the binder is index 0 on all of them. The
-    property worth asserting is therefore the one #1467's finding is actually
-    about: no dependency the handler DECLARES resolves before the gate.
+    "First" is not literally "index 0": the tenant binder above is, on every
+    route. So the property asserted is that nothing EXCEPT the binder resolves
+    ahead of the gate — which covers #1467's finding (a gate declared as a
+    trailing handler parameter, behind a service) and the decorator-list
+    ordering that a name-based rule missed.
 
-    The discriminator is ``Dependant.name``, which FastAPI sets to the
-    parameter's name for a handler-declared dependency and leaves ``None`` for
-    a parameterless one built from ``dependencies=[...]``. Measured:
-
-        @app.get("/decorator", dependencies=[Depends(gate)])
-        async def a(svc=Depends(service)): ...
-            -> [(None, 'gate'), ('svc', 'service')]
-
-        @app.get("/parameter")
-        async def b(svc=Depends(service), user=Depends(gate)): ...
-            -> [('svc', 'service'), ('user', 'gate')]
-
-    ``test_a_gate_declared_after_a_service_parameter_is_not_a_gate`` drives both
-    shapes through the request path, so this predicate is not the only thing
-    claiming the difference matters.
+    The gate's position is the first TOP-LEVEL dependency whose subtree
+    contains a mandatory auth dependency, so a gate reached through a composite
+    (``Depends(get_current_user_id)``, which depends on
+    ``require_authentication``) is found where it actually resolves rather than
+    reported absent.
     """
-    import inspect
-
     from tests.integration.api.test_openapi_documents_auth import (
         MANDATORY_AUTH_DEPENDENCIES,
     )
 
-    def qualified(call) -> str:
-        module = getattr(inspect.getmodule(call), "__name__", "")
-        name = getattr(call, "__name__", type(call).__name__)
-        return f"{module}.{name}" if module else name
-
-    dependencies = route.dependant.dependencies
+    top_level = route.dependant.dependencies
     gates = [
         index
-        for index, dependency in enumerate(dependencies)
-        if qualified(dependency.call) in MANDATORY_AUTH_DEPENDENCIES
+        for index, dependency in enumerate(top_level)
+        if MANDATORY_AUTH_DEPENDENCIES & _dependency_names(dependency)
+        or _qualified(dependency.call) in MANDATORY_AUTH_DEPENDENCIES
     ]
     if not gates:
         return (
             "no mandatory auth dependency at all; resolved: "
-            f"{[qualified(d.call) for d in dependencies]}"
+            f"{[_qualified(d.call) for d in top_level]}"
         )
 
-    declared = [
-        (index, dependency)
-        for index, dependency in enumerate(dependencies)
-        if dependency.name is not None
-    ]
     early = [
-        f"{dependency.name}={qualified(dependency.call)}"
-        for index, dependency in declared
+        f"{dependency.name or '<decorator>'}={_qualified(dependency.call)}"
+        for index, dependency in enumerate(top_level)
         if index < min(gates)
+        and _qualified(dependency.call) not in _PERMITTED_BEFORE_A_GATE
     ]
     if early:
         return (
-            "these handler-declared dependencies resolve BEFORE the auth "
-            f"gate: {early}. Declare the gate on the decorator "
-            "(dependencies=[Depends(require_platform_admin)]) rather than as "
-            "a handler parameter"
+            f"these dependencies resolve BEFORE the auth gate: {early}. Declare "
+            "the gate first — on the decorator "
+            "(``dependencies=[Depends(require_platform_admin)]``) and ahead of "
+            "anything else in that list — or an anonymous caller reaches them "
+            "and gets their failure instead of the refusal"
         )
     return None
 
@@ -780,8 +826,15 @@ def test_a_gate_declared_after_a_service_parameter_is_not_a_gate():
     resolution would fail here, where the reason is legible, instead of
     silently turning four 401s into 500s.
 
-    The gate is the REAL ``require_platform_admin`` in both, not a stand-in:
-    only its declaration site differs, so what the two routes disagree about is
+    Three shapes, because the second rule this predicate had to learn came from
+    a review of the first: a collaborator listed in the SAME
+    ``dependencies=[...]`` as the gate, ahead of it, is also parameterless, so a
+    rule that discriminated on "was this declared as a handler parameter"
+    reported it clean while an anonymous GET answered 500. Measured, which is
+    why it is a row here rather than a sentence.
+
+    The gate is the REAL ``require_platform_admin`` in all three, not a
+    stand-in: only its position differs, so what the routes disagree about is
     exactly the one thing under test.
     """
     from fastapi import Depends as _Depends
@@ -809,22 +862,73 @@ def test_a_gate_declared_after_a_service_parameter_is_not_a_gate():
     ):
         return {}
 
+    @probe.get(
+        "/gate-after-a-decorator-collaborator",
+        dependencies=[_Depends(service), _Depends(require_platform_admin)],
+    )
+    async def _mis_ordered():  # pragma: no cover
+        return {}
+
+    # A gate reached through TWO levels of wrapper. This is the only thing in
+    # the module that observes the recursion in ``_dependency_names``, and it
+    # is here because a mutation proved the recursion inert without it: with
+    # ``_dependency_names`` flattened to one level the whole module still
+    # passed, which means the shared walk — a choke point both predicates now
+    # sit on — was carrying an untested claim. One level is not enough to see
+    # it (the wrapper's direct children are still enumerated); two is.
+    #
+    # It fails LOUDLY in both predicates when the walk stops short — the route
+    # is reported "no mandatory auth dependency at all" rather than quietly
+    # accepted — but loud-when-broken is a property to assert, not to assume.
+    async def _inner_gate(caller=_Depends(require_platform_admin)):
+        return caller
+
+    async def _outer_gate(caller=_Depends(_inner_gate)):
+        return caller
+
+    @probe.get("/gate-through-two-wrappers", dependencies=[_Depends(_outer_gate)])
+    async def _nested():  # pragma: no cover
+        return {}
+
     routes = {
         route.path: route for route in probe.routes if isinstance(route, APIRoute)
     }
-    assert _gate_failure(routes["/gate-on-the-decorator"]) is None
-    assert _gate_failure(routes["/gate-after-the-parameter"]) is not None, (
-        "the predicate accepted a gate declared after a service parameter — "
-        "it is not discriminating, and every route it passes is unchecked"
+    assert _gate_failure(routes["/gate-on-the-decorator"]) is None, (
+        "the predicate rejected a correctly gated route — it is not a rule, it "
+        "is an outage"
     )
+    assert _gate_failure(routes["/gate-through-two-wrappers"]) is None, (
+        "the predicate did not find an auth gate two wrappers deep, so "
+        "_dependency_names is not reaching the whole subtree. Both predicates "
+        "read that one walk: _open_served_operations would report this route "
+        "OPEN, and this one reports it ungated"
+    )
+    assert "faultmaven.api.v1.auth_dependencies.require_platform_admin" in (
+        _dependency_names(routes["/gate-through-two-wrappers"].dependant)
+    ), "the shared walk does not reach a dependency two levels down"
+    for path in ("/gate-after-the-parameter", "/gate-after-a-decorator-collaborator"):
+        assert _gate_failure(routes[path]) is not None, (
+            f"the predicate accepted {path}, where a collaborator resolves "
+            "ahead of the gate — it is not discriminating, and every route it "
+            "passes is unchecked"
+        )
 
     with TestClient(probe, raise_server_exceptions=False) as client:
         assert client.get("/gate-on-the-decorator").status_code == 401
-        assert client.get("/gate-after-the-parameter").status_code == 500, (
-            "a gate declared after a service parameter no longer lets the "
-            "service's failure reach the caller first — FastAPI's resolution "
-            "order changed, and the rule below needs re-deriving"
+        assert client.get("/gate-through-two-wrappers").status_code == 401, (
+            "a gate two wrappers deep no longer refuses an anonymous caller — "
+            "the shape the walk above is asserted to see is not the shape "
+            "FastAPI runs"
         )
+        for path in (
+            "/gate-after-the-parameter",
+            "/gate-after-a-decorator-collaborator",
+        ):
+            assert client.get(path).status_code == 500, (
+                f"{path}: a collaborator ahead of the gate no longer reaches "
+                "the caller first — FastAPI's resolution order changed, and "
+                "the rule below needs re-deriving"
+            )
 
 
 @pytest.mark.integration
@@ -843,6 +947,13 @@ def test_the_debug_gate_resolves_before_anything_the_handler_declares():
     so the ordering is currently unobservable from a status code, and the next
     person to add one would be relying on a property nothing in this repository
     checks.
+
+    Quantified over the WHOLE router (``_ALL_DEBUG_PATHS``), not the four this
+    issue gated. ``/debug/cases/{case_id}/causal-graph`` declares its
+    ``require_authentication`` as a trailing handler parameter — the shape this
+    rule exists to forbid, currently harmless because it declares nothing else
+    — so it is the one route on the router that most needs watching, and the
+    one an "only the routes #1474 touched" scope would have skipped.
     """
     from fastapi.routing import APIRoute
 
@@ -850,10 +961,10 @@ def test_the_debug_gate_resolves_before_anything_the_handler_declares():
     routes = {
         route.path: route
         for route in served.routes
-        if isinstance(route, APIRoute) and route.path in _DEBUG_PATHS
+        if isinstance(route, APIRoute) and route.path in _ALL_DEBUG_PATHS
     }
 
-    missing = set(_DEBUG_PATHS) - set(routes)
+    missing = set(_ALL_DEBUG_PATHS) - set(routes)
     assert not missing, f"debug routes absent from the served app: {sorted(missing)}"
 
     failures = {
@@ -868,32 +979,53 @@ def test_the_debug_gate_resolves_before_anything_the_handler_declares():
 
 @pytest.mark.integration
 @pytest.mark.security
-@pytest.mark.parametrize(
-    "label,overrides",
-    [
-        ("the shipped default", {"ENVIRONMENT": "development"}),
-        (
-            "the operator flag in production",
-            {"ENVIRONMENT": "production", "ENABLE_DEBUG_ENDPOINTS": "true"},
-        ),
-    ],
-)
-def test_the_debug_routes_refuse_anonymous_and_non_operator_callers(label, overrides):
-    """Driven through the served app, on both paths that mount the router.
+def test_the_debug_routes_refuse_anonymous_and_non_operator_callers():
+    """Driven through the served app: the gate as a caller experiences it.
 
-    A guard has to be exercised through the path that runs it. The dependency-
-    graph assertions above read the route object; this one issues the request,
-    on both mount paths rather than on the convenient one — the flag in
-    production is where the exposure mattered (self-hosted publishes 8090 on
-    0.0.0.0 with no proxy), and development is the shipped default, so a fix
-    that closed only one of them would close neither in practice.
+    The structural guards above read ``route.dependant``. This one issues the
+    request, because a dependency graph says a gate is PRESENT and only a
+    request says what a caller gets.
 
     Three callers, because "requires auth" and "requires the operator role" are
     different claims and only the third proves the routes still WORK. An
     authenticated non-operator getting 200 would mean the gate had been
     weakened to ``require_authentication``; an operator getting 401 or 403
     would mean the developer surface had been removed rather than gated, which
-    is not what #1474 decided.
+    is not what #1474 decided. The operator assertion checks the PAYLOAD as
+    well as the status, because ``debug_config`` and ``debug_llm_providers``
+    both catch every exception and answer 200 with an ``error`` key — a
+    regression that broke either of them outright would leave a status-only
+    assertion green.
+
+    **Built under development, and only under development.** The obvious
+    second arm — the same requests against the app built with
+    ``ENVIRONMENT=production`` + ``ENABLE_DEBUG_ENDPOINTS=true`` — was written,
+    shipped, and failed in CI's Cloud matrix with
+
+        GET /debug/config -> 503
+        {"error": "service_unavailable",
+         "message": "Rate limiting service temporarily unavailable"}
+
+    and it was RIGHT to. ``_app_under`` empties the environment before building,
+    the production protection preset sets ``fail_open_on_redis_error=False`` and
+    ``protection_bypass_headers=[]`` ("No bypasses in production",
+    ``config/protection.py``), and the limiter resolves its client from
+    ``app.state``. So a production-built app with no reachable Redis refuses
+    every rate-limited request at the middleware, ahead of any route. Nothing
+    about the gate can be observed through it, and a test that tolerated the 503
+    as "refused" would pass a deployment whose auth had been removed.
+
+    It cost nothing real to drop, which is the part worth recording:
+    ``_app_under`` restores ``os.environ`` and calls ``reset_settings()`` in its
+    ``finally``, so by the time any request is issued ``get_settings()`` reports
+    ``environment=development, auth_mode=LOCAL`` whichever way the app was
+    built. Measured. The two arms therefore differed only in which routes were
+    MOUNTED — never in what a request met — and the mounted-under-the-flag route
+    table is asserted, on that same app object, by
+    :func:`test_the_debug_router_in_production_is_an_explicit_opt_in`: every
+    operation it mounts carries a mandatory auth dependency, and each one's gate
+    resolves first. The flag path keeps both structural guarantees; what it
+    cannot have, in an environment with no Redis, is an HTTP round trip.
     """
     from datetime import UTC, datetime
 
@@ -901,6 +1033,17 @@ def test_the_debug_routes_refuse_anonymous_and_non_operator_callers(label, overr
 
     from faultmaven.api.v1.auth_dependencies import require_authentication
     from faultmaven.modules.auth.domain.models.auth import DevUser
+
+    #: A key every gated handler puts in its 200 body, so the operator
+    #: assertion fails on a handler that answered 200 out of its own
+    #: ``except Exception`` instead of doing its job.
+    expected_key = {
+        "/debug/config": "configuration",
+        "/debug/routes": "routes",
+        "/debug/health": "status",
+        "/debug/llm-providers": "fallback_chain",
+    }
+    assert set(expected_key) == set(_DEBUG_PATHS)
 
     def _user(roles):
         return DevUser(
@@ -912,15 +1055,19 @@ def test_the_debug_routes_refuse_anonymous_and_non_operator_callers(label, overr
             roles=roles,
         )
 
-    served = _app_under(**overrides)
-    assert _debug_routes(served), f"{label}: the debug router did not mount"
+    served = _app_under(ENVIRONMENT="development")
+    assert _debug_routes(served), "the debug router did not mount"
 
-    with TestClient(served) as client:
+    # ``raise_server_exceptions=False`` so a handler that raises is reported by
+    # the assertion that names the caller identity, rather than as a bare
+    # traceback out of ``client.get`` with no indication of which of the three
+    # was in play.
+    with TestClient(served, raise_server_exceptions=False) as client:
         for path in _DEBUG_PATHS:
             anonymous = client.get(path)
             assert anonymous.status_code == 401, (
-                f"{label}: GET {path} answered {anonymous.status_code} to a "
-                f"caller with no credential: {anonymous.text[:200]}"
+                f"GET {path} answered {anonymous.status_code} to a caller with "
+                f"no credential: {anonymous.text[:200]}"
             )
 
         served.dependency_overrides[require_authentication] = lambda: _user(["user"])
@@ -928,9 +1075,9 @@ def test_the_debug_routes_refuse_anonymous_and_non_operator_callers(label, overr
             for path in _DEBUG_PATHS:
                 signed_in = client.get(path)
                 assert signed_in.status_code == 403, (
-                    f"{label}: GET {path} answered {signed_in.status_code} to "
-                    "an authenticated NON-operator; the gate is "
-                    f"require_platform_admin, not require_authentication: "
+                    f"GET {path} answered {signed_in.status_code} to an "
+                    "authenticated NON-operator; the gate is "
+                    "require_platform_admin, not require_authentication: "
                     f"{signed_in.text[:200]}"
                 )
 
@@ -940,9 +1087,15 @@ def test_the_debug_routes_refuse_anonymous_and_non_operator_callers(label, overr
             for path in _DEBUG_PATHS:
                 operator = client.get(path)
                 assert operator.status_code == 200, (
-                    f"{label}: GET {path} answered {operator.status_code} to a "
-                    "platform administrator — #1474 gated these routes, it did "
-                    f"not remove them: {operator.text[:200]}"
+                    f"GET {path} answered {operator.status_code} to a platform "
+                    "administrator — #1474 gated these routes, it did not "
+                    f"remove them: {operator.text[:200]}"
+                )
+                assert expected_key[path] in operator.json(), (
+                    f"GET {path} answered 200 to a platform administrator but "
+                    f"without {expected_key[path]!r}: the handler caught its "
+                    "own failure and reported success. "
+                    f"{operator.text[:200]}"
                 )
         finally:
             served.dependency_overrides.clear()

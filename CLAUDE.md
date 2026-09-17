@@ -1101,7 +1101,7 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | `GET /api/v1/meta/capabilities` | Backend capabilities for extension and dashboard |
 | `GET /v1/meta/capabilities` | Deprecated alias of the above, kept for installed extensions |
 
-**Debug Endpoints (development only):**
+**Debug Endpoints** — mounted when `ENVIRONMENT` is development/testing/test, or in any environment (staging and production included) when `ENABLE_DEBUG_ENDPOINTS=true`. **All four require the platform administrator role** (#1474); an anonymous caller gets 401. The standalone bootstrap account holds that role, so a local `dev-login` token reaches them.
 
 | Endpoint | Description |
 |----------|-------------|
@@ -1109,6 +1109,8 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | `GET /debug/health` | Minimal debug health |
 | `GET /debug/config` | Configuration summary |
 | `GET /debug/llm-providers` | LLM provider status |
+
+`GET /debug/cases/{case_id}/causal-graph` is the fifth route on the same router and takes `require_authentication` only.
 
 **Documentation:** http://localhost:8090/docs
 
@@ -1253,8 +1255,12 @@ lint-imports
 echo $CHAT_PROVIDER
 echo $OPENAI_API_KEY  # (or relevant provider key)
 
-# Check debug endpoint
-curl http://localhost:8090/debug/llm-providers
+# Check debug endpoint (platform-admin only since #1474 — without the header
+# this answers 401). $TOKEN from POST /api/v1/auth/dev-login {"username":"admin"}
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8090/debug/llm-providers
+
+# Or the always-mounted operator surface, which needs no debug flag:
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/v1/admin/llm/config
 
 # Check logs for API errors
 ./faultmaven.sh logs api
