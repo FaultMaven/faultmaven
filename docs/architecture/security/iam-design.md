@@ -637,12 +637,21 @@ ENDPOINT_VISIBILITY = {
     "/api/v1/auth/logout":    ["local", "oauth"],  # Always available
 }
 
-# Debug endpoints — development only (no auth, internal topology exposed)
-DEVELOPMENT_ONLY_ENDPOINTS = [
+# Debug endpoints — gated by require_platform_admin (#1474), and NOT
+# development-only: ENABLE_DEBUG_ENDPOINTS mounts them in any environment.
+# Both halves of the old claim here were wrong, which is how they came to be
+# served to anonymous callers in production behind an operator flag.
+OPERATOR_DEBUG_ENDPOINTS = [
     "/debug/routes",
     "/debug/health",
     "/debug/config",
     "/debug/llm-providers",
+]
+
+# The fifth route on the same router takes require_authentication only — any
+# signed-in caller, bounded by the case's owner ∪ shared-to-my-teams check.
+AUTHENTICATED_DEBUG_ENDPOINTS = [
+    "/debug/cases/{case_id}/causal-graph",
 ]
 
 # Admin-only endpoints — always registered, gated by require_platform_admin
