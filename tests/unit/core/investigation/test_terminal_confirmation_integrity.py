@@ -268,17 +268,29 @@ class TestMintedIntentGateOneConsentGuard:
         )
         assert self.GUARD(case, minted, message) is True
 
-    def test_the_decline_arm_is_guarded_too(self):
-        """``confirmation_value`` is not consulted on this arm, because the
-        ENGINE does not consult it: section 0c commits Gate 1 for a minted
-        ``confirmation`` whatever the value says (#1464). Pinned so that when
-        the engine learns to decline, this test is what says the guard may
-        narrow."""
+    def test_the_decline_arm_is_no_longer_guarded(self):
+        """#1464 narrowed this arm to the affirmative, and this is the test
+        that said it may.
+
+        Until #1464 the arm ignored ``confirmation_value`` because the ENGINE
+        did: section 0c committed Gate 1 for a minted ``confirmation``
+        whatever the value said, so guarding both arms was what "would commit
+        a gate" meant. 0c now commits on an explicit ``True`` alone, so an
+        adopted declining mint commits nothing and there is nothing here to
+        intercept.
+
+        The licence is the engine's behaviour, not this docstring:
+        ``tests/unit/core/investigation/test_gate_one_decline_1464.py``
+        drives a declining confirmation through
+        ``InvestigationService.process_turn`` and asserts Gate 1 stays
+        uncommitted, and it asserts THIS narrowing in the same test — revert
+        either half and both fail.
+        """
         case = self._inquiry_awaiting_gate_one()
         minted = QueryIntent(type=IntentType.CONFIRMATION, confirmation_value=False)
         assert (
             self.GUARD(case, minted, "not quite — is it the replica or the primary?")
-            is True
+            is False
         )
 
     @pytest.mark.parametrize(
@@ -290,7 +302,7 @@ class TestMintedIntentGateOneConsentGuard:
         ],
         ids=["no-pending", "pending-close", "pending-needs-info"],
     )
-    def test_gate_one_is_guarded_whether_or_not_a_transition_is_pending(self, pending):
+    def test_an_affirmative_mint_is_guarded_whatever_is_pending(self, pending):
         """The two gates are not alternatives, and writing them as one was a
         real hole.
 
@@ -304,13 +316,25 @@ class TestMintedIntentGateOneConsentGuard:
         still — 0b is skipped wholesale
         (``elif not case.pending_transition.get("needs_info")``).
 
-        The parametrization is the point: drop any one value and the hole
-        reopens silently.
+        #1464 changed what this can prove, and the change is stated rather
+        than papered over. The mint is now AFFIRMATIVE (a declining one
+        commits nothing anywhere, so it is guarded nowhere), and an
+        affirmative ``confirmation`` with any truthy ``pending`` is matched by
+        ``confirms_pending_transition`` as well — that arm accepts
+        CONFIRMATION+True for any pending row, without looking at
+        ``to_state``. So the if/else hole can no longer reopen THROUGH a
+        pending case whichever way the Gate-1 arm is written, and the shape
+        where the arm answers alone is ``no-pending``.
+
+        What the parametrization still holds: no shape of ``pending`` turns
+        the guard off. That is the regression this class exists for — the
+        original bug was a mint being ADOPTED, and the pending shapes are
+        where adoption was measured.
         """
         case = self._inquiry_awaiting_gate_one()
         case.pending_transition = pending
-        minted = QueryIntent(type=IntentType.CONFIRMATION, confirmation_value=False)
-        message = "no - but is the problem statement about the replica or the primary?"
+        minted = QueryIntent(type=IntentType.CONFIRMATION, confirmation_value=True)
+        message = "yes - but is the problem statement about the replica or the primary?"
         assert is_substantive_reply(message) is True
         assert self.GUARD(case, minted, message) is True
 

@@ -2918,14 +2918,35 @@ class InvestigationService:
         transition. Both only cancel a standing proposal, and the message is
         processed as a normal turn either way.
 
-        The Gate-1 arm does not read ``confirmation_value``, and that is not
-        an oversight: the engine's 0c branch does not read it either, so a
-        minted ``confirmation_value=False`` commits Gate 1 exactly as True
-        does (#1464 — reachable by an ordinary DECIDE click, so a different
-        root). Guarding both arms is therefore what "would commit a gate"
-        means TODAY. When #1464 teaches that branch to decline, this arm
-        becomes over-broad by one case — and over-broad here costs only a
-        normal LLM turn, which is the direction to err in.
+        The Gate-1 arm reads ``confirmation_value`` as of #1464, and the
+        decline it no longer guards is the change #1464's own note predicted.
+        Until then the engine's 0c branch was value-blind, so a minted
+        ``confirmation_value=False`` committed Gate 1 exactly as True did and
+        guarding both arms was what "would commit a gate" MEANT. 0c now
+        commits on an explicit True alone
+        (``tests/unit/core/investigation/test_gate_one_decline_1464.py``
+        drives that through the real path), so a declining mint commits
+        nothing and the broad arm was over-broad by exactly the one case that
+        used to justify it.
+
+        Narrowed rather than left broad, for two reasons beyond the name
+        being true again. The broad arm caught a decline only on the Gate-1
+        SHAPE — INQUIRY, statement proposed — and nowhere else: a declining
+        mint on an INVESTIGATING case with a pending transition was never
+        guarded, so "an inferred no is not trusted" was never the rule this
+        predicate held, only an accident of where the commit happened to be.
+        And keeping it would now cost the user's own answer: an adopted
+        decline reaches 0b/0c as a decline, where a rejected mint leaves the
+        outcome to the typed-decline pattern matcher instead.
+
+        One structural consequence, so nobody re-derives it as a hole: with
+        the Gate-1 arm affirmative-only, any mint it matches while a
+        ``pending_transition`` exists is matched by ``confirms_pending_-
+        transition`` too (that arm accepts CONFIRMATION+True for any pending
+        row). The fm#918 if/else hole therefore cannot reopen through a
+        pending case — but the arm is still written independently of
+        ``pending``, because 0c is reached with one or without one and the
+        no-pending shape is the arm's own.
         """
         from faultmaven.core.investigation.terminal_transitions import (
             is_substantive_reply,
@@ -2962,10 +2983,13 @@ class InvestigationService:
         # Gate 1. The same conditions the engine's 0c branch checks before it
         # commits, read in the same order — a fourth condition added there
         # without one here would make this guard silently miss the commit it
-        # exists to intercept. Deliberately says NOTHING about ``pending``:
+        # exists to intercept. ``confirmation_value is True`` is 0c's newest
+        # one (#1464): a declining mint commits nothing there, so it commits
+        # nothing to guard here. Deliberately says NOTHING about ``pending``:
         # 0c is reached with one or without one.
         commits_gate_one = (
             minted.type == IntentType.CONFIRMATION
+            and minted.confirmation_value is True
             and case.state == CaseState.INQUIRY
             and bool(
                 getattr(

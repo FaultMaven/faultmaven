@@ -6028,9 +6028,19 @@ class MilestoneEngine:
                     raise ValueError(f"Unknown to_state: {to_status_str}")
 
             elif intent_type == "confirmation":
+                # THE ANSWER THE USER GAVE. A confirmation intent carries one
+                # (``QueryIntent`` refuses to validate without it), and this
+                # branch commits a gate, so it must read it — a branch that
+                # decides off ``intent_type`` alone answers the gate for the
+                # user. Section 0b's two reads above are the same rule; the
+                # scan that holds all three to it is
+                # ``tests/unit/core/investigation/test_gate_one_decline_1464.py``.
+                confirmation_value = (intent_data or {}).get("value")
+
                 logger.info(
                     f"Explicit confirmation intent for case {case.case_id} "
-                    f"(has_pending_statement={bool(case.inquiry.proposed_problem_statement)})"
+                    f"(value={confirmation_value}, has_pending_statement="
+                    f"{bool(case.inquiry.proposed_problem_statement)})"
                 )
 
                 if case.state != CaseState.INQUIRY:
@@ -6041,6 +6051,35 @@ class MilestoneEngine:
                     logger.warning(
                         f"Received confirmation intent for case {case.case_id} but no proposed problem statement exists"
                     )
+                elif confirmation_value is not True:
+                    # #1464: Gate 1 commits on AFFIRMATIVE CONSENT ONLY. This
+                    # branch used to be blind to the value, so "Not quite, let
+                    # me clarify" (``confirmation_value: False``, the engine's
+                    # own decline affordance) started the investigation on the
+                    # statement the user was asking to refine.
+                    #
+                    # The decline is NOT a no-op turn — it falls through to
+                    # normal LLM processing exactly as section 0b's substantive
+                    # decline does, so the message is answered and the LLM can
+                    # rewrite ``proposed_problem_statement`` (it stays mutable
+                    # precisely because Gate 1 did not commit). ``_gate1_is_pending``
+                    # is a pure function of that state, so the confirmation pair
+                    # is re-offered on the refined statement with no bookkeeping
+                    # here. Nothing to withdraw either: Gate 1 has no
+                    # ``pending_transition`` row, which is why this arm has no
+                    # counterpart to 0b's ``_record_deferred_disposition_decline``.
+                    if confirmation_value is False:
+                        logger.info(
+                            f"Case {case.case_id}: Gate 1 DECLINED via confirmation "
+                            f"intent — nothing committed, processing the message "
+                            f"normally so the problem statement can be refined"
+                        )
+                    else:
+                        logger.warning(
+                            f"Case {case.case_id}: confirmation intent carried no "
+                            f"value ({confirmation_value!r}) — Gate 1 not committed. "
+                            f"Only an explicit True is consent"
+                        )
                 else:
                     # Gate 1 commit (problem-statement confirmation). There is
                     # no path fork (redesign R5) — the investigation proceeds
