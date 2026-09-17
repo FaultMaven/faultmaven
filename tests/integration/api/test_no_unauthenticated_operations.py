@@ -878,7 +878,7 @@ def test_the_debug_router_in_production_is_an_explicit_opt_in():
 
 
 #: Operations that ARE gated but resolve a collaborator before the gate — the
-#: #1467 shape, carried rather than fixed. **#1491.**
+#: #1467 shape, carried rather than fixed. **#1494.**
 #:
 #: The predicate below is quantified over the WHOLE application, not over the
 #: five debug routes it was written for, because a rule applied to five routes
@@ -893,7 +893,7 @@ def test_the_debug_router_in_production_is_an_explicit_opt_in():
 #: ``auth`` and the shared ``api/v1`` dependencies is a wide mechanical change
 #: that wants its own review. They are carried the way ``PUBLIC_OPERATIONS``
 #: carries its deferrals — with the issue that closes them — and the allowlist
-#: fails in BOTH directions, so the class cannot grow quietly and closing #1491
+#: fails in BOTH directions, so the class cannot grow quietly and closing #1494
 #: forces the entries out.
 #: The disposition for an operation that IS gated but resolves something else
 #: first. Its own word rather than ``_DEFERRED``, because the two say different
@@ -1700,7 +1700,7 @@ def test_no_gated_operation_resolves_a_collaborator_before_its_gate():
     #1467 found the rule on one route; #1474 wrote a reusable predicate for it
     and then quantified it over a five-element tuple, which is a rule about five
     routes. Run app-wide it reports 53 operations of the same shape — carried in
-    ``MISORDERED_GATE_OPERATIONS`` with the issue that closes them (#1491), not
+    ``MISORDERED_GATE_OPERATIONS`` with the issue that closes them (#1494), not
     fixed here, because they span four modules and want their own review.
 
     What this guard is FOR is that the class stops growing. It fails in both
@@ -1772,7 +1772,7 @@ def test_no_gated_operation_resolves_a_collaborator_before_its_gate():
     fixed = set(MISORDERED_GATE_OPERATIONS) - misordered
     assert not fixed, (
         "these MISORDERED_GATE_OPERATIONS entries no longer name a "
-        "mis-ordered operation — #1491 is closing, remove them:\n" + _format(fixed)
+        "mis-ordered operation — #1494 is closing, remove them:\n" + _format(fixed)
     )
 
 
