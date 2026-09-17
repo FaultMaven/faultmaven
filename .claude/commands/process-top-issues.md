@@ -304,7 +304,12 @@ Unanswered questions stay blocked and go in the next proposal unchanged.
 
 ## 4. Build
 
-Dispatch the approved items in the order the ranked head gives them,
+**The approved items** are the ones the owner approved from this round's
+proposal — the ranked head's names that made it into *Building*, plus any the
+owner pinned and the rule-4 slot, neither of which is in the head. The head is
+their order, not their membership.
+
+Dispatch them in the order the ranked head gives,
 **skipping any the ready query does not return, and any it returns that
 carries a second `pile:` label** — the ready query being
 `gh issue list --state open --label pile:ready`. Two conditions, because the
@@ -312,15 +317,12 @@ query cannot express the second: an item mid-move carries both labels and
 `--label pile:ready` still returns it.
 
 That is one predicate and it is the only one. It is a query rather than a test
-on the name, which is what makes it cover the three ways the head and the
-labels drift apart: a pull earlier in this step or in a previous invocation of
-it (the item gained `pile:blocked`, and during the window between the two
-label commands it carries **both** — still `pile:ready`, and still not
-dispatchable); an item delivered and closed by a previous round (labels
-survive closing, so only `--state open` excludes it); and an item the owner
-pinned or the rule-4 slot reserved, neither of which is in the head at all —
-which is why this dispatches *the approved items* and uses the head only for
-their order.
+on a name, which is what lets it cover both ways an approved item stops being
+dispatchable: a pull earlier in this step or in a previous invocation of it
+(the item gained `pile:blocked`, and between the two label commands it carries
+**both** — still `pile:ready`, and still not dispatchable), and an item
+delivered and closed by a previous round (labels survive closing, so only
+`--state open` excludes it).
 
 One subagent per approved item, each with a self-contained prompt carrying:
 the issue and its full text, the ruling if it had one, what "done" means, and
