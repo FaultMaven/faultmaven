@@ -1204,6 +1204,14 @@ def _pure_settings_answer(feature: str, settings) -> bool:
         # written as, and it reports True on a process that composed no
         # knowledge service and therefore pushes nothing.
         return bool(settings.knowledge.kb_prefetch_enabled)
+    if feature == "token_revocation_durable":
+        # The obvious version: "standalone means durable". It reports True on a
+        # standalone process whose store is the cache, and on one that composed
+        # no store at all — which is not non-durable but unenforceable (#767).
+        # Spelled as equality rather than `!= "cloud"` so an unconfigured
+        # settings object reports False: the deployment mode is always SET to
+        # something, so a negated test would be a constant True here.
+        return str(getattr(settings, "deployment_mode", "")) == "standalone"
     raise AssertionError(f"no settings-only stand-in defined for {feature}")
 
 
@@ -1768,12 +1776,43 @@ def _scenario_kb_prefetch(settings, app, monkeypatch, reality):
     app.state.knowledge_service = MagicMock() if reality else None
 
 
+def _scenario_token_revocation_durable(settings, app, monkeypatch, reality):
+    """The runtime fact withheld here is the store the container composed.
+
+    ``DEPLOYMENT_MODE`` is standalone in BOTH arms — that is the point. What
+    decides whether a revocation survives a restart is which class
+    ``create_token_revocation_store`` actually built and put on ``app.state``,
+    and an operator cannot read that off their config: #828's review found two
+    ways the resolution used to move underneath them (a Redis ping failure and
+    ``SKIP_SERVICE_CHECKS``). A settings-only implementation reports True on a
+    process whose store is the cache — or on one that composed no store at all,
+    where revocation is not merely non-durable but unenforceable (#767).
+    """
+    import fakeredis.aioredis as fakeredis_aio
+
+    from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
+        RedisTokenRevocationStore,
+        SqlTokenRevocationStore,
+    )
+
+    settings.deployment_mode = "standalone"
+    app.state.token_revocation_store = (
+        SqlTokenRevocationStore()
+        if reality
+        else RedisTokenRevocationStore(
+            fakeredis_aio.FakeRedis(decode_responses=True),
+            key_prefix="revoked:token:",
+        )
+    )
+
+
 FEATURE_SCENARIOS = {
     "kb_prefetch": _scenario_kb_prefetch,
     "web_search": _scenario_web_search,
     "llm_tracing": _scenario_llm_tracing,
     "first_party_consent_skip": _scenario_first_party_consent_skip,
     "suggestion_store_worker_safe": _scenario_suggestion_store_worker_safe,
+    "token_revocation_durable": _scenario_token_revocation_durable,
 }
 
 

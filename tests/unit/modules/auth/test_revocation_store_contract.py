@@ -3,9 +3,9 @@
 ``ITokenRevocationStore`` now has TWO production implementations, because
 "where does revocation state live" turned out to be a durability question:
 
-- ``RedisTokenRevocationStore`` — cloud, where the cache is a real Redis that
-  outlives the API process.
-- ``SqlTokenRevocationStore`` — standalone, where it is the in-process
+- ``RedisTokenRevocationStore`` — cloud, whose cache is a real Redis that
+  outlives the API pod (``fakeredis_or_fail`` refuses the boot otherwise).
+- ``SqlTokenRevocationStore`` — standalone, whose cache is the in-process
   FakeRedis singleton and does not, so an API restart used to resurrect every
   revoked-but-unexpired token.
 
@@ -165,6 +165,59 @@ class TestEntriesStopRevokingAtTheirDeadline:
 
         assert await store.is_revoked(JTI) is False
         assert await store.is_user_revoked(USER_ID, int(now)) is False
+        # And on the BATCHED read, which is the one the request path calls: it
+        # carries its own deadline filter, so it needs its own observable here
+        # or a store could expire correctly through the methods nobody uses.
+        assert await store.revocation_state(JTI, USER_ID, int(now)) == (False, False)
+
+
+class TestTheBatchedReadAgreesWithTheSingleReads:
+    """``revocation_state`` is a round-trip optimisation, never a second rule.
+
+    A store may answer both arms in one query (the SQL one does, because each
+    read there costs a database session). What it may not do is answer
+    DIFFERENTLY from the two methods it stands in for — so every case is
+    checked both ways, against both stores.
+    """
+
+    @pytest.mark.parametrize(
+        "revoke_jti,revoke_user,iat_offset",
+        [
+            pytest.param(False, False, 0, id="nothing-revoked"),
+            pytest.param(True, False, 0, id="jti-only"),
+            pytest.param(False, True, -1, id="user-only-token-predates"),
+            pytest.param(False, True, +5, id="user-only-token-postdates"),
+            pytest.param(True, True, -1, id="both"),
+        ],
+    )
+    async def test_it_matches_the_methods_it_replaces(
+        self, store, revoke_jti, revoke_user, iat_offset
+    ):
+        now = time.time()
+        if revoke_jti:
+            await store.add_revoked_token(JTI, ttl=60)
+        if revoke_user:
+            await store.revoke_user_tokens_before(USER_ID, now, ttl=60)
+        issued_at = int(now) + iat_offset
+
+        batched = await store.revocation_state(JTI, USER_ID, issued_at)
+
+        sequential_jti = await store.is_revoked(JTI)
+        sequential_user = (
+            False if sequential_jti else await store.is_user_revoked(USER_ID, issued_at)
+        )
+        assert batched == (sequential_jti, sequential_user)
+
+    async def test_a_token_with_no_user_claims_uses_only_the_jti_arm(self, store):
+        await store.revoke_user_tokens_before(USER_ID, time.time(), ttl=60)
+
+        assert await store.revocation_state(JTI, None, None) == (False, False)
+
+    async def test_a_token_with_no_jti_uses_only_the_user_arm(self, store):
+        now = time.time()
+        await store.revoke_user_tokens_before(USER_ID, now, ttl=60)
+
+        assert await store.revocation_state(None, USER_ID, int(now)) == (False, True)
 
 
 class TestTheTwoArmsCannotCollide:
@@ -218,6 +271,25 @@ class TestClearIsConditionalAndAtomic:
         assert (
             await store.clear_user_revocation_if_before(USER_ID, time.time()) is False
         )
+
+    @pytest.mark.slow
+    async def test_an_elapsed_watermark_is_not_there_to_clear(self, store):
+        """The arms disagreed here, and nothing looked (#828 review).
+
+        Redis answers False because its key is already gone. The SQL arm
+        answered True, because nothing had swept the row yet — the two stores
+        disagreeing about whether a login superseded a revocation that had
+        already stopped revoking. A deadline is the same rule for every read,
+        including the read that happens to delete.
+        """
+        import asyncio
+
+        now = time.time()
+        await store.revoke_user_tokens_before(USER_ID, now - 10, ttl=1)
+        await asyncio.sleep(1.2)
+        assert await store.is_user_revoked(USER_ID, int(now) - 20) is False
+
+        assert await store.clear_user_revocation_if_before(USER_ID, now) is False
 
 
 class TestSurvivesARestart:
@@ -321,29 +393,125 @@ class TestTheSqlStoreKeepsItselfBounded:
         assert await store.is_revoked("live") is True
 
 
+class TestTheSqlStoreOwnsItsUnitOfWork:
+    """Durability must not be a property of the caller's session factory.
+
+    The store shipped without a single ``commit``, leaving it to whatever
+    ``session_factory`` it was handed. ``get_db_session`` happens to commit and
+    both factories in this module were written to, so nothing failed — but
+    handed the idiomatic ``async_sessionmaker()``, every revocation was
+    discarded on exit, and ``AuthService._is_revoked`` fails open, so the
+    control would have been silently OFF with a log line as the only signal.
+
+    The factory below is deliberately the plain one: it opens and closes a
+    session and commits nothing. A store that owns its writes is unaffected.
+    """
+
+    @staticmethod
+    def _non_committing_factory(url: str):
+        engine = create_async_engine(url)
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        created = {"done": False}
+
+        @asynccontextmanager
+        async def factory():
+            if not created["done"]:
+                async with engine.begin() as conn:
+                    await conn.run_sync(Base.metadata.create_all)
+                created["done"] = True
+            session = sessions()
+            try:
+                yield session  # no commit, no rollback — the idiomatic shape
+            finally:
+                await session.close()
+
+        return factory, engine
+
+    async def test_a_revoked_jti_survives_a_factory_that_never_commits(self, tmp_path):
+        url = f"sqlite+aiosqlite:///{tmp_path / 'own.db'}"
+        factory, engine = self._non_committing_factory(url)
+        try:
+            await SqlTokenRevocationStore(session_factory=factory).add_revoked_token(
+                JTI, ttl=3600
+            )
+        finally:
+            await engine.dispose()
+
+        reader, reader_engine = _sqlite_session_factory(url)
+        try:
+            assert (
+                await SqlTokenRevocationStore(session_factory=reader).is_revoked(JTI)
+                is True
+            )
+        finally:
+            await reader_engine.dispose()
+
+    async def test_a_watermark_survives_a_factory_that_never_commits(self, tmp_path):
+        url = f"sqlite+aiosqlite:///{tmp_path / 'own.db'}"
+        revoked_at = time.time()
+        factory, engine = self._non_committing_factory(url)
+        try:
+            await SqlTokenRevocationStore(
+                session_factory=factory
+            ).revoke_user_tokens_before(USER_ID, revoked_at, ttl=3600)
+        finally:
+            await engine.dispose()
+
+        reader, reader_engine = _sqlite_session_factory(url)
+        try:
+            assert (
+                await SqlTokenRevocationStore(session_factory=reader).is_user_revoked(
+                    USER_ID, int(revoked_at)
+                )
+                is True
+            )
+        finally:
+            await reader_engine.dispose()
+
+
 def _stores_declared_in_package() -> set[str]:
-    """Every class in ``faultmaven/`` declaring ``ITokenRevocationStore`` as a base.
+    """Every class in ``faultmaven/`` that IS an ``ITokenRevocationStore``.
 
     Source scan, not ``__subclasses__()``: the latter reports only what this
     process has imported, so a new store in a module nothing here touches would
     be invisible to it — precisely the case this guard exists for.
+
+    Resolved TRANSITIVELY. Matching only a direct base spelled
+    ``ITokenRevocationStore`` missed the likeliest third store there is — a
+    subclass of one of the two shipped ones, which inherits the whole contract
+    and can override any part of it (#828 review). Names are collected first,
+    then the store set is grown to a fixed point.
+
+    Deliberately scoped to ``faultmaven/``. ``tests/utils.InMemoryRevocationStore``
+    is a third subclass and stays out: this guard asks "did a DEPLOYMENT get a
+    store nobody held to the contract", and a double is not a deployment. That
+    exclusion has a cost worth naming — the double honours no TTL at all, so
+    the deadline rule ``TestEntriesStopRevokingAtTheirDeadline`` pins here is
+    not observable through the stand-in the rest of the auth suite uses. Tests
+    that need to see an entry expire must use a real store, as this module does.
     """
     root = Path(faultmaven.__file__).parent
-    found = set()
+    bases_of: dict[str, set[str]] = {}
     for path in root.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.ClassDef):
                 continue
-            for base in node.bases:
-                name = (
-                    base.id
-                    if isinstance(base, ast.Name)
-                    else getattr(base, "attr", None)
-                )
-                if name == "ITokenRevocationStore":
-                    found.add(node.name)
-    return found
+            names = {
+                base.id if isinstance(base, ast.Name) else getattr(base, "attr", None)
+                for base in node.bases
+            }
+            bases_of[node.name] = {n for n in names if n}
+
+    stores = {"ITokenRevocationStore"}
+    grew = True
+    while grew:
+        grew = False
+        for name, bases in bases_of.items():
+            if name not in stores and bases & stores:
+                stores.add(name)
+                grew = True
+    return stores - {"ITokenRevocationStore"}
 
 
 def test_every_production_store_is_covered_here():

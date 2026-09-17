@@ -964,7 +964,7 @@ All tables have SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/
 
 One migration: `001_enterprise_baseline` (revision `a1e0c17bd001`,
 `alembic/versions/20260906_1200_a1e0c17bd001_001_enterprise_baseline.py`). It
-creates all 41 tables, the RLS policies, the append-only operator triggers, the
+creates all 42 tables, the RLS policies, the append-only operator triggers, the
 last-admin constraint trigger, and the seed rows (the Standalone enterprise, the
 Standalone default team, the RBAC roles and permissions). `downgrade()` drops
 everything — there is one migration, so there is no history to step back

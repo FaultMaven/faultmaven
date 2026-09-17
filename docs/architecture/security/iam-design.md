@@ -383,13 +383,18 @@ shapes the response.
   issued at or before the revocation instant" is measured on the *revoker's*
   clock. If a minter's clock runs ahead by S seconds, tokens minted up to S
   seconds before the revocation can survive it.
-- Revocation state outlives the API process in every deployment (#828). Where
-  the cache client is a real Redis the store is that Redis; where it is the
-  in-process FakeRedis stand-in — standalone — the store is the
-  `token_revocations` table instead, because a revocation that a restart
-  forgets is not a revocation. `create_token_revocation_store` chooses on that
-  one property, not on a deployment name. Both arms are held to one behaviour
-  by a contract suite parametrised over the two implementations.
+- Revocation state outlives the API process in every deployment (#828). Cloud
+  keeps the Redis store — its cache is an external service that outlives the
+  pod. Standalone, whose cache is the in-process FakeRedis stand-in, writes to
+  the `token_revocations` table instead, because a revocation that a restart
+  forgets is not a revocation. `create_token_revocation_store` chooses on
+  `DEPLOYMENT_MODE` and **not** on what the cache client turned out to be: a
+  Redis ping failure or `SKIP_SERVICE_CHECKS` substitutes FakeRedis at boot, so
+  the runtime probe made the store identity differ between two boots of one
+  deployment — and revocations written by one store are invisible to the other.
+  Both arms are held to one behaviour by a contract suite parametrised over the
+  two implementations. Which store a process actually resolved is reported as
+  `token_revocation_durable` by `GET /admin/config/status`.
 - The watermark is held against `MAX_TOKEN_LIFETIME_DAYS` — the longest
   lifetime any permitted configuration can mint — not against the lifetime
   currently configured (#828). Otherwise lowering

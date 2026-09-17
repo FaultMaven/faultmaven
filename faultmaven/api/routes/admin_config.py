@@ -872,6 +872,39 @@ async def get_env_config_status(
             ),
         )
 
+        # Whether a revocation survives a restart HERE (#828). Read off the
+        # store this process actually resolved, not off DEPLOYMENT_MODE: the
+        # composition root is what decides, and an operator cannot see which
+        # class it built. Absent store => False, which is the honest answer —
+        # with no store there is no revocation at all (#767).
+        #
+        # A startup log line would not do: it rolls out of `kubectl logs`, and
+        # the question ("are the revocations I issued during that incident
+        # still in force after the pod restarted?") is asked long afterwards.
+        revocation_store = getattr(request.app.state, "token_revocation_store", None)
+        store_name = type(revocation_store).__name__ if revocation_store else None
+        features["token_revocation_durable"] = FeatureStatus(
+            enabled=store_name == "SqlTokenRevocationStore",
+            description=(
+                f"Revocation store: {store_name or 'none'}. "
+                + (
+                    "Revoked tokens and per-user watermarks are held in the "
+                    "token_revocations table and survive an API restart."
+                    if store_name == "SqlTokenRevocationStore"
+                    else "Revocation state is held in the cache."
+                )
+            ),
+            config_hint=(
+                "True when revocations outlive the API process. Standalone "
+                "resolves the durable database store. Cloud reports False and "
+                "is correct to: its Redis is an external service that outlives "
+                "the pod, and it is the only store read on the authenticated "
+                "request path. False on a STANDALONE deployment means no store "
+                "was composed at all — revocation is unenforceable, not merely "
+                "non-durable."
+            ),
+        )
+
         # The three settings that bound self-service sign-up, at the values
         # this process is running with (fm#1320, fm#1324).
         #

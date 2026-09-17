@@ -17,7 +17,7 @@ store is rebuilt from the factory.
 
 from __future__ import annotations
 
-import time
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -107,7 +107,14 @@ def durable_db(tmp_path, monkeypatch):
         monkeypatch.setattr(mod, "get_db_session", factory)
 
     rebind()
-    return rebind
+    yield rebind
+
+    # Every engine this fixture opened, the pre-restart ones included: their
+    # only remaining reference is this list. ``sync_engine.dispose()`` is the
+    # synchronous form, usable from a sync teardown; an undisposed async
+    # engine leaves its pool and aiosqlite's thread alive for the session.
+    for engine in engines:
+        engine.sync_engine.dispose()
 
 
 def _settings():
@@ -115,6 +122,7 @@ def _settings():
     builds it: expiry on the auth half only, the HS256 secret on the security
     half beside the revocation key prefix."""
     return SimpleNamespace(
+        is_cloud=False,
         auth=SimpleNamespace(
             auth_mode="local",
             jwt_refresh_token_expire_days=7,
@@ -153,26 +161,65 @@ def _boot(settings, cache_client):
     return store, service, generator
 
 
-class TestTheStoreIsChosenByDurability:
-    """Which store a deployment gets is decided by whether its cache outlives
-    the process — not by a deployment name, and not by a Redis-shaped duck."""
+class TestTheStoreIsChosenByConfigurationNotByProbe:
+    """Which store a deployment gets must be the SAME one every boot.
 
-    def test_an_in_process_cache_gets_the_durable_store(self):
+    Keying on ``is_fakeredis(cache_client)`` looked more precise and was worse:
+    ``get_async_redis_client`` substitutes FakeRedis whenever real Redis fails
+    its ping (standalone warns rather than raising), and
+    ``SKIP_SERVICE_CHECKS=true`` substitutes it outright — so a standalone
+    deployment with real Redis resolved the SQL store for that process's life,
+    could not see anything already in Redis, and flipped back on the next
+    healthy boot, orphaning whatever it wrote (#828 review). Configuration
+    cannot flap.
+    """
+
+    def test_standalone_gets_the_durable_store(self):
         store = create_token_revocation_store(_settings(), cache_client=_fake_redis())
 
         assert isinstance(store, SqlTokenRevocationStore)
 
-    def test_no_cache_at_all_gets_the_durable_store(self):
-        store = create_token_revocation_store(_settings(), cache_client=None)
+    def test_cloud_keeps_the_redis_store(self):
+        """Its cache is an external service that outlives the pod, and it is
+        the only store read on the authenticated request path."""
+        settings = _settings()
+        settings.is_cloud = True
+
+        store = create_token_revocation_store(settings, cache_client=_NotFakeRedis())
+
+        assert isinstance(store, RedisTokenRevocationStore)
+
+    @pytest.mark.parametrize(
+        "make_cache",
+        [
+            pytest.param(_fake_redis, id="booted-while-redis-was-down"),
+            pytest.param(_NotFakeRedis, id="booted-while-redis-was-up"),
+        ],
+    )
+    def test_one_deployment_resolves_one_store_whatever_the_cache_turned_out_to_be(
+        self, make_cache
+    ):
+        """The regression itself: a Redis flap must not move the store.
+
+        Both arms are the SAME standalone deployment — one booted while Redis
+        was answering, one while it was not. If the store differs, the
+        revocations one boot wrote are invisible to the next.
+        """
+        store = create_token_revocation_store(_settings(), cache_client=make_cache())
 
         assert isinstance(store, SqlTokenRevocationStore)
 
-    def test_a_real_redis_keeps_the_redis_store(self):
-        """Cloud is unchanged: a real Redis outlives the API pod, and this is
-        the only store read on the authenticated request path."""
-        store = create_token_revocation_store(_settings(), cache_client=_NotFakeRedis())
+    def test_cloud_without_a_cache_does_not_silently_write_to_the_wrong_place(self):
+        """A cloud pod with no cache client is a composition error, and cloud
+        never reaches it — ``fakeredis_or_fail`` refuses the boot first. It
+        falls back to the durable store rather than to nothing, because the
+        alternative is a store with no backing at all (#767)."""
+        settings = _settings()
+        settings.is_cloud = True
 
-        assert isinstance(store, RedisTokenRevocationStore)
+        store = create_token_revocation_store(settings, cache_client=None)
+
+        assert isinstance(store, SqlTokenRevocationStore)
 
 
 class TestARestartPreservesRevocations:
@@ -214,6 +261,7 @@ class TestARestartPreservesRevocations:
 
         assert await store2.is_revoked(jti) is True
 
+    @pytest.mark.slow
     async def test_a_token_minted_after_the_revocation_still_works_afterwards(
         self, durable_db
     ):
@@ -229,8 +277,10 @@ class TestARestartPreservesRevocations:
 
         durable_db()
         _store2, service2, generator2 = _boot(settings, _fake_redis())
-        # Past the whole-second `iat <= watermark` comparison.
-        time.sleep(1.1)
+        # Past the whole-second `iat <= watermark` comparison. ``asyncio``'s
+        # sleep, not the blocking one: this is an async test, and blocking
+        # the loop stalls every other task the session is running.
+        await asyncio.sleep(1.1)
         fresh = await generator2.generate_access_token(
             _user(), state_read_at=datetime.now(timezone.utc)
         )

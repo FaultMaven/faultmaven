@@ -5,18 +5,22 @@ revoke path (OAuth /revoke, refresh rotation in both auth modes, logout,
 admin per-user revocation) writes here, and the request-path check
 (``AuthService._is_revoked``) reads here.
 
-**Two implementations, chosen by whether the cache outlives the process**
-(#828). ``create_token_revocation_store`` picks between them:
+**Two implementations, chosen by DEPLOYMENT MODE** (#828).
+``create_token_revocation_store`` picks between them:
 
-- :class:`RedisTokenRevocationStore` — where the cache client is a real Redis,
-  i.e. cloud. Redis expiry handles cleanup, and the deployment-wide store is
-  shared across replicas.
-- :class:`SqlTokenRevocationStore` — where it is not. In standalone the cache
-  client is the in-process FakeRedis singleton, which has no persistence, so
-  an API restart resurrected every revoked-but-unexpired token for the
-  remainder of its natural life. Revocation there lives in
-  ``token_revocations`` instead, beside the account state (deactivation) that
-  already survived a restart.
+- :class:`RedisTokenRevocationStore` — cloud. Its cache is a real Redis that
+  outlives the API pod, Redis expiry handles cleanup, and the deployment-wide
+  store is shared across replicas.
+- :class:`SqlTokenRevocationStore` — standalone, whose cache is the in-process
+  FakeRedis singleton. That has no persistence, so an API restart resurrected
+  every revoked-but-unexpired token for the remainder of its natural life.
+  Revocation there lives in ``token_revocations`` instead, beside the account
+  state (deactivation) that already survived a restart.
+
+The choice is deliberately made on configuration rather than on what the cache
+client turned out to BE: a Redis ping failure or ``SKIP_SERVICE_CHECKS`` can
+substitute FakeRedis at boot, and keying on that made the store identity differ
+between two boots of one deployment — see ``create_token_revocation_store``.
 
 The two are held to ONE behaviour by a shared contract suite
 (``tests/unit/modules/auth/test_revocation_store_contract.py``), which is
@@ -26,6 +30,15 @@ there rather than in whichever deployment happens to run the other.
 Two granularities (see ``ITokenRevocationStore``): individual tokens by JTI,
 and whole users by revocation watermark (#769). Both live in this one store
 with TTLs matching token expiration.
+
+**Watermark retention is 90 days on BOTH arms**, because
+``AuthService._watermark_ttl_seconds`` is store-agnostic and holds against the
+schema ceiling on token lifetime rather than the configured one (#828). On the
+Redis arm that raises per-user key retention from the configured refresh
+lifetime (7 days by default) to 90 — a real memory cost, not only a row. It is
+one small key per user who has been revoked and has not signed back in since (a
+sign-in clears the watermark), and the alternative is the resurrection the
+ceiling exists to prevent, so the cost is accepted rather than traded away.
 
 In the Redis store the key prefix comes from
 ``settings.security.token_revocation_prefix`` so writers and the reader can
@@ -48,9 +61,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 
 from faultmaven.infrastructure.persistence.database import get_db_session
+from faultmaven.infrastructure.persistence.db_compat import dialect_insert
 from faultmaven.infrastructure.persistence.models import TokenRevocationModel
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     ITokenRevocationStore,
@@ -212,27 +226,43 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
     ) -> None:
         async with self._session_factory() as session:
             await self._sweep(session)
-            # Delete-then-insert rather than a dialect-specific upsert: the two
-            # dialects this baseline supports spell ``ON CONFLICT`` differently
-            # and a write here is rare enough that the extra statement costs
-            # nothing. A later revocation overwrites an earlier one
-            # unconditionally, matching ``SETEX`` and the interface's contract
-            # ("the caller has already decided to invalidate everything
-            # outstanding").
+            # ONE statement, via the repository's dialect helper. The
+            # delete-then-insert this replaced was not atomic: two concurrent
+            # revocations of the same (scope, subject) — a double-submitted
+            # logout, or an admin revoke racing a password change — both found
+            # nothing to delete and both inserted, and PostgreSQL raised a
+            # unique violation that ``revoke_token``/``revoke_user_tokens``
+            # propagate as a failed revocation. ``dialect_insert`` is what the
+            # seven sibling upsert sites already use, so the SQLite and
+            # PostgreSQL constructs cannot drift (they are NOT interchangeable
+            # — see ``db_compat``).
+            #
+            # A later revocation overwrites an earlier one unconditionally,
+            # matching ``SETEX`` and the interface's contract ("the caller has
+            # already decided to invalidate everything outstanding").
+            statement = dialect_insert(session, TokenRevocationModel).values(
+                scope=scope,
+                subject=subject,
+                revoked_at=revoked_at,
+                expires_at=self._deadline(ttl),
+            )
             await session.execute(
-                delete(TokenRevocationModel).where(
-                    TokenRevocationModel.scope == scope,
-                    TokenRevocationModel.subject == subject,
+                statement.on_conflict_do_update(
+                    index_elements=["scope", "subject"],
+                    set_={
+                        "revoked_at": statement.excluded.revoked_at,
+                        "expires_at": statement.excluded.expires_at,
+                    },
                 )
             )
-            session.add(
-                TokenRevocationModel(
-                    scope=scope,
-                    subject=subject,
-                    revoked_at=revoked_at,
-                    expires_at=self._deadline(ttl),
-                )
-            )
+            # The store owns its unit of work. Leaving the commit to the
+            # session factory made durability — the entire point of #828 — an
+            # undocumented property of the injected callable: handed the
+            # idiomatic ``async_sessionmaker()``, every revocation was dropped
+            # on exit, and ``AuthService._is_revoked`` fails open, so the
+            # control would simply have been off with a log line as the only
+            # signal.
+            await session.commit()
 
     async def add_revoked_token(self, jti: str, ttl: int) -> None:
         # ``revoked_at`` is meaningless on this arm — a jti entry revokes
@@ -274,6 +304,62 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
             # ``clear_user_revocation_if_before`` can order two instants.
             return issued_at <= int(float(row[0]))
 
+    async def revocation_state(self, jti, user_id, issued_at):
+        """Both arms in ONE session and ONE query (see the base class).
+
+        The request path asks this on every authenticated request, and here a
+        read is not free: SQLite's engine uses ``NullPool``, so each session is
+        a fresh connection paying seven PRAGMAs, and PostgreSQL additionally
+        runs the RLS ``set_config`` per transaction. Inheriting the default
+        opened two of those per request — measured at 17.7ms against 10.8ms for
+        one (#828 review).
+
+        This composes nothing: it returns the two raw booleans and
+        ``revocation_reason`` still decides which wins. The short-circuit the
+        default has (a revoked jti never consults the watermark) is not worth a
+        second round trip here, so both rows are fetched and the jti answer is
+        still reported alone when it is True.
+        """
+        if not jti and not user_id:
+            return False, False
+
+        wanted = []
+        if jti:
+            wanted.append(
+                (TokenRevocationModel.scope == _JTI_SCOPE)
+                & (TokenRevocationModel.subject == jti)
+            )
+        if user_id and issued_at is not None:
+            wanted.append(
+                (TokenRevocationModel.scope == _USER_SCOPE)
+                & (TokenRevocationModel.subject == user_id)
+            )
+        if not wanted:
+            return False, False
+
+        async with self._session_factory() as session:
+            rows = await session.execute(
+                select(
+                    TokenRevocationModel.scope,
+                    TokenRevocationModel.revoked_at,
+                ).where(
+                    TokenRevocationModel.expires_at > datetime.now(timezone.utc),
+                    or_(*wanted),
+                )
+            )
+            token_revoked = False
+            user_revoked = False
+            for scope, revoked_at in rows.all():
+                if scope == _JTI_SCOPE:
+                    token_revoked = True
+                elif issued_at is not None:
+                    # Floored to whole seconds, the same rule ``is_user_revoked``
+                    # applies — one comparison, spelled once per arm.
+                    user_revoked = issued_at <= int(float(revoked_at))
+            if token_revoked:
+                return True, False
+            return False, user_revoked
+
     async def clear_user_revocation_if_before(
         self, user_id: str, instant: float
     ) -> bool:
@@ -288,10 +374,24 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
                     TokenRevocationModel.scope == _USER_SCOPE,
                     TokenRevocationModel.subject == user_id,
                     TokenRevocationModel.revoked_at < instant,
+                    # An ELAPSED watermark is not there to clear. Redis answers
+                    # False because its key is already gone; without this the
+                    # SQL arm answered True, because nothing had swept the row
+                    # yet — the two arms disagreeing about whether a login
+                    # superseded a revocation that had already stopped
+                    # revoking. Every read here filters on the deadline, and
+                    # this is a read that happens to delete.
+                    TokenRevocationModel.expires_at > datetime.now(timezone.utc),
                 )
             )
-            return bool(result.rowcount)
+            await session.commit()
+            # ``> 0``, not ``bool(...)``: -1 means "the driver could not count",
+            # and bool(-1) is True — reporting a clear that may not have
+            # happened. Same guard as ``_sweep``.
+            return max(result.rowcount or 0, 0) > 0
 
     async def cleanup_expired(self) -> int:
         async with self._session_factory() as session:
-            return await self._sweep(session)
+            swept = await self._sweep(session)
+            await session.commit()
+            return swept

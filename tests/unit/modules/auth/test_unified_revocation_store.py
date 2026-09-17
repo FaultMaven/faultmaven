@@ -333,23 +333,6 @@ class TestLocalRouteGeneratorFactory:
         assert await generator.validate_refresh_token(refresh) is None
 
 
-def _real_looking_redis():
-    """A working Redis whose type does not come from ``fakeredis``.
-
-    ``create_token_revocation_store`` now asks ``is_fakeredis`` whether the
-    cache outlives the process (#828), and only the Redis arm has a key prefix
-    to honour — so exercising that arm needs a client the predicate reads as
-    real. Subclassing the fake gives one that answers Redis commands while
-    being declared here rather than in ``fakeredis``, which is precisely what a
-    real client looks like to that predicate.
-    """
-    import fakeredis.aioredis as fakeredis_aio
-
-    cls = type("RealRedisStandIn", (fakeredis_aio.FakeRedis,), {})
-    cls.__module__ = __name__
-    return cls(decode_responses=True)
-
-
 class TestDIFactoryUsesConfiguredPrefix:
     """create_token_revocation_store must honour the settings prefix.
 
@@ -363,9 +346,15 @@ class TestDIFactoryUsesConfiguredPrefix:
             create_token_revocation_store,
         )
 
-        redis = _real_looking_redis()
+        redis = _fake_redis()
         settings = SimpleNamespace(
-            security=SimpleNamespace(token_revocation_prefix="revoked:token:")
+            # Cloud: the arm that HAS a key prefix. The factory chooses on
+            # deployment mode, not on what the cache client turned out to be
+            # (#828 review), so this is what selects the Redis store — and a
+            # FakeRedis stands in for the real one perfectly well here, since
+            # nothing inspects its type any more.
+            is_cloud=True,
+            security=SimpleNamespace(token_revocation_prefix="revoked:token:"),
         )
         store = create_token_revocation_store(settings, cache_client=redis)
 

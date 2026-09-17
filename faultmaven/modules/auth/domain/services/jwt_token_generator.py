@@ -14,7 +14,7 @@ import logging
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Dict, NamedTuple, Optional
+from typing import Callable, Dict, NamedTuple, Optional, Tuple
 
 import jwt
 
@@ -1170,15 +1170,24 @@ async def revocation_reason(revocation_store, payload: Dict) -> Optional[str]:
     rounding errors.
     """
     jti = payload.get("jti")
-    if jti and await revocation_store.is_revoked(jti):
-        return "token_revoked"
-
     user_id = payload.get("sub")
     issued_at = payload.get("iat")
-    if user_id and issued_at is not None:
-        if await revocation_store.is_user_revoked(user_id, int(issued_at)):
-            return "user_revoked"
+    if issued_at is None or not user_id:
+        # Nothing to match a watermark against; only the jti arm applies.
+        user_id, issued_at = None, None
+    else:
+        issued_at = int(issued_at)
 
+    # ONE call, so a store whose reads cost something can answer both arms in
+    # one round trip (#828 review). Which answer WINS, and what a missing claim
+    # means, stay here: the rule is what must not be duplicated per store.
+    token_revoked, user_revoked = await revocation_store.revocation_state(
+        jti, user_id, issued_at
+    )
+    if token_revoked:
+        return "token_revoked"
+    if user_revoked:
+        return "user_revoked"
     return None
 
 
@@ -1887,6 +1896,35 @@ class ITokenRevocationStore(ABC):
             True if the user has a watermark at or after ``issued_at``
         """
         ...
+
+    async def revocation_state(
+        self,
+        jti: Optional[str],
+        user_id: Optional[str],
+        issued_at: Optional[int],
+    ) -> Tuple[bool, bool]:
+        """Both arms' raw answers for one token: ``(token_revoked, user_revoked)``.
+
+        NOT abstract, and deliberately not a second revocation rule: it returns
+        the two booleans and composes nothing. ``revocation_reason`` remains the
+        one place that decides which answer wins and what a missing claim means,
+        so a store overriding this cannot drift from the rule — only from the
+        number of round trips it takes to answer.
+
+        The default is the obvious pair of calls, which is right for any store
+        whose reads are free (Redis, the in-memory doubles). A store whose reads
+        each cost a database session overrides it to answer in one — the request
+        path calls this on every authenticated request (#828 review: two
+        sessions measured at 17.7ms/request against 10.8ms sharing one).
+
+        Short-circuits exactly as the sequential form did: a revoked jti means
+        the watermark is never consulted.
+        """
+        if jti and await self.is_revoked(jti):
+            return True, False
+        if user_id and issued_at is not None:
+            return False, await self.is_user_revoked(user_id, issued_at)
+        return False, False
 
     @abstractmethod
     async def clear_user_revocation_if_before(
