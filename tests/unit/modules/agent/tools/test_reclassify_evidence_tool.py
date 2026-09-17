@@ -6,6 +6,7 @@ design — validation + delegation — so tests focus on the validation
 surface and the exception-to-ToolResult mapping.
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -20,6 +21,10 @@ from faultmaven.modules.agent.tools.base import ToolContext
 from faultmaven.modules.agent.tools.reclassify_evidence_tool import (
     ReclassifyEvidenceTool,
 )
+
+#: Sentinel: ``_ctx(None)`` means "no in-flight case", which is a real
+#: (and refused) shape, so it cannot also be the default.
+_UNSET = object()
 
 
 def _enable_flag(value: bool):
@@ -36,12 +41,23 @@ def _enable_flag(value: bool):
     )
 
 
-def _ctx():
+def _ctx(in_memory_case=_UNSET):
+    """The context the engine builds — which always carries the turn's case.
+
+    ``in_memory_case`` is not optional decoration here (#1465): it is the
+    aggregate the turn will save, and the tool refuses to reclassify without
+    it rather than write to a copy that the end-of-turn save overwrites. The
+    default is a stand-in for that object, so every test below drives the
+    shape ``_build_tool_context`` produces; pass ``None`` to drive the
+    refusal.
+    """
+    case = SimpleNamespace(case_id="case_xyz") if in_memory_case is _UNSET else None
     return ToolContext(
         session_id="sess_1",
         case_id="case_xyz",
         enterprise_id="org_1",
         user_id="user_abc",
+        in_memory_case=case,
     )
 
 
@@ -179,3 +195,50 @@ class TestServiceDelegation:
             )
         assert result.success is False
         assert "no stored raw file" in result.error
+
+    @pytest.mark.asyncio
+    async def test_the_in_flight_case_is_forwarded(self, tool, service):
+        """#1465: the turn's own aggregate reaches the service.
+
+        The whole fix is that the write lands on the object the turn will
+        save. The tool is where that object is picked up, so this pins the
+        handoff by IDENTITY — an equal-looking copy is exactly the bug.
+        """
+        updated = MagicMock()
+        updated.evidence_id = "ev_abc"
+        updated.source_type.value = "logs_and_errors"
+        updated.summary = "Re-extracted"
+        service.reclassify_evidence.return_value = updated
+
+        ctx = _ctx()
+        with _enable_flag(True):
+            result = await tool.execute_with_context(
+                params={"evidence_id": "ev_abc", "data_type": "logs_and_errors"},
+                context=ctx,
+            )
+
+        assert result.success is True
+        kwargs = service.reclassify_evidence.call_args.kwargs
+        assert kwargs["in_flight_case"] is ctx.in_memory_case
+
+    @pytest.mark.asyncio
+    async def test_no_in_flight_case_refuses_rather_than_losing_the_write(
+        self, tool, service
+    ):
+        """A context without the turn's case gets a refusal, not a no-op.
+
+        Without the aggregate this call would write a row the end-of-turn
+        save overwrites and still report success — the #1465 shape, where the
+        model asserts a reclassification back to the user that did not
+        survive the turn. Refusing is the honest answer, and the service is
+        never reached.
+        """
+        with _enable_flag(True):
+            result = await tool.execute_with_context(
+                params={"evidence_id": "ev_abc", "data_type": "logs_and_errors"},
+                context=_ctx(in_memory_case=None),
+            )
+
+        assert result.success is False
+        assert "in-flight case" in result.error
+        service.reclassify_evidence.assert_not_awaited()

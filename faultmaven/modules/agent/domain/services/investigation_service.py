@@ -23,6 +23,7 @@ from faultmaven.core.investigation.case_telemetry import (
     collect_progress_arms,
     emit_case_turn,
 )
+from faultmaven.core.investigation.coverage_trust import CALLER_DECLARED_COVERAGE_SOURCE
 from faultmaven.core.investigation.intent_resolver import IntentResolver
 from faultmaven.core.investigation.kb_push import visible_kb_context
 from faultmaven.core.investigation.milestone_engine import (
@@ -299,6 +300,55 @@ def _infer_source_type(data_type: DataType) -> EvidenceSourceType:
     return _DATA_TYPE_TO_SOURCE_TYPE.get(data_type, EvidenceSourceType.TEXT)
 
 
+def _refreshed_coverage(
+    file_meta: "UploadedFile",
+    preprocessing_result,
+) -> Dict[str, Any]:
+    """The coverage fields a re-extraction supersedes, as a patch (#1471).
+
+    Separate from the caller only so the ``update=`` dict there stays a
+    literal: the fm#918 scan that states how many places write
+    ``UploadedFile.data_type`` matches ``model_copy(update={...})`` by
+    literal key, and declares a patch dict built in a variable as a shape it
+    cannot see. Building this part here and spreading it keeps that guard
+    pointed at the writer it is watching.
+
+    Three fields move together or not at all. ``coverage_source`` is not
+    decoration on the span — it is what ``coverage_trust`` reads to decide
+    whether the instant may be STATED at all — so a window refreshed under
+    the previous extractor's provenance label would be a worse row than the
+    stale window it replaced.
+    """
+    start_ts = getattr(preprocessing_result, "coverage_start_ts", None)
+    end_ts = getattr(preprocessing_result, "coverage_end_ts", None)
+    if start_ts is not None or end_ts is not None:
+        # Parsed content wins, and the span carries its own provenance. Both
+        # ends are taken as the extractor reported them, half-open span
+        # included: that is what intake does with the same object, and a
+        # normalisation applied on only one of the two writers would make a
+        # reclassified row differ from a freshly ingested one.
+        return {
+            "coverage_start_ts": start_ts,
+            "coverage_end_ts": end_ts,
+            "coverage_source": getattr(preprocessing_result, "coverage_source", None),
+        }
+    if file_meta.coverage_source == CALLER_DECLARED_COVERAGE_SOURCE:
+        # Not extractor output, so a re-extraction cannot refute it: the
+        # instant is a forwarding client's statement about when it SAW the
+        # content. Kept. Intake's own precedence is the same one — parsed
+        # content wins, ``observed_at`` is the fallback — and clearing here
+        # would delete the only temporal signal an alert notification has.
+        return {}
+    # The new extractor found nothing and what is on the row came from the
+    # OLD one. Clearing is the honest read: every consumer treats a present
+    # span as fact, so a window nothing supports any more is worse than none.
+    return {
+        "coverage_start_ts": None,
+        "coverage_end_ts": None,
+        "coverage_source": None,
+    }
+
+
 def _file_row_with_reclassification(
     file_meta: "UploadedFile",
     preprocessing_result,
@@ -308,16 +358,88 @@ def _file_row_with_reclassification(
 
     Post-010 routing: data_type / summary / structural_index describe the
     FILE and live on ``uploaded_files``; Evidence rows carry only the
-    LLM-authored claim. Shared by both reclassification paths.
+    LLM-authored claim. Reached through :func:`_reclassified_collections`,
+    which is what both reclassification paths call.
+
+    **The coverage window moves with the extraction that produced it**
+    (#1471). Reclassification re-runs extraction under a different
+    ``DataType``, so a different extractor parses a different timestamp
+    range; leaving the window put described the file by the extractor it had
+    just replaced — a ``structured_config`` → ``logs_and_errors`` file kept
+    ``coverage_start_ts = None`` and contributed nothing to timeline
+    assembly, and a ``logs_and_errors`` → ``code`` file kept a log window it
+    cannot have. ``coverage_source`` moves with the span rather than being
+    left behind: it is what ``coverage_trust`` reads to decide whether the
+    instant may be STATED, so a refreshed window under a stale provenance
+    label would be a worse row than the stale window was.
+
+    The one value a re-extraction may not overwrite is a ``caller_declared``
+    span. That instant was never read out of the content — it is the
+    forwarding client's statement about when it SAW the content, seeded at
+    intake precisely because the content parsed to nothing. Re-parsing the
+    same bytes under a different data type cannot refute it, so it is kept
+    when the new extraction yields no window of its own. This mirrors
+    intake's own precedence, where parsed content always wins and
+    ``observed_at`` is the fallback — applied here in the same order.
     """
     return file_meta.model_copy(
         update={
             "data_type": new_source_type.value,
             "summary": preprocessing_result.summary,
             "structural_index": preprocessing_result.structural_index,
+            **_refreshed_coverage(file_meta, preprocessing_result),
         },
         deep=True,
     )
+
+
+def _reclassified_collections(
+    case: "Case",
+    file_id: str,
+    preprocessing_result,
+    new_source_type: EvidenceSourceType,
+) -> "tuple[list[UploadedFile], list[Evidence]]":
+    """Both of a case's collections re-aligned to one file's reclassification.
+
+    The single seam every reclassification crosses. Returns
+    ``(uploaded_files, evidence)`` as new lists — the file row rebuilt from
+    the re-extraction, and **every** Evidence row backed by that file
+    re-aligned to the new source type. Neither input list is mutated.
+
+    Hoisted because the two paths had re-aligned Evidence differently
+    (#1470). The turn seam (``_handle_file_reclassification``) looped every
+    row with the same ``source_file_id``; the out-of-band path
+    (``reclassify_evidence``) addressed exactly one. So a file backing two
+    Evidence rows — the ordinary case once the LLM has anchored two claims on
+    one upload — came out of ``PATCH /evidence/{id}/classification``
+    described by two contradictory source types, with nothing to reconcile
+    them. One file has one classification; how many claims cite it is not a
+    property of the classification. Making that structural is what stops the
+    two paths agreeing only for as long as both remember to.
+
+    Claim content is untouched: an Evidence row's LLM-authored ``summary``
+    and ``extract`` are what it ASSERTS, and reclassifying the file it was
+    read from does not rewrite the assertion. Only ``source_type`` — the
+    row's statement about what KIND of data it was read from, which is
+    exactly the file-level fact that just changed — is re-aligned here.
+    """
+    new_files_list = list(case.uploaded_files or [])
+    file_index = next(
+        (i for i, uf in enumerate(new_files_list) if uf.file_id == file_id),
+        None,
+    )
+    if file_index is not None:
+        new_files_list[file_index] = _file_row_with_reclassification(
+            new_files_list[file_index], preprocessing_result, new_source_type
+        )
+
+    new_evidence_list = list(case.evidence or [])
+    for i, ev in enumerate(new_evidence_list):
+        if ev.source_file_id == file_id:
+            new_evidence_list[i] = ev.model_copy(
+                update={"source_type": new_source_type}, deep=True
+            )
+    return new_files_list, new_evidence_list
 
 
 # Filename extensions and MIME prefixes for content known to be binary.
@@ -2718,7 +2840,7 @@ class InvestigationService:
             # by ``_parse_observed_at`` — and it is also the one case a
             # metadata blob written during extraction could never express,
             # because it is applied here, afterwards.
-            uploaded_file.coverage_source = "caller_declared"
+            uploaded_file.coverage_source = CALLER_DECLARED_COVERAGE_SOURCE
             logger.info(
                 "Seeded coverage for %s from caller-declared observed_at %s "
                 "(content had no parseable timestamps)",
@@ -3210,19 +3332,12 @@ class InvestigationService:
         )
         previous_type = file_meta.data_type or "unknown"
 
-        new_files_list = list(case.uploaded_files)
-        new_files_list[file_index] = _file_row_with_reclassification(
-            file_meta, preprocessing_result, new_source_type
+        # One seam for both collections (#1470): the file row, and EVERY
+        # Evidence row backed by it. Claim content — the LLM-authored
+        # summary/extract — stays untouched.
+        new_files_list, new_evidence_list = _reclassified_collections(
+            case, file_id, preprocessing_result, new_source_type
         )
-
-        # Re-align Evidence rows already backed by this file (claim content —
-        # the LLM-authored summary/extract — stays untouched).
-        new_evidence_list = list(case.evidence or [])
-        for i, ev in enumerate(new_evidence_list):
-            if ev.source_file_id == file_id:
-                new_evidence_list[i] = ev.model_copy(
-                    update={"source_type": new_source_type}, deep=True
-                )
 
         # Shallow copy with the replaced collections. ``messages`` gets a
         # fresh list because process_turn appends the agent message to the
@@ -3441,6 +3556,7 @@ class InvestigationService:
         user_id: str,
         data_type: DataType,
         trigger: str = "api",
+        in_flight_case: Optional["Case"] = None,
     ) -> Evidence:
         """Re-run preprocessing on the file behind an existing evidence row
         under a user-specified data type.
@@ -3451,12 +3567,14 @@ class InvestigationService:
         this method fetches the stored raw bytes, re-runs extraction
         under ``user_override=data_type``, and updates the **backing
         UploadedFile**'s preprocessing artifacts (``data_type``,
-        ``summary``, ``structural_index``) — these live with the file,
-        not on Evidence. The Evidence row's ``source_type`` is
-        re-aligned so it stays consistent with the file's new
-        classification, but the LLM-authored ``summary`` and ``extract``
-        fields on Evidence are left untouched (they are claim content,
-        not preprocessing output).
+        ``summary``, ``structural_index``, and the coverage window) —
+        these live with the file, not on Evidence. **Every** Evidence row
+        backed by that file has its ``source_type`` re-aligned, not just
+        the addressed one (#1470): the file has one classification, and
+        how many claims cite it is not a property of the classification.
+        The LLM-authored ``summary`` and ``extract`` fields on Evidence
+        are left untouched (they are claim content, not preprocessing
+        output).
 
         Args:
             case_id: Case owning the evidence.
@@ -3466,11 +3584,21 @@ class InvestigationService:
             trigger: Where the request came from — ``api`` (direct
                 PATCH) or ``agent_tool`` (reclassify_evidence tool).
                 Labels the observability counter.
+            in_flight_case: The case aggregate a turn is currently holding,
+                when this call is made from INSIDE that turn. Supplying it
+                moves the write onto the turn's own object and hands
+                persistence back to the turn; omitting it (the PATCH
+                endpoint, which runs outside any turn) keeps the
+                load-mutate-save this method has always done. See the
+                WRITE MODEL note below — this parameter is #1465's fix.
 
         Returns:
-            The updated Evidence row with the re-aligned
-            ``source_type``. The structural_index / summary / data_type
-            updates land on the backing UploadedFile in the same case.
+            The ADDRESSED Evidence row, with the re-aligned
+            ``source_type`` and the re-extraction's ``metadata``. Its
+            siblings on the same file are re-aligned too but not
+            returned — the caller asked about one row. The
+            structural_index / summary / data_type / coverage updates
+            land on the backing UploadedFile in the same case.
 
         Raises:
             NotFoundError: case or evidence not found. Mapped to HTTP 404
@@ -3484,8 +3612,57 @@ class InvestigationService:
                 callers can branch programmatically.
             ServiceException: any other failure (storage fetch,
                 preprocessing). Mapped to HTTP 500.
+
+        WRITE MODEL (#1465).
+            This method used to load-mutate-save unconditionally, which is
+            correct for ``trigger="api"`` — the PATCH endpoint runs outside
+            any turn and owns its write. On ``trigger="agent_tool"`` the LLM
+            calls it from inside the engine's tool loop, and a turn ends with
+            ONE aggregate save of the case object it has been holding since it
+            started. That save has no idea a row was written underneath it, so
+            it wrote the pre-reclassification aggregate back over this
+            method's work: the file row, the Evidence row and the fm#918
+            clarification drop alike. The model was told the reclassification
+            succeeded and the case ended the turn as though it never happened.
+
+            The defect is in the ORDERING, not in the values, so the fix is
+            where the write lands rather than what it contains. A caller
+            inside a turn passes the aggregate it is holding; this method
+            applies the change to THAT object and does not save. The turn's
+            existing end-of-turn save is then the write — one save per turn,
+            which is the write model the engine already has.
+
+            The rejected alternative is making the end-of-turn save merge
+            rather than replace. It is worse on the same argument: the
+            aggregate save is what makes a turn atomic, and a merging save
+            would have to decide, field by field, whether a difference is a
+            concurrent write to keep or a deliberate revert to apply — a
+            question neither side of the merge carries the information to
+            answer. It would also make every other in-turn write ambiguous to
+            pay for one caller.
+
+            What this does NOT close is the concurrency reach #1465 also
+            names: a ``PATCH`` landing from another request while a turn is
+            mid-flight is still a lost update, because the per-case lock lives
+            in ``MilestoneEngine.process_turn`` and nothing outside a turn
+            takes it. That needs a lock rather than a parameter and is a
+            separate change.
         """
-        case = await self.repository.get(case_id)
+        if in_flight_case is not None:
+            if in_flight_case.case_id != case_id:
+                # A turn may only write its OWN case. Reaching another one
+                # through the in-flight handle would write it without its
+                # lock and then persist it on the wrong turn's save.
+                raise ValidationException(
+                    "in_flight_case does not belong to the addressed case",
+                    {
+                        "case_id": case_id,
+                        "in_flight_case_id": in_flight_case.case_id,
+                    },
+                )
+            case = in_flight_case
+        else:
+            case = await self.repository.get(case_id)
         if not case:
             raise NotFoundError("Case", case_id)
         if case.user_id != user_id:
@@ -3537,70 +3714,83 @@ class InvestigationService:
         # the next turn. The LLM-authored ``summary`` and ``extract``
         # fields on Evidence are left untouched: they are claim content,
         # not preprocessing output.
-        file_index = next(
-            (
-                i
-                for i, uf in enumerate(case.uploaded_files or [])
-                if uf.file_id == evidence.source_file_id
-            ),
-            None,
+        #
+        # Through the shared seam (#1470) so EVERY Evidence row backed by
+        # this file is re-aligned, not just the addressed one. The file has
+        # one classification; how many claims cite it is not a property of
+        # the classification, and leaving the siblings behind described one
+        # file with two contradictory source types.
+        new_files_list, new_evidence_list = _reclassified_collections(
+            case, evidence.source_file_id, preprocessing_result, new_source_type
         )
-        new_files_list = list(case.uploaded_files or [])
-        if file_index is not None:
-            new_files_list[file_index] = _file_row_with_reclassification(
-                file_meta, preprocessing_result, new_source_type
-            )
 
-        updated_evidence = evidence.model_copy(
-            update={
-                "source_type": new_source_type,
-                "metadata": new_evidence_metadata,
-            },
+        # The ADDRESSED row additionally takes the re-extraction's
+        # ``evidence_metadata`` block — the classification confidence and the
+        # extractor-attempt trail for the request that was made about THIS
+        # row. Deliberately not fanned out to the siblings: the trail records
+        # what was asked of this evidence, and stamping a request nobody made
+        # onto a neighbouring row would make the observability trail lie.
+        updated_evidence = new_evidence_list[evidence_index].model_copy(
+            update={"metadata": new_evidence_metadata},
             deep=True,
         )
-        new_evidence_list = list(case.evidence)
         new_evidence_list[evidence_index] = updated_evidence
-        updated_case = case.model_copy(
-            update={
-                "evidence": new_evidence_list,
-                "uploaded_files": new_files_list,
-                # fm#918 exposure 1: this path writes ``UploadedFile.data_type``
-                # without going through the turn seam, so nothing else rewrites
-                # ``last_suggestions`` and the file's clarification choices stay
-                # armed for the TYPED arm — the resolver reads this list, and
-                # this is what empties it. A DECIDE **click** is not covered
-                # and is not meant to be: a click carries its intent on the
-                # request and never consults this list
-                # (``suggestion_is_live``), so a card the client still shows
-                # can still be clicked and still reaches the same end state.
-                # That is consent rather than inference, which is the whole
-                # distinction INV-26 rests on — but it does mean "exposure 1
-                # is closed" is true of typing and not of clicking. Raised on
-                # fm#918 rather than decided here.
-                #
-                # Answering the question here is exact; the referent
-                # check in ``suggestion_is_live`` compares the 12→6 projection
-                # and cannot see a reclassification WITHIN a source type
-                # (logs_and_errors → command_output, both ``logs``), which is
-                # how a typed "Application logs (x.log)" on the next turn
-                # overwrote the answer the user had just given here.
-                #
-                # True of ``trigger="api"`` (the PATCH endpoint), which is the
-                # only trigger that reaches this method from outside a turn.
-                # On ``trigger="agent_tool"`` the LLM calls this MID-turn, and
-                # this whole save — the file row, the evidence row and this
-                # drop alike — is then clobbered by the end-of-turn aggregate
-                # save of the in-memory case the turn is holding. That lost
-                # update predates fm#918 and is filed as #1465; nothing here
-                # makes it better or worse.
-                "last_suggestions": drop_clarifications_for_file(
-                    case.last_suggestions, evidence.source_file_id
-                ),
-            },
-            deep=True,
+
+        # fm#918 exposure 1: this path writes ``UploadedFile.data_type``
+        # without going through the turn seam, so nothing else rewrites
+        # ``last_suggestions`` and the file's clarification choices stay
+        # armed for the TYPED arm — the resolver reads this list, and
+        # this is what empties it. A DECIDE **click** is not covered
+        # and is not meant to be: a click carries its intent on the
+        # request and never consults this list
+        # (``suggestion_is_live``), so a card the client still shows
+        # can still be clicked and still reaches the same end state.
+        # That is consent rather than inference, which is the whole
+        # distinction INV-26 rests on — but it does mean "exposure 1
+        # is closed" is true of typing and not of clicking. Raised on
+        # fm#918 rather than decided here.
+        #
+        # Answering the question here is exact; the referent
+        # check in ``suggestion_is_live`` compares the 12→6 projection
+        # and cannot see a reclassification WITHIN a source type
+        # (logs_and_errors → command_output, both ``logs``), which is
+        # how a typed "Application logs (x.log)" on the next turn
+        # overwrote the answer the user had just given here.
+        #
+        # Now true of BOTH triggers. It used to be true of ``api`` only:
+        # on ``trigger="agent_tool"`` this whole write — the file row, the
+        # evidence rows and this drop alike — was clobbered by the
+        # end-of-turn aggregate save of the case the turn was holding
+        # (#1465). The write model below is what closed that.
+        dropped_suggestions = drop_clarifications_for_file(
+            case.last_suggestions, evidence.source_file_id
         )
 
-        await self.repository.save(updated_case)
+        if in_flight_case is not None:
+            # IN-TURN (#1465). The caller is holding this exact object and
+            # will save it at the end of the turn, so the change is applied
+            # IN PLACE and nothing is persisted here. A ``model_copy`` would
+            # be the bug: the copy is not what the turn is holding, so the
+            # aggregate save would write the unmodified original back.
+            #
+            # Three whole-field assignments, no in-place list mutation: the
+            # lists above are new lists built from the case's own, so this
+            # leaves any list the caller may still be holding alone.
+            case.uploaded_files = new_files_list
+            case.evidence = new_evidence_list
+            case.last_suggestions = dropped_suggestions
+        else:
+            # OUT OF BAND (the PATCH endpoint). No turn owns this write, so
+            # this method does — load-mutate-save, exactly as before.
+            updated_case = case.model_copy(
+                update={
+                    "evidence": new_evidence_list,
+                    "uploaded_files": new_files_list,
+                    "last_suggestions": dropped_suggestions,
+                },
+                deep=True,
+            )
+            await self.repository.save(updated_case)
 
         EVIDENCE_RECLASSIFICATION_TOTAL.labels(
             from_type=str(previous_type or "unknown"),

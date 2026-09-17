@@ -29,6 +29,7 @@ from __future__ import annotations
 from typing import Optional
 
 __all__ = [
+    "CALLER_DECLARED_COVERAGE_SOURCE",
     "VOUCHED_COVERAGE_SOURCES",
     "INFERRED_COVERAGE_SOURCES",
     "is_vouched",
@@ -36,9 +37,21 @@ __all__ = [
     "may_be_stated",
 ]
 
+#: The one provenance that is NOT extractor output.
+#:
+#: Every other value names a timestamp pattern read out of the content. This
+#: one is the forwarding caller's own statement about when it saw the content,
+#: seeded at intake from ``observed_at`` when the content carried no parseable
+#: timestamps of its own. Named here, beside the trust decision it feeds,
+#: because two places outside this module have to tell it apart from a parsed
+#: source: intake WRITES it, and reclassification must not CLOBBER it — a
+#: re-extraction under a different data type re-reads the content, which says
+#: nothing about what the caller observed.
+CALLER_DECLARED_COVERAGE_SOURCE = "caller_declared"
+
 VOUCHED_COVERAGE_SOURCES = frozenset(
     {
-        "caller_declared",
+        CALLER_DECLARED_COVERAGE_SOURCE,
         "iso8601",
         "iso8601_t",
         "healthapp",

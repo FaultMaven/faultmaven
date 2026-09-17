@@ -351,8 +351,20 @@ def make_evidence(
     )
 
 
-def make_preprocessing_result(new_data_type=None, metadata: Optional[dict] = None):
-    """PreprocessingResult as returned by reclassify under user_override."""
+def make_preprocessing_result(
+    new_data_type=None,
+    metadata: Optional[dict] = None,
+    coverage_start_ts=None,
+    coverage_end_ts=None,
+    coverage_source=None,
+):
+    """PreprocessingResult as returned by reclassify under user_override.
+
+    The coverage triple defaults to "this extractor parsed no timestamps",
+    which is the shape most callers want. Pass it to model the case #1471 is
+    about: a DIFFERENT extractor over the same bytes parses a DIFFERENT
+    window, and the row has to move with it.
+    """
     from faultmaven.core.preprocessing.models import (
         PreprocessingResult,
         UnifiedDataType,
@@ -379,4 +391,7 @@ def make_preprocessing_result(new_data_type=None, metadata: Optional[dict] = Non
         extraction_metadata={"evidence_metadata": metadata or {}},
         content_hash="a" * 64,
         processing_time_ms=5,
+        coverage_start_ts=coverage_start_ts,
+        coverage_end_ts=coverage_end_ts,
+        coverage_source=coverage_source,
     )

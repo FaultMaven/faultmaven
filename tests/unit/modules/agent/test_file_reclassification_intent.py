@@ -2979,7 +2979,9 @@ def test_every_data_type_writer_retires_the_question():
     # ``data_type`` in it becomes possible, and the filter would then narrow
     # the scan silently. What IS live is the assertion below that every module
     # the expected set names survived the filter.
-    modules = _package_modules(("data_type", "_file_row_with_reclassification"))
+    modules = _package_modules(
+        ("data_type", "_file_row_with_reclassification", "_reclassified_collections")
+    )
     parsed = {rel for rel, _ in modules}
 
     for rel, tree in modules:
@@ -3046,7 +3048,10 @@ def test_every_data_type_writer_retires_the_question():
             def visit_Call(self, node):
                 fn = node.func
                 name = getattr(fn, "id", None) or getattr(fn, "attr", None)
-                if name == "_file_row_with_reclassification":
+                if name in (
+                    "_file_row_with_reclassification",
+                    "_reclassified_collections",
+                ):
                     self._record("reclassification")
                 elif self._model_copy_writes_data_type(node):
                     self._record("model_copy_update")
@@ -3083,19 +3088,29 @@ def test_every_data_type_writer_retires_the_question():
             "InvestigationService._preprocess_attachment",
             "attribute_write",
         ),
-        # The shared body both reclassification paths route through. It is
-        # private to this module, which is why a writer added ELSEWHERE would
-        # have to take one of the other matched forms.
+        # The row write itself. It is private to this module, which is why a
+        # writer added ELSEWHERE would have to take one of the other matched
+        # forms. Its ``update=`` dict is kept a LITERAL for this matcher's
+        # sake — the coverage half (#1471) is spread in from
+        # ``_refreshed_coverage`` rather than assembled into a variable,
+        # which is a shape this scan declares it cannot see.
         (service_module, "_file_row_with_reclassification", "model_copy_update"),
+        # The seam both paths cross (#1470): the file row AND every Evidence
+        # row backed by it. Its own entry, because it is now the only caller
+        # of the row writer above — the two paths below reach the write
+        # THROUGH it, which is what stops them re-aligning Evidence two
+        # different ways.
+        (service_module, "_reclassified_collections", "reclassification"),
         # The turn seam — retires by ``resolved_file_id``.
         (
             service_module,
             "InvestigationService._handle_file_reclassification",
             "reclassification",
         ),
-        # Out of band — retires by ``drop_clarifications_for_file`` (fm#918)
-        # on ``trigger="api"``. On ``trigger="agent_tool"`` the whole write is
-        # clobbered by the end-of-turn save (#1465); see that call site.
+        # Out of band — retires by ``drop_clarifications_for_file`` (fm#918).
+        # True of BOTH triggers since #1465: a call made from inside a turn
+        # now writes the aggregate the turn is holding instead of a copy the
+        # end-of-turn save overwrites.
         (
             service_module,
             "InvestigationService.reclassify_evidence",
