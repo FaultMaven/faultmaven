@@ -803,8 +803,10 @@ async def get_env_config_status(
                     "Mounted automatically when ENVIRONMENT is "
                     "development/testing/test, and in ANY environment — "
                     "staging and production included — when "
-                    "ENABLE_DEBUG_ENDPOINTS=true. Unset the flag to remove the "
-                    "surface entirely"
+                    "ENABLE_DEBUG_ENDPOINTS=true. Unsetting the flag removes "
+                    "the surface only where ENVIRONMENT is not one of those "
+                    "three: on the shipped development default the router "
+                    "mounts with the flag unset"
                 ),
             ),
             "llm_tracing": FeatureStatus(

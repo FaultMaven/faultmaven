@@ -79,8 +79,20 @@ allowlist against the same file the change publishes.
 import contextlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from typing import NamedTuple
 
 import pytest
+
+# FastAPI's own route flattener. Imported at MODULE level, not inside the
+# helper, for two reasons: it is how ``api/middleware/route_policy.py`` does it
+# (fm#1305), and a function-local import cannot be monkeypatched — which would
+# leave the >= 0.139 arm unexecuted on the pinned ``fastapi==0.136.0`` that CI
+# and the image install. See ``TestTheFlattenedArmOnThePinnedVersion``.
+try:  # pragma: no cover - exercised on FastAPI >= 0.139
+    from fastapi.routing import iter_route_contexts
+except ImportError:  # pragma: no cover - FastAPI < 0.139
+    iter_route_contexts = None
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CONTRACT = PROJECT_ROOT / "docs" / "reference" / "api" / "openapi.json"
@@ -635,49 +647,75 @@ def _served_under(**overrides):
         reset_settings()
 
 
-def _served_api_routes(app) -> list[tuple[str, frozenset, object]]:
-    """``(effective path, methods, route)`` for every API route the app serves.
+class _Served(NamedTuple):
+    """One served API operation's path, verbs, and the dependant FastAPI RESOLVES.
 
-    NOT ``[r for r in app.routes if isinstance(r, APIRoute)]``, which is what
-    every guard in this module used to do and what ``GET /debug/routes`` still
-    did. FastAPI 0.139 stopped copying an included router's routes into
-    ``app.routes`` and records one ``_IncludedRouter`` placeholder per
-    ``include_router`` instead. Measured on fastapi 0.141.1: a flat scan of the
-    composed app finds 20 API routes where 144 are served.
+    The third field is the point. Every consumer here asks a question about the
+    dependency tree, and on FastAPI >= 0.139 ``route.dependant`` is NOT the tree
+    that runs for a route reached through ``include_router`` — it carries only
+    what the handler declares. Measured on the composed app under 0.141.1:
 
-    That is not a theoretical gap for this module — it is the gap its own
-    recommended follow-up would open. Collecting the five debug handlers on an
-    ``APIRouter(prefix="/debug", dependencies=[...])``, which is the obvious way
-    to gate every present and future debug route once, makes every one of them
-    invisible to a flat scan, so ``_debug_routes`` would return ``[]``,
-    ``_open_served_operations`` would find nothing open, and all of it would
-    pass while guarding nothing.
+        APIRoute contexts                                 147
+        ctx.dependant IS route.dependant                   15
+        ctx.dependant IS NOT route.dependant              132
+        route.dependant LACKING the app-level tenant binder 132
+        ctx.dependant   LACKING the app-level tenant binder   0
 
-    ``iter_route_contexts`` is FastAPI's own flattener for exactly this and is
-    what ``faultmaven/api/middleware/route_policy.py`` uses (fm#1305). It
-    resolves the EFFECTIVE path, including the prefix — which is why the
-    obvious hand-rolled alternative is wrong: walking ``original_router``
-    recursively reaches the routes but yields their unprefixed paths.
-    Measured, on a router included at ``prefix="/pre"``:
+    So reading ``route.dependant`` there would mean: the binder is absent from
+    132 trees (falsifying what ``_PERMITTED_BEFORE_A_GATE`` says about it), a
+    gate contributed by ``include_router(..., dependencies=[...])`` is invisible
+    so its whole router reads as OPEN, and a COLLABORATOR contributed the same
+    way resolves ahead of the route's own gate at runtime while ``_gate_failure``
+    answers ``None`` — the #1467 shape passing silently.
+    """
+
+    path: str
+    methods: frozenset
+    dependant: object
+
+
+def _served_api_routes(app) -> list[_Served]:
+    """Every API operation the app serves, with its EFFECTIVE path and dependant.
+
+    NOT ``[r for r in app.routes if isinstance(r, APIRoute)]``, and the reason
+    is entirely version-dependent — which is why both arms exist and both are
+    tested. Measured, on a router included at ``prefix="/pre"`` with an
+    app-level dependency, a router-level dependency and a handler parameter:
+
+        fastapi==0.136.0  (PINNED: requirements/{test,dev,cloud}.txt, the image)
+          app.routes types            ['APIRoute', 'Route']
+          flat APIRoute paths         ['/direct', '/pre/leaf']   <- COMPLETE
+          route.dependant             [app_global, router_gate, handler_dep]
+                                                                 <- COMPLETE
+        fastapi==0.141.1
+          app.routes types            ['APIRoute', 'Route', '_IncludedRouter']
+          flat APIRoute paths         ['/direct']                <- 20 of 144
+          route.dependant             [handler_dep]              <- INCOMPLETE
+          ctx.path                    '/pre/leaf'
+          ctx.dependant               [app_global, router_gate, handler_dep]
+
+    0.139 stopped copying an included router's routes into ``app.routes`` and
+    records one ``_IncludedRouter`` placeholder per ``include_router`` instead,
+    moving BOTH the path and the resolved dependant onto the context. Before
+    that, the eager copy already merged the prefix and the contributed
+    dependencies into the route itself, so the flat scan is not a degraded
+    fallback there — it is exactly right, and this helper is a correct no-op on
+    the version that currently ships.
+
+    The obvious hand-rolled alternative is wrong on both counts: walking
+    ``original_router`` reaches the routes but yields their UNPREFIXED paths and
+    their handler-only dependants.
 
         flat app.routes        -> ['/direct']
         original_router walk   -> ['/direct', '/leaf']      <- wrong path
         iter_route_contexts    -> ['/direct', '/pre/leaf']  <- effective path
         app.openapi()["paths"] -> ['/direct', '/pre/leaf']
-
-    Before 0.139 the flattener does not exist and is not needed, because
-    ``app.routes`` really does hold every route; the fallback is that flat scan.
     """
     from fastapi.routing import APIRoute
 
-    try:
-        from fastapi.routing import iter_route_contexts
-    except ImportError:  # pragma: no cover - FastAPI < 0.139
-        iter_route_contexts = None
-
-    if iter_route_contexts is None:  # pragma: no cover - FastAPI < 0.139
+    if iter_route_contexts is None:  # FastAPI < 0.139: the eager-copy shape
         return [
-            (route.path, frozenset(route.methods or ()), route)
+            _Served(route.path, frozenset(route.methods or ()), route.dependant)
             for route in app.routes
             if isinstance(route, APIRoute)
         ]
@@ -685,21 +723,34 @@ def _served_api_routes(app) -> list[tuple[str, frozenset, object]]:
     found = []
     for context in iter_route_contexts(app.routes):
         route = getattr(context, "route", None)
-        if isinstance(route, APIRoute):
-            found.append(
-                (
-                    context.path,
-                    frozenset(getattr(context, "methods", None) or ()),
-                    route,
-                )
+        if not isinstance(route, APIRoute):
+            continue
+        # Demanded, never defaulted. Falling back to ``route.dependant`` when a
+        # context does not carry one would silently reinstate the exact defect
+        # this helper exists to avoid, on a future FastAPI, with every test
+        # still green. Measured on 0.141.1: 0 of 147 APIRoute contexts lack it.
+        if not hasattr(context, "dependant"):
+            raise AssertionError(
+                f"{context.path}: this FastAPI's route context carries no "
+                "`dependant`, so the tree that actually resolves cannot be "
+                "read. Do NOT fall back to route.dependant — on >= 0.139 that "
+                "is the handler's tree only, and every guard in this module "
+                "would quietly start asking about the wrong one."
             )
+        found.append(
+            _Served(
+                context.path,
+                frozenset(getattr(context, "methods", None) or ()),
+                context.dependant,
+            )
+        )
     return found
 
 
 def _debug_routes(app) -> list[str]:
     return sorted(
         path
-        for path, _methods, _route in _served_api_routes(app)
+        for path, _methods, _dependant in _served_api_routes(app)
         if path.startswith("/debug")
     )
 
@@ -744,11 +795,11 @@ def _open_served_operations(app, prefix: str) -> set[tuple[str, str]]:
 
     return {
         (method, path)
-        for path, methods, route in _served_api_routes(app)
+        for path, methods, dependant in _served_api_routes(app)
         if path.startswith(prefix)
         for method in methods
         if method not in {"HEAD", "OPTIONS"}
-        and not (MANDATORY_AUTH_DEPENDENCIES & _dependency_names(route.dependant))
+        and not (MANDATORY_AUTH_DEPENDENCIES & _dependency_names(dependant))
     }
 
 
@@ -861,14 +912,11 @@ def test_the_debug_router_in_production_is_an_explicit_opt_in():
     # is present" and "the gate resolves first" are separate claims, and this is
     # the only place the second one is made about the routes AS MOUNTED BY THE
     # FLAG rather than as mounted by the environment.
-    from fastapi.routing import APIRoute
-
     mis_ordered = {
-        route.path: failure
-        for route in opted_in_app.routes
-        if isinstance(route, APIRoute)
-        and route.path in _ALL_DEBUG_PATHS
-        and (failure := _gate_failure(route)) is not None
+        path: failure
+        for path, _methods, dependant in _served_api_routes(opted_in_app)
+        if path in _ALL_DEBUG_PATHS
+        and (failure := _gate_failure(dependant)) is not None
     }
     assert not mis_ordered, (
         "the operator flag mounted these debug routes in PRODUCTION with "
@@ -1142,29 +1190,6 @@ _DEBUG_PATHS = (
 _ALL_DEBUG_PATHS = _DEBUG_PATHS + ("/debug/cases/{case_id}/causal-graph",)
 
 
-#: The only dependency permitted to resolve ahead of an auth gate.
-#:
-#: ``bind_request_enterprise_context`` is declared as a GLOBAL on ``app`` — the
-#: module docstring's "the app's only global dependency is the tenant binder,
-#: not authentication" — and FastAPI puts app-level dependencies at the front of
-#: every route's dependant. So it is index 0 on every route in the application
-#: and no route can be written that does not have it first.
-#:
-#: Naming it rather than discriminating structurally is deliberate. The obvious
-#: structural rule — "ignore anything FastAPI built without a parameter name" —
-#: measured WRONG: a collaborator listed in the same ``dependencies=[...]`` as
-#: the gate also has ``name is None``, so
-#: ``dependencies=[Depends(service), Depends(require_platform_admin)]`` passed a
-#: rule written to forbid exactly that, while an anonymous GET answered 500.
-#: An allowlist of one cannot make that mistake: everything not named here is
-#: reported, wherever it was declared.
-_PERMITTED_BEFORE_A_GATE = frozenset(
-    {
-        "faultmaven.api.middleware.tenant_scope.bind_request_enterprise_context",
-    }
-)
-
-
 def _resolution_order(dependant) -> list:
     """Every dependency in the tree, in the order FastAPI actually resolves it.
 
@@ -1218,7 +1243,7 @@ _PERMITTED_BEFORE_A_GATE = frozenset(
 )
 
 
-def _gate_failure(route) -> str | None:
+def _gate_failure(dependant) -> str | None:
     """``None`` if an auth gate resolves before every other dependency.
 
     "First" is not literally "index 0": the tenant binder above is, on every
@@ -1233,7 +1258,7 @@ def _gate_failure(route) -> str | None:
         MANDATORY_AUTH_DEPENDENCIES,
     )
 
-    order = _resolution_order(route.dependant)
+    order = _resolution_order(dependant)
     gates = [
         index
         for index, dependency in enumerate(order)
@@ -1366,11 +1391,11 @@ def test_a_gate_declared_after_a_service_parameter_is_not_a_gate():
     routes = {
         route.path: route for route in probe.routes if isinstance(route, APIRoute)
     }
-    assert _gate_failure(routes["/gate-on-the-decorator"]) is None, (
+    assert _gate_failure(routes["/gate-on-the-decorator"].dependant) is None, (
         "the predicate rejected a correctly gated route — it is not a rule, it "
         "is an outage"
     )
-    assert _gate_failure(routes["/gate-through-two-wrappers"]) is None, (
+    assert _gate_failure(routes["/gate-through-two-wrappers"].dependant) is None, (
         "the predicate did not find an auth gate two wrappers deep, so "
         "_dependency_names is not reaching the whole subtree. Both predicates "
         "read that one walk: _open_served_operations would report this route "
@@ -1380,7 +1405,7 @@ def test_a_gate_declared_after_a_service_parameter_is_not_a_gate():
         _dependency_names(routes["/gate-through-two-wrappers"].dependant)
     ), "the shared walk does not reach a dependency two levels down"
     for path in ("/gate-after-the-parameter", "/gate-after-a-decorator-collaborator"):
-        assert _gate_failure(routes[path]) is not None, (
+        assert _gate_failure(routes[path].dependant) is not None, (
             f"the predicate accepted {path}, where a collaborator resolves "
             "ahead of the gate — it is not discriminating, and every route it "
             "passes is unchecked"
@@ -1428,13 +1453,11 @@ def test_the_debug_gate_resolves_before_anything_the_handler_declares():
     — so it is the one route on the router that most needs watching, and the
     one an "only the routes #1474 touched" scope would have skipped.
     """
-    from fastapi.routing import APIRoute
-
     served = _app_under(ENVIRONMENT="development")
     routes = {
-        route.path: route
-        for route in served.routes
-        if isinstance(route, APIRoute) and route.path in _ALL_DEBUG_PATHS
+        path: dependant
+        for path, _methods, dependant in _served_api_routes(served)
+        if path in _ALL_DEBUG_PATHS
     }
 
     missing = set(_ALL_DEBUG_PATHS) - set(routes)
@@ -1442,8 +1465,8 @@ def test_the_debug_gate_resolves_before_anything_the_handler_declares():
 
     failures = {
         path: failure
-        for path, route in sorted(routes.items())
-        if (failure := _gate_failure(route)) is not None
+        for path, dependant in sorted(routes.items())
+        if (failure := _gate_failure(dependant)) is not None
     }
     assert not failures, "\n".join(
         f"{path}: {reason}" for path, reason in failures.items()
@@ -1721,9 +1744,11 @@ def test_no_gated_operation_resolves_a_collaborator_before_its_gate():
     routes = _served_api_routes(served)
 
     assert len(routes) > 100, (
-        f"only {len(routes)} API routes were found — the flattener is not "
+        f"only {len(routes)} API routes were found — the enumeration is not "
         "seeing the composed application, and this guard measured almost "
-        "nothing. A flat app.routes scan finds 20 of them"
+        "nothing. On FastAPI >= 0.139 a flat app.routes scan finds 20 of 144; "
+        "on the pinned 0.136 it finds all of them, so a shortfall here means "
+        "something else"
     )
 
     # The two categories ``_gate_failure`` conflates, separated on purpose.
@@ -1735,10 +1760,10 @@ def test_no_gated_operation_resolves_a_collaborator_before_its_gate():
     # operations that HAVE a gate with something resolving ahead of it.
     misordered = set()
     ungated = set()
-    for path, methods, route in routes:
-        if _gate_failure(route) is None:
+    for path, methods, dependant in routes:
+        if _gate_failure(dependant) is None:
             continue
-        gated = bool(MANDATORY_AUTH_DEPENDENCIES & _dependency_names(route.dependant))
+        gated = bool(MANDATORY_AUTH_DEPENDENCIES & _dependency_names(dependant))
         for method in methods:
             if method in {"HEAD", "OPTIONS"}:
                 continue
@@ -1773,6 +1798,229 @@ def test_no_gated_operation_resolves_a_collaborator_before_its_gate():
     assert not fixed, (
         "these MISORDERED_GATE_OPERATIONS entries no longer name a "
         "mis-ordered operation — #1494 is closing, remove them:\n" + _format(fixed)
+    )
+
+
+# ---------------------------------------------------------------------------
+# The FastAPI >= 0.139 arm of ``_served_api_routes``, made reachable on the
+# version that actually ships.
+#
+# ``requirements/{test,dev,cloud}.txt`` all pin ``fastapi==0.136.0`` — that is
+# what CI installs and what the Dockerfile builds — and ``iter_route_contexts``
+# does not exist there, so the whole flattening arm takes the ``is None``
+# branch. A test that only drives a real app would therefore leave it
+# unexecuted in CI and any regression would ship green. Measured:
+#
+#     fastapi==0.136.0: `from fastapi.routing import iter_route_contexts`
+#                       -> ImportError
+#
+# Same shape, and the same reasoning, as the fm#1305 arm in
+# ``tests/unit/api/middleware/test_composed_route_policy.py``: drive it with
+# stand-ins for what the flattener really yields, and keep a live arm that
+# becomes real the moment the pin moves.
+# ---------------------------------------------------------------------------
+
+
+class _StubContext:
+    """A ``RouteContext``-shaped record, as ``iter_route_contexts`` yields one.
+
+    Carries ``dependant`` because the real one does — on >= 0.139 that is the
+    resolved tree, and ``route.dependant`` is the handler's only. A stub without
+    it would make the helper's "demanded, never defaulted" check unreachable,
+    which is most of what these tests are for.
+    """
+
+    def __init__(self, path, methods=frozenset(), route=None, dependant=None):
+        self.path = path
+        self.methods = methods
+        self.route = route
+        if dependant is not None:
+            self.dependant = dependant
+
+
+class _StubContextWithoutDependant:
+    """The same record from a FastAPI that stopped carrying ``dependant``."""
+
+    def __init__(self, path, methods=frozenset(), route=None):
+        self.path = path
+        self.methods = methods
+        self.route = route
+
+
+def _route_and_trees():
+    """An APIRoute whose own dependant differs from the one that resolves.
+
+    Built by hand rather than by ``include_router`` because on the pinned
+    version ``include_router`` copies eagerly and the two trees are the SAME
+    object — there would be nothing to tell apart, which is exactly why the
+    difference is invisible to CI without this.
+    """
+    from fastapi import Depends, FastAPI
+    from fastapi.routing import APIRoute
+
+    from faultmaven.api.v1.auth_dependencies import require_platform_admin
+
+    probe = FastAPI()
+
+    @probe.get("/leaf")
+    async def _leaf(caller=Depends(require_platform_admin)):  # pragma: no cover
+        return {}
+
+    route = [r for r in probe.routes if isinstance(r, APIRoute)][0]
+
+    gated = FastAPI(dependencies=[Depends(require_platform_admin)])
+
+    @gated.get("/leaf")
+    async def _gated():  # pragma: no cover
+        return {}
+
+    resolved = [r for r in gated.routes if isinstance(r, APIRoute)][0].dependant
+    return route, resolved
+
+
+@pytest.mark.integration
+@pytest.mark.security
+def test_the_flattener_arm_reads_the_contexts_dependant_not_the_routes(monkeypatch):
+    """The >= 0.139 arm, executed on the pinned 0.136.
+
+    The bug this forbids is subtle and was shipped once: flattening with
+    ``iter_route_contexts`` for the PATH while still reading ``route.dependant``
+    for the TREE. Measured on the composed app under 0.141.1, that is wrong for
+    **132 of 147 routes**, and all 132 lose the app-level tenant binder — so a
+    gate contributed by ``include_router(..., dependencies=[...])`` is invisible
+    and its whole router reads as OPEN, while a collaborator contributed the
+    same way resolves ahead of the route's own gate with ``_gate_failure``
+    answering ``None``.
+    """
+    import tests.integration.api.test_no_unauthenticated_operations as module
+
+    route, resolved = _route_and_trees()
+    assert route.dependant is not resolved, "the fixture does not distinguish them"
+
+    monkeypatch.setattr(
+        module,
+        "iter_route_contexts",
+        lambda routes: [
+            _StubContext("/pre/leaf", frozenset({"GET"}), route, resolved),
+            _StubContext("", frozenset(), None, None),  # a Mount: no APIRoute
+        ],
+    )
+
+    served = module._served_api_routes(SimpleNamespace(routes=[]))
+
+    assert [s.path for s in served] == ["/pre/leaf"], (
+        "the arm did not run, or it kept a context whose route is not an " "APIRoute"
+    )
+    assert served[0].methods == frozenset({"GET"})
+    assert served[0].dependant is resolved, (
+        "the flattened arm returned the ROUTE's dependant. On >= 0.139 that is "
+        "the handler's tree only — the path comes from the context and the tree "
+        "must come from the same place"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.security
+def test_a_context_without_a_dependant_is_refused_rather_than_defaulted(monkeypatch):
+    """Falling back to ``route.dependant`` would be silent and wrong.
+
+    If a future FastAPI stops carrying ``dependant`` on the context, the helper
+    must say so. Defaulting would reinstate the 132-route defect above with
+    every test still green, which is the failure mode this module exists to
+    prevent rather than demonstrate.
+    """
+    import tests.integration.api.test_no_unauthenticated_operations as module
+
+    route, _resolved = _route_and_trees()
+    monkeypatch.setattr(
+        module,
+        "iter_route_contexts",
+        lambda routes: [_StubContextWithoutDependant("/pre/leaf", {"GET"}, route)],
+    )
+
+    with pytest.raises(AssertionError, match="carries no `dependant`"):
+        module._served_api_routes(SimpleNamespace(routes=[]))
+
+
+@pytest.mark.integration
+@pytest.mark.security
+def test_the_pre_0_139_arm_is_the_flat_scan(monkeypatch):
+    """And it is CORRECT there, not a degraded fallback.
+
+    On the pinned ``fastapi==0.136.0`` ``include_router`` copies eagerly, with
+    the prefix merged into the path and the contributed dependencies merged into
+    the route's own dependant. Measured, on a router included at
+    ``prefix="/pre"`` with an app-level dependency, a router-level one and a
+    handler parameter:
+
+        0.136.0  flat APIRoute paths -> ['/direct', '/pre/leaf']
+                 route.dependant     -> [app_global, router_gate, handler_dep]
+        0.141.1  flat APIRoute paths -> ['/direct']
+                 route.dependant     -> [handler_dep]
+
+    So this arm is not second best on the shipped version — it is exactly right,
+    and the flattening arm above is forward protection for the pin moving.
+    """
+    from fastapi import Depends, FastAPI
+
+    import tests.integration.api.test_no_unauthenticated_operations as module
+    from faultmaven.api.v1.auth_dependencies import require_platform_admin
+
+    monkeypatch.setattr(module, "iter_route_contexts", None)
+
+    app = FastAPI()
+
+    @app.get("/plain")
+    async def _plain(caller=Depends(require_platform_admin)):  # pragma: no cover
+        return {}
+
+    served = module._served_api_routes(app)
+    paths = {s.path for s in served}
+
+    assert "/plain" in paths, "the flat arm did not run"
+    entry = next(s for s in served if s.path == "/plain")
+    assert entry.methods == frozenset({"GET"})
+    assert (
+        _gate_failure(entry.dependant) is None
+    ), "the flat arm handed back a tree the predicate cannot read"
+
+
+@pytest.mark.integration
+@pytest.mark.security
+@pytest.mark.skipif(
+    iter_route_contexts is None,
+    reason="fastapi < 0.139 copies included routes in eagerly; nothing to flatten",
+)
+def test_a_really_included_router_is_flattened_with_its_resolved_tree():
+    """The live arm. Vacuous on the pin, real the moment it moves.
+
+    Kept beside the injected ones rather than instead of them: the stubs prove
+    the code does the right thing with the shape, and this proves the shape is
+    the one FastAPI really produces.
+    """
+    from fastapi import APIRouter, Depends, FastAPI
+
+    import tests.integration.api.test_no_unauthenticated_operations as module
+    from faultmaven.api.v1.auth_dependencies import require_platform_admin
+
+    sub = APIRouter()
+
+    @sub.get("/leaf")
+    async def _leaf():  # pragma: no cover
+        return {}
+
+    app = FastAPI(dependencies=[Depends(require_platform_admin)])
+    app.include_router(sub, prefix="/pre")
+
+    served = {s.path: s for s in module._served_api_routes(app)}
+
+    assert "/pre/leaf" in served, (
+        "the effective path was not recovered — an unprefixed '/leaf' here "
+        "means the walk reached original_router instead of the flattener"
+    )
+    assert _gate_failure(served["/pre/leaf"].dependant) is None, (
+        "the app-level gate is absent from the tree this helper returned, so "
+        "it read route.dependant rather than the context's"
     )
 
 
