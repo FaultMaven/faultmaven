@@ -329,6 +329,24 @@ one the project hit, and it is refused rather than sent with a `strict: true`
 the API rejects. Enforcement is scoped to the schema tool; investigation tools
 keep optional parameters.
 
+**The rewrite keeps the schema's value constraints** (`minimum`/`maximum`,
+`maxLength`, `pattern`, `minItems`/`maxItems`) — it drops only `default`,
+`examples`, `format` and the handful of keywords an API refuses. It used to
+drop the narrowing ones too, as "descriptive", and the Gemini adapter stripped
+them a second time; the engine's `likelihood: Field(ge=0, le=1)` therefore
+reached the model as a bare number and came back as `95`, which Pydantic
+rejects and the turn 500s (fm#355). Note what that means for fm#355's own
+proposal: routing the schema tool through Gemini's `response_schema` instead of
+function calling enforces **nothing** extra, because
+`generationConfig.responseSchema` and `FunctionDeclaration.parameters` are the
+same `Schema` message in the API and go through the same adapter resolver — the
+lever is what the schema contains, not which field carries it. Measured
+enforcement per provider, and where `maxLength` stops biting, is in
+`docs/reference/llm-model-capabilities.md` §"Value constraints"; the guard is
+`tests/unit/core/investigation/test_schema_constraints_reach_the_provider.py`,
+written end-to-end over both builders so a third stripper anywhere on either
+path fails it.
+
 The investigation schemas reached the subset by giving their two `Dict[str, Any]`
 fields declared shapes (fm#1057). `milestone_justifications` became
 `MilestoneJustifications`, one field per settable milestone — its key domain was

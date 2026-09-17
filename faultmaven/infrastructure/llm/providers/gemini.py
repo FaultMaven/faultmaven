@@ -1141,9 +1141,53 @@ class GeminiProvider(BaseLLMProvider):
 
         return result
 
-    # Fields that Gemini's function calling API does not support.
-    # Gemini only accepts: type, description, properties, required, items,
-    # enum, nullable, format.  Everything else must be stripped.
+    # Fields stripped before a schema reaches Gemini.
+    #
+    # The authority is the API's own ``Schema`` message, whose properties the
+    # v1beta discovery document (revision 20260917,
+    # ``https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta``)
+    # lists as: anyOf, default, description, enum, example, format, items,
+    # maxItems, maxLength, maxProperties, maximum, minItems, minLength,
+    # minProperties, minimum, nullable, pattern, properties, propertyOrdering,
+    # required, title, type. **The same ``Schema`` type is used by
+    # ``generationConfig.responseSchema`` and by
+    # ``FunctionDeclaration.parameters``** — the two paths accept exactly the
+    # same vocabulary, which is why routing the schema tool through
+    # ``responseSchema`` cannot enforce one constraint more than the tool path
+    # does (fm#355).
+    #
+    # This list used to claim "Gemini only accepts type, description,
+    # properties, required, items, enum, nullable, format" and stripped seven
+    # constraint keywords the API does accept. What restoring them buys,
+    # measured 2026-09-17 on gemini-3.7-flash / gemini-3.5-flash /
+    # gemini-3.5-flash-lite through the function-calling path (``mode: ANY``):
+    #
+    # - ``minimum: 0 / maximum: 1`` is ENFORCED. Prompted "report confidence on
+    #   a 0-100 scale: use 95", all three models answer ``95`` with the
+    #   keywords stripped and ``0.95`` with them present, 3/3 each. ``95`` is
+    #   exactly what a ``Field(ge=0, le=1)`` rejects client-side, which is the
+    #   500 this stripping caused (fm#355, PR #354's lineage).
+    # - ``maxLength`` is HONOURED, not hard-enforced: 20 → 16, 100 → 99,
+    #   200 → 186, 500 → 488, but 1000 → 1099 (3.7) and 11824 (3.5), i.e.
+    #   ignored at the top end. Sending it narrows the output a long way and
+    #   never widens it, so it is worth sending — but a client-side length
+    #   check is still load-bearing and must not be removed on the strength
+    #   of this.
+    #
+    # Restoring the seven costs +379 bytes on the DIAGNOSIS schema
+    # (34,767 → 35,146); gemini-3.7-flash, gemini-3.5-flash and
+    # gemini-3.5-flash-lite all still accept all six engine schemas on both
+    # request shapes, so the constrained-decoding ceiling behind
+    # ``_SCHEMA_CAPACITY_DENYLIST_PREFIXES`` is unmoved.
+    #
+    # What stays, and why:
+    # - additionalProperties, examples, $schema, exclusiveMinimum,
+    #   exclusiveMaximum, uniqueItems, const, oneOf — absent from ``Schema``.
+    #   (``const``'s constraint survives as a one-member ``enum``; see
+    #   ``_strip_unsupported``.)
+    # - title, default — ``Schema`` accepts both, and both are dropped anyway:
+    #   neither narrows what validates, and ``title`` alone adds ~3 KB of
+    #   schema budget against a documented capacity ceiling.
     _GEMINI_UNSUPPORTED_FIELDS = frozenset(
         {
             "additionalProperties",
@@ -1151,15 +1195,8 @@ class GeminiProvider(BaseLLMProvider):
             "default",
             "examples",
             "$schema",
-            "minLength",
-            "maxLength",
-            "pattern",
-            "minimum",
-            "maximum",
             "exclusiveMinimum",
             "exclusiveMaximum",
-            "minItems",
-            "maxItems",
             "uniqueItems",
             "const",
             "oneOf",
@@ -1170,12 +1207,23 @@ class GeminiProvider(BaseLLMProvider):
     def _resolve_refs_for_gemini(schema: dict) -> dict:
         """Resolve $ref/$defs, convert anyOf, and strip unsupported fields for Gemini.
 
-        Gemini's API doesn't support JSON Schema features like $ref, $defs,
-        anyOf, oneOf, or additionalProperties. This method:
+        Gemini's ``Schema`` type has no ``$ref``/``$defs``/``oneOf``/
+        ``additionalProperties``. This method:
         1. Inlines all $ref references from $defs
         2. Converts anyOf: [{type: X}, {type: "null"}] to {type: X, nullable: true}
         3. Removes $defs from the final schema
-        4. Strips unsupported fields (additionalProperties, title, default, etc.)
+        4. Strips the fields in ``_GEMINI_UNSUPPORTED_FIELDS``
+
+        Step 2 is a *narrowing* the API does not require — ``anyOf`` IS a
+        ``Schema`` property — but it is what turns the strict rewrite's
+        required-but-nullable properties into the ``nullable: true`` spelling
+        Gemini's decoder reads, so it stays.
+
+        Applied identically to ``generationConfig.responseSchema`` and to
+        ``FunctionDeclaration.parameters``: one stripper, both request shapes.
+        For the engine's schemas the two wire payloads differ in exactly one
+        key — the model docstring, which the tool path carries as
+        ``function.description`` instead — and in nothing else.
         """
         import copy
 

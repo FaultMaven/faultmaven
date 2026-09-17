@@ -121,6 +121,82 @@ Defines how reliably the provider produces valid JSON matching a schema.
 > matrix row above describes what the code *does*, not the ceiling of what the
 > provider *can* do.
 
+### Value constraints, and why the request shape is not what carries them
+
+A STRICT provider enforces types and required keys. Whether it also enforces
+**value constraints** — `minimum`/`maximum`, `maxLength`, `pattern` — is a
+separate question, and the engine depends on the answer: its `likelihood` /
+`confidence` fields are `Field(ge=0, le=1)`, and a model that answers `95`
+fails Pydantic and 500s the turn.
+
+FaultMaven used to strip those keywords twice on the way out —
+`to_strict_schema` dropped them as "descriptive", and
+`GeminiProvider._GEMINI_UNSUPPORTED_FIELDS` dropped them again. fm#355 proposed
+recovering enforcement by routing the schema tool through Gemini's
+`response_schema` instead of function calling. That cannot work, for a reason
+worth recording:
+
+> **The Gemini API uses one `Schema` message for both request shapes.**
+> `generationConfig.responseSchema` and `FunctionDeclaration.parameters` are
+> both `$ref: Schema` in the v1beta discovery document (revision 20260917,
+> `https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta`),
+> whose properties are: `anyOf, default, description, enum, example, format,
+> items, maxItems, maxLength, maxProperties, maximum, minItems, minLength,
+> minProperties, minimum, nullable, pattern, properties, propertyOrdering,
+> required, title, type`. The two shapes accept exactly the same vocabulary, so
+> switching between them enforces nothing extra. What the schema *contains* is
+> the only lever.
+
+There is a second reason the routing change is not available on the request
+shape the engine sends. `_tool_augmented_generate` uses `tool_choice:
+"required"`, which the adapter maps to `functionCallingConfig.mode: ANY`, on
+every iteration that offers only the schema tool and on every Directed Analysis
+turn. Measured 2026-09-17 against `generateContent`:
+
+| model | `tools` + `responseSchema`, AUTO | + `mode: ANY` |
+|---|---|---|
+| gemini-3.7-flash | 200 | **400** `Forced function calling (ANY mode) with a response mime type: 'application/json' is unsupported` |
+| gemini-3.5-flash | 200 | **400** same |
+| gemini-2.5-flash | **400** `Function calling with a response mime type: 'application/json' is unsupported` | 400 same |
+
+Combining them at all is Gemini-3-only and documented as Preview
+(<https://ai.google.dev/gemini-api/docs/structured-output>, "Structured outputs
+with tools"); forcing a tool call alongside a JSON response mime type is
+refused on every model tested.
+
+`type` itself is enforced identically on both shapes — the int-where-string
+case in fm#355's opening example does not reproduce on either
+(`'new_index_1'`, 3/3 each, gemini-3.7-flash and gemini-3.5-flash). The
+`IdRef` before-validator from PR #354 is what covers that class.
+
+Measured 2026-09-17 with the keywords restored:
+
+| Provider / model | `minimum`/`maximum` | `maxLength` |
+|---|---|---|
+| gemini-3.7-flash | enforced (`0.95`, 3/3; `95` when stripped) | honoured to 500, ignored at 1000 |
+| gemini-3.5-flash | enforced (`0.95`, 3/3) | honoured to 500, ignored at 1000 |
+| gemini-3.5-flash-lite | enforced (`0.95`, 3/3) | not measured |
+| gpt-4o-mini | accepted | enforced (20 → 20 chars) |
+| gpt-5.6-luna | accepted | enforced |
+| groq `openai/gpt-oss-20b` | enforced (`0.95`) | enforced (20 → 16 chars) |
+
+Two consequences:
+
+- `maxLength` is a **guide, not a stop**, on Gemini. Client-side length
+  handling stays load-bearing; do not remove it on the strength of the schema.
+- `uniqueItems` is rejected outright by OpenAI (`'uniqueItems' is not
+  permitted`) and absent from Gemini's `Schema`, so it stays stripped — as do
+  `additionalProperties`, `const`, `oneOf`, `exclusiveMinimum`/`Maximum` and
+  `$schema`. (`const`'s constraint survives as a one-member `enum`.)
+
+All six engine schemas are still accepted by gemini-3.7-flash,
+gemini-3.5-flash, gemini-3.5-flash-lite (both request shapes), gpt-4o-mini and
+gpt-5.6-luna with the constraints present; DIAGNOSIS grows 34,767 → 35,146
+bytes, which does not approach the constrained-decoding ceiling behind
+`_SCHEMA_CAPACITY_DENYLIST_PREFIXES`. Groq's free tier refuses a schema that
+size on TPM (10,071 tokens against an 8,000 limit) **before and after**, so it
+is unmeasured there rather than changed.
+
 ## Known Model-Specific Behaviors
 
 ### Fireworks tool-calling denylist
