@@ -117,24 +117,36 @@ its own state:
   at the rank that selected it with nothing to move it, so the next round
   dispatches a lane to build the same fix again.
 
-**Every one of those ends by writing a note on the issue naming the pull
-request it settled, and a note naming that pull request ends the matter.**
-Settling mutates issues, and until the note exists the only record that it
-ran is the proposal, which is written later — so an invocation that settles
-and then stops re-applies the whole thing next time, editing the same parent
-down a second time and re-ranking it again. **The note has to name the pull
-request, not merely exist:** an issue is settled once per pull request that
-carries it, and a parent edited down is built again later under another one.
-A guard that fires on any note at all would skip that second settlement, and
-every settlement after it, leaving the issue open at a stale rank forever —
-which is the `Refs`-merged parent again, re-created permanently by the
-mechanism meant to prevent re-application. The note is also what tells a
-pull request the **agent** closed, in a pull, from one the owner abandoned:
-a pull writes the same note whenever it closes a pull request, so the
-abandonment case never fires on it, and a pull mid-build has no pull request
-to close and never reaches here at all. Reading the round's result prose for
-that instead would rest on a format this pass introduced, which round 1's
-result, written before it, does not carry.
+**Every one of those is safe to repeat**, so an invocation that settles and
+then stops has lost nothing: the re-run settles again. Each action reads the
+issue before it writes and writes only what is not already there — a close
+on a closed issue is a no-op, an edit down to a remainder the body already
+carries changes nothing, the re-rank recomputes the same answer, and a
+comment the issue already holds is not posted twice. An earlier pass wrote a
+`Settled by #<pr>` marker instead, and skipped any issue already carrying
+one for that pull request. That made the stop it was built for
+**unrecoverable** rather than harmless: the marker is on the issue, the
+piles are in the `Queue` body, so the re-run read the marker and did nothing
+while *Propose* — which reads no markers — rebuilt the item straight back
+into ready at its old rank. It was bought against one duplicate comment in a
+window of seconds, and it cost more than ten review findings across three
+rounds — plus the leak it was written to close.
+
+**What a stop can still lose is the pile move, so the settlement rewrites
+the `Queue` body as it ends rather than leaving that to *Propose*.** The
+piles are in that body and nowhere else. A closed issue drops out of the
+next rebuild by itself; nothing else does, because the rebuild reads open
+issues and the body, and neither of them says that an item stopped. An item
+moved to **blocked** whose move the body does not carry is rebuilt into
+ready at the rank that selected it, and the next round dispatches a lane
+against it — the abandoned pull request above, arriving by a second road. A
+lane's pull writes the body for the same reason and at the moment it stops,
+because there the step that used to do the writing has already run.
+
+**A pull request the agent closed is told from one the owner abandoned by
+the result table**, which reports that issue's outcome as `pulled`. That
+table already supplies the settlement's pairs, so the distinction costs no
+record of its own.
 
 ### 1. Propose
 
@@ -216,8 +228,9 @@ One lane per approved item, in its own worktree, autonomous. The gates under
 **No question is asked while building.** If a lane cannot deliver its item,
 the item is **pulled**: the lane stops, what stopped it is recorded on the
 issue — the question if there is one, otherwise the fact — the item returns
-to the blocked pile, and it appears in the next proposal. The other lanes
-carry on. Half-built work is not left behind and the round is not held up.
+to the blocked pile, which means the `Queue` body is written there and then,
+and it appears in the next proposal. The other lanes carry on. Half-built
+work is not left behind and the round is not held up.
 
 **"Cannot deliver", not "needs a ruling".** Needing a ruling is the common
 case and not the only one: the work turns out to be several rounds of it, or
@@ -351,9 +364,9 @@ Gates for a lane, each from a failure that cost real time:
   mid-build:** a blocking finding **the lane cannot clear** is pulled — the
   owning agent closes the pull request, records on the issue either the
   question, if it needs a ruling, or simply that the lane could not clear
-  it, adds the settlement note naming that pull request so the next round
-  reads the close as a pull rather than as the owner's abandonment, returns
-  the item to the blocked pile, and the result reports it as not delivered.
+  it, returns the item to the blocked pile, and reports it in the result as
+  `pulled` rather than delivered — which is also what tells the next round's
+  settlement that this close was not the owner's.
   The condition is "cannot clear", not "needs a ruling": a
   finding that is merely too hard trips none of the four escalation
   triggers, so gating the exit on a ruling would leave that case with no

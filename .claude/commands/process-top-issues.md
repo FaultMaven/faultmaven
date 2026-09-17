@@ -70,23 +70,26 @@ gh issue view <n> --json state,title,body,comments   # each cited issue
 
 | the issue | its pull request | what you do |
 |---|---|---|
-| carries a `Settled by #<pr>` note **naming this pull request** | any | nothing; this step or the pull that closed that PR already did it. Match the number — a note from an earlier pull request means the issue was settled once and built again, not that this one is done |
 | closed | any | nothing |
 | open | merged | close #<n> if every part it named is now delivered or re-filed, citing this pull request and the re-filings; otherwise edit #<n> down to the part that still stands — title and body — and put it back in **ready** as a fresh arrival, ranked against the current candidates and never left at its old rank. There is no third outcome |
-| open | closed unmerged | the owner abandoned it. Comment that the work was built and the pull request closed unmerged, link it, and move #<n> to **blocked**; the next proposal asks the owner whether to build it another way or close it. Do not guess why |
+| open | closed unmerged | **if the result table reports that issue `pulled`**, nothing: the pull recorded it and put it in **blocked** where it happened. Otherwise the owner abandoned it — comment that the work was built and the pull request closed unmerged, link it, and move #<n> to **blocked**; the next proposal asks whether to build it another way or close it. Do not guess why |
 
-If several pull requests named one issue, the merged one decides. Then end
-every action above with one line on the issue:
+If several pull requests named one issue, the merged one decides.
 
-```
-Settled by #<pr>: closed | edited down to <remainder> | returned to blocked (abandoned) | pulled
-```
+**Every action above is safe to run twice**, so a stop between here and the
+proposal costs nothing. Read the issue before you write and write only what
+is not already there: a close on a closed issue, an edit down to a remainder
+the body already carries, a re-rank, and a comment the issue already holds
+are all no-ops. Do not add a marker recording that you have been here — one
+used to, and it turned that stop into the one state this procedure could not
+leave.
 
-That note is the only durable record the settlement ran — the proposal is
-written later — so without it an invocation that settles and then stops
-re-applies the whole table on the next run. **A pull writes the same note**
-when it closes a pull request, which is what keeps the abandonment row off
-one you closed yourself.
+Then **PATCH the `Queue` body** with the piles as the settlement leaves them,
+before going on. That write *is* the settlement: the piles are in that body
+and nowhere else, and step 2's rebuild reads open issues and the body,
+neither of which says an item was returned to blocked. Leave the round
+timestamp as you found it — step 2 sets it, and stamping it here would make
+its own "what arrived since the last round" read find nothing.
 
 Report what you settled under *Settled from last round* in the proposal.
 
@@ -177,8 +180,9 @@ Rule-4 tier: <n> ready items holding none of rules 1-3 (last round: <n>)
 Rewrite the `Queue` body with the three piles, **the ranked head in order**
 and this round's timestamp. The head is what "losing a comparison does not
 have to be undone" rests on; the rule-4 tier is not written down, because
-oldest-first is recoverable from the issues. Use `gh api -X PATCH` and read
-it back; `gh issue edit` can fail silently.
+oldest-first is recoverable from the issues. The timestamp is set here and
+only here — steps 1 and 4 write the piles and leave it alone. Use `gh api -X
+PATCH` and read it back; `gh issue edit` can fail silently.
 
 Then **stop and wait**. Do not build anything that has an open question
 against it.
@@ -234,8 +238,9 @@ anything unresolved.
 because the work turns out to be several rounds of it, or because it cannot
 be done from where the lane stands. Stop that lane, record on the issue the
 question if there is one and otherwise what stopped it, return the item to
-the blocked pile, and carry on with the others. Do not ask the owner
-mid-round and do not guess.
+the blocked pile — **PATCH the `Queue` body now**, because step 2 has already
+run and nothing else will write it — and carry on with the others. Do not ask
+the owner mid-round and do not guess.
 
 Then per returned lane, in order:
 
@@ -263,11 +268,11 @@ Then per returned lane, in order:
    escalating it would hand the owner a pull request you know is broken. **If
    the lane cannot clear it — for any reason, not only a ruling — pull it**:
    close the pull request, record on the issue either the question or that
-   the lane could not clear it, add the `Settled by #<pr>: pulled` note
-   naming the pull request you closed so the next round does not read the
-   close as the owner's, return the item to the blocked pile, and report it
-   as not delivered. That is the loop's
-   only other exit, and without it the round cannot reach step 5 at all.
+   the lane could not clear it, return the item to the blocked pile (PATCH
+   the `Queue` body, as in the pull above), and give it a result row with
+   outcome `pulled` — that row is what stops the next round's settlement
+   reading your close as the owner's abandonment. That is the loop's only
+   other exit, and without it the round cannot reach step 5 at all.
    Blocking means the change is worse than the bug it fixes for someone who
    has not hit it. Say in the result how many findings you filed rather
    than fixed.
@@ -285,6 +290,9 @@ Comment on the round's proposal:
 One row per **issue**, even where one lane delivered several under one pull
 request: the next round's *Settle the last round* reads this table for its
 issue-to-pull-request pairs, and an issue missing from it is never settled.
+A pulled issue gets a row too, outcome `pulled` — that is what tells the next
+settlement your close from the owner's. The line below carries what stopped
+it.
 
 Pulled: #N — <the question, or what stopped the lane>
 Filed on the way: …
