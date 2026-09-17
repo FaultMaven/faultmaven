@@ -16,6 +16,7 @@ nature (they ARE the login) and rate-limited per IP.
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
@@ -89,10 +90,36 @@ async def sso_login(
         default=None,
         description="Dashboard path to return to after login (same-origin path only)",
     ),
+    screen_hint: Literal["sign-in", "sign-up"] | None = Query(
+        default=None,
+        description=(
+            "Which screen the hosted login opens on. Omit for the provider's "
+            "default, which is sign-in. 'sign-up' is what a first-time visitor "
+            "arriving from the marketing site needs; it selects a screen and "
+            "grants nothing."
+        ),
+    ),
     service: SSOLoginService = Depends(get_sso_login_service),
 ) -> RedirectResponse:
-    """Start the hosted-login flow: mint state, redirect to the IdP."""
-    start = await service.begin_login(return_to)
+    """Start the hosted-login flow: mint state, redirect to the IdP.
+
+    ``screen_hint`` is a ``Literal`` rather than a ``str``, and the reason is
+    not injection: the shipped adapter passes the value through ``urlencode``
+    (``workos._base_client.build_url``), so a free string could not append
+    query material to the authorization URL.
+
+    It is closed because only two values mean anything to the IdP and a third
+    is the caller's bug. Accepted as a free string it would be forwarded,
+    ignored by the provider, and surface as "the hint does not work" — a 422
+    names the mistake where it was made. And because the parameter is
+    published, the closed set *is* the contract: a client reads what is
+    accepted instead of discovering it.
+
+    So the encoding is what makes the value safe, and this constraint is
+    defence in depth behind it. A provider that built the URL by concatenation
+    would make it load-bearing — which is the reason to keep it closed.
+    """
+    start = await service.begin_login(return_to, screen_hint=screen_hint)
     response = RedirectResponse(
         start.authorization_url, status_code=302, headers=_NO_STORE
     )

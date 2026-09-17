@@ -79,8 +79,14 @@ class FakeProvider(ISSOIdentityProvider):
     def provider_name(self) -> str:
         return "workos"
 
-    def build_authorization_url(self, *, state: str) -> str:
-        return f"https://authkit.test/authorize?state={state}"
+    def build_authorization_url(
+        self, *, state: str, screen_hint: str | None = None
+    ) -> str:
+        # Echoes the hint so a test can tell "forwarded" from "swallowed".
+        url = f"https://authkit.test/authorize?state={state}"
+        if screen_hint is not None:
+            url += f"&screen_hint={screen_hint}"
+        return url
 
     def exchange_code(self, code: str) -> SSOIdentity:
         self.exchanged_codes.append(code)
@@ -316,6 +322,39 @@ async def test_begin_login_drops_unsafe_return_to(store):
     service = build_service(store)
     start = await service.begin_login("https://evil.test/phish")
     assert await store.consume_state(start.state) == {}
+
+
+async def test_begin_login_does_not_persist_the_screen_hint_in_state(store):
+    """The hint chooses a screen; it must not survive into the callback leg.
+
+    `begin_login`'s docstring states this and nothing enforced it: adding
+    `payload["screen_hint"] = screen_hint` beside `return_to` left the whole
+    suite green. The callback would then be taking an authorization-relevant
+    input from an unauthenticated query string, which is exactly what the
+    parameter is documented NOT to be.
+    """
+    service = build_service(store)
+    start = await service.begin_login("/cases", screen_hint="sign-up")
+
+    stored = await store.consume_state(start.state)
+    assert stored == {"return_to": "/cases"}
+    assert "screen_hint" not in stored
+
+
+async def test_begin_login_with_only_a_screen_hint_stores_an_empty_payload(store):
+    """No return_to and a hint must not invent a payload entry either."""
+    service = build_service(store)
+    start = await service.begin_login(None, screen_hint="sign-up")
+
+    assert await store.consume_state(start.state) == {}
+
+
+async def test_begin_login_passes_the_screen_hint_to_the_provider(store):
+    """…while still reaching the IdP, which is the only place it belongs."""
+    service = build_service(store)
+    start = await service.begin_login(None, screen_hint="sign-up")
+
+    assert "screen_hint=sign-up" in start.authorization_url
 
 
 async def test_begin_login_states_are_unique(store):

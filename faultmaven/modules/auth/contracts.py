@@ -577,12 +577,35 @@ class ISSOIdentityProvider(ABC):
         """Stable provider key persisted on the user (e.g. ``"workos"``)."""
 
     @abstractmethod
-    def build_authorization_url(self, *, state: str) -> str:
+    def build_authorization_url(
+        self, *, state: str, screen_hint: str | None = None
+    ) -> str:
         """Return the IdP hosted-login URL to redirect the browser to.
 
         Args:
             state: an opaque CSRF token the caller mints and later verifies when
                 the IdP redirects back to the callback.
+            screen_hint: which screen the hosted login should open on —
+                ``"sign-up"`` or ``"sign-in"``. ``None`` leaves it to the
+                provider, which is what every returning-user path wants.
+
+                This exists because a hosted login opens on **sign-in** by
+                default, so a first-time visitor following "try it" from the
+                marketing site was shown a form for an account they do not have
+                (website#42). A provider with no such concept ignores it: the
+                hint is a preference about presentation, never about who may
+                authenticate, and it grants nothing.
+
+                The value reaches this port from a **public, unauthenticated**
+                query parameter, and is constrained to a closed set at the API
+                boundary (``modules/auth/api/sso.py``) rather than here. Note
+                what that constraint is and is not for: the shipped WorkOS
+                adapter ``urlencode``s its parameters, so a free string could
+                not inject into the authorization URL. The closed set exists
+                because a third value is a caller's bug that should fail
+                loudly, and because a published parameter's accepted values are
+                part of the contract. An adapter that built the URL by
+                concatenation would make it load-bearing instead.
         """
 
     @abstractmethod

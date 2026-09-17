@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 6.0.0
+**Version:** 6.1.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -1333,6 +1333,22 @@ not distinguish causes for an unauthenticated caller.
 
 Start the hosted-login flow: mint state, redirect to the IdP.
 
+``screen_hint`` is a ``Literal`` rather than a ``str``, and the reason is
+not injection: the shipped adapter passes the value through ``urlencode``
+(``workos._base_client.build_url``), so a free string could not append
+query material to the authorization URL.
+
+It is closed because only two values mean anything to the IdP and a third
+is the caller's bug. Accepted as a free string it would be forwarded,
+ignored by the provider, and surface as "the hint does not work" — a 422
+names the mistake where it was made. And because the parameter is
+published, the closed set *is* the contract: a client reads what is
+accepted instead of discovering it.
+
+So the encoding is what makes the value safe, and this constraint is
+defence in depth behind it. A provider that built the URL by concatenation
+would make it load-bearing — which is the reason to keep it closed.
+
 **Tags:** `sso`
 
 **Auth:** None — this operation is reachable unauthenticated.
@@ -1340,6 +1356,7 @@ Start the hosted-login flow: mint state, redirect to the IdP.
 **Parameters:**
 
 - `return_to` (query, optional) — Dashboard path to return to after login (same-origin path only)
+- `screen_hint` (query, optional) — Which screen the hosted login opens on. Omit for the provider's default, which is sign-in. 'sign-up' is what a first-time visitor arriving from the marketing site needs; it selects a screen and grants nothing.
 
 **Responses:**
 

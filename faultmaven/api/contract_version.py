@@ -1188,4 +1188,33 @@ asked to accept, and it belongs to a person.
 # never share a version — a number that cannot tell two contracts apart is not
 # doing its job — so this moves rather than collides, and both entries stay.
 # They describe unrelated surfaces.
-API_CONTRACT_VERSION = "6.0.0"
+# 6.1.0 — MINOR. `GET /api/v1/auth/sso/login` accepts an optional
+# `screen_hint` query parameter, `sign-in | sign-up`. Omitted, the request is
+# byte-identical to before, so every existing client survives untouched.
+#
+# It exists because a hosted login opens on its SIGN-IN screen by default, and
+# self-service sign-up went live with the ADR-017 cutover. A first-time visitor
+# following "try it" from the marketing site was therefore shown a form asking
+# for an account they do not have, with a sign-up link somewhere on it — which
+# is the defect faultmaven-website#42 describes, and the reason it was blocked
+# on fm#1045 until that landed.
+#
+# The parameter is a `Literal`, not a string, and the reason is worth stating
+# precisely because the obvious one is wrong: it is NOT injection. The shipped
+# WorkOS adapter urlencodes its parameters, so a free string could not append
+# query material to the authorization URL. It is closed because only two values
+# mean anything to the IdP — a third is a caller's bug, and forwarding it
+# silently would surface as "the hint does not work" rather than as a 422 at
+# the caller — and because the accepted values of a published parameter are
+# part of the contract clients read.
+#
+# It chooses a screen and nothing else. It is not persisted with the login
+# state and is not consulted on the callback leg, because whether an account
+# may be created is the IdP's and the sign-up policy's decision — a hint that
+# could move that would be an authorization parameter taking instructions from
+# the query string.
+#
+# Adopted by faultmaven-dashboard in the same batch (a `/signup` route that
+# hands off with the hint). faultmaven-copilot and faultmaven-slack-agent do
+# not call this endpoint.
+API_CONTRACT_VERSION = "6.1.0"

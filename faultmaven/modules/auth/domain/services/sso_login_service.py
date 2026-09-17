@@ -366,8 +366,20 @@ class SSOLoginService:
 
     # -- leg 1: browser -> IdP ---------------------------------------------- #
 
-    async def begin_login(self, return_to: str | None = None) -> SSOLoginStart:
-        """Mint a single-use state and return the IdP URL + state to bind."""
+    async def begin_login(
+        self, return_to: str | None = None, screen_hint: str | None = None
+    ) -> SSOLoginStart:
+        """Mint a single-use state and return the IdP URL + state to bind.
+
+        ``screen_hint`` only chooses which screen the hosted login opens on
+        (website#42: a first-time visitor was landed on a sign-in form for an
+        account they did not have). It is not persisted with the state and is
+        not consulted on the callback leg, because it decides nothing about the
+        identity that comes back — whether an account may be created is the
+        IdP's and the sign-up policy's call, and a hint that could change that
+        would be an authorization parameter taking instructions from the query
+        string.
+        """
         state = secrets.token_urlsafe(32)
         payload = {}
         safe_return_to = sanitize_return_to(return_to)
@@ -375,7 +387,9 @@ class SSOLoginService:
             payload["return_to"] = safe_return_to
         await self._store.put_state(state, payload, STATE_TTL_SECONDS)
         return SSOLoginStart(
-            authorization_url=self._provider.build_authorization_url(state=state),
+            authorization_url=self._provider.build_authorization_url(
+                state=state, screen_hint=screen_hint
+            ),
             state=state,
         )
 

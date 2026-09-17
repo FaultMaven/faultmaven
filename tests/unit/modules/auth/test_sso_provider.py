@@ -13,6 +13,7 @@ Covers three things and nothing that needs a live WorkOS SDK:
 
 from __future__ import annotations
 
+import importlib.util
 from types import SimpleNamespace
 
 import pytest
@@ -80,8 +81,96 @@ def test_build_authorization_url_uses_authkit_and_configured_redirect():
 
     assert url == "https://idp.example/login"
     assert um.authorize_calls == [
-        {"provider": "authkit", "redirect_uri": "https://cb", "state": "state-123"}
+        {
+            "provider": "authkit",
+            "redirect_uri": "https://cb",
+            "state": "state-123",
+            # Passed explicitly rather than omitted: the SDK drops null
+            # parameters before encoding, so this does not reach the URL.
+            # `test_omits_screen_hint_from_the_url_when_not_asked` asserts that
+            # against the real SDK — this line only records the call shape.
+            "screen_hint": None,
+        }
     ]
+
+
+def test_build_authorization_url_forwards_screen_hint_to_the_sdk():
+    """website#42: the hosted login opens on sign-in unless told otherwise."""
+    um = _FakeUserManagement(authorize_url="https://idp.example/signup")
+    provider = WorkOSIdentityProvider(client=_FakeClient(um), redirect_uri="https://cb")
+
+    url = provider.build_authorization_url(state="state-123", screen_hint="sign-up")
+
+    assert url == "https://idp.example/signup"
+    assert um.authorize_calls[0]["screen_hint"] == "sign-up"
+
+
+# --------------------------------------------------------------------------- #
+# Adapter: conformance against the REAL SDK
+#
+# Everything above talks to `_FakeUserManagement`, which accepts **kwargs and
+# therefore cannot tell whether `screen_hint` is a parameter the installed
+# WorkOS SDK actually has. `pyproject.toml` allows `workos>=10.1.1,<11` while
+# the lockfile pins 10.2.0, so a resolve anywhere else in that range that
+# dropped or renamed the argument would raise TypeError on the first real
+# cloud sign-in with every mocked test still green.
+#
+# Skipped rather than failed where the SDK is absent: the adapter is
+# deliberately import-safe without it, and the unit suite runs in a venv that
+# does not install it.
+# --------------------------------------------------------------------------- #
+
+# Per-TEST skip, never module-level: `pytest.importorskip` at import time
+# skips the whole file, which would take the 29 adapter tests above with it in
+# any environment without the SDK — including CI, which installs
+# requirements/dev.txt and does not have it. Measured: module-level skipping
+# turned this file from 32 passed into "collected 0 items / 1 skipped".
+_HAS_WORKOS = importlib.util.find_spec("workos") is not None
+requires_sdk = pytest.mark.skipif(
+    not _HAS_WORKOS, reason="WorkOS SDK not installed in this environment"
+)
+
+
+def _real_provider(**kwargs):
+    from workos import WorkOSClient
+
+    client = WorkOSClient(api_key="sk_test", client_id="client_123", **kwargs)
+    return WorkOSIdentityProvider(client=client, redirect_uri="https://cb/callback")
+
+
+@requires_sdk
+def test_installed_sdk_accepts_the_screen_hint_argument():
+    """The kwarg exists on the real SDK, not just on the fake."""
+    url = _real_provider().build_authorization_url(
+        state="state-123", screen_hint="sign-up"
+    )
+    assert "screen_hint=sign-up" in url
+
+
+@requires_sdk
+def test_omits_screen_hint_from_the_url_when_not_asked():
+    """A returning user's authorize URL must be as if the argument never existed.
+
+    This is the property the adapter relies on the SDK for — it passes `None`
+    straight through rather than omitting the argument itself — so it is
+    asserted against the real SDK rather than a fake that records raw kwargs.
+    """
+    url = _real_provider().build_authorization_url(state="state-123")
+    assert "screen_hint" not in url
+
+
+@requires_sdk
+def test_real_sdk_encodes_the_value_rather_than_appending_to_the_query():
+    """The reason the API's Literal is defence in depth, not the barrier.
+
+    If this ever fails, the closed set at the API boundary becomes
+    load-bearing and the note in `sso.py` needs rewriting the other way.
+    """
+    url = _real_provider().build_authorization_url(
+        state="s", screen_hint="sign-up&prompt=none"
+    )
+    assert "prompt=none" not in url.replace("%26prompt%3Dnone", "")
+    assert "sign-up%26prompt%3Dnone" in url
 
 
 def test_provider_name_is_workos():
@@ -394,7 +483,7 @@ def test_default_port_implementation_offers_no_single_logout():
         def provider_name(self):
             return "minimal"
 
-        def build_authorization_url(self, *, state):
+        def build_authorization_url(self, *, state, screen_hint=None):
             return "https://idp/authorize"
 
         def provision_personal_organization(
