@@ -171,6 +171,16 @@ at all. That is the correct statement about an account nobody is paying for.
 
 A service account has no login to derive a tenant from, so the operator supplies
 the enterprise at provisioning time (`fm-provision-service-account --enterprise-id`).
+**That is also why its email is exempt from the domain rule above.** A service
+account (`account_kind = 'service'`) is minted with an auto-generated
+`<username>@faultmaven.example` address, which is deliberately not routable and is
+never used to sign in; if it went through the derivation this document owns, it
+would claim an enterprise for `faultmaven.example` and put every workspace agent in
+one tenant. Nothing derives from it, because nothing ever signs in with it: the
+principal holds no password and no identity-provider record, and authenticates only
+by a single-use rotating refresh credential. Deactivating it (`is_active = false`)
+refuses that credential and writes the same per-user revocation watermark described
+below, which for this principal is the complete kill switch.
 Provisioning refuses at mint whatever `bind_request_enterprise_context` would
 refuse at bind — the sentinel enterprise in any mode, and a missing enterprise
 under multi-tenant — so the misconfiguration surfaces to the operator minting
