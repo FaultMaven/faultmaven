@@ -141,8 +141,12 @@ class ServerSettings(BaseSettings):
     # Debug endpoints configuration
     enable_debug_endpoints: bool = Field(
         default=False,
-        description="Enable debug endpoints (development/testing only). "
-        "Automatically enabled if ENVIRONMENT is development/testing/test.",
+        description="Mount the /debug router in ANY environment, staging and "
+        "production included — this is not a development-only switch. The "
+        "router is mounted automatically when ENVIRONMENT is "
+        "development/testing/test, and this flag is the other way in. Every "
+        "route on it requires an authenticated caller and the four operator "
+        "diagnostics require the platform administrator role (#1474).",
     )
 
     model_config = {"env_prefix": "", "extra": "ignore"}
