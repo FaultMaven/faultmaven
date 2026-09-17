@@ -577,12 +577,31 @@ class ISSOIdentityProvider(ABC):
         """Stable provider key persisted on the user (e.g. ``"workos"``)."""
 
     @abstractmethod
-    def build_authorization_url(self, *, state: str) -> str:
+    def build_authorization_url(
+        self, *, state: str, screen_hint: str | None = None
+    ) -> str:
         """Return the IdP hosted-login URL to redirect the browser to.
 
         Args:
             state: an opaque CSRF token the caller mints and later verifies when
                 the IdP redirects back to the callback.
+            screen_hint: which screen the hosted login should open on —
+                ``"sign-up"`` or ``"sign-in"``. ``None`` leaves it to the
+                provider, which is what every returning-user path wants.
+
+                This exists because a hosted login opens on **sign-in** by
+                default, so a first-time visitor following "try it" from the
+                marketing site was shown a form for an account they do not have
+                (website#42). A provider with no such concept ignores it: the
+                hint is a preference about presentation, never about who may
+                authenticate, and it grants nothing.
+
+                ‼ The value reaches this port from a **public, unauthenticated**
+                query parameter and is interpolated into the IdP URL, so it is
+                constrained to a closed set at the API boundary
+                (``modules/auth/api/sso.py``) rather than here. Widening it to a
+                free string anywhere on that path would make the endpoint a
+                redirect-parameter injection surface.
         """
 
     @abstractmethod

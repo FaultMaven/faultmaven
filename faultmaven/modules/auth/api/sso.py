@@ -16,6 +16,7 @@ nature (they ARE the login) and rate-limited per IP.
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
@@ -89,10 +90,26 @@ async def sso_login(
         default=None,
         description="Dashboard path to return to after login (same-origin path only)",
     ),
+    screen_hint: Literal["sign-in", "sign-up"] | None = Query(
+        default=None,
+        description=(
+            "Which screen the hosted login opens on. Omit for the provider's "
+            "default, which is sign-in. 'sign-up' is what a first-time visitor "
+            "arriving from the marketing site needs; it selects a screen and "
+            "grants nothing."
+        ),
+    ),
     service: SSOLoginService = Depends(get_sso_login_service),
 ) -> RedirectResponse:
-    """Start the hosted-login flow: mint state, redirect to the IdP."""
-    start = await service.begin_login(return_to)
+    """Start the hosted-login flow: mint state, redirect to the IdP.
+
+    ``screen_hint`` is typed as a ``Literal``, not ``str``, and that is the
+    whole control: this endpoint is public and unauthenticated, and the value
+    is interpolated into the IdP authorization URL. A free string here would
+    let a caller append arbitrary query material to that URL. FastAPI rejects
+    anything outside the two members with a 422 before the service is reached.
+    """
+    start = await service.begin_login(return_to, screen_hint=screen_hint)
     response = RedirectResponse(
         start.authorization_url, status_code=302, headers=_NO_STORE
     )

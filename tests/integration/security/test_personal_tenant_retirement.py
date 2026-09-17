@@ -680,7 +680,9 @@ class _FakeProvider(ISSOIdentityProvider):
     def provider_name(self) -> str:
         return PROVIDER
 
-    def build_authorization_url(self, *, state: str) -> str:
+    def build_authorization_url(
+        self, *, state: str, screen_hint: str | None = None
+    ) -> str:
         return f"https://authkit.test/authorize?state={state}"
 
     def exchange_code(self, code: str) -> SSOIdentity:  # pragma: no cover - unused

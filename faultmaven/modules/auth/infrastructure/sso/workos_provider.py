@@ -105,11 +105,24 @@ class WorkOSIdentityProvider(ISSOIdentityProvider, ISSOTenantRetirementProvider)
     def provider_name(self) -> str:
         return PROVIDER_NAME
 
-    def build_authorization_url(self, *, state: str) -> str:
+    def build_authorization_url(
+        self, *, state: str, screen_hint: str | None = None
+    ) -> str:
+        # `screen_hint` is passed as a plain string, not the SDK's
+        # `UserManagementAuthenticationScreenHint`. That name is an
+        # auto-generation artefact in workos 10.2.0 — it aliases
+        # `RadarStandaloneAssessRequestAction`, an unrelated Radar type — so
+        # importing it would bind us to a mis-generated symbol and validate
+        # nothing. The signature accepts `str`, and the closed set that may
+        # reach here is enforced at the API boundary instead.
+        kwargs = {}
+        if screen_hint is not None:
+            kwargs["screen_hint"] = screen_hint
         return self._client.user_management.get_authorization_url(
             provider=_AUTHKIT_PROVIDER,
             redirect_uri=self._redirect_uri,
             state=state,
+            **kwargs,
         )
 
     def exchange_code(self, code: str) -> SSOIdentity:

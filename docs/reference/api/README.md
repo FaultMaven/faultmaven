@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 6.0.0
+**Version:** 6.1.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -1333,6 +1333,12 @@ not distinguish causes for an unauthenticated caller.
 
 Start the hosted-login flow: mint state, redirect to the IdP.
 
+``screen_hint`` is typed as a ``Literal``, not ``str``, and that is the
+whole control: this endpoint is public and unauthenticated, and the value
+is interpolated into the IdP authorization URL. A free string here would
+let a caller append arbitrary query material to that URL. FastAPI rejects
+anything outside the two members with a 422 before the service is reached.
+
 **Tags:** `sso`
 
 **Auth:** None — this operation is reachable unauthenticated.
@@ -1340,6 +1346,7 @@ Start the hosted-login flow: mint state, redirect to the IdP.
 **Parameters:**
 
 - `return_to` (query, optional) — Dashboard path to return to after login (same-origin path only)
+- `screen_hint` (query, optional) — Which screen the hosted login opens on. Omit for the provider's default, which is sign-in. 'sign-up' is what a first-time visitor arriving from the marketing site needs; it selects a screen and grants nothing.
 
 **Responses:**
 

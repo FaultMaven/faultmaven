@@ -84,6 +84,38 @@ def test_build_authorization_url_uses_authkit_and_configured_redirect():
     ]
 
 
+def test_build_authorization_url_omits_screen_hint_when_not_asked():
+    """The returning-user call must be byte-identical to before website#42.
+
+    Passing screen_hint=None through to the SDK would send an explicit null
+    where the previous call sent nothing at all.
+    """
+    um = _FakeUserManagement(authorize_url="https://idp.example/login")
+    provider = WorkOSIdentityProvider(client=_FakeClient(um), redirect_uri="https://cb")
+
+    provider.build_authorization_url(state="state-123", screen_hint=None)
+
+    assert "screen_hint" not in um.authorize_calls[0]
+
+
+def test_build_authorization_url_forwards_screen_hint_to_the_sdk():
+    """website#42: the hosted login opens on sign-in unless told otherwise."""
+    um = _FakeUserManagement(authorize_url="https://idp.example/signup")
+    provider = WorkOSIdentityProvider(client=_FakeClient(um), redirect_uri="https://cb")
+
+    url = provider.build_authorization_url(state="state-123", screen_hint="sign-up")
+
+    assert url == "https://idp.example/signup"
+    assert um.authorize_calls == [
+        {
+            "provider": "authkit",
+            "redirect_uri": "https://cb",
+            "state": "state-123",
+            "screen_hint": "sign-up",
+        }
+    ]
+
+
 def test_provider_name_is_workos():
     provider = WorkOSIdentityProvider(
         client=_FakeClient(_FakeUserManagement()), redirect_uri="https://cb"
@@ -394,7 +426,7 @@ def test_default_port_implementation_offers_no_single_logout():
         def provider_name(self):
             return "minimal"
 
-        def build_authorization_url(self, *, state):
+        def build_authorization_url(self, *, state, screen_hint=None):
             return "https://idp/authorize"
 
         def provision_personal_organization(

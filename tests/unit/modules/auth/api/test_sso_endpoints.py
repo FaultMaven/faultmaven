@@ -56,8 +56,16 @@ class FakeProvider(ISSOIdentityProvider):
     def provider_name(self) -> str:
         return "workos"
 
-    def build_authorization_url(self, *, state: str) -> str:
-        return f"https://authkit.test/authorize?state={state}"
+    def build_authorization_url(
+        self, *, state: str, screen_hint: str | None = None
+    ) -> str:
+        # Echoes screen_hint so a test can prove the endpoint FORWARDED it. A
+        # fake that swallowed the argument would pass whether or not the route
+        # ever passed one (website#42).
+        url = f"https://authkit.test/authorize?state={state}"
+        if screen_hint is not None:
+            url += f"&screen_hint={screen_hint}"
+        return url
 
     def exchange_code(self, code: str) -> SSOIdentity:
         return SSOIdentity(
@@ -182,6 +190,62 @@ def test_login_redirects_to_idp_with_no_store(client):
         "https://authkit.test/authorize?state="
     )
     assert response.headers["cache-control"] == "no-store"
+
+
+def test_login_defaults_to_no_screen_hint(client):
+    """A returning user's path is unchanged: nothing is appended."""
+    response = client.get("/api/v1/auth/sso/login", follow_redirects=False)
+    assert response.status_code == 302
+    assert "screen_hint" not in response.headers["location"]
+
+
+def test_login_forwards_sign_up_screen_hint_to_the_idp(client):
+    """website#42: a first-time visitor must reach the sign-up screen.
+
+    The hosted login opens on sign-in by default, so without this a "try it"
+    click from the marketing site showed a form for an account the visitor does
+    not have.
+    """
+    response = client.get(
+        "/api/v1/auth/sso/login?screen_hint=sign-up", follow_redirects=False
+    )
+    assert response.status_code == 302
+    assert "screen_hint=sign-up" in response.headers["location"]
+
+
+def test_login_forwards_sign_in_screen_hint(client):
+    response = client.get(
+        "/api/v1/auth/sso/login?screen_hint=sign-in", follow_redirects=False
+    )
+    assert response.status_code == 302
+    assert "screen_hint=sign-in" in response.headers["location"]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "signup",  # near-miss spelling
+        "SIGN-UP",  # case
+        "sign-up ",  # trailing space
+        "sign-up&prompt=none",  # extra authorize parameter
+        "sign-up#fragment",
+        "../../evil",
+        "",
+    ],
+)
+def test_login_refuses_any_other_screen_hint(client, value):
+    """The endpoint is public and the value lands in the IdP URL.
+
+    Typed as a Literal precisely so FastAPI rejects everything else before the
+    service is reached — a free string here would let a caller append arbitrary
+    query material to the authorization URL.
+    """
+    response = client.get(
+        "/api/v1/auth/sso/login",
+        params={"screen_hint": value},
+        follow_redirects=False,
+    )
+    assert response.status_code == 422, response.text
 
 
 def test_login_sets_browser_binding_state_cookie(client):

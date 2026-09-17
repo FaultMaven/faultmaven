@@ -1188,4 +1188,30 @@ asked to accept, and it belongs to a person.
 # never share a version — a number that cannot tell two contracts apart is not
 # doing its job — so this moves rather than collides, and both entries stay.
 # They describe unrelated surfaces.
-API_CONTRACT_VERSION = "6.0.0"
+# 6.1.0 — MINOR. `GET /api/v1/auth/sso/login` accepts an optional
+# `screen_hint` query parameter, `sign-in | sign-up`. Omitted, the request is
+# byte-identical to before, so every existing client survives untouched.
+#
+# It exists because a hosted login opens on its SIGN-IN screen by default, and
+# self-service sign-up went live with the ADR-017 cutover. A first-time visitor
+# following "try it" from the marketing site was therefore shown a form asking
+# for an account they do not have, with a sign-up link somewhere on it — which
+# is the defect faultmaven-website#42 describes, and the reason it was blocked
+# on fm#1045 until that landed.
+#
+# The parameter is typed as a `Literal`, not a string, and that is the point
+# rather than a detail: the endpoint is public and unauthenticated, and the
+# value is interpolated into the IdP authorization URL. A free string would let
+# a caller append arbitrary query material to it. FastAPI rejects anything
+# outside the two members with a 422 before the service is reached.
+#
+# It chooses a screen and nothing else. It is not persisted with the login
+# state and is not consulted on the callback leg, because whether an account
+# may be created is the IdP's and the sign-up policy's decision — a hint that
+# could move that would be an authorization parameter taking instructions from
+# the query string.
+#
+# Adopted by faultmaven-dashboard in the same batch (a `/signup` route that
+# hands off with the hint). faultmaven-copilot and faultmaven-slack-agent do
+# not call this endpoint.
+API_CONTRACT_VERSION = "6.1.0"

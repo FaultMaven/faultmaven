@@ -381,7 +381,9 @@ def test_a_provider_cannot_be_constructed_without_implementing_it():
         def provider_name(self) -> str:
             return "minimal"
 
-        def build_authorization_url(self, *, state: str) -> str:
+        def build_authorization_url(
+            self, *, state: str, screen_hint: str | None = None
+        ) -> str:
             return "https://idp.test"
 
         def exchange_code(self, code: str):
