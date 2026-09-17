@@ -767,10 +767,15 @@ ADR-015). It is null unless SSO is configured; `authorize_url` remains the
 copilot OAuth-PKCE machine flow.
 
 `supports_screen_hint` says whether that URL honours `?screen_hint=`
-(contract 6.1.0). Clients should gate a sign-up control on it rather than
-on a version: an older API accepts the parameter, drops it, and serves the
-sign-in screen, so a client that offers the control anyway is offering one
-that silently does nothing.
+(contract 6.2.0 — the parameter itself arrived in 6.1.0, the way to detect
+it did not, which is exactly why a client must not infer this from a
+version). An older API accepts the parameter, drops it, and serves the
+sign-in screen.
+
+`self_service_signup_enabled` says whether a person with no account can
+finish. Gate a sign-up control on **both**: forwarding the hint without
+self-service sign-up sends someone through the sign-up form to an
+`sso_org_unmapped` error at the callback.
 
 **Tags:** `authentication`
 
@@ -5988,6 +5993,7 @@ OAuth configuration for cloud mode.
 - `client_id` (string, required)
 - `hosted_login_url` (object, optional)
 - `scopes` (array, required)
+- `self_service_signup_enabled` (boolean, optional)
 - `supports_screen_hint` (boolean, optional)
 - `token_url` (string, required)
 

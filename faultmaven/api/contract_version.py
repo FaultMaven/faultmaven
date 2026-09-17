@@ -1217,9 +1217,20 @@ asked to accept, and it belongs to a person.
 # Adopted by faultmaven-dashboard in the same batch (a `/signup` route that
 # hands off with the hint). faultmaven-copilot and faultmaven-slack-agent do
 # not call this endpoint.
-# 6.2.0 — MINOR. `GET /api/v1/auth/config` gains `oauth.supports_screen_hint`,
-# a boolean saying whether `hosted_login_url` honours the `screen_hint` added
-# in 6.1.0. Additive; a client that ignores it is unaffected.
+# 6.2.0 — MINOR. `GET /api/v1/auth/config` gains TWO booleans on the `oauth`
+# block: `supports_screen_hint` (does `hosted_login_url` honour the
+# `screen_hint` added in 6.1.0) and `self_service_signup_enabled` (can a
+# person with no account actually finish). Additive; a client that ignores
+# them is unaffected.
+#
+# They are separate because they are different facts and conflating them
+# builds a dead end one step further down. A deployment can forward the hint
+# perfectly while self-service sign-up is off — the shipped default — in
+# which case an org-less identity reaches the sign-up screen, completes it,
+# and is refused at the callback with `sso_org_unmapped` (ADR-017 / #1045).
+# A client gating a "create an account" control on the hint alone would send
+# someone through a form to an error. Offer the control only when BOTH are
+# true.
 #
 # It exists because 6.1.0 shipped a capability clients could not detect, and
 # that cost something immediately. faultmaven-dashboard#161 added a "Create an
