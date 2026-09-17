@@ -28,6 +28,7 @@ from faultmaven.core.investigation.intent_resolver import IntentResolver
 from faultmaven.core.investigation.kb_push import visible_kb_context
 from faultmaven.core.investigation.milestone_engine import (
     MilestoneEngine,
+    _evidence_coverage,
     score_progress,
 )
 from faultmaven.core.investigation.prompts.context_builder import (
@@ -300,6 +301,28 @@ def _infer_source_type(data_type: DataType) -> EvidenceSourceType:
     return _DATA_TYPE_TO_SOURCE_TYPE.get(data_type, EvidenceSourceType.TEXT)
 
 
+def _classification_block(preprocessing_result) -> Optional[Dict[str, Any]]:
+    """The re-extraction's ``classification`` verdict, if it published one.
+
+    Lifted from ``extraction_metadata["evidence_metadata"]["classification"]``
+    — the same block ``reclassify_evidence`` already reads for the addressed
+    row, read once here because it is a FILE-level fact that applies to every
+    row behind the file (see :func:`_reclassified_collections`).
+
+    Returns ``None`` when the result carries no such block, which is the
+    signal to leave every row's existing metadata alone rather than to write
+    an empty verdict over a real one.
+    """
+    pp_metadata = getattr(preprocessing_result, "extraction_metadata", None)
+    if not isinstance(pp_metadata, dict):
+        return None
+    evidence_metadata = pp_metadata.get("evidence_metadata")
+    if not isinstance(evidence_metadata, dict):
+        return None
+    classification = evidence_metadata.get("classification")
+    return classification if isinstance(classification, dict) else None
+
+
 def _refreshed_coverage(
     file_meta: "UploadedFile",
     preprocessing_result,
@@ -398,7 +421,7 @@ def _reclassified_collections(
     file_id: str,
     preprocessing_result,
     new_source_type: EvidenceSourceType,
-) -> "tuple[list[UploadedFile], list[Evidence]]":
+) -> "tuple[list[UploadedFile], list[Evidence], Optional[list[dict[str, Any]]]]":
     """Both of a case's collections re-aligned to one file's reclassification.
 
     The single seam every reclassification crosses. Returns
@@ -419,27 +442,98 @@ def _reclassified_collections(
 
     Claim content is untouched: an Evidence row's LLM-authored ``summary``
     and ``extract`` are what it ASSERTS, and reclassifying the file it was
-    read from does not rewrite the assertion. Only ``source_type`` — the
-    row's statement about what KIND of data it was read from, which is
-    exactly the file-level fact that just changed — is re-aligned here.
+    read from does not rewrite the assertion. What IS re-aligned is
+    everything a row holds that is a restatement of a FILE-level fact, and
+    the file-level facts are what just changed — ``source_type``, the
+    coverage window a row INHERITED from the file row, and the classifier's
+    ``classification`` verdict. Each is justified at its own line below.
+
+    Returns a third value, the ``last_suggestions`` list with the
+    clarification this reclassification ANSWERS retired, so that retirement
+    cannot be got right by one caller and forgotten by another.
     """
     new_files_list = list(case.uploaded_files or [])
     file_index = next(
         (i for i, uf in enumerate(new_files_list) if uf.file_id == file_id),
         None,
     )
-    if file_index is not None:
-        new_files_list[file_index] = _file_row_with_reclassification(
-            new_files_list[file_index], preprocessing_result, new_source_type
-        )
+    if file_index is None:
+        # REFUSED, not partially applied. Both callers resolve the row before
+        # they get here, so this is unreachable today — but it is unreachable
+        # inside the one function designated as the single seam, and the
+        # failure it would otherwise produce is precisely the one the seam
+        # exists to prevent: the Evidence loop below would re-align every row
+        # to a classification that no file row records, manufacturing the
+        # contradiction rather than reconciling it.
+        raise NotFoundError("UploadedFile", file_id)
+    new_files_list[file_index] = _file_row_with_reclassification(
+        new_files_list[file_index], preprocessing_result, new_source_type
+    )
+
+    # The rows are re-derived against the case as it will be AFTER the file
+    # row moves, because an Evidence row's own coverage was INHERITED from
+    # that row (see below).
+    reclassified_view = case.model_copy(update={"uploaded_files": new_files_list})
+    new_classification = _classification_block(preprocessing_result)
 
     new_evidence_list = list(case.evidence or [])
     for i, ev in enumerate(new_evidence_list):
-        if ev.source_file_id == file_id:
-            new_evidence_list[i] = ev.model_copy(
-                update={"source_type": new_source_type}, deep=True
-            )
-    return new_files_list, new_evidence_list
+        if ev.source_file_id != file_id:
+            continue
+        update: Dict[str, Any] = {"source_type": new_source_type}
+
+        # #1471, the Evidence half. ``milestone_engine._evidence_coverage``
+        # copies the FILE's span AND its provenance onto a row at creation
+        # when the file span is a single instant, so a row born that way
+        # asserts an instant the reclassified file no longer supports —
+        # ``symptom_currency`` reads ``ev.coverage_end_ts`` with
+        # ``is_vouched(ev.coverage_source)`` for staleness, and
+        # ``list_evidence_by_time_tool`` publishes it beside the now-empty
+        # file span. The same argument that clears the file window applies
+        # verbatim: a window nothing supports any more is worse than none.
+        #
+        # RE-DERIVED rather than cleared, through the very function that
+        # decided it. That function prefers the row's OWN extract timestamps
+        # (resolution order 1), which are more authoritative than the file's
+        # and must not be destroyed; only a row that inherited from the file
+        # follows the file. Reimplementing the precedence here is how the two
+        # would drift.
+        start_ts, end_ts, coverage_source = _evidence_coverage(
+            reclassified_view, ev.source_file_id, ev.extract
+        )
+        update["coverage_start_ts"] = start_ts
+        update["coverage_end_ts"] = end_ts
+        update["coverage_source"] = coverage_source
+
+        # The classifier's verdict is a FILE-level fact, and it changed for
+        # every row behind the file — not just the addressed one. Left stale,
+        # a sibling keeps the intake confidence and ``_confidence_marker``
+        # still renders ``confidence="low"`` with "treat the file extract as
+        # tentative" for a row the user has just corrected, which the prompt
+        # then acts on by re-asking. ``extractor`` is NOT fanned out: its
+        # ``attempts`` trail records what was asked of THAT row, and stamping
+        # a request nobody made onto a neighbour would make the trail lie.
+        if new_classification is not None:
+            merged = dict(ev.metadata or {})
+            merged["classification"] = new_classification
+            update["metadata"] = merged
+
+        new_evidence_list[i] = ev.model_copy(update=update, deep=True)
+
+    # The question this reclassification ANSWERS is retired here too, so a
+    # caller cannot get the collections right and the retirement wrong. The
+    # turn seam reaches the same end state a second way — it hands
+    # ``metadata["file_reclassified"]["file_id"]`` back to ``process_turn``,
+    # which passes it as ``resolved_file_id`` to
+    # ``_carry_forward_unresolved_clarifications``. Measured: that filter's
+    # predicate (``is_clarification_entry(entry) and entry_file_id(entry) !=
+    # resolved_file_id``) is the exact complement of the one here, so the two
+    # agree and running both is idempotent. Doing it here as well is what
+    # makes it true for a THIRD caller that never touches the turn loop —
+    # which is the same argument the collections were hoisted on.
+    retired_suggestions = drop_clarifications_for_file(case.last_suggestions, file_id)
+
+    return new_files_list, new_evidence_list, retired_suggestions
 
 
 # Filename extensions and MIME prefixes for content known to be binary.
@@ -3332,10 +3426,14 @@ class InvestigationService:
         )
         previous_type = file_meta.data_type or "unknown"
 
-        # One seam for both collections (#1470): the file row, and EVERY
-        # Evidence row backed by it. Claim content — the LLM-authored
-        # summary/extract — stays untouched.
-        new_files_list, new_evidence_list = _reclassified_collections(
+        # One seam (#1470): the file row, EVERY Evidence row backed by it,
+        # and the retirement of the question this answers. Claim content —
+        # the LLM-authored summary/extract — stays untouched.
+        (
+            new_files_list,
+            new_evidence_list,
+            retired_suggestions,
+        ) = _reclassified_collections(
             case, file_id, preprocessing_result, new_source_type
         )
 
@@ -3349,6 +3447,10 @@ class InvestigationService:
             update={
                 "uploaded_files": new_files_list,
                 "evidence": new_evidence_list,
+                # Retired at the seam as well as by the ``resolved_file_id``
+                # round-trip below; the two predicates are complements, so
+                # this is idempotent (see the seam).
+                "last_suggestions": retired_suggestions,
                 "messages": list(case.messages),
             }
         )
@@ -3670,6 +3772,35 @@ class InvestigationService:
                 f"User {user_id} not authorized for case {case_id}"
             )
 
+        # Terminal guard, matching ``_handle_file_reclassification`` — the
+        # asymmetry between the two paths is closed here because THIS change
+        # is what made it bite.
+        #
+        # The terminal short-circuit does not protect this method; it
+        # short-circuits INTO a tool loop. ``_process_terminal_qa`` builds
+        # ``_build_da_tool_schemas()`` — every registered tool, no name
+        # filter, so ``reclassify_evidence`` is in the menu whenever the flag
+        # is on — hands it a ``ToolContext`` carrying ``in_memory_case=case``,
+        # and returns that same object as ``case_updated`` for ``process_turn``
+        # to save. So on a CLOSED case the model can call the tool and the
+        # terminal turn's own save commits the write.
+        #
+        # Before the in-flight write model above, that was accidentally
+        # harmless: the tool wrote its own freshly-loaded copy and the
+        # terminal turn's aggregate save overwrote it — the #1465 lost update
+        # was protecting closed cases. Measured on ``origin/main``: the row
+        # came back unchanged. Removing the lost update removes that
+        # accident, so the guard the sibling handler has always had has to be
+        # here too, or a case whose own handler documents "no state mutations"
+        # becomes persistently mutable.
+        if case.is_terminal:
+            raise ValidationException(
+                "Cannot reclassify evidence on a closed case — the "
+                "investigation is terminal; only questions about the case "
+                "are accepted.",
+                {"case_state": case.state.value},
+            )
+
         evidence_index: Optional[int] = None
         for i, ev in enumerate(case.evidence or []):
             if ev.evidence_id == evidence_id:
@@ -3720,7 +3851,11 @@ class InvestigationService:
         # one classification; how many claims cite it is not a property of
         # the classification, and leaving the siblings behind described one
         # file with two contradictory source types.
-        new_files_list, new_evidence_list = _reclassified_collections(
+        (
+            new_files_list,
+            new_evidence_list,
+            dropped_suggestions,
+        ) = _reclassified_collections(
             case, evidence.source_file_id, preprocessing_result, new_source_type
         )
 
@@ -3761,10 +3896,8 @@ class InvestigationService:
         # on ``trigger="agent_tool"`` this whole write — the file row, the
         # evidence rows and this drop alike — was clobbered by the
         # end-of-turn aggregate save of the case the turn was holding
-        # (#1465). The write model below is what closed that.
-        dropped_suggestions = drop_clarifications_for_file(
-            case.last_suggestions, evidence.source_file_id
-        )
+        # (#1465). The write model below is what closed that. The drop itself
+        # now comes back from the seam with the collections.
 
         if in_flight_case is not None:
             # IN-TURN (#1465). The caller is holding this exact object and
@@ -3792,6 +3925,24 @@ class InvestigationService:
             )
             await self.repository.save(updated_case)
 
+        # WHAT THIS COUNTS, per trigger, because the answer is no longer the
+        # same for all three and reading it wrong misreads the graph.
+        #
+        # ``api`` counts a COMMITTED reclassification — this method owns the
+        # save and it has already run above. ``agent_tool`` counts an APPLIED
+        # one: the write is on the turn's aggregate and the turn's own save
+        # commits it, so a turn that dies after this line leaves a count with
+        # no row behind it.
+        #
+        # That is deliberate rather than overlooked, and it is what makes the
+        # labels comparable: ``clarification`` (the turn-seam sibling) has
+        # always counted applications for exactly the same reason — it hands
+        # its case back for ``process_turn`` to save and increments before
+        # that happens. Aligning ``agent_tool`` with the other TURN-BORNE
+        # trigger, rather than with the out-of-band one it no longer
+        # resembles, keeps "reclassifications this deployment performed" a
+        # sum worth taking. A strictly committed counter needs the count to
+        # move to whoever owns persistence; noted on the PR as follow-up.
         EVIDENCE_RECLASSIFICATION_TOTAL.labels(
             from_type=str(previous_type or "unknown"),
             to_type=new_type,
