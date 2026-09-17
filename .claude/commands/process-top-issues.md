@@ -78,12 +78,6 @@ Read what arrived since the last round's timestamp:
 gh issue list --state open --limit 500 --json number,title,labels,createdAt,body
 ```
 
-**Check the premise of anything you are about to rank.** `git fetch origin
-main` now, then confirm the issue's named code points still say what it says.
-Two of round 1's five approved P1s were already fixed by pull requests that
-never cited them. An item whose premise looks dead goes into the round as a
-**verification** lane, not a build lane.
-
 Sort each new issue into **ready**, **blocked** or **yours** using *What
 escalates* in the procedure. The third pile is work no agent can do — a live
 deployment check, a console or credential an agent lacks. List it, never
@@ -91,6 +85,14 @@ rank it into a round. Compare it against the current candidates and place it; do
 re-sort the backlog. Re-rank an old loser only if a trigger fired: a new
 priority label, another issue on the same seam, a citation, an age
 threshold.
+
+**Then check the premise of the items you are about to list under
+*Building* — whatever their age, and before you write the comment.** `git
+fetch origin main` now and confirm each one's named code points still say
+what the issue says. This runs on the selected candidates, not on this week's
+arrivals: round 1's two dead items were 49 and 58 days old, so checking only
+new issues would have missed both. An item whose premise looks dead still
+goes into the round — as a **verification** lane rather than a build lane.
 
 Post one comment on `Queue`:
 
@@ -176,8 +178,12 @@ Then per returned lane, in order:
    defect becomes a new issue carrying `Found while working on #<n>`.
 3. **Delta.** Re-review the new head. A finding surviving two rounds is
    escalated, not iterated — unless it **blocks the merge**, in which case it
-   goes back however many rounds it takes, because escalating it would hand
-   the owner a pull request you know is broken. Blocking means the change is
+   goes back for as many rounds as the lane can clear it in, because
+   escalating it would hand the owner a pull request you know is broken. **If
+   the lane cannot clear it without a ruling, pull it** — close the pull
+   request, record the question on the issue, return the item to the blocked
+   pile, and report it as not delivered. That is the loop's only other exit,
+   and without it the round cannot reach step 5 at all. Blocking means the change is
    worse than the bug it fixes for someone who has not hit the bug. Say in
    the result how many findings you filed rather than fixed.
 4. **Never relay a finding you could not reproduce by running it.**

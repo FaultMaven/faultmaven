@@ -85,19 +85,28 @@ listed in the proposal and never ranked into a round.
 ranked into a round, check its named code points against `origin/main`
 fetched now. Round 1 approved five P1s and two of them — #907 and #752 — had
 already been fixed, each by a pull request that solved the problem from
-another angle and never cited the issue it closed, leaving them open 49 and
-58 days after the fact. So issue age here measures linking hygiene as much as
-code health, and the check is cheap: reading one narration file and one
-`git grep` caught both before any lane was dispatched. An item whose premise
-looks dead is still worth a round — as a **verification** lane, which proves
-by execution whether it reproduces, makes the covering guard bite under
-mutation, and either posts the evidence or fixes what survives.
+another angle and never cited the issue it closed. They had been open 49 and
+58 days; the fixes were 23 days and **one** day old. So age measures linking
+hygiene as much as code health, and `fetched now` is not a figure of speech —
+a base pulled the day before would still have ranked #752. The check is
+cheap: reading one narration file and one `git grep` caught both before any
+lane was dispatched. An item whose premise looks dead is still worth a round
+— as a **verification** lane, which proves by execution whether it
+reproduces, makes the covering guard bite under mutation, and either posts
+the evidence or fixes what survives. **Who closes
+it:** the owning agent, after re-running that evidence rather than relaying
+it, naming the pull request that actually fixed it — resolved with `gh pr
+view`, never inferred from a narration. Residue is filed separately rather
+than held against the issue. A result that is ambiguous — it reproduces only
+under one configuration, or the guard does not bite and making it bite is a
+design call — is not a closure: it goes to the blocked pile as a question,
+like any other pull.
 
 Rank the ready pile (see *Picking*), then post **one** comment, the round
 proposal, with three parts:
 
-1. **Building** — up to five ready items, each with one line on why it is
-   ranked there and what "done" means.
+1. **Building** — the ready items this round builds, each with one line on
+   why it is ranked there and what "done" means.
 2. **Needs your call** — every blocked item, the whole standing pile rather
    than only the new ones. Each gets the question in one sentence, the
    options, a recommendation, and what it unblocks. Answering should take
@@ -152,10 +161,11 @@ The ranking fills whatever capacity the pinned items leave. It decides
 **Size is bounded by review capacity, not by lane capacity.** Lanes are
 cheap and parallel; review is neither, because a fix written to answer a
 review is new code that has to be reviewed again. Round 1's five items became
-three pull requests that took four review rounds each, and every round found
-a defect in the previous round's fix. Count the *independent seams* a batch
-touches rather than the items: three items on three seams is a bigger round
-than five on one. When a single item is large enough that its own review will
+three pull requests: one needed no fix commit at all, the other two needed
+four and six, and each round found a defect in the fix before it — the last
+of them a boot gate the round before had added. Count the *independent
+seams* a batch touches rather than the items: three items on three seams is
+a bigger round than five on one. When a single item is large enough that its own review will
 run several rounds — a security boundary, a storage change, anything shipping
 a new guard — it is a round by itself.
 
@@ -198,7 +208,16 @@ Gates for a lane, each from a failure that cost real time:
   is not something to hand anyone. Blocking means the change is worse than
   the bug it fixes for someone who has not hit the bug. That exception is
   narrow on purpose: everything non-blocking is filed, and the round says how
-  many findings it filed rather than fixed.
+  many findings it filed rather than fixed. **And it is bounded by the pull
+  rule, which reaches an open pull request as well as a lane mid-build:** a
+  blocking finding the lane cannot clear without a ruling is pulled — the
+  owning agent closes the pull request, records the question on the issue,
+  returns the item to the blocked pile, and the result reports it as not
+  delivered. Closing a pull request is the one action on one the owning agent
+  may take; merging is never one. Without that exit this exception would be
+  the only state here the *round itself* cannot leave — step 5 could never
+  run, so no other lane's work would reach the owner either, and holding the
+  round up is precisely what the pull rule exists to prevent.
 - **Verify, do not relay.** Act on a subagent's finding only with execution
   evidence, and run a suggested remedy before adopting it. A remedy is
   checked *before* it is asked for: in round 1 the suggested fix for a
