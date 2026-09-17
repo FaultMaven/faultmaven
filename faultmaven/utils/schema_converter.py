@@ -141,6 +141,30 @@ class StrictSchemaUnsupported(Exception):
 #: provider-specific limit belongs. Keeping them here and dropping them there is
 #: the difference between "this rewrite is OpenAI's subset" and "this rewrite is
 #: the intersection of every provider", and the latter is what cost fm#355.
+#:
+#: ‼ **This is a DENYLIST while the Gemini boundary is an ALLOWLIST, and the
+#: asymmetry is deliberate — do not "fix" it.** The obvious tidy-up is to make
+#: both allowlists. It is wrong here, for a measured reason:
+#:
+#: - Gemini publishes a CLOSED message type. ``Schema``'s properties are
+#:   enumerated in the v1beta discovery document, and anything outside it is a
+#:   hard ``400 Unknown name "…"``. An allowlist there converts an unanticipated
+#:   keyword into a loud, immediate failure — which is what you want.
+#: - OpenAI publishes no such closed set, and **accepts more than it
+#:   documents**: of 19 keywords probed on ``strict: true`` (2026-09-17,
+#:   gpt-4o-mini), 17 were accepted — including ``prefixItems``, ``const``,
+#:   ``multipleOf`` and ``discriminator``, none of which appear in the published
+#:   supported-properties list. An allowlist here would therefore silently DROP
+#:   keywords the API would have enforced, turning an unanticipated keyword into
+#:   a quiet loss of enforcement.
+#:
+#: That quiet loss is precisely fm#355: constraints removed on the way out, the
+#: model answering out of range, and nothing failing loudly enough to notice.
+#: So each boundary takes the shape its provider's contract supports — a
+#: denylist where the vocabulary is open, an allowlist where it is closed.
+#: The two rejects that make this list non-empty on the structural side
+#: (``oneOf``/``allOf``) are handled by normalisation in ``to_strict_schema``
+#: rather than by dropping, because dropping them empties the property.
 _STRICT_UNSUPPORTED_KEYWORDS = frozenset(
     {
         "default",
