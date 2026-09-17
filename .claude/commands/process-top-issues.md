@@ -1,5 +1,5 @@
 ---
-description: Run one round of issue processing — check the last round landed, propose five items plus the questions blocking others, build what is approved, report. Opens PRs; never merges.
+description: Run one round of issue processing — check the last round landed, propose a round of items plus the questions blocking others, build what is approved, report. Opens PRs; never merges.
 allow_all_tools: true
 ---
 
@@ -86,6 +86,14 @@ re-sort the backlog. Re-rank an old loser only if a trigger fired: a new
 priority label, another issue on the same seam, a citation, an age
 threshold.
 
+**Then check the premise of the items you are about to list under
+*Building* — whatever their age, and before you write the comment.** `git
+fetch origin main` now and confirm each one's named code points still say
+what the issue says. This runs on the selected candidates, not on this week's
+arrivals: round 1's two dead items were 49 and 58 days old, so checking only
+new issues would have missed both. An item whose premise looks dead still
+goes into the round — as a **verification** lane rather than a build lane.
+
 Post one comment on `Queue`:
 
 ```
@@ -94,8 +102,12 @@ Post one comment on `Queue`:
 ### Building
 | # | kind | why in this round | done when |
 
-One line on why the round is this size: five is a working batch size, not a
-rule, and complexity and dependency move it either way.
+One line on why the round is this size, in terms of **independent seams and
+the review rounds they will cost**, not item count: lanes are parallel and
+review is not, so three items on three seams is a bigger round than five on
+one, and an item whose own review will run several rounds — a security
+boundary, a storage change, anything shipping a new guard — is a round by
+itself.
 
 ### Needs your call (every blocked item, not only the new ones)
 | # | the question | options | my recommendation | unblocks |
@@ -152,13 +164,33 @@ Then per returned lane, in order:
 
 1. **Verify.** Re-run the lane's test command yourself from its worktree and
    confirm the output matches what was reported. Confirm `git status` was
-   clean or every leftover file is named.
+   clean or every leftover file is named — and that the work is actually on
+   the pull request, not only on disk:
+
+   ```bash
+   git -C <worktree> rev-parse --short HEAD @{u}      # must agree
+   gh pr view <n> --json commits --jq '.commits[-1].oid[0:9]'
+   ```
+
+   Verify the *fixes* as well as the findings. A finding the lane pushed back
+   on gets your attention by default; one it accepted does not, and that is
+   where a half-done fix survives. Re-run the measurement that failed, not
+   the report of it.
 2. **Review.** `/code-review` on the pull request's final head. On-seam
    defect goes back to the lane for one fix commit; a design call becomes a
    question for the next proposal, not a mid-round interruption; an off-seam
    defect becomes a new issue carrying `Found while working on #<n>`.
 3. **Delta.** Re-review the new head. A finding surviving two rounds is
-   escalated, not iterated.
+   escalated, not iterated — unless it **blocks the merge**, in which case it
+   goes back for as many rounds as the lane can clear it in, because
+   escalating it would hand the owner a pull request you know is broken. **If
+   the lane cannot clear it — for any reason, not only a ruling — pull it**:
+   close the pull request, record on the issue either the question or that
+   the lane could not clear it, return the item to the blocked pile, and
+   report it as not delivered. That is the loop's only other exit, and
+   without it the round cannot reach step 5 at all. Blocking means the
+   change is worse than the bug it fixes for someone who has not hit it.
+   Say in the result how many findings you filed rather than fixed.
 4. **Never relay a finding you could not reproduce by running it.**
 
 ## 5. Report and hand back

@@ -81,11 +81,33 @@ beta gates that were neither ready nor blocked on a ruling. Calling them
 ready would have had them proposed every round and never built. They are
 listed in the proposal and never ranked into a round.
 
+**An open issue is not evidence the defect is live.** Before an item is
+ranked into a round, check its named code points against `origin/main`
+fetched now. Round 1 approved five P1s and two of them — #907 and #752 — had
+already been fixed, each by a pull request that solved the problem from
+another angle and never cited the issue it closed. They had been open 49 and
+58 days; the fixes were 23 days and **one** day old. So age measures linking
+hygiene as much as code health, and `fetched now` is not a figure of speech —
+a base pulled the day before would still have ranked #752. The check is
+cheap: reading one narration file and one `git grep` caught both before any
+lane was dispatched. An item whose premise looks dead is still worth a round
+— as a **verification** lane, which proves by execution whether it
+reproduces, makes the covering guard bite under mutation, and either posts
+the evidence or fixes what survives.
+
+**Who closes a verified-fixed issue:** the owning agent, after re-running
+that evidence rather than relaying it, naming the pull request that actually
+fixed it — resolved with `gh pr view`, never inferred from a narration.
+Residue is filed separately rather than held against the issue. A result
+that is ambiguous — it reproduces only under one configuration, or the guard
+does not bite and making it bite is a design call — is not a closure: it
+goes to the blocked pile as a question, like any other pull.
+
 Rank the ready pile (see *Picking*), then post **one** comment, the round
 proposal, with three parts:
 
-1. **Building** — up to five ready items, each with one line on why it is
-   ranked there and what "done" means.
+1. **Building** — the ready items this round builds, each with one line on
+   why it is ranked there and what "done" means.
 2. **Needs your call** — every blocked item, the whole standing pile rather
    than only the new ones. Each gets the question in one sentence, the
    options, a recommendation, and what it unblocks. Answering should take
@@ -96,7 +118,7 @@ proposal, with three parts:
 
 ### 2. Owner answers
 
-The owner approves or edits the five and answers whichever questions they
+The owner approves or edits the round and answers whichever questions they
 choose to. An unanswered question is not a failure: that item stays blocked
 and appears again next round. An answered one moves its issue to the ready
 pile with the ruling recorded on it as its spec.
@@ -137,6 +159,17 @@ Rank the ready pile by the first rule that applies:
 The ranking fills whatever capacity the pinned items leave. It decides
 *order*, not size; size is the judgement above.
 
+**Size is bounded by review capacity, not by lane capacity.** Lanes are
+cheap and parallel; review is neither, because a fix written to answer a
+review is new code that has to be reviewed again. Round 1's five items became
+three pull requests: one needed no fix commit at all, the other two needed
+four and six, and each round found a defect in the fix before it — the last
+of them a boot gate the round before had added. Count the *independent
+seams* a batch touches rather than the items: three items on three seams is
+a bigger round than five on one. When a single item is large enough that its
+own review will run several rounds — a security boundary, a storage change,
+anything shipping a new guard — it is a round by itself.
+
 **Ranking is incremental.** A new issue is compared against the current
 candidates when it arrives, and that is the only comparison it gets. Nothing
 re-sorts the whole backlog each round, which would be work proportional to
@@ -170,11 +203,52 @@ Gates for a lane, each from a failure that cost real time:
   code that breaks is old code that read the old meaning.
 - **Review on the final head.** A fix written to answer a review is new code
   nobody has reviewed, so run the review again after it. A finding that
-  survives two rounds is escalated rather than iterated.
+  survives two rounds is escalated rather than iterated — **unless it blocks
+  the merge**, because escalation hands the owner a pull request, and a pull
+  request that refuses a fresh install or answers 500 where it promises 401
+  is not something to hand anyone. Blocking means the change is worse than
+  the bug it fixes for someone who has not hit the bug. That exception is
+  narrow on purpose: everything non-blocking is filed, and the round says
+  how many findings it filed rather than fixed. **And it is bounded by the
+  pull rule, which reaches an open pull request as well as a lane
+  mid-build:** a blocking finding **the lane cannot clear** is pulled — the
+  owning agent closes the pull request, records on the issue either the
+  question, if it needs a ruling, or simply that the lane could not clear
+  it, returns the item to the blocked pile, and the result reports it as not
+  delivered. The condition is "cannot clear", not "needs a ruling": a
+  finding that is merely too hard trips none of the four escalation
+  triggers, so gating the exit on a ruling would leave that case with no
+  exit at all — the same shape as the leak this rule exists to close. "The
+  lane could not clear it" is itself a call for the owner: ship the bug, or
+  take it on themselves. Closing a pull request is the one action on one the
+  owning agent may take; merging is never one. Without that exit this
+  exception would be the only state here the *round itself* cannot leave —
+  step 5 could never run, so no other lane's work would reach the owner
+  either, and holding the round up is precisely what the pull rule exists to
+  prevent.
 - **Verify, do not relay.** Act on a subagent's finding only with execution
-  evidence, and run a suggested remedy before adopting it.
+  evidence, and run a suggested remedy before adopting it. A remedy is
+  checked *before* it is asked for: in round 1 the suggested fix for a
+  session disclosure would have turned it into a 500 on the degraded path
+  that made the bug reachable, and the lane caught it by running it.
+- **Verify the fix, not only the finding.** The attention goes where the
+  disagreement is, so a finding a lane pushes back on gets checked and a
+  finding it accepts does not. Round 1 reported an engine leak as fixed while
+  half of it stood — the sibling fixture was fixed, the one named in the
+  review was not — and it was caught a round later by re-running the
+  measurement rather than re-reading the report. Re-run the thing that
+  failed, not the summary of it.
+- **Exercise a guard through the path that runs it.** A direct call proves
+  the guard's logic and nothing about where it is called from. Round 1
+  shipped a boot gate that refused a database with no table, tested by
+  calling it, and it ran *before* the migration that creates the table — so
+  it refused every first-ever install. Both the lane's test and the owning
+  agent's verification called it directly, which is why neither saw it. A
+  guard that runs at startup needs one test that drives startup.
 - **Port the whole tree.** Before reporting, the worktree is clean or every
-  remaining file is named.
+  remaining file is named. Clean is not the same as shipped: a lane in round
+  1 finished with 203 lines unstaged and the pull request head unmoved, so
+  the work existed only on disk.
 
 ## What escalates
 
@@ -189,6 +263,16 @@ of these holds. Everything else an agent decides and records.
 3. Two defensible options mean materially different amounts of work.
 4. It deletes data, changes a wire contract's major version, or changes what
    a deployment must configure.
+
+**A pull enters the blocked pile by its own door, and these four do not
+govern it.** They say when an agent must *ask* rather than decide; a pull is
+not an agent asking, it is a lane stopping. Most pulls do trip one of them —
+Step 3's is gated on the item needing a ruling — but a blocking review
+finding the lane simply could not clear trips none, and it still belongs in
+the pile, because the alternative is a round that cannot reach step 5. What
+the issue records in that case is not a question but the fact: the lane
+could not clear it. The owner's call is then whether to ship the bug or take
+it on themselves.
 
 Recording a decision is not the same as closing the issue. When a ruling
 implies work, the issue is re-filed as the defect or feature that work is,
@@ -206,6 +290,15 @@ Two signals that this document is wrong rather than the work:
 - Residue not falling across four rounds spanning at least four weeks.
 - Items pulled in step 3 more often than they are built, which would mean
   step 1 is not finding the questions before the work starts.
+
+**A round raising the open count is not one of them.** Round 1 closed two
+issues and filed eleven, so the open set rose over the round, and all but two
+of the eleven came out of review. That is the process working: a review
+finding becomes an issue precisely so it is not silently carried, and the
+residue — issues surviving a week — is what says whether they drain. Judge a
+round by what it *closed and filed*, and by whether the filed ones close
+later; an agent that keeps the count flat by not writing findings down is
+failing, not succeeding.
 
 **Every fifth round, read this document as a state machine rather than as
 prose.** For each state an issue can be in, name what moves it out and who
