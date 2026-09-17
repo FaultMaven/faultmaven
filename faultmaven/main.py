@@ -1683,8 +1683,10 @@ except Exception as e:
     )
 
 
-# Debug endpoints - ONLY available in development/testing environments
-# These endpoints expose internal state and should never be enabled in production
+# Debug endpoints - mounted outside production, or in production behind the
+# ENABLE_DEBUG_ENDPOINTS operator switch. They expose internal state, so every
+# one of them requires the platform administrator role (#1474); the block at
+# the mount below says why that is the layer the gate sits at.
 def _is_debug_enabled(settings=None) -> bool:
     """Check if debug endpoints should be enabled based on environment."""
     # Get settings if not provided
@@ -1719,15 +1721,55 @@ try:
 except Exception:
     _debug_settings = None
 
+# Mounting is one question; exposure is another, and #1474 is what happens when
+# a codebase answers only the first. ``_is_debug_enabled()`` is a DISJUNCTION —
+# ``env in (development, testing, test) OR enable_debug_endpoints`` — not an
+# environment check, so the header comment's former claim that these "should
+# never be enabled in production" was an intent the code did not implement:
+# ``ENABLE_DEBUG_ENDPOINTS=true`` mounts this router in production, and four of
+# its five routes took no auth dependency at all. Self hosted publishes 8090 on
+# 0.0.0.0 with no proxy, so the audience of ``GET /debug/config`` — environment,
+# preset, storage backend, tenant provider, llm provider, protection on/off —
+# was whoever could reach the port.
+#
+# The flag is left alone. Debugging a production deployment is presumably why an
+# operator switch exists, and taking that away is the owner's call, not a
+# security fix's. What changes is that the flag now governs MOUNTING rather than
+# EXPOSURE: every route below carries ``require_platform_admin``, matching
+# ``/debug/cases/{case_id}/causal-graph``, which already required auth and made
+# this router internally inconsistent rather than deliberately open.
+#
+# The gate is declared on the DECORATOR (``dependencies=[...]``) rather than as a
+# handler parameter, which is the shape #1467 established for
+# ``/admin/optimization/trigger-cleanup``. It is not a style preference: FastAPI
+# inserts decorator-level dependencies at the FRONT of the route's dependant, so
+# they resolve before any parameter the handler declares. A gate written as a
+# parameter resolves in declaration order beside the others, and an anonymous
+# caller can get a service's 500 instead of the 401 the gate promises. These four
+# handlers declare no parameters today; the ordering is asserted anyway, in
+# ``tests/integration/api/test_no_unauthenticated_operations.py``, because the
+# next person to add one must not have to rediscover it.
+#
+# Deferred rather than done here: making ``_is_debug_enabled()`` a conjunction as
+# well, so the flag cannot lift the router into production at all. That is
+# defence in depth on top of this, not an alternative to it.
 if _is_debug_enabled(settings=_debug_settings):
     logger.info(
-        "🔧 Debug endpoints enabled (ENVIRONMENT=%s)",
+        "🔧 Debug endpoints enabled (ENVIRONMENT=%s, platform-admin required)",
         _debug_settings.server.environment.value if _debug_settings else "unknown",
     )
 
-    @app.get("/debug/routes")
+    @app.get(
+        "/debug/routes",
+        dependencies=[Depends(require_platform_admin)],
+    )
     async def debug_routes():
-        """List all registered routes (path + methods)."""
+        """List all registered routes (path + methods).
+
+        Requires the platform administrator role (#1474): the table includes
+        every route registered with ``include_in_schema=False``, so it is a
+        strictly larger surface than the published contract.
+        """
         routes_info = []
         for route in app.routes:
             path = getattr(route, "path", None)
@@ -1740,17 +1782,34 @@ if _is_debug_enabled(settings=_debug_settings):
             "timestamp": to_json_compatible(datetime.now(UTC)),
         }
 
-    @app.get("/debug/health")
+    @app.get(
+        "/debug/health",
+        dependencies=[Depends(require_platform_admin)],
+    )
     async def debug_health():
-        """Minimal debug health endpoint."""
+        """Minimal debug health endpoint.
+
+        Requires the platform administrator role (#1474). Strictly less than
+        the ``/health`` family, which is public in every environment and needs
+        no flag — gated with its three siblings because they mount together
+        and a router where only some routes are gated is the state that
+        produced this issue.
+        """
         return {
             "status": "ok",
             "timestamp": to_json_compatible(datetime.now(UTC)),
         }
 
-    @app.get("/debug/config")
+    @app.get(
+        "/debug/config",
+        dependencies=[Depends(require_platform_admin)],
+    )
     async def debug_config():
         """Get current configuration summary including active preset.
+
+        Requires the platform administrator role (#1474): this is the most
+        revealing of the four, and the reason the fix is auth on the routes
+        rather than a note in the allowlist.
 
         Returns information about:
         - Active configuration preset (if any)
@@ -1779,9 +1838,17 @@ if _is_debug_enabled(settings=_debug_settings):
                 "timestamp": to_json_compatible(datetime.now(UTC)),
             }
 
-    @app.get("/debug/llm-providers")
+    @app.get(
+        "/debug/llm-providers",
+        dependencies=[Depends(require_platform_admin)],
+    )
     async def debug_llm_providers():
-        """Get current LLM provider status and fallback chain."""
+        """Get current LLM provider status and fallback chain.
+
+        Requires the platform administrator role (#1474): never a key, but
+        deployment reconnaissance — which providers are configured, which are
+        reachable, and the resolved context-window budget.
+        """
         try:
             from .container import container
 

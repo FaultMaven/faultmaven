@@ -50,16 +50,25 @@ tables too, and their counts agree about it vacuously. Measured: under
 ``ENVIRONMENT=development`` (the shipped default — ``Environment.DEVELOPMENT``
 in ``config/settings.py``, and ``.env.example`` ships the override commented
 out) ``/debug/routes``, ``/debug/health``, ``/debug/config`` and
-``/debug/llm-providers`` are served with NO auth dependency, and
-``GET /debug/config`` answers an anonymous caller 200 with
-``settings.get_configuration_summary()``.
+``/debug/llm-providers`` were served with NO auth dependency, and
+``GET /debug/config`` answered an anonymous caller 200 with
+``settings.get_configuration_summary()``. They were also served that way in
+PRODUCTION wherever ``ENABLE_DEBUG_ENDPOINTS=true``, because the gate mounting
+them is a disjunction rather than an environment check.
 
 So the reach is extended rather than the claim narrowed:
 :func:`test_no_conditionally_mounted_route_is_open_without_a_decision` builds
 the app with the debug router mounted and applies the same rule to it, and
-:func:`test_the_debug_router_is_absent_in_production` asserts the gate that
-makes those four acceptable — because "development only" is the whole of their
-defence, and an undefended property is not one.
+:func:`test_the_debug_router_in_production_is_an_explicit_opt_in` asserts the
+gate that decides whether they mount at all.
+
+#1474 closed the four with ``require_platform_admin``, so what those guards now
+hold is a property rather than a deferral — which is why this module also drives
+the routes through the request path
+(:func:`test_the_debug_routes_refuse_anonymous_and_non_operator_callers`) and
+pins the resolution ORDER the gate depends on
+(:func:`test_the_debug_gate_resolves_before_anything_the_handler_declares`). A
+dependency graph says a gate is present; only a request says it runs first.
 
 Reading the COMMITTED artifact rather than ``app.openapi()`` is deliberate. It
 is the document the clients are written against, it is kept equal to the app by
@@ -308,51 +317,23 @@ PUBLIC_OPERATIONS: dict[tuple[str, str], tuple[str, str]] = {
 #: Same rule as ``PUBLIC_OPERATIONS``, applied to the surface the contract
 #: cannot describe.
 #:
-#: All four are the debug router, gated by ``_is_debug_enabled()`` — a
-#: DISJUNCTION, ``env in (development, testing, test) OR
-#: enable_debug_endpoints``, so ``ENABLE_DEBUG_ENDPOINTS=true`` mounts them in
-#: production. Both halves of that are asserted by
-#: :func:`test_the_debug_router_in_production_is_an_explicit_opt_in`.
+#: **Empty since #1474, and kept rather than deleted.** It held the debug
+#: router's four ungated routes — ``/debug/routes``, ``/debug/health``,
+#: ``/debug/llm-providers``, ``/debug/config`` — as ``_DEFERRED``, which is the
+#: disposition for "open although it should not be". They are now gated with
+#: ``require_platform_admin``, matching ``/debug/cases/{case_id}/causal-graph``,
+#: which already required auth; the entries came out because a ``_DEFERRED``
+#: entry outliving its finding is a green test asserting nothing, and
+#: :func:`test_no_conditionally_mounted_route_is_open_without_a_decision`
+#: fails on a stale one in exactly the way it fails on a new open route.
 #:
-#: All four are ``_DEFERRED``, not ``_PUBLIC``, and the distinction is the
-#: whole value of having two words. ``_PUBLIC`` means "open because it is meant
-#: to be" — a claim about the route. An anonymous configuration surface reachable
-#: in production behind an operator flag is not that; it is a state somebody has
-#: to decide about, which is what ``_DEFERRED`` plus an issue number says. They
-#: were briefly ``_PUBLIC`` here, in the same change that established they mount
-#: in production, which would have made this allowlist certify the thing it had
-#: just measured. #1474 carries the decision.
-DEBUG_OPERATIONS: dict[tuple[str, str], tuple[str, str]] = {
-    ("GET", "/debug/routes"): (
-        _DEFERRED,
-        "the app's whole route table, to an anonymous caller. Less than the "
-        "published contract gives anybody, which is why it is the mildest of "
-        "the four — but it is open on the shipped default and in production "
-        "behind ENABLE_DEBUG_ENDPOINTS. #1474.",
-    ),
-    ("GET", "/debug/health"): (
-        _DEFERRED,
-        "a minimal health echo — strictly less than the ``/health`` family, "
-        "which is public in every environment and needs no flag. Deferred with "
-        "its three siblings rather than argued separately: they mount and "
-        "close together. #1474.",
-    ),
-    ("GET", "/debug/llm-providers"): (
-        _DEFERRED,
-        "which LLM providers are configured and reachable — never a key, but "
-        "deployment reconnaissance, and open to an anonymous caller on the "
-        "shipped default. #1474.",
-    ),
-    ("GET", "/debug/config"): (
-        _DEFERRED,
-        "a configuration summary — environment, preset, storage, tenant "
-        "provider, llm provider, protection on/off — to an anonymous caller. "
-        "No secrets and no tenant data, so reconnaissance rather than "
-        "disclosure, but it is the most revealing of the four and the reason "
-        "the gate below is asserted on the FLAG rather than on ENVIRONMENT "
-        "alone. #1474.",
-    ),
-}
+#: An empty allowlist is not a dead one. The conditionally-mounted surface is
+#: where the contract-derived half of this module is blind, so the *next*
+#: ungated debug route has to arrive here with a reason and an issue number
+#: rather than merely arriving. What is asserted in its absence is the positive
+#: control below: the router still MOUNTS under development, so "no open
+#: operation" means the routes are closed and not that nothing was looked at.
+DEBUG_OPERATIONS: dict[tuple[str, str], tuple[str, str]] = {}
 
 #: Router families the published surface must contain for this module to be
 #: looking at the whole of it. One representative operation each — a router that
@@ -610,15 +591,23 @@ def test_no_conditionally_mounted_route_is_open_without_a_decision():
     the published document AND from both delegate guards, which build under
     ``ENVIRONMENT=production``. Same rule, applied to the app instead of the
     artifact: open, or listed with a reason.
+
+    The positive control is that the router MOUNTED, not that something open
+    was found on it. It used to be the latter — ``assert open_debug`` — which
+    was a fair control while the four routes were ungated and is false the
+    moment they are not (#1474). Asserting on the mount keeps the control
+    honest under both states: an empty ``open_debug`` now means "every debug
+    route is closed", and the assertion above it is what rules out the other
+    reading, "the router was never built".
     """
     served = _app_under(ENVIRONMENT="development")
-    open_debug = _open_served_operations(served, "/debug")
 
-    assert open_debug, (
-        "no open /debug operation was found under ENVIRONMENT=development — "
-        "the debug router did not mount, so this guard measured nothing"
+    assert _debug_routes(served), (
+        "the debug router did not mount under ENVIRONMENT=development, which "
+        "is the shipped default — this guard measured nothing"
     )
 
+    open_debug = _open_served_operations(served, "/debug")
     undeclared = open_debug - set(DEBUG_OPERATIONS)
     assert not undeclared, (
         "these debug operations are served with NO authentication and are not "
@@ -651,33 +640,312 @@ def test_the_debug_router_in_production_is_an_explicit_opt_in():
     earlier version of this test varied only ``ENVIRONMENT`` and therefore
     asserted "absent in production", which is false on the flag that matters —
     measured: with the flag set, the app logs
-    ``🔧 Debug endpoints enabled (ENVIRONMENT=production)``.
+    ``🔧 Debug endpoints enabled (ENVIRONMENT=production ...)``.
 
     Both halves are asserted, because only the pair is the real property: the
     DEFAULT is closed, and the way past it is one named operator switch rather
-    than an accident of configuration. The allowlist's reasons say exactly that
-    and no more.
+    than an accident of configuration.
+
+    The second half was the ``_FINDING`` idiom until #1474 — asserted as it
+    behaved, so that a fix would turn it red. #1474 landed as auth on the
+    routes rather than as a conjunction in the gate, which is a fix at the
+    other layer and leaves the mount exactly as it was, so this half did not go
+    red and is not deleted. What changes is what it is FOR. It is no longer a
+    recorded finding; it is the operator capability the flag exists to provide,
+    now paired with the assertion that gives it teeth — that nothing the flag
+    mounts in production is reachable without a platform administrator. That
+    pairing is the whole of #1474's decision: the flag governs MOUNTING, and
+    authentication governs EXPOSURE.
+
+    Making the gate a conjunction as well remains available as defence in
+    depth. If it is ever taken, the first assertion below absorbs it and the
+    second is what has to be rewritten.
     """
     assert _debug_routes(_app_under(ENVIRONMENT="production")) == [], (
         "the debug router mounted in production with ENABLE_DEBUG_ENDPOINTS "
-        "unset — production is no longer closed by default, and every "
-        "DEBUG_OPERATIONS reason depends on it being so"
+        "unset — production is no longer closed by DEFAULT, which is the half "
+        "of this gate that no route-level auth can substitute for"
     )
 
-    # The second half is the ``_FINDING`` idiom: asserted AS IT BEHAVES, with
-    # the issue that tracks it, so a fix turns this red rather than passing
-    # quietly over a door that has been closed. If you are reading this because
-    # it failed, #1474 has landed: delete this assertion, and take the four
-    # entries out of DEBUG_OPERATIONS — the unlisted-open half above will tell
-    # you if you were wrong.
-    opted_in = _debug_routes(
-        _app_under(ENVIRONMENT="production", ENABLE_DEBUG_ENDPOINTS="true")
-    )
-    assert opted_in, (
+    opted_in_app = _app_under(ENVIRONMENT="production", ENABLE_DEBUG_ENDPOINTS="true")
+    assert _debug_routes(opted_in_app), (
         "ENABLE_DEBUG_ENDPOINTS=true no longer mounts the debug router in "
-        "production — #1474 has landed, or the gate changed. Drop this "
-        "assertion and the four DEBUG_OPERATIONS entries it defends"
+        "production. That may be deliberate — the conjunction #1474 left "
+        "available — but it removes an operator's ability to debug a "
+        "production deployment, so it is a decision, not a refactor"
     )
+
+    open_in_production = _open_served_operations(opted_in_app, "/debug")
+    assert not open_in_production, (
+        "the operator flag mounted these debug operations in PRODUCTION with "
+        "no authentication — this is #1474, on the path where it is worst:\n"
+        + _format(open_in_production)
+    )
+
+
+#: The four routes #1474 gated. ``/debug/cases/{case_id}/causal-graph`` is the
+#: fifth on that router and is deliberately absent: it already required auth,
+#: and it takes a path parameter and a case service, so it cannot be driven by
+#: a bare GET the way these four can.
+#:
+#: Named rather than derived from the served app, because a route silently
+#: dropped from the router is a thing this module should notice: a derived list
+#: would simply come back shorter and every assertion over it would still pass.
+_DEBUG_PATHS = (
+    "/debug/config",
+    "/debug/routes",
+    "/debug/health",
+    "/debug/llm-providers",
+)
+
+
+def _gate_failure(route) -> str | None:
+    """``None`` if an auth gate resolves before anything the HANDLER declares.
+
+    "First" is not the same as "index 0". The application carries one global
+    dependency — ``bind_request_enterprise_context``, the tenant binder — and
+    FastAPI inserts app-level and decorator-level dependencies at the front of
+    every route's dependant, so the binder is index 0 on all of them. The
+    property worth asserting is therefore the one #1467's finding is actually
+    about: no dependency the handler DECLARES resolves before the gate.
+
+    The discriminator is ``Dependant.name``, which FastAPI sets to the
+    parameter's name for a handler-declared dependency and leaves ``None`` for
+    a parameterless one built from ``dependencies=[...]``. Measured:
+
+        @app.get("/decorator", dependencies=[Depends(gate)])
+        async def a(svc=Depends(service)): ...
+            -> [(None, 'gate'), ('svc', 'service')]
+
+        @app.get("/parameter")
+        async def b(svc=Depends(service), user=Depends(gate)): ...
+            -> [('svc', 'service'), ('user', 'gate')]
+
+    ``test_a_gate_declared_after_a_service_parameter_is_not_a_gate`` drives both
+    shapes through the request path, so this predicate is not the only thing
+    claiming the difference matters.
+    """
+    import inspect
+
+    from tests.integration.api.test_openapi_documents_auth import (
+        MANDATORY_AUTH_DEPENDENCIES,
+    )
+
+    def qualified(call) -> str:
+        module = getattr(inspect.getmodule(call), "__name__", "")
+        name = getattr(call, "__name__", type(call).__name__)
+        return f"{module}.{name}" if module else name
+
+    dependencies = route.dependant.dependencies
+    gates = [
+        index
+        for index, dependency in enumerate(dependencies)
+        if qualified(dependency.call) in MANDATORY_AUTH_DEPENDENCIES
+    ]
+    if not gates:
+        return (
+            "no mandatory auth dependency at all; resolved: "
+            f"{[qualified(d.call) for d in dependencies]}"
+        )
+
+    declared = [
+        (index, dependency)
+        for index, dependency in enumerate(dependencies)
+        if dependency.name is not None
+    ]
+    early = [
+        f"{dependency.name}={qualified(dependency.call)}"
+        for index, dependency in declared
+        if index < min(gates)
+    ]
+    if early:
+        return (
+            "these handler-declared dependencies resolve BEFORE the auth "
+            f"gate: {early}. Declare the gate on the decorator "
+            "(dependencies=[Depends(require_platform_admin)]) rather than as "
+            "a handler parameter"
+        )
+    return None
+
+
+@pytest.mark.integration
+@pytest.mark.security
+def test_a_gate_declared_after_a_service_parameter_is_not_a_gate():
+    """#1467's finding, pinned as behaviour rather than repeated as advice.
+
+    This is the positive control for the rule the four debug routes are
+    asserted against. It builds the two shapes on a throwaway app and drives
+    both, so the rule is justified by what FastAPI does rather than by the
+    comment saying so — and a FastAPI upgrade that reordered dependency
+    resolution would fail here, where the reason is legible, instead of
+    silently turning four 401s into 500s.
+
+    The gate is the REAL ``require_platform_admin`` in both, not a stand-in:
+    only its declaration site differs, so what the two routes disagree about is
+    exactly the one thing under test.
+    """
+    from fastapi import Depends as _Depends
+    from fastapi import FastAPI
+    from fastapi.routing import APIRoute
+    from fastapi.testclient import TestClient
+
+    from faultmaven.api.v1.auth_dependencies import require_platform_admin
+
+    def service():
+        raise RuntimeError("a collaborator that is unavailable to this caller")
+
+    probe = FastAPI()
+
+    @probe.get(
+        "/gate-on-the-decorator", dependencies=[_Depends(require_platform_admin)]
+    )
+    async def _decorated(collaborator=_Depends(service)):  # pragma: no cover
+        return {}
+
+    @probe.get("/gate-after-the-parameter")
+    async def _parameterised(  # pragma: no cover
+        collaborator=_Depends(service),
+        caller=_Depends(require_platform_admin),
+    ):
+        return {}
+
+    routes = {
+        route.path: route for route in probe.routes if isinstance(route, APIRoute)
+    }
+    assert _gate_failure(routes["/gate-on-the-decorator"]) is None
+    assert _gate_failure(routes["/gate-after-the-parameter"]) is not None, (
+        "the predicate accepted a gate declared after a service parameter — "
+        "it is not discriminating, and every route it passes is unchecked"
+    )
+
+    with TestClient(probe, raise_server_exceptions=False) as client:
+        assert client.get("/gate-on-the-decorator").status_code == 401
+        assert client.get("/gate-after-the-parameter").status_code == 500, (
+            "a gate declared after a service parameter no longer lets the "
+            "service's failure reach the caller first — FastAPI's resolution "
+            "order changed, and the rule below needs re-deriving"
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.security
+def test_the_debug_gate_resolves_before_anything_the_handler_declares():
+    """Declared on the decorator, so it runs first — asserted, not assumed.
+
+    #1467 found this the expensive way on ``/admin/optimization/trigger-
+    cleanup``: a gate written as a handler PARAMETER resolves in declaration
+    order beside the handler's other parameters, so a service dependency ahead
+    of it resolves first and an anonymous caller gets that service's 500 where
+    the gate promised a 401.
+
+    That is FastAPI's behaviour rather than FaultMaven's, which is precisely
+    why it is pinned here: the four debug handlers declare no parameters today,
+    so the ordering is currently unobservable from a status code, and the next
+    person to add one would be relying on a property nothing in this repository
+    checks.
+    """
+    from fastapi.routing import APIRoute
+
+    served = _app_under(ENVIRONMENT="development")
+    routes = {
+        route.path: route
+        for route in served.routes
+        if isinstance(route, APIRoute) and route.path in _DEBUG_PATHS
+    }
+
+    missing = set(_DEBUG_PATHS) - set(routes)
+    assert not missing, f"debug routes absent from the served app: {sorted(missing)}"
+
+    failures = {
+        path: failure
+        for path, route in sorted(routes.items())
+        if (failure := _gate_failure(route)) is not None
+    }
+    assert not failures, "\n".join(
+        f"{path}: {reason}" for path, reason in failures.items()
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "label,overrides",
+    [
+        ("the shipped default", {"ENVIRONMENT": "development"}),
+        (
+            "the operator flag in production",
+            {"ENVIRONMENT": "production", "ENABLE_DEBUG_ENDPOINTS": "true"},
+        ),
+    ],
+)
+def test_the_debug_routes_refuse_anonymous_and_non_operator_callers(label, overrides):
+    """Driven through the served app, on both paths that mount the router.
+
+    A guard has to be exercised through the path that runs it. The dependency-
+    graph assertions above read the route object; this one issues the request,
+    on both mount paths rather than on the convenient one — the flag in
+    production is where the exposure mattered (self-hosted publishes 8090 on
+    0.0.0.0 with no proxy), and development is the shipped default, so a fix
+    that closed only one of them would close neither in practice.
+
+    Three callers, because "requires auth" and "requires the operator role" are
+    different claims and only the third proves the routes still WORK. An
+    authenticated non-operator getting 200 would mean the gate had been
+    weakened to ``require_authentication``; an operator getting 401 or 403
+    would mean the developer surface had been removed rather than gated, which
+    is not what #1474 decided.
+    """
+    from datetime import UTC, datetime
+
+    from fastapi.testclient import TestClient
+
+    from faultmaven.api.v1.auth_dependencies import require_authentication
+    from faultmaven.modules.auth.domain.models.auth import DevUser
+
+    def _user(roles):
+        return DevUser(
+            user_id="00000000-0000-0000-0000-0000000000ff",
+            username="probe",
+            email="probe@local.faultmaven",
+            display_name="probe",
+            created_at=datetime.now(UTC),
+            roles=roles,
+        )
+
+    served = _app_under(**overrides)
+    assert _debug_routes(served), f"{label}: the debug router did not mount"
+
+    with TestClient(served) as client:
+        for path in _DEBUG_PATHS:
+            anonymous = client.get(path)
+            assert anonymous.status_code == 401, (
+                f"{label}: GET {path} answered {anonymous.status_code} to a "
+                f"caller with no credential: {anonymous.text[:200]}"
+            )
+
+        served.dependency_overrides[require_authentication] = lambda: _user(["user"])
+        try:
+            for path in _DEBUG_PATHS:
+                signed_in = client.get(path)
+                assert signed_in.status_code == 403, (
+                    f"{label}: GET {path} answered {signed_in.status_code} to "
+                    "an authenticated NON-operator; the gate is "
+                    f"require_platform_admin, not require_authentication: "
+                    f"{signed_in.text[:200]}"
+                )
+
+            served.dependency_overrides[require_authentication] = lambda: _user(
+                ["user", "admin", "platform_admin"]
+            )
+            for path in _DEBUG_PATHS:
+                operator = client.get(path)
+                assert operator.status_code == 200, (
+                    f"{label}: GET {path} answered {operator.status_code} to a "
+                    "platform administrator — #1474 gated these routes, it did "
+                    f"not remove them: {operator.text[:200]}"
+                )
+        finally:
+            served.dependency_overrides.clear()
 
 
 @pytest.mark.integration
