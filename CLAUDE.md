@@ -846,8 +846,12 @@ git add docs/reference/api/openapi.json docs/reference/api/README.md
 
 The generator empties the environment and applies its own pinned settings, so
 the artifact is a function of the code rather than of your `.env`. It documents
-the **maximal deployed surface** (OAuth, SSO and `/metrics` mounted; debug
-endpoints, which are development-only, excluded).
+the **maximal deployed surface** (OAuth, SSO and `/metrics` mounted; the debug
+router excluded). The debug router is NOT development-only —
+`ENABLE_DEBUG_ENDPOINTS` mounts it in any environment — so what excludes it is
+the generator itself: `ENVIRONMENT=production` rules out the automatic mount,
+and emptying the environment down to `_SYSTEM_ENVIRONMENT_KEYS` means the flag
+cannot arrive from your shell.
 
 ⚠️ **Regenerate with the lockfile installed** (`pip install -r
 requirements/dev.txt`). FastAPI and Pydantic decide how schemas are emitted, so
@@ -1101,7 +1105,7 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | `GET /api/v1/meta/capabilities` | Backend capabilities for extension and dashboard |
 | `GET /v1/meta/capabilities` | Deprecated alias of the above, kept for installed extensions |
 
-**Debug Endpoints** — mounted when `ENVIRONMENT` is development/testing/test, or in any environment (staging and production included) when `ENABLE_DEBUG_ENDPOINTS=true`. **All four require the platform administrator role** (#1474): an anonymous caller gets **401**, and an authenticated caller without the role gets **403 "Platform administrator access required"** — including a Cloud beta account, so a 403 here is the gate working, not a bug. The standalone bootstrap account is granted the operator roles on every startup, so a local `dev-login` token reaches them.
+**Debug Endpoints** — mounted when `ENVIRONMENT=development`, or in any environment (staging and production included) when `ENABLE_DEBUG_ENDPOINTS=true`. Only `development`: the `Environment` enum admits development/staging/production, so `ENVIRONMENT=testing` is not a mounting value, it is a startup `ValidationError`. **All four require the platform administrator role** (#1474): an anonymous caller gets **401**, and an authenticated caller without the role gets **403 "Platform administrator access required"** — including a Cloud beta account, so a 403 here is the gate working, not a bug. The standalone bootstrap account is granted the operator roles on every startup, so a local `dev-login` token reaches them.
 
 | Endpoint | Description |
 |----------|-------------|

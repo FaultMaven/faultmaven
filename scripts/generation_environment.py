@@ -26,27 +26,30 @@ Nothing here may have import side effects — that is the whole point.
 #
 # The reference documents the **maximal deployed surface**: every route the
 # product can serve, so one generated client covers every deployment. Debug
-# endpoints are the exception, and the reason is NOT `ENVIRONMENT=production` —
-# `_is_debug_enabled()` is a disjunction, so production plus
-# `ENABLE_DEBUG_ENDPOINTS=true` mounts the router. What excludes them is that
-# this module EMPTIES the environment down to `_SYSTEM_ENVIRONMENT_KEYS` before
-# applying the pin, so the flag cannot arrive from the caller's shell; the
-# explicit `"false"` below states it rather than relying on the emptying, and
-# `tests/integration/api/test_openapi_generation_is_pinned.py` exports the flag
-# hostilely to prove it. (They are not "development-only" either: that flag
-# mounts them anywhere. They require the platform administrator role — #1474.)
-# Excluding OAuth and SSO would leave the document advertising
+# endpoints are the exception, and it takes BOTH halves of the disjunction
+# `_is_debug_enabled()` tests: `ENVIRONMENT=production` below rules out the
+# automatic mount, and `ENABLE_DEBUG_ENDPOINTS` is ruled out by this module
+# EMPTYING the environment down to `_SYSTEM_ENVIRONMENT_KEYS`, so the flag
+# cannot arrive from the caller's shell.
+#
+# That flag is deliberately NOT added to the pin below. Pinning it would make
+# the reason self-evident here and would cost a real property elsewhere:
+# `test_openapi_generation_is_pinned.py` detects loss of the `os.environ.clear()`
+# step precisely BY exporting `ENABLE_DEBUG_ENDPOINTS=true` hostilely and
+# relying on nothing in PINNED_ENVIRONMENT overwriting it. A pinned value makes
+# that test pass with the clear removed. The emptying is the mechanism, and it
+# is the tested one. (Debug endpoints are not "development-only" either: that
+# flag mounts them anywhere. They require the platform administrator role —
+# #1474.) Excluding OAuth and SSO would leave the document advertising
 # `/auth/oauth/authorize` and `/auth/sso/login` from `GET /auth/config` while
 # describing neither.
 PINNED_ENVIRONMENT = {
     # Building a document must not reach a database, Redis or an LLM provider.
     "SKIP_SERVICE_CHECKS": "true",
+    # Not development: with ENABLE_DEBUG_ENDPOINTS absent, this is what keeps
+    # the debug router out. The flag is deliberately NOT pinned here — see the
+    # note above.
     "ENVIRONMENT": "production",
-    # The debug router, refused explicitly rather than by absence. The
-    # environment is emptied before this dict is applied, so the flag cannot
-    # arrive from a caller's shell — but "excluded because nobody set it" is a
-    # property of the emptying, and pinning it false is a property of the pin.
-    "ENABLE_DEBUG_ENDPOINTS": "false",
     # Only present to satisfy the startup validator that rejects wildcard CORS
     # in production. CORS is middleware — it appears nowhere in the document.
     "CORS_ALLOW_ORIGINS": '["https://app.faultmaven.com"]',

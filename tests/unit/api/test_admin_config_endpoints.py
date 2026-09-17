@@ -2017,33 +2017,30 @@ def _scenario_token_revocation_durable(settings, app, monkeypatch, reality):
 
 
 def _scenario_debug_endpoints(settings, app, monkeypatch, reality):
-    """The runtime fact withheld here is whether THIS PROCESS mounted the router.
+    """The runtime fact withheld here is whether this process SERVES the router.
 
     ``ENABLE_DEBUG_ENDPOINTS`` is set in BOTH arms — that is the point, and it
-    is the whole reason #1493 asked for this field. The flag is a policy; the
-    mount is what a given process did with it, and the two come apart in ways an
-    operator cannot read off their own configuration: the router also mounts
-    with the flag unset whenever ``ENVIRONMENT`` is development/testing/test, and
-    it does not mount on a process whose module-level block never ran under that
-    configuration at all.
+    is the whole reason #1493 asked for this field. The flag is a policy; what
+    the process serves is the fact. The two come apart in ways an operator
+    cannot read off their configuration: the router also mounts with the flag
+    unset when ``ENVIRONMENT=development``, and it does not mount on a process
+    whose composition never built it.
 
-    A settings-only implementation would report True for every deployment with
-    the flag set, which tells an operator auditing a cluster the one thing they
-    already knew — they typed it — instead of whether the surface is present on
-    the pod in front of them.
+    A settings-only implementation reports True for every deployment with the
+    flag set, which tells an auditor the one thing they already knew — they
+    typed it — instead of whether the surface is present on the pod in front of
+    them.
 
-    ``main`` writes the flag at the mount itself, so the fact withheld here is
-    exactly the fact the endpoint reads.
+    The ON arm adds a real ``/debug`` route to the app under test, because the
+    reader walks the route table; the OFF arm leaves the app without one. Both
+    arms keep the flag set, so nothing here can be satisfied by reading it.
     """
     settings.server.enable_debug_endpoints = True
     if reality:
-        app.state.debug_endpoints_mounted = True
-    else:
-        # Not "set False" — REMOVED, which is the state of an app object whose
-        # mount block never ran. The reader defaults False for it, and that
-        # default is the behaviour under test.
-        if hasattr(app.state, "debug_endpoints_mounted"):
-            delattr(app.state, "debug_endpoints_mounted")
+
+        @app.get("/debug/config")
+        async def _debug_config_probe():  # pragma: no cover
+            return {}
 
 
 FEATURE_SCENARIOS = {

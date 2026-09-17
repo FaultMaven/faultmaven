@@ -205,6 +205,7 @@ def _check_llm_configuration(llm_provider, settings=None) -> None:
 
 
 from .api.middleware.logging import LoggingMiddleware
+from .api.route_enumeration import iter_served_routes
 
 # Admin routes
 from .api.routes.admin import router as admin_users_router
@@ -213,14 +214,6 @@ from .api.routes.admin_config import router as admin_config_router
 from .api.routes.admin_grants import router as admin_grants_router
 from .api.routes.sessions import router as investigation_sessions_router
 from .api.v1.auth_dependencies import require_authentication, require_platform_admin
-
-# FastAPI's own route flattener; see ``debug_routes`` and
-# ``api/middleware/route_policy.py`` (fm#1305). Absent before 0.139, where it is
-# not needed because ``app.routes`` really does hold every route.
-try:  # pragma: no cover - exercised on FastAPI >= 0.139
-    from fastapi.routing import iter_route_contexts
-except ImportError:  # pragma: no cover - FastAPI < 0.139
-    iter_route_contexts = None
 from .infrastructure.observability.tracing import init_opik_tracing
 
 # Import API routes from modules
@@ -1691,14 +1684,25 @@ except Exception as e:
     )
 
 
-# Debug endpoints - mounted when ENVIRONMENT is development/testing/test, or in
-# ANY environment when the ENABLE_DEBUG_ENDPOINTS operator switch is set. Note
-# what that leaves out: `Environment` is development/staging/production, so
-# `staging` does NOT mount them by default — "outside production" would be the
-# same kind of wrong as the claim this comment replaced. They expose internal
-# state, so every route on the router requires an authenticated caller and the
-# four #1474 gated require the platform administrator role; the block at the
-# mount below says why that is the layer the gate sits at.
+# Debug endpoints - mounted when ENVIRONMENT is `development`, or in ANY
+# environment when the ENABLE_DEBUG_ENDPOINTS operator switch is set.
+#
+# `development` and nothing else, although the predicate below reads
+# `env in ("development", "testing", "test")`. `Environment` admits exactly
+# development / staging / production, so the other two strings are DEAD against
+# settings: `ENVIRONMENT=testing` does not select them, it raises
+# ValidationError ("Input should be 'development', 'staging' or 'production'").
+# They can only ever match in the degraded `os.getenv` fallback further down —
+# which runs when `get_settings()` already failed, i.e. exactly the state
+# `ENVIRONMENT=testing` produces. Documenting them as mounting values sent an
+# operator to set one and break their own boot, which is why every published
+# statement of this flag now says `development`.
+#
+# `staging` does NOT mount by default either; "outside production" would be the
+# same kind of wrong as the claim this comment replaced. The routes expose
+# internal state, so every route on the router requires an authenticated caller
+# and the four #1474 gated require the platform administrator role; the block at
+# the mount below says why that is the layer the gate sits at.
 def _is_debug_enabled(settings=None) -> bool:
     """Check if debug endpoints should be enabled based on environment."""
     # Get settings if not provided
@@ -1785,19 +1789,17 @@ if _is_debug_enabled(settings=_debug_settings):
         "credential, the four operator diagnostics require platform admin",
         _debug_settings.server.environment.value if _debug_settings else "unknown",
     )
-    # Recorded, not only logged. Whether the operator flag lifted this router
-    # into a non-development environment is a security-relevant deployment fact,
-    # and a startup line is not an observable — it rolls out of `kubectl logs`
-    # long before anyone asks, so a runbook saying "grep for it" returns empty
-    # on a perfectly healthy pod and teaches the wrong conclusion.
-    # `GET /admin/config/status` reports it beside `kb_prefetch` and
+    # Whether the operator flag lifted this router into a non-development
+    # environment is a security-relevant deployment fact, and a startup line is
+    # not an observable — it rolls out of `kubectl logs` long before anyone
+    # asks. `GET /admin/config/status` reports it beside `kb_prefetch` and
     # `first_party_consent_skip`, which are there for the same reason.
     #
-    # Written by the branch that DID the mounting rather than re-derived later
-    # from settings or by walking the route table: a fact recorded where it
-    # happens cannot disagree with what happened, and it needs no second copy of
-    # the route-flattening idiom to read it back.
-    app.state.debug_endpoints_mounted = True
+    # It reads the ROUTE TABLE rather than a flag written here. A flag only this
+    # branch sets reports "no debug surface" for any app composed another way,
+    # and for a security-audit observable that is the dangerous direction: it is
+    # the answer that ends an investigation early about a pod that does serve
+    # /debug. See `api/route_enumeration.serves_path_prefix`.
 
     @app.get(
         "/debug/routes",
@@ -1824,24 +1826,12 @@ if _is_debug_enabled(settings=_debug_settings):
         """
         routes_info = []
         seen = set()
-
-        def _record(path, methods):
-            key = (path, tuple(sorted(methods)))
-            if path and key not in seen:
+        for served in iter_served_routes(app):
+            key = (served.path, tuple(sorted(served.methods)))
+            if served.path and key not in seen:
                 seen.add(key)
-                routes_info.append({"path": path, "methods": sorted(methods)})
-
-        if iter_route_contexts is not None:
-            for context in iter_route_contexts(app.routes):
-                _record(
-                    getattr(context, "path", None),
-                    list(getattr(context, "methods", None) or []),
-                )
-        else:  # pragma: no cover - FastAPI < 0.139 copies routes in, so this is complete
-            for route in app.routes:
-                _record(
-                    getattr(route, "path", None),
-                    list(getattr(route, "methods", []) or []),
+                routes_info.append(
+                    {"path": served.path, "methods": sorted(served.methods)}
                 )
 
         return {
@@ -1996,7 +1986,7 @@ if _is_debug_enabled(settings=_debug_settings):
         request: Request,
         current_user: DevUser = Depends(require_authentication),
     ):
-        """Dump a case's causal graph + hypothesis-chain wiring (dev-only).
+        """Dump a case's causal graph + hypothesis-chain wiring (debug router).
 
         Instrumentation hook for the 2D-hypothesis chain-emission validation
         (chain emission is always active). Returns the persisted causal
@@ -2018,7 +2008,9 @@ if _is_debug_enabled(settings=_debug_settings):
         envelope an absent one does, so the refusal is not an existence oracle.
 
         Best-effort: never raises on serialization; absent graph returns empty
-        collections. Not registered in production (debug block).
+        collections. Registered only where the debug router mounts — which is
+        `ENVIRONMENT=development`, or ANY environment including production when
+        ENABLE_DEBUG_ENDPOINTS is set. It is not production-free (#1493).
         """
         from .api.debug_introspection import build_causal_graph_debug_payload
 
@@ -2037,15 +2029,16 @@ if _is_debug_enabled(settings=_debug_settings):
         }
 
 else:
-    # "disabled in production" was wrong for `staging`, which also lands here
-    # and which this line would have reported as production. Same error class as
-    # the header comment above, in the channel an operator actually reads.
+    # Two corrections in one line. "disabled in production" was wrong for
+    # `staging`, which also lands here and which this reported as production;
+    # and "ENABLE_DEBUG_ENDPOINTS unset" was wrong for every falsey SET value —
+    # `false`, `0`, `no` — including the `"false"` the API-reference generator
+    # exports. The resolved value is interpolated instead of described.
     logger.info(
-        "🔒 Debug endpoints not mounted (ENVIRONMENT=%s, "
-        "ENABLE_DEBUG_ENDPOINTS unset)",
+        "🔒 Debug endpoints not mounted (ENVIRONMENT=%s, " "ENABLE_DEBUG_ENDPOINTS=%s)",
         _debug_settings.server.environment.value if _debug_settings else "unknown",
+        os.getenv("ENABLE_DEBUG_ENDPOINTS", "<unset>"),
     )
-    app.state.debug_endpoints_mounted = False
 
 # Modular monolith pivot: keep only core endpoints; advanced routes disabled
 # Protection monitoring is now handled by middleware and health endpoints

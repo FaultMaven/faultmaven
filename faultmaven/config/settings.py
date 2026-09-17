@@ -143,8 +143,9 @@ class ServerSettings(BaseSettings):
         default=False,
         description="Mount the /debug router in ANY environment, staging and "
         "production included — this is not a development-only switch. The "
-        "router is mounted automatically when ENVIRONMENT is "
-        "development/testing/test, and this flag is the other way in. Every "
+        "router is also mounted automatically when ENVIRONMENT=development "
+        "(and only development: Environment admits development/staging/"
+        "production, so 'testing' and 'test' are not settable values). Every "
         "route on it requires an authenticated caller and the four operator "
         "diagnostics require the platform administrator role (#1474).",
     )

@@ -617,11 +617,14 @@ FaultMaven JWT tokens carry two separate tenancy claims, because they answer two
 
 ### Conditional Endpoint Exposure
 
-Which endpoints are mounted depends on two independent things — the auth mode,
-and the `ENABLE_DEBUG_ENDPOINTS` operator switch. It is deliberately NOT a
-question of environment alone: `ENABLE_DEBUG_ENDPOINTS` mounts the debug router
-in staging and production too, which is how those routes came to be served to
-anonymous callers in production behind an operator flag (#1474). Mounting and
+Which endpoints are mounted depends on three independent things — the auth
+mode, `ENVIRONMENT`, and the `ENABLE_DEBUG_ENDPOINTS` operator switch. It is not
+a question of environment ALONE, which is the part that surprised people:
+`ENABLE_DEBUG_ENDPOINTS` mounts the debug router in staging and production too,
+which is how those routes came to be served to anonymous callers in production
+behind an operator flag (#1474). `ENVIRONMENT` is the other half of that
+disjunction and mounts the router on `development` — and only `development`,
+since the enum admits development/staging/production. Mounting and
 authentication are separate questions, and every endpoint below answers both:
 
 ```python

@@ -84,15 +84,13 @@ from typing import NamedTuple
 
 import pytest
 
-# FastAPI's own route flattener. Imported at MODULE level, not inside the
-# helper, for two reasons: it is how ``api/middleware/route_policy.py`` does it
-# (fm#1305), and a function-local import cannot be monkeypatched — which would
-# leave the >= 0.139 arm unexecuted on the pinned ``fastapi==0.136.0`` that CI
-# and the image install. See ``TestTheFlattenedArmOnThePinnedVersion``.
-try:  # pragma: no cover - exercised on FastAPI >= 0.139
-    from fastapi.routing import iter_route_contexts
-except ImportError:  # pragma: no cover - FastAPI < 0.139
-    iter_route_contexts = None
+# The version gate lives in ONE place, ``faultmaven/api/route_enumeration.py``,
+# and this module drives THAT rather than keeping a fourth copy. The tests below
+# monkeypatch ``route_enumeration.iter_route_contexts``, which is why the import
+# is at module level there: a function-local import cannot be patched, and the
+# >= 0.139 arm would then be unexecuted on the pinned ``fastapi==0.136.0`` that
+# CI and the image install.
+from faultmaven.api import route_enumeration  # noqa: E402
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CONTRACT = PROJECT_ROOT / "docs" / "reference" / "api" / "openapi.json"
@@ -647,104 +645,17 @@ def _served_under(**overrides):
         reset_settings()
 
 
-class _Served(NamedTuple):
-    """One served API operation's path, verbs, and the dependant FastAPI RESOLVES.
+def _served_api_routes(app):
+    """Every served API operation, as ``(path, methods, dependant)``.
 
-    The third field is the point. Every consumer here asks a question about the
-    dependency tree, and on FastAPI >= 0.139 ``route.dependant`` is NOT the tree
-    that runs for a route reached through ``include_router`` — it carries only
-    what the handler declares. Measured on the composed app under 0.141.1:
-
-        APIRoute contexts                                 147
-        ctx.dependant IS route.dependant                   15
-        ctx.dependant IS NOT route.dependant              132
-        route.dependant LACKING the app-level tenant binder 132
-        ctx.dependant   LACKING the app-level tenant binder   0
-
-    So reading ``route.dependant`` there would mean: the binder is absent from
-    132 trees (falsifying what ``_PERMITTED_BEFORE_A_GATE`` says about it), a
-    gate contributed by ``include_router(..., dependencies=[...])`` is invisible
-    so its whole router reads as OPEN, and a COLLABORATOR contributed the same
-    way resolves ahead of the route's own gate at runtime while ``_gate_failure``
-    answers ``None`` — the #1467 shape passing silently.
+    Delegates to ``faultmaven.api.route_enumeration``, which is the production
+    code ``GET /debug/routes`` and the ``/admin/config/status`` mount reading
+    also use. A guard that reimplemented the enumeration would be asserting
+    about its own copy rather than about what the application does — and the
+    three copies this replaced had already drifted: two skipped empty paths, one
+    demanded a ``dependant`` and one did not.
     """
-
-    path: str
-    methods: frozenset
-    dependant: object
-
-
-def _served_api_routes(app) -> list[_Served]:
-    """Every API operation the app serves, with its EFFECTIVE path and dependant.
-
-    NOT ``[r for r in app.routes if isinstance(r, APIRoute)]``, and the reason
-    is entirely version-dependent — which is why both arms exist and both are
-    tested. Measured, on a router included at ``prefix="/pre"`` with an
-    app-level dependency, a router-level dependency and a handler parameter:
-
-        fastapi==0.136.0  (PINNED: requirements/{test,dev,cloud}.txt, the image)
-          app.routes types            ['APIRoute', 'Route']
-          flat APIRoute paths         ['/direct', '/pre/leaf']   <- COMPLETE
-          route.dependant             [app_global, router_gate, handler_dep]
-                                                                 <- COMPLETE
-        fastapi==0.141.1
-          app.routes types            ['APIRoute', 'Route', '_IncludedRouter']
-          flat APIRoute paths         ['/direct']                <- 20 of 144
-          route.dependant             [handler_dep]              <- INCOMPLETE
-          ctx.path                    '/pre/leaf'
-          ctx.dependant               [app_global, router_gate, handler_dep]
-
-    0.139 stopped copying an included router's routes into ``app.routes`` and
-    records one ``_IncludedRouter`` placeholder per ``include_router`` instead,
-    moving BOTH the path and the resolved dependant onto the context. Before
-    that, the eager copy already merged the prefix and the contributed
-    dependencies into the route itself, so the flat scan is not a degraded
-    fallback there — it is exactly right, and this helper is a correct no-op on
-    the version that currently ships.
-
-    The obvious hand-rolled alternative is wrong on both counts: walking
-    ``original_router`` reaches the routes but yields their UNPREFIXED paths and
-    their handler-only dependants.
-
-        flat app.routes        -> ['/direct']
-        original_router walk   -> ['/direct', '/leaf']      <- wrong path
-        iter_route_contexts    -> ['/direct', '/pre/leaf']  <- effective path
-        app.openapi()["paths"] -> ['/direct', '/pre/leaf']
-    """
-    from fastapi.routing import APIRoute
-
-    if iter_route_contexts is None:  # FastAPI < 0.139: the eager-copy shape
-        return [
-            _Served(route.path, frozenset(route.methods or ()), route.dependant)
-            for route in app.routes
-            if isinstance(route, APIRoute)
-        ]
-
-    found = []
-    for context in iter_route_contexts(app.routes):
-        route = getattr(context, "route", None)
-        if not isinstance(route, APIRoute):
-            continue
-        # Demanded, never defaulted. Falling back to ``route.dependant`` when a
-        # context does not carry one would silently reinstate the exact defect
-        # this helper exists to avoid, on a future FastAPI, with every test
-        # still green. Measured on 0.141.1: 0 of 147 APIRoute contexts lack it.
-        if not hasattr(context, "dependant"):
-            raise AssertionError(
-                f"{context.path}: this FastAPI's route context carries no "
-                "`dependant`, so the tree that actually resolves cannot be "
-                "read. Do NOT fall back to route.dependant — on >= 0.139 that "
-                "is the handler's tree only, and every guard in this module "
-                "would quietly start asking about the wrong one."
-            )
-        found.append(
-            _Served(
-                context.path,
-                frozenset(getattr(context, "methods", None) or ()),
-                context.dependant,
-            )
-        )
-    return found
+    return route_enumeration.iter_served_routes(app)
 
 
 def _debug_routes(app) -> list[str]:
@@ -1692,6 +1603,8 @@ def test_whether_the_debug_router_mounted_is_reported_not_only_logged(
     production, the router does NOT mount there by default, and a log line that
     called it production is one of the four claims #1493 lists.
     """
+    from faultmaven.api.routes.admin_config import _debug_endpoints_are_mounted
+
     served = _app_under(**overrides)
     mounted = bool(_debug_routes(served))
 
@@ -1699,19 +1612,54 @@ def test_whether_the_debug_router_mounted_is_reported_not_only_logged(
         f"{label}: the debug router {'did not mount' if expected else 'mounted'}"
         f" — expected {expected}. Routes: {_debug_routes(served)}"
     )
-    assert getattr(served.state, "debug_endpoints_mounted", None) is expected, (
-        f"{label}: app.state.debug_endpoints_mounted is "
-        f"{getattr(served.state, 'debug_endpoints_mounted', None)!r}, but the "
-        f"route table says mounted={mounted}. The report and the mount are "
-        "taken in the same if/else and cannot be allowed to disagree"
-    )
-
-    from faultmaven.api.routes.admin_config import _debug_endpoints_are_mounted
-
     assert _debug_endpoints_are_mounted(served) is expected, (
         f"{label}: /admin/config/status would report "
         f"{_debug_endpoints_are_mounted(served)} for a process whose route "
         f"table says mounted={mounted}"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.security
+def test_the_mount_report_does_not_depend_on_how_the_app_was_composed():
+    """The reason it reads the route table and not a flag ``main`` sets.
+
+    The first version of this reported ``app.state.debug_endpoints_mounted``,
+    written by the branch of ``main`` that does the mounting. That is wrong for
+    a security-audit observable, and the two failure directions are not
+    symmetric: an app composed ANY other way — a harness, a future composition
+    root, anything that builds the router without going through that branch —
+    answered "no debug surface here" while serving ``/debug/config``. Telling an
+    auditor no about a pod that has it is the answer that ends the
+    investigation; over-reporting would only have wasted someone's time.
+
+    Built here without ``main`` at all, which is precisely the case the flag
+    could not see.
+    """
+    from fastapi import FastAPI
+
+    from faultmaven.api.routes.admin_config import _debug_endpoints_are_mounted
+
+    hand_composed = FastAPI()
+
+    @hand_composed.get("/debug/config")
+    async def _config():  # pragma: no cover
+        return {}
+
+    assert _debug_endpoints_are_mounted(hand_composed) is True, (
+        "an app that serves /debug/config reported no debug surface — the "
+        "report is keyed on how the app was built rather than on what it serves"
+    )
+
+    bare = FastAPI()
+
+    @bare.get("/healthz")
+    async def _healthz():  # pragma: no cover
+        return {}
+
+    assert _debug_endpoints_are_mounted(bare) is False, (
+        "an app with no /debug route reported one, so the predicate is a "
+        "constant and the assertion above proves nothing"
     )
 
 
@@ -1824,27 +1772,22 @@ def test_no_gated_operation_resolves_a_collaborator_before_its_gate():
 class _StubContext:
     """A ``RouteContext``-shaped record, as ``iter_route_contexts`` yields one.
 
-    Carries ``dependant`` because the real one does — on >= 0.139 that is the
-    resolved tree, and ``route.dependant`` is the handler's only. A stub without
-    it would make the helper's "demanded, never defaulted" check unreachable,
-    which is most of what these tests are for.
+    ``dependant`` is ALWAYS an attribute, defaulting to ``None`` — which is the
+    real shape. ``RouteContext.__getattr__`` proxies to a record where
+    ``dependant`` is a declared field with a ``None`` default, so a context that
+    carries it unset answers ``hasattr`` truthfully and hands back ``None``. An
+    earlier stub omitted the attribute entirely; that made the helper's
+    ``hasattr`` check look effective against a shape FastAPI never yields, while
+    the shape it does yield sailed through and failed later inside the tree
+    walk. The check is ``getattr(...) is None`` for that reason, and this stub
+    is what proves it.
     """
 
     def __init__(self, path, methods=frozenset(), route=None, dependant=None):
         self.path = path
         self.methods = methods
         self.route = route
-        if dependant is not None:
-            self.dependant = dependant
-
-
-class _StubContextWithoutDependant:
-    """The same record from a FastAPI that stopped carrying ``dependant``."""
-
-    def __init__(self, path, methods=frozenset(), route=None):
-        self.path = path
-        self.methods = methods
-        self.route = route
+        self.dependant = dependant
 
 
 def _route_and_trees():
@@ -1898,7 +1841,7 @@ def test_the_flattener_arm_reads_the_contexts_dependant_not_the_routes(monkeypat
     assert route.dependant is not resolved, "the fixture does not distinguish them"
 
     monkeypatch.setattr(
-        module,
+        route_enumeration,
         "iter_route_contexts",
         lambda routes: [
             _StubContext("/pre/leaf", frozenset({"GET"}), route, resolved),
@@ -1933,12 +1876,14 @@ def test_a_context_without_a_dependant_is_refused_rather_than_defaulted(monkeypa
 
     route, _resolved = _route_and_trees()
     monkeypatch.setattr(
-        module,
+        route_enumeration,
         "iter_route_contexts",
-        lambda routes: [_StubContextWithoutDependant("/pre/leaf", {"GET"}, route)],
+        # dependant defaults to None: the shape a FastAPI that stopped
+        # populating it would really yield.
+        lambda routes: [_StubContext("/pre/leaf", {"GET"}, route)],
     )
 
-    with pytest.raises(AssertionError, match="carries no `dependant`"):
+    with pytest.raises(RuntimeError, match="carries no resolved dependant"):
         module._served_api_routes(SimpleNamespace(routes=[]))
 
 
@@ -1966,7 +1911,7 @@ def test_the_pre_0_139_arm_is_the_flat_scan(monkeypatch):
     import tests.integration.api.test_no_unauthenticated_operations as module
     from faultmaven.api.v1.auth_dependencies import require_platform_admin
 
-    monkeypatch.setattr(module, "iter_route_contexts", None)
+    monkeypatch.setattr(route_enumeration, "iter_route_contexts", None)
 
     app = FastAPI()
 
