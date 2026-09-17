@@ -1037,9 +1037,11 @@ def _stored_suggestions(
     oldest-last, then the engine's follow-ups.
 
     Follow-ups are stamped too. They are not carried (their window is one
-    turn), but the stamp is what makes them EXPIRE rather than linger when no
-    turn rewrites the list — fm#918's mid-turn-save exposure is exactly a
-    follow-up outliving the state it was about.
+    turn), and the stamp is what expires them when an ORDINARY turn does not
+    rewrite the list. It is NOT what covers fm#918's mid-turn-save exposure —
+    the two saves that commit a row mid-turn run before the turn is recorded,
+    so the stamp ages to 1 and stays in window; what covers that is the
+    terminal guard in ``suggestion_is_live``. See ``FOLLOW_UP_CARRY_TURNS``.
 
     Everything assembled is then put through the liveness rule at
     ``as_of_turn``, the number the NEXT read will use. Filtering the fresh
@@ -1691,6 +1693,12 @@ class InvestigationService:
             # reject the great majority of turns, and this walks every stored
             # entry and indexes every uploaded file to answer a question those
             # turns never ask.
+            # Set when the INV-26 guard below refuses a mint. The refusal is a
+            # POSITIVE judgement — this message is a substantive answer to a
+            # gate — so it is carried to the out-of-band lane rather than
+            # recomputed there; see the lane's own note.
+            gate_reply_refused = False
+
             if (
                 intent_type == IntentType.CONVERSATION
                 and query
@@ -1725,6 +1733,7 @@ class InvestigationService:
                             # transition exists its own escape lane withdraws
                             # the proposal and processes the message; the
                             # engine can re-propose from fresher state).
+                            gate_reply_refused = True
                             logger.info(
                                 "Discarded classifier-minted intent "
                                 f"{resolved_qi.type.value} for case "
@@ -1757,6 +1766,19 @@ class InvestigationService:
             # terminal case (its Q&A path has its own cards and refuses new
             # data). The turn is already charged; what the verdict changes is
             # the route: an aside skips the engine and is recorded OUT_OF_BAND.
+            #
+            # ``gate_reply_refused`` is the same rule as ``pending_transition``,
+            # applied to the gate that has no pending row. The INV-26 guard
+            # refuses a mint precisely because the message IS a substantive
+            # answer to a gate — so triaging it afterwards can only get it
+            # wrong, and getting it wrong is expensive: an aside verdict
+            # answers from a small prompt with no case context, records
+            # ``TurnOutcome.OUT_OF_BAND``, and renders in later prompts as an
+            # off-topic exchange, so the engine never learns the user
+            # questioned its problem statement. #721's arm was exempt by
+            # construction (it REQUIRED a pending transition, which this lane
+            # already excludes); fm#918's Gate-1 arm is defined by the absence
+            # of one, so the exemption has to be carried explicitly.
             oob_kind: Optional[OutOfBandKind] = None
             if (
                 intent_type == IntentType.CONVERSATION
@@ -1765,6 +1787,7 @@ class InvestigationService:
                 and not payload.has_attachments
                 and not case.is_terminal
                 and not getattr(case, "pending_transition", None)
+                and not gate_reply_refused
             ):
                 oob_kind = await self.out_of_band_triage.triage(
                     case, query, classification
@@ -3509,6 +3532,15 @@ class InvestigationService:
                 # (logs_and_errors → command_output, both ``logs``), which is
                 # how a typed "Application logs (x.log)" on the next turn
                 # overwrote the answer the user had just given here.
+                #
+                # True of ``trigger="api"`` (the PATCH endpoint), which is the
+                # only trigger that reaches this method from outside a turn.
+                # On ``trigger="agent_tool"`` the LLM calls this MID-turn, and
+                # this whole save — the file row, the evidence row and this
+                # drop alike — is then clobbered by the end-of-turn aggregate
+                # save of the in-memory case the turn is holding. That lost
+                # update predates fm#918 and is filed separately; nothing here
+                # makes it better or worse.
                 "last_suggestions": drop_clarifications_for_file(
                     case.last_suggestions, evidence.source_file_id
                 ),

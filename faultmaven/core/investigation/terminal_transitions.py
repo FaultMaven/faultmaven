@@ -72,7 +72,15 @@ BARE_CONSENT_MAX_LENGTH = 100
 
 
 def is_substantive_reply(user_message: "str | None") -> bool:
-    """INV-26 substance test for replies to a pending TERMINAL transition.
+    """INV-26 substance test for a reply that would commit a gate.
+
+    Named for the pending TERMINAL transition because that is the gate it was
+    written for, and it now has a second caller that is neither pending nor
+    terminal: the adoption-site guard applies it to INQUIRY's Gate 1 as well
+    (fm#918). The test itself is unchanged and deliberately shared — two
+    confirm lanes with two substance predicates is the drift this exists to
+    prevent — so tuning it (``BARE_CONSENT_MAX_LENGTH``, the contrastive
+    tokens) moves BOTH gates at once.
 
     A message is substantive — and therefore can never be consumed as consent
     to an irreversible RESOLVED/CLOSED transition — when it is long (>

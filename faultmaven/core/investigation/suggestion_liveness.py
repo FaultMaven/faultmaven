@@ -353,7 +353,8 @@ def drop_clarifications_for_file(
     kept = [
         entry
         for entry in stored
-        if not (is_clarification_entry(entry) and entry_file_id(entry) == file_id)
+        if not isinstance(entry, dict)
+        or not (is_clarification_entry(entry) and entry_file_id(entry) == file_id)
     ]
     return kept or None
 

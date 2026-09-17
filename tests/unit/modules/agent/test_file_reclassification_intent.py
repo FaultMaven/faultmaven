@@ -2592,6 +2592,17 @@ def test_every_data_type_writer_retires_the_question():
     the writers happen to live in today — a guard that looks only where the
     violations are not is the failure mode this repository already has one of.
 
+    File reach is not enough on its own; the PATTERN has to reach too, and the
+    first version of this scan did not. It matched ``uploaded_file.data_type =
+    …`` by the receiver's spelling, so a writer in another module — which is
+    exactly where a third one would appear, since
+    ``_file_row_with_reclassification`` is private to
+    ``investigation_service`` and unreachable from outside it — escaped under
+    either of the two forms it would naturally take (``uf.data_type = …``, or
+    a ``model_copy(update={"data_type": …})``). All three forms are matched
+    now, by the ATTRIBUTE and the key rather than by the receiver's name. The
+    three probes are in the mutation record on the PR.
+
     The expected set is written out, so a new writer fails here and its author
     has to decide whether it retires the question (call
     ``drop_clarifications_for_file``, as ``reclassify_evidence`` does) or is
@@ -2624,41 +2635,79 @@ def test_every_data_type_writer_retires_the_question():
                 fn = node.func
                 name = getattr(fn, "id", None) or getattr(fn, "attr", None)
                 if name == "_file_row_with_reclassification":
-                    found.add(
-                        (
-                            path.relative_to(package).as_posix(),
-                            scopes[-1] if scopes else "<module>",
-                            "reclassification",
-                        )
-                    )
+                    self._record("reclassification")
+                elif self._model_copy_writes_data_type(node):
+                    self._record("model_copy_update")
                 self.generic_visit(node)
 
+            def _record(self, kind: str) -> None:
+                found.add(
+                    (
+                        path.relative_to(package).as_posix(),
+                        scopes[-1] if scopes else "<module>",
+                        kind,
+                    )
+                )
+
             def visit_Assign(self, node):
+                # ``<anything>.data_type = …`` — keyed on the ATTRIBUTE, not on
+                # the receiver's spelling, so ``uf.data_type = …`` in another
+                # module cannot slip past.
                 for target in node.targets:
-                    if (
-                        isinstance(target, ast.Attribute)
-                        and target.attr == "data_type"
-                        and isinstance(target.value, ast.Name)
-                        and target.value.id == "uploaded_file"
+                    if isinstance(target, ast.Attribute) and target.attr == (
+                        "data_type"
                     ):
-                        found.add(
-                            (
-                                path.relative_to(package).as_posix(),
-                                scopes[-1] if scopes else "<module>",
-                                "intake",
-                            )
-                        )
+                        self._record("attribute_write")
                 self.generic_visit(node)
+
+            def visit_AnnAssign(self, node):
+                if (
+                    isinstance(node.target, ast.Attribute)
+                    and node.target.attr == "data_type"
+                    and node.value is not None
+                ):
+                    self._record("attribute_write")
+                self.generic_visit(node)
+
+            def _model_copy_writes_data_type(self, node: ast.Call) -> bool:
+                """``….model_copy(update={"data_type": …})``.
+
+                Scoped to the ``update=`` keyword of a ``model_copy`` rather
+                than to any dict carrying the key: measured, a bare key match
+                finds 20+ sites across the package — prompt dicts, SQL
+                parameter dicts, read-path summaries — none of which write a
+                row, and folding them into the expected set below would make
+                the guard unreadable AND make every new dict with a
+                ``data_type`` key a failure. This is the one dict shape that
+                produces a changed ``UploadedFile``.
+                """
+                if getattr(node.func, "attr", None) != "model_copy":
+                    return False
+                for kw in node.keywords:
+                    if kw.arg == "update" and isinstance(kw.value, ast.Dict):
+                        if any(
+                            isinstance(k, ast.Constant) and k.value == "data_type"
+                            for k in kw.value.keys
+                        ):
+                            return True
+                return False
 
         _Walk().visit(tree)
 
     service_module = "modules/agent/domain/services/investigation_service.py"
     assert found == {
         # Mints the question; does not answer one.
-        (service_module, "_preprocess_attachment", "intake"),
+        (service_module, "_preprocess_attachment", "attribute_write"),
+        # The shared body both reclassification paths route through. It is
+        # private to this module, which is why a writer added ELSEWHERE would
+        # have to take one of the other two forms — and why the scan matches
+        # those forms rather than this name alone.
+        (service_module, "_file_row_with_reclassification", "model_copy_update"),
         # The turn seam — retires by ``resolved_file_id``.
         (service_module, "_handle_file_reclassification", "reclassification"),
-        # Out of band — retires by ``drop_clarifications_for_file`` (fm#918).
+        # Out of band — retires by ``drop_clarifications_for_file`` (fm#918)
+        # on ``trigger="api"``. On ``trigger="agent_tool"`` the whole write is
+        # clobbered by the end-of-turn save; see the note at that call site.
         (service_module, "reclassify_evidence", "reclassification"),
     }, f"an unexpected writer of UploadedFile.data_type: {sorted(found)}"
 
@@ -2699,44 +2748,60 @@ class TestATerminalCaseAnswersNothingStored:
             "not catch it — this guard is what does"
         )
 
-    def test_terminal_follow_ups_carry_no_intent(self):
+    def test_every_intent_bearing_follow_up_belongs_to_a_gate(self):
         """What the terminal guard above costs: nothing.
 
-        A terminal turn's own affordances (regenerate summary, generate
-        runbook) carry no ``intent``, so ``_stored_suggestions`` never stores
-        one and there is no terminal card for the resolver to match. Scanned
-        rather than sampled, because the claim is about every builder on that
-        path and a builder added later is exactly what would break it.
+        The claim is "no follow-up the engine can emit on a TERMINAL case
+        carries an ``intent``", and the honest way to check it is to enumerate
+        the intent-bearing follow-ups rather than the terminal builders. A
+        hand-written list of terminal builders is the wrong direction: it
+        cannot fail when a NEW builder appears, which is the only way this can
+        break. (The first version of this test did exactly that, and already
+        omitted ``_generate_runbook_anyway_suggestion`` — which IS returned as
+        ``suggested_follow_ups`` on a terminal-case turn.)
+
+        So: scan ``milestone_engine`` for every dict literal carrying both
+        ``label`` and ``intent`` — the shape of an intent-bearing DECIDE
+        suggestion — and pin the set of functions that build one. All three
+        are gate confirmations, emitted beside a ``propose_transition`` or an
+        open Gate 1, which is to say only while the case is NOT terminal. A
+        fourth entry here is the signal to check whether its emitter can fire
+        on a terminal case; if it can, the guard in ``suggestion_is_live``
+        starts silently dropping a card that used to work.
         """
         import ast
         import inspect
 
         from faultmaven.core.investigation import milestone_engine as me
 
-        builders = [
-            "_resolved_ack_suggestions",
-            "_resolved_suggestions",
-            "_closed_suggestions",
-            "_runbook_suggestion",
-            "_regenerate_resolution_summary_suggestion",
-            "_select_ack_follow_ups",
-        ]
-        literals = 0
-        for name in builders:
-            tree = ast.parse(inspect.getsource(getattr(me, name)))
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Dict):
-                    continue
+        tree = ast.parse(inspect.getsource(me))
+        builders: set[str] = set()
+        scopes: list[str] = []
+
+        class _Walk(ast.NodeVisitor):
+            def _named(self, node):
+                scopes.append(node.name)
+                self.generic_visit(node)
+                scopes.pop()
+
+            visit_FunctionDef = _named
+            visit_AsyncFunctionDef = _named
+            visit_ClassDef = _named
+
+            def visit_Dict(self, node):
                 keys = {k.value for k in node.keys if isinstance(k, ast.Constant)}
-                if "label" not in keys:
-                    continue
-                literals += 1
-                assert "intent" not in keys, (
-                    f"{name} builds a terminal follow-up carrying an intent; "
-                    "the terminal guard in suggestion_is_live would now drop "
-                    "it and typing that card would stop working"
-                )
-        assert literals >= 3, (
-            "positive control: the scan found almost no suggestion literals, "
-            f"so it is measuring nothing (found {literals})"
+                if {"label", "intent"} <= keys:
+                    builders.add(scopes[-1] if scopes else "<module>")
+                self.generic_visit(node)
+
+        _Walk().visit(tree)
+
+        assert builders == {
+            "_investigation_confirmation_suggestions",  # Gate 1, INQUIRY only
+            "_resolution_confirmation_suggestions",  # pending -> RESOLVED
+            "_close_confirmation_suggestions",  # pending -> CLOSED
+        }, (
+            "a new intent-bearing follow-up builder: "
+            f"{sorted(builders)}. If it can fire on a terminal case, the "
+            "terminal guard in suggestion_is_live will drop its card."
         )
