@@ -115,14 +115,19 @@ class WorkOSIdentityProvider(ISSOIdentityProvider, ISSOTenantRetirementProvider)
         # importing it would bind us to a mis-generated symbol and validate
         # nothing. The signature accepts `str`, and the closed set that may
         # reach here is enforced at the API boundary instead.
-        kwargs = {}
-        if screen_hint is not None:
-            kwargs["screen_hint"] = screen_hint
+        #
+        # `None` is passed straight through rather than conditionally omitted:
+        # the SDK drops null parameters before encoding, so the request is
+        # already identical to one that never mentioned the argument. A
+        # conditional here would be a second, weaker copy of that rule, and the
+        # only test able to tell the two apart would be asserting on a fake.
+        # `test_omits_screen_hint_from_the_url_when_not_asked` pins the real
+        # behaviour against the installed SDK instead.
         return self._client.user_management.get_authorization_url(
             provider=_AUTHKIT_PROVIDER,
             redirect_uri=self._redirect_uri,
             state=state,
-            **kwargs,
+            screen_hint=screen_hint,
         )
 
     def exchange_code(self, code: str) -> SSOIdentity:

@@ -8983,7 +8983,7 @@
     },
     "/api/v1/auth/sso/login": {
       "get": {
-        "description": "Start the hosted-login flow: mint state, redirect to the IdP.\n\n``screen_hint`` is typed as a ``Literal``, not ``str``, and that is the\nwhole control: this endpoint is public and unauthenticated, and the value\nis interpolated into the IdP authorization URL. A free string here would\nlet a caller append arbitrary query material to that URL. FastAPI rejects\nanything outside the two members with a 422 before the service is reached.",
+        "description": "Start the hosted-login flow: mint state, redirect to the IdP.\n\n``screen_hint`` is a ``Literal`` rather than a ``str``, and the reason is\nnot injection: the shipped adapter passes the value through ``urlencode``\n(``workos._base_client.build_url``), so a free string could not append\nquery material to the authorization URL.\n\nIt is closed because only two values mean anything to the IdP and a third\nis the caller's bug. Accepted as a free string it would be forwarded,\nignored by the provider, and surface as \"the hint does not work\" \u2014 a 422\nnames the mistake where it was made. And because the parameter is\npublished, the closed set *is* the contract: a client reads what is\naccepted instead of discovering it.\n\nSo the encoding is what makes the value safe, and this constraint is\ndefence in depth behind it. A provider that built the URL by concatenation\nwould make it load-bearing \u2014 which is the reason to keep it closed.",
         "operationId": "sso_login_api_v1_auth_sso_login_get",
         "parameters": [
           {

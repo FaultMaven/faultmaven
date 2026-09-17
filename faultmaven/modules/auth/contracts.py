@@ -596,12 +596,16 @@ class ISSOIdentityProvider(ABC):
                 hint is a preference about presentation, never about who may
                 authenticate, and it grants nothing.
 
-                ‼ The value reaches this port from a **public, unauthenticated**
-                query parameter and is interpolated into the IdP URL, so it is
-                constrained to a closed set at the API boundary
-                (``modules/auth/api/sso.py``) rather than here. Widening it to a
-                free string anywhere on that path would make the endpoint a
-                redirect-parameter injection surface.
+                The value reaches this port from a **public, unauthenticated**
+                query parameter, and is constrained to a closed set at the API
+                boundary (``modules/auth/api/sso.py``) rather than here. Note
+                what that constraint is and is not for: the shipped WorkOS
+                adapter ``urlencode``s its parameters, so a free string could
+                not inject into the authorization URL. The closed set exists
+                because a third value is a caller's bug that should fail
+                loudly, and because a published parameter's accepted values are
+                part of the contract. An adapter that built the URL by
+                concatenation would make it load-bearing instead.
         """
 
     @abstractmethod

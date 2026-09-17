@@ -1199,11 +1199,14 @@ asked to accept, and it belongs to a person.
 # is the defect faultmaven-website#42 describes, and the reason it was blocked
 # on fm#1045 until that landed.
 #
-# The parameter is typed as a `Literal`, not a string, and that is the point
-# rather than a detail: the endpoint is public and unauthenticated, and the
-# value is interpolated into the IdP authorization URL. A free string would let
-# a caller append arbitrary query material to it. FastAPI rejects anything
-# outside the two members with a 422 before the service is reached.
+# The parameter is a `Literal`, not a string, and the reason is worth stating
+# precisely because the obvious one is wrong: it is NOT injection. The shipped
+# WorkOS adapter urlencodes its parameters, so a free string could not append
+# query material to the authorization URL. It is closed because only two values
+# mean anything to the IdP — a third is a caller's bug, and forwarding it
+# silently would surface as "the hint does not work" rather than as a 422 at
+# the caller — and because the accepted values of a published parameter are
+# part of the contract clients read.
 #
 # It chooses a screen and nothing else. It is not persisted with the login
 # state and is not consulted on the callback leg, because whether an account
