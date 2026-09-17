@@ -1985,18 +1985,44 @@ def test_the_pre_0_139_arm_is_the_flat_scan(monkeypatch):
     ), "the flat arm handed back a tree the predicate cannot read"
 
 
+def _flattener_is_available() -> bool:
+    """Does THIS interpreter's FastAPI expose the route flattener? (>= 0.139)
+
+    Asked as a function rather than read off the module-level name, because
+    ``skipif(iter_route_contexts is None, ...)`` folds to a literal on the
+    pinned 0.136 and ``test_skip_guards_can_evaluate`` refuses it — correctly:
+    a condition fixed at authoring time "is not a guard; it is a disabled test
+    wearing a guard's clothes". This one queries the installed package, so it
+    answers differently on a different install, which is what the guard asks
+    for and what is actually true here.
+    """
+    try:
+        from fastapi.routing import iter_route_contexts  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 @pytest.mark.integration
 @pytest.mark.security
 @pytest.mark.skipif(
-    iter_route_contexts is None,
+    not _flattener_is_available(),
     reason="fastapi < 0.139 copies included routes in eagerly; nothing to flatten",
 )
 def test_a_really_included_router_is_flattened_with_its_resolved_tree():
-    """The live arm. Vacuous on the pin, real the moment it moves.
+    """The live arm. Skipped on the pin, real the moment it moves.
 
     Kept beside the injected ones rather than instead of them: the stubs prove
     the code does the right thing with the shape, and this proves the shape is
     the one FastAPI really produces.
+
+    **This is the blind spot ``test_skip_guards_can_evaluate`` names in its own
+    docstring** — "a guard whose condition is real but true in every job that
+    exists". Every CI job installs ``fastapi==0.136.0``, so this test does not
+    run anywhere today and its green is worth nothing. That is stated rather
+    than papered over, and it is exactly why the two injected tests above exist:
+    they carry the real coverage of the flattening arm on the pinned version,
+    and this one only becomes load-bearing when the pin moves.
     """
     from fastapi import APIRouter, Depends, FastAPI
 
