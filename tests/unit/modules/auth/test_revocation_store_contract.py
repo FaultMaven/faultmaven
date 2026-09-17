@@ -34,6 +34,10 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import faultmaven
 from faultmaven.infrastructure.persistence.models import Base
+from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+    ITokenRevocationStore,
+    SequentialRevocationState,
+)
 from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
     RedisTokenRevocationStore,
     SqlTokenRevocationStore,
@@ -48,8 +52,17 @@ JTI = "jti-828"
 
 
 def _sqlite_session_factory(url: str):
-    """A session factory over ``url``, creating the schema on first use."""
+    """A session factory over a NEW engine for ``url``, plus that engine.
+
+    Callers dispose the engine they are handed; ``_factory_over`` is the half
+    for a caller that already owns one.
+    """
     engine = create_async_engine(url)
+    return _factory_over(engine), engine
+
+
+def _factory_over(engine):
+    """A session factory over an existing engine, creating the schema once."""
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     created = {"done": False}
 
@@ -69,7 +82,7 @@ def _sqlite_session_factory(url: str):
         finally:
             await session.close()
 
-    return factory, engine
+    return factory
 
 
 def _redis_store():
@@ -81,15 +94,28 @@ def _redis_store():
     )
 
 
-def _sql_store():
-    factory, _engine = _sqlite_session_factory("sqlite+aiosqlite:///:memory:")
-    return SqlTokenRevocationStore(session_factory=factory)
-
-
 @pytest.fixture(params=["redis", "sql"])
-def store(request):
-    """One store per implementation, built the way production builds it."""
-    return _redis_store() if request.param == "redis" else _sql_store()
+async def store(request):
+    """One store per implementation, built the way production builds it.
+
+    A YIELD fixture because the SQL arm owns an engine: a plain return left one
+    undisposed per parametrisation, and aiosqlite's thread then outlived the
+    loop it was bound to — 28 "Event loop is closed" lines from this module, and
+    a real failure under
+    ``-W error::pytest.PytestUnhandledThreadExceptionWarning`` (#828 delta
+    review; the sibling restart module already disposed its engines, this one
+    was the half that was missed).
+    """
+    if request.param == "redis":
+        yield _redis_store()
+        return
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    factory = _factory_over(engine)
+    try:
+        yield SqlTokenRevocationStore(session_factory=factory)
+    finally:
+        await engine.dispose()
 
 
 class TestPerTokenArm:
@@ -467,6 +493,67 @@ class TestTheSqlStoreOwnsItsUnitOfWork:
             )
         finally:
             await reader_engine.dispose()
+
+
+class TestTheInterfaceDemandsTheMethodTheRequestPathCalls:
+    """``revocation_state`` is abstract like every other method here.
+
+    It is the ONE the request path calls, and ``AuthService._is_revoked``
+    turns a failure to answer into "not revoked" — so a store that does not
+    implement it does not error, it silently stops revoking. A concrete default
+    on the interface let a subclass inherit an answer it never considered
+    (#828 delta review); the two shapes are offered explicitly instead.
+    """
+
+    def test_a_store_that_does_not_implement_it_cannot_be_constructed(self):
+        class ForgotToImplementIt(ITokenRevocationStore):
+            async def add_revoked_token(self, jti, ttl): ...
+
+            async def is_revoked(self, jti):
+                return False
+
+            async def revoke_user_tokens_before(self, user_id, revoked_at, ttl): ...
+
+            async def is_user_revoked(self, user_id, issued_at):
+                return False
+
+            async def clear_user_revocation_if_before(self, user_id, instant):
+                return False
+
+            async def cleanup_expired(self):
+                return 0
+
+        with pytest.raises(TypeError, match="revocation_state"):
+            ForgotToImplementIt()
+
+    async def test_the_mixin_is_the_sequential_shape_a_store_can_opt_into(self):
+        """Opting in is a line in the bases, not a thing you get by omission."""
+
+        class FreeReads(SequentialRevocationState, ITokenRevocationStore):
+            def __init__(self):
+                self.revoked = set()
+
+            async def add_revoked_token(self, jti, ttl):
+                self.revoked.add(jti)
+
+            async def is_revoked(self, jti):
+                return jti in self.revoked
+
+            async def revoke_user_tokens_before(self, user_id, revoked_at, ttl): ...
+
+            async def is_user_revoked(self, user_id, issued_at):
+                return False
+
+            async def clear_user_revocation_if_before(self, user_id, instant):
+                return False
+
+            async def cleanup_expired(self):
+                return 0
+
+        store = FreeReads()
+        await store.add_revoked_token(JTI, ttl=60)
+
+        assert await store.revocation_state(JTI, USER_ID, 1) == (True, False)
 
 
 def _stores_declared_in_package() -> set[str]:

@@ -1170,6 +1170,71 @@ async def _web_search_feature(user, settings, app):
     return await _feature(user, settings, app, "web_search")
 
 
+class TestTokenRevocationDurableIdentifiesTheStoreByType:
+    """A SUBCLASS of the durable store is still durable (#828 delta review).
+
+    Decided by ``isinstance``, not by a class-NAME comparison — because the
+    likeliest third store is a subclass of a shipped one, which is exactly why
+    the contract suite's scan resolves subclasses transitively. A name check
+    would report such a deployment as non-durable, with a config hint telling
+    the operator revocation is unenforceable where it is in fact fine.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_subclass_of_the_durable_store_reports_durable(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
+            SqlTokenRevocationStore,
+        )
+
+        class DeploymentSpecificStore(SqlTokenRevocationStore):
+            pass
+
+        rate_limited_app.state.token_revocation_store = DeploymentSpecificStore()
+
+        feature = await _feature(
+            mock_admin_user, mock_settings, rate_limited_app, "token_revocation_durable"
+        )
+
+        assert feature.enabled is True
+        assert "DeploymentSpecificStore" in feature.description
+
+    @pytest.mark.asyncio
+    async def test_a_cache_backed_store_reports_not_durable(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        import fakeredis.aioredis as fakeredis_aio
+
+        from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
+            RedisTokenRevocationStore,
+        )
+
+        rate_limited_app.state.token_revocation_store = RedisTokenRevocationStore(
+            fakeredis_aio.FakeRedis(decode_responses=True), key_prefix="revoked:token:"
+        )
+
+        feature = await _feature(
+            mock_admin_user, mock_settings, rate_limited_app, "token_revocation_durable"
+        )
+
+        assert feature.enabled is False
+
+    @pytest.mark.asyncio
+    async def test_no_store_at_all_reports_not_durable(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        """Not merely non-durable: revocation is unenforceable (#767)."""
+        rate_limited_app.state.token_revocation_store = None
+
+        feature = await _feature(
+            mock_admin_user, mock_settings, rate_limited_app, "token_revocation_durable"
+        )
+
+        assert feature.enabled is False
+        assert "none" in feature.description
+
+
 def _pure_settings_answer(feature: str, settings) -> bool:
     """What a SETTINGS-ONLY implementation of ``feature`` would report.
 

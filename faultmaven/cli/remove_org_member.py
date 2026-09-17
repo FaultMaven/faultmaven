@@ -44,15 +44,30 @@ login path re-adds membership just-in-time, so a user who can still authenticate
 at the identity provider is silently re-added on their next login. Deprovision
 them at the IdP first — see the runbook section this command is documented in.
 
-Why it refuses under in-process FakeRedis
------------------------------------------
-The revocation watermark lives in the deployment-wide Redis store (#767). In a
-standalone deployment that store is **FakeRedis, private to one process** — a
-watermark this command writes would live and die inside the CLI process and the
-running API would never see it. The command would print success while every
-token stayed valid, which is worse than not running at all, so it refuses.
-Cloud, where organizations and this procedure actually apply, requires real
-Redis (``fakeredis_or_fail``), so the guard never fires there.
+Why it refuses when its store is not the API's store
+---------------------------------------------------
+The preflight asks one question: will a watermark written HERE be seen by the
+RUNNING API? If not, this command deletes the membership, writes a watermark
+nobody reads, prints success and exits 0 — worse than not running at all,
+because the operator believes the access is gone.
+
+Two ways that happens, and the guard names both:
+
+* **in-process FakeRedis** — a watermark written there lives and dies inside
+  the CLI process. Cloud, where organizations and this procedure actually
+  apply, requires real Redis (``fakeredis_or_fail``), so this arm does not fire
+  there.
+* **the database store on a cloud deployment** — since #828, revocation lives
+  in ``token_revocations`` on standalone and in Redis on cloud. A cloud CLI
+  holding the database store has resolved a DIFFERENT store from the API pods,
+  so its rows revoke nothing.
+
+The guard is keyed on what the store IS (``isinstance``), not on whether it
+carries a ``.redis`` attribute. It used to open with ``hasattr(store,
+"redis")``, which read as tolerance for an unknown future store and became a
+bypass the moment one arrived: ``SqlTokenRevocationStore`` has no ``.redis``,
+so #828 walked straight past a guard that was still here and still described
+(#828 delta review).
 
 Exit codes
 ----------
@@ -96,37 +111,72 @@ EXIT_MEMBERSHIP_NOT_REMOVED = 4
 def _revocation_store_unusable(store) -> str | None:
     """Why this revocation store cannot end a session, or None if it can.
 
-    Two known-broken shapes, both of which would let the command delete the
-    membership and only then fail to revoke — the half-state the preflight
-    exists to prevent, detectable before the write:
+    The question is not "is this store broken" but "will a watermark written
+    HERE be seen by the RUNNING API". A store that fails that is the half-state
+    this preflight exists to catch before the membership row is deleted: the
+    command reports success, exits 0, and every token stays valid.
 
-    * **in-process FakeRedis** — a watermark written here lives and dies inside
-      the CLI process, invisible to the running API;
-    * **no client at all** — the store was built without one, so writing the
-      watermark raises on a ``None``.
+    Keyed on **what the store is**, by ``isinstance``. It used to open with
+    ``if not hasattr(store, "redis"): return None``, which read as tolerance for
+    an unknown future store and became a bypass the moment one arrived:
+    ``SqlTokenRevocationStore`` has no ``.redis``, so #828 walked straight past
+    this guard (#828 delta review). ``isinstance`` also survives a subclass,
+    which a class-name comparison would not.
 
-    An otherwise unrecognised store shape is left alone rather than refused, so a
-    future store implementation does not become an outage in this command.
+    Refused:
+
+    * **Redis store over in-process FakeRedis** — the watermark lives and dies
+      inside the CLI process;
+    * **Redis store with no client** — writing the watermark raises on a
+      ``None``, after the membership has gone;
+    * **the database store on a CLOUD deployment** — the API pods there read
+      Redis, so a row in ``token_revocations`` revokes nothing. Reaching this
+      means the CLI resolved a different store from the API, which is worth
+      saying out loud rather than tolerating.
+
+    A genuinely unrecognised store is still left alone, so a future
+    implementation does not become an outage in this command — but that
+    tolerance now applies only to classes this file has never heard of, not to
+    the shipped store that happens to lack an attribute.
     """
+    from faultmaven.config.settings import get_settings
     from faultmaven.infrastructure.redis_client import is_fakeredis
+    from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
+        RedisTokenRevocationStore,
+        SqlTokenRevocationStore,
+    )
 
-    if not hasattr(store, "redis"):
+    if isinstance(store, SqlTokenRevocationStore):
+        if get_settings().is_cloud:
+            return (
+                "the token revocation store is the DATABASE store, but this is a "
+                "cloud deployment whose API reads Redis. A watermark written "
+                "here would revoke nothing, so this command would report success "
+                "while every token stayed valid.\n"
+                "   The API resolves Redis on cloud; this process did not. Point "
+                "REDIS_URL / REDIS_HOST at the deployment's Redis and re-run"
+            )
         return None
-    client = store.redis
-    if client is None:
-        return (
-            "the token revocation store has no client, so writing the watermark "
-            "would fail after the membership had already been deleted"
-        )
-    if is_fakeredis(client):
-        return (
-            "the token revocation store is in-process FakeRedis. A watermark "
-            "written here would be invisible to the running API, so this command "
-            "would report success while every token stayed valid.\n"
-            "   This procedure applies to multi-tenant (Cloud) deployments, which "
-            "run a real Redis. Point REDIS_URL / REDIS_HOST at the deployment's "
-            "Redis and re-run"
-        )
+
+    if isinstance(store, RedisTokenRevocationStore):
+        client = store.redis
+        if client is None:
+            return (
+                "the token revocation store has no client, so writing the "
+                "watermark would fail after the membership had already been "
+                "deleted"
+            )
+        if is_fakeredis(client):
+            return (
+                "the token revocation store is in-process FakeRedis. A watermark "
+                "written here would be invisible to the running API, so this "
+                "command would report success while every token stayed valid.\n"
+                "   This procedure applies to multi-tenant (Cloud) deployments, "
+                "which run a real Redis. Point REDIS_URL / REDIS_HOST at the "
+                "deployment's Redis and re-run"
+            )
+        return None
+
     return None
 
 

@@ -926,19 +926,33 @@ def create_token_revocation_store(
 
     Args:
         settings: FaultMavenSettings instance
-        cache_client: Async Redis-compatible client. Required under cloud; a
-            missing one there is a composition error rather than a reason to
-            silently write somewhere else.
+        cache_client: Async Redis-compatible client. Required under cloud.
 
     Returns:
         A ``RedisTokenRevocationStore`` or a ``SqlTokenRevocationStore``
+
+    Raises:
+        RedisUnavailableError: Cloud with no cache client. Falling back to the
+            database store there would write revocations somewhere the API pods
+            do not read — the silent divergence this function exists to
+            prevent — so it refuses instead. Unreachable in a real boot:
+            ``create_redis_client`` already refuses under cloud, so this is the
+            backstop for a composition that bypassed it.
     """
+    from faultmaven.infrastructure.redis_client import RedisUnavailableError
     from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
         RedisTokenRevocationStore,
         SqlTokenRevocationStore,
     )
 
-    if settings.is_cloud and cache_client is not None:
+    if settings.is_cloud:
+        if cache_client is None:
+            raise RedisUnavailableError(
+                "Cloud requires a Redis client for the token revocation store. "
+                "Refusing to fall back to the database store: the API reads "
+                "Redis here, so revocations written to token_revocations would "
+                "revoke nothing while every write path reported success."
+            )
         return RedisTokenRevocationStore(
             cache_client,
             key_prefix=settings.security.token_revocation_prefix,

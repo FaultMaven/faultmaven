@@ -1876,11 +1876,23 @@ class ITokenRevocationStore(ABC):
                 the fraction is significant — ``is_user_revoked`` floors it,
                 but ``clear_user_revocation_if_before`` orders against it)
             ttl: Time to live in seconds; must outlive the longest-lived token
-                the deployment issues MEASURED FROM ITS BASIS — the configured
-                lifetime plus ``MAX_MINT_BASIS_CARRY_SECONDS``, since ``iat``
-                (what the watermark compares against) can trail the mint by up
-                to the hand-off artifact's TTL (#831) — or tokens could
-                outlive the watermark that revokes them
+                the deployment issues MEASURED FROM ITS BASIS — the schema
+                CEILING on token lifetime (``MAX_TOKEN_LIFETIME_DAYS``) plus
+                ``MAX_MINT_BASIS_CARRY_SECONDS``, since ``iat`` (what the
+                watermark compares against) can trail the mint by up to the
+                hand-off artifact's TTL (#831) — or tokens could outlive the
+                watermark that revokes them.
+
+                **The ceiling, NOT the configured lifetime** (#828). Sizing
+                against the current configuration covers every mint path, but
+                only under the configuration in force at the moment of
+                revocation: an operator lowering
+                ``JWT_REFRESH_TOKEN_EXPIRY_DAYS`` while longer-lived tokens are
+                outstanding gets a watermark that expires before them. At the
+                shipped defaults the difference is 13x (7 days against 90), so
+                an implementer sizing storage from the old rule would
+                under-provision by that much. ``AuthService._watermark_ttl_seconds``
+                is the one caller and computes it.
         """
         ...
 
@@ -1897,6 +1909,7 @@ class ITokenRevocationStore(ABC):
         """
         ...
 
+    @abstractmethod
     async def revocation_state(
         self,
         jti: Optional[str],
@@ -1905,26 +1918,27 @@ class ITokenRevocationStore(ABC):
     ) -> Tuple[bool, bool]:
         """Both arms' raw answers for one token: ``(token_revoked, user_revoked)``.
 
-        NOT abstract, and deliberately not a second revocation rule: it returns
-        the two booleans and composes nothing. ``revocation_reason`` remains the
-        one place that decides which answer wins and what a missing claim means,
-        so a store overriding this cannot drift from the rule — only from the
-        number of round trips it takes to answer.
+        Deliberately not a second revocation rule: it returns the two booleans
+        and composes nothing. ``revocation_reason`` remains the one place that
+        decides which answer wins and what a missing claim means, so a store
+        implementing this cannot drift from the rule — only from the number of
+        round trips it takes to answer.
 
-        The default is the obvious pair of calls, which is right for any store
-        whose reads are free (Redis, the in-memory doubles). A store whose reads
-        each cost a database session overrides it to answer in one — the request
-        path calls this on every authenticated request (#828 review: two
-        sessions measured at 17.7ms/request against 10.8ms sharing one).
+        **Abstract, like every other method here.** It is the one the request
+        path actually calls, so a store that does not implement it fails on
+        every authenticated request — and ``AuthService._is_revoked`` turns that
+        into "not revoked", so the symptom is revocation silently OFF rather
+        than an error anybody sees. A concrete default on this class would let a
+        subclass inherit an answer it never considered; instead the two shapes
+        are offered explicitly and an implementer picks one:
 
-        Short-circuits exactly as the sequential form did: a revoked jti means
-        the watermark is never consulted.
+        * :class:`SequentialRevocationState` — the obvious pair of calls, right
+          for any store whose reads are free (Redis, the in-memory doubles);
+        * a hand-written override — for a store whose reads each cost something.
+          ``SqlTokenRevocationStore`` answers in one session and one query,
+          because two cost 17.7ms per request against 9.3ms for one (#828).
         """
-        if jti and await self.is_revoked(jti):
-            return True, False
-        if user_id and issued_at is not None:
-            return False, await self.is_user_revoked(user_id, issued_at)
-        return False, False
+        ...
 
     @abstractmethod
     async def clear_user_revocation_if_before(
@@ -1991,3 +2005,32 @@ class ITokenRevocationStore(ABC):
             Count of entries cleaned up
         """
         ...
+
+
+class SequentialRevocationState:
+    """``revocation_state`` for a store whose reads are free.
+
+    The obvious pair of calls, with the short-circuit the request path has
+    always had: a revoked jti means the watermark is never consulted. Mixed in
+    rather than defaulted on :class:`ITokenRevocationStore`, so that answering
+    both arms in two round trips is a CHOICE a store records in its bases — a
+    store that ought to batch cannot acquire this by forgetting to think about
+    it, and `MagicMock(spec=ITokenRevocationStore)` covers the method because
+    the interface declares it.
+
+    Mix in BEFORE the interface, so this wins the MRO::
+
+        class MyStore(SequentialRevocationState, ITokenRevocationStore): ...
+    """
+
+    async def revocation_state(
+        self,
+        jti: Optional[str],
+        user_id: Optional[str],
+        issued_at: Optional[int],
+    ) -> Tuple[bool, bool]:
+        if jti and await self.is_revoked(jti):
+            return True, False
+        if user_id and issued_at is not None:
+            return False, await self.is_user_revoked(user_id, issued_at)
+        return False, False

@@ -68,6 +68,7 @@ from faultmaven.infrastructure.persistence.db_compat import dialect_insert
 from faultmaven.infrastructure.persistence.models import TokenRevocationModel
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     ITokenRevocationStore,
+    SequentialRevocationState,
 )
 
 #: ``scope`` values. Literals, not an enum: they are half of a primary key and
@@ -76,11 +77,18 @@ _JTI_SCOPE = "jti"
 _USER_SCOPE = "user"
 
 
-class RedisTokenRevocationStore(ITokenRevocationStore):
+class RedisTokenRevocationStore(SequentialRevocationState, ITokenRevocationStore):
     """Redis implementation of token revocation store.
 
-    Works against real Redis (cloud) or FakeRedis (standalone).
-    Uses Redis TTL for automatic expiration.
+    The CLOUD store. Standalone no longer constructs it: its cache is the
+    in-process FakeRedis singleton, which a restart forgets, so
+    ``create_token_revocation_store`` gives standalone the durable SQL store
+    instead (#828). It still WORKS against FakeRedis — every test in the shared
+    contract suite drives this class over one — but no deployment resolves that
+    pairing any more.
+
+    Redis TTL handles expiration. Reads are free here, so both revocation arms
+    are answered by the sequential mixin rather than batched.
     """
 
     def __init__(self, redis_client, key_prefix: str = "revoked:token:"):
@@ -183,12 +191,26 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
 
     **Expiry is a predicate, not a sweeper.** Every read filters on
     ``expires_at``, so an elapsed entry stops revoking at its deadline whether
-    or not anything has deleted it — the property Redis gets from TTL. Rows are
-    then reclaimed opportunistically: each WRITE deletes elapsed rows in its
-    own transaction, which bounds the table without a scheduled job that could
-    be forgotten at wiring time (nothing calls ``cleanup_expired``, in this
-    class or the Redis one). Writes are revocations, so the sweep runs rarely
-    and against an index.
+    or not anything has deleted it — the property Redis gets from TTL.
+
+    Rows are then reclaimed opportunistically, by **the two writes that ADD an
+    entry** (``add_revoked_token`` and ``revoke_user_tokens_before``, both
+    through ``_upsert``) and by the explicit ``cleanup_expired``. That bounds
+    the table without a scheduled job that could be forgotten at wiring time —
+    and nothing calls ``cleanup_expired``, in this class or the Redis one, so
+    the opportunistic path is the one that runs.
+
+    ``clear_user_revocation_if_before`` deliberately does NOT sweep, which is
+    why the rule is stated as "the writes that add" rather than "every write":
+    it runs on every successful login, so sweeping there would put a table-wide
+    delete on the sign-in path to reclaim rows that a revocation write will
+    reclaim anyway. It also refuses to delete an elapsed watermark, by design
+    (Redis answers the same, its key having already gone).
+
+    The cost is bounded either way: measured over 20,000 live 90-day
+    watermarks, a revocation write carrying the sweep costs 3.81ms, and the one
+    write that reclaimed 5,000 elapsed rows cost 23ms (#828 review). It is an
+    indexed range delete, not a scan.
 
     **Session per operation**, as the sibling sessionless repositories: the
     store is a process-wide singleton built at composition time, long before

@@ -881,16 +881,27 @@ async def get_env_config_status(
         # A startup log line would not do: it rolls out of `kubectl logs`, and
         # the question ("are the revocations I issued during that incident
         # still in force after the pod restarted?") is asked long afterwards.
+        from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
+            SqlTokenRevocationStore,
+        )
+
         revocation_store = getattr(request.app.state, "token_revocation_store", None)
         store_name = type(revocation_store).__name__ if revocation_store else None
+        # ``isinstance``, not a class-NAME comparison: the likeliest third store
+        # is a subclass of a shipped one — which is exactly why the contract
+        # suite's scan resolves subclasses transitively — and a name check would
+        # report such a store as non-durable, with a hint telling the operator
+        # revocation is unenforceable on a deployment where it is fine (#828
+        # delta review).
+        durable = isinstance(revocation_store, SqlTokenRevocationStore)
         features["token_revocation_durable"] = FeatureStatus(
-            enabled=store_name == "SqlTokenRevocationStore",
+            enabled=durable,
             description=(
                 f"Revocation store: {store_name or 'none'}. "
                 + (
                     "Revoked tokens and per-user watermarks are held in the "
                     "token_revocations table and survive an API restart."
-                    if store_name == "SqlTokenRevocationStore"
+                    if durable
                     else "Revocation state is held in the cache."
                 )
             ),

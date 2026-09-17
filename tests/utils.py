@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     ITokenRevocationStore,
+    SequentialRevocationState,
 )
 
 if TYPE_CHECKING:  # static analysis only — see make_org_knowledge_item
@@ -581,7 +582,7 @@ def bridge_flat_hypotheses_to_graph(case) -> None:
         hyp.path = [root.node_id, d_id]
 
 
-class InMemoryRevocationStore(ITokenRevocationStore):
+class InMemoryRevocationStore(SequentialRevocationState, ITokenRevocationStore):
     """In-memory implementation of the full token-revocation contract.
 
     Records what production Redis would: revoked JTIs with their TTLs, and

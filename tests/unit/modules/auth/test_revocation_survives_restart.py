@@ -209,17 +209,23 @@ class TestTheStoreIsChosenByConfigurationNotByProbe:
 
         assert isinstance(store, SqlTokenRevocationStore)
 
-    def test_cloud_without_a_cache_does_not_silently_write_to_the_wrong_place(self):
-        """A cloud pod with no cache client is a composition error, and cloud
-        never reaches it — ``fakeredis_or_fail`` refuses the boot first. It
-        falls back to the durable store rather than to nothing, because the
-        alternative is a store with no backing at all (#767)."""
+    def test_cloud_without_a_cache_refuses_rather_than_writing_elsewhere(self):
+        """A cloud pod with no cache client is a composition error.
+
+        It used to fall back to the durable store, which sounds safe and is the
+        exact silent divergence this function exists to prevent: the API pods
+        read Redis, so those rows revoke nothing while every write path reports
+        success — and ``fm-remove-org-member``'s preflight would have to catch
+        it afterwards (#828 delta review). Unreachable in a real boot, since
+        ``create_redis_client`` refuses under cloud first; this is the backstop.
+        """
+        from faultmaven.infrastructure.redis_client import RedisUnavailableError
+
         settings = _settings()
         settings.is_cloud = True
 
-        store = create_token_revocation_store(settings, cache_client=None)
-
-        assert isinstance(store, SqlTokenRevocationStore)
+        with pytest.raises(RedisUnavailableError, match="revocation"):
+            create_token_revocation_store(settings, cache_client=None)
 
 
 class TestARestartPreservesRevocations:

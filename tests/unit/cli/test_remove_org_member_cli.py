@@ -206,11 +206,36 @@ def test_dry_run_with_yes_is_a_usage_error(capsys):
 # =============================================================================
 
 
+def _redis_store(client):
+    from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
+        RedisTokenRevocationStore,
+    )
+
+    return RedisTokenRevocationStore(client, key_prefix="revoked:token:")
+
+
+def _sql_store():
+    from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
+        SqlTokenRevocationStore,
+    )
+
+    return SqlTokenRevocationStore()
+
+
+def _deployment(monkeypatch, *, cloud: bool):
+    """Point the guard's ``get_settings`` at a deployment of the given kind."""
+    import faultmaven.config.settings as settings_module
+
+    monkeypatch.setattr(
+        settings_module,
+        "get_settings",
+        lambda: SimpleNamespace(is_cloud=cloud),
+    )
+
+
 async def test_refuses_when_the_revocation_store_is_process_local(wiring, capsys):
     """A watermark written against in-process FakeRedis is invisible to the API."""
-    wiring.container.get_service = lambda name: SimpleNamespace(
-        redis=_FakeRedisClient()
-    )
+    wiring.container.get_service = lambda name: _redis_store(_FakeRedisClient())
 
     code = await remove_org_member.remove_org_member(
         enterprise_id=ENTERPRISE_ID,
@@ -227,7 +252,7 @@ async def test_refuses_when_the_revocation_store_is_process_local(wiring, capsys
 async def test_refuses_when_the_revocation_store_has_no_client(wiring, capsys):
     """A store built without a client fails on the watermark write — after the
     delete has landed. That half-state is detectable here, before the write."""
-    wiring.container.get_service = lambda name: SimpleNamespace(redis=None)
+    wiring.container.get_service = lambda name: _redis_store(None)
 
     code = await remove_org_member.remove_org_member(
         enterprise_id=ENTERPRISE_ID,
@@ -241,10 +266,65 @@ async def test_refuses_when_the_revocation_store_has_no_client(wiring, capsys):
     wiring.orgs.remove_member.assert_not_awaited()
 
 
+async def test_refuses_the_database_store_on_a_cloud_deployment(
+    wiring, monkeypatch, capsys
+):
+    """The shape that walked straight past this guard (#828 delta review).
+
+    The preflight opened with ``if not hasattr(store, "redis"): return None``,
+    read as tolerance for an unknown future store. ``SqlTokenRevocationStore``
+    has no ``.redis``, so when #828 introduced it this command deleted the
+    membership, wrote the watermark to a table no cloud API pod reads, printed
+    success and exited 0 — the exact half-state the guard was written to
+    prevent, with the guard in place and unable to fire.
+    """
+    _deployment(monkeypatch, cloud=True)
+    wiring.container.get_service = lambda name: _sql_store()
+
+    code = await remove_org_member.remove_org_member(
+        enterprise_id=ENTERPRISE_ID,
+        organization_id=ORG_ID,
+        user_identifier="alice",
+        dry_run=False,
+    )
+
+    assert code == 1
+    assert "DATABASE store" in capsys.readouterr().out
+    wiring.orgs.remove_member.assert_not_awaited()
+
+
+async def test_the_database_store_is_usable_on_a_standalone_deployment(
+    wiring, monkeypatch
+):
+    """The refusal is about DIVERGENCE, not about the database store.
+
+    Standalone's API reads the same table this would write, so refusing here
+    would be an outage rather than a guard — and would make the rule "the SQL
+    store is bad" instead of "this process resolved a different store from the
+    API".
+    """
+    _deployment(monkeypatch, cloud=False)
+    wiring.container.get_service = lambda name: _sql_store()
+
+    code = await remove_org_member.remove_org_member(
+        enterprise_id=ENTERPRISE_ID,
+        organization_id=ORG_ID,
+        user_identifier="alice",
+        dry_run=False,
+    )
+
+    assert code == 0
+    wiring.orgs.remove_member.assert_awaited_once()
+
+
 async def test_unrecognised_store_shape_is_not_refused(wiring):
-    """The guard identifies the known-broken shapes; it does not demand proof of
-    health, so a future store implementation is not an outage here."""
-    wiring.container.get_service = lambda name: SimpleNamespace()  # no `.redis`
+    """The guard identifies the known shapes; it does not demand proof of
+    health, so a future store implementation is not an outage here.
+
+    Narrower than it was: the tolerance now applies to a class this file has
+    never heard of, not to a shipped store that happens to lack an attribute.
+    """
+    wiring.container.get_service = lambda name: SimpleNamespace()  # unknown class
 
     code = await remove_org_member.remove_org_member(
         enterprise_id=ENTERPRISE_ID,

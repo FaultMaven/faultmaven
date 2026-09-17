@@ -97,7 +97,7 @@ In development, the same SQLite-backed user store is used as in local deployment
 
 **Storage**: SQLite (Local Deployment) or PostgreSQL (Cloud Deployment) via SQLAlchemy ORM
 
-**Tables**: 14 tables (user domain). Three tiers answer three separate questions (ADR-017): the **enterprise** isolates (hard, RLS-enforced), the **organization** bills (a cost centre, no role in visibility), the **team** shares (formed by consent, may span organizations).
+**Tables**: 15 tables (user domain). Three tiers answer three separate questions (ADR-017): the **enterprise** isolates (hard, RLS-enforced), the **organization** bills (a cost centre, no role in visibility), the **team** shares (formed by consent, may span organizations).
 - `enterprises` - The isolation boundary. Top-tier tenancy container; every tenant-scoped row carries its `enterprise_id`
 - `users` - User accounts, anchored to exactly one enterprise
 - `organizations` - Billing targets (cost centres) inside an enterprise
@@ -112,6 +112,7 @@ In development, the same SQLite-backed user store is used as in local deployment
 - `oauth_authorization_codes` - OAuth PKCE authorization codes
 - `sso_org_mappings` - IdP organization → FaultMaven enterprise (untenanted; read pre-auth)
 - `sso_personal_enterprises` - IdP subject → the personal enterprise it owns (untenanted; read pre-auth)
+- `token_revocations` - Revoked JTIs and per-user revocation watermarks (untenanted; read pre-auth, on every authenticated request)
 
 ---
 
@@ -995,7 +996,7 @@ HAVING COUNT(*) > 5;
 - ✅ Isolation via `enterprises` + `users.enterprise_id`; billing via `organizations` + `organization_members`; sharing via `teams` + `team_invitations`
 - ✅ Full RBAC via `roles`, `permissions`, `role_permissions`
 - ✅ Audit trail via `user_audit_log`
-- ✅ SSO via `sso_provider` / `sso_provider_id` columns, `sso_org_mappings` (IdP org → enterprise) and `sso_personal_enterprises` (IdP subject → personal enterprise); OAuth code flow via `oauth_authorization_codes` (token revocation is Redis-only — #767)
+- ✅ SSO via `sso_provider` / `sso_provider_id` columns, `sso_org_mappings` (IdP org → enterprise) and `sso_personal_enterprises` (IdP subject → personal enterprise); OAuth code flow via `oauth_authorization_codes` (token revocation lives in `token_revocations` on standalone and in Redis on cloud — #767, #828)
 
 ---
 
