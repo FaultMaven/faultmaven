@@ -1,5 +1,5 @@
 ---
-description: Run one round of issue processing — check the last round landed, propose five items plus the questions blocking others, build what is approved, report. Opens PRs; never merges.
+description: Run one round of issue processing — check the last round landed, propose a round of items plus the questions blocking others, build what is approved, report. Opens PRs; never merges.
 allow_all_tools: true
 ---
 

@@ -258,21 +258,21 @@ the merges in step 4. Between those, decide and record rather than ask.
 A question belongs in the blocked pile, and therefore in a proposal, when any
 of these holds. Everything else an agent decides and records.
 
-**A pull enters the blocked pile by its own door, and these four do not
-govern it.** They say when an agent must *ask* rather than decide; a pull is
-not an agent asking, it is a lane stopping. Most pulls do trip one of them —
-§3's is gated on the item needing a ruling — but a blocking review finding
-the lane simply could not clear trips none, and it still belongs in the pile,
-because the alternative is a round that cannot reach step 5. What the issue
-records in that case is not a question but the fact: the lane could not clear
-it. The owner's call is then whether to ship the bug or take it on
-themselves.
-
 1. It would override a documented design decision.
 2. It is about what a user sees or experiences.
 3. Two defensible options mean materially different amounts of work.
 4. It deletes data, changes a wire contract's major version, or changes what
    a deployment must configure.
+
+**A pull enters the blocked pile by its own door, and these four do not
+govern it.** They say when an agent must *ask* rather than decide; a pull is
+not an agent asking, it is a lane stopping. Most pulls do trip one of them —
+Step 3's is gated on the item needing a ruling — but a blocking review
+finding the lane simply could not clear trips none, and it still belongs in
+the pile, because the alternative is a round that cannot reach step 5. What
+the issue records in that case is not a question but the fact: the lane
+could not clear it. The owner's call is then whether to ship the bug or take
+it on themselves.
 
 Recording a decision is not the same as closing the issue. When a ruling
 implies work, the issue is re-filed as the defect or feature that work is,
