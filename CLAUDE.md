@@ -335,7 +335,12 @@ keep optional parameters.
 drop the narrowing ones too, as "descriptive", and the Gemini adapter stripped
 them a second time; the engine's `likelihood: Field(ge=0, le=1)` therefore
 reached the model as a bare number and came back as `95`, which Pydantic
-rejects and the turn 500s (fm#355). Note what that means for fm#355's own
+rejects. That does NOT 500: `milestone_engine`'s never-500 backstop prunes
+the offending record (the hypothesis is silently lost) or, for a non-list
+field such as `milestones.root_cause_likelihood`, drops **all** `state_updates`
+including valid siblings and answers conversationally — so the turn returns 200
+having advanced nothing, which is harder to find than a 500 (fm#355). Note what
+that means for fm#355's own
 proposal: routing the schema tool through Gemini's `response_schema` instead of
 function calling enforces **nothing** extra, because
 `generationConfig.responseSchema` and `FunctionDeclaration.parameters` are the

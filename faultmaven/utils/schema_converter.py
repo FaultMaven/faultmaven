@@ -111,21 +111,23 @@ class StrictSchemaUnsupported(Exception):
 #: gemini-3.5-flash-lite via both ``responseSchema`` and
 #: ``functionDeclarations`` (2026-09-17). The old comment here called them
 #: "descriptive rather than structural"; they are the opposite, which is what
-#: made the claim costly. See ``GeminiProvider._GEMINI_UNSUPPORTED_FIELDS``
+#: made the claim costly. See ``GeminiProvider._GEMINI_ALLOWED_FIELDS``
 #: for how hard each one bites on Gemini — ``minimum``/``maximum`` are
 #: enforced, ``maxLength`` is honoured rather than hard-enforced, so the
 #: client-side checks stay.
 #:
-#: ``exclusiveMinimum``/``exclusiveMaximum`` stay dropped: OpenAI accepts them,
-#: but they are absent from Gemini's ``Schema`` type, and no engine schema emits
-#: them — so carrying them would be an unmeasured wire change for no gain.
+#: ``exclusiveMinimum``/``exclusiveMaximum`` are narrowing too and are measured
+#: ACCEPTED by OpenAI strict (gpt-4o-mini and gpt-5.6-luna, 2026-09-17), so this
+#: rewrite keeps them. They are absent from Gemini's ``Schema`` message, so the
+#: Gemini adapter drops them at its own boundary — which is where a
+#: provider-specific limit belongs. Keeping them here and dropping them there is
+#: the difference between "this rewrite is OpenAI's subset" and "this rewrite is
+#: the intersection of every provider", and the latter is what cost fm#355.
 _STRICT_UNSUPPORTED_KEYWORDS = frozenset(
     {
         "default",
         "examples",
         "format",
-        "exclusiveMinimum",
-        "exclusiveMaximum",
         "uniqueItems",
     }
 )

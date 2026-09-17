@@ -78,7 +78,9 @@ def _coerce_bare_int_to_new_index(v: Any) -> Any:
     Some models (observed: Gemini) emit an unquoted integer where the schema
     declares ``str``. Gemini's function-calling tool spec carries ``type`` as
     advisory metadata rather than a decoding constraint, so the wire protocol
-    accepts the integer and Pydantic 500s the turn client-side.
+    accepts the integer and Pydantic rejects it client-side. That does not
+    500 either: the engine's backstop prunes the record or drops all
+    ``state_updates``, so the turn advances nothing instead of erroring.
 
     A bare index ``N`` almost certainly means "the Nth item created this
     turn": every real ID in this schema carries a typed prefix
@@ -127,6 +129,56 @@ def _coerce_bare_int_to_new_index(v: Any) -> Any:
 # question ([[project_pydantic_shape_failures_backlog]]) and applies to every
 # ``str`` field, not just ID-shaped ones. It is not settled here.
 IdRef = Annotated[str, BeforeValidator(_coerce_bare_int_to_new_index)]
+
+
+def _clamp_to_unit_interval(v):
+    """Bound a probability-shaped value into ``[0, 1]`` before validation.
+
+    Non-numeric input is passed through untouched so a genuine type error still
+    surfaces as one; ``None`` reaches the ``Optional`` branch unchanged.
+    """
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return v
+    return max(0.0, min(1.0, float(v)))
+
+
+# Every probability/confidence field in this module. ``ge``/``le`` alone are
+# NOT enough, and the distinction is the whole of fm#355's second half:
+#
+# ``ge``/``le`` are CORE constraints, so they run before any ``mode="after"``
+# validator. ``EvidenceToAdd`` carried exactly such a clamp —
+# ``@field_validator("likelihood")`` with no mode, i.e. after — which therefore
+# could never see the value it was written for: ``model_validate({...
+# "likelihood": 95})`` raised ``less_than_equal`` and the clamp never ran. Its
+# two sibling validators in the same class do declare ``mode="before"``. The
+# other nine bounded fields had no clamp at all.
+#
+# Why it matters beyond tidiness: the decoder-level fix (sending
+# ``minimum``/``maximum`` to the provider) only reaches providers that enforce
+# them. On a FUNCTION_CALLING provider (Anthropic) or any BEST_EFFORT one, the
+# constraint is advisory and a model asked for confidence "on a 0-100 scale"
+# answers ``95``. This annotation is what covers those providers, in one place,
+# for every field.
+#
+# What happens then is a BOUND, not a repair: ``95`` clamps to ``1.0``, which
+# overstates confidence rather than recovering the intended ``0.95``.
+# Rescaling by 100 would recover it and is deliberately NOT done — inferring
+# intent from an out-of-range value is the post-generation-correction pattern
+# ``agent-behavioral-rules.md § Post-Generation Validators`` rejects, and
+# fm#355 cites that section as the reason not to go down this road. The bound
+# keeps the record; the decoder-level fix is what gets the number right where
+# a provider will enforce it.
+#
+# ⚠️ ORDER IS LOAD-BEARING: ``Field`` must precede ``BeforeValidator``. With the
+# validator first, pydantic cannot attach the constraints to the core float
+# schema and emits them as the raw kwargs ``{"ge": 0.0, "le": 1.0}`` instead of
+# JSON Schema's ``{"minimum": 0.0, "maximum": 1.0}`` — so the bound still holds
+# in Python but DISAPPEARS from every wire schema, silently undoing the
+# decoder-level half of fm#355. (It would also be a hard Gemini 400,
+# ``Unknown name "ge"``, were the adapter not allowlist-filtered.)
+UnitInterval = Annotated[
+    float, Field(ge=0.0, le=1.0), BeforeValidator(_clamp_to_unit_interval)
+]
 
 # =============================================================================
 # Unified Ingestion Pipeline (v4.1)
@@ -248,9 +300,7 @@ class ReasoningConclusion(BaseModel):
 
     observation: str = Field(description="What was observed in the evidence")
     inference: str = Field(description="What this implies about the problem")
-    confidence: float = Field(
-        ge=0.0, le=1.0, description="Confidence in this inference"
-    )
+    confidence: UnitInterval = Field(description="Confidence in this inference")
 
 
 def _coerce_justification_to_text(v: Any) -> Any:
@@ -394,7 +444,7 @@ class KnowledgeMatch(BaseModel):
     """Knowledge base match for potential instant resolution."""
 
     match_type: Literal["past_case", "runbook", "documentation"]
-    match_likelihood: float = Field(ge=0.0, le=1.0)
+    match_likelihood: UnitInterval
     match_summary: str
     suggested_solution: Optional[str] = None
 
@@ -430,7 +480,7 @@ class MilestoneUpdates(NullTolerantModel):
     #   from a validated, uncontested chain root (§9.2), never an LLM self-claim.
     #   The LLM builds and grounds the chain; ``root_cause_likelihood`` carries
     #   its confidence. There is no self-certification boolean.
-    root_cause_likelihood: Optional[float] = Field(None, ge=0.0, le=1.0)
+    root_cause_likelihood: Optional[UnitInterval] = None
     # solution_proposed removed (3F) — engine-derived from live SOLUTION
     # offers at the assessment recompute (INV-32), never LLM-set
     root_cause_method: Optional[
@@ -541,7 +591,7 @@ class EvidenceToAdd(NullTolerantModel):
             "rejected by the evidence_source_invariant DB CHECK."
         ),
     )
-    likelihood: float = Field(0.8, ge=0.0, le=1.0)
+    likelihood: UnitInterval = 0.8
 
     @field_validator("summary", mode="before")
     @classmethod
@@ -582,11 +632,6 @@ class EvidenceToAdd(NullTolerantModel):
             return EvidenceCategory(v)
         return v
 
-    @field_validator("likelihood")
-    @classmethod
-    def validate_likelihood(cls, v: float) -> float:
-        return max(0.0, min(1.0, v))
-
     @model_validator(mode="after")
     def _source_file_required_unless_user_description(self) -> "EvidenceToAdd":
         """Mirror of the DB ``evidence_source_invariant`` CHECK: every
@@ -623,7 +668,7 @@ class HypothesisToAdd(BaseModel):
 
     statement: str
     category: HypothesisCategory
-    likelihood: float = Field(ge=0.0, le=1.0)
+    likelihood: UnitInterval
     rationale: str
     # Stays Optional in BOTH flag states by design: the field is always in the
     # serialized schema, the flag-off baseline emits no chains, and the engine
@@ -665,7 +710,7 @@ class HypothesisUpdate(BaseModel):
             "same turn."
         ),
     )
-    likelihood: Optional[float] = Field(None, ge=0.0, le=1.0)
+    likelihood: Optional[UnitInterval] = None
     state: Optional[HypothesisState] = None
     refutation_reason: Optional[str] = Field(
         default=None,
@@ -744,10 +789,8 @@ class HypothesisEvidenceLinkToAdd(NullTolerantModel):
     )
     stance: EvidenceStance
     reasoning: str
-    stance_confidence: float = Field(
+    stance_confidence: UnitInterval = Field(
         default=1.0,
-        ge=0.0,
-        le=1.0,
         description="Confidence in the stance assessment (0.0-1.0)",
     )
 
@@ -844,10 +887,8 @@ class NodeEvidenceLinkToAdd(BaseModel):
     )
     stance: EvidenceStance
     reasoning: str
-    stance_confidence: float | None = Field(
+    stance_confidence: UnitInterval | None = Field(
         default=None,
-        ge=0.0,
-        le=1.0,
         description=(
             "Confidence in the stance assessment (0.0-1.0). A SUPPORTS link "
             "below 0.6 is treated as correlational color, NOT causal "
@@ -1070,7 +1111,7 @@ class WorkingConclusionUpdate(NullTolerantModel):
     """
 
     summary: Optional[str] = None
-    likelihood: Optional[float] = Field(None, ge=0.0, le=1.0)
+    likelihood: Optional[UnitInterval] = None
     next_steps: Optional[List[str]] = Field(default_factory=list)
     blockers: Optional[List[str]] = Field(default_factory=list)
 
@@ -1158,7 +1199,7 @@ class RootCauseConclusionUpdate(NullTolerantModel):
     root_cause: str
     mechanism: str
     evidence_ids: List[str] = Field(default_factory=list)
-    likelihood: float = Field(default=0.7, ge=0.0, le=1.0)
+    likelihood: UnitInterval = 0.7
     names_root_node_id: Optional[IdRef] = Field(
         default=None,
         description=(

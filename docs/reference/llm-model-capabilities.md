@@ -127,7 +127,12 @@ A STRICT provider enforces types and required keys. Whether it also enforces
 **value constraints** — `minimum`/`maximum`, `maxLength`, `pattern` — is a
 separate question, and the engine depends on the answer: its `likelihood` /
 `confidence` fields are `Field(ge=0, le=1)`, and a model that answers `95`
-fails Pydantic and 500s the turn.
+fails Pydantic. That is **not** a 500: `milestone_engine`'s never-500 backstop
+prunes the invalid record — silently losing the hypothesis — or, for a non-list
+field such as `milestones.root_cause_likelihood`, drops every `state_updates`
+including the valid siblings and returns a conversational reply. The turn
+answers 200 having advanced nothing, which is why a reader grepping for 500s
+finds none.
 
 FaultMaven used to strip those keywords twice on the way out —
 `to_strict_schema` dropped them as "descriptive", and

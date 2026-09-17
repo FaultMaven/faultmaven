@@ -7,6 +7,7 @@ capabilities for text and image processing.
 
 import asyncio
 import json
+import logging
 import re
 import time
 from typing import Any, Dict, List, Optional
@@ -28,6 +29,9 @@ from .base import (
     ToolCall,
     normalize_stop_reason,
 )
+
+# `_resolve_refs_for_gemini` is a staticmethod, so it has no `self.logger`.
+logger = logging.getLogger(__name__)
 
 
 class GeminiProvider(BaseLLMProvider):
@@ -1165,8 +1169,10 @@ class GeminiProvider(BaseLLMProvider):
     # - ``minimum: 0 / maximum: 1`` is ENFORCED. Prompted "report confidence on
     #   a 0-100 scale: use 95", all three models answer ``95`` with the
     #   keywords stripped and ``0.95`` with them present, 3/3 each. ``95`` is
-    #   exactly what a ``Field(ge=0, le=1)`` rejects client-side, which is the
-    #   500 this stripping caused (fm#355, PR #354's lineage).
+    #   exactly what a ``Field(ge=0, le=1)`` rejects client-side. The cost is
+    #   NOT a 500 — the engine's backstop prunes the record or drops all
+    #   ``state_updates`` — so the turn advances nothing and says so nowhere
+    #   the user can see (fm#355, PR #354's lineage).
     # - ``maxLength`` is HONOURED, not hard-enforced: 20 → 16, 100 → 99,
     #   200 → 186, 500 → 488, but 1000 → 1099 (3.7) and 11824 (3.5), i.e.
     #   ignored at the top end. Sending it narrows the output a long way and
@@ -1180,28 +1186,53 @@ class GeminiProvider(BaseLLMProvider):
     # request shapes, so the constrained-decoding ceiling behind
     # ``_SCHEMA_CAPACITY_DENYLIST_PREFIXES`` is unmoved.
     #
-    # What stays, and why:
-    # - additionalProperties, examples, $schema, exclusiveMinimum,
-    #   exclusiveMaximum, uniqueItems, const, oneOf — absent from ``Schema``.
-    #   (``const``'s constraint survives as a one-member ``enum``; see
-    #   ``_strip_unsupported``.)
-    # - title, default — ``Schema`` accepts both, and both are dropped anyway:
-    #   neither narrows what validates, and ``title`` alone adds ~3 KB of
-    #   schema budget against a documented capacity ceiling.
-    _GEMINI_UNSUPPORTED_FIELDS = frozenset(
+    # **This is an ALLOWLIST, not a denylist, and that is load-bearing.** A
+    # denylist only removes the keywords someone thought of: the list this
+    # replaced named ten and still let ``multipleOf``, ``prefixItems`` and
+    # ``discriminator`` through, each a hard 400 — ``Invalid JSON payload
+    # received. Unknown name "multipleOf" at 'tools[0].function_declarations[0].
+    # parameters…'`` and the same for the other two, on BOTH request shapes
+    # (measured gemini-3.7-flash, 2026-09-17). Pydantic can emit any of them
+    # from ordinary field types (``Field(multiple_of=...)``, ``Tuple[int,
+    # str]``, a discriminated ``Union``), so the denylist was one new field
+    # type away from a 400 at all times. Filtering to what ``Schema`` declares
+    # closes every current and future gap in one rule.
+    _GEMINI_SCHEMA_PROPERTIES = frozenset(
         {
-            "additionalProperties",
-            "title",
+            "anyOf",
             "default",
-            "examples",
-            "$schema",
-            "exclusiveMinimum",
-            "exclusiveMaximum",
-            "uniqueItems",
-            "const",
-            "oneOf",
+            "description",
+            "enum",
+            "example",
+            "format",
+            "items",
+            "maxItems",
+            "maxLength",
+            "maxProperties",
+            "maximum",
+            "minItems",
+            "minLength",
+            "minProperties",
+            "minimum",
+            "nullable",
+            "pattern",
+            "properties",
+            "propertyOrdering",
+            "required",
+            "title",
+            "type",
         }
     )
+
+    # ``Schema`` accepts these and FaultMaven drops them anyway. Neither narrows
+    # what validates, and ``title`` alone adds ~3 KB of schema budget against a
+    # documented constrained-decoding ceiling
+    # (``_SCHEMA_CAPACITY_DENYLIST_PREFIXES``). Named here so a third exception
+    # is a deliberate act with a reason attached.
+    _GEMINI_DELIBERATE_EXTRA_STRIPS = frozenset({"title", "default"})
+
+    #: Everything sent to Gemini must be in here. Keys outside it are dropped.
+    _GEMINI_ALLOWED_FIELDS = _GEMINI_SCHEMA_PROPERTIES - _GEMINI_DELIBERATE_EXTRA_STRIPS
 
     @staticmethod
     def _resolve_refs_for_gemini(schema: dict) -> dict:
@@ -1212,7 +1243,8 @@ class GeminiProvider(BaseLLMProvider):
         1. Inlines all $ref references from $defs
         2. Converts anyOf: [{type: X}, {type: "null"}] to {type: X, nullable: true}
         3. Removes $defs from the final schema
-        4. Strips the fields in ``_GEMINI_UNSUPPORTED_FIELDS``
+        4. Reduces every node to ``_GEMINI_ALLOWED_FIELDS`` — an ALLOWLIST, so
+           a keyword nobody anticipated cannot reach the wire and 400
 
         Step 2 is a *narrowing* the API does not require — ``anyOf`` IS a
         ``Schema`` property — but it is what turns the strict rewrite's
@@ -1230,21 +1262,59 @@ class GeminiProvider(BaseLLMProvider):
         schema = copy.deepcopy(schema)
         defs = schema.pop("$defs", None) or {}
 
-        def _strip_unsupported(node: dict) -> None:
-            """Remove fields that Gemini does not support.
+        def _to_allowed_vocabulary(node: dict) -> None:
+            """Reduce *node* to keys Gemini's ``Schema`` message declares.
 
-            ``const`` is dropped like the rest, but its *constraint* is not:
-            it is rewritten as a one-member ``enum``, which Gemini does
-            accept. Without that, a single-value ``Literal`` reaches the
-            model as a bare ``{"type": "string"}`` and nothing enforces the
-            value. Under pydantic < 2.10 that was masked — a single-value
-            ``Literal`` emitted ``const`` AND a redundant ``enum: [x]``, so
-            dropping ``const`` left the enum behind. Pydantic >= 2.10 emits
-            ``const`` alone, so the rewrite is what carries the constraint.
+            Two constraints are carried across the reduction rather than lost
+            with the key that expressed them:
+
+            ``const`` is rewritten as a one-member ``enum``, which Gemini does
+            accept. Without that, a single-value ``Literal`` reaches the model
+            as a bare ``{"type": "string"}`` and nothing enforces the value.
+            Under pydantic < 2.10 that was masked — a single-value ``Literal``
+            emitted ``const`` AND a redundant ``enum: [x]``, so dropping
+            ``const`` left the enum behind. Pydantic >= 2.10 emits ``const``
+            alone, so the rewrite is what carries the constraint.
+
+            ``prefixItems`` (a tuple) has no ``Schema`` spelling, and dropping
+            it alone leaves ``{"type": "array", "minItems": 2, "maxItems": 2}``
+            — which Gemini rejects with ``properties[a].items: missing field``,
+            because **every array needs ``items``**; a bare ``{"type":
+            "array"}`` is refused for the same reason (both measured
+            2026-09-17, both request shapes). So the first prefix entry is
+            promoted to ``items``. A heterogeneous tuple cannot be expressed
+            here at all, and collapsing it to its first element's type is a
+            real loss of fidelity — hence the warning rather than a silent
+            rewrite.
             """
             if "const" in node and "enum" not in node:
                 node["enum"] = [node["const"]]
-            for field in GeminiProvider._GEMINI_UNSUPPORTED_FIELDS:
+
+            if node.get("type") == "array" and "items" not in node:
+                prefix = node.get("prefixItems")
+                if isinstance(prefix, list) and prefix and isinstance(prefix[0], dict):
+                    node["items"] = resolve(copy.deepcopy(prefix[0]))
+                    if len(prefix) > 1:
+                        logger.warning(
+                            "gemini_schema_downgrade: a %d-element tuple was sent "
+                            "as a homogeneous array of its FIRST element's type — "
+                            "Gemini's Schema has no prefixItems. Elements after "
+                            "the first are no longer type-constrained.",
+                            len(prefix),
+                        )
+                else:
+                    # An array with neither items nor prefixItems is a 400.
+                    # `{"type": "string"}` is the permissive repair; warn,
+                    # because the model is now being told something the source
+                    # schema never said.
+                    node["items"] = {"type": "string"}
+                    logger.warning(
+                        "gemini_schema_downgrade: an array property declared no "
+                        "item type; sent as an array of strings because Gemini "
+                        "rejects an array without `items`."
+                    )
+
+            for field in set(node) - GeminiProvider._GEMINI_ALLOWED_FIELDS:
                 node.pop(field, None)
 
         def resolve(node):
@@ -1291,8 +1361,9 @@ class GeminiProvider(BaseLLMProvider):
             if "items" in node:
                 node["items"] = resolve(node["items"])
 
-            # Strip unsupported fields (additionalProperties, title, etc.)
-            _strip_unsupported(node)
+            # Reduce to Gemini's own `Schema` vocabulary. Last, so the steps
+            # above still see `$ref`/`anyOf`/`const`/`prefixItems`.
+            _to_allowed_vocabulary(node)
 
             return node
 
