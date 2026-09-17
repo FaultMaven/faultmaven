@@ -1170,35 +1170,110 @@ async def _web_search_feature(user, settings, app):
     return await _feature(user, settings, app, "web_search")
 
 
-class TestTokenRevocationDurableIdentifiesTheStoreByType:
-    """A SUBCLASS of the durable store is still durable (#828 delta review).
+def _store_over_a_real_schema(tmp_path, *, with_table: bool):
+    """A ``SqlTokenRevocationStore`` over SQLite, with or without its table.
 
-    Decided by ``isinstance``, not by a class-NAME comparison — because the
-    likeliest third store is a subclass of a shipped one, which is exactly why
-    the contract suite's scan resolves subclasses transitively. A name check
-    would report such a deployment as non-durable, with a config hint telling
-    the operator revocation is unenforceable where it is in fact fine.
+    ``with_table=False`` is the deployment this field exists for: standalone,
+    upgraded rather than re-provisioned, so the single in-place-edited baseline
+    was already stamped and ``token_revocations`` never appeared (#828 delta
+    review).
+    """
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from faultmaven.infrastructure.persistence.models import Base
+    from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
+        SqlTokenRevocationStore,
+    )
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'status.db'}")
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    created = {"done": False}
+
+    @asynccontextmanager
+    async def factory():
+        if with_table and not created["done"]:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            created["done"] = True
+        session = sessions()
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+
+    return SqlTokenRevocationStore(session_factory=factory), engine
+
+
+class TestTokenRevocationDurableAnswersWhetherRevocationIsInForce:
+    """The field claims revocations survive a restart. It has to mean it.
+
+    Two ways it used to be wrong: deciding by class NAME (a subclass of the
+    durable store reported non-durable), and deciding by TYPE ALONE (a store
+    whose table does not exist reported durable, with "…survive an API
+    restart", on exactly the deployment where the question is urgent).
     """
 
     @pytest.mark.asyncio
     async def test_a_subclass_of_the_durable_store_reports_durable(
-        self, mock_admin_user, mock_settings, rate_limited_app
+        self, mock_admin_user, mock_settings, rate_limited_app, tmp_path
     ):
         from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
             SqlTokenRevocationStore,
         )
 
+        store, engine = _store_over_a_real_schema(tmp_path, with_table=True)
+
         class DeploymentSpecificStore(SqlTokenRevocationStore):
             pass
 
-        rate_limited_app.state.token_revocation_store = DeploymentSpecificStore()
-
-        feature = await _feature(
-            mock_admin_user, mock_settings, rate_limited_app, "token_revocation_durable"
+        rate_limited_app.state.token_revocation_store = DeploymentSpecificStore(
+            session_factory=store._session_factory
         )
+        try:
+            feature = await _feature(
+                mock_admin_user,
+                mock_settings,
+                rate_limited_app,
+                "token_revocation_durable",
+            )
+        finally:
+            await engine.dispose()
 
         assert feature.enabled is True
         assert "DeploymentSpecificStore" in feature.description
+
+    @pytest.mark.asyncio
+    async def test_a_store_whose_table_is_missing_reports_not_durable(
+        self, mock_admin_user, mock_settings, rate_limited_app, tmp_path
+    ):
+        """The upgraded-not-wiped deployment (#828 delta review).
+
+        Type alone said durable here. Revocation is in fact OFF — every read
+        raises and ``AuthService._is_revoked`` returns False — so the one
+        observable added to answer "are my revocations in force?" was giving
+        the wrong answer in the only state where it matters.
+        """
+        store, engine = _store_over_a_real_schema(tmp_path, with_table=False)
+        rate_limited_app.state.token_revocation_store = store
+        try:
+            feature = await _feature(
+                mock_admin_user,
+                mock_settings,
+                rate_limited_app,
+                "token_revocation_durable",
+            )
+        finally:
+            await engine.dispose()
+
+        assert feature.enabled is False
+        assert "cannot read its storage" in feature.description
+        assert "token_revocations" in feature.description
 
     @pytest.mark.asyncio
     async def test_a_cache_backed_store_reports_not_durable(
@@ -1219,12 +1294,18 @@ class TestTokenRevocationDurableIdentifiesTheStoreByType:
         )
 
         assert feature.enabled is False
+        assert "held in the cache" in feature.description
 
     @pytest.mark.asyncio
-    async def test_no_store_at_all_reports_not_durable(
+    async def test_no_store_at_all_says_unenforceable_not_cached(
         self, mock_admin_user, mock_settings, rate_limited_app
     ):
-        """Not merely non-durable: revocation is unenforceable (#767)."""
+        """With no store there IS no cache holding anything (#767).
+
+        The description used to fall through to "Revocation state is held in
+        the cache", contradicting its own hint, because the branch keyed on
+        ``durable`` rather than on whether a store existed.
+        """
         rate_limited_app.state.token_revocation_store = None
 
         feature = await _feature(
@@ -1232,7 +1313,39 @@ class TestTokenRevocationDurableIdentifiesTheStoreByType:
         )
 
         assert feature.enabled is False
-        assert "none" in feature.description
+        assert "unenforceable" in feature.description
+        assert "held in the cache" not in feature.description
+
+    @pytest.mark.asyncio
+    async def test_a_store_that_is_falsy_is_still_a_store(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        """``is not None``, not truthiness.
+
+        A store defining ``__len__`` and currently empty reported "none" from
+        the name field while ``isinstance`` reported it durable — two halves of
+        one entry disagreeing about whether a store exists.
+        """
+        import fakeredis.aioredis as fakeredis_aio
+
+        from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
+            RedisTokenRevocationStore,
+        )
+
+        class EmptyIsFalsy(RedisTokenRevocationStore):
+            def __len__(self):
+                return 0
+
+        rate_limited_app.state.token_revocation_store = EmptyIsFalsy(
+            fakeredis_aio.FakeRedis(decode_responses=True), key_prefix="revoked:token:"
+        )
+
+        feature = await _feature(
+            mock_admin_user, mock_settings, rate_limited_app, "token_revocation_durable"
+        )
+
+        assert "EmptyIsFalsy" in feature.description
+        assert "none" not in feature.description
 
 
 def _pure_settings_answer(feature: str, settings) -> bool:

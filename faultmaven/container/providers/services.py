@@ -898,10 +898,14 @@ def create_token_revocation_store(
     downgrade, password change, admin revoke-tokens) for as long as it was
     meant to cover.
 
-    - **Cloud** keeps ``RedisTokenRevocationStore``. Its cache is a real Redis
-      that outlives the API pod — guaranteed, because ``fakeredis_or_fail``
-      refuses the boot otherwise — and this is the only store hit on the
-      authenticated request path.
+    - **Cloud** keeps ``RedisTokenRevocationStore``. Its cache is a real Redis,
+      an external service that outlives the API POD, and this is the only store
+      hit on the authenticated request path. Note what that does and does not
+      buy: ``fakeredis_or_fail`` proves the client is not the in-process
+      stand-in, NOT that Redis persists. Nothing here mandates AOF/RDB, so a
+      Redis restart or a ``maxmemory`` eviction resurrects every
+      revoked-but-unexpired token. Cloud durability is a known gap, not a
+      property this function delivers.
     - **Standalone** gets ``SqlTokenRevocationStore``, which writes to
       ``token_revocations`` in the same database that already makes account
       deactivation survive a restart.

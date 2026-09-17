@@ -315,6 +315,21 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
 
     logger.info("✅ DI container initialized successfully with authentication services")
 
+    # The store exists — but can it reach its storage? Presence was never the
+    # whole question, and for the database arm (#828) the answer is no on any
+    # standalone deployment that upgraded its image instead of wiping: the
+    # table lives in the single in-place-edited baseline, so `alembic upgrade
+    # head` is a no-op there and `token_revocations` never appears. Revocation
+    # would then be silently OFF, because `AuthService._is_revoked` fails open.
+    #
+    # Skipped in test environments, like the credential and investigation
+    # gates beside it, which boot the app against databases that were never
+    # migrated.
+    if not _is_test_environment(settings):
+        from .config.revocation_storage import validate_revocation_storage
+
+        await validate_revocation_storage(token_revocation_store)
+
     # Make container available to app for access by other components
     app.extra["di_container"] = container
 

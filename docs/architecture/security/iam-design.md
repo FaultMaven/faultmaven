@@ -383,9 +383,15 @@ shapes the response.
   issued at or before the revocation instant" is measured on the *revoker's*
   clock. If a minter's clock runs ahead by S seconds, tokens minted up to S
   seconds before the revocation can survive it.
-- Revocation state outlives the API process in every deployment (#828). Cloud
-  keeps the Redis store — its cache is an external service that outlives the
-  pod. Standalone, whose cache is the in-process FakeRedis stand-in, writes to
+- Revocation state outlives the API process on **standalone** (#828), where it
+  is written to `token_revocations`. **Cloud is a known gap, not a guarantee**:
+  it keeps the Redis store because that cache is an external service which
+  outlives the pod, but nothing in this repository mandates AOF/RDB
+  persistence — `fakeredis_or_fail` proves the client is not the in-process
+  stand-in, not that Redis survives its own restart. A Redis restart, or a
+  `maxmemory` eviction, resurrects every revoked-but-unexpired token, now for
+  up to the 90-day watermark ceiling. Open question rather than a shipped
+  property. Standalone, whose cache is the in-process FakeRedis stand-in, writes to
   the `token_revocations` table instead, because a revocation that a restart
   forgets is not a revocation. `create_token_revocation_store` chooses on
   `DEPLOYMENT_MODE` and **not** on what the cache client turned out to be: a

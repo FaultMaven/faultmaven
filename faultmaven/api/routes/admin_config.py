@@ -881,38 +881,76 @@ async def get_env_config_status(
         # A startup log line would not do: it rolls out of `kubectl logs`, and
         # the question ("are the revocations I issued during that incident
         # still in force after the pod restarted?") is asked long afterwards.
+        from faultmaven.config.revocation_storage import probe_revocation_storage
         from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
             SqlTokenRevocationStore,
         )
 
         revocation_store = getattr(request.app.state, "token_revocation_store", None)
-        store_name = type(revocation_store).__name__ if revocation_store else None
+        store_name = (
+            type(revocation_store).__name__ if revocation_store is not None else None
+        )
+        # ``is not None``, not truthiness: a store defining ``__len__`` and
+        # currently empty would otherwise report "none" while ``isinstance``
+        # below reported it durable — two fields disagreeing about whether a
+        # store exists (#828 delta review).
+        #
         # ``isinstance``, not a class-NAME comparison: the likeliest third store
         # is a subclass of a shipped one — which is exactly why the contract
         # suite's scan resolves subclasses transitively — and a name check would
         # report such a store as non-durable, with a hint telling the operator
-        # revocation is unenforceable on a deployment where it is fine (#828
-        # delta review).
-        durable = isinstance(revocation_store, SqlTokenRevocationStore)
+        # revocation is unenforceable on a deployment where it is fine.
+        is_database_store = isinstance(revocation_store, SqlTokenRevocationStore)
+
+        # And then PROBE it. Being the database store is necessary, not
+        # sufficient: on a standalone deployment upgraded rather than wiped,
+        # `token_revocations` does not exist, every read raises, and
+        # `AuthService._is_revoked` turns that into "not revoked". Deciding this
+        # field by type alone reported `enabled=true` with "…survive an API
+        # restart" on exactly that deployment — the wrong answer in the one
+        # state where the question is urgent.
+        #
+        # Live rather than cached at startup: the field answers "are my
+        # revocations in force NOW", and a value cached at boot would keep
+        # saying yes after the table was dropped. One indexed read on an admin
+        # endpoint, which is not the request path.
+        storage_fault = (
+            await probe_revocation_storage(revocation_store)
+            if revocation_store is not None
+            else None
+        )
+        durable = is_database_store and storage_fault is None
+
+        if revocation_store is None:
+            detail = (
+                "No revocation store was composed, so revocation is "
+                "unenforceable — not merely non-durable (#767)."
+            )
+        elif storage_fault is not None:
+            detail = (
+                "The store cannot read its storage, so revocation is NOT in "
+                f"force: {storage_fault}"
+            )
+        elif is_database_store:
+            detail = (
+                "Revoked tokens and per-user watermarks are held in the "
+                "token_revocations table and survive an API restart."
+            )
+        else:
+            detail = "Revocation state is held in the cache."
+
         features["token_revocation_durable"] = FeatureStatus(
             enabled=durable,
-            description=(
-                f"Revocation store: {store_name or 'none'}. "
-                + (
-                    "Revoked tokens and per-user watermarks are held in the "
-                    "token_revocations table and survive an API restart."
-                    if durable
-                    else "Revocation state is held in the cache."
-                )
-            ),
+            description=f"Revocation store: {store_name or 'none'}. {detail}",
             config_hint=(
-                "True when revocations outlive the API process. Standalone "
-                "resolves the durable database store. Cloud reports False and "
-                "is correct to: its Redis is an external service that outlives "
-                "the pod, and it is the only store read on the authenticated "
-                "request path. False on a STANDALONE deployment means no store "
-                "was composed at all — revocation is unenforceable, not merely "
-                "non-durable."
+                "True when revocations outlive the API process AND the store "
+                "can read its storage. Standalone resolves the durable "
+                "database store. Cloud reports False and is correct to: its "
+                "Redis is an external service that outlives the pod, and it is "
+                "the only store read on the authenticated request path. False "
+                "on a STANDALONE deployment means revocation is not in force — "
+                "either no store was composed, or its table is missing because "
+                "the deployment was upgraded rather than re-provisioned (#828)."
             ),
         )
 

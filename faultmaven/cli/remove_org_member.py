@@ -108,7 +108,7 @@ EXIT_REVOCATION_INCOMPLETE = 3
 EXIT_MEMBERSHIP_NOT_REMOVED = 4
 
 
-def _revocation_store_unusable(store) -> str | None:
+async def _revocation_store_unusable(store) -> str | None:
     """Why this revocation store cannot end a session, or None if it can.
 
     The question is not "is this store broken" but "will a watermark written
@@ -139,6 +139,7 @@ def _revocation_store_unusable(store) -> str | None:
     tolerance now applies only to classes this file has never heard of, not to
     the shipped store that happens to lack an attribute.
     """
+    from faultmaven.config.revocation_storage import probe_revocation_storage
     from faultmaven.config.settings import get_settings
     from faultmaven.infrastructure.redis_client import is_fakeredis
     from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
@@ -155,6 +156,22 @@ def _revocation_store_unusable(store) -> str | None:
                 "while every token stayed valid.\n"
                 "   The API resolves Redis on cloud; this process did not. Point "
                 "REDIS_URL / REDIS_HOST at the deployment's Redis and re-run"
+            )
+        # Standalone: the API reads this database, so the store is the right
+        # one — but that is not the whole question. Prove the storage is
+        # actually there, exactly as the Redis arm proves a client is. On a
+        # deployment upgraded rather than re-provisioned, ``token_revocations``
+        # does not exist, so the watermark write raises AFTER the membership
+        # has gone (#828 delta review).
+        fault = await probe_revocation_storage(store)
+        if fault is not None:
+            return (
+                "the token revocation store cannot read its storage, so writing "
+                f"the watermark would fail after the membership had already "
+                f"been deleted: {fault}\n"
+                "   If this deployment was upgraded rather than wiped, the "
+                "token_revocations table is missing and `alembic upgrade head` "
+                "will not create it — re-provision on the current baseline"
             )
         return None
 
@@ -235,7 +252,22 @@ async def remove_org_member(
     print("=" * 80)
 
     print("\nInitializing...")
-    await container.initialize()
+    try:
+        await container.initialize()
+    except Exception as exc:  # noqa: BLE001 - any composition failure is a refusal
+        # The preflight below is what turns "this process cannot revoke" into
+        # the documented refusal + exit 1. It never ran if composition itself
+        # refused — and composition DOES refuse now, for the same reason
+        # (cloud with no Redis client, #828): the operator got a traceback and
+        # an unhandled-exception status instead. Nothing has been written at
+        # this point, so exit 1 is the honest outcome either way, and naming
+        # the cause loses nothing a traceback carried.
+        print(f"\n❌ {type(exc).__name__}: {exc}")
+        print(
+            "\n   Refusing to remove the membership: this process could not be "
+            "composed, so it cannot revoke. Nothing has been written."
+        )
+        return 1
 
     auth_service = container.get_auth_service()
     if auth_service is None:
@@ -253,7 +285,7 @@ async def remove_org_member(
             "written. Refusing to remove the membership."
         )
         return 1
-    unusable = _revocation_store_unusable(revocation_store)
+    unusable = await _revocation_store_unusable(revocation_store)
     if unusable is not None:
         print(f"\n❌ Refusing to remove the membership: {unusable}.")
         return 1

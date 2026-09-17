@@ -214,12 +214,47 @@ def _redis_store(client):
     return RedisTokenRevocationStore(client, key_prefix="revoked:token:")
 
 
-def _sql_store():
+def _sql_store(tmp_path=None, *, with_table: bool = True):
+    """A database store over real SQLite, with or without its table.
+
+    ``with_table=False`` is the deployment that made this whole arm matter: a
+    standalone install upgraded rather than re-provisioned, whose single
+    in-place-edited baseline was already stamped, so ``token_revocations``
+    never appeared (#828 delta review).
+    """
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from faultmaven.infrastructure.persistence.models import Base
     from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
         SqlTokenRevocationStore,
     )
 
-    return SqlTokenRevocationStore()
+    if tmp_path is None:
+        return SqlTokenRevocationStore(), None
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'cli.db'}")
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    created = {"done": False}
+
+    @asynccontextmanager
+    async def factory():
+        if with_table and not created["done"]:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            created["done"] = True
+        session = sessions()
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+
+    return SqlTokenRevocationStore(session_factory=factory), engine
 
 
 def _deployment(monkeypatch, *, cloud: bool):
@@ -279,7 +314,8 @@ async def test_refuses_the_database_store_on_a_cloud_deployment(
     prevent, with the guard in place and unable to fire.
     """
     _deployment(monkeypatch, cloud=True)
-    wiring.container.get_service = lambda name: _sql_store()
+    store, _ = _sql_store()
+    wiring.container.get_service = lambda name: store
 
     code = await remove_org_member.remove_org_member(
         enterprise_id=ENTERPRISE_ID,
@@ -294,7 +330,7 @@ async def test_refuses_the_database_store_on_a_cloud_deployment(
 
 
 async def test_the_database_store_is_usable_on_a_standalone_deployment(
-    wiring, monkeypatch
+    wiring, monkeypatch, tmp_path
 ):
     """The refusal is about DIVERGENCE, not about the database store.
 
@@ -304,7 +340,63 @@ async def test_the_database_store_is_usable_on_a_standalone_deployment(
     API".
     """
     _deployment(monkeypatch, cloud=False)
-    wiring.container.get_service = lambda name: _sql_store()
+    store, engine = _sql_store(tmp_path, with_table=True)
+    wiring.container.get_service = lambda name: store
+    try:
+        code = await remove_org_member.remove_org_member(
+            enterprise_id=ENTERPRISE_ID,
+            organization_id=ORG_ID,
+            user_identifier="alice",
+            dry_run=False,
+        )
+    finally:
+        await engine.dispose()
+
+    assert code == 0
+    wiring.orgs.remove_member.assert_awaited_once()
+
+
+async def test_refuses_a_database_store_whose_table_is_missing(
+    wiring, monkeypatch, tmp_path, capsys
+):
+    """Being the right store is necessary, not sufficient (#828 delta review).
+
+    The standalone arm used to return None on sight of the class, proving
+    nothing, while the Redis arm proved a client existed. On a deployment
+    upgraded rather than re-provisioned the table is absent, so the watermark
+    write raises — AFTER the membership row has gone. That is precisely the
+    half-state this preflight exists to detect before the write.
+    """
+    _deployment(monkeypatch, cloud=False)
+    store, engine = _sql_store(tmp_path, with_table=False)
+    wiring.container.get_service = lambda name: store
+    try:
+        code = await remove_org_member.remove_org_member(
+            enterprise_id=ENTERPRISE_ID,
+            organization_id=ORG_ID,
+            user_identifier="alice",
+            dry_run=False,
+        )
+    finally:
+        await engine.dispose()
+
+    assert code == 1
+    assert "cannot read its storage" in capsys.readouterr().out
+    wiring.orgs.remove_member.assert_not_awaited()
+
+
+async def test_a_composition_failure_is_a_refusal_not_a_traceback(wiring, capsys):
+    """Composition can refuse now, and it runs BEFORE the preflight.
+
+    ``create_token_revocation_store`` raises on cloud with no Redis client
+    (#828), and ``container.initialize()`` re-raises that as ``RuntimeError``
+    — so the operator got a traceback and an unhandled-exception status
+    instead of the refusal and exit 1 this module's docstring promises. The
+    guard the preflight provides was never reached.
+    """
+    wiring.container.initialize = AsyncMock(
+        side_effect=RuntimeError("DI Container initialization failed: no Redis")
+    )
 
     code = await remove_org_member.remove_org_member(
         enterprise_id=ENTERPRISE_ID,
@@ -313,8 +405,11 @@ async def test_the_database_store_is_usable_on_a_standalone_deployment(
         dry_run=False,
     )
 
-    assert code == 0
-    wiring.orgs.remove_member.assert_awaited_once()
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "could not be composed" in out
+    assert "Nothing has been written" in out
+    wiring.orgs.remove_member.assert_not_awaited()
 
 
 async def test_unrecognised_store_shape_is_not_refused(wiring):

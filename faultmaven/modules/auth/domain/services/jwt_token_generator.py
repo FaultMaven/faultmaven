@@ -1171,12 +1171,22 @@ async def revocation_reason(revocation_store, payload: Dict) -> Optional[str]:
     """
     jti = payload.get("jti")
     user_id = payload.get("sub")
-    issued_at = payload.get("iat")
-    if issued_at is None or not user_id:
-        # Nothing to match a watermark against; only the jti arm applies.
-        user_id, issued_at = None, None
-    else:
-        issued_at = int(issued_at)
+    raw_iat = payload.get("iat")
+    issued_at = None
+    if user_id and raw_iat is not None:
+        # Coerced INSIDE a try, and only for the watermark arm. A malformed
+        # ``iat`` is a property of the watermark's inputs, not of the jti, and
+        # letting it raise here turned a revoked-jti answer into an exception
+        # that ``AuthService._is_revoked`` swallows into "not revoked" — a
+        # revoked token accepted because a DIFFERENT claim was malformed (#828
+        # delta review). Nothing to match a watermark against is the same
+        # outcome as a claim that cannot be read: only the jti arm applies.
+        try:
+            issued_at = int(raw_iat)
+        except (TypeError, ValueError):
+            issued_at = None
+    if issued_at is None:
+        user_id = None
 
     # ONE call, so a store whose reads cost something can answer both arms in
     # one round trip (#828 review). Which answer WINS, and what a missing claim

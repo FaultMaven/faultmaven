@@ -37,6 +37,7 @@ from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     ITokenRevocationStore,
     SequentialRevocationState,
+    revocation_reason,
 )
 from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
     RedisTokenRevocationStore,
@@ -51,13 +52,41 @@ USER_ID = "user-828"
 JTI = "jti-828"
 
 
+#: Every engine this module opens. An engine that is not disposed leaves its
+#: pool — and, for aiosqlite, a thread — alive past the loop it was bound to,
+#: which surfaces as "Event loop is closed" from unrelated tests and fails under
+#: ``-W error::pytest.PytestUnhandledThreadExceptionWarning``.
+#:
+#: The leak was fixed three times in this PR and came back twice, each time in a
+#: site the previous fix did not cover (#828 reviews). Remembering to dispose is
+#: evidently not a thing this module can rely on, so it does not: every engine is
+#: registered here and ``_dispose_engines_after_each_test`` disposes them all.
+#: ``test_every_engine_here_is_registered`` keeps the registration honest.
+_ENGINES: list = []
+
+
+def _new_engine(url: str):
+    """The ONE place this module creates an engine, so none can be forgotten."""
+    engine = create_async_engine(url)
+    _ENGINES.append(engine)
+    return engine
+
+
+@pytest.fixture(autouse=True)
+async def _dispose_engines_after_each_test():
+    """Dispose every engine the test opened, however it opened it."""
+    yield
+    while _ENGINES:
+        await _ENGINES.pop().dispose()
+
+
 def _sqlite_session_factory(url: str):
     """A session factory over a NEW engine for ``url``, plus that engine.
 
-    Callers dispose the engine they are handed; ``_factory_over`` is the half
-    for a caller that already owns one.
+    The engine is returned because the restart tests dispose it MID-test — that
+    is the restart — not because the caller is responsible for cleanup.
     """
-    engine = create_async_engine(url)
+    engine = _new_engine(url)
     return _factory_over(engine), engine
 
 
@@ -110,12 +139,8 @@ async def store(request):
         yield _redis_store()
         return
 
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    factory = _factory_over(engine)
-    try:
-        yield SqlTokenRevocationStore(session_factory=factory)
-    finally:
-        await engine.dispose()
+    engine = _new_engine("sqlite+aiosqlite:///:memory:")
+    yield SqlTokenRevocationStore(session_factory=_factory_over(engine))
 
 
 class TestPerTokenArm:
@@ -244,6 +269,48 @@ class TestTheBatchedReadAgreesWithTheSingleReads:
         await store.revoke_user_tokens_before(USER_ID, now, ttl=60)
 
         assert await store.revocation_state(None, USER_ID, int(now)) == (False, True)
+
+
+class TestTheJtiArmIsNeverGatedOnTheWatermarkInputs:
+    """A malformed ``iat`` must not resurrect a revoked jti.
+
+    ``revocation_reason`` reads both claims up front, and coercing ``iat``
+    eagerly made a bad ``iat`` raise BEFORE the jti arm was consulted —
+    ``AuthService._is_revoked`` then swallowed it into "not revoked", so a
+    revoked token was accepted because a DIFFERENT claim was malformed (#828
+    delta review). The arms are independent; the rule has to keep them so.
+
+    Run against both stores, because the rule lives above them and must hold
+    whichever one answers.
+    """
+
+    @pytest.mark.parametrize(
+        "bad_iat",
+        [
+            pytest.param("not-a-number", id="unparseable-string"),
+            pytest.param({"a": 1}, id="wrong-type"),
+            pytest.param(None, id="absent"),
+            pytest.param([], id="empty-list"),
+        ],
+    )
+    async def test_a_revoked_jti_is_still_revoked(self, store, bad_iat):
+        await store.add_revoked_token(JTI, ttl=60)
+
+        reason = await revocation_reason(
+            store, {"jti": JTI, "sub": USER_ID, "iat": bad_iat}
+        )
+
+        assert reason == "token_revoked"
+
+    async def test_a_malformed_iat_simply_skips_the_watermark_arm(self, store):
+        """It is not an error either — there is nothing to compare against."""
+        await store.revoke_user_tokens_before(USER_ID, time.time(), ttl=60)
+
+        reason = await revocation_reason(
+            store, {"jti": "some-other-jti", "sub": USER_ID, "iat": "nonsense"}
+        )
+
+        assert reason is None
 
 
 class TestTheTwoArmsCannotCollide:
@@ -389,7 +456,7 @@ class TestTheSqlStoreKeepsItselfBounded:
 
         from faultmaven.infrastructure.persistence.models import TokenRevocationModel
 
-        factory, _engine = _sqlite_session_factory("sqlite+aiosqlite:///:memory:")
+        factory, _ = _sqlite_session_factory("sqlite+aiosqlite:///:memory:")
         store = SqlTokenRevocationStore(session_factory=factory)
 
         await store.add_revoked_token("live", ttl=3600)
@@ -435,7 +502,7 @@ class TestTheSqlStoreOwnsItsUnitOfWork:
 
     @staticmethod
     def _non_committing_factory(url: str):
-        engine = create_async_engine(url)
+        engine = _new_engine(url)
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         created = {"done": False}
 
@@ -556,6 +623,79 @@ class TestTheInterfaceDemandsTheMethodTheRequestPathCalls:
         assert await store.revocation_state(JTI, USER_ID, 1) == (True, False)
 
 
+def test_every_engine_here_is_registered():
+    """``create_async_engine`` appears in exactly one place: ``_new_engine``.
+
+    The disposal rule is only as good as its coverage, and this module's history
+    is three fixes and two recurrences — each time in a site the previous fix
+    did not think to look at. So the rule is not "remember to dispose" but "there
+    is one constructor", and this is what keeps that true: a future test calling
+    ``create_async_engine`` directly fails here rather than leaking quietly into
+    somebody else's event loop.
+    """
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    callers = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any(
+            isinstance(call.func, ast.Name) and call.func.id == "create_async_engine"
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call)
+        )
+    }
+
+    assert callers == {"_new_engine"}, (
+        f"create_async_engine is called from {sorted(callers)}; it belongs in "
+        "_new_engine alone, which registers the engine for disposal."
+    )
+
+
+def _bases_by_module_and_class(root: Path) -> dict[tuple[str, str], set[str]]:
+    """``(module, class) -> base names`` for every class under ``root``.
+
+    Keyed on (module, class), not on the bare name: two classes sharing a name
+    anywhere in the tree collided, last one parsed winning — so an unrelated
+    ``Store`` in some other module could evict a real revocation store from this
+    map and hide it from the guard entirely (#828 delta review). Extracted from
+    the scan so that property is testable against a tree that HAS a collision;
+    the real package may not have one today, and a guard whose fix is
+    unobservable is a guard nobody can trust.
+    """
+    bases_of: dict[tuple[str, str], set[str]] = {}
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            names = {
+                base.id if isinstance(base, ast.Name) else getattr(base, "attr", None)
+                for base in node.bases
+            }
+            bases_of[(str(path.relative_to(root)), node.name)] = {n for n in names if n}
+    return bases_of
+
+
+def _resolve_stores(bases_of: dict[tuple[str, str], set[str]]) -> set[str]:
+    """Every class reachable from ``ITokenRevocationStore`` by inheritance.
+
+    Base names are resolved by NAME (an ``ast`` base is a name, not a qualified
+    reference), so the reachable set stays name-keyed even though the map is
+    not. That direction is safe: a name collision can only make the set LARGER
+    — it reports a class that is not a store rather than hiding one that is,
+    and a false positive fails loudly here.
+    """
+    reachable = {"ITokenRevocationStore"}
+    grew = True
+    while grew:
+        grew = False
+        for (_module, name), bases in bases_of.items():
+            if name not in reachable and bases & reachable:
+                reachable.add(name)
+                grew = True
+    return reachable - {"ITokenRevocationStore"}
+
+
 def _stores_declared_in_package() -> set[str]:
     """Every class in ``faultmaven/`` that IS an ``ITokenRevocationStore``.
 
@@ -566,8 +706,7 @@ def _stores_declared_in_package() -> set[str]:
     Resolved TRANSITIVELY. Matching only a direct base spelled
     ``ITokenRevocationStore`` missed the likeliest third store there is — a
     subclass of one of the two shipped ones, which inherits the whole contract
-    and can override any part of it (#828 review). Names are collected first,
-    then the store set is grown to a fixed point.
+    and can override any part of it.
 
     Deliberately scoped to ``faultmaven/``. ``tests/utils.InMemoryRevocationStore``
     is a third subclass and stays out: this guard asks "did a DEPLOYMENT get a
@@ -577,28 +716,42 @@ def _stores_declared_in_package() -> set[str]:
     not observable through the stand-in the rest of the auth suite uses. Tests
     that need to see an entry expire must use a real store, as this module does.
     """
-    root = Path(faultmaven.__file__).parent
-    bases_of: dict[str, set[str]] = {}
-    for path in root.rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.ClassDef):
-                continue
-            names = {
-                base.id if isinstance(base, ast.Name) else getattr(base, "attr", None)
-                for base in node.bases
-            }
-            bases_of[node.name] = {n for n in names if n}
+    return _resolve_stores(_bases_by_module_and_class(Path(faultmaven.__file__).parent))
 
-    stores = {"ITokenRevocationStore"}
-    grew = True
-    while grew:
-        grew = False
-        for name, bases in bases_of.items():
-            if name not in stores and bases & stores:
-                stores.add(name)
-                grew = True
-    return stores - {"ITokenRevocationStore"}
+
+class TestTheScanSurvivesADuplicatedClassName:
+    """Two classes may share a name; only one of them may be the store.
+
+    The map was keyed on the bare class name, so the last module parsed won and
+    a real store could be evicted by something unrelated — invisible to the
+    guard that exists to catch exactly a store nobody covered (#828 delta
+    review). Tested against a tree that HAS the collision, because the real
+    package does not have to for the hazard to be real.
+    """
+
+    @staticmethod
+    def _tree(tmp_path):
+        (tmp_path / "pkg").mkdir()
+        # Alphabetically AFTER the store module, so under the old bare-name key
+        # it is parsed last and wins.
+        (tmp_path / "pkg" / "a_store.py").write_text(
+            "class Collider(ITokenRevocationStore):\n    pass\n", encoding="utf-8"
+        )
+        (tmp_path / "pkg" / "z_unrelated.py").write_text(
+            "class Collider(SomethingElse):\n    pass\n", encoding="utf-8"
+        )
+        return tmp_path
+
+    def test_both_classes_are_kept_apart(self, tmp_path):
+        bases = _bases_by_module_and_class(self._tree(tmp_path))
+
+        keys = {k for k in bases if k[1] == "Collider"}
+        assert len(keys) == 2, f"a name collision collapsed to one entry: {keys}"
+
+    def test_the_store_is_still_found_behind_the_collision(self, tmp_path):
+        found = _resolve_stores(_bases_by_module_and_class(self._tree(tmp_path)))
+
+        assert "Collider" in found
 
 
 def test_every_production_store_is_covered_here():
