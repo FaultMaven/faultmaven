@@ -73,36 +73,22 @@ next proposal — which is the cheap direction to be wrong in, because the
 expensive one would be dispatching a lane at an item that was pulled. Say so
 in *Measurement* so a half-finished move is visible rather than merely safe.
 **No** `pile:` label means an unsorted arrival, which step 2 sorts — and
-nothing bare is ever dispatched either, because the dispatch rule in step 4
-asks for `pile:ready` rather than for the absence of the other two.
+nothing bare is ever dispatched either, because step 4 dispatches from the
+ready query, which a bare issue is not in.
 
 Adding a label already present is a no-op and so is removing one that is
 absent, both exit 0, which is what makes every move below safe to repeat.
 That is obtained from the medium rather than argued for in prose, and it is
 why nothing here writes a marker recording that it has been.
 
-**Once, before the first round on this scheme**, the lists still written in
-the `Queue` body become labels. Run it, check the counts against the body's,
-and delete this block:
-
-```bash
-for n in 908 985 1167 1168 1206 1294 1442 1451 1461 1477 1478 1479; do
-  gh issue edit $n --add-label pile:blocked; done
-for n in 1251 1252; do gh issue edit $n --add-label pile:yours; done
-
-# everything else open and unlabelled is ready — except the Queue itself
-gh issue list --state open --limit 500 --json number,labels \
-  --jq '.[] | select([.labels[].name] | any(startswith("pile:")) | not)
-        | .number' \
-  | grep -vx 1456 | xargs -n1 -I{} gh issue edit {} --add-label pile:ready
-```
-
-It is re-runnable: the last command only touches issues that carry no pile
-label yet, and the first two are no-ops the second time. Check each pile's
-query against the list that body still carries, and only then delete both
-this block and those lists — an unrun migration answers every pile query with
-nothing, which would drop twelve standing questions out of the next proposal
-without saying so.
+The migration off the old enumerated lists has been **run** (2026-09-17):
+`pile:ready` 64, `pile:blocked` 12, `pile:yours` 2, balancing against 79 open
+issues with only the `Queue` itself unlabelled. It is not repeated here,
+because the commands were keyed to the lists as they stood that day and a
+re-run would re-add `pile:blocked` to anything a ruling has since moved to
+ready — a second writer of pile membership, derived from a stale list, which
+is the shape this whole scheme exists to remove. The run and its
+reconciliation are recorded on the `Queue`.
 
 ## The Queue
 
@@ -123,10 +109,11 @@ settlement and a pull change piles without touching it — which is what lets
 the head live in a blob at all. Write it with `gh api -X PATCH` and read it
 back; `gh issue edit` can fail silently.
 
-- **The ranked head orders; the labels decide.** A name in the head that no
-  longer carries `pile:ready` is skipped wherever the head is read. So a pull
-  does not have to edit the head, and a head naming a blocked or closed item
-  is stale rather than wrong.
+- **The ranked head orders; the labels decide.** A name in the head that the
+  ready query does not return is skipped wherever the head is read — step 4
+  states that predicate, and it is the only one. So a pull does not have to
+  edit the head, and a head naming a blocked, pulled or closed item is stale
+  rather than wrong.
 - **The counts are a snapshot, never read back.** Step 2 stamps them beside
   the timestamp because the body is also what a person reads; every decision
   takes its count from the query.
@@ -185,7 +172,7 @@ and merged is settled as merged even where the round reported that item
 | the row | what you do |
 |---|---|
 | the issue is closed | nothing |
-| the issue is open, its pull request merged | close #<n> if every part it named is now delivered or re-filed, citing this pull request and the re-filings; otherwise edit #<n> down to the part that still stands — title and body — and leave it `pile:ready`, to be ranked against the current candidates and never left at its old rank. There is no third outcome |
+| the issue is open, its pull request merged | close #<n> if every part it named is now delivered or re-filed, citing this pull request and the re-filings; otherwise edit #<n> down to the part that still stands — title and body — then `--add-label pile:ready` and `--remove-label pile:blocked`, because a round that reported this item `pulled` already moved it and "leave it ready" would leave it blocked. There is no third outcome |
 | the round reported it `pulled` | `--add-label pile:blocked`, then `--remove-label pile:ready`. The pull did this when it happened; doing it again is a no-op, and doing it *now* is what repairs a label the pull failed to write. Say nothing more — the pull already recorded what stopped it. The row may name no pull request at all, because a lane pulled mid-build opened none |
 | the issue is open, its pull request closed unmerged | the owner abandoned it — comment that the work was built and the pull request closed unmerged, link it, then the same two label edits; the next proposal asks whether to build it another way or close it. Do not guess why |
 
@@ -317,10 +304,23 @@ Unanswered questions stay blocked and go in the next proposal unchanged.
 
 ## 4. Build
 
-Dispatch from the ranked head, **skipping any item that no longer carries
-`pile:ready`** — a pull earlier in this step, or in a previous invocation of
-it, is why the head and the labels can disagree, and the label is the one
-that decides.
+Dispatch the approved items in the order the ranked head gives them,
+**skipping any the ready query does not return, and any it returns that
+carries a second `pile:` label** — the ready query being
+`gh issue list --state open --label pile:ready`. Two conditions, because the
+query cannot express the second: an item mid-move carries both labels and
+`--label pile:ready` still returns it.
+
+That is one predicate and it is the only one. It is a query rather than a test
+on the name, which is what makes it cover the three ways the head and the
+labels drift apart: a pull earlier in this step or in a previous invocation of
+it (the item gained `pile:blocked`, and during the window between the two
+label commands it carries **both** — still `pile:ready`, and still not
+dispatchable); an item delivered and closed by a previous round (labels
+survive closing, so only `--state open` excludes it); and an item the owner
+pinned or the rule-4 slot reserved, neither of which is in the head at all —
+which is why this dispatches *the approved items* and uses the head only for
+their order.
 
 One subagent per approved item, each with a self-contained prompt carrying:
 the issue and its full text, the ruling if it had one, what "done" means, and

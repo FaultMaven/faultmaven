@@ -143,13 +143,14 @@ lanes. The wall was the blob. **A label has the properties the prose kept
 failing to state**, and it has them by construction: one issue, one atomic
 edit, no shared object, and a pile that is a query rather than a parse.
 
-**What survives in the `Queue` body is what a label cannot hold** — the
-ranked head, in order, and the round timestamp. *Propose* is its only writer,
-so it has no concurrency left to get wrong, and the head is an ordering over
-membership rather than membership itself: **a name in the head that no longer
-carries `pile:ready` is skipped wherever the head is read.** That is why a
-pull writes one label and nothing else, and why a head naming a blocked item
-is stale rather than wrong.
+**What survives in the `Queue` body is what a label cannot hold** — the ranked
+head, in order, and the round timestamp. *Propose* is its only writer, so it
+has no concurrency left to get wrong, and the head is an ordering over
+membership rather than membership itself: **a name the ready query no longer
+returns is skipped wherever the head is read.** *Build* states that predicate
+in full and it is the only one. That is why a pull writes one label and
+nothing else, and why a head naming a blocked, pulled or closed item is stale
+rather than wrong.
 
 **A pull request the agent closed is told from one the owner abandoned by
 the result table**, which reports that issue's outcome as `pulled`. It
@@ -333,24 +334,24 @@ anything shipping a new guard — it is a round by itself.
 
 **Ranking is incremental.** A new issue is compared against the current
 candidates when it arrives, and that is the only comparison it gets. Nothing
-re-sorts the whole backlog each round, which would be work proportional to
-the backlog for comparisons already made. Losing that comparison is not a
-state: the item keeps the place the comparison gave it, and the pile drains
-past it. That only holds if the place survives the round, so the **ranked
-head** — the items holding rules 1-3, in order — is written into the `Queue`
-body and carried forward. An order is the one thing a label cannot hold, and
-it is safe there because *Propose* is that body's only writer and because the
-head decides nothing on its own: membership is the label, so a name in the
-head that has since been blocked or closed is skipped rather than obeyed. The
-rule-4 tier is not written down, and needs not be: "oldest first" is
-recoverable from the issues themselves at any moment, which is why the tier
-is the part of the pile that costs no bookkeeping. Three things
-move an item up out of its turn — a new priority label, another issue on the
-same seam, a citation from a new issue — and an item that gets none of them
-still arrives, because rule 4 orders its tier and every round takes the
-oldest of it. An earlier draft listed a fourth trigger, "an age threshold
-recorded in the pile", which nothing ever recorded a value for. A trigger
-with no value is not an exit.
+re-sorts the whole backlog each round, which would be work proportional to the
+backlog for comparisons already made. Losing that comparison is not a state:
+the item keeps the place the comparison gave it, and the pile drains past it.
+That only holds if the place survives the round, so the **ranked head** — the
+items holding rules 1-3, in order — is written into the `Queue` body and
+carried forward. An order is the one thing a label cannot hold, and it is safe
+there because *Propose* is that body's only writer and because the head
+decides nothing on its own: membership is the label, so a name the ready query
+no longer returns — blocked, mid-move, pulled or closed — is skipped rather
+than obeyed. The rule-4 tier is not written down, and needs not be: "oldest
+first" is recoverable from the issues themselves at any moment, so the tier is
+the part of the pile that costs no bookkeeping. Three things move an item up
+out of its turn — a new priority label, another issue on the same seam, a
+citation from a new issue — and an item that gets none of them still arrives,
+because rule 4 orders its tier and every round takes the oldest of it. An
+earlier draft listed a fourth trigger, "an age threshold recorded in the
+pile", which nothing ever recorded a value for. A trigger with no value is not
+an exit.
 
 ## Building
 
