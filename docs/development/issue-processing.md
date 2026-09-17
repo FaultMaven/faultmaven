@@ -118,7 +118,7 @@ proposal, with three parts:
 
 ### 2. Owner answers
 
-The owner approves or edits the five and answers whichever questions they
+The owner approves or edits the round and answers whichever questions they
 choose to. An unanswered question is not a failure: that item stays blocked
 and appears again next round. An answered one moves its issue to the ready
 pile with the ruling recorded on it as its spec.
@@ -208,23 +208,24 @@ Gates for a lane, each from a failure that cost real time:
   request that refuses a fresh install or answers 500 where it promises 401
   is not something to hand anyone. Blocking means the change is worse than
   the bug it fixes for someone who has not hit the bug. That exception is
-  narrow on purpose: everything non-blocking is filed, and the round says how
-  many findings it filed rather than fixed. **And it is bounded by the pull
-  rule, which reaches an open pull request as well as a lane mid-build:** a
-  blocking finding **the lane cannot clear** is pulled — the owning agent
-  closes the pull request, records on the issue either the question, if it
-  needs a ruling, or simply that the lane could not clear it, returns the
-  item to the blocked pile, and the result reports it as not delivered. The
-  condition is "cannot clear", not "needs a ruling": a finding that is merely
-  too hard trips none of the four escalation triggers, so gating the exit on
-  a ruling would leave that case with no exit at all — the same shape as the
-  leak this rule exists to close. "The lane could not clear it" is itself a
-  call for the owner: ship the bug, or take it on themselves. Closing a pull
-  request is the one action on one the owning agent may take; merging is
-  never one. Without that exit this exception would be
-  the only state here the *round itself* cannot leave — step 5 could never
-  run, so no other lane's work would reach the owner either, and holding the
-  round up is precisely what the pull rule exists to prevent.
+  narrow on purpose: everything non-blocking is filed, and the round says
+  how many findings it filed rather than fixed. **And it is bounded by the
+  pull rule, which reaches an open pull request as well as a lane
+  mid-build:** a blocking finding **the lane cannot clear** is pulled — the
+  owning agent closes the pull request, records on the issue either the
+  question, if it needs a ruling, or simply that the lane could not clear
+  it, returns the item to the blocked pile, and the result reports it as not
+  delivered. The condition is "cannot clear", not "needs a ruling": a
+  finding that is merely too hard trips none of the four escalation
+  triggers, so gating the exit on a ruling would leave that case with no
+  exit at all — the same shape as the leak this rule exists to close. "The
+  lane could not clear it" is itself a call for the owner: ship the bug, or
+  take it on themselves. Closing a pull request is the one action on one the
+  owning agent may take; merging is never one. Without that exit this
+  exception would be the only state here the *round itself* cannot leave —
+  step 5 could never run, so no other lane's work would reach the owner
+  either, and holding the round up is precisely what the pull rule exists to
+  prevent.
 - **Verify, do not relay.** Act on a subagent's finding only with execution
   evidence, and run a suggested remedy before adopting it. A remedy is
   checked *before* it is asked for: in round 1 the suggested fix for a
@@ -256,6 +257,16 @@ the merges in step 4. Between those, decide and record rather than ask.
 
 A question belongs in the blocked pile, and therefore in a proposal, when any
 of these holds. Everything else an agent decides and records.
+
+**A pull enters the blocked pile by its own door, and these four do not
+govern it.** They say when an agent must *ask* rather than decide; a pull is
+not an agent asking, it is a lane stopping. Most pulls do trip one of them —
+§3's is gated on the item needing a ruling — but a blocking review finding
+the lane simply could not clear trips none, and it still belongs in the pile,
+because the alternative is a round that cannot reach step 5. What the issue
+records in that case is not a question but the fact: the lane could not clear
+it. The owner's call is then whether to ship the bug or take it on
+themselves.
 
 1. It would override a documented design decision.
 2. It is about what a user sees or experiences.
