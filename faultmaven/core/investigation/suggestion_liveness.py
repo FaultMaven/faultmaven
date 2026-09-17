@@ -21,11 +21,26 @@ Two facts make that question non-trivial:
    endpoints move the case without touching the list at all. So "it is in the
    row" is not evidence that a turn put it there *for now*.
 
-One mechanism answers both: every stored entry carries the turn that OFFERED
-it, and liveness is an age bound on that stamp. Fact 1 is a wide window with a
-hard span cap; fact 2 is the same predicate applied where no turn wrote — an
-entry left behind by a non-turn writer ages out on the clock rather than
-needing every writer to remember to clear it.
+Every stored entry carries the turn that OFFERED it, and liveness is an age
+bound on that stamp. Fact 1 is a wide window with a hard span cap. Fact 2 has
+two halves and the stamp answers only ONE of them, which this note used to get
+wrong (it claimed "one mechanism answers both"):
+
+- A **non-turn writer** leaves an entry behind and the clock keeps moving, so
+  the entry ages out without every writer having to remember to clear it. The
+  age bound does answer this — and, since fm#918, the one such writer that
+  ANSWERS a clarification question (``reclassify_evidence``) retires it
+  exactly rather than waiting for the window, because the age bound is a bound
+  and not a correction. The others of this shape — ``close_case``,
+  ``transition_to_investigating``, ``case_service.add_message`` — answer no
+  question and have nothing to retire, so for them the age bound is the whole
+  mechanism.
+- A **mid-turn save** is NOT answered by the age bound. Measured: the two saves
+  that can commit a row mid-turn run BEFORE the turn is recorded, so the row
+  carries N-1 in the persisted counter *and* a stamp of N-1 — age 1, inside
+  every window. What answers it is that both of those saves commit a TERMINAL
+  case, and nothing stored is live on one. See ``FOLLOW_UP_CARRY_TURNS`` and
+  the terminal guard in ``suggestion_is_live``.
 
 WHICH clock, precisely. The stamp is the in-flight ``case.current_turn``, and
 the number a LATER turn compares it against is the one that survives a save —
@@ -70,6 +85,7 @@ __all__ = [
     "FOLLOW_UP_CARRY_TURNS",
     "OFFERED_DATA_TYPE_KEY",
     "OFFERED_TURN_KEY",
+    "drop_clarifications_for_file",
     "entry_file_id",
     "entry_match_keys",
     "entry_offered_turn",
@@ -102,10 +118,23 @@ OFFERED_TURN_KEY = "offered_turn"
 #: Deliberately lossy in one direction and never the other. ``data_type`` holds
 #: an ``EvidenceSourceType``, a 12→6 projection of ``DataType``, so a
 #: reclassification WITHIN a source type (logs_and_errors → command_output,
-#: both ``logs``) leaves it unchanged and the question stays live. That is a
-#: missed drop, never a wrong one: the value cannot change except by
-#: reclassification, so this can never retire a question the user has not
-#: answered.
+#: both ``logs``) leaves it unchanged. That is a missed drop, never a wrong
+#: one: the value cannot change except by reclassification, so this can never
+#: retire a question the user has not answered.
+#:
+#: The missed drop is REACHABLE, and is fm#918's exposure 1 rather than a
+#: theoretical edge: a file that failed classification as ``logs_and_errors``
+#: (the classifier's best-effort arm fails at 0.50 with a concrete type, so
+#: the row lands at ``logs``) is reclassified through
+#: ``PATCH /evidence/{id}/classification`` to ``command_output``, the stamp
+#: still reads ``logs``, and typing "Application logs (x.log)" next turn mints
+#: a reclassification that overwrites the answer the user just gave. So this
+#: check is NOT the whole defence for a cooperative writer; it is the backstop
+#: for writers that cannot cooperate. The out-of-band reclassification path
+#: drops the file's choices itself, via ``drop_clarifications_for_file``, which
+#: is exact because it names the file rather than comparing a projection of its
+#: type. Which writers must call it is pinned by
+#: ``test_every_data_type_writer_retires_the_question``.
 OFFERED_DATA_TYPE_KEY = "offered_data_type"
 
 #: Turns after the offering turn that a clarification choice stays answerable
@@ -128,11 +157,19 @@ CLARIFICATION_CARRY_TURNS = 3
 #: action) stays answerable: exactly the next one, which is the window the
 #: system has always had. A follow-up is about the turn that produced it —
 #: "Yes, mark as resolved" means nothing once the proposal it belonged to is
-#: gone — so it must NOT inherit the clarification window. This is also the half
-#: that closes fm#918's mid-turn-save exposure: the engine appends
-#: ``turn_history`` at its Step 6 and saves at Step 7, so a row committed by a
-#: save whose final assignment never ran carries turn N in the persisted counter
-#: and a stamp of N-1, which is out of window on the retry turn.
+#: gone — so it must NOT inherit the clarification window.
+#:
+#: It does NOT, on its own, close fm#918's mid-turn-save exposure, and this
+#: comment used to claim it did — "the engine appends ``turn_history`` at its
+#: Step 6 and saves at Step 7, so a row committed by a save whose final
+#: assignment never ran carries turn N in the persisted counter and a stamp of
+#: N-1, which is out of window on the retry turn". Measured: two saves inside
+#: ``_process_turn_impl`` run BEFORE the turn is recorded (both "persist
+#: terminal state before synthesis", ahead of ``_finish_deterministic_turn``),
+#: so such a row carries N-1 in the persisted counter AND a stamp of N-1. The
+#: retry asks at N, the age is exactly 1, and the follow-up is inside this
+#: window rather than outside it. What closes that window is the terminal
+#: guard in ``suggestion_is_live``: both of those saves commit a TERMINAL case.
 FOLLOW_UP_CARRY_TURNS = 1
 
 #: Distinct attachments whose clarification choices may be on offer at once. A
@@ -158,8 +195,20 @@ def normalize_choice_text(text: Optional[str]) -> str:
     would answer to the same typing. If the two normalisations drift, the
     admission rule reports a set as unambiguous that the matcher can still
     resolve two ways — which is #1245's round-one defect in a new place.
+
+    A non-string folds to ``""``, which ``entry_match_keys`` then drops. That
+    is the right answer and not merely a safe one: nothing a user can TYPE
+    matches an ``int``, so such a field contributes no match key. ``(text or
+    "")`` does not cover it — it catches ``None`` and every other falsey
+    value, and a truthy non-string (``5``) goes straight to ``.lower()``. This
+    is the single leaf under every reader of a stored ``label`` or
+    ``payload``: ``entry_match_keys`` → ``_admit_clarification_entries`` on
+    the WRITE path (after the LLM call, so the turn's work is lost at save)
+    and ``IntentResolver._exact_match`` on the READ path.
     """
-    return (text or "").lower().strip().rstrip(".!?")
+    if not isinstance(text, str):
+        return ""
+    return text.lower().strip().rstrip(".!?")
 
 
 def entry_match_keys(entry: Dict[str, Any]) -> Set[str]:
@@ -189,14 +238,31 @@ def entry_match_keys(entry: Dict[str, Any]) -> Set[str]:
 
 
 def is_clarification_entry(entry: Dict[str, Any]) -> bool:
-    """Is this stored entry one of the clarification choices?"""
-    intent = entry.get("intent") or {}
+    """Is this stored entry one of the clarification choices?
+
+    A non-dict ``intent`` answers False rather than raising. ``or {}`` does not
+    cover it — a TRUTHY non-dict (``"confirmation"``, from a legacy or
+    hand-written row) passes straight through and ``.get`` blows up on it. That
+    was reachable from BOTH sides of the seam: ``live_suggestions`` walks every
+    stored entry at the adoption site, so one such row turned every typed turn
+    on that case into a 500, and ``drop_clarifications_for_file`` runs it on the
+    write path answering ``PATCH /evidence/{id}/classification``.
+    """
+    intent = entry.get("intent")
+    if not isinstance(intent, dict):
+        return False
     return intent.get("type") == IntentType.FILE_RECLASSIFICATION.value
 
 
 def entry_file_id(entry: Dict[str, Any]) -> Optional[str]:
-    """The attachment a clarification entry targets, or None."""
-    intent = entry.get("intent") or {}
+    """The attachment a clarification entry targets, or None.
+
+    Same non-dict ``intent`` guard as ``is_clarification_entry``, for the same
+    reason: both are called on rows this module did not write.
+    """
+    intent = entry.get("intent")
+    if not isinstance(intent, dict):
+        return None
     file_id = intent.get("file_id")
     return file_id if isinstance(file_id, str) and file_id else None
 
@@ -243,7 +309,13 @@ def suggestion_is_live(
     instead would re-arm every pre-existing row permanently, since the paths
     that leave one behind are precisely the paths that never rewrite it.
     """
-    if not isinstance(entry, dict) or not entry.get("intent"):
+    # A non-dict ``intent`` is NOT live, and that is the read side of the
+    # asymmetry ``drop_clarifications_for_file`` argues on the write side:
+    # nothing downstream can act on it (the resolver hands what it finds to
+    # ``QueryIntent(**intent)``), so there is nothing to keep it alive for.
+    # The writer keeps such a row because it cannot read it; the reader
+    # refuses it for the same reason.
+    if not isinstance(entry, dict) or not isinstance(entry.get("intent"), dict):
         return False
 
     offered = entry_offered_turn(entry)
@@ -262,15 +334,37 @@ def suggestion_is_live(
     if age > window:
         return False
 
-    if not is_clarification:
-        return True
-
-    # A clarification click mutates files and evidence, so
-    # ``_handle_file_reclassification`` refuses on a terminal case (422).
-    # Minting the intent anyway would turn an ordinary typed message on a
-    # closed case into an error response; drop the choice instead.
+    # NOTHING stored is answerable once the case is terminal, and that applies
+    # to follow-ups as well as to clarifications (fm#918 exposure 2). The two
+    # halves of the argument are different and both hold:
+    #
+    # - A clarification click mutates files and evidence, so
+    #   ``_handle_file_reclassification`` refuses on a terminal case (422).
+    #   Minting the intent anyway would turn an ordinary typed message on a
+    #   closed case into an error response.
+    # - A follow-up on a terminal case cannot execute anything either: the
+    #   engine routes every turn on such a case to ``_process_terminal_turn``
+    #   before it reads ``intent_type``, so a minted ``confirmation`` is
+    #   discarded there. Matching one costs a classifier call to reach a
+    #   result the engine throws away.
+    #
+    # This is also the arm that covers the only mid-turn window that can
+    # actually commit a row: the two saves that precede the turn record
+    # (``milestone_engine`` "persist terminal state before synthesis") both
+    # write a TERMINAL case, and because they run BEFORE the turn is recorded
+    # the stamp is NOT out of window on the retry. The age bound does not
+    # catch that one — see ``FOLLOW_UP_CARRY_TURNS``. This does.
+    #
+    # Nothing is lost: the follow-ups a terminal turn itself emits
+    # (regenerate summary, generate runbook) carry no ``intent``, so
+    # ``_stored_suggestions`` never stores them and there is no terminal
+    # affordance for the resolver to match. Pinned by
+    # ``test_every_intent_bearing_follow_up_belongs_to_a_gate``.
     if case_is_terminal:
         return False
+
+    if not is_clarification:
+        return True
 
     file_id = entry_file_id(entry)
     if file_id is None or file_id not in file_data_types:
@@ -281,6 +375,52 @@ def suggestion_is_live(
 def file_data_types(case: "Case") -> Dict[str, Optional[str]]:
     """``file_id`` → current ``data_type``, for the referent check."""
     return {uf.file_id: uf.data_type for uf in (case.uploaded_files or [])}
+
+
+def drop_clarifications_for_file(
+    stored: Optional[List[Dict[str, Any]]], file_id: Optional[str]
+) -> Optional[List[Dict[str, Any]]]:
+    """``stored`` without the clarification choices that target *file_id*.
+
+    What a writer of ``UploadedFile.data_type`` outside the turn seam calls to
+    retire the question it has just answered (fm#918 exposure 1). The turn path
+    already does this by name — ``_carry_forward_unresolved_clarifications``
+    takes ``resolved_file_id`` — and this is the same act for the paths that
+    load-mutate-save without rebuilding the list.
+
+    Exact where ``OFFERED_DATA_TYPE_KEY`` is a proxy: it names the attachment
+    rather than comparing a 12→6 projection of its type, so it retires a
+    within-source-type reclassification (logs_and_errors → command_output) that
+    the referent check cannot see. The referent check stays as the backstop for
+    any future writer that does not call this.
+
+    Follow-ups are untouched — they are not about a file — and ``None`` is
+    returned for an empty result, which is the value the write site stores
+    (``stored or None``) so the field has one empty state rather than two.
+
+    An entry this function cannot classify is KEPT rather than inspected —
+    a non-dict entry, and a dict entry whose ``intent`` is not a dict either.
+    This is a WRITER on the request path of
+    ``PATCH /evidence/{id}/classification``: dropping what it cannot read would
+    delete a row's contents on a guess, and raising on it answers 500 to a
+    request that has nothing to do with the malformed row. The reader is where
+    such an entry dies — ``suggestion_is_live`` refuses both shapes — so
+    keeping it here costs nothing and loses nothing.
+    """
+    if not stored or not file_id:
+        # ``or None`` on this path too. Returning ``stored`` verbatim gave the
+        # field two empty states — ``[]`` from here, ``None`` from the filter
+        # below — while the paragraph above promised one, and the caller
+        # writes the result straight through without the ``or None`` the turn
+        # seam applies.
+        return stored or None
+    kept = [
+        entry
+        for entry in stored
+        if not isinstance(entry, dict)
+        or not (is_clarification_entry(entry) and entry_file_id(entry) == file_id)
+    ]
+    return kept or None
 
 
 def live_suggestions(

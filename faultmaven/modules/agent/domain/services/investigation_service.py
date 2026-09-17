@@ -37,6 +37,7 @@ from faultmaven.core.investigation.suggestion_liveness import (
     CLARIFICATION_SPAN_CAP,
     OFFERED_DATA_TYPE_KEY,
     OFFERED_TURN_KEY,
+    drop_clarifications_for_file,
     entry_file_id,
     entry_match_keys,
     file_data_types,
@@ -1036,9 +1037,11 @@ def _stored_suggestions(
     oldest-last, then the engine's follow-ups.
 
     Follow-ups are stamped too. They are not carried (their window is one
-    turn), but the stamp is what makes them EXPIRE rather than linger when no
-    turn rewrites the list — fm#918's mid-turn-save exposure is exactly a
-    follow-up outliving the state it was about.
+    turn), and the stamp is what expires them when an ORDINARY turn does not
+    rewrite the list. It is NOT what covers fm#918's mid-turn-save exposure —
+    the two saves that commit a row mid-turn run before the turn is recorded,
+    so the stamp ages to 1 and stays in window; what covers that is the
+    terminal guard in ``suggestion_is_live``. See ``FOLLOW_UP_CARRY_TURNS``.
 
     Everything assembled is then put through the liveness rule at
     ``as_of_turn``, the number the NEXT read will use. Filtering the fresh
@@ -1690,6 +1693,13 @@ class InvestigationService:
             # reject the great majority of turns, and this walks every stored
             # entry and indexes every uploaded file to answer a question those
             # turns never ask.
+
+            # Set when the INV-26 guard below refuses a mint. The refusal is a
+            # POSITIVE judgement — this message is a substantive answer to a
+            # gate — so it is carried to the out-of-band lane rather than
+            # recomputed there; see the lane's own note.
+            gate_reply_refused = False
+
             if (
                 intent_type == IntentType.CONVERSATION
                 and query
@@ -1710,26 +1720,26 @@ class InvestigationService:
                 if resolved_intent:
                     try:
                         resolved_qi = QueryIntent(**resolved_intent)
-                        if self._minted_intent_swallows_terminal_consent(
+                        if self._minted_intent_swallows_gate_consent(
                             case, resolved_qi, query
                         ):
-                            # INV-26 guard (#721): the resolver's classifier
-                            # tier matched substantive typed text ("yes but
-                            # what about the replication lag?") to a
-                            # suggestion whose intent would confirm the
-                            # pending TERMINAL transition. Substantive input
-                            # is never consent to an irreversible action —
-                            # drop the minted intent so the message flows
-                            # through the pending-gate escape lane as a
-                            # normal turn (the engine withdraws the proposal
-                            # and processes the message; it can re-propose
-                            # from fresher state).
+                            # INV-26 guard (#721, widened by fm#918): the
+                            # resolver's classifier tier matched substantive
+                            # typed text ("yes but what about the replication
+                            # lag?") to a suggestion whose intent would COMMIT
+                            # A GATE — the pending TERMINAL transition, or
+                            # INQUIRY's Gate 1. Substantive input is never
+                            # consent — drop the minted intent so the message
+                            # flows through as a normal turn (where a pending
+                            # transition exists its own escape lane withdraws
+                            # the proposal and processes the message; the
+                            # engine can re-propose from fresher state).
+                            gate_reply_refused = True
                             logger.info(
                                 "Discarded classifier-minted intent "
                                 f"{resolved_qi.type.value} for case "
                                 f"{case.case_id}: substantive reply must not "
-                                "confirm a pending terminal transition "
-                                "(INV-26, #721)"
+                                "commit a gate (INV-26, #721/fm#918)"
                             )
                         else:
                             intent = resolved_qi
@@ -1757,6 +1767,38 @@ class InvestigationService:
             # terminal case (its Q&A path has its own cards and refuses new
             # data). The turn is already charged; what the verdict changes is
             # the route: an aside skips the engine and is recorded OUT_OF_BAND.
+            #
+            # ``gate_reply_refused`` carries the INV-26 guard's verdict here.
+            # The guard refuses a mint precisely because the message IS a
+            # substantive answer to a gate — so triaging it afterwards can
+            # only get it wrong, and getting it wrong is expensive: an aside
+            # verdict answers from a small prompt with no case context,
+            # records ``TurnOutcome.OUT_OF_BAND``, and renders in later
+            # prompts as an off-topic exchange, so the engine never learns the
+            # user questioned its problem statement. #721's arm was exempt by
+            # construction (it REQUIRED a pending transition, which this lane
+            # already excludes); fm#918's Gate-1 arm is defined by the absence
+            # of one, so the exemption has to be carried explicitly.
+            #
+            # It only ever ADDS coverage for the no-pending case, because a
+            # pending row already excludes this lane one line up — and that
+            # overlap is the point: the guard can refuse with a pending row
+            # too (the two gate arms are an OR, not an if/else), and there the
+            # conjunct is inert rather than wrong.
+            #
+            # It is NOT the same rule as ``pending_transition``, and the
+            # difference is worth knowing: that one suppresses this lane on
+            # EVERY turn while a gate is open, whereas this is turn-local —
+            # it is a verdict the guard reached on THIS message, so it exists
+            # only where the guard ran, which needs a live intent-bearing card
+            # on offer. A Gate-1 case whose ``last_suggestions`` has since
+            # been emptied (an aside or an orientation turn stores no
+            # intent-bearing follow-up, so the next ``_stored_suggestions``
+            # writes None) answers the gate with no exemption and is triaged.
+            # That is pre-existing rather than introduced here, and narrowing
+            # it would mean keying on ``_gate1_is_pending`` instead — which
+            # suppresses the aside lane for a whole phase and is #1329's
+            # design call, not this guard's.
             oob_kind: Optional[OutOfBandKind] = None
             if (
                 intent_type == IntentType.CONVERSATION
@@ -1765,6 +1807,7 @@ class InvestigationService:
                 and not payload.has_attachments
                 and not case.is_terminal
                 and not getattr(case, "pending_transition", None)
+                and not gate_reply_refused
             ):
                 oob_kind = await self.out_of_band_triage.triage(
                     case, query, classification
@@ -2837,47 +2880,104 @@ class InvestigationService:
         return result
 
     @staticmethod
-    def _minted_intent_swallows_terminal_consent(
+    def _minted_intent_swallows_gate_consent(
         case: "Case", minted: QueryIntent, user_message: str
     ) -> bool:
-        """INV-26 guard for resolver-minted intents (#721).
+        """INV-26 guard for resolver-minted intents (#721, widened by fm#918).
 
         True when adopting ``minted`` would let a SUBSTANTIVE typed message
-        confirm the case's pending TERMINAL transition. The IntentResolver's
-        classifier tier semantically matches typed text against the previous
-        turn's DECIDE suggestions and can mint ``confirmation``/
-        ``status_transition`` intents — but the engine treats those intents
-        as deterministic consent (the DECIDE-click path) and consults them
-        BEFORE its INV-26 bare-token guards. A click IS deterministic
-        consent; an inference from typed text is not. So a minted intent
-        that would confirm a pending RESOLVED/CLOSED must pass the same
-        substance test the typed-confirmation matcher applies
-        (``is_substantive_reply`` — shared single source of truth): "yes but
-        what about the replication lag?" is substantive input, never consent
-        to an irreversible transition.
+        COMMIT A GATE. The IntentResolver's classifier tier semantically
+        matches typed text against the previous turn's DECIDE suggestions and
+        can mint ``confirmation``/``status_transition`` intents — but the
+        engine treats those intents as deterministic consent (the DECIDE-click
+        path) and consults them BEFORE its INV-26 bare-token guards. A click
+        IS deterministic consent; an inference from typed text is not. So a
+        minted intent that would commit a gate must pass the same substance
+        test the typed-confirmation matcher applies (``is_substantive_reply``
+        — shared single source of truth): "yes but what about the replication
+        lag?" is substantive input, never consent.
 
-        Only confirm-shaped mints over a pending terminal transition are
-        guarded. Declines, mints with no pending transition (e.g. Gate 1
-        problem-statement confirmation), and contradicting status
-        transitions (which merely cancel the pending) adopt as before —
-        none of them can execute a terminal transition.
+        **Two gates, not one.** Until fm#918 this returned False whenever the
+        case had no ``pending_transition``, justified as "mints with no
+        pending transition (e.g. Gate 1 problem-statement confirmation) …
+        adopt as before — none of them can execute a terminal transition".
+        The premise holds; the conclusion did not follow. A minted
+        ``confirmation`` with no pending transition reaches the engine's
+        section 0c, which on an INQUIRY case carrying a proposed problem
+        statement commits **Gate 1** (``problem_statement_confirmed`` +
+        ``decided_to_investigate``), and ``_check_automatic_transitions`` then
+        fires INQUIRY → INVESTIGATING. Measured: "correct — is the problem
+        statement about the replica or the primary?" started the
+        investigation off a statement the user was in the middle of
+        questioning. Gate 1 is reversible where RESOLVED is not, which is why
+        it is a P1 and not a P0 — but INV-26 is a rule about what an
+        INFERENCE may answer, not about which gate it lands on.
+
+        What is deliberately NOT guarded stays unguarded, because neither
+        commits anything: a **decline**, and a **contradicting** status
+        transition. Both only cancel a standing proposal, and the message is
+        processed as a normal turn either way.
+
+        The Gate-1 arm does not read ``confirmation_value``, and that is not
+        an oversight: the engine's 0c branch does not read it either, so a
+        minted ``confirmation_value=False`` commits Gate 1 exactly as True
+        does (#1464 — reachable by an ordinary DECIDE click, so a different
+        root). Guarding both arms is therefore what "would commit a gate"
+        means TODAY. When #1464 teaches that branch to decline, this arm
+        becomes over-broad by one case — and over-broad here costs only a
+        normal LLM turn, which is the direction to err in.
         """
         from faultmaven.core.investigation.terminal_transitions import (
             is_substantive_reply,
         )
 
+        # OR, not if/else. The two gates are not alternatives — a case can
+        # carry a pending transition AND be an INQUIRY case with a proposed
+        # problem statement, and writing the Gate-1 arm as the ``else`` of
+        # ``if pending`` made it unreachable exactly there. Measured on that
+        # shape with a substantive DECLINE
+        # ("no - but is the problem statement about the replica or the
+        # primary?"): the pending arm only matches ``confirmation_value is
+        # True``, so the mint was adopted, 0b cancelled the pending and fell
+        # through, and 0c committed Gate 1 — the exposure the arm exists to
+        # close, reached through the one door the if/else left open. A
+        # ``needs_info`` pending is worse still: 0b is skipped wholesale
+        # (``elif not case.pending_transition.get("needs_info")``) and the
+        # mint lands in 0c directly.
         pending = getattr(case, "pending_transition", None)
-        if not pending:
-            return False
 
-        confirms_pending = (
-            minted.type == IntentType.CONFIRMATION and minted.confirmation_value is True
-        ) or (
-            minted.type == IntentType.STATUS_TRANSITION
-            and minted.to_state is not None
-            and minted.to_state.value == pending.get("to_state")
+        # The pending TERMINAL gate. Requires a pending row by definition.
+        confirms_pending_transition = bool(pending) and (
+            (
+                minted.type == IntentType.CONFIRMATION
+                and minted.confirmation_value is True
+            )
+            or (
+                minted.type == IntentType.STATUS_TRANSITION
+                and minted.to_state is not None
+                and minted.to_state.value == pending.get("to_state")
+            )
         )
-        return confirms_pending and is_substantive_reply(user_message)
+
+        # Gate 1. The same conditions the engine's 0c branch checks before it
+        # commits, read in the same order — a fourth condition added there
+        # without one here would make this guard silently miss the commit it
+        # exists to intercept. Deliberately says NOTHING about ``pending``:
+        # 0c is reached with one or without one.
+        commits_gate_one = (
+            minted.type == IntentType.CONFIRMATION
+            and case.state == CaseState.INQUIRY
+            and bool(
+                getattr(
+                    getattr(case, "inquiry", None),
+                    "proposed_problem_statement",
+                    None,
+                )
+            )
+        )
+
+        commits_gate = confirms_pending_transition or commits_gate_one
+        return commits_gate and is_substantive_reply(user_message)
 
     async def _handle_confirmation(
         self,
@@ -3464,6 +3564,38 @@ class InvestigationService:
             update={
                 "evidence": new_evidence_list,
                 "uploaded_files": new_files_list,
+                # fm#918 exposure 1: this path writes ``UploadedFile.data_type``
+                # without going through the turn seam, so nothing else rewrites
+                # ``last_suggestions`` and the file's clarification choices stay
+                # armed for the TYPED arm — the resolver reads this list, and
+                # this is what empties it. A DECIDE **click** is not covered
+                # and is not meant to be: a click carries its intent on the
+                # request and never consults this list
+                # (``suggestion_is_live``), so a card the client still shows
+                # can still be clicked and still reaches the same end state.
+                # That is consent rather than inference, which is the whole
+                # distinction INV-26 rests on — but it does mean "exposure 1
+                # is closed" is true of typing and not of clicking. Raised on
+                # fm#918 rather than decided here.
+                #
+                # Answering the question here is exact; the referent
+                # check in ``suggestion_is_live`` compares the 12→6 projection
+                # and cannot see a reclassification WITHIN a source type
+                # (logs_and_errors → command_output, both ``logs``), which is
+                # how a typed "Application logs (x.log)" on the next turn
+                # overwrote the answer the user had just given here.
+                #
+                # True of ``trigger="api"`` (the PATCH endpoint), which is the
+                # only trigger that reaches this method from outside a turn.
+                # On ``trigger="agent_tool"`` the LLM calls this MID-turn, and
+                # this whole save — the file row, the evidence row and this
+                # drop alike — is then clobbered by the end-of-turn aggregate
+                # save of the in-memory case the turn is holding. That lost
+                # update predates fm#918 and is filed as #1465; nothing here
+                # makes it better or worse.
+                "last_suggestions": drop_clarifications_for_file(
+                    case.last_suggestions, evidence.source_file_id
+                ),
             },
             deep=True,
         )

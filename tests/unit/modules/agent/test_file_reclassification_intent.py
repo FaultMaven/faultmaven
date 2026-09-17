@@ -8,8 +8,11 @@ choice), and the SERVICE handler re-runs preprocessing mechanically — no LLM
 call, so the choice can never be misread as an analysis request.
 """
 
+import ast
 import re
 from datetime import UTC, datetime
+from functools import lru_cache
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -19,8 +22,14 @@ from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.core.investigation.suggestion_liveness import (
     CLARIFICATION_CARRY_TURNS,
     CLARIFICATION_SPAN_CAP,
+    OFFERED_DATA_TYPE_KEY,
+    OFFERED_TURN_KEY,
+    drop_clarifications_for_file,
     entry_file_id,
+    entry_match_keys,
+    is_clarification_entry,
     live_suggestions,
+    normalize_choice_text,
 )
 from faultmaven.core.preprocessing.models import UnifiedDataType
 from faultmaven.exceptions import NotFoundError, ValidationException
@@ -1197,6 +1206,10 @@ def _stored_entry(
     }
 
 
+#: The attachment id the liveness suites share.
+_A = "file_aaaaaaaaaaaa"
+
+
 def _case_holding(*file_ids, current_turn=1, state=CaseState.INQUIRY, **kw):
     """A case whose ``uploaded_files`` are exactly ``file_ids``.
 
@@ -1821,6 +1834,227 @@ class TestATerminalTurnOffersNothing:
         assert saved.last_suggestions is None
 
 
+class TestAnUnreadableIntentIsNeverAnException:
+    """A stored entry whose ``intent`` is a truthy NON-dict.
+
+    ``(entry.get("intent") or {}).get("type")`` reads as defensive and is not:
+    ``or {}`` only catches a FALSEY value, so ``"confirmation"`` — a legacy or
+    hand-written row — passes through and ``.get`` raises ``AttributeError``.
+
+    Both sides of the seam ran that predicate on rows they did not write, so
+    one such row was a 500 twice over: ``live_suggestions`` walks every stored
+    entry at the adoption site, and ``drop_clarifications_for_file`` runs on
+    the request path of ``PATCH /evidence/{id}/classification``. The read side
+    now refuses the entry and the write side keeps it — the asymmetry is the
+    point, and each half is asserted below.
+    """
+
+    BAD = {"label": "x", "intent": "confirmation", "offered_turn": 1}
+
+    def test_the_predicates_answer_rather_than_raise(self):
+        assert is_clarification_entry(self.BAD) is False
+        assert entry_file_id(self.BAD) is None
+
+    def test_the_reader_refuses_it(self):
+        case = _case_holding("file_aaaaaaaaaaaa", current_turn=1)
+        assert live_suggestions([self.BAD], case, as_of_turn=2) == []
+        # Positive control: a well-formed entry at the same age IS live, so
+        # the empty result above is the intent guard and not the window.
+        good = _stored_entry("file_aaaaaaaaaaaa", offered_turn=1)
+        assert live_suggestions([good], case, as_of_turn=2) == [good]
+
+    def test_the_writer_keeps_it(self):
+        """It cannot be classified, so dropping it would delete a row's
+        contents on a guess — and this writer is answering an HTTP request
+        about a different file."""
+        kept = drop_clarifications_for_file([self.BAD], "file_aaaaaaaaaaaa")
+        assert kept == [self.BAD]
+
+    @pytest.mark.asyncio
+    async def test_the_patch_endpoint_does_not_500_on_one(
+        self, repo_with_case, preprocessing_service, file_storage
+    ):
+        """The end-to-end shape: the row is in the case, the operator
+        reclassifies an unrelated evidence row, and the call must succeed."""
+        repo, case = repo_with_case
+        case.last_suggestions = [self.BAD]
+        service = InvestigationService(
+            milestone_engine=MockMilestoneEngine(),
+            case_repository=repo,
+            preprocessing_service=preprocessing_service,
+            file_storage_service=file_storage,
+        )
+        updated = await service.reclassify_evidence(
+            case_id=case.case_id,
+            evidence_id="ev_aaaaaaaaaaaa",
+            user_id=case.user_id,
+            data_type=DataType.LOGS_AND_ERRORS,
+            trigger="api",
+        )
+        assert updated.evidence_id == "ev_aaaaaaaaaaaa"
+        saved = await repo.get(case.case_id)
+        assert saved.last_suggestions == [self.BAD], (
+            "the unreadable row is kept verbatim — the writer must not delete "
+            "what it cannot classify"
+        )
+
+
+def test_every_reader_of_a_stored_entry_tolerates_any_shape():
+    """State N: how many functions read a field off a stored entry, and where.
+
+    The rule this pins is not about one field. A row in ``last_suggestions``
+    was written by some earlier version of this code, or by hand, so **any
+    field may hold any shape** — and every reader has to answer rather than
+    raise. The lane learned that twice, one field at a time: a truthy non-dict
+    ``intent`` 500'd both the adoption site and ``PATCH
+    /evidence/{id}/classification``, and then a non-string ``label`` did the
+    same one field over, sailing through the ``intent`` guard because its
+    ``intent`` was fine. Fixing the second copy is not the rule; this is.
+
+    So: scan the package for every read of a stored-entry field name — the
+    closed set ``_stored_suggestions`` writes — and pin the result. Reads via
+    the ``OFFERED_*`` CONSTANTS are matched too; keying only on string
+    literals missed ``entry_offered_turn`` entirely, which is the shape of
+    miss that makes a scan look complete while it is not.
+
+    Every genuine reader below is shape-tolerant at a LEAF, not at its own
+    call site — ``normalize_choice_text`` for text fields, the
+    ``isinstance(intent, dict)`` guards for the intent — so a new reader
+    inherits the tolerance instead of having to remember it. The entries that
+    are NOT stored-entry readers are annotated, because a scan keyed on field
+    NAMES cannot tell them apart and trimming it to try is how a real reader
+    would slip out.
+    """
+    fields = {
+        "label",
+        "action_type",
+        "payload",
+        "body",
+        "intent",
+        OFFERED_TURN_KEY,
+        OFFERED_DATA_TYPE_KEY,
+    }
+    constants = {"OFFERED_TURN_KEY", "OFFERED_DATA_TYPE_KEY"}
+    readers: dict[tuple[str, str], set[str]] = {}
+
+    for rel, tree in _package_modules(tuple(fields | constants)):
+
+        class _Walk(_ScopedVisitor):
+            def _hit(self, field: str) -> None:
+                readers.setdefault((self.rel, self.scope), set()).add(field)
+
+            def _field_of(self, node) -> str | None:
+                if isinstance(node, ast.Constant) and node.value in fields:
+                    return node.value
+                # ``entry.get(OFFERED_TURN_KEY)`` — the constant, not a literal.
+                if isinstance(node, ast.Name) and node.id in constants:
+                    return node.id
+                return None
+
+            def visit_Call(self, node):
+                if (
+                    getattr(node.func, "attr", None) == "get"
+                    and node.args
+                    and (field := self._field_of(node.args[0]))
+                ):
+                    self._hit(field)
+                self.generic_visit(node)
+
+            def visit_Subscript(self, node):
+                if isinstance(node.ctx, ast.Load) and (
+                    field := self._field_of(node.slice)
+                ):
+                    self._hit(field)
+                self.generic_visit(node)
+
+        _Walk(rel).visit(tree)
+
+    liveness = "core/investigation/suggestion_liveness.py"
+    resolver = "core/investigation/intent_resolver.py"
+    service = "modules/agent/domain/services/investigation_service.py"
+    engine = "core/investigation/milestone_engine.py"
+
+    assert set(readers) == {
+        # ---- stored-entry readers. Shape-tolerant via the leaves. ----------
+        (liveness, "entry_match_keys"),  # -> normalize_choice_text
+        (liveness, "is_clarification_entry"),  # isinstance(intent, dict)
+        (liveness, "entry_file_id"),  # isinstance(intent, dict)
+        (liveness, "entry_offered_turn"),  # isinstance(offered, int)
+        (liveness, "suggestion_is_live"),  # refuses a non-dict intent
+        (resolver, "IntentResolver._exact_match"),  # -> normalize_choice_text
+        (resolver, "IntentResolver._build_prompt"),  # f-string: any shape
+        (resolver, "IntentResolver.resolve"),  # truthiness only
+        (resolver, "IntentResolver._parse_response"),  # truthiness only
+        (service, "_stored_suggestions"),  # truthiness only
+        # ---- NOT stored-entry readers: they share a field NAME -------------
+        # The re-render of THIS turn's engine follow-ups, not of a stored row.
+        (service, "InvestigationService.process_turn"),
+        # The clarification friendly-names table.
+        (service, "_clarification_suggestions_for_failed"),
+        # A tool result's own label.
+        (engine, "MilestoneEngine._format_tool_result"),
+        # HTTP request/response bodies, unrelated to this seam.
+        ("api/middleware/body_size.py", "RequestBodySizeLimitMiddleware.__call__"),
+        (
+            "api/middleware/idempotency.py",
+            "IdempotencyMiddleware._create_response_from_cache",
+        ),
+    }, f"a new reader of a stored-entry field: {sorted(set(readers))}"
+
+    # The scan looked where the rule can be violated: the two modules that
+    # own the seam are both in the result, with the fields they read.
+    assert readers[(liveness, "entry_match_keys")] == {"label", "payload"}
+    assert readers[(liveness, "entry_offered_turn")] == {"OFFERED_TURN_KEY"}, (
+        "the constant-key read must be matched — keying on string literals "
+        "alone missed this reader entirely"
+    )
+
+
+class TestAStoredEntryMayHaveAnyShape:
+    """Every field, not just the one the last review named.
+
+    ``BAD`` is the population the ``intent`` guards were added for — a legacy
+    or hand-written row — with an unreadable value in a DIFFERENT field. Its
+    ``intent`` is well-formed, so it passes every guard the previous commit
+    added and reaches the matcher anyway.
+    """
+
+    BAD = {
+        "label": 5,
+        "payload": None,
+        "intent": {"type": IntentType.FILE_RECLASSIFICATION.value, "file_id": _A},
+        "offered_turn": 1,
+        "offered_data_type": "logs",
+    }
+
+    def test_the_liveness_rule_accepts_it_so_the_matcher_must_cope(self):
+        """The premise. If liveness refused it the crash would be
+        unreachable and the tests below would prove nothing."""
+        case = _case_holding(_A, current_turn=1)
+        case.uploaded_files = [make_uploaded_file(file_id=_A, data_type="logs")]
+        assert live_suggestions([self.BAD], case, as_of_turn=2) == [self.BAD]
+
+    def test_normalisation_folds_an_unmatchable_value_away(self):
+        assert normalize_choice_text(5) == ""
+        assert normalize_choice_text(None) == ""
+        assert normalize_choice_text("  Yes. ") == "yes"
+
+    def test_the_write_path_survives_it(self):
+        """``_admit_clarification_entries`` runs at ``_stored_suggestions``
+        time — after the LLM call — so a raise here loses the whole turn's
+        work at save."""
+        assert entry_match_keys(self.BAD) == set()
+        assert len(_admit_clarification_entries([self.BAD])) == 1
+
+    def test_the_read_path_survives_it(self):
+        resolver = IntentResolver(MagicMock())
+        assert resolver._exact_match("application logs", [self.BAD]) is None
+        # Positive control: a well-formed sibling still matches, so the None
+        # above is the unmatchable value and not a dead matcher.
+        good = _stored_entry(_A, offered_turn=1)
+        assert resolver._exact_match(good["payload"], [good]) == good["intent"]
+
+
 class TestSuggestionLiveness:
     """The stamp, and what an absent or impossible one means."""
 
@@ -1854,11 +2088,15 @@ class TestSuggestionLiveness:
         )
 
     def test_a_follow_up_dies_one_turn_after_it_was_offered(self):
-        """fm#918 exposure 2: the engine appends ``turn_history`` at Step 6
-        and saves at Step 7, so a row committed when the final assignment
-        never ran carries turn N in the persisted counter beside a stamp of
-        N-1. On the retry turn that ages to 2 — out of window — so a typed
-        "yes" cannot consent to a proposal that no longer exists."""
+        """The window itself: offered on turn 5, answerable on 6, gone on 7.
+
+        This used to be labelled as fm#918 exposure 2's guard, on the reading
+        that a mid-turn save commits turn N in the persisted counter beside a
+        stamp of N-1 and so ages to 2. It does not — the two saves that commit
+        mid-turn run BEFORE the turn is recorded, so both numbers read N-1 and
+        the age is 1. What covers that window is
+        ``TestATerminalCaseAnswersNothingStored``; this pins the window and
+        nothing else."""
         case = _case_holding(self._A)
         follow_up = _stored_entry(
             self._A, intent_type=IntentType.CONFIRMATION.value, offered_turn=5
@@ -2378,3 +2616,663 @@ class TestSourceTypeMapExhaustiveness:
         default stays (a miss must not crash a turn), this pin moves the
         failure to CI."""
         assert data_type in _DATA_TYPE_TO_SOURCE_TYPE
+
+
+# =============================================================================
+# fm#918 exposure 1 — the out-of-band writer of ``UploadedFile.data_type``
+# =============================================================================
+
+
+def _reextraction_as(dt: DataType):
+    """A PreprocessingResult as ``reclassify_evidence`` returns under an
+    override to *dt* — the fine-grained type is what the file row is derived
+    from, so the probe has to carry the requested one, not a fixed default."""
+    from faultmaven.core.preprocessing.models import PreprocessingResult
+
+    return PreprocessingResult(
+        data_type=_UNIFIED_FOR_PROBE[dt],
+        detailed_data_type=dt,
+        summary="re-extracted summary",
+        structural_index="re-extracted index",
+        content_ref=None,
+        content_size_bytes=100,
+        content_type="text/plain",
+        extraction_method="crime_scene",
+        compression_ratio=0.1,
+        extraction_metadata={"evidence_metadata": {}},
+        content_hash="a" * 64,
+        processing_time_ms=5,
+    )
+
+
+_UNIFIED_FOR_PROBE = {
+    DataType.LOGS_AND_ERRORS: UnifiedDataType.LOGS,
+    DataType.COMMAND_OUTPUT: UnifiedDataType.LOGS,
+    DataType.STRUCTURED_CONFIG: UnifiedDataType.CONFIGURATION,
+}
+
+
+class TestOutOfBandReclassificationRetiresTheQuestion:
+    """fm#918 exposure 1, end to end.
+
+    ``PATCH /evidence/{id}/classification`` writes ``UploadedFile.data_type``
+    without going through the turn seam, so nothing rewrites
+    ``last_suggestions`` and the file's clarification choices stay armed. The
+    referent check (``OFFERED_DATA_TYPE_KEY``) catches that only when the
+    COARSE value moves: ``data_type`` holds an ``EvidenceSourceType``, a 12→6
+    projection, so ``logs_and_errors`` → ``command_output`` (both ``logs``)
+    left the question live and a typed "Application logs (…)" on the next turn
+    overwrote the answer the user had just given.
+
+    Both directions are asserted from one driver, because the cross-source-type
+    case is the control: if it also failed, the test would be measuring the
+    plumbing rather than the projection.
+    """
+
+    _FAILED_AS_LOGS_SUGGESTIONS = ["logs_and_errors", "structured_config"]
+
+    @staticmethod
+    def _failed_as_logs():
+        """The classifier's best-effort arm: ``classification_failed`` at 0.50
+        WITH a concrete type, so the row lands at ``logs`` rather than at
+        ``text``. That is what makes a within-source-type reclassification
+        reachable at all — the stamp has to already read ``logs``."""
+        result = MagicMock()
+        result.summary = "preview summary"
+        result.structural_index = "index"
+        result.data_type = UnifiedDataType.LOGS
+        result.detailed_data_type = DataType.LOGS_AND_ERRORS
+        result.content_hash = "d" * 64
+        result.extraction_method = "classification_failed"
+        result.extraction_metadata = {
+            "suggested_types": TestOutOfBandReclassificationRetiresTheQuestion._FAILED_AS_LOGS_SUGGESTIONS  # noqa: E501
+        }
+        result.coverage_start_ts = None
+        result.coverage_end_ts = None
+        return result
+
+    async def _armed_case(self, preprocessing_service, file_storage):
+        repo = RecordingCaseRepository()
+        case = create_sample_case(user_id="user_owner")
+        case.uploaded_files = []
+        case.evidence = []
+        repo._storage[case.case_id] = case
+
+        preprocessing_service.classify_and_extract = AsyncMock(
+            side_effect=lambda *a, **k: self._failed_as_logs()
+        )
+        preprocessing_service.reclassify_evidence = AsyncMock(
+            side_effect=lambda **k: _reextraction_as(k["user_override"])
+        )
+        file_storage.store_file = AsyncMock(
+            return_value={"storage_key": "evidence/case_x/mystery.log"}
+        )
+        file_storage.mark_linked = AsyncMock(return_value=True)
+        file_storage.retrieve_file = AsyncMock(return_value=b"line1\nline2\n")
+
+        service = InvestigationService(
+            milestone_engine=MockMilestoneEngine(),
+            case_repository=repo,
+            preprocessing_service=preprocessing_service,
+            file_storage_service=file_storage,
+        )
+        await service.process_turn(
+            case_id=case.case_id,
+            user_id="user_owner",
+            payload=TurnPayload(
+                query="what is this?",
+                attachments=[
+                    Attachment(
+                        content=b"ambiguous bytes",
+                        filename="mystery.log",
+                        content_type="text/plain",
+                        source_metadata={"source_type": "file_upload"},
+                    )
+                ],
+            ),
+        )
+        saved = await repo.get(case.case_id)
+        uploaded = saved.uploaded_files[0]
+        assert uploaded.data_type == "logs", (
+            "the premise of this suite: the armed question was minted while "
+            "the file already read 'logs', so a reclassification within that "
+            "source type cannot move the stamp"
+        )
+        assert self._clarified_file_ids(saved.last_suggestions) == [uploaded.file_id]
+        # The LLM anchors a claim on the file later (post-010: Evidence is born
+        # from evidence_to_add). That row is what the PATCH endpoint addresses.
+        saved.evidence = [
+            make_evidence(source_file_id=uploaded.file_id, data_type="logs")
+        ]
+        return service, repo, saved, uploaded.file_id
+
+    _clarified_file_ids = staticmethod(
+        TestRecoveryLoopSurvivesResolvingOneAttachment._clarified_file_ids
+    )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "override",
+        [DataType.COMMAND_OUTPUT, DataType.STRUCTURED_CONFIG],
+        ids=["within_source_type", "across_source_types"],
+    )
+    async def test_the_question_is_retired(
+        self, preprocessing_service, file_storage, override
+    ):
+        service, repo, case, file_id = await self._armed_case(
+            preprocessing_service, file_storage
+        )
+
+        await service.reclassify_evidence(
+            case_id=case.case_id,
+            evidence_id="ev_aaaaaaaaaaaa",
+            user_id="user_owner",
+            data_type=override,
+            trigger="api",
+        )
+
+        saved = await repo.get(case.case_id)
+        on_offer = live_suggestions(
+            saved.last_suggestions, saved, as_of_turn=saved.effective_current_turn + 1
+        )
+        assert self._clarified_file_ids(on_offer) == [], (
+            "the file has been classified out of band — the resolver must not "
+            "still be offered its choices, whether or not the coarse "
+            "data_type moved"
+        )
+
+        response = await service.process_turn(
+            case_id=case.case_id,
+            user_id="user_owner",
+            payload=TurnPayload(query="Application logs (mystery.log)"),
+        )
+        assert "Got it" not in response.agent_response, (
+            "typing a retired choice must not mint a file_reclassification "
+            "that overwrites the answer the user just gave out of band"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_stored_set_is_cleaned_not_merely_filtered(
+        self, preprocessing_service, file_storage
+    ):
+        """The writer's own half, stated separately from the reader's.
+
+        ``suggestion_is_live`` would hide an across-source-type answer at READ
+        time even if nothing cleaned the row, so the two defences have to be
+        measured apart or a mutation of one is masked by the other. This is
+        the write side: after the out-of-band reclassification the stored
+        field no longer carries the file's choices at all.
+        """
+        service, repo, case, file_id = await self._armed_case(
+            preprocessing_service, file_storage
+        )
+        await service.reclassify_evidence(
+            case_id=case.case_id,
+            evidence_id="ev_aaaaaaaaaaaa",
+            user_id="user_owner",
+            data_type=DataType.STRUCTURED_CONFIG,
+            trigger="api",
+        )
+        saved = await repo.get(case.case_id)
+        assert self._clarified_file_ids(saved.last_suggestions) == []
+
+
+# =============================================================================
+# Package-wide AST scans (fm#918)
+# =============================================================================
+#
+# Two guards below walk the whole ``faultmaven`` package. Both need the same
+# two things, so both take them from here.
+#
+# **The tree is anchored on THIS FILE, not on ``import faultmaven``.** An
+# editable install resolves ``faultmaven`` to whichever checkout it was
+# installed from, so a scan that locates the package by importing it can walk
+# a DIFFERENT tree than the one under test and pass vacuously — and a mutation
+# probe against this worktree would still have looked green, which is the one
+# failure a mutation-verified guard cannot detect in itself. Asserting
+# ``package.name == "faultmaven"`` does not catch it: that is true of every
+# checkout. The import is still performed and asserted to AGREE, following
+# ``tests/eval/progress_score_ordering/replay_transition.py``.
+#
+# **Only the files that could match are parsed, and the result is cached.** An
+# AST node naming ``data_type`` cannot exist in a file whose SOURCE does not
+# contain that token, so filtering on the token before parsing is sound rather
+# than merely fast — but only if every token a scan matches on is declared,
+# which is why callers pass all of them. (``_file_row_with_reclassification``
+# is its own token: its call sites do not mention ``data_type`` at all.)
+
+_PACKAGE_ROOT = Path(__file__).resolve().parents[4] / "faultmaven"
+
+
+@lru_cache(maxsize=1)
+def _package_root() -> Path:
+    """The tree under test, asserted to be the one ``import faultmaven`` gets."""
+    assert _PACKAGE_ROOT.is_dir(), _PACKAGE_ROOT
+    import faultmaven
+
+    imported = Path(faultmaven.__file__).resolve().parent
+    if imported != _PACKAGE_ROOT:
+        # SKIP, not fail. The anchoring is the point — a scan must never
+        # measure a tree other than the one it is checking — but a wheel
+        # install, or a venv built from a different checkout, makes the two
+        # disagree for reasons that say nothing about this branch. Two red
+        # tests that mean "your environment is arranged differently" are
+        # worse than two skips that say so: the first time they go red for a
+        # REAL reason nobody will believe them.
+        pytest.skip(
+            f"imported faultmaven from {imported}, not the tree under test at "
+            f"{_PACKAGE_ROOT} — these scans measure the checkout they live "
+            "in, so they cannot run against a shadowing install"
+        )
+    return _PACKAGE_ROOT
+
+
+@lru_cache(maxsize=1)
+def _package_sources() -> tuple[tuple[str, str], ...]:
+    """``(path relative to the package, source text)`` for every file.
+
+    Cached separately from the token filter below. Keying the cache on the
+    tokens meant each distinct token tuple walked and re-read the whole tree —
+    two scans, two full reads of ~500 files for one tree that had not changed.
+    """
+    root = _package_root()
+    return tuple(
+        (path.relative_to(root).as_posix(), path.read_text(encoding="utf-8"))
+        for path in sorted(root.rglob("*.py"))
+    )
+
+
+@lru_cache(maxsize=4)
+def _package_modules(tokens: tuple[str, ...]) -> tuple[tuple[str, ast.Module], ...]:
+    """``(path relative to the package, parsed module)`` for candidate files.
+
+    A file is a candidate when its source contains ANY of *tokens*. Declare
+    every token the caller's matchers key on, or the filter silently narrows
+    the scan — the failure this whole seam exists to avoid.
+    """
+    out = [
+        (rel, ast.parse(source))
+        for rel, source in _package_sources()
+        if any(token in source for token in tokens)
+    ]
+    assert out, f"the token filter {tokens} matched no file — it is measuring nothing"
+    return tuple(out)
+
+
+class _ScopedVisitor(ast.NodeVisitor):
+    """A visitor that tracks the enclosing def/class name."""
+
+    def __init__(self, rel: str) -> None:
+        self.rel = rel
+        self.scopes: list[str] = []
+
+    def _named(self, node):
+        self.scopes.append(node.name)
+        self.generic_visit(node)
+        self.scopes.pop()
+
+    visit_FunctionDef = _named
+    visit_AsyncFunctionDef = _named
+    visit_ClassDef = _named
+
+    @property
+    def scope(self) -> str:
+        """The FULL chain, not just the innermost name.
+
+        ``scopes[-1]`` collapses two same-named methods of different classes
+        into one tuple, so a writer added as ``OtherClass.process_turn``
+        produces no new entry and the expected set below stays green through
+        exactly the change it exists to catch.
+        """
+        return ".".join(self.scopes) if self.scopes else "<module>"
+
+
+def test_every_data_type_writer_retires_the_question():
+    """State N: how many places write ``UploadedFile.data_type``, and where.
+
+    ``OFFERED_DATA_TYPE_KEY`` rests on "the ONLY writer after intake is
+    ``_file_row_with_reclassification``". That is a claim about the whole
+    package, so the scan reads the whole package rather than the one module
+    the writers happen to live in today — a guard that looks only where the
+    violations are not is the failure mode this repository already has one of.
+
+    File reach is not enough on its own; the PATTERN has to reach too, and the
+    first version of this scan did not. It matched ``uploaded_file.data_type =
+    …`` by the RECEIVER's spelling, so a writer in another module — which is
+    where a third one would appear, since ``_file_row_with_reclassification``
+    is private to ``investigation_service`` and unreachable from outside it —
+    escaped as ``uf.data_type = …``. Matching is keyed on the attribute and on
+    the write's shape, never on the receiver's name, and covers:
+
+    - plain, augmented and tuple-unpacked attribute assignment;
+    - ``setattr(x, "data_type", …)``;
+    - ``model_copy(update=…)`` naming ``data_type`` as a literal key or a
+      ``dict()`` keyword;
+    - ``UploadedFile(…, data_type=…)`` — a replacement row from the
+      constructor, which for a pydantic model is as natural as ``model_copy``;
+    - ``update(...).values(data_type=…)`` — the repository-layer shape.
+
+    WHAT IT STILL MISSES, stated rather than implied, because a guard that
+    reads as exhaustive and is not is worse than one that declares its edge:
+    a patch dict built in a variable and passed to ``model_copy``; a
+    replacement row built from ``model_dump()`` plus an override; and
+    ``__dict__`` / ``object.__setattr__``. Each needs dataflow rather than a
+    syntactic match, and each is verified to escape rather than assumed to.
+    They are the shapes to look for by hand if this test is ever green while
+    the referent check is misbehaving.
+
+    The expected set is written out, so a new writer fails here and its author
+    has to decide whether it retires the question (call
+    ``drop_clarifications_for_file``, as ``reclassify_evidence`` does) or is
+    the turn seam (which retires by ``resolved_file_id``).
+    """
+    found: set[tuple[str, str, str]] = set()
+
+    # Every token the matchers below key on: the attribute/keyword name, and
+    # the private helper whose call sites never mention it.
+    #
+    # ‼ The second token is DEFENSIVE and currently redundant — measured:
+    # dropping it changes nothing, because the only file holding those call
+    # sites is saturated with ``data_type`` anyway and is parsed either way.
+    # It is kept because that is a property of where the helper lives today,
+    # not of the rule: make it non-private and a call site in a file with no
+    # ``data_type`` in it becomes possible, and the filter would then narrow
+    # the scan silently. What IS live is the assertion below that every module
+    # the expected set names survived the filter.
+    modules = _package_modules(("data_type", "_file_row_with_reclassification"))
+    parsed = {rel for rel, _ in modules}
+
+    for rel, tree in modules:
+
+        class _Walk(_ScopedVisitor):
+            def _record(self, kind: str) -> None:
+                found.add((self.rel, self.scope, kind))
+
+            @staticmethod
+            def _flatten(target):
+                """Unpack a tuple/list target so unpacking cannot hide one."""
+                if isinstance(target, (ast.Tuple, ast.List)):
+                    for inner in target.elts:
+                        yield from _Walk._flatten(inner)
+                else:
+                    yield target
+
+            def _check_targets(self, targets) -> None:
+                for target in targets:
+                    for flat in self._flatten(target):
+                        if isinstance(flat, ast.Attribute) and flat.attr == "data_type":
+                            self._record("attribute_write")
+
+            def visit_Assign(self, node):
+                self._check_targets(node.targets)
+                self.generic_visit(node)
+
+            def visit_AugAssign(self, node):
+                self._check_targets([node.target])
+                self.generic_visit(node)
+
+            def visit_AnnAssign(self, node):
+                if node.value is not None:
+                    self._check_targets([node.target])
+                self.generic_visit(node)
+
+            @staticmethod
+            def _model_copy_writes_data_type(node: ast.Call) -> bool:
+                """``….model_copy(update={"data_type": …})``.
+
+                Scoped to the ``update=`` keyword rather than to any dict
+                carrying the key: measured, a bare key match finds 20+ sites
+                across the package — prompt dicts, SQL parameter dicts,
+                read-path summaries — none of which write a row.
+                """
+                if getattr(node.func, "attr", None) != "model_copy":
+                    return False
+                for kw in node.keywords:
+                    if kw.arg != "update":
+                        continue
+                    if isinstance(kw.value, ast.Dict) and any(
+                        isinstance(k, ast.Constant) and k.value == "data_type"
+                        for k in kw.value.keys
+                    ):
+                        return True
+                    if (
+                        isinstance(kw.value, ast.Call)
+                        and getattr(kw.value.func, "id", None) == "dict"
+                        and any(k.arg == "data_type" for k in kw.value.keywords)
+                    ):
+                        return True
+                return False
+
+            def visit_Call(self, node):
+                fn = node.func
+                name = getattr(fn, "id", None) or getattr(fn, "attr", None)
+                if name == "_file_row_with_reclassification":
+                    self._record("reclassification")
+                elif self._model_copy_writes_data_type(node):
+                    self._record("model_copy_update")
+                elif name == "setattr" and len(node.args) == 3:
+                    attr = node.args[1]
+                    if isinstance(attr, ast.Constant) and attr.value == "data_type":
+                        self._record("attribute_write")
+                elif name == "UploadedFile" and any(
+                    kw.arg == "data_type" for kw in node.keywords
+                ):
+                    self._record("constructor")
+                elif name == "values" and any(
+                    kw.arg == "data_type" for kw in node.keywords
+                ):
+                    self._record("sql_values")
+                self.generic_visit(node)
+
+        _Walk(rel).visit(tree)
+
+    service_module = "modules/agent/domain/services/investigation_service.py"
+    # The filter did not exclude a file a known writer lives in. Without this,
+    # a narrowed token list drops hits and the equality below still passes by
+    # matching a smaller set against a smaller expectation.
+    assert {
+        service_module,
+        "modules/case/infrastructure/sqlite_case_repository.py",
+        "modules/case/infrastructure/postgresql_hybrid_case_repository.py",
+    } <= parsed, f"the token filter excluded a module holding a known writer: {parsed}"
+
+    assert found == {
+        # Mints the question; does not answer one.
+        (
+            service_module,
+            "InvestigationService._preprocess_attachment",
+            "attribute_write",
+        ),
+        # The shared body both reclassification paths route through. It is
+        # private to this module, which is why a writer added ELSEWHERE would
+        # have to take one of the other matched forms.
+        (service_module, "_file_row_with_reclassification", "model_copy_update"),
+        # The turn seam — retires by ``resolved_file_id``.
+        (
+            service_module,
+            "InvestigationService._handle_file_reclassification",
+            "reclassification",
+        ),
+        # Out of band — retires by ``drop_clarifications_for_file`` (fm#918)
+        # on ``trigger="api"``. On ``trigger="agent_tool"`` the whole write is
+        # clobbered by the end-of-turn save (#1465); see that call site.
+        (
+            service_module,
+            "InvestigationService.reclassify_evidence",
+            "reclassification",
+        ),
+        # Not writers: the two repositories HYDRATE an ``UploadedFile`` from a
+        # stored row, which carries ``data_type=`` like every other column.
+        # The matcher cannot tell a read from a write syntactically, and
+        # narrowing it to try would be how the constructor shape escaped in
+        # the first place — so they are named here instead. A NEW constructor
+        # entry is the one to look at: outside a repository, building a row
+        # with a ``data_type`` is a write.
+        (
+            "modules/case/infrastructure/sqlite_case_repository.py",
+            "SQLiteCaseRepository.find_uploaded_file_by_content_hash",
+            "constructor",
+        ),
+        (
+            "modules/case/infrastructure/postgresql_hybrid_case_repository.py",
+            "PostgreSQLHybridCaseRepository.find_uploaded_file_by_content_hash",
+            "constructor",
+        ),
+    }, f"an unexpected writer of UploadedFile.data_type: {sorted(found)}"
+
+
+class TestATerminalCaseAnswersNothingStored:
+    """fm#918 exposure 2 — the mid-turn save that commits a TERMINAL row.
+
+    Two saves inside ``_process_turn_impl`` run BEFORE the turn is recorded
+    (both "persist terminal state before synthesis", ahead of
+    ``_finish_deterministic_turn``), so a crash in report generation commits
+    turn N's terminal state with the persisted counter and the stored stamp
+    both reading N-1. The retry asks at N, the age is exactly 1, and
+    ``FOLLOW_UP_CARRY_TURNS`` does NOT expire it — the comment there used to
+    claim it did. What expires it is that the committed case is terminal.
+    """
+
+    _A = "file_aaaaaaaaaaaa"
+
+    def test_a_follow_up_is_dead_on_a_terminal_case(self):
+        case = _case_holding(self._A, state=CaseState.INQUIRY)
+        follow_up = _stored_entry(
+            self._A, intent_type=IntentType.CONFIRMATION.value, offered_turn=4
+        )
+        # Positive control: in window, and live while the case is open.
+        assert live_suggestions([follow_up], case, as_of_turn=5) == [follow_up]
+
+        terminal = case.model_copy(
+            update={
+                "state": CaseState.RESOLVED,
+                "resolved_at": datetime.now(UTC),
+                "closed_at": datetime.now(UTC),
+                "closure_reason": "resolved",
+            }
+        )
+        assert terminal.is_terminal
+        assert live_suggestions([follow_up], terminal, as_of_turn=5) == [], (
+            "the mid-turn save commits a TERMINAL row, and the age bound does "
+            "not catch it — this guard is what does"
+        )
+
+    def test_every_intent_bearing_follow_up_belongs_to_a_gate(self):
+        """What the terminal guard above costs: nothing.
+
+        The claim is "no follow-up the engine can emit on a TERMINAL case
+        carries an ``intent``", and the honest way to check it is to enumerate
+        the intent-bearing follow-ups rather than the terminal builders. A
+        hand-written list of terminal builders is the wrong direction: it
+        cannot fail when a NEW builder appears, which is the only way this can
+        break. (The first version of this test did exactly that, and already
+        omitted ``_generate_runbook_anyway_suggestion`` — which IS returned as
+        ``suggested_follow_ups`` on a terminal-case turn, and carries no
+        intent.)
+
+        Scanned over the WHOLE package, not over ``milestone_engine`` alone,
+        for the same reason the writer scan above is: the terminal guard in
+        ``suggestion_is_live`` applies to every stored follow-up whatever
+        built it, and a guard that reads only where the violations are not is
+        the failure this repository already has one of. Today the engine is
+        the only producer that could carry one — ``SuggestedFollowUp`` has no
+        ``intent`` field, so the LLM path is closed by the schema — but
+        ``investigation_service`` and ``orientation`` both hand-build DECIDE
+        cards and are one key away.
+
+        Four spellings are matched: a dict literal carrying both ``label`` and
+        ``intent``; the same via ``dict(label=…, intent=…)``; a dict SPREAD
+        (``{**base, "intent": …}``), which carries the key without carrying
+        ``label``; and a ``SuggestedActionResponse(label=…, intent=…)``
+        constructor, which is what ``_stored_suggestions`` reads ``.intent``
+        off. A post-hoc ``card["intent"] = …`` is matched too.
+
+        WHAT IT STILL MISSES, declared for the same reason its sibling scan
+        declares its own: a card whose ``intent`` arrives through a variable
+        or a helper's return value rather than appearing syntactically at the
+        construction site. That needs dataflow. If this guard is ever green
+        while a terminal card stops responding to typing, that is the shape to
+        look for by hand.
+
+        A NEW entry here is the signal to check whether its emitter can fire
+        on a terminal case; if it can, the guard in ``suggestion_is_live``
+        starts silently dropping a card that used to work. The set is
+        annotated rather than trimmed: the scan reports what it finds, and not
+        every hit is a producer.
+        """
+        builders: set[tuple[str, str]] = set()
+
+        # Every matcher below requires the literal ``intent`` in the source:
+        # as a dict key, a keyword argument, or a subscript.
+        for rel, tree in _package_modules(("intent",)):
+
+            class _Walk(_ScopedVisitor):
+                def _record(self) -> None:
+                    builders.add((self.rel, self.scope))
+
+                def visit_Dict(self, node):
+                    keys = {k.value for k in node.keys if isinstance(k, ast.Constant)}
+                    # ``{**base, "intent": …}`` carries a ``None`` key for the
+                    # spread, so ``label`` need not appear here for this to be
+                    # an intent-bearing card.
+                    spread = any(k is None for k in node.keys)
+                    if "intent" in keys and ({"label"} <= keys or spread):
+                        self._record()
+                    self.generic_visit(node)
+
+                def visit_Call(self, node):
+                    name = getattr(node.func, "id", None) or getattr(
+                        node.func, "attr", None
+                    )
+                    kws = {k.arg for k in node.keywords}
+                    if (
+                        name in ("dict", "SuggestedActionResponse")
+                        and {
+                            "label",
+                            "intent",
+                        }
+                        <= kws
+                    ):
+                        self._record()
+                    self.generic_visit(node)
+
+                def visit_Assign(self, node):
+                    # ``card["intent"] = {…}`` after the fact.
+                    for target in node.targets:
+                        if (
+                            isinstance(target, ast.Subscript)
+                            and isinstance(target.slice, ast.Constant)
+                            and target.slice.value == "intent"
+                        ):
+                            self._record()
+                    self.generic_visit(node)
+
+            _Walk(rel).visit(tree)
+
+        engine = "core/investigation/milestone_engine.py"
+        service = "modules/agent/domain/services/investigation_service.py"
+        assert builders == {
+            # The three engine GATE builders. Each is emitted beside a
+            # ``propose_transition`` or an open Gate 1, so never on a terminal
+            # case — which is what makes the terminal guard free.
+            (engine, "_investigation_confirmation_suggestions"),  # Gate 1, INQUIRY
+            (engine, "_resolution_confirmation_suggestions"),  # pending -> RESOLVED
+            (engine, "_close_confirmation_suggestions"),  # pending -> CLOSED
+            # Not producers. ``_stored_suggestions`` re-materialises this
+            # turn's clarification choices as stored entries, and
+            # ``_clarification_suggestions_for_failed`` mints those choices —
+            # both carry ``intent`` by construction. A clarification IS
+            # dropped on a terminal case, deliberately, and since before
+            # fm#918 — see ``suggestion_is_live``.
+            (service, "_stored_suggestions"),
+            (service, "_clarification_suggestions_for_failed"),
+            # Also not a producer: ``process_turn`` RE-RENDERS whatever the
+            # engine returned into the response, forwarding ``f.get("intent")``
+            # unchanged. It cannot originate an intent, so it cannot originate
+            # one on a terminal case either.
+            (service, "InvestigationService.process_turn"),
+        }, (
+            "a new intent-bearing follow-up builder: "
+            f"{sorted(builders)}. If it can fire on a terminal case, the "
+            "terminal guard in suggestion_is_live will drop its card."
+        )

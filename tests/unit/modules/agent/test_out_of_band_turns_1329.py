@@ -27,6 +27,7 @@ import pytest
 
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
+from faultmaven.core.investigation.terminal_transitions import is_substantive_reply
 from faultmaven.infrastructure.protection.tenant_turn_cap import (
     SUBJECT_ACCOUNT,
     BillingSubject,
@@ -41,7 +42,10 @@ from faultmaven.modules.agent.domain.services.investigation_service import (
 from faultmaven.modules.agent.domain.services.out_of_band import (
     TRIAGE_MAX_TOKENS,
     OutOfBandKind,
+    needs_llm_triage,
+    reads_as_continuation,
 )
+from faultmaven.modules.agent.domain.services.query_classifier import classify_query
 from faultmaven.modules.case.domain.models import CaseState, TurnOutcome, TurnProgress
 
 pytestmark = pytest.mark.unit
@@ -363,6 +367,92 @@ class TestControls:
         )
         assert await ledger.usage(_subject(case.user_id), utc_day()) == 1
         engine.process_turn.assert_called_once()
+
+    async def test_a_refused_gate_reply_is_never_triaged(
+        self, engine, recording_case_repository, case
+    ):
+        """fm#918: the sibling of the pending-gate control, for the gate that
+        has no pending row.
+
+        The INV-26 adoption guard refuses a minted CONFIRMATION that would
+        commit Gate 1 from a SUBSTANTIVE message. That refusal is a positive
+        judgement — this message is an answer to a gate — and the turn must
+        not then be offered to the aside triage, which would answer it from a
+        small prompt with no case context and record it ``OUT_OF_BAND``, so
+        the engine's next turn never learns the user questioned the problem
+        statement.
+
+        The pending-transition arm was exempt by construction (this lane
+        already excludes a pending gate); Gate 1 is defined by the absence of
+        one, so the exemption is carried explicitly and pinned here.
+        """
+        ledger = InMemoryTurnLedger()
+        # verdict "2" = aside, and the digit is load-bearing:
+        # ``OutOfBandTriage.parse_response`` returns OFF_TOPIC for a bare "2"
+        # ONLY, so under "1" the triage answers "incident" and the engine runs
+        # either way — which would leave the two assertions below unfailable
+        # and the test demonstrating nothing but the absent LLM call. With
+        # "2", removing the exemption skips the engine and records the turn
+        # OUT_OF_BAND, so all three assertions move together.
+        service = _service(engine, recording_case_repository, ledger, verdict="2")
+        case.state = CaseState.INQUIRY
+        case.pending_transition = None
+        case.inquiry.problem_statement_confirmed = False
+        case.inquiry.problem_statement_confirmed_at = None
+        case.inquiry.decided_to_investigate = False
+        case.inquiry.decision_made_at = None
+        service.intent_resolver.resolve = AsyncMock(
+            return_value={"type": "confirmation", "confirmation_value": True}
+        )
+        case.last_suggestions = [
+            {
+                "label": "Yes, let's investigate",
+                "payload": "Yes, that's correct. Let's investigate.",
+                "action_type": "DECIDE",
+                "intent": {"type": "confirmation", "confirmation_value": True},
+                "offered_turn": case.current_turn,
+            }
+        ]
+
+        # The message has to REACH the triage classifier, or the exemption is
+        # untestable: ``OutOfBandTriage.triage`` returns None mechanically when
+        # ``needs_llm_triage`` is False or ``reads_as_continuation`` is True,
+        # and a message caught by either pre-filter passes this test whether
+        # or not the exemption exists. Measured for this one:
+        # ``needs_llm_triage=True, reads_as_continuation=False`` — so removing
+        # the exemption really does put it in front of the classifier, which
+        # the verdict below then answers "aside".
+        substantive = "correct, is that the right problem statement?"
+        assert is_substantive_reply(substantive), (
+            "the INV-26 guard only fires on a substantive reply; if this stops "
+            "being one the test silently measures the adopt path"
+        )
+        assert needs_llm_triage(classify_query(substantive)) and not (
+            reads_as_continuation(substantive)
+        ), (
+            "this message must reach the triage classifier, or the exemption "
+            "under test is not what keeps the engine path"
+        )
+        resp, _, saved = await _turn(
+            service, recording_case_repository, case, query=substantive
+        )
+
+        engine.process_turn.assert_called_once()
+        assert engine.process_turn.await_args.kwargs["intent_type"] == (
+            "conversation"
+        ), (
+            "the guard must have refused the mint — an ADOPTED one dispatches "
+            "as 'confirmation', so anything else here means this test is "
+            "measuring the wrong branch"
+        )
+        caps = [
+            c.kwargs.get("max_tokens") for c in engine.llm_provider.route.call_args_list
+        ]
+        assert TRIAGE_MAX_TOKENS not in caps, (
+            "a message the INV-26 guard just judged to be a gate answer must "
+            "not then be offered to the aside triage"
+        )
+        assert saved.messages[-2]["metadata"].get("out_of_band") is None
 
     async def test_a_typed_answer_to_an_offered_choice_is_incident_work(
         self, engine, recording_case_repository, case
