@@ -92,9 +92,16 @@ class ToolContext:
             ICaseRepository in directly).
         execution_id: Current agent execution ID
         metadata: Additional context metadata
-        in_memory_case: Snapshot of the case at turn start (avoids re-fetching
-            and works around races where evidence persisted earlier this turn
-            isn't yet visible to a fresh repository read).
+        in_memory_case: **The live case aggregate this turn is holding** —
+            the very object ``process_turn`` saves when the turn ends, not a
+            snapshot. Most tools only READ it (avoiding a re-fetch, and
+            avoiding races where evidence persisted earlier this turn is not
+            yet visible to a fresh repository read), but a write applied to
+            it IS durable: it is committed by the turn's own aggregate save.
+            ``reclassify_evidence`` relies on exactly that (#1465), where
+            writing a separately-loaded copy was silently overwritten by that
+            save. So: do not cache it across turns, and do not copy it and
+            expect a write to the copy to survive.
         kb_context_metadata: Case context (e.g. affected service) used by the
             KB reranker's metadata signal to boost domain/service-aligned
             chunks. Populated from the case's problem verification; empty when

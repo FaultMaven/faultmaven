@@ -220,13 +220,22 @@ class ReclassifyEvidenceTool(AgentTool):
                 # name, because it is what the agent's context will show.
                 "data_type": data_type.value,
                 "source_type": updated.source_type.value,
-                "summary": updated.summary,
+                # The row's OWN claim summary, named as such. It is
+                # LLM-authored and reclassification deliberately does not
+                # touch it; reporting it under a bare ``summary`` beside a
+                # note about the re-extracted summary invited the model to
+                # read stale claim text as the fresh file summary — the same
+                # wrong-domain answer the ``data_type``/``source_type`` split
+                # fixes one field over. The file's new summary is not returned
+                # here at all; it arrives in context with the file.
+                "evidence_summary": updated.summary,
                 "note": (
                     "Reclassification complete. The re-extracted structural "
                     "index and summary belong to the FILE behind this "
-                    "evidence, not to the evidence row, and will appear in "
-                    "your context on the next turn. Every evidence row backed "
-                    "by that file now reports the new source type."
+                    "evidence and arrive in your context on the next turn — "
+                    "they are not in this result. ``evidence_summary`` above "
+                    "is this row's own unchanged claim. Every evidence row "
+                    "backed by that file now reports the new source type."
                 ),
             },
         )

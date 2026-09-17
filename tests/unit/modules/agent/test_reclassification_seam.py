@@ -773,15 +773,22 @@ class TestTheEvidenceRowsInheritedCoverageMovesToo:
         assert not is_vouched(evidence.coverage_source)
 
     @pytest.mark.asyncio
-    async def test_a_span_the_row_parsed_from_its_own_extract_survives(self):
+    async def test_a_span_the_row_owns_is_left_alone(self):
         """The control that stops the fix becoming a different bug.
 
-        ``_evidence_coverage`` resolves the row's OWN extract first, and that
-        span is more authoritative than the file's. Re-deriving must not
-        flatten it — which is why the fix routes through that function rather
-        than clearing the fields.
+        A row that parsed its span from its OWN extract is making a claim of
+        its own — more authoritative than the file's, and resting on an
+        extract reclassification does not touch. It must not move when the
+        file's window does.
+
+        Note what this does NOT do: re-derive the row's span from the
+        extract. See ``test_a_yearless_instant_never_shifts`` for why
+        re-parsing is the wrong mechanism even when it would give the "right"
+        answer.
         """
         file_instant = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
+        own_start = datetime(2026, 7, 4, 3, 11, tzinfo=timezone.utc)
+        own_end = datetime(2026, 7, 4, 3, 12, tzinfo=timezone.utc)
         rig = _build(
             old_coverage=(file_instant, file_instant, "epoch_s"),
             new_coverage=(None, None, None),
@@ -793,6 +800,9 @@ class TestTheEvidenceRowsInheritedCoverageMovesToo:
                     "2026-07-04T03:11:00Z ERROR boom\n"
                     "2026-07-04T03:12:00Z ERROR again\n"
                 ),
+                "coverage_start_ts": own_start,
+                "coverage_end_ts": own_end,
+                "coverage_source": "iso8601_t",
             }
         )
         rig.repo._storage[rig.case.case_id] = rig.case
@@ -800,13 +810,10 @@ class TestTheEvidenceRowsInheritedCoverageMovesToo:
         saved = await _out_of_band(rig)
 
         evidence = saved.evidence[0]
+        # Positive control: the file's window really did move.
         assert saved.uploaded_files[0].coverage_end_ts is None
-        assert evidence.coverage_start_ts == datetime(
-            2026, 7, 4, 3, 11, tzinfo=timezone.utc
-        )
-        assert evidence.coverage_end_ts == datetime(
-            2026, 7, 4, 3, 12, tzinfo=timezone.utc
-        )
+        assert evidence.coverage_start_ts == own_start
+        assert evidence.coverage_end_ts == own_end
         assert evidence.coverage_source == "iso8601_t"
 
     @pytest.mark.asyncio
@@ -981,3 +988,274 @@ class TestTheQuestionIsRetiredAtTheSeam:
         )
         assert files and evidence
         assert retired is None or not [e for e in retired if is_clarification_entry(e)]
+
+
+class TestNoRowSharesAnotherRowsMetadata:
+    """B3 — ``model_copy(update=..., deep=True)`` does not copy update VALUES.
+
+    Pydantic v2 applies ``update`` with ``copied.__dict__.update(update)``
+    AFTER the deepcopy, so handing the same dict to every row makes them all
+    share one mutable object — and that object is a live reference into the
+    ``PreprocessingResult``. Measured before the fix: mutating one sibling's
+    confidence changed every other sibling's AND the preprocessing result's.
+    The ``deep=True`` reads as a guarantee it does not provide.
+    """
+
+    _VERDICT = {
+        "classification": {
+            "confidence": 1.0,
+            "source": "user_override",
+            "failed": False,
+            "suggested_types": [],
+        },
+        "extractor": {"chosen_type": "logs_and_errors", "attempts": []},
+    }
+
+    def test_the_pydantic_behaviour_this_rests_on(self):
+        """State the mechanism, so a pydantic change fails HERE and loudly."""
+        row = make_evidence()
+        shared = {"classification": {"confidence": 1.0}}
+        first = row.model_copy(update={"metadata": shared}, deep=True)
+        second = row.model_copy(update={"metadata": shared}, deep=True)
+        assert first.metadata is shared, (
+            "pydantic no longer aliases update values — the defensive copies "
+            "in the seam can be reconsidered"
+        )
+        assert first.metadata is second.metadata
+
+    @staticmethod
+    async def _reclassify_three(rig, result):
+        rig.case.evidence = [
+            make_evidence(
+                evidence_id=eid, metadata={"classification": {"confidence": 0.4}}
+            )
+            for eid in (EV_1, EV_2, "ev_cccccccccccc")
+        ]
+        rig.repo._storage[rig.case.case_id] = rig.case
+        rig.service.preprocessing_service.reclassify_evidence = AsyncMock(
+            return_value=result
+        )
+        return await _out_of_band(rig)
+
+    @pytest.mark.asyncio
+    async def test_mutating_one_row_moves_no_other_row(self):
+        rig = _build()
+        result = make_preprocessing_result(
+            new_data_type=DataType.LOGS_AND_ERRORS, metadata=dict(self._VERDICT)
+        )
+        saved = await self._reclassify_three(rig, result)
+        addressed, sibling, other = saved.evidence
+
+        # Positive control: all three really did take the new verdict.
+        assert [e.metadata["classification"]["confidence"] for e in saved.evidence] == [
+            1.0,
+            1.0,
+            1.0,
+        ]
+
+        sibling.metadata["classification"]["confidence"] = 0.01
+
+        assert other.metadata["classification"]["confidence"] == 1.0
+        assert addressed.metadata["classification"]["confidence"] == 1.0
+
+    @pytest.mark.asyncio
+    async def test_no_row_holds_a_live_reference_into_the_preprocessing_result(
+        self,
+    ):
+        """A persisted row must not be a window into a transient object.
+
+        ‼ Asserted on the aggregate handed to ``repository.save``, NOT on one
+        read back through ``get``. The hydrating double deep-copies on read,
+        and a deepcopy severs a reference to an object outside the copied
+        graph — so reading back hides exactly this defect. (It does NOT hide
+        sibling-to-sibling sharing, because deepcopy's memo preserves identity
+        within the graph, which is why the sibling test above bites either
+        way.) Measured: with the defensive copy removed, the read-back version
+        of this test killed nothing.
+        """
+        rig = _build()
+        result = make_preprocessing_result(
+            new_data_type=DataType.LOGS_AND_ERRORS, metadata=dict(self._VERDICT)
+        )
+        await self._reclassify_three(rig, result)
+        persisted = rig.repo._storage[rig.case.case_id]
+        source = result.extraction_metadata["evidence_metadata"]
+
+        for row in persisted.evidence:
+            assert row.metadata is not source
+            assert row.metadata["classification"] is not source["classification"]
+
+        persisted.evidence[1].metadata["classification"]["confidence"] = 0.01
+        assert source["classification"]["confidence"] == 1.0
+
+
+class TestNoStoredInstantMovesToAThirdValue:
+    """B4 — re-derivation must not re-run a clock-dependent parse.
+
+    ``extract_time_range_ts`` INVENTS the year for ``syslog_bsd_noyear`` from
+    ``datetime.now()``. Re-parsing an unchanged extract on a later day
+    therefore yields a different instant: a row written on 2026-12-10 from
+    ``Dec 15 03:00:00`` stores 2025-12-15, and re-parsing it on 2026-12-20
+    yields 2026-12-15. That is a 365-day jump on an operation about data
+    TYPE, applied to every sibling at once, on a field ``symptom_currency``
+    reads as fact.
+
+    The rule that replaced re-parsing: a row either FOLLOWS the file (because
+    its stored span was the file's) or is LEFT ALONE. There is no third
+    value, so no parse runs and no clock is consulted.
+    """
+
+    _YEARLESS = "Dec 15 03:00:00 host sshd[1]: Accepted password for root\n"
+
+    def test_the_parser_really_is_clock_dependent(self):
+        """The premise. Without it the rule below is solving nothing."""
+        from faultmaven.modules.preprocessing.extractors import utils as extractor_utils
+
+        class _FrozenNow(datetime):
+            _now = None
+
+            @classmethod
+            def now(cls, tz=None):
+                return cls._now
+
+        def parse_on(day):
+            _FrozenNow._now = day
+            with patch.object(extractor_utils, "datetime", _FrozenNow):
+                return extractor_utils.extract_time_range_ts(self._YEARLESS)
+
+        early, _, source = parse_on(datetime(2026, 12, 10, tzinfo=timezone.utc))
+        late, _, _ = parse_on(datetime(2026, 12, 20, tzinfo=timezone.utc))
+        assert source == "syslog_bsd_noyear"
+        assert early != late
+        assert (late - early).days == 365
+
+    @pytest.mark.asyncio
+    async def test_a_yearless_instant_never_shifts(self):
+        stored = datetime(2025, 12, 15, 3, 0, tzinfo=timezone.utc)
+        rig = _build(
+            old_coverage=(stored, stored, "syslog_bsd_noyear"),
+            new_coverage=(None, None, None),
+            new_data_type=DataType.STRUCTURED_CONFIG,
+        )
+        rig.case.evidence[0] = rig.case.evidence[0].model_copy(
+            update={
+                "extract": self._YEARLESS,
+                "coverage_start_ts": stored,
+                "coverage_end_ts": stored,
+                "coverage_source": "syslog_bsd_noyear",
+            }
+        )
+        rig.repo._storage[rig.case.case_id] = rig.case
+
+        saved = await _out_of_band(rig)
+
+        evidence = saved.evidence[0]
+        # It FOLLOWED the file (whose window the re-extraction cleared).
+        # What it must never be is a third instant read off today's clock.
+        assert evidence.coverage_start_ts in (None, stored)
+        assert evidence.coverage_start_ts != datetime(
+            2026, 12, 15, 3, 0, tzinfo=timezone.utc
+        )
+
+    @pytest.mark.asyncio
+    async def test_every_row_either_follows_the_file_or_stands_still(self):
+        """The invariant, over a mixed case: no row invents a third value."""
+        file_instant = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
+        own = datetime(2026, 7, 4, 3, 11, tzinfo=timezone.utc)
+        new_instant = datetime(2026, 5, 5, 3, 0, tzinfo=timezone.utc)
+        rig = _build(
+            evidence_rows=2,
+            old_coverage=(file_instant, file_instant, "epoch_s"),
+            new_coverage=(new_instant, new_instant, "iso8601"),
+        )
+        rig.case.evidence = [
+            # inherited the file's span
+            rig.case.evidence[0].model_copy(
+                update={
+                    "coverage_start_ts": file_instant,
+                    "coverage_end_ts": file_instant,
+                    "coverage_source": "epoch_s",
+                }
+            ),
+            # parsed its own
+            rig.case.evidence[1].model_copy(
+                update={
+                    "coverage_start_ts": own,
+                    "coverage_end_ts": own,
+                    "coverage_source": "iso8601_t",
+                }
+            ),
+        ]
+        rig.repo._storage[rig.case.case_id] = rig.case
+
+        saved = await _out_of_band(rig)
+
+        inherited, owned = saved.evidence
+        assert inherited.coverage_start_ts == new_instant
+        assert inherited.coverage_source == "iso8601"
+        assert owned.coverage_start_ts == own
+        assert owned.coverage_source == "iso8601_t"
+
+
+class TestTheAddressedRowKeepsAVerdict:
+    """The addressed row was built twice, the second build undoing the first."""
+
+    @pytest.mark.asyncio
+    async def test_a_result_with_no_evidence_metadata_leaves_the_merge_alone(self):
+        """Otherwise the addressed row alone loses the verdict its siblings keep.
+
+        One file, two answers — the shape #1470 exists to close, in the one
+        row the caller actually asked about.
+        """
+        rig = _build(evidence_rows=2)
+        rig.case.evidence = [
+            e.model_copy(update={"metadata": {"classification": {"confidence": 0.4}}})
+            for e in rig.case.evidence
+        ]
+        rig.repo._storage[rig.case.case_id] = rig.case
+        result = make_preprocessing_result(new_data_type=DataType.LOGS_AND_ERRORS)
+        result.extraction_metadata = {}  # no evidence_metadata at all
+        rig.service.preprocessing_service.reclassify_evidence = AsyncMock(
+            return_value=result
+        )
+
+        saved = await _out_of_band(rig)
+
+        addressed, sibling = saved.evidence
+        assert addressed.metadata is not None
+        assert addressed.metadata == sibling.metadata
+
+
+class TestAMissingEvidenceIdIsA404WhateverTheCaseState:
+    """The terminal guard must not decide what a missing row is called."""
+
+    @pytest.mark.asyncio
+    async def test_an_open_case_answers_not_found(self):
+        rig = _build()
+        with pytest.raises(NotFoundError):
+            await rig.service.reclassify_evidence(
+                case_id=rig.case.case_id,
+                evidence_id="ev_does_not_exist",
+                user_id=OWNER,
+                data_type=DataType.LOGS_AND_ERRORS,
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_closed_case_answers_not_found_too(self):
+        rig = _build()
+        now = datetime.now(timezone.utc)
+        closed = rig.case.model_copy(
+            update={
+                "state": CaseState.CLOSED,
+                "closed_at": now,
+                "closure_reason": "resolved",
+            }
+        )
+        rig.repo._storage[closed.case_id] = closed
+        with pytest.raises(NotFoundError):
+            await rig.service.reclassify_evidence(
+                case_id=closed.case_id,
+                evidence_id="ev_does_not_exist",
+                user_id=OWNER,
+                data_type=DataType.LOGS_AND_ERRORS,
+            )

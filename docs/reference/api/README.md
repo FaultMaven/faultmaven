@@ -1968,7 +1968,10 @@ Error responses (dispatched by ``api/exception_handlers.py``):
 - ``409`` — evidence has no backing file (``ConflictError`` with
   ``conflict_reason="no_backing_file"``).
 - ``403`` — caller does not own the case (``AuthorizationError``).
-- ``422`` — invalid or missing ``data_type`` (``ValidationException``).
+- ``422`` — invalid or missing ``data_type``, OR the case is terminal
+  (both ``ValidationException``). A closed or resolved investigation
+  accepts questions, not mutation; the terminal refusal is raised after
+  the evidence lookup, so a missing evidence id is still a ``404``.
 - ``500`` — storage/preprocessing failure (``ServiceException``).
 
 **Tags:** `cases`
