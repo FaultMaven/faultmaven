@@ -84,6 +84,8 @@ from typing import NamedTuple
 
 import pytest
 
+import faultmaven.api.routes.admin_config  # noqa: E402
+
 # The version gate lives in ONE place, ``faultmaven/api/route_enumeration.py``,
 # and this module drives THAT rather than keeping a fourth copy. The tests below
 # monkeypatch ``route_enumeration.iter_route_contexts``, which is why the import
@@ -643,6 +645,23 @@ def _served_under(**overrides):
         os.environ.clear()
         os.environ.update(saved_environ)
         reset_settings()
+
+
+def _debug_feature_config_hint() -> str:
+    """The ``config_hint`` ``GET /admin/config/status`` publishes for the router.
+
+    Built by calling the endpoint's own feature assembly would mean standing up
+    settings and a request; the string is a literal, so it is read from the
+    source between two markers instead. If the entry is renamed the markers stop
+    matching and the caller's emptiness check fails rather than passing over a
+    string it never found.
+    """
+    source = Path(faultmaven.api.routes.admin_config.__file__).read_text()
+    start = source.find('"debug_endpoints": FeatureStatus(')
+    if start == -1:
+        return ""
+    end = source.find("),", source.find("config_hint=(", start))
+    return source[start:end] if end != -1 else ""
 
 
 def _served_api_routes(app):
@@ -1992,6 +2011,77 @@ def test_a_really_included_router_is_flattened_with_its_resolved_tree():
     assert _gate_failure(served["/pre/leaf"].dependant) is None, (
         "the app-level gate is absent from the tree this helper returned, so "
         "it read route.dependant rather than the context's"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.security
+def test_no_published_remediation_names_an_unsettable_environment():
+    """A remediation string must name values an operator can actually set.
+
+    This is #1493's class, caught once as an instance and now as a rule. The
+    predicate behind the debug router reads
+    ``env in ("development", "testing", "test")``, so three plausible-looking
+    values got written into the places that TELL AN OPERATOR WHAT TO DO — the
+    ``enable_debug_endpoints`` field description, ``CLAUDE.md``, and the
+    ``config_hint`` that ``GET /admin/config/status`` returns over HTTP. Two of
+    the three cannot be set:
+
+        Environment admits  : development, staging, production
+        ENVIRONMENT=testing : ValidationError, not a debug mount
+
+    So the remediation sent an operator to set a value that raises at startup,
+    after which ``get_settings()`` fails and the app falls to its degraded
+    fallback — the advice does not merely not work, it breaks the thing it
+    claims to configure.
+
+    Scoped to strings published as guidance, and to the one variable whose value
+    space is a closed enum. It deliberately does NOT read the predicate in
+    ``main``: that the code tests for unsettable strings is a separate,
+    documented fact, and demanding they agree would force those dead strings to
+    be deleted — a behaviour change this is not making.
+
+    It matches the FORM ``ENVIRONMENT=<value>`` / ``ENVIRONMENT is a/b/c`` and
+    cannot tell naming a value from warning against one, so prose that cites an
+    unsettable value as a counterexample has to cite it without that form. That
+    is a real cost and it is the right way round: the rule stays mechanical, and
+    the one place it bites a true sentence is prose a human can reword. It found
+    exactly that case in ``CLAUDE.md`` on its first run.
+    """
+    import re
+
+    from faultmaven.config.settings import Environment, ServerSettings
+
+    settable = {member.value for member in Environment}
+    assert settable, "the Environment enum is empty; this guard measures nothing"
+
+    published: dict[str, str] = {
+        "settings.enable_debug_endpoints.description": (
+            ServerSettings.model_fields["enable_debug_endpoints"].description or ""
+        ),
+        "admin_config.debug_endpoints.config_hint": _debug_feature_config_hint(),
+        "CLAUDE.md": "\n".join(
+            line
+            for line in (PROJECT_ROOT / "CLAUDE.md").read_text().splitlines()
+            if "ENABLE_DEBUG_ENDPOINTS" in line or "ENVIRONMENT=" in line
+        ),
+    }
+    for where, text in published.items():
+        assert text.strip(), f"{where}: read empty, so this guard checked nothing"
+
+    offenders: list[str] = []
+    for where, text in published.items():
+        named = set(re.findall(r"ENVIRONMENT=([a-z]+)", text))
+        for run in re.findall(r"ENVIRONMENT is ([a-z/]+)", text):
+            named.update(part for part in run.split("/") if part)
+        for value in sorted(named - settable):
+            offenders.append(f"{where}: names ENVIRONMENT={value!r}")
+
+    assert not offenders, (
+        "these published strings tell an operator to set an ENVIRONMENT value "
+        f"the enum does not admit {sorted(settable)} — setting it raises at "
+        "startup, so the remediation breaks what it claims to configure:\n  "
+        + "\n  ".join(offenders)
     )
 
 
