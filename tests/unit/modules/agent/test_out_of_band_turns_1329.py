@@ -387,10 +387,14 @@ class TestControls:
         one, so the exemption is carried explicitly and pinned here.
         """
         ledger = InMemoryTurnLedger()
-        # verdict "1" = aside. If the exemption is removed, the triage fires
-        # and says aside, so the engine is skipped — the assertion below is
-        # the one that moves.
-        service = _service(engine, recording_case_repository, ledger, verdict="1")
+        # verdict "2" = aside, and the digit is load-bearing:
+        # ``OutOfBandTriage.parse_response`` returns OFF_TOPIC for a bare "2"
+        # ONLY, so under "1" the triage answers "incident" and the engine runs
+        # either way — which would leave the two assertions below unfailable
+        # and the test demonstrating nothing but the absent LLM call. With
+        # "2", removing the exemption skips the engine and records the turn
+        # OUT_OF_BAND, so all three assertions move together.
+        service = _service(engine, recording_case_repository, ledger, verdict="2")
         case.state = CaseState.INQUIRY
         case.pending_transition = None
         case.inquiry.problem_statement_confirmed = False

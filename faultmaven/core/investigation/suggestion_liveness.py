@@ -309,7 +309,7 @@ def suggestion_is_live(
     # (regenerate summary, generate runbook) carry no ``intent``, so
     # ``_stored_suggestions`` never stores them and there is no terminal
     # affordance for the resolver to match. Pinned by
-    # ``test_terminal_follow_ups_carry_no_intent``.
+    # ``test_every_intent_bearing_follow_up_belongs_to_a_gate``.
     if case_is_terminal:
         return False
 
@@ -347,6 +347,12 @@ def drop_clarifications_for_file(
     Follow-ups are untouched — they are not about a file — and ``None`` is
     returned for an empty result, which is the value the write site stores
     (``stored or None``) so the field has one empty state rather than two.
+
+    A non-dict entry is KEPT rather than inspected. It cannot be classified,
+    and this is a writer: dropping what it cannot read would delete a row's
+    contents on a guess. The reader is where such an entry dies —
+    ``suggestion_is_live`` refuses anything that is not a dict — so keeping it
+    here costs nothing and loses nothing.
     """
     if not stored or not file_id:
         return stored

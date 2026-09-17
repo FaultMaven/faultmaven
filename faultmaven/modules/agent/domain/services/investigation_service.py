@@ -1767,18 +1767,31 @@ class InvestigationService:
             # data). The turn is already charged; what the verdict changes is
             # the route: an aside skips the engine and is recorded OUT_OF_BAND.
             #
-            # ``gate_reply_refused`` is the same rule as ``pending_transition``,
-            # applied to the gate that has no pending row. The INV-26 guard
-            # refuses a mint precisely because the message IS a substantive
-            # answer to a gate — so triaging it afterwards can only get it
-            # wrong, and getting it wrong is expensive: an aside verdict
-            # answers from a small prompt with no case context, records
-            # ``TurnOutcome.OUT_OF_BAND``, and renders in later prompts as an
-            # off-topic exchange, so the engine never learns the user
-            # questioned its problem statement. #721's arm was exempt by
+            # ``gate_reply_refused`` carries the INV-26 guard's verdict here.
+            # The guard refuses a mint precisely because the message IS a
+            # substantive answer to a gate — so triaging it afterwards can
+            # only get it wrong, and getting it wrong is expensive: an aside
+            # verdict answers from a small prompt with no case context,
+            # records ``TurnOutcome.OUT_OF_BAND``, and renders in later
+            # prompts as an off-topic exchange, so the engine never learns the
+            # user questioned its problem statement. #721's arm was exempt by
             # construction (it REQUIRED a pending transition, which this lane
             # already excludes); fm#918's Gate-1 arm is defined by the absence
             # of one, so the exemption has to be carried explicitly.
+            #
+            # It is NOT the same rule as ``pending_transition``, and the
+            # difference is worth knowing: that one suppresses this lane on
+            # EVERY turn while a gate is open, whereas this is turn-local —
+            # it is a verdict the guard reached on THIS message, so it exists
+            # only where the guard ran, which needs a live intent-bearing card
+            # on offer. A Gate-1 case whose ``last_suggestions`` has since
+            # been emptied (an aside or an orientation turn stores no
+            # intent-bearing follow-up, so the next ``_stored_suggestions``
+            # writes None) answers the gate with no exemption and is triaged.
+            # That is pre-existing rather than introduced here, and narrowing
+            # it would mean keying on ``_gate1_is_pending`` instead — which
+            # suppresses the aside lane for a whole phase and is #1329's
+            # design call, not this guard's.
             oob_kind: Optional[OutOfBandKind] = None
             if (
                 intent_type == IntentType.CONVERSATION
