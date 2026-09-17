@@ -422,10 +422,72 @@ async def create_session(
         raise HTTPException(status_code=500, detail="Failed to create session")
 
 
-@router.get("/{session_id}", response_model=SessionResponse)
+def _caller_scope(current_user: DevUser) -> str:
+    """The id to scope a query to, or a refusal — never a falsy value.
+
+    Layer two of the #1447-review fix, and it is deliberately not the only one.
+    ``get_current_user_optional`` now refuses a token whose ``sub`` names no
+    subject, so in a correct system this never fires; it fires if any future
+    identity path hands a route a principal with a blank id. That matters here
+    more than elsewhere because the shape these services expose is a FILTER —
+    ``if user_id:`` in both ``AuthSessionService.list_sessions`` and the
+    minimal stand-in — and a filter that is skipped returns everything rather
+    than nothing.
+
+    It REFUSES; it does not NORMALISE. The returned id is the principal's own
+    bytes, unstripped, because the four sibling ownership checks on this router
+    compare ``session.user_id != current_user.user_id`` unstripped — and a
+    session minted under a padded subject is stored under the padded one. A
+    scope that stripped while the comparisons did not would answer a padded
+    caller an empty listing on this route while its own per-session routes kept
+    working, which is a disagreement rather than a defence. Normalisation, if it
+    is ever wanted, belongs at the identity layer where the principal is built,
+    once, for every reader (#1447 review).
+
+    The refusal is byte-identical to ``require_authentication``'s, on purpose:
+    a caller presenting a subject-less credential learns "not authenticated",
+    not "your token's shape was the problem".
+    """
+    user_id = current_user.user_id
+    if not isinstance(user_id, str) or not user_id.strip():
+        logger.warning(
+            "Refusing a session query: the authenticated principal has no subject"
+        )
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required. Please log in to access this resource.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return user_id
+
+
+# The auth gate is a ROUTE-LEVEL dependency, not only a handler parameter, and
+# that is the difference between a refusal and a 500. FastAPI solves a
+# dependant's dependencies in DECLARATION ORDER, and every route on this router
+# declared ``session_service`` before ``current_user`` — so on a deployment
+# whose Composition Root did not populate ``app.state.session_service``,
+# ``get_session_service``'s bare attribute read raised first and an
+# unauthenticated caller got 500 before the 401 ever ran. A pre-auth
+# availability oracle, on the routes #1447 exists to close. Measured: with the
+# slot absent, anonymous ``GET /api/v1/sessions`` answered
+# ``500 Internal Server Error``.
+#
+# Route-level dependencies are solved BEFORE the handler's own parameters, so
+# the refusal is unconditional and cannot be undone by a future parameter edit.
+# The ``current_user`` parameter stays where a handler needs the principal —
+# FastAPI caches a dependency per request, so ``require_authentication`` still
+# runs once. ``tests/integration/security/test_unauthenticated_session_surface.py``
+# asserts the ordering on a service-less app, because "declared in the right
+# order" is not a property anything would otherwise check (#1447 review).
+@router.get(
+    "/{session_id}",
+    response_model=SessionResponse,
+    dependencies=[Depends(require_authentication)],
+)
 async def get_session(
     session_id: str,
     session_service: AuthSessionService = Depends(get_session_service),
+    current_user: DevUser = Depends(require_authentication),
 ) -> SessionResponse:
     """
     Retrieve a specific session by ID.
@@ -435,6 +497,10 @@ async def get_session(
 
     Returns:
         Session details
+
+    Raises:
+        404: Session not found
+        403: User not authorized to read this session
     """
     try:
         session = await session_service.get_session(session_id)
@@ -447,6 +513,12 @@ async def get_session(
                     message=f"Session not found: {session_id}",
                     session_id=session_id,
                 ).model_dump(),
+            )
+
+        # Authorization check - users can only read their own sessions
+        if session.user_id != current_user.user_id:
+            raise HTTPException(
+                status_code=403, detail="Not authorized to read this session"
             )
 
         return SessionResponse(
@@ -471,29 +543,52 @@ async def get_session(
         raise HTTPException(status_code=500, detail="Failed to get session")
 
 
-@router.get("")
+# WHOSE sessions this lists is the server's answer, not the request's. The
+# route used to take no auth dependency at all AND a `user_id` query FILTER, so
+# an anonymous caller could name a user and read back their session ids — and,
+# unfiltered, every session id with the identity it is bound to (#1447 §1,
+# measured against MinimalSessionService, which ships a working list_sessions
+# and which create_session_service installs whenever the real service cannot be
+# constructed).
+#
+# The filter is REMOVED rather than ignored, for the argument contract 6.0.0
+# made about the identical parameter on `POST /api/v1/sessions`: once the
+# caller's own id is the only legal value, every accepted request carries
+# redundant information and every rejected one wrong information, so the
+# parameter can no longer say anything.
+@router.get("", dependencies=[Depends(require_authentication)])
 async def list_sessions(
-    user_id: Optional[str] = Query(None),
     session_type: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     session_service: AuthSessionService = Depends(get_session_service),
+    current_user: DevUser = Depends(require_authentication),
 ):
     """
-    List all sessions with optional filtering.
+    List the caller's own sessions.
+
+    Whose sessions are listed is not a request parameter: the route answers
+    with the authenticated caller's own sessions and nothing else. The
+    `user_id` filter this route used to accept was removed in contract 7.0.0.
 
     Args:
-        user_id: Optional user ID filter
         session_type: Optional session type filter
         limit: Maximum number of sessions to return
         offset: Number of sessions to skip
 
     Returns:
-        List of sessions
+        List of the authenticated caller's sessions
     """
+    # OUTSIDE the try, and that is load-bearing: this handler's only exception
+    # arm is a bare ``except Exception`` answering 500, with no ``except
+    # HTTPException: raise`` before it, so a refusal raised inside the block is
+    # swallowed and republished as "Failed to list sessions". Caught by this
+    # change's own test — a 500 where a 401 was asserted.
+    scope = _caller_scope(current_user)
+
     try:
         # Get sessions from SessionManager and apply filters/pagination
-        all_sessions = await session_service.list_sessions(user_id=user_id)
+        all_sessions = await session_service.list_sessions(user_id=scope)
 
         # Apply session type filtering
         if session_type:
@@ -589,10 +684,15 @@ async def list_sessions(
         raise HTTPException(status_code=500, detail="Failed to list sessions")
 
 
-@router.delete("/{session_id}", status_code=204)
+@router.delete(
+    "/{session_id}",
+    status_code=204,
+    dependencies=[Depends(require_authentication)],
+)
 async def delete_session(
     session_id: str,
     session_service: AuthSessionService = Depends(get_session_service),
+    current_user: DevUser = Depends(require_authentication),
 ):
     """
     Delete a specific session.
@@ -602,6 +702,10 @@ async def delete_session(
 
     Returns:
         Deletion confirmation
+
+    Raises:
+        404: Session not found
+        403: User not authorized to delete this session
     """
     try:
         # Check if session exists first
@@ -615,6 +719,12 @@ async def delete_session(
                     message=f"Session not found: {session_id}",
                     session_id=session_id,
                 ).model_dump(),
+            )
+
+        # Authorization check - users can only delete their own sessions
+        if session.user_id != current_user.user_id:
+            raise HTTPException(
+                status_code=403, detail="Not authorized to delete this session"
             )
 
         # Delete session
@@ -631,6 +741,29 @@ async def delete_session(
         raise HTTPException(status_code=500, detail="Failed to delete session")
 
 
+# TAKES NO AUTH DEPENDENCY, and that is a decision rather than the omission its
+# three siblings were (#1447 §2). It is the one session route whose closure is
+# coupled to the mint, which stays anonymous-capable until the coordinated
+# two-repository release tracked by #1460: while `POST /sessions` mints
+# `user_id = f"user_{uuid4()[:8]}"` for a caller with no bearer, anonymously
+# minted sessions exist and require_authentication would refuse their owner.
+#
+# The evidence that decided it, gathered across both sibling frontends. The only
+# production caller is `heartbeatSession`
+# (faultmaven-copilot/packages/copilot-ui/lib/api/services/session-service.ts,
+# which the Dashboard runs too, via @faultmaven/copilot-ui), and it deliberately
+# does NOT route through `authenticatedFetch`: a failure is swallowed by
+# `session-slice.ts` as non-fatal. So a 401 here would neither loop nor sign
+# anyone out — the mint's failure mode does not reach this route. What does
+# reach it is worse for being quiet: `CopilotPanel` mints unconditionally at
+# mount, sign-IN does not re-mint, and a signed-in user holding an anonymously
+# minted session would be refused 403 forever with no signal, losing the
+# keep-alive this route exists to provide.
+#
+# It is listed in PUBLIC_OPERATIONS
+# (tests/integration/api/test_no_unauthenticated_operations.py) carrying #1460,
+# and that guard fails on a stale entry — so closing this route forces the entry
+# out rather than leaving a green test asserting nothing.
 @router.post("/{session_id}/heartbeat")
 async def session_heartbeat(
     session_id: str,
@@ -734,7 +867,7 @@ async def session_heartbeat(
 # =============================================================================
 
 
-@router.put("/{session_id}")
+@router.put("/{session_id}", dependencies=[Depends(require_authentication)])
 async def update_session(
     session_id: str,
     updates: dict = Body(...),
@@ -802,7 +935,7 @@ async def update_session(
         raise HTTPException(status_code=500, detail="Failed to update session")
 
 
-@router.post("/search")
+@router.post("/search", dependencies=[Depends(require_authentication)])
 async def search_sessions(
     search_params: dict = Body(...),
     session_service: AuthSessionService = Depends(get_session_service),
@@ -827,14 +960,21 @@ async def search_sessions(
             "total": int
         }
     """
+    # Outside the try for the same reason as the listing above: this handler
+    # also catches ``Exception`` and answers 500 with no re-raise arm.
+    scope = _caller_scope(current_user)
+
     try:
         query = search_params.get("query")
         status = search_params.get("status")
         limit = search_params.get("limit", 50)
 
         # Search sessions
+        # Same scope-not-filter rule as the listing: ``search_sessions``
+        # forwards this straight to ``list_sessions``, so a blank caller id
+        # would search every session rather than none.
         sessions = await session_service.search_sessions(
-            user_id=current_user.user_id, query=query, status=status, limit=limit
+            user_id=scope, query=query, status=status, limit=limit
         )
 
         # Format response
@@ -865,7 +1005,10 @@ async def search_sessions(
         raise HTTPException(status_code=500, detail="Failed to search sessions")
 
 
-@router.post("/{session_id}/archive")
+@router.post(
+    "/{session_id}/archive",
+    dependencies=[Depends(require_authentication)],
+)
 async def archive_session(
     session_id: str,
     session_service: AuthSessionService = Depends(get_session_service),

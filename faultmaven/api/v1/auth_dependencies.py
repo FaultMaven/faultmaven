@@ -214,8 +214,40 @@ async def get_current_user_optional(
         # sourcing it from the claim rather than the binding is correct here: an
         # account in no organization must present ``None`` rather than a sentinel
         # somebody would later mistake for a tenant.
+        #
+        # A token that names no subject authenticates nobody. PyJWT's
+        # ``require`` list asserts a claim is PRESENT, not that it says
+        # anything: measured on PyJWT 2.13.0, ``sub: ""`` decodes clean.
+        #
+        # THE ROOT IS UPSTREAM, and this is deliberately a second layer rather
+        # than the fix. ``AuthService.verify_token`` refuses such a token, which
+        # is the single point every principal path reaches its claims through —
+        # so by the time this line runs, a blank subject has already been
+        # refused. It is kept because this constructor reads ``claims["sub"]``
+        # itself: a guard that exists only upstream is one refactor away from
+        # being absent, and this one has its own test at its own observable
+        # (#1447 review).
+        #
+        # Why a blank id is not a harmless one: the house shape for scoping a
+        # query is ``if user_id:``, so a falsy caller does not narrow a query,
+        # it DROPS the predicate — ``case_scope_where("")`` returns None and
+        # ``list_sessions("")`` returns every session.
+        # ``.get``, not ``["sub"]``. A subscript raises KeyError on an ABSENT
+        # claim, and the catch-all at the bottom of this function turns that
+        # into a correlation-id'd WARNING — so the absent case never reached
+        # the guard below, the ``not isinstance`` arm was unreachable for it,
+        # and the test covering this layer was green through the catch-all
+        # rather than through the check it names. Measured: absent ->
+        # ``WARNING Unexpected error in JWT validation: 'sub'``; ``""`` and
+        # ``None`` -> ``DEBUG JWT rejected``. Same spelling as the other two
+        # readers of this claim, which is the point (#1447 review).
+        subject = claims.get("sub")
+        if not isinstance(subject, str) or not subject.strip():
+            logger.debug("JWT rejected: the `sub` claim names no subject")
+            return None
+
         user = DevUser(
-            user_id=claims["sub"],
+            user_id=subject,
             username=claims.get("username", ""),
             email=claims.get("email", ""),
             display_name=claims.get("username", ""),  # Use username as display name

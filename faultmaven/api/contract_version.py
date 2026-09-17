@@ -30,6 +30,251 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
+# 7.0.0 — MAJOR. Four published operations that admitted an anonymous caller
+# now refuse one, and a query FILTER that let a caller name whose sessions to
+# list is REMOVED (#1447 §1/§2). A caller that succeeded with no credential
+# yesterday gets 401 today, which is the definition of the bump.
+#
+#   * `GET /api/v1/sessions` gains `require_authentication` AND loses its
+#     `user_id` QUERY PARAMETER. It took no auth dependency at all and accepted
+#     that parameter as a filter, so an anonymous caller could name a user and
+#     read back their session ids — and, unfiltered, EVERY session id with the
+#     identity it is bound to. Whose sessions are listed is now the caller's
+#     own id and nothing else.
+#   * `GET /api/v1/sessions/{session_id}` gains `require_authentication` and a
+#     `session.user_id != current_user.user_id` → **403** ownership check. It
+#     published that session's `user_id` to anyone who knew the id.
+#   * `DELETE /api/v1/sessions/{session_id}` gains the same pair. It was the
+#     one with a write effect: an unauthenticated caller who learned a session
+#     id could destroy it.
+#   * `GET /admin/optimization/trigger-cleanup` is REMOVED.
+#   * `POST /admin/optimization/trigger-cleanup` is ADDED, gated by
+#     `require_platform_admin`. Same handler, and the two bullets are one
+#     change — but spelled as a removal and an addition, because that is what a
+#     client sees and what a differ reports. 5.0.0 and 6.0.0 each give their
+#     removals their own line; naming this one only by its old verb inside a
+#     "becomes" sentence would hide a removal inside a change list. Not a
+#     session route, and that is the point — see below.
+#
+# THIS WAS LIVE, NOT A HARDENING, and the correction matters because 6.0.0's
+# own entry got it wrong. That entry deferred `GET /api/v1/sessions` to "the day
+# `RedisSessionStore.list_sessions()` stops being a stub" and was corrected in
+# place; the stub is one of TWO implementations. `MinimalSessionService`
+# (`_container_impl._create_minimal_session_service`) ships a working
+# `list_sessions` with the `user_id` filter, and `create_session_service`
+# installs it whenever the real service cannot be constructed — "Reachable in
+# PRODUCTION, not only under test", in its own docstring — as does
+# `_create_minimal_container()` outright. Measured over ASGI against that
+# service with no `Authorization` header, two sessions minted for two users:
+#
+#     GET /api/v1/sessions?user_id=<victim>  -> 200  that user's session id
+#     GET /api/v1/sessions                   -> 200  every session id + user_id
+#     GET /api/v1/sessions/<victim session>  -> 200  its bound user_id
+#     DELETE /api/v1/sessions/<victim session> -> 204  and the session was gone
+#
+# The same four calls answer 401 on this contract. Cloud fails the boot rather
+# than degrading (`settings.must_not_degrade`), so the exposure was self-hosted,
+# where the API publishes 8090 on `0.0.0.0` with no proxy in front of it.
+#
+# WHY THE FILTER IS REMOVED RATHER THAN IGNORED, which is the smaller-looking
+# repair and the wrong one. Once the route forces `user_id =
+# current_user.user_id`, the parameter's only legal value is one the server
+# already holds: every accepted request would carry redundant information and
+# every rejected one wrong information, so the parameter can no longer say
+# anything. That is 6.0.0's argument for removing the IDENTICAL parameter from
+# `POST /api/v1/sessions` one route over, and it transfers without amendment.
+# The runtime behaviour is the same either way — FastAPI ignores an undeclared
+# query parameter — so what removal buys is a document that stops publishing a
+# filter that does nothing, which is the defect class 5.0.0 exists to close.
+#
+# THE GATES ARE ROUTE-LEVEL DEPENDENCIES, NOT ONLY HANDLER PARAMETERS, and that
+# is the difference between a refusal and a 500. FastAPI solves a dependant's
+# dependencies in DECLARATION ORDER, and every route on this router declared
+# `session_service` before `current_user` — so on a deployment whose Composition
+# Root had not populated `app.state.session_service`, the service's bare
+# attribute read raised before the auth dependency ran and an unauthenticated
+# caller received `500 Internal Server Error`: a pre-auth availability oracle on
+# the very routes this entry is about. Measured, and fixed by moving the gate
+# into `dependencies=[...]`, which is solved before the handler's own
+# parameters. The `current_user` parameter stays where the handler needs the
+# principal — FastAPI caches a dependency per request — and the ordering is now
+# asserted on a service-less app, because "declared in the right order" is not
+# a property anything else would check. Applied to all six authenticated routes
+# on the router, including the three that already had auth before this change.
+#
+# THE OWNERSHIP REFUSAL IS 403, NOT 404, and it is copied rather than designed:
+# `PUT /sessions/{id}`, `POST /sessions/search` and `POST
+# /sessions/{id}/archive` have carried `require_authentication` plus
+# `raise HTTPException(status_code=403, detail="Not authorized to ...")` all
+# along. The four routes here were not brought along with them; making the
+# stragglers answer differently from their siblings would have been a second
+# defect dressed as a fix. A 404-first ordering is likewise the siblings'
+# (absent session → 404, then the ownership check), so an authenticated caller
+# can still distinguish "no such session" from "not yours" — a pre-existing
+# property of this router, unchanged here, and not one the anonymous caller
+# this entry is about ever reaches.
+#
+# WHAT IS DELIBERATELY NOT IN THIS CHANGE, and it is the same two routes 6.0.0
+# deferred for the same reason, now with a ticket of their own (#1460):
+#
+#   * `POST /api/v1/sessions` — the mint — still takes
+#     `get_current_user_optional`. `getAuthHeaders()` in faultmaven-copilot
+#     returns headers WITHOUT `Authorization` when `transport.accessToken()`
+#     stumbles ("the request goes out unauthenticated", in its own comment),
+#     and `client.ts` treats a 401 on a credential-less request as the
+#     RECOVERABLE path and re-mints. Compose the two and requiring auth here is
+#     a mint → 401 → re-mint loop in the field. That is the case
+#     `docs/development/api-contract-changes.md` calls the one that cannot
+#     expand: client tolerant first, confirmed deployed, server after.
+#   * `POST /api/v1/sessions/{session_id}/heartbeat` — still open, and this one
+#     was DECIDED rather than inherited. Its only production caller is
+#     `heartbeatSession` in faultmaven-copilot (which the Dashboard runs too,
+#     via `@faultmaven/copilot-ui`); it deliberately avoids `authenticatedFetch`
+#     and its failure is swallowed as non-fatal, so a 401 would neither loop nor
+#     sign anyone out. What stops it shipping here is the mint: while the mint
+#     is anonymous-capable, anonymously-minted sessions exist, `CopilotPanel`
+#     mints unconditionally at mount, and sign-IN does not re-mint — so a
+#     signed-in user can hold an anonymously-minted session and would be refused
+#     403 forever, silently, losing the keep-alive the route exists to provide.
+#     A quiet permanent degradation is a worse thing to publish than a loud one.
+#
+# A FALSY CALLER ID IS NOT A SCOPE, and that is the second half of the listing
+# fix rather than a hardening beside it. Forcing `user_id = current_user.user_id`
+# closes the anonymous hole and leaves a narrower one, because the shape both
+# session services expose is a FILTER, not a scope:
+# `if user_id: [filter] else: return everything`. A caller whose id is falsy
+# therefore receives the whole table — session ids and the identity each is
+# bound to, which is the §1 payload behind a 200 instead of an anonymous call.
+# The repository already knew the shape by name: `_container_impl.py` records
+# "`CaseService.get_case` writes `if user_id and ...`, so an empty-string caller
+# id takes the unscoped path there." It reaches past sessions —
+# `case_scope_where(params, "")` returns None, dropping the owner clause
+# entirely, which is the cross-tenant platform-admin path's own return value
+# reached by an ordinary caller.
+#
+# Three layers, because no one of them is the whole answer:
+#
+#   1. `AuthService.verify_token` refuses a token whose `sub` names no subject.
+#      THIS IS THE ROOT, and it sits one line from where the gap was: PyJWT's
+#      `require` list above it asserts the claim is PRESENT, so presence and
+#      content are now decided together rather than one inferred from the
+#      other. It is the SINGLE POINT because every path that turns a token into
+#      a principal reads the claims this method returns — the two
+#      `AuthenticatedUser` constructions in `auth_service`, `DevUser` in
+#      `api/v1/auth_dependencies`, the tenant binder, and idempotency keying.
+#
+#      The two PRINCIPAL CONSTRUCTORS keep guards of their own as a second
+#      layer. N was 2, and one was unguarded: `AuthenticatedUser.from_jwt_claims`
+#      read `claims.get("sub", "")` — defaulting a missing subject to the value
+#      every scope check reads as "no owner" — and it serves
+#      `api/middleware/auth.get_current_user`, hence the admin routers and
+#      `api/routes/sessions.py`. The inventory of `jwt.decode` sites is pinned
+#      at 10 in `tests/unit/modules/auth/test_subject_is_an_identity.py` with
+#      exactly one classified PRINCIPAL, so a second principal source cannot be
+#      added without saying so — which is how "the single point" would
+#      otherwise quietly stop being single.
+#
+#   2. `GET /api/v1/sessions` and `POST /api/v1/sessions/search` refuse a
+#      principal with a blank id anyway, so a future identity path cannot
+#      reopen this quietly; search needed it for the same reason, forwarding the
+#      same id to the same filter. The refusal is byte-identical to
+#      `require_authentication`'s, so a subject-less credential learns "not
+#      authenticated" rather than "your token's shape was the problem". It
+#      REFUSES without NORMALISING: the id it returns is the principal's own
+#      bytes, because the four sibling ownership checks on that router compare
+#      unstripped, and a scope that stripped while they did not would answer a
+#      padded caller an empty listing while its per-session routes still worked.
+#
+#   3. Both `list_sessions` implementations key on `is not None` rather than
+#      truthiness, so a filter that was SUPPLIED is honoured literally. `None`
+#      still means "all" — that is the maintenance API several callers use.
+#
+# HOW REACHABLE IS IT, stated exactly rather than rounded up, because the answer
+# changes how this reads. PyJWT's `require` list asserts a claim is PRESENT, not
+# that it says anything: measured on PyJWT 2.13.0, `sub: ""` decodes clean and
+# arrives as an empty string, while `sub: null` and an absent `sub` are both
+# refused — the control showing `require` works, and what it works on. What
+# could NOT be established is a path by which a caller WITHOUT the signing key
+# obtains such a token: every mint reads `user.user_id` off a persisted row, and
+# no route was found that produces an empty one. So this is a fail-open on a
+# value the system has no known way to produce — not a second live enumeration —
+# and it is fixed because one `if` stands between "the caller's sessions" and
+# "everyone's", which is too little to leave resting on an unproven scarcity.
+#
+# `/admin/optimization/trigger-cleanup` IS IN THIS CHANGE THOUGH IT IS NOT A
+# SESSION ROUTE, because the root #1447 names is not about sessions: there is no
+# global authentication gate, every route is individually responsible for its
+# own auth, and nothing tells you when one forgets. That route forgot. Declared
+# on `app` directly in `main.py` rather than on one of the admin routers where
+# `require_platform_admin` is the house rule, it let an anonymous caller drive an
+# aggressive resource cleanup and a full `gc.collect()` on the running API — a
+# write effect and a denial-of-service lever, not a disclosure. It was found by
+# the guard this change installs, on the commit that installs it, which is the
+# argument for the guard. No client calls it: outside `main.py` the only
+# occurrences of the path are the generated `api.generated.ts` declarations in
+# faultmaven-copilot and faultmaven-dashboard, and a declaration is what a
+# generator emits, not what a client sends.
+#
+# IT ALSO STOPS BEING A `GET`. The method was part of the defect rather than a
+# detail beside it: a GET is prefetchable by a browser or a link scanner,
+# followable by a proxy, and replayable from history, and this operation runs an
+# aggressive resource cleanup and a full `gc.collect()` on the live API.
+# Publishing a non-safe operation under a safe verb invites exactly the
+# accidental trip an operator lever must not have. Doing it now costs nothing —
+# the bump is MAJOR already and nothing sends it — and doing it later would cost
+# a deprecation cycle. The gate is a router-level `dependencies=[...]` rather
+# than an unused handler parameter, matching the OAuth and SSO rate limiters:
+# what the route needs from `require_platform_admin` is the refusal, not the
+# principal. The emitted `security` is the same either way.
+#
+# WHAT IT DOES NOT GAIN IS AN AUDIT ROW, and that is a decision rather than an
+# omission. `operator_access_audit`'s vocabulary is a closed four: `LIST` and
+# `CONTENT_OPEN` (operator reads of TENANT DATA — the D8/D9 boundary) and
+# `ROLE_GRANTED` / `ROLE_REVOKED` (changes to who is an operator). Its own
+# docstring reads the enum as "operator events, of which data access is two".
+# This route reads no tenant data and grants no role, so a row would mean
+# inventing a fifth member and widening the table to "every platform-admin
+# action" — a decision about what the trail is FOR, which should not be taken as
+# a side effect of adding a gate. Its neighbours agree: the four
+# `require_platform_admin` routes in `api/routes/admin_config.py` write no audit
+# row either.
+#
+# THE GUARD. `tests/integration/api/test_no_unauthenticated_operations.py` reads
+# the committed `docs/reference/api/openapi.json`, collects every operation that
+# declares no `security`, and diffs it against a committed allowlist carrying a
+# reason per entry. It fails in BOTH directions — an unlisted open operation is
+# an unreviewed one, and a listed operation that has since gained auth is a
+# stale entry, which is a green test asserting nothing. The two routes deferred
+# above are listed as `_DEFERRED` carrying #1460, so closing them turns the
+# guard red and forces the entries out. It is the first thing in this repository
+# that asks whether an operation is ALLOWED to be open; the two existing
+# implementations of the neighbouring rule
+# (`tests/integration/api/test_openapi_documents_auth.py` and
+# `tests/unit/modules/case/api/test_session_is_not_identity.py`) both ask
+# whether a route that requires auth SAYS SO, which is a different question and
+# is why this class was found by reading rather than by CI.
+#
+# THE GUARD'S OWN BLIND SPOT WAS BIGGER THAN IT FIRST CLAIMED, and the answer is
+# reach rather than a narrower claim. It delegated "served but not documented"
+# to two sibling guards, and both build their app under the generator's pinned
+# `ENVIRONMENT=production` — which exists precisely to exclude the debug router
+# — so a route that mounts only outside production is missing from their route
+# tables too, and their counts agree about it vacuously. Measured under
+# `ENVIRONMENT=development`, the shipped default: `/debug/routes`,
+# `/debug/health`, `/debug/config` and `/debug/llm-providers` are served with no
+# auth dependency, and `GET /debug/config` answers an anonymous caller 200 with
+# a six-key configuration summary.
+#
+# They are covered now by the same rule applied to the served app rather than to
+# the artifact. Asserting the gate those entries lean on corrected a second
+# mistake: `_is_debug_enabled()` is a DISJUNCTION — `env in (development,
+# testing, test) OR enable_debug_endpoints` — so `ENABLE_DEBUG_ENDPOINTS=true`
+# mounts the router IN PRODUCTION. A test that varied only `ENVIRONMENT`
+# asserted "absent in production", which is false on exactly the flag that
+# matters. Both halves of the real property are asserted now: production is
+# closed by DEFAULT, and the way past it is one named operator switch. The
+# allowlist's reasons say that and no more.
+#
 # 6.0.0 — MAJOR. Two REMOVALS that together close one gap: a caller could name
 # the identity a session was minted for, and then spend that session id as
 # proof of it.
@@ -167,7 +412,18 @@ asked to accept, and it belongs to a person.
 # they carry. Cloud fails the boot rather than degrading
 # (`settings.must_not_degrade`), so the exposure is self-hosted. Re-filed at
 # that severity in #1447 rather than fixed here: it is a different route on a
-# different router, and it needs the same coordinated release the mint does.
+# different router.
+#
+# ‼ CORRECTED AGAIN, by 7.0.0. This entry went on to say the listing "needs the
+# same coordinated release the mint does", and that is wrong for the same
+# reason the "stops being a stub" claim above it was: it was inherited from the
+# mint rather than checked against the listing. The coupling is a property of
+# the MINT — `getAuthHeaders()` sends header-less on a stumbled refresh and
+# `client.ts` re-mints on a credential-less 401 — and no client calls
+# `GET /api/v1/sessions` at all, in any of the four client repositories. So it
+# needed no coordination and 7.0.0 closed it outright. Corrected in place
+# rather than left standing, on this entry's own precedent: a wrong deferral
+# reads as a decision somebody made.
 #
 # 5.0.0 — MAJOR. Five published operations that do nothing they claim are
 # REMOVED from the session router, along with the request model one of them
@@ -1250,4 +1506,4 @@ asked to accept, and it belongs to a person.
 # and absent must read as "no": a client treating a missing value as
 # unknown-therefore-fine renders the dead control again, which is the whole
 # failure being closed.
-API_CONTRACT_VERSION = "6.2.0"
+API_CONTRACT_VERSION = "7.0.0"

@@ -6763,7 +6763,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "6.2.0"
+    "version": "7.0.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -6785,9 +6785,9 @@
       }
     },
     "/admin/optimization/trigger-cleanup": {
-      "get": {
-        "description": "Trigger comprehensive system cleanup and optimization.",
-        "operationId": "trigger_system_cleanup_admin_optimization_trigger_cleanup_get",
+      "post": {
+        "description": "Trigger comprehensive system cleanup and optimization.\n\nRequires the platform administrator role.",
+        "operationId": "trigger_system_cleanup_admin_optimization_trigger_cleanup_post",
         "responses": {
           "200": {
             "content": {
@@ -6798,6 +6798,11 @@
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Trigger System Cleanup"
       }
     },
@@ -13712,25 +13717,9 @@
     },
     "/api/v1/sessions": {
       "get": {
-        "description": "List all sessions with optional filtering.\n\nArgs:\n    user_id: Optional user ID filter\n    session_type: Optional session type filter\n    limit: Maximum number of sessions to return\n    offset: Number of sessions to skip\n\nReturns:\n    List of sessions",
+        "description": "List the caller's own sessions.\n\nWhose sessions are listed is not a request parameter: the route answers\nwith the authenticated caller's own sessions and nothing else. The\n`user_id` filter this route used to accept was removed in contract 7.0.0.\n\nArgs:\n    session_type: Optional session type filter\n    limit: Maximum number of sessions to return\n    offset: Number of sessions to skip\n\nReturns:\n    List of the authenticated caller's sessions",
         "operationId": "list_sessions_api_v1_sessions_get",
         "parameters": [
-          {
-            "in": "query",
-            "name": "user_id",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "User Id"
-            }
-          },
           {
             "in": "query",
             "name": "session_type",
@@ -13791,6 +13780,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "List Sessions",
         "tags": [
           "session_management"
@@ -13958,7 +13952,7 @@
     },
     "/api/v1/sessions/{session_id}": {
       "delete": {
-        "description": "Delete a specific session.\n\nArgs:\n    session_id: Session identifier\n\nReturns:\n    Deletion confirmation",
+        "description": "Delete a specific session.\n\nArgs:\n    session_id: Session identifier\n\nReturns:\n    Deletion confirmation\n\nRaises:\n    404: Session not found\n    403: User not authorized to delete this session",
         "operationId": "delete_session_api_v1_sessions__session_id__delete",
         "parameters": [
           {
@@ -13986,13 +13980,18 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Delete Session",
         "tags": [
           "session_management"
         ]
       },
       "get": {
-        "description": "Retrieve a specific session by ID.\n\nArgs:\n    session_id: Session identifier\n\nReturns:\n    Session details",
+        "description": "Retrieve a specific session by ID.\n\nArgs:\n    session_id: Session identifier\n\nReturns:\n    Session details\n\nRaises:\n    404: Session not found\n    403: User not authorized to read this session",
         "operationId": "get_session_api_v1_sessions__session_id__get",
         "parameters": [
           {
@@ -14027,6 +14026,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Get Session",
         "tags": [
           "session_management"

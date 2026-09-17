@@ -212,7 +212,7 @@ from .api.routes.admin_cases import router as admin_cases_router
 from .api.routes.admin_config import router as admin_config_router
 from .api.routes.admin_grants import router as admin_grants_router
 from .api.routes.sessions import router as investigation_sessions_router
-from .api.v1.auth_dependencies import require_authentication
+from .api.v1.auth_dependencies import require_authentication, require_platform_admin
 from .infrastructure.observability.tracing import init_opik_tracing
 
 # Import API routes from modules
@@ -2651,9 +2651,60 @@ async def get_system_optimization_metrics():
         }
 
 
-@app.get("/admin/optimization/trigger-cleanup")
+# POST, and platform-admin only, since #1447. It was an unauthenticated GET.
+#
+# The METHOD is part of the fix rather than tidiness. This is not a safe
+# operation: it drives an aggressive resource cleanup and a full
+# ``gc.collect()`` on the running API. A GET says the opposite — it is
+# prefetchable by a browser or a link scanner, followable by a proxy, and
+# replayable from history — and the one thing an operator lever like this must
+# not be is something a caller can trip without meaning to. The bump is MAJOR
+# either way and no client sends it (below), so the honest shape costs nothing
+# here and would cost a deprecation cycle later.
+#
+# What it is deliberately NOT: a row in ``operator_access_audit``. That table's
+# vocabulary is a closed four — ``LIST`` and ``CONTENT_OPEN`` (operator reads of
+# TENANT DATA, the D8/D9 boundary) and ``ROLE_GRANTED``/``ROLE_REVOKED``
+# (changes to who is an operator) — and its own docstring reads it as "operator
+# events, of which data access is two". This route reads no tenant data and
+# grants no role, so recording it would mean inventing a fifth member and
+# widening the table from that to "every platform-admin action". Its neighbours
+# agree: the four ``require_platform_admin`` routes in
+# ``api/routes/admin_config.py`` write no audit row either. Worth revisiting as
+# a deliberate decision about what the trail is FOR; not worth deciding as a
+# side effect of adding a gate.
+#
+# The auth gate itself is a router-level dependency rather than a handler
+# parameter, matching the OAuth and SSO rate limiters: what this route needs
+# from ``require_platform_admin`` is the refusal, not the principal, and an
+# unused parameter says otherwise. It emits the same ``security`` either way.
+#
+# The original finding: it took no auth dependency at all — an
+# anonymous caller on a self-hosted deployment, which publishes 8090 on
+# 0.0.0.0 with no proxy, could drive an aggressive resource cleanup and a full
+# gc.collect() on the running API. Not a disclosure — a write effect, and a
+# denial-of-service lever, reachable with no credential.
+#
+# It is declared on `app` directly rather than on one of the admin routers,
+# which is exactly how it escaped the place where require_platform_admin is the
+# house rule: "every route is individually responsible for its own auth, and
+# nothing tells you when one forgets" is #1447's root, and this route is not a
+# session route. The guard installed with it,
+# tests/integration/api/test_no_unauthenticated_operations.py, is what named it.
+#
+# No client calls it: outside this file the only occurrences of the path are the
+# generated api.generated.ts declarations in faultmaven-copilot and
+# faultmaven-dashboard, and a declaration is what a generator emits, not what a
+# client sends.
+@app.post(
+    "/admin/optimization/trigger-cleanup",
+    dependencies=[Depends(require_platform_admin)],
+)
 async def trigger_system_cleanup():
-    """Trigger comprehensive system cleanup and optimization."""
+    """Trigger comprehensive system cleanup and optimization.
+
+    Requires the platform administrator role.
+    """
     try:
         cleanup_results = {}
 

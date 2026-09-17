@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 6.2.0
+**Version:** 7.0.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -34,13 +34,15 @@ Root endpoint with API information.
 
 ### `/admin/optimization/trigger-cleanup`
 
-#### GET
+#### POST
 
 **Trigger System Cleanup**
 
 Trigger comprehensive system cleanup and optimization.
 
-**Auth:** None — this operation is reachable unauthenticated.
+Requires the platform administrator role.
+
+**Auth:** `HTTPBearer`
 
 **Responses:**
 
@@ -4069,24 +4071,26 @@ Retrieve all versions of a report
 
 **List Sessions**
 
-List all sessions with optional filtering.
+List the caller's own sessions.
+
+Whose sessions are listed is not a request parameter: the route answers
+with the authenticated caller's own sessions and nothing else. The
+`user_id` filter this route used to accept was removed in contract 7.0.0.
 
 Args:
-    user_id: Optional user ID filter
     session_type: Optional session type filter
     limit: Maximum number of sessions to return
     offset: Number of sessions to skip
 
 Returns:
-    List of sessions
+    List of the authenticated caller's sessions
 
 **Tags:** `session_management`
 
-**Auth:** None — this operation is reachable unauthenticated.
+**Auth:** `HTTPBearer`
 
 **Parameters:**
 
-- `user_id` (query, optional)
 - `session_type` (query, optional)
 - `limit` (query, optional)
 - `offset` (query, optional)
@@ -4204,9 +4208,13 @@ Args:
 Returns:
     Session details
 
+Raises:
+    404: Session not found
+    403: User not authorized to read this session
+
 **Tags:** `session_management`
 
-**Auth:** None — this operation is reachable unauthenticated.
+**Auth:** `HTTPBearer`
 
 **Parameters:**
 
@@ -4271,9 +4279,13 @@ Args:
 Returns:
     Deletion confirmation
 
+Raises:
+    404: Session not found
+    403: User not authorized to delete this session
+
 **Tags:** `session_management`
 
-**Auth:** None — this operation is reachable unauthenticated.
+**Auth:** `HTTPBearer`
 
 **Parameters:**
 

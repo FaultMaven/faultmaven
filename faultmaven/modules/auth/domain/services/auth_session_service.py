@@ -391,7 +391,14 @@ class AuthSessionService:
 
         all_sessions = await self.session_store.list_sessions()
 
-        if user_id:
+        # ``is not None``, not truthiness. Only an OMITTED filter means "all";
+        # a filter that was supplied is honoured literally, so a blank caller
+        # id yields nothing rather than everything. Under ``if user_id:`` this
+        # method answered a falsy caller with every session and the identity
+        # each is bound to — the #1447 §1 payload behind a 200 instead of an
+        # anonymous call. ``get_user_sessions`` above already fails closed the
+        # same way; this brings the filter path in line with it.
+        if user_id is not None:
             return [s for s in all_sessions if s.user_id == user_id]
 
         return all_sessions

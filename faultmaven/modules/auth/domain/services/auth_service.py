@@ -326,6 +326,36 @@ class AuthService:
         """Get JWT audience from settings."""
         return self._settings.security.jwt_audience
 
+    def _principal_from(self, claims: Dict[str, Any]) -> "AuthenticatedUser":
+        """Build the principal, in the exception vocabulary this class publishes.
+
+        ``AuthenticatedUser.from_jwt_claims`` refuses a claim set whose ``sub``
+        names nobody, and it raises the auth module's own
+        ``exceptions.AuthenticationError`` — it cannot raise THIS module's,
+        because this module imports it and the cycle is caught by
+        ``test_no_circular_imports``. Both public methods that end in that call
+        document ``Raises: AuthenticationError`` meaning the class defined here,
+        which is what ``api/v1/auth_dependencies`` and ``api/middleware/auth``
+        import and catch. So the translation happens once, here, rather than
+        leaving two published contracts almost true.
+
+        Unreachable through either public method today — ``verify_token``
+        refuses a subject-less token first, with the same ``error_code`` — and
+        kept because "unreachable" is a property of the current call order
+        rather than of the contract (#1447 review).
+        """
+        from faultmaven.modules.auth.exceptions import (
+            AuthenticationError as AuthModuleError,
+        )
+
+        try:
+            return AuthenticatedUser.from_jwt_claims(claims)
+        except AuthModuleError as refusal:
+            raise AuthenticationError(
+                str(refusal),
+                error_code=refusal.error_code or "INVALID_TOKEN_SUBJECT",
+            ) from refusal
+
     def verify_token(
         self,
         token: str,
@@ -382,6 +412,33 @@ class AuthService:
                     "require": ["sub", "iss", "aud", "exp", "iat", "jti", "type"],
                 },
             )
+
+            # A `sub` that names nobody is not a subject. PyJWT's `require`
+            # list above asserts the claim is PRESENT, not that it says
+            # anything — measured on PyJWT 2.13.0, `sub: ""` decodes clean —
+            # so presence and content are checked on adjacent lines rather
+            # than one of them being assumed from the other.
+            #
+            # THIS IS THE SINGLE POINT, and that is the whole design. Every
+            # path that turns a token into a principal reaches its claims
+            # through this method: `verify_token_with_revocation_check` calls
+            # it, and the five consumers downstream — `AuthenticatedUser`
+            # (twice, here in this service), `DevUser`
+            # (`api/v1/auth_dependencies`), the tenant binder
+            # (`api/middleware/tenant_scope`) and idempotency keying — all read
+            # what it returns. Refusing here therefore fixes the CLASS by
+            # construction rather than once per constructor, which matters
+            # because the class is quiet: the house shape for scoping a query
+            # is `if user_id:`, so a blank id does not narrow a query, it drops
+            # the predicate. `case_scope_where("")` returns None — the
+            # cross-tenant platform-admin path's own semantics — and
+            # `list_sessions("")` returns every session (#1447 review).
+            subject = claims.get("sub")
+            if not isinstance(subject, str) or not subject.strip():
+                raise AuthenticationError(
+                    "Token subject is empty",
+                    error_code="INVALID_TOKEN_SUBJECT",
+                )
 
             # Verify token type
             actual_type = claims.get("type")
@@ -647,7 +704,7 @@ class AuthService:
             AuthenticationError: Invalid or expired token
         """
         claims = self.verify_token(token, token_type="access")
-        return AuthenticatedUser.from_jwt_claims(claims)
+        return self._principal_from(claims)
 
     async def extract_user_from_token_with_revocation_check(
         self,
@@ -669,4 +726,4 @@ class AuthService:
             token,
             token_type="access",
         )
-        return AuthenticatedUser.from_jwt_claims(claims)
+        return self._principal_from(claims)

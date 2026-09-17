@@ -846,3 +846,39 @@ def request_with_authorization(authorization: Optional[str] = None) -> "Request"
             "headers": headers,
         }
     )
+
+
+def minimal_session_service():
+    """The session stand-in ``create_session_service`` installs when Redis is down.
+
+    Built through the production factory rather than copied, so a change to the
+    degraded fallback reaches whatever is measuring it instead of leaving it
+    measuring a replica of what the fallback used to be. That is the whole
+    reason the helper exists, which is why it lives HERE rather than being
+    spelled out per module: a copied accessor is a copy of the thing the
+    helper was meant to stop copying (#1447 review).
+
+    How many accessors of this private factory exist, and the scan that found
+    the number — ``grep -rn '_create_minimal_session_service' tests/``: four
+    before this, two of them added by #1447 and now replaced by this one. The
+    two that remain are out of this change's scope and are named so the next
+    caller converges here rather than adding a fifth:
+    ``tests/unit/container/test_minimal_session_service_validate.py`` and
+    ``tests/unit/architecture/test_contract_signature_conformance.py``
+    (whose ``minimal_session_service`` is the same thing under another roof).
+
+    ``object.__new__`` rather than ``DIContainer.__new__``: the latter returns
+    the process singleton, so calling it observes and mutates whatever the rest
+    of the suite has built. The factory itself is self-contained and needs no
+    initialised container.
+
+    Imported through the package facade: ``faultmaven._container_impl`` imports
+    ``faultmaven.container``, which imports it back, so reaching the
+    implementation module first raises ImportError on a partially initialised
+    module.
+    """
+    from faultmaven.container import DIContainer
+
+    container = object.__new__(DIContainer)
+    container.settings = None
+    return container._create_minimal_session_service()
