@@ -2901,9 +2901,10 @@ class InvestigationService:
         The Gate-1 arm does not read ``confirmation_value``, and that is not
         an oversight: the engine's 0c branch does not read it either, so a
         minted ``confirmation_value=False`` commits Gate 1 exactly as True
-        does. Guarding both arms is therefore what "would commit a gate"
-        means TODAY. If that engine branch is ever taught to decline, this
-        arm becomes over-broad by one case — and over-broad here costs only a
+        does (#1464 — reachable by an ordinary DECIDE click, so a different
+        root). Guarding both arms is therefore what "would commit a gate"
+        means TODAY. When #1464 teaches that branch to decline, this arm
+        becomes over-broad by one case — and over-broad here costs only a
         normal LLM turn, which is the direction to err in.
         """
         from faultmaven.core.investigation.terminal_transitions import (
@@ -3539,7 +3540,7 @@ class InvestigationService:
                 # this whole save — the file row, the evidence row and this
                 # drop alike — is then clobbered by the end-of-turn aggregate
                 # save of the in-memory case the turn is holding. That lost
-                # update predates fm#918 and is filed separately; nothing here
+                # update predates fm#918 and is filed as #1465; nothing here
                 # makes it better or worse.
                 "last_suggestions": drop_clarifications_for_file(
                     case.last_suggestions, evidence.source_file_id

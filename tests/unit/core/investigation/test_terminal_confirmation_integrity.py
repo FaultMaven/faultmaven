@@ -271,8 +271,9 @@ class TestMintedIntentGateOneConsentGuard:
     def test_the_decline_arm_is_guarded_too(self):
         """``confirmation_value`` is not consulted on this arm, because the
         ENGINE does not consult it: section 0c commits Gate 1 for a minted
-        ``confirmation`` whatever the value says. Pinned so that if the engine
-        learns to decline, this test is what says the guard may narrow."""
+        ``confirmation`` whatever the value says (#1464). Pinned so that when
+        the engine learns to decline, this test is what says the guard may
+        narrow."""
         case = self._inquiry_awaiting_gate_one()
         minted = QueryIntent(type=IntentType.CONFIRMATION, confirmation_value=False)
         assert (

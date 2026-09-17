@@ -2707,7 +2707,7 @@ def test_every_data_type_writer_retires_the_question():
         (service_module, "_handle_file_reclassification", "reclassification"),
         # Out of band — retires by ``drop_clarifications_for_file`` (fm#918)
         # on ``trigger="api"``. On ``trigger="agent_tool"`` the whole write is
-        # clobbered by the end-of-turn save; see the note at that call site.
+        # clobbered by the end-of-turn save (#1465); see that call site.
         (service_module, "reclassify_evidence", "reclassification"),
     }, f"an unexpected writer of UploadedFile.data_type: {sorted(found)}"
 
