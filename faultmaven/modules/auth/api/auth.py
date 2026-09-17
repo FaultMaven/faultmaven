@@ -206,6 +206,25 @@ class OAuthConfigResponse(BaseModel):
     # the dashboard shows an honest "not configured" state instead of a broken
     # redirect.
     hosted_login_url: Optional[str] = None
+    #: Whether ``hosted_login_url`` honours a ``screen_hint`` query parameter.
+    #: A MECHANICAL fact about this build: an API without it accepts the
+    #: parameter, drops it, and serves the sign-in screen, which is how the
+    #: Dashboard ended up with two buttons that did the same thing when it
+    #: shipped ahead of the build that understood the hint.
+    supports_screen_hint: bool = False
+    #: Whether a person with no existing account can complete sign-up here.
+    #:
+    #: Deliberately SEPARATE from ``supports_screen_hint``, because they are
+    #: different facts and conflating them builds a dead end one step further
+    #: down: with self-service sign-up off, an identity carrying no IdP
+    #: organization reaches the sign-up screen, completes it, and is refused
+    #: at the callback with ``sso_org_unmapped``. A client gating a "create an
+    #: account" control on the hint alone would send someone through a form to
+    #: an error — the same "a control that silently does nothing" failure,
+    #: moved later in the flow where it costs the user more.
+    #:
+    #: Offer a sign-up control only when BOTH are true.
+    self_service_signup_enabled: bool = False
 
 
 class AuthConfigResponse(BaseModel):
@@ -261,6 +280,17 @@ async def get_auth_config() -> AuthConfigResponse:
     `hosted_login_url` is the human sign-in entry point (hosted SSO login,
     ADR-015). It is null unless SSO is configured; `authorize_url` remains the
     copilot OAuth-PKCE machine flow.
+
+    `supports_screen_hint` says whether that URL honours `?screen_hint=`
+    (contract 6.2.0 — the parameter itself arrived in 6.1.0, the way to detect
+    it did not, which is exactly why a client must not infer this from a
+    version). An older API accepts the parameter, drops it, and serves the
+    sign-in screen.
+
+    `self_service_signup_enabled` says whether a person with no account can
+    finish. Gate a sign-up control on **both**: forwarding the hint without
+    self-service sign-up sends someone through the sign-up form to an
+    `sso_org_unmapped` error at the callback.
     """
     settings = get_settings()
     auth_settings = settings.auth
@@ -291,6 +321,21 @@ async def get_auth_config() -> AuthConfigResponse:
                 # origin.
                 hosted_login_url=(
                     "/api/v1/auth/sso/login" if auth_settings.sso_configured else None
+                ),
+                # Reported only where the URL it qualifies exists — a
+                # deployment with no hosted login has nothing to hint at. That
+                # is why this reads `sso_configured` rather than a literal
+                # `True`: the code in this build always accepts the parameter,
+                # but advertising a property of a URL that is null would be
+                # advertising nothing.
+                supports_screen_hint=auth_settings.sso_configured,
+                # Policy, not mechanics. An org-less identity is refused at the
+                # callback unless self-service sign-up is on (ADR-017 / #1045),
+                # so a deployment can forward the hint perfectly and still have
+                # no way for a new person to finish.
+                self_service_signup_enabled=(
+                    auth_settings.sso_configured
+                    and auth_settings.sso_jit_personal_tenant_enabled
                 ),
             ),
         )

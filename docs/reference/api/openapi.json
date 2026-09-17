@@ -4138,6 +4138,16 @@
             "title": "Scopes",
             "type": "array"
           },
+          "self_service_signup_enabled": {
+            "default": false,
+            "title": "Self Service Signup Enabled",
+            "type": "boolean"
+          },
+          "supports_screen_hint": {
+            "default": false,
+            "title": "Supports Screen Hint",
+            "type": "boolean"
+          },
           "token_url": {
             "title": "Token Url",
             "type": "string"
@@ -6753,7 +6763,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "6.1.0"
+    "version": "6.2.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -7985,7 +7995,7 @@
     },
     "/api/v1/auth/config": {
       "get": {
-        "description": "Auth configuration discovery endpoint.\n\nReturns the authentication configuration for the current deployment.\nFrontend uses this to determine which auth flow to implement.\n\n**Local Mode Response:**\n```json\n{\n  \"auth_mode\": \"local\",\n  \"login_endpoint\": \"/api/v1/auth/login\",\n  \"register_endpoint\": \"/api/v1/auth/register\",\n  \"supports_registration\": true,\n  \"oauth\": null\n}\n```\n\n**Cloud Mode Response:**\n```json\n{\n  \"auth_mode\": \"oauth\",\n  \"login_endpoint\": null,\n  \"register_endpoint\": null,\n  \"supports_registration\": false,\n  \"oauth\": {\n    \"authorize_url\": \"/auth/oauth/authorize\",\n    \"token_url\": \"/auth/oauth/token\",\n    \"client_id\": \"faultmaven-copilot\",\n    \"scopes\": [\"openid\", \"profile\", \"email\", \"cases:read\", \"cases:write\"],\n    \"hosted_login_url\": \"/api/v1/auth/sso/login\"\n  }\n}\n```\n\n`hosted_login_url` is the human sign-in entry point (hosted SSO login,\nADR-015). It is null unless SSO is configured; `authorize_url` remains the\ncopilot OAuth-PKCE machine flow.",
+        "description": "Auth configuration discovery endpoint.\n\nReturns the authentication configuration for the current deployment.\nFrontend uses this to determine which auth flow to implement.\n\n**Local Mode Response:**\n```json\n{\n  \"auth_mode\": \"local\",\n  \"login_endpoint\": \"/api/v1/auth/login\",\n  \"register_endpoint\": \"/api/v1/auth/register\",\n  \"supports_registration\": true,\n  \"oauth\": null\n}\n```\n\n**Cloud Mode Response:**\n```json\n{\n  \"auth_mode\": \"oauth\",\n  \"login_endpoint\": null,\n  \"register_endpoint\": null,\n  \"supports_registration\": false,\n  \"oauth\": {\n    \"authorize_url\": \"/auth/oauth/authorize\",\n    \"token_url\": \"/auth/oauth/token\",\n    \"client_id\": \"faultmaven-copilot\",\n    \"scopes\": [\"openid\", \"profile\", \"email\", \"cases:read\", \"cases:write\"],\n    \"hosted_login_url\": \"/api/v1/auth/sso/login\"\n  }\n}\n```\n\n`hosted_login_url` is the human sign-in entry point (hosted SSO login,\nADR-015). It is null unless SSO is configured; `authorize_url` remains the\ncopilot OAuth-PKCE machine flow.\n\n`supports_screen_hint` says whether that URL honours `?screen_hint=`\n(contract 6.2.0 \u2014 the parameter itself arrived in 6.1.0, the way to detect\nit did not, which is exactly why a client must not infer this from a\nversion). An older API accepts the parameter, drops it, and serves the\nsign-in screen.\n\n`self_service_signup_enabled` says whether a person with no account can\nfinish. Gate a sign-up control on **both**: forwarding the hint without\nself-service sign-up sends someone through the sign-up form to an\n`sso_org_unmapped` error at the callback.",
         "operationId": "get_auth_config_api_v1_auth_config_get",
         "responses": {
           "200": {

@@ -1217,4 +1217,37 @@ asked to accept, and it belongs to a person.
 # Adopted by faultmaven-dashboard in the same batch (a `/signup` route that
 # hands off with the hint). faultmaven-copilot and faultmaven-slack-agent do
 # not call this endpoint.
-API_CONTRACT_VERSION = "6.1.0"
+# 6.2.0 — MINOR. `GET /api/v1/auth/config` gains TWO booleans on the `oauth`
+# block: `supports_screen_hint` (does `hosted_login_url` honour the
+# `screen_hint` added in 6.1.0) and `self_service_signup_enabled` (can a
+# person with no account actually finish). Additive; a client that ignores
+# them is unaffected.
+#
+# They are separate because they are different facts and conflating them
+# builds a dead end one step further down. A deployment can forward the hint
+# perfectly while self-service sign-up is off — the shipped default — in
+# which case an org-less identity reaches the sign-up screen, completes it,
+# and is refused at the callback with `sso_org_unmapped` (ADR-017 / #1045).
+# A client gating a "create an account" control on the hint alone would send
+# someone through a form to an error. Offer the control only when BOTH are
+# true.
+#
+# It exists because 6.1.0 shipped a capability clients could not detect, and
+# that cost something immediately. faultmaven-dashboard#161 added a "Create an
+# account" button alongside "Sign In", merged, and deployed against an API
+# that did not yet have 6.1.0 — which accepts an unknown query parameter,
+# drops it, and serves the sign-in screen. The result was two buttons doing
+# exactly the same thing, with no signal anywhere that anything was wrong:
+# every test in three repositories was green, and the only way to tell was to
+# send a deliberately invalid value and see whether it 422'd.
+#
+# So the capability is advertised rather than inferred. This is the same rule
+# the Dashboard already applies to the browser extension (ADR-019:
+# "CAPABILITIES beat the version", "the Dashboard DEGRADES, never requires") —
+# it simply had not been applied to the backend it talks to.
+#
+# `False` by default, not `Optional[bool]`. An older API sends no such field,
+# and absent must read as "no": a client treating a missing value as
+# unknown-therefore-fine renders the dead control again, which is the whole
+# failure being closed.
+API_CONTRACT_VERSION = "6.2.0"
