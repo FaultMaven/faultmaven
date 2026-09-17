@@ -118,19 +118,21 @@ its own state:
   dispatches a lane to build the same fix again.
 
 **Every one of those is safe to repeat**, so an invocation that settles and
-then stops has lost nothing: the re-run settles again. Each action reads the
-issue before it writes and writes only what is not already there — a close
-on a closed issue is a no-op, an edit down to a remainder the body already
-carries changes nothing, the re-rank recomputes the same answer, and a
-comment the issue already holds is not posted twice. An earlier pass wrote a
-`Settled by #<pr>` marker instead, and skipped any issue already carrying
-one for that pull request. That made the stop it was built for
-**unrecoverable** rather than harmless: the marker is on the issue, the
-piles are in the `Queue` body, so the re-run read the marker and did nothing
-while *Propose* — which reads no markers — rebuilt the item straight back
-into ready at its old rank. It was bought against one duplicate comment in a
-window of seconds, and it cost more than ten review findings across three
-rounds — plus the leak it was written to close.
+then stops has lost nothing: the re-run settles again. Safe is not the same
+as silent. Each action reads the issue before it writes — a close on a
+closed issue is a no-op, an edit down to a remainder the body already
+carries changes nothing, the re-rank recomputes the same answer — but the
+abandonment comment is free-form prose that a re-run cannot reliably
+recognise as its own, so it may be posted a second time. That duplicate is
+the entire price, and it is the price an earlier pass refused to pay: it
+wrote a `Settled by #<pr>` marker on each issue and skipped any already
+carrying one for that pull request. The stop it was built for became
+**unrecoverable** rather than harmless, because the marker is on the issue
+while the piles are in the `Queue` body — the re-run read the marker and did
+nothing, and *Propose*, which reads no markers, rebuilt the item straight
+back into ready at its old rank. One duplicate comment in a window of
+seconds, against more than ten review findings across three rounds and the
+leak the marker was written to close.
 
 **What a stop can still lose is the pile move, so the settlement rewrites
 the `Queue` body as it ends rather than leaving that to *Propose*.** The
@@ -140,13 +142,21 @@ issues and the body, and neither of them says that an item stopped. An item
 moved to **blocked** whose move the body does not carry is rebuilt into
 ready at the rank that selected it, and the next round dispatches a lane
 against it — the abandoned pull request above, arriving by a second road. A
-lane's pull writes the body for the same reason and at the moment it stops,
-because there the step that used to do the writing has already run.
+pull is written the same way and at the moment it happens, because there the
+step that used to do the writing has already run. **Every one of these
+writes is the owning agent's**; a lane never touches the `Queue`, which has
+no compare-and-set, so two lanes writing at once would each compute from a
+read taken before the other's and the first pull's move would vanish — the
+same leak by a third road.
 
 **A pull request the agent closed is told from one the owner abandoned by
-the result table**, which reports that issue's outcome as `pulled`. That
-table already supplies the settlement's pairs, so the distinction costs no
-record of its own.
+the result table**, which reports that issue's outcome as `pulled`. An
+earlier draft objected to reading the round's result for this, on the ground
+that it rested on a format that pass had just introduced. It no longer does:
+that table is already where the settlement gets its pairs, so the dependency
+is not new — only the column read is — and the result reserves the one value
+the settlement reads. A round that writes it wrong costs one wrong comment
+on an issue already in the right pile, not a lost item.
 
 ### 1. Propose
 
@@ -228,9 +238,9 @@ One lane per approved item, in its own worktree, autonomous. The gates under
 **No question is asked while building.** If a lane cannot deliver its item,
 the item is **pulled**: the lane stops, what stopped it is recorded on the
 issue — the question if there is one, otherwise the fact — the item returns
-to the blocked pile, which means the `Queue` body is written there and then,
-and it appears in the next proposal. The other lanes carry on. Half-built
-work is not left behind and the round is not held up.
+to the blocked pile, which means the owning agent writes the `Queue` body
+there and then, and it appears in the next proposal. The other lanes carry
+on. Half-built work is not left behind and the round is not held up.
 
 **"Cannot deliver", not "needs a ruling".** Needing a ruling is the common
 case and not the only one: the work turns out to be several rounds of it, or
@@ -364,20 +374,20 @@ Gates for a lane, each from a failure that cost real time:
   mid-build:** a blocking finding **the lane cannot clear** is pulled — the
   owning agent closes the pull request, records on the issue either the
   question, if it needs a ruling, or simply that the lane could not clear
-  it, returns the item to the blocked pile, and reports it in the result as
-  `pulled` rather than delivered — which is also what tells the next round's
-  settlement that this close was not the owner's.
-  The condition is "cannot clear", not "needs a ruling": a
-  finding that is merely too hard trips none of the four escalation
-  triggers, so gating the exit on a ruling would leave that case with no
-  exit at all — the same shape as the leak this rule exists to close. "The
-  lane could not clear it" is itself a call for the owner: ship the bug, or
-  take it on themselves. Closing a pull request is the one action on one the
-  owning agent may take; merging is never one. Without that exit this
-  exception would be the only state here the *round itself* cannot leave —
-  step 5 could never run, so no other lane's work would reach the owner
-  either, and holding the round up is precisely what the pull rule exists to
-  prevent.
+  it, returns the item to the blocked pile — a write to the `Queue` body,
+  which only the owning agent ever makes — and reports it in the result as
+  `pulled` rather than delivered, which is also what tells the next round's
+  settlement that this close was not the owner's. The condition is "cannot
+  clear", not "needs a ruling": a finding that is merely too hard trips none
+  of the four escalation triggers, so gating the exit on a ruling would
+  leave that case with no exit at all — the same shape as the leak this rule
+  exists to close. "The lane could not clear it" is itself a call for the
+  owner: ship the bug, or take it on themselves. Closing a pull request is
+  the one action on one the owning agent may take; merging is never one.
+  Without that exit this exception would be the only state here the *round
+  itself* cannot leave — step 5 could never run, so no other lane's work
+  would reach the owner either, and holding the round up is precisely what
+  the pull rule exists to prevent.
 - **Verify, do not relay.** Act on a subagent's finding only with execution
   evidence, and run a suggested remedy before adopting it. A remedy is
   checked *before* it is asked for: in round 1 the suggested fix for a

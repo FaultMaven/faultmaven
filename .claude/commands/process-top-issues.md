@@ -29,6 +29,46 @@ there, so the operator never has to know.
 - `propose` — force a fresh proposal even if one is outstanding.
 - `build` — force the building step.
 
+## The Queue
+
+Everything below reads or writes one pinned tracking issue titled exactly
+`Queue`. Its **body** holds the three piles, the ranked head in order and the
+round timestamp; its **last comment** is where the round has got to.
+
+```bash
+gh issue list --state open --label tracking --search "Queue in:title" \
+  --json number,title --jq 'map(select(.title == "Queue"))'
+```
+
+Create it if absent (`gh issue create --title Queue --label tracking`, then
+`gh issue pin`) and say so in the report.
+
+**Writing the body.** Three steps write it — the settlement (1), the proposal
+(2) and a pull (4) — and each writes the *whole* body, because a PATCH on
+`body` replaces it. So:
+
+- **Emit all three parts every time**: the piles, the ranked head in order,
+  and the timestamp. A write that emits the piles alone deletes the head, and
+  with it every rules-1-3 comparison ever made — which is what "losing a
+  comparison does not have to be undone" rests on. The rule-4 tier is not
+  written down; oldest-first is recoverable from the issues.
+- **The timestamp belongs to step 2.** Steps 1 and 4 carry forward the value
+  they read. Stamping it in step 1 would make step 2's own "what arrived
+  since the last round" read, seconds later, find nothing, and every issue
+  filed during the last round would be sorted into no pile at all.
+- **`gh api -X PATCH`, then read it back.** `gh issue edit` can fail
+  silently. At the pull site a write lost that way re-creates the leak the
+  write exists to close, and nothing else would ever say so.
+- **The owning agent makes every one of these writes.** A subagent never
+  touches the `Queue`. There is no compare-and-set here, so two lanes writing
+  at once would each compute from a read taken before the other's, and the
+  first pull's move to **blocked** would vanish — the same leak by a third
+  road.
+- **The body names only open issues.** Step 2 enforces that when it rebuilds;
+  steps 1 and 4 carry forward what they read, so the body can briefly name an
+  issue closed since. Nothing acts on those numbers in between, and step 2's
+  rebuild drops them.
+
 ## 0. Locate the round
 
 Read the last comment on the `Queue` issue and continue from what it is:
@@ -68,28 +108,39 @@ settled. Read each issue's own state, not the pull request's body.
 gh issue view <n> --json state,title,body,comments   # each cited issue
 ```
 
-| the issue | its pull request | what you do |
-|---|---|---|
-| closed | any | nothing |
-| open | merged | close #<n> if every part it named is now delivered or re-filed, citing this pull request and the re-filings; otherwise edit #<n> down to the part that still stands — title and body — and put it back in **ready** as a fresh arrival, ranked against the current candidates and never left at its old rank. There is no third outcome |
-| open | closed unmerged | **if the result table reports that issue `pulled`**, nothing: the pull recorded it and put it in **blocked** where it happened. Otherwise the owner abandoned it — comment that the work was built and the pull request closed unmerged, link it, and move #<n> to **blocked**; the next proposal asks whether to build it another way or close it. Do not guess why |
+Walk that table **one row at a time**. A row is an issue, the pull request
+that carried it and an outcome, so what you do is decided by the row in front
+of you and that issue's own state — never by another row, and never by the
+issue alone. Take the **first** row here that matches; the order is what
+lands on the fact rather than on the report of it, so a pull request the
+owner reopened and merged is settled as merged even where the round reported
+that item `pulled`:
 
-If several pull requests named one issue, the merged one decides.
+| the row | what you do |
+|---|---|
+| the issue is closed | nothing |
+| the issue is open, its pull request merged | close #<n> if every part it named is now delivered or re-filed, citing this pull request and the re-filings; otherwise edit #<n> down to the part that still stands — title and body — and put it back in **ready** as a fresh arrival, ranked against the current candidates and never left at its old rank. There is no third outcome |
+| its outcome is `pulled` | nothing. The pull recorded it on the issue and put it in **blocked** where it happened. The row may name no pull request at all — a lane pulled mid-build never opened one |
+| the issue is open, its pull request closed unmerged | the owner abandoned it — comment that the work was built and the pull request closed unmerged, link it, and move #<n> to **blocked**; the next proposal asks whether to build it another way or close it. Do not guess why |
+
+A row matching none of them — open, naming no pull request, and not `pulled` —
+is a malformed result. Say so under *Settled from last round* rather than
+guessing; the item stays wherever the last body put it. If several pull
+requests named one issue, the merged one decides.
 
 **Every action above is safe to run twice**, so a stop between here and the
-proposal costs nothing. Read the issue before you write and write only what
-is not already there: a close on a closed issue, an edit down to a remainder
-the body already carries, a re-rank, and a comment the issue already holds
-are all no-ops. Do not add a marker recording that you have been here — one
-used to, and it turned that stop into the one state this procedure could not
-leave.
+proposal costs nothing — but safe is not silent. Read the issue before you
+write: a close on a closed issue, an edit down to a remainder the body
+already carries, and a re-rank are all no-ops. The abandonment comment is the
+one that is not, because it is free-form prose a re-run cannot reliably
+recognise as its own. That duplicate is the whole price of having no marker,
+and it was priced knowingly. Do not add a marker back — one used to be here,
+and it turned that stop into the one state this procedure could not leave.
 
-Then **PATCH the `Queue` body** with the piles as the settlement leaves them,
-before going on. That write *is* the settlement: the piles are in that body
-and nowhere else, and step 2's rebuild reads open issues and the body,
-neither of which says an item was returned to blocked. Leave the round
-timestamp as you found it — step 2 sets it, and stamping it here would make
-its own "what arrived since the last round" read find nothing.
+Then **write the `Queue` body**, per *The Queue*, with the piles as the
+settlement leaves them. That write *is* the settlement: the piles are in that
+body and nowhere else, and step 2's rebuild reads open issues and the body,
+neither of which says an item was returned to blocked.
 
 Report what you settled under *Settled from last round* in the proposal.
 
@@ -98,18 +149,7 @@ check and the round starts.
 
 ## 2. Propose
 
-Find the pinned tracking issue whose title is exactly `Queue`:
-
-```bash
-gh issue list --state open --label tracking --search "Queue in:title" \
-  --json number,title --jq 'map(select(.title == "Queue"))'
-```
-
-Create it if absent (`gh issue create --title Queue --label tracking`, then
-`gh issue pin`) and say so in the report. Its body holds the three piles and
-the ranked head; the last comment holds the last round.
-
-Read what arrived since the last round's timestamp:
+Read what arrived since the round timestamp in the `Queue` body:
 
 ```bash
 gh issue list --state open --limit 500 --json number,title,labels,createdAt,body
@@ -177,12 +217,8 @@ and never omitted, or they leave every pile.
 Rule-4 tier: <n> ready items holding none of rules 1-3 (last round: <n>)
 ```
 
-Rewrite the `Queue` body with the three piles, **the ranked head in order**
-and this round's timestamp. The head is what "losing a comparison does not
-have to be undone" rests on; the rule-4 tier is not written down, because
-oldest-first is recoverable from the issues. The timestamp is set here and
-only here — steps 1 and 4 write the piles and leave it alone. Use `gh api -X
-PATCH` and read it back; `gh issue edit` can fail silently.
+Write the `Queue` body per *The Queue*: the three piles, **the ranked head in
+order**, and this round's timestamp, which is set here and nowhere else.
 
 Then **stop and wait**. Do not build anything that has an open question
 against it.
@@ -238,9 +274,11 @@ anything unresolved.
 because the work turns out to be several rounds of it, or because it cannot
 be done from where the lane stands. Stop that lane, record on the issue the
 question if there is one and otherwise what stopped it, return the item to
-the blocked pile — **PATCH the `Queue` body now**, because step 2 has already
-run and nothing else will write it — and carry on with the others. Do not ask
-the owner mid-round and do not guess.
+the blocked pile — **write the `Queue` body now**, per *The Queue*, because
+step 2 has already run and nothing else will write it — and carry on with the
+others. A re-entry into this step does not re-dispatch that item, whatever
+the proposal still lists: the body places it in **blocked** and the issue
+says what stopped it. Do not ask the owner mid-round and do not guess.
 
 Then per returned lane, in order:
 
@@ -268,7 +306,7 @@ Then per returned lane, in order:
    escalating it would hand the owner a pull request you know is broken. **If
    the lane cannot clear it — for any reason, not only a ruling — pull it**:
    close the pull request, record on the issue either the question or that
-   the lane could not clear it, return the item to the blocked pile (PATCH
+   the lane could not clear it, return the item to the blocked pile (write
    the `Queue` body, as in the pull above), and give it a result row with
    outcome `pulled` — that row is what stops the next round's settlement
    reading your close as the owner's abandonment. That is the loop's only
@@ -290,8 +328,10 @@ Comment on the round's proposal:
 One row per **issue**, even where one lane delivered several under one pull
 request: the next round's *Settle the last round* reads this table for its
 issue-to-pull-request pairs, and an issue missing from it is never settled.
-A pulled issue gets a row too, outcome `pulled` — that is what tells the next
-settlement your close from the owner's. The line below carries what stopped
+A pulled issue gets a row too. `outcome` is free text with **one reserved
+value** — `pulled`, lower case, which nothing but a pull may carry and which
+is the only value the next settlement reads. A mid-build pull's row names no
+pull request, because none was opened. The line below carries what stopped
 it.
 
 Pulled: #N — <the question, or what stopped the lane>
