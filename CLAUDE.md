@@ -1101,7 +1101,7 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | `GET /api/v1/meta/capabilities` | Backend capabilities for extension and dashboard |
 | `GET /v1/meta/capabilities` | Deprecated alias of the above, kept for installed extensions |
 
-**Debug Endpoints** — mounted when `ENVIRONMENT` is development/testing/test, or in any environment (staging and production included) when `ENABLE_DEBUG_ENDPOINTS=true`. **All four require the platform administrator role** (#1474); an anonymous caller gets 401. The standalone bootstrap account holds that role, so a local `dev-login` token reaches them.
+**Debug Endpoints** — mounted when `ENVIRONMENT` is development/testing/test, or in any environment (staging and production included) when `ENABLE_DEBUG_ENDPOINTS=true`. **All four require the platform administrator role** (#1474): an anonymous caller gets **401**, and an authenticated caller without the role gets **403 "Platform administrator access required"** — including a Cloud beta account, so a 403 here is the gate working, not a bug. The standalone bootstrap account is granted the operator roles on every startup, so a local `dev-login` token reaches them.
 
 | Endpoint | Description |
 |----------|-------------|
@@ -1255,8 +1255,10 @@ lint-imports
 echo $CHAT_PROVIDER
 echo $OPENAI_API_KEY  # (or relevant provider key)
 
-# Check debug endpoint (platform-admin only since #1474 — without the header
-# this answers 401). $TOKEN from POST /api/v1/auth/dev-login {"username":"admin"}
+# Check debug endpoint (platform-admin only since #1474: no header -> 401,
+# a non-operator token -> 403). $TOKEN from
+# POST /api/v1/auth/dev-login {"username":"admin"} — the bootstrap admin holds
+# the operator roles.
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8090/debug/llm-providers
 
 # Or the always-mounted operator surface, which needs no debug flag:

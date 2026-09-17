@@ -213,6 +213,14 @@ from .api.routes.admin_config import router as admin_config_router
 from .api.routes.admin_grants import router as admin_grants_router
 from .api.routes.sessions import router as investigation_sessions_router
 from .api.v1.auth_dependencies import require_authentication, require_platform_admin
+
+# FastAPI's own route flattener; see ``debug_routes`` and
+# ``api/middleware/route_policy.py`` (fm#1305). Absent before 0.139, where it is
+# not needed because ``app.routes`` really does hold every route.
+try:  # pragma: no cover - exercised on FastAPI >= 0.139
+    from fastapi.routing import iter_route_contexts
+except ImportError:  # pragma: no cover - FastAPI < 0.139
+    iter_route_contexts = None
 from .infrastructure.observability.tracing import init_opik_tracing
 
 # Import API routes from modules
@@ -1768,8 +1776,13 @@ except Exception:
 # well, so the flag cannot lift the router into production at all. That is
 # defence in depth on top of this, not an alternative to it.
 if _is_debug_enabled(settings=_debug_settings):
+    # Says what is true of the whole router rather than of most of it: four
+    # routes are platform-admin, the causal-graph route is authenticated. The
+    # blanket "platform-admin required" this line first carried is the claim
+    # the block above forbids in as many words.
     logger.info(
-        "🔧 Debug endpoints enabled (ENVIRONMENT=%s, platform-admin required)",
+        "🔧 Debug endpoints mounted (ENVIRONMENT=%s); every route requires a "
+        "credential, the four operator diagnostics require platform admin",
         _debug_settings.server.environment.value if _debug_settings else "unknown",
     )
 
@@ -1783,13 +1796,41 @@ if _is_debug_enabled(settings=_debug_settings):
         Requires the platform administrator role (#1474): the table includes
         every route registered with ``include_in_schema=False``, so it is a
         strictly larger surface than the published contract.
+
+        Flattened through ``iter_route_contexts``, not by walking ``app.routes``
+        directly. FastAPI 0.139 stopped copying an included router's routes into
+        ``app.routes`` and records one ``_IncludedRouter`` placeholder per
+        ``include_router`` instead, so the flat walk this used to do reported
+        **24 of 147 routes** on fastapi 0.141.1 — a strict SUBSET of the
+        published contract rather than a superset of it, and an operator
+        checking whether a route is registered was told "no" about a hundred
+        routes that are. Same flattener, and same reason, as
+        ``api/middleware/route_policy.py`` (fm#1305); it resolves the EFFECTIVE
+        path, including any prefix passed to ``include_router``, which walking
+        ``original_router`` by hand does not.
         """
         routes_info = []
-        for route in app.routes:
-            path = getattr(route, "path", None)
-            methods = list(getattr(route, "methods", []) or [])
-            if path:
-                routes_info.append({"path": path, "methods": methods})
+        seen = set()
+
+        def _record(path, methods):
+            key = (path, tuple(sorted(methods)))
+            if path and key not in seen:
+                seen.add(key)
+                routes_info.append({"path": path, "methods": sorted(methods)})
+
+        if iter_route_contexts is not None:
+            for context in iter_route_contexts(app.routes):
+                _record(
+                    getattr(context, "path", None),
+                    list(getattr(context, "methods", None) or []),
+                )
+        else:  # pragma: no cover - FastAPI < 0.139 copies routes in, so this is complete
+            for route in app.routes:
+                _record(
+                    getattr(route, "path", None),
+                    list(getattr(route, "methods", []) or []),
+                )
+
         return {
             "routes": routes_info,
             "count": len(routes_info),
@@ -1983,8 +2024,12 @@ if _is_debug_enabled(settings=_debug_settings):
         }
 
 else:
+    # "disabled in production" was wrong for `staging`, which also lands here
+    # and which this line would have reported as production. Same error class as
+    # the header comment above, in the channel an operator actually reads.
     logger.info(
-        "🔒 Debug endpoints disabled in production (ENVIRONMENT=%s)",
+        "🔒 Debug endpoints not mounted (ENVIRONMENT=%s, "
+        "ENABLE_DEBUG_ENDPOINTS unset)",
         _debug_settings.server.environment.value if _debug_settings else "unknown",
     )
 

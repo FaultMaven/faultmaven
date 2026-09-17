@@ -26,19 +26,27 @@ Nothing here may have import side effects — that is the whole point.
 #
 # The reference documents the **maximal deployed surface**: every route the
 # product can serve, so one generated client covers every deployment. Debug
-# endpoints are the exception — they are excluded because this pins
-# `ENVIRONMENT=production`, where they mount only if an operator sets
-# `ENABLE_DEBUG_ENDPOINTS`, so they are not part of the surface a generated
-# client should assume. (They are not "development-only": that flag mounts them
-# anywhere. They require the platform administrator role — #1474.) Excluding
-# OAuth and SSO would leave the document advertising
+# endpoints are the exception, and the reason is NOT `ENVIRONMENT=production` —
+# `_is_debug_enabled()` is a disjunction, so production plus
+# `ENABLE_DEBUG_ENDPOINTS=true` mounts the router. What excludes them is that
+# this module EMPTIES the environment down to `_SYSTEM_ENVIRONMENT_KEYS` before
+# applying the pin, so the flag cannot arrive from the caller's shell; the
+# explicit `"false"` below states it rather than relying on the emptying, and
+# `tests/integration/api/test_openapi_generation_is_pinned.py` exports the flag
+# hostilely to prove it. (They are not "development-only" either: that flag
+# mounts them anywhere. They require the platform administrator role — #1474.)
+# Excluding OAuth and SSO would leave the document advertising
 # `/auth/oauth/authorize` and `/auth/sso/login` from `GET /auth/config` while
 # describing neither.
 PINNED_ENVIRONMENT = {
     # Building a document must not reach a database, Redis or an LLM provider.
     "SKIP_SERVICE_CHECKS": "true",
-    # Not development: excludes the debug router.
     "ENVIRONMENT": "production",
+    # The debug router, refused explicitly rather than by absence. The
+    # environment is emptied before this dict is applied, so the flag cannot
+    # arrive from a caller's shell — but "excluded because nobody set it" is a
+    # property of the emptying, and pinning it false is a property of the pin.
+    "ENABLE_DEBUG_ENDPOINTS": "false",
     # Only present to satisfy the startup validator that rejects wildcard CORS
     # in production. CORS is middleware — it appears nowhere in the document.
     "CORS_ALLOW_ORIGINS": '["https://app.faultmaven.com"]',
