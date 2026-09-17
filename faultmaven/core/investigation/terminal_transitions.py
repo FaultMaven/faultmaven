@@ -77,10 +77,22 @@ def is_substantive_reply(user_message: "str | None") -> bool:
     Named for the pending TERMINAL transition because that is the gate it was
     written for, and it now has a second caller that is neither pending nor
     terminal: the adoption-site guard applies it to INQUIRY's Gate 1 as well
-    (fm#918). The test itself is unchanged and deliberately shared — two
-    confirm lanes with two substance predicates is the drift this exists to
-    prevent — so tuning it (``BARE_CONSENT_MAX_LENGTH``, the contrastive
-    tokens) moves BOTH gates at once.
+    (fm#918). It is deliberately shared between its two callers — two confirm
+    lanes with two substance predicates is the drift this exists to prevent —
+    so tuning it (``BARE_CONSENT_MAX_LENGTH``, the contrastive tokens) moves
+    both gates at once.
+
+    ‼ "Shared" means shared by the two CONFIRM-side callers below, and not
+    that it is the only substance test in the gate machinery. The engine's 0b
+    handler computes its own ``message_is_substantive`` for a different
+    question — *is this an answer to the gate at all, or should the proposal
+    be withdrawn?* — at ``_PENDING_GATE_SUBSTANTIVE_LEN`` (40) with no
+    contrastive token, against this one's 100 plus ``?``/`` but ``. Measured,
+    the two disagree in a real band: "we will do it in friday's maintenance
+    window instead of now" (59 chars) is substantive to 0b and bare consent
+    here. Whether those two should be one predicate is an open question on
+    fm#918 — it cannot be settled by narrowing this docstring, because
+    unifying them moves shipped terminal-consent behaviour.
 
     A message is substantive — and therefore can never be consumed as consent
     to an irreversible RESOLVED/CLOSED transition — when it is long (>

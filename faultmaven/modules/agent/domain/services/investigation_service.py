@@ -1693,6 +1693,7 @@ class InvestigationService:
             # reject the great majority of turns, and this walks every stored
             # entry and indexes every uploaded file to answer a question those
             # turns never ask.
+
             # Set when the INV-26 guard below refuses a mint. The refusal is a
             # POSITIVE judgement — this message is a substantive answer to a
             # gate — so it is carried to the out-of-band lane rather than
@@ -1778,6 +1779,12 @@ class InvestigationService:
             # construction (it REQUIRED a pending transition, which this lane
             # already excludes); fm#918's Gate-1 arm is defined by the absence
             # of one, so the exemption has to be carried explicitly.
+            #
+            # It only ever ADDS coverage for the no-pending case, because a
+            # pending row already excludes this lane one line up — and that
+            # overlap is the point: the guard can refuse with a pending row
+            # too (the two gate arms are an OR, not an if/else), and there the
+            # conjunct is inert rather than wrong.
             #
             # It is NOT the same rule as ``pending_transition``, and the
             # difference is worth knowing: that one suppresses this lane on
@@ -2924,32 +2931,52 @@ class InvestigationService:
             is_substantive_reply,
         )
 
+        # OR, not if/else. The two gates are not alternatives — a case can
+        # carry a pending transition AND be an INQUIRY case with a proposed
+        # problem statement, and writing the Gate-1 arm as the ``else`` of
+        # ``if pending`` made it unreachable exactly there. Measured on that
+        # shape with a substantive DECLINE
+        # ("no - but is the problem statement about the replica or the
+        # primary?"): the pending arm only matches ``confirmation_value is
+        # True``, so the mint was adopted, 0b cancelled the pending and fell
+        # through, and 0c committed Gate 1 — the exposure the arm exists to
+        # close, reached through the one door the if/else left open. A
+        # ``needs_info`` pending is worse still: 0b is skipped wholesale
+        # (``elif not case.pending_transition.get("needs_info")``) and the
+        # mint lands in 0c directly.
         pending = getattr(case, "pending_transition", None)
-        if pending:
-            commits_gate = (
+
+        # The pending TERMINAL gate. Requires a pending row by definition.
+        confirms_pending_transition = bool(pending) and (
+            (
                 minted.type == IntentType.CONFIRMATION
                 and minted.confirmation_value is True
-            ) or (
+            )
+            or (
                 minted.type == IntentType.STATUS_TRANSITION
                 and minted.to_state is not None
                 and minted.to_state.value == pending.get("to_state")
             )
-        else:
-            # The same three conditions the engine's 0c branch checks before
-            # it commits Gate 1, read in the same order — a fourth condition
-            # added there without one here would make this guard silently
-            # miss the commit it exists to intercept.
-            commits_gate = (
-                minted.type == IntentType.CONFIRMATION
-                and case.state == CaseState.INQUIRY
-                and bool(
-                    getattr(
-                        getattr(case, "inquiry", None),
-                        "proposed_problem_statement",
-                        None,
-                    )
+        )
+
+        # Gate 1. The same conditions the engine's 0c branch checks before it
+        # commits, read in the same order — a fourth condition added there
+        # without one here would make this guard silently miss the commit it
+        # exists to intercept. Deliberately says NOTHING about ``pending``:
+        # 0c is reached with one or without one.
+        commits_gate_one = (
+            minted.type == IntentType.CONFIRMATION
+            and case.state == CaseState.INQUIRY
+            and bool(
+                getattr(
+                    getattr(case, "inquiry", None),
+                    "proposed_problem_statement",
+                    None,
                 )
             )
+        )
+
+        commits_gate = confirms_pending_transition or commits_gate_one
         return commits_gate and is_substantive_reply(user_message)
 
     async def _handle_confirmation(
@@ -3540,7 +3567,18 @@ class InvestigationService:
                 # fm#918 exposure 1: this path writes ``UploadedFile.data_type``
                 # without going through the turn seam, so nothing else rewrites
                 # ``last_suggestions`` and the file's clarification choices stay
-                # armed. Answering the question here is exact; the referent
+                # armed for the TYPED arm — the resolver reads this list, and
+                # this is what empties it. A DECIDE **click** is not covered
+                # and is not meant to be: a click carries its intent on the
+                # request and never consults this list
+                # (``suggestion_is_live``), so a card the client still shows
+                # can still be clicked and still reaches the same end state.
+                # That is consent rather than inference, which is the whole
+                # distinction INV-26 rests on — but it does mean "exposure 1
+                # is closed" is true of typing and not of clicking. Raised on
+                # fm#918 rather than decided here.
+                #
+                # Answering the question here is exact; the referent
                 # check in ``suggestion_is_live`` compares the 12→6 projection
                 # and cannot see a reclassification WITHIN a source type
                 # (logs_and_errors → command_output, both ``logs``), which is

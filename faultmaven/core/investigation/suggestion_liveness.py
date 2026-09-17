@@ -21,11 +21,23 @@ Two facts make that question non-trivial:
    endpoints move the case without touching the list at all. So "it is in the
    row" is not evidence that a turn put it there *for now*.
 
-One mechanism answers both: every stored entry carries the turn that OFFERED
-it, and liveness is an age bound on that stamp. Fact 1 is a wide window with a
-hard span cap; fact 2 is the same predicate applied where no turn wrote — an
-entry left behind by a non-turn writer ages out on the clock rather than
-needing every writer to remember to clear it.
+Every stored entry carries the turn that OFFERED it, and liveness is an age
+bound on that stamp. Fact 1 is a wide window with a hard span cap. Fact 2 has
+two halves and the stamp answers only ONE of them, which this note used to get
+wrong (it claimed "one mechanism answers both"):
+
+- A **non-turn writer** leaves an entry behind and the clock keeps moving, so
+  the entry ages out without every writer having to remember to clear it. The
+  age bound does answer this — and, since fm#918, the one such writer inside
+  this codebase (``reclassify_evidence``) retires its own question exactly
+  rather than waiting for the window, because the age bound is a bound and not
+  a correction.
+- A **mid-turn save** is NOT answered by the age bound. Measured: the two saves
+  that can commit a row mid-turn run BEFORE the turn is recorded, so the row
+  carries N-1 in the persisted counter *and* a stamp of N-1 — age 1, inside
+  every window. What answers it is that both of those saves commit a TERMINAL
+  case, and nothing stored is live on one. See ``FOLLOW_UP_CARRY_TURNS`` and
+  the terminal guard in ``suggestion_is_live``.
 
 WHICH clock, precisely. The stamp is the in-flight ``case.current_turn``, and
 the number a LATER turn compares it against is the one that survives a save —
@@ -355,7 +367,12 @@ def drop_clarifications_for_file(
     here costs nothing and loses nothing.
     """
     if not stored or not file_id:
-        return stored
+        # ``or None`` on this path too. Returning ``stored`` verbatim gave the
+        # field two empty states — ``[]`` from here, ``None`` from the filter
+        # below — while the paragraph above promised one, and the caller
+        # writes the result straight through without the ``or None`` the turn
+        # seam applies.
+        return stored or None
     kept = [
         entry
         for entry in stored

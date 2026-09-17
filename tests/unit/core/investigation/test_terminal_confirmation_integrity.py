@@ -281,6 +281,39 @@ class TestMintedIntentGateOneConsentGuard:
             is True
         )
 
+    @pytest.mark.parametrize(
+        "pending",
+        [
+            None,
+            {"to_state": "closed"},
+            {"needs_info": True},
+        ],
+        ids=["no-pending", "pending-close", "pending-needs-info"],
+    )
+    def test_gate_one_is_guarded_whether_or_not_a_transition_is_pending(self, pending):
+        """The two gates are not alternatives, and writing them as one was a
+        real hole.
+
+        Every other Gate-1 case in this class has ``pending_transition=None``,
+        so a guard written as ``if pending: … else: <gate 1>`` passed all of
+        them while leaving the arm unreachable on the shape that HAS a pending
+        row. Measured on that shape with a substantive DECLINE: the pending
+        arm only matches ``confirmation_value is True``, so the mint was
+        adopted; 0b's decline branch cancelled the pending and fell through to
+        0c, and 0c committed Gate 1. A ``needs_info`` pending is more direct
+        still — 0b is skipped wholesale
+        (``elif not case.pending_transition.get("needs_info")``).
+
+        The parametrization is the point: drop any one value and the hole
+        reopens silently.
+        """
+        case = self._inquiry_awaiting_gate_one()
+        case.pending_transition = pending
+        minted = QueryIntent(type=IntentType.CONFIRMATION, confirmation_value=False)
+        message = "no - but is the problem statement about the replica or the primary?"
+        assert is_substantive_reply(message) is True
+        assert self.GUARD(case, minted, message) is True
+
     def test_a_case_with_no_proposed_statement_has_no_gate_to_commit(self):
         case = self._inquiry_awaiting_gate_one()
         case.inquiry.proposed_problem_statement = None

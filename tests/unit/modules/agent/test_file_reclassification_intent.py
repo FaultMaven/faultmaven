@@ -8,8 +8,11 @@ choice), and the SERVICE handler re-runs preprocessing mechanically — no LLM
 call, so the choice can never be misread as an analysis request.
 """
 
+import ast
 import re
 from datetime import UTC, datetime
+from functools import lru_cache
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -2583,6 +2586,88 @@ class TestOutOfBandReclassificationRetiresTheQuestion:
         assert self._clarified_file_ids(saved.last_suggestions) == []
 
 
+# =============================================================================
+# Package-wide AST scans (fm#918)
+# =============================================================================
+#
+# Two guards below walk the whole ``faultmaven`` package. Both need the same
+# two things, so both take them from here.
+#
+# **The tree is anchored on THIS FILE, not on ``import faultmaven``.** An
+# editable install resolves ``faultmaven`` to whichever checkout it was
+# installed from, so a scan that locates the package by importing it can walk
+# a DIFFERENT tree than the one under test and pass vacuously — and a mutation
+# probe against this worktree would still have looked green, which is the one
+# failure a mutation-verified guard cannot detect in itself. Asserting
+# ``package.name == "faultmaven"`` does not catch it: that is true of every
+# checkout. The import is still performed and asserted to AGREE, following
+# ``tests/eval/progress_score_ordering/replay_transition.py``.
+#
+# **Only the files that could match are parsed, and the result is cached.** An
+# AST node naming ``data_type`` cannot exist in a file whose SOURCE does not
+# contain that token, so filtering on the token before parsing is sound rather
+# than merely fast — but only if every token a scan matches on is declared,
+# which is why callers pass all of them. (``_file_row_with_reclassification``
+# is its own token: its call sites do not mention ``data_type`` at all.)
+
+_PACKAGE_ROOT = Path(__file__).resolve().parents[4] / "faultmaven"
+
+
+@lru_cache(maxsize=1)
+def _package_root() -> Path:
+    """The tree under test, asserted to be the one ``import faultmaven`` gets."""
+    assert _PACKAGE_ROOT.is_dir(), _PACKAGE_ROOT
+    import faultmaven
+
+    imported = Path(faultmaven.__file__).resolve().parent
+    assert imported == _PACKAGE_ROOT, (
+        f"imported faultmaven from {imported}, not the tree under test at "
+        f"{_PACKAGE_ROOT} — an editable install is shadowing this checkout, "
+        "and every scan below would be measuring the wrong tree"
+    )
+    return _PACKAGE_ROOT
+
+
+@lru_cache(maxsize=4)
+def _package_modules(tokens: tuple[str, ...]) -> tuple[tuple[str, ast.Module], ...]:
+    """``(path relative to the package, parsed module)`` for candidate files.
+
+    A file is a candidate when its source contains ANY of *tokens*. Declare
+    every token the caller's matchers key on, or the filter silently narrows
+    the scan — the failure this whole seam exists to avoid.
+    """
+    root = _package_root()
+    out = []
+    for path in sorted(root.rglob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        if not any(token in source for token in tokens):
+            continue
+        out.append((path.relative_to(root).as_posix(), ast.parse(source)))
+    assert out, f"the token filter {tokens} matched no file — it is measuring nothing"
+    return tuple(out)
+
+
+class _ScopedVisitor(ast.NodeVisitor):
+    """A visitor that tracks the enclosing def/class name."""
+
+    def __init__(self, rel: str) -> None:
+        self.rel = rel
+        self.scopes: list[str] = []
+
+    def _named(self, node):
+        self.scopes.append(node.name)
+        self.generic_visit(node)
+        self.scopes.pop()
+
+    visit_FunctionDef = _named
+    visit_AsyncFunctionDef = _named
+    visit_ClassDef = _named
+
+    @property
+    def scope(self) -> str:
+        return self.scopes[-1] if self.scopes else "<module>"
+
+
 def test_every_data_type_writer_retires_the_question():
     """State N: how many places write ``UploadedFile.data_type``, and where.
 
@@ -2597,92 +2682,65 @@ def test_every_data_type_writer_retires_the_question():
     …`` by the RECEIVER's spelling, so a writer in another module — which is
     where a third one would appear, since ``_file_row_with_reclassification``
     is private to ``investigation_service`` and unreachable from outside it —
-    escaped as ``uf.data_type = …``. Matching is now keyed on the attribute
-    and on the update key, never on the receiver's name, and covers: plain,
-    augmented and tuple-unpacked attribute assignment; ``setattr``; and a
-    ``model_copy(update=…)`` naming ``data_type`` as a literal key or a
-    ``dict()`` keyword. The realistic repository-layer shape
-    (``update(...).values(data_type=…)``) is matched too.
+    escaped as ``uf.data_type = …``. Matching is keyed on the attribute and on
+    the write's shape, never on the receiver's name, and covers:
+
+    - plain, augmented and tuple-unpacked attribute assignment;
+    - ``setattr(x, "data_type", …)``;
+    - ``model_copy(update=…)`` naming ``data_type`` as a literal key or a
+      ``dict()`` keyword;
+    - ``UploadedFile(…, data_type=…)`` — a replacement row from the
+      constructor, which for a pydantic model is as natural as ``model_copy``;
+    - ``update(...).values(data_type=…)`` — the repository-layer shape.
 
     WHAT IT STILL MISSES, stated rather than implied, because a guard that
     reads as exhaustive and is not is worse than one that declares its edge:
     a patch dict built in a variable and passed to ``model_copy``; a
-    replacement row constructed from ``model_dump()`` plus an override;
-    ``__dict__``/``object.__setattr__``. Each needs dataflow rather than a
-    syntactic match. They are the shapes to look for by hand if this test is
-    ever green while the referent check is misbehaving.
+    replacement row built from ``model_dump()`` plus an override; and
+    ``__dict__`` / ``object.__setattr__``. Each needs dataflow rather than a
+    syntactic match, and each is verified to escape rather than assumed to.
+    They are the shapes to look for by hand if this test is ever green while
+    the referent check is misbehaving.
 
     The expected set is written out, so a new writer fails here and its author
     has to decide whether it retires the question (call
     ``drop_clarifications_for_file``, as ``reclassify_evidence`` does) or is
     the turn seam (which retires by ``resolved_file_id``).
     """
-    import ast
-    from pathlib import Path
-
-    import faultmaven
-
-    package = Path(faultmaven.__file__).parent
-    assert package.name == "faultmaven", package
-
     found: set[tuple[str, str, str]] = set()
-    for path in package.rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        scopes: list[str] = []
 
-        class _Walk(ast.NodeVisitor):
-            def _named(self, node):
-                scopes.append(node.name)
-                self.generic_visit(node)
-                scopes.pop()
+    # Every token the matchers below key on: the attribute/keyword name, and
+    # the private helper whose call sites never mention it.
+    #
+    # ‼ The second token is DEFENSIVE and currently redundant — measured:
+    # dropping it changes nothing, because the only file holding those call
+    # sites is saturated with ``data_type`` anyway and is parsed either way.
+    # It is kept because that is a property of where the helper lives today,
+    # not of the rule: make it non-private and a call site in a file with no
+    # ``data_type`` in it becomes possible, and the filter would then narrow
+    # the scan silently. What IS live is the assertion below that every module
+    # the expected set names survived the filter.
+    modules = _package_modules(("data_type", "_file_row_with_reclassification"))
+    parsed = {rel for rel, _ in modules}
 
-            visit_FunctionDef = _named
-            visit_AsyncFunctionDef = _named
-            visit_ClassDef = _named
+    for rel, tree in modules:
 
-            def visit_Call(self, node):
-                fn = node.func
-                name = getattr(fn, "id", None) or getattr(fn, "attr", None)
-                if name == "_file_row_with_reclassification":
-                    self._record("reclassification")
-                elif self._model_copy_writes_data_type(node):
-                    self._record("model_copy_update")
-                elif name == "setattr" and len(node.args) == 3:
-                    attr = node.args[1]
-                    if isinstance(attr, ast.Constant) and attr.value == "data_type":
-                        self._record("attribute_write")
-                elif name == "values" and any(
-                    kw.arg == "data_type" for kw in node.keywords
-                ):
-                    # ``update(UploadedFileModel).values(data_type=…)`` — the
-                    # shape a repository-layer writer would take.
-                    self._record("sql_values")
-                self.generic_visit(node)
-
+        class _Walk(_ScopedVisitor):
             def _record(self, kind: str) -> None:
-                found.add(
-                    (
-                        path.relative_to(package).as_posix(),
-                        scopes[-1] if scopes else "<module>",
-                        kind,
-                    )
-                )
+                found.add((self.rel, self.scope, kind))
 
             @staticmethod
-            def _targets(target):
-                """Flatten a tuple/list target so unpacking cannot hide one."""
+            def _flatten(target):
+                """Unpack a tuple/list target so unpacking cannot hide one."""
                 if isinstance(target, (ast.Tuple, ast.List)):
                     for inner in target.elts:
-                        yield from _Walk._targets(inner)
+                        yield from _Walk._flatten(inner)
                 else:
                     yield target
 
             def _check_targets(self, targets) -> None:
-                # ``<anything>.data_type = …`` — keyed on the ATTRIBUTE, not on
-                # the receiver's spelling, so ``uf.data_type = …`` in another
-                # module cannot slip past.
                 for target in targets:
-                    for flat in self._targets(target):
+                    for flat in self._flatten(target):
                         if isinstance(flat, ast.Attribute) and flat.attr == "data_type":
                             self._record("attribute_write")
 
@@ -2699,17 +2757,14 @@ def test_every_data_type_writer_retires_the_question():
                     self._check_targets([node.target])
                 self.generic_visit(node)
 
-            def _model_copy_writes_data_type(self, node: ast.Call) -> bool:
+            @staticmethod
+            def _model_copy_writes_data_type(node: ast.Call) -> bool:
                 """``….model_copy(update={"data_type": …})``.
 
-                Scoped to the ``update=`` keyword of a ``model_copy`` rather
-                than to any dict carrying the key: measured, a bare key match
-                finds 20+ sites across the package — prompt dicts, SQL
-                parameter dicts, read-path summaries — none of which write a
-                row, and folding them into the expected set below would make
-                the guard unreadable AND make every new dict with a
-                ``data_type`` key a failure. This is the one dict shape that
-                produces a changed ``UploadedFile``.
+                Scoped to the ``update=`` keyword rather than to any dict
+                carrying the key: measured, a bare key match finds 20+ sites
+                across the package — prompt dicts, SQL parameter dicts,
+                read-path summaries — none of which write a row.
                 """
                 if getattr(node.func, "attr", None) != "model_copy":
                     return False
@@ -2721,9 +2776,6 @@ def test_every_data_type_writer_retires_the_question():
                         for k in kw.value.keys
                     ):
                         return True
-                    # ``update=dict(data_type=…)`` is the same write spelled
-                    # with the constructor, and an ``ast.Dict`` match alone
-                    # does not see it.
                     if (
                         isinstance(kw.value, ast.Call)
                         and getattr(kw.value.func, "id", None) == "dict"
@@ -2732,16 +2784,45 @@ def test_every_data_type_writer_retires_the_question():
                         return True
                 return False
 
-        _Walk().visit(tree)
+            def visit_Call(self, node):
+                fn = node.func
+                name = getattr(fn, "id", None) or getattr(fn, "attr", None)
+                if name == "_file_row_with_reclassification":
+                    self._record("reclassification")
+                elif self._model_copy_writes_data_type(node):
+                    self._record("model_copy_update")
+                elif name == "setattr" and len(node.args) == 3:
+                    attr = node.args[1]
+                    if isinstance(attr, ast.Constant) and attr.value == "data_type":
+                        self._record("attribute_write")
+                elif name == "UploadedFile" and any(
+                    kw.arg == "data_type" for kw in node.keywords
+                ):
+                    self._record("constructor")
+                elif name == "values" and any(
+                    kw.arg == "data_type" for kw in node.keywords
+                ):
+                    self._record("sql_values")
+                self.generic_visit(node)
+
+        _Walk(rel).visit(tree)
 
     service_module = "modules/agent/domain/services/investigation_service.py"
+    # The filter did not exclude a file a known writer lives in. Without this,
+    # a narrowed token list drops hits and the equality below still passes by
+    # matching a smaller set against a smaller expectation.
+    assert {
+        service_module,
+        "modules/case/infrastructure/sqlite_case_repository.py",
+        "modules/case/infrastructure/postgresql_hybrid_case_repository.py",
+    } <= parsed, f"the token filter excluded a module holding a known writer: {parsed}"
+
     assert found == {
         # Mints the question; does not answer one.
         (service_module, "_preprocess_attachment", "attribute_write"),
         # The shared body both reclassification paths route through. It is
         # private to this module, which is why a writer added ELSEWHERE would
-        # have to take one of the other two forms — and why the scan matches
-        # those forms rather than this name alone.
+        # have to take one of the other matched forms.
         (service_module, "_file_row_with_reclassification", "model_copy_update"),
         # The turn seam — retires by ``resolved_file_id``.
         (service_module, "_handle_file_reclassification", "reclassification"),
@@ -2749,6 +2830,23 @@ def test_every_data_type_writer_retires_the_question():
         # on ``trigger="api"``. On ``trigger="agent_tool"`` the whole write is
         # clobbered by the end-of-turn save (#1465); see that call site.
         (service_module, "reclassify_evidence", "reclassification"),
+        # Not writers: the two repositories HYDRATE an ``UploadedFile`` from a
+        # stored row, which carries ``data_type=`` like every other column.
+        # The matcher cannot tell a read from a write syntactically, and
+        # narrowing it to try would be how the constructor shape escaped in
+        # the first place — so they are named here instead. A NEW constructor
+        # entry is the one to look at: outside a repository, building a row
+        # with a ``data_type`` is a write.
+        (
+            "modules/case/infrastructure/sqlite_case_repository.py",
+            "find_uploaded_file_by_content_hash",
+            "constructor",
+        ),
+        (
+            "modules/case/infrastructure/postgresql_hybrid_case_repository.py",
+            "find_uploaded_file_by_content_hash",
+            "constructor",
+        ),
     }, f"an unexpected writer of UploadedFile.data_type: {sorted(found)}"
 
 
@@ -2811,54 +2909,60 @@ class TestATerminalCaseAnswersNothingStored:
         ``investigation_service`` and ``orientation`` both hand-build DECIDE
         cards and are one key away.
 
-        Three spellings are matched: a dict literal carrying both ``label``
-        and ``intent``, the same via ``dict(label=…, intent=…)``, and a
-        post-hoc ``card["intent"] = …``. All three pinned by mutation.
+        Four spellings are matched: a dict literal carrying both ``label`` and
+        ``intent``; the same via ``dict(label=…, intent=…)``; a dict SPREAD
+        (``{**base, "intent": …}``), which carries the key without carrying
+        ``label``; and a ``SuggestedActionResponse(label=…, intent=…)``
+        constructor, which is what ``_stored_suggestions`` reads ``.intent``
+        off. A post-hoc ``card["intent"] = …`` is matched too.
+
+        WHAT IT STILL MISSES, declared for the same reason its sibling scan
+        declares its own: a card whose ``intent`` arrives through a variable
+        or a helper's return value rather than appearing syntactically at the
+        construction site. That needs dataflow. If this guard is ever green
+        while a terminal card stops responding to typing, that is the shape to
+        look for by hand.
 
         A NEW entry here is the signal to check whether its emitter can fire
         on a terminal case; if it can, the guard in ``suggestion_is_live``
         starts silently dropping a card that used to work. The set is
-        annotated rather than trimmed: the scan reports what it finds, and
-        one of the four is the storage shape rather than a producer, which is
-        worth a reader knowing.
+        annotated rather than trimmed: the scan reports what it finds, and not
+        every hit is a producer.
         """
-        import ast
-        from pathlib import Path
-
-        import faultmaven
-
-        package = Path(faultmaven.__file__).parent
         builders: set[tuple[str, str]] = set()
 
-        for path in package.rglob("*.py"):
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-            rel = path.relative_to(package).as_posix()
-            scopes: list[str] = []
+        # Every matcher below requires the literal ``intent`` in the source:
+        # as a dict key, a keyword argument, or a subscript.
+        for rel, tree in _package_modules(("intent",)):
 
-            class _Walk(ast.NodeVisitor):
-                def _named(self, node):
-                    scopes.append(node.name)
-                    self.generic_visit(node)
-                    scopes.pop()
-
-                visit_FunctionDef = _named
-                visit_AsyncFunctionDef = _named
-                visit_ClassDef = _named
-
+            class _Walk(_ScopedVisitor):
                 def _record(self) -> None:
-                    builders.add((rel, scopes[-1] if scopes else "<module>"))
+                    builders.add((self.rel, self.scope))
 
                 def visit_Dict(self, node):
                     keys = {k.value for k in node.keys if isinstance(k, ast.Constant)}
-                    if {"label", "intent"} <= keys:
+                    # ``{**base, "intent": …}`` carries a ``None`` key for the
+                    # spread, so ``label`` need not appear here for this to be
+                    # an intent-bearing card.
+                    spread = any(k is None for k in node.keys)
+                    if "intent" in keys and ({"label"} <= keys or spread):
                         self._record()
                     self.generic_visit(node)
 
                 def visit_Call(self, node):
-                    if getattr(node.func, "id", None) == "dict":
-                        kws = {k.arg for k in node.keywords}
-                        if {"label", "intent"} <= kws:
-                            self._record()
+                    name = getattr(node.func, "id", None) or getattr(
+                        node.func, "attr", None
+                    )
+                    kws = {k.arg for k in node.keywords}
+                    if (
+                        name in ("dict", "SuggestedActionResponse")
+                        and {
+                            "label",
+                            "intent",
+                        }
+                        <= kws
+                    ):
+                        self._record()
                     self.generic_visit(node)
 
                 def visit_Assign(self, node):
@@ -2872,7 +2976,7 @@ class TestATerminalCaseAnswersNothingStored:
                             self._record()
                     self.generic_visit(node)
 
-            _Walk().visit(tree)
+            _Walk(rel).visit(tree)
 
         engine = "core/investigation/milestone_engine.py"
         service = "modules/agent/domain/services/investigation_service.py"
@@ -2883,12 +2987,19 @@ class TestATerminalCaseAnswersNothingStored:
             (engine, "_investigation_confirmation_suggestions"),  # Gate 1, INQUIRY
             (engine, "_resolution_confirmation_suggestions"),  # pending -> RESOLVED
             (engine, "_close_confirmation_suggestions"),  # pending -> CLOSED
-            # Not a producer: the STORAGE shape. ``_stored_suggestions``
-            # re-materialises this turn's clarification choices as stored
-            # entries, so the literal carries ``intent`` by construction. A
-            # clarification IS dropped on a terminal case, deliberately and
-            # since before fm#918 — see ``suggestion_is_live``.
+            # Not producers. ``_stored_suggestions`` re-materialises this
+            # turn's clarification choices as stored entries, and
+            # ``_clarification_suggestions_for_failed`` mints those choices —
+            # both carry ``intent`` by construction. A clarification IS
+            # dropped on a terminal case, deliberately, and since before
+            # fm#918 — see ``suggestion_is_live``.
             (service, "_stored_suggestions"),
+            (service, "_clarification_suggestions_for_failed"),
+            # Also not a producer: ``process_turn`` RE-RENDERS whatever the
+            # engine returned into the response, forwarding ``f.get("intent")``
+            # unchanged. It cannot originate an intent, so it cannot originate
+            # one on a terminal case either.
+            (service, "process_turn"),
         }, (
             "a new intent-bearing follow-up builder: "
             f"{sorted(builders)}. If it can fire on a terminal case, the "
