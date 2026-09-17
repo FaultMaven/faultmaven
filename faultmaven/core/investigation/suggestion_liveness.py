@@ -28,10 +28,13 @@ wrong (it claimed "one mechanism answers both"):
 
 - A **non-turn writer** leaves an entry behind and the clock keeps moving, so
   the entry ages out without every writer having to remember to clear it. The
-  age bound does answer this — and, since fm#918, the one such writer inside
-  this codebase (``reclassify_evidence``) retires its own question exactly
-  rather than waiting for the window, because the age bound is a bound and not
-  a correction.
+  age bound does answer this — and, since fm#918, the one such writer that
+  ANSWERS a clarification question (``reclassify_evidence``) retires it
+  exactly rather than waiting for the window, because the age bound is a bound
+  and not a correction. The others of this shape — ``close_case``,
+  ``transition_to_investigating``, ``case_service.add_message`` — answer no
+  question and have nothing to retire, so for them the age bound is the whole
+  mechanism.
 - A **mid-turn save** is NOT answered by the age bound. Measured: the two saves
   that can commit a row mid-turn run BEFORE the turn is recorded, so the row
   carries N-1 in the persisted counter *and* a stamp of N-1 — age 1, inside
@@ -192,8 +195,20 @@ def normalize_choice_text(text: Optional[str]) -> str:
     would answer to the same typing. If the two normalisations drift, the
     admission rule reports a set as unambiguous that the matcher can still
     resolve two ways — which is #1245's round-one defect in a new place.
+
+    A non-string folds to ``""``, which ``entry_match_keys`` then drops. That
+    is the right answer and not merely a safe one: nothing a user can TYPE
+    matches an ``int``, so such a field contributes no match key. ``(text or
+    "")`` does not cover it — it catches ``None`` and every other falsey
+    value, and a truthy non-string (``5``) goes straight to ``.lower()``. This
+    is the single leaf under every reader of a stored ``label`` or
+    ``payload``: ``entry_match_keys`` → ``_admit_clarification_entries`` on
+    the WRITE path (after the LLM call, so the turn's work is lost at save)
+    and ``IntentResolver._exact_match`` on the READ path.
     """
-    return (text or "").lower().strip().rstrip(".!?")
+    if not isinstance(text, str):
+        return ""
+    return text.lower().strip().rstrip(".!?")
 
 
 def entry_match_keys(entry: Dict[str, Any]) -> Set[str]:

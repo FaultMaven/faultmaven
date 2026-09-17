@@ -22,10 +22,14 @@ from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.core.investigation.suggestion_liveness import (
     CLARIFICATION_CARRY_TURNS,
     CLARIFICATION_SPAN_CAP,
+    OFFERED_DATA_TYPE_KEY,
+    OFFERED_TURN_KEY,
     drop_clarifications_for_file,
     entry_file_id,
+    entry_match_keys,
     is_clarification_entry,
     live_suggestions,
+    normalize_choice_text,
 )
 from faultmaven.core.preprocessing.models import UnifiedDataType
 from faultmaven.exceptions import NotFoundError, ValidationException
@@ -1202,6 +1206,10 @@ def _stored_entry(
     }
 
 
+#: The attachment id the liveness suites share.
+_A = "file_aaaaaaaaaaaa"
+
+
 def _case_holding(*file_ids, current_turn=1, state=CaseState.INQUIRY, **kw):
     """A case whose ``uploaded_files`` are exactly ``file_ids``.
 
@@ -1889,6 +1897,162 @@ class TestAnUnreadableIntentIsNeverAnException:
             "the unreadable row is kept verbatim — the writer must not delete "
             "what it cannot classify"
         )
+
+
+def test_every_reader_of_a_stored_entry_tolerates_any_shape():
+    """State N: how many functions read a field off a stored entry, and where.
+
+    The rule this pins is not about one field. A row in ``last_suggestions``
+    was written by some earlier version of this code, or by hand, so **any
+    field may hold any shape** — and every reader has to answer rather than
+    raise. The lane learned that twice, one field at a time: a truthy non-dict
+    ``intent`` 500'd both the adoption site and ``PATCH
+    /evidence/{id}/classification``, and then a non-string ``label`` did the
+    same one field over, sailing through the ``intent`` guard because its
+    ``intent`` was fine. Fixing the second copy is not the rule; this is.
+
+    So: scan the package for every read of a stored-entry field name — the
+    closed set ``_stored_suggestions`` writes — and pin the result. Reads via
+    the ``OFFERED_*`` CONSTANTS are matched too; keying only on string
+    literals missed ``entry_offered_turn`` entirely, which is the shape of
+    miss that makes a scan look complete while it is not.
+
+    Every genuine reader below is shape-tolerant at a LEAF, not at its own
+    call site — ``normalize_choice_text`` for text fields, the
+    ``isinstance(intent, dict)`` guards for the intent — so a new reader
+    inherits the tolerance instead of having to remember it. The entries that
+    are NOT stored-entry readers are annotated, because a scan keyed on field
+    NAMES cannot tell them apart and trimming it to try is how a real reader
+    would slip out.
+    """
+    fields = {
+        "label",
+        "action_type",
+        "payload",
+        "body",
+        "intent",
+        OFFERED_TURN_KEY,
+        OFFERED_DATA_TYPE_KEY,
+    }
+    constants = {"OFFERED_TURN_KEY", "OFFERED_DATA_TYPE_KEY"}
+    readers: dict[tuple[str, str], set[str]] = {}
+
+    for rel, tree in _package_modules(tuple(fields | constants)):
+
+        class _Walk(_ScopedVisitor):
+            def _hit(self, field: str) -> None:
+                readers.setdefault((self.rel, self.scope), set()).add(field)
+
+            def _field_of(self, node) -> str | None:
+                if isinstance(node, ast.Constant) and node.value in fields:
+                    return node.value
+                # ``entry.get(OFFERED_TURN_KEY)`` — the constant, not a literal.
+                if isinstance(node, ast.Name) and node.id in constants:
+                    return node.id
+                return None
+
+            def visit_Call(self, node):
+                if (
+                    getattr(node.func, "attr", None) == "get"
+                    and node.args
+                    and (field := self._field_of(node.args[0]))
+                ):
+                    self._hit(field)
+                self.generic_visit(node)
+
+            def visit_Subscript(self, node):
+                if isinstance(node.ctx, ast.Load) and (
+                    field := self._field_of(node.slice)
+                ):
+                    self._hit(field)
+                self.generic_visit(node)
+
+        _Walk(rel).visit(tree)
+
+    liveness = "core/investigation/suggestion_liveness.py"
+    resolver = "core/investigation/intent_resolver.py"
+    service = "modules/agent/domain/services/investigation_service.py"
+    engine = "core/investigation/milestone_engine.py"
+
+    assert set(readers) == {
+        # ---- stored-entry readers. Shape-tolerant via the leaves. ----------
+        (liveness, "entry_match_keys"),  # -> normalize_choice_text
+        (liveness, "is_clarification_entry"),  # isinstance(intent, dict)
+        (liveness, "entry_file_id"),  # isinstance(intent, dict)
+        (liveness, "entry_offered_turn"),  # isinstance(offered, int)
+        (liveness, "suggestion_is_live"),  # refuses a non-dict intent
+        (resolver, "IntentResolver._exact_match"),  # -> normalize_choice_text
+        (resolver, "IntentResolver._build_prompt"),  # f-string: any shape
+        (resolver, "IntentResolver.resolve"),  # truthiness only
+        (resolver, "IntentResolver._parse_response"),  # truthiness only
+        (service, "_stored_suggestions"),  # truthiness only
+        # ---- NOT stored-entry readers: they share a field NAME -------------
+        # The re-render of THIS turn's engine follow-ups, not of a stored row.
+        (service, "InvestigationService.process_turn"),
+        # The clarification friendly-names table.
+        (service, "_clarification_suggestions_for_failed"),
+        # A tool result's own label.
+        (engine, "MilestoneEngine._format_tool_result"),
+        # HTTP request/response bodies, unrelated to this seam.
+        ("api/middleware/body_size.py", "RequestBodySizeLimitMiddleware.__call__"),
+        (
+            "api/middleware/idempotency.py",
+            "IdempotencyMiddleware._create_response_from_cache",
+        ),
+    }, f"a new reader of a stored-entry field: {sorted(set(readers))}"
+
+    # The scan looked where the rule can be violated: the two modules that
+    # own the seam are both in the result, with the fields they read.
+    assert readers[(liveness, "entry_match_keys")] == {"label", "payload"}
+    assert readers[(liveness, "entry_offered_turn")] == {"OFFERED_TURN_KEY"}, (
+        "the constant-key read must be matched — keying on string literals "
+        "alone missed this reader entirely"
+    )
+
+
+class TestAStoredEntryMayHaveAnyShape:
+    """Every field, not just the one the last review named.
+
+    ``BAD`` is the population the ``intent`` guards were added for — a legacy
+    or hand-written row — with an unreadable value in a DIFFERENT field. Its
+    ``intent`` is well-formed, so it passes every guard the previous commit
+    added and reaches the matcher anyway.
+    """
+
+    BAD = {
+        "label": 5,
+        "payload": None,
+        "intent": {"type": IntentType.FILE_RECLASSIFICATION.value, "file_id": _A},
+        "offered_turn": 1,
+        "offered_data_type": "logs",
+    }
+
+    def test_the_liveness_rule_accepts_it_so_the_matcher_must_cope(self):
+        """The premise. If liveness refused it the crash would be
+        unreachable and the tests below would prove nothing."""
+        case = _case_holding(_A, current_turn=1)
+        case.uploaded_files = [make_uploaded_file(file_id=_A, data_type="logs")]
+        assert live_suggestions([self.BAD], case, as_of_turn=2) == [self.BAD]
+
+    def test_normalisation_folds_an_unmatchable_value_away(self):
+        assert normalize_choice_text(5) == ""
+        assert normalize_choice_text(None) == ""
+        assert normalize_choice_text("  Yes. ") == "yes"
+
+    def test_the_write_path_survives_it(self):
+        """``_admit_clarification_entries`` runs at ``_stored_suggestions``
+        time — after the LLM call — so a raise here loses the whole turn's
+        work at save."""
+        assert entry_match_keys(self.BAD) == set()
+        assert len(_admit_clarification_entries([self.BAD])) == 1
+
+    def test_the_read_path_survives_it(self):
+        resolver = IntentResolver(MagicMock())
+        assert resolver._exact_match("application logs", [self.BAD]) is None
+        # Positive control: a well-formed sibling still matches, so the None
+        # above is the unmatchable value and not a dead matcher.
+        good = _stored_entry(_A, offered_turn=1)
+        assert resolver._exact_match(good["payload"], [good]) == good["intent"]
 
 
 class TestSuggestionLiveness:
@@ -2753,7 +2917,14 @@ class _ScopedVisitor(ast.NodeVisitor):
 
     @property
     def scope(self) -> str:
-        return self.scopes[-1] if self.scopes else "<module>"
+        """The FULL chain, not just the innermost name.
+
+        ``scopes[-1]`` collapses two same-named methods of different classes
+        into one tuple, so a writer added as ``OtherClass.process_turn``
+        produces no new entry and the expected set below stays green through
+        exactly the change it exists to catch.
+        """
+        return ".".join(self.scopes) if self.scopes else "<module>"
 
 
 def test_every_data_type_writer_retires_the_question():
@@ -2907,17 +3078,29 @@ def test_every_data_type_writer_retires_the_question():
 
     assert found == {
         # Mints the question; does not answer one.
-        (service_module, "_preprocess_attachment", "attribute_write"),
+        (
+            service_module,
+            "InvestigationService._preprocess_attachment",
+            "attribute_write",
+        ),
         # The shared body both reclassification paths route through. It is
         # private to this module, which is why a writer added ELSEWHERE would
         # have to take one of the other matched forms.
         (service_module, "_file_row_with_reclassification", "model_copy_update"),
         # The turn seam — retires by ``resolved_file_id``.
-        (service_module, "_handle_file_reclassification", "reclassification"),
+        (
+            service_module,
+            "InvestigationService._handle_file_reclassification",
+            "reclassification",
+        ),
         # Out of band — retires by ``drop_clarifications_for_file`` (fm#918)
         # on ``trigger="api"``. On ``trigger="agent_tool"`` the whole write is
         # clobbered by the end-of-turn save (#1465); see that call site.
-        (service_module, "reclassify_evidence", "reclassification"),
+        (
+            service_module,
+            "InvestigationService.reclassify_evidence",
+            "reclassification",
+        ),
         # Not writers: the two repositories HYDRATE an ``UploadedFile`` from a
         # stored row, which carries ``data_type=`` like every other column.
         # The matcher cannot tell a read from a write syntactically, and
@@ -2927,12 +3110,12 @@ def test_every_data_type_writer_retires_the_question():
         # with a ``data_type`` is a write.
         (
             "modules/case/infrastructure/sqlite_case_repository.py",
-            "find_uploaded_file_by_content_hash",
+            "SQLiteCaseRepository.find_uploaded_file_by_content_hash",
             "constructor",
         ),
         (
             "modules/case/infrastructure/postgresql_hybrid_case_repository.py",
-            "find_uploaded_file_by_content_hash",
+            "PostgreSQLHybridCaseRepository.find_uploaded_file_by_content_hash",
             "constructor",
         ),
     }, f"an unexpected writer of UploadedFile.data_type: {sorted(found)}"
@@ -3087,7 +3270,7 @@ class TestATerminalCaseAnswersNothingStored:
             # engine returned into the response, forwarding ``f.get("intent")``
             # unchanged. It cannot originate an intent, so it cannot originate
             # one on a terminal case either.
-            (service, "process_turn"),
+            (service, "InvestigationService.process_turn"),
         }, (
             "a new intent-bearing follow-up builder: "
             f"{sorted(builders)}. If it can fire on a terminal case, the "
