@@ -23,6 +23,7 @@ from faultmaven.exceptions import (
     ConflictError,
     NotFoundError,
     ServiceException,
+    ValidationException,
 )
 from faultmaven.models.api import DataType
 from faultmaven.models.interfaces import ToolResult
@@ -43,6 +44,9 @@ class ReclassifyEvidenceTool(AgentTool):
     correction is detected, then respond to the substance of the user's
     actual question using the re-extracted structural index (which
     becomes available in the agent's context on the next turn).
+
+    The change is applied to the case the TURN is holding rather than
+    persisted on its own (#1465) — see ``execute_with_context``.
     """
 
     def __init__(self, investigation_service: Any = None):
@@ -137,6 +141,32 @@ class ReclassifyEvidenceTool(AgentTool):
                 error=f"Unknown data_type '{data_type_raw}'. Valid: {valid}",
             )
 
+        # The case the turn is holding (#1465). This tool runs INSIDE the
+        # engine's tool loop, and a turn ends by saving that one object — so a
+        # reclassification written to a freshly loaded copy is overwritten
+        # seconds later and the model is told it succeeded. Handing the
+        # in-flight aggregate to the service puts the change on the object the
+        # turn will actually save.
+        #
+        # Refused rather than degraded when it is missing. Without it this
+        # call is a silent no-op that REPORTS success, and a tool result the
+        # model cannot trust is worse than one that says it is unavailable —
+        # the model can tell the user, where a lost write it believes in gets
+        # asserted back to them. ``_build_tool_context`` always sets it, so
+        # this is a guard against a future context built without one, not a
+        # path that runs today.
+        in_flight_case = context.in_memory_case
+        if in_flight_case is None:
+            return ToolResult(
+                success=False,
+                data=None,
+                error=(
+                    "Reclassification is unavailable on this turn (the "
+                    "in-flight case is not attached to the tool context). "
+                    "Inform the user and do not retry."
+                ),
+            )
+
         try:
             updated = await self.investigation_service.reclassify_evidence(
                 case_id=context.case_id,
@@ -144,6 +174,7 @@ class ReclassifyEvidenceTool(AgentTool):
                 user_id=context.user_id,
                 data_type=data_type,
                 trigger="agent_tool",
+                in_flight_case=in_flight_case,
             )
         except NotFoundError as e:
             return ToolResult(success=False, data=None, error=str(e))
@@ -152,6 +183,19 @@ class ReclassifyEvidenceTool(AgentTool):
         except ConflictError as e:
             # No backing file — nothing to re-extract.
             return ToolResult(success=False, data=None, error=str(e))
+        except ValidationException as e:
+            # A REFUSAL the model must not retry — today, a closed case (the
+            # service refuses terminal mutation the way the clarification
+            # handler always has) or an in-flight case that is not this one.
+            # Without this arm it fell through the catch-all below, which
+            # logs a stack trace for a correctly-refused call and hands the
+            # model "Reclassification failed: ...", a phrasing it reads as
+            # transient and retries.
+            return ToolResult(
+                success=False,
+                data=None,
+                error=f"{e}. Inform the user and do not retry.",
+            )
         except ServiceException as e:
             return ToolResult(success=False, data=None, error=str(e))
         except Exception as e:
@@ -166,12 +210,23 @@ class ReclassifyEvidenceTool(AgentTool):
             success=True,
             data={
                 "evidence_id": updated.evidence_id,
-                "data_type": updated.source_type.value,
+                # What the caller ASKED for, under the key whose value domain
+                # it belongs to. ``data_type`` is the tool's own parameter and
+                # its schema enum is ``DataType``; reporting
+                # ``source_type.value`` there answered a 12-value question
+                # with a 6-value projection — ask for ``command_output`` and
+                # be told ``logs``, which reads as the tool having ignored the
+                # request. The projection is still reported, under its own
+                # name, because it is what the agent's context will show.
+                "data_type": data_type.value,
+                "source_type": updated.source_type.value,
                 "summary": updated.summary,
                 "note": (
-                    "Reclassification complete. The re-extracted "
-                    "structural index is now attached to this evidence "
-                    "and will appear in your context on the next turn."
+                    "Reclassification complete. The re-extracted structural "
+                    "index and summary belong to the FILE behind this "
+                    "evidence, not to the evidence row, and will appear in "
+                    "your context on the next turn. Every evidence row backed "
+                    "by that file now reports the new source type."
                 ),
             },
         )
