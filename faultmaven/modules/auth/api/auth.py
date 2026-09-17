@@ -206,6 +206,18 @@ class OAuthConfigResponse(BaseModel):
     # the dashboard shows an honest "not configured" state instead of a broken
     # redirect.
     hosted_login_url: Optional[str] = None
+    #: Whether ``hosted_login_url`` honours a ``screen_hint`` query parameter
+    #: (contract 6.1.0). A client uses this to decide whether to OFFER a
+    #: sign-up control at all — without it, asking for the sign-up screen is
+    #: accepted, dropped, and lands the user on sign-in, which is how the
+    #: Dashboard ended up with two buttons that did the same thing when it
+    #: shipped ahead of this build.
+    #:
+    #: Absent (an older API) must read as "no", so the field is declared with
+    #: a ``False`` default rather than ``Optional``: a client that treats a
+    #: missing value as unknown-therefore-fine would show the dead control
+    #: again, which is the failure this exists to prevent.
+    supports_screen_hint: bool = False
 
 
 class AuthConfigResponse(BaseModel):
@@ -261,6 +273,12 @@ async def get_auth_config() -> AuthConfigResponse:
     `hosted_login_url` is the human sign-in entry point (hosted SSO login,
     ADR-015). It is null unless SSO is configured; `authorize_url` remains the
     copilot OAuth-PKCE machine flow.
+
+    `supports_screen_hint` says whether that URL honours `?screen_hint=`
+    (contract 6.1.0). Clients should gate a sign-up control on it rather than
+    on a version: an older API accepts the parameter, drops it, and serves the
+    sign-in screen, so a client that offers the control anyway is offering one
+    that silently does nothing.
     """
     settings = get_settings()
     auth_settings = settings.auth
@@ -292,6 +310,11 @@ async def get_auth_config() -> AuthConfigResponse:
                 hosted_login_url=(
                     "/api/v1/auth/sso/login" if auth_settings.sso_configured else None
                 ),
+                # True because THIS build accepts the parameter — a property of
+                # the running code, not of configuration. It is reported
+                # alongside the URL it qualifies, and only where that URL
+                # exists: a client with no hosted login has nothing to hint at.
+                supports_screen_hint=auth_settings.sso_configured,
             ),
         )
 

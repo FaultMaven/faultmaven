@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 6.1.0
+**Version:** 6.2.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -765,6 +765,12 @@ Frontend uses this to determine which auth flow to implement.
 `hosted_login_url` is the human sign-in entry point (hosted SSO login,
 ADR-015). It is null unless SSO is configured; `authorize_url` remains the
 copilot OAuth-PKCE machine flow.
+
+`supports_screen_hint` says whether that URL honours `?screen_hint=`
+(contract 6.1.0). Clients should gate a sign-up control on it rather than
+on a version: an older API accepts the parameter, drops it, and serves the
+sign-in screen, so a client that offers the control anyway is offering one
+that silently does nothing.
 
 **Tags:** `authentication`
 
@@ -5982,6 +5988,7 @@ OAuth configuration for cloud mode.
 - `client_id` (string, required)
 - `hosted_login_url` (object, optional)
 - `scopes` (array, required)
+- `supports_screen_hint` (boolean, optional)
 - `token_url` (string, required)
 
 ---
