@@ -860,14 +860,15 @@ def test_the_debug_router_in_production_is_an_explicit_opt_in():
 #:
 #: The predicate below is quantified over the WHOLE application, not over the
 #: five debug routes it was written for, because a rule applied to five routes
-#: out of 147 is a rule about five routes. Run app-wide it reports 53
-#: operations: an anonymous caller to ``GET /api/v1/cases/{case_id}`` reaches
+#: out of 147 is a rule about five routes. Run app-wide it reports 51
+#: operations, every one of them a SERVICE provider: an anonymous caller to
+#: ``GET /api/v1/cases/{case_id}`` reaches
 #: ``_di_get_case_service_dependency`` before the gate, and whatever that
 #: provider does on a degraded deployment is what the caller gets in place of
 #: the 401 the route promises. Not a disclosure — the gate still runs if the
 #: provider succeeds — a wrong refusal, and the class #1447 was.
 #:
-#: They are NOT fixed here: 53 operations across ``case``, ``knowledge``,
+#: They are NOT fixed here: 51 operations across ``case``, ``knowledge``,
 #: ``auth`` and the shared ``api/v1`` dependencies is a wide mechanical change
 #: that wants its own review. They are carried the way ``PUBLIC_OPERATIONS``
 #: carries its deferrals — with the issue that closes them — and the allowlist
@@ -899,10 +900,6 @@ MISORDERED_GATE_OPERATIONS: dict[tuple[str, str], tuple[str, str]] = {
     ("DELETE", "/api/v1/knowledge/documents/{document_id}"): (
         _MISORDERED,
         "knowledge_service=get_knowledge_service resolves first. #1494.",
-    ),
-    ("GET", "/api/v1/auth/oauth/authorize"): (
-        _MISORDERED,
-        "<decorator>=require_oauth_rate_limit_authorize resolves first. #1494.",
     ),
     ("GET", "/api/v1/cases"): (
         _MISORDERED,
@@ -991,10 +988,6 @@ MISORDERED_GATE_OPERATIONS: dict[tuple[str, str], tuple[str, str]] = {
     ("PATCH", "/api/v1/cases/{case_id}/evidence/{evidence_id}/classification"): (
         _MISORDERED,
         "investigation_service=get_investigation_service resolves first. #1494.",
-    ),
-    ("POST", "/api/v1/auth/oauth/authorize"): (
-        _MISORDERED,
-        "<decorator>=require_oauth_rate_limit_authorize resolves first. #1494.",
     ),
     ("POST", "/api/v1/cases"): (
         _MISORDERED,
@@ -1166,6 +1159,11 @@ def _resolution_order(dependant) -> list:
 #: rule written to forbid exactly that, while an anonymous GET answered 500.
 #: An allowlist of one cannot make that mistake: everything not named here is
 #: reported, wherever and however deep it was declared.
+#:
+#: This is not the whole excusal — see ``_gate_failure``, which also excuses the
+#: refusals a route makes ON PURPOSE before anyone is authenticated. Those are
+#: named in the sibling module beside ``MANDATORY_AUTH_DEPENDENCIES``, not here,
+#: because they are shared vocabulary rather than this predicate's private list.
 _PERMITTED_BEFORE_A_GATE = frozenset(
     {
         "faultmaven.api.middleware.tenant_scope.bind_request_enterprise_context",
@@ -1185,7 +1183,41 @@ def _gate_failure(dependant) -> str | None:
     collaborator ahead of the gate inside a composite dependency.
     """
     from tests.integration.api.test_openapi_documents_auth import (
+        DELIBERATE_PRE_AUTH_REFUSALS,
         MANDATORY_AUTH_DEPENDENCIES,
+        OPTIONAL_AUTH_DEPENDENCIES,
+    )
+
+    # Deliberately ahead of the gate, and CORRECT there. A rate limiter answers
+    # 429 and must apply to callers who never authenticate — putting the auth
+    # gate in front of it would exempt every anonymous caller from the limit on
+    # an OAuth endpoint. Optional authentication returns None rather than
+    # raising, so it cannot pre-empt a refusal either.
+    #
+    # Taken from the sibling's NAMED GROUPS rather than from its flat
+    # ``NON_MANDATORY_AUTH_DEPENDENCIES``, and the reason is a principle, not a
+    # measured difference — stated that way because the measurement says
+    # otherwise and the honest version is the useful one.
+    #
+    # Measured: on this application both give the same answer, 51. The union's
+    # extra members are its four SERVICE PROVIDERS, and none of the nine
+    # dependencies currently found ahead of a gate is one of them — the blockers
+    # are case/knowledge service providers, which the sibling never listed
+    # because its own question was about auth-module dependencies only.
+    #
+    # The narrow import is still the right one. The union's members are grouped
+    # by "lives in an auth module and does not by itself refuse an anonymous
+    # caller"; what this predicate needs is "may correctly resolve BEFORE the
+    # gate", and for a service provider the answer is no — that IS the #1467
+    # shape. Importing the union would make the predicate silently excuse
+    # ``get_auth_service`` or ``get_oauth_service`` the day one of them is
+    # declared ahead of a gate, with nothing to notice. The mutation that swaps
+    # them (M24) therefore kills nothing today, which is reported rather than
+    # hidden.
+    excusable = (
+        _PERMITTED_BEFORE_A_GATE
+        | DELIBERATE_PRE_AUTH_REFUSALS
+        | OPTIONAL_AUTH_DEPENDENCIES
     )
 
     order = _resolution_order(dependant)
@@ -1213,15 +1245,16 @@ def _gate_failure(dependant) -> str | None:
     #    ``extract_bearer_token``, ``get_auth_service`` and the ``HTTPBearer``
     #    scheme. They are how the gate does its job; counting them as "ahead of
     #    the gate" reports every correctly gated route in the application.
-    # 2. Whatever ``_PERMITTED_BEFORE_A_GATE`` names, with its subtree — the
-    #    app-level tenant binder, which is first on every route by construction.
+    # 2. Whatever ``excusable`` names, with its subtree — the app-level tenant
+    #    binder, and the refusals a route makes on purpose before anyone is
+    #    authenticated (rate limiters, optional auth).
     #
     # Excluded by ``id`` rather than by name, so a collaborator that happens to
     # share a name with something in either tree is still reported.
     first = min(gates)
     excused = {id(d) for d in _resolution_order(order[first])}
     for dependency in order:
-        if _qualified(dependency.call) in _PERMITTED_BEFORE_A_GATE:
+        if _qualified(dependency.call) in excusable:
             excused.add(id(dependency))
             excused.update(id(d) for d in _resolution_order(dependency))
 
@@ -1232,12 +1265,16 @@ def _gate_failure(dependant) -> str | None:
     ]
     if early:
         return (
-            f"these dependencies resolve BEFORE the auth gate: {early}. Declare "
-            "the gate first — on the decorator "
-            "(``dependencies=[Depends(require_platform_admin)]``), ahead of "
-            "anything else in that list, and not behind a collaborator inside a "
-            "composite — or an anonymous caller reaches them and gets their "
-            "failure instead of the refusal"
+            f"these dependencies resolve BEFORE the auth gate: {early}. If they "
+            "are SERVICE providers, declare the gate ahead of them — on the "
+            "decorator (``dependencies=[Depends(require_platform_admin)]``), "
+            "before anything else in that list, and not behind a collaborator "
+            "inside a composite — or an anonymous caller reaches them and gets "
+            "their failure instead of the refusal. If one is a DELIBERATE "
+            "pre-auth refusal (a rate limiter answering 429, which must apply "
+            "to callers who never authenticate), do NOT move the gate in front "
+            "of it — that would exempt anonymous callers from the limit. Add it "
+            "to DELIBERATE_PRE_AUTH_REFUSALS in test_openapi_documents_auth.py."
         )
     return None
 
@@ -1689,7 +1726,7 @@ def test_no_gated_operation_resolves_a_collaborator_before_its_gate():
 
     #1467 found the rule on one route; #1474 wrote a reusable predicate for it
     and then quantified it over a five-element tuple, which is a rule about five
-    routes. Run app-wide it reports 53 operations of the same shape — carried in
+    routes. Run app-wide it reports 51 operations of the same shape — carried in
     ``MISORDERED_GATE_OPERATIONS`` with the issue that closes them (#1494), not
     fixed here, because they span four modules and want their own review.
 
@@ -2011,6 +2048,105 @@ def test_a_really_included_router_is_flattened_with_its_resolved_tree():
     assert _gate_failure(served["/pre/leaf"].dependant) is None, (
         "the app-level gate is absent from the tree this helper returned, so "
         "it read route.dependant rather than the context's"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.security
+def test_a_rate_limiter_ahead_of_the_gate_is_not_reported_as_misordered():
+    """The one pre-gate collaborator that must stay pre-gate.
+
+    ``GET`` and ``POST /api/v1/auth/oauth/authorize`` declare
+    ``dependencies=[Depends(require_oauth_rate_limit_authorize)]`` — the limiter
+    FIRST, deliberately. A rate limiter answers 429 and has to apply to callers
+    who never authenticate; that is what it is for. They were carried in
+    ``MISORDERED_GATE_OPERATIONS`` for one round, and the failure message told a
+    maintainer to "declare the gate ahead of every collaborator". Following that
+    on these two routes would have exempted every anonymous caller from the
+    limit on an OAuth endpoint — the allowlist instructing a future round into a
+    vulnerability.
+
+    Pinned as a property rather than fixed as two paths: the predicate excuses
+    ``DELIBERATE_PRE_AUTH_REFUSALS``, which lives beside
+    ``MANDATORY_AUTH_DEPENDENCIES`` in the sibling because it is shared
+    vocabulary.
+
+    The second half is about which set is imported. The excusal must NOT be the
+    flat ``NON_MANDATORY_AUTH_DEPENDENCIES``: that union also contains the four
+    service providers, and a service provider ahead of a gate IS the #1467
+    shape. Measured honestly — today both sets give the same answer (51),
+    because none of the nine dependencies currently found ahead of a gate is one
+    of those four. So this is a guard against a future excusal, not a present
+    difference, and it is asserted structurally (the groups stay disjoint)
+    rather than by a count that would pass either way.
+    """
+    from tests.integration.api.test_openapi_documents_auth import (
+        DELIBERATE_PRE_AUTH_REFUSALS,
+        MANDATORY_AUTH_DEPENDENCIES,
+        NON_MANDATORY_AUTH_DEPENDENCIES,
+        SERVICE_PROVIDER_DEPENDENCIES,
+    )
+
+    limiter = (
+        "faultmaven.modules.auth.api.rate_limiting.require_oauth_rate_limit_authorize"
+    )
+    assert limiter in DELIBERATE_PRE_AUTH_REFUSALS
+
+    served = _app_under(ENVIRONMENT="production")
+    authorize = {
+        path: dependant
+        for path, _methods, dependant in _served_api_routes(served)
+        if path == "/api/v1/auth/oauth/authorize"
+    }
+    assert authorize, "the OAuth authorize route is not served; nothing measured"
+
+    for path, dependant in authorize.items():
+        names = _dependency_names(dependant)
+        assert limiter in names, (
+            f"{path} no longer carries the OAuth authorize rate limiter — if it "
+            "moved, this test is measuring a route that no longer has the shape"
+        )
+        assert MANDATORY_AUTH_DEPENDENCIES & names, (
+            f"{path} carries no auth gate at all, so 'the limiter precedes the "
+            "gate' is not the property under test here"
+        )
+        order = [_qualified(d.call) for d in _resolution_order(dependant)]
+        gate = min(
+            index
+            for index, name in enumerate(order)
+            if name in MANDATORY_AUTH_DEPENDENCIES
+        )
+        assert order.index(limiter) < gate, (
+            f"{path}: the limiter no longer resolves before the auth gate. If "
+            "that was deliberate, an anonymous caller is now unlimited on an "
+            "OAuth endpoint — check it"
+        )
+        assert _gate_failure(dependant) is None, (
+            f"{path}: reported as mis-ordered although the only thing ahead of "
+            "the gate is a deliberate pre-auth refusal. Carrying it in the "
+            "allowlist tells a maintainer to move the gate in front of the "
+            "limiter, which removes rate limiting from anonymous callers"
+        )
+        assert path not in {
+            key[1] for key in MISORDERED_GATE_OPERATIONS
+        }, f"{path} is back in MISORDERED_GATE_OPERATIONS; it is not a defect"
+
+    # Structural, because a count would pass either way today.
+    assert SERVICE_PROVIDER_DEPENDENCIES <= NON_MANDATORY_AUTH_DEPENDENCIES, (
+        "the flat union no longer contains the service providers, so importing "
+        "it would no longer be the hazard this test is about — re-derive"
+    )
+    assert not (SERVICE_PROVIDER_DEPENDENCIES & DELIBERATE_PRE_AUTH_REFUSALS), (
+        "a service provider is listed as a deliberate pre-auth refusal — the "
+        "two groups have merged and the predicate now excuses the #1467 shape"
+    )
+    assert SERVICE_PROVIDER_DEPENDENCIES, (
+        "the service-provider group is empty, so the disjointness assertion "
+        "above holds vacuously"
+    )
+    assert MISORDERED_GATE_OPERATIONS, (
+        "the carried set is empty: either #1494 closed, or the excusal widened "
+        "to the flat union and swallowed all 51"
     )
 
 
