@@ -10,6 +10,7 @@ This service wraps the MilestoneEngine and provides:
 - Integration with session management
 """
 
+import copy
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timezone
@@ -416,6 +417,38 @@ def _file_row_with_reclassification(
     )
 
 
+def _span_was_inherited_from(evidence, file_row) -> bool:
+    """True when *evidence*'s stored coverage is a restatement of *file_row*'s.
+
+    ``milestone_engine._evidence_coverage`` gives a new row the FILE's span
+    when the file's is a single instant, provenance included. Such a row is
+    not making a claim of its own — it is repeating the file's — so when the
+    file's span moves, it must move with it. A row that parsed its own span
+    from its extract IS making a claim of its own, and reclassifying the file
+    does not touch the extract that claim rests on.
+
+    The test is equality of the whole triple against the file row as it stood
+    before the reclassification, plus the point-span condition that is the
+    only shape ever inherited. A row that independently parsed exactly the
+    file's instant is indistinguishable from one that inherited it, and is
+    treated as inherited: the two agreed about the same instant, and no
+    cheaper discriminator exists that does not re-parse — which is the thing
+    that must not happen here (see the caller).
+    """
+    start = getattr(evidence, "coverage_start_ts", None)
+    if start is None or start != getattr(evidence, "coverage_end_ts", None):
+        return False
+    return (
+        start,
+        getattr(evidence, "coverage_end_ts", None),
+        getattr(evidence, "coverage_source", None),
+    ) == (
+        getattr(file_row, "coverage_start_ts", None),
+        getattr(file_row, "coverage_end_ts", None),
+        getattr(file_row, "coverage_source", None),
+    )
+
+
 def _reclassified_collections(
     case: "Case",
     file_id: str,
@@ -424,10 +457,11 @@ def _reclassified_collections(
 ) -> "tuple[list[UploadedFile], list[Evidence], Optional[list[dict[str, Any]]]]":
     """Both of a case's collections re-aligned to one file's reclassification.
 
-    The single seam every reclassification crosses. Returns
-    ``(uploaded_files, evidence)`` as new lists — the file row rebuilt from
-    the re-extraction, and **every** Evidence row backed by that file
-    re-aligned to the new source type. Neither input list is mutated.
+    The single seam every reclassification crosses. Returns a THREE-tuple,
+    ``(uploaded_files, evidence, last_suggestions)`` — the file row rebuilt
+    from the re-extraction, **every** Evidence row backed by that file
+    re-aligned, and the stored suggestions with the question this answers
+    retired. Neither input collection is mutated.
 
     Hoisted because the two paths had re-aligned Evidence differently
     (#1470). The turn seam (``_handle_file_reclassification``) looped every
@@ -472,7 +506,10 @@ def _reclassified_collections(
 
     # The rows are re-derived against the case as it will be AFTER the file
     # row moves, because an Evidence row's own coverage was INHERITED from
-    # that row (see below).
+    # that row (see below). ``previous_file_row`` is what it looked like
+    # BEFORE, which is how a row that inherited is told apart from one that
+    # parsed its own span.
+    previous_file_row = case.uploaded_files[file_index]
     reclassified_view = case.model_copy(update={"uploaded_files": new_files_list})
     new_classification = _classification_block(preprocessing_result)
 
@@ -492,18 +529,34 @@ def _reclassified_collections(
         # file span. The same argument that clears the file window applies
         # verbatim: a window nothing supports any more is worse than none.
         #
-        # RE-DERIVED rather than cleared, through the very function that
-        # decided it. That function prefers the row's OWN extract timestamps
-        # (resolution order 1), which are more authoritative than the file's
-        # and must not be destroyed; only a row that inherited from the file
-        # follows the file. Reimplementing the precedence here is how the two
-        # would drift.
-        start_ts, end_ts, coverage_source = _evidence_coverage(
-            reclassified_view, ev.source_file_id, ev.extract
-        )
-        update["coverage_start_ts"] = start_ts
-        update["coverage_end_ts"] = end_ts
-        update["coverage_source"] = coverage_source
+        # ONLY a row that INHERITED its span from the file follows the file.
+        # A row that parsed its own span from its extract keeps it: that span
+        # is more authoritative than the file's, and reclassification does not
+        # change the row's extract.
+        #
+        # Which is which is decided by comparing the stored triple against the
+        # file row as it stood BEFORE this reclassification, rather than by
+        # re-parsing the extract. Re-parsing would be the obvious way and it is
+        # wrong: ``extract_time_range_ts`` INVENTS the year for
+        # ``syslog_bsd_noyear`` from ``datetime.now()``, so the same bytes
+        # parse to a different instant on a different day. Measured — a row
+        # written on 2026-12-10 from ``Dec 15 03:00:00`` stores 2025-12-15, and
+        # re-parsing it on 2026-12-20 yields 2026-12-15: a 365-day jump on an
+        # operation about data TYPE, applied to every sibling at once, on a
+        # field ``symptom_currency`` reads as fact. Nothing here may move an
+        # instant the user did not ask to move.
+        #
+        # The new value comes from ``_evidence_coverage`` with NO extract, so
+        # it is that function's file rule (resolution order 2) exactly, taken
+        # from the function that owns it rather than restated here — and with
+        # no parse, so it cannot depend on the clock either.
+        if _span_was_inherited_from(ev, previous_file_row):
+            start_ts, end_ts, coverage_source = _evidence_coverage(
+                reclassified_view, ev.source_file_id, None
+            )
+            update["coverage_start_ts"] = start_ts
+            update["coverage_end_ts"] = end_ts
+            update["coverage_source"] = coverage_source
 
         # The classifier's verdict is a FILE-level fact, and it changed for
         # every row behind the file — not just the addressed one. Left stale,
@@ -515,7 +568,16 @@ def _reclassified_collections(
         # a request nobody made onto a neighbour would make the trail lie.
         if new_classification is not None:
             merged = dict(ev.metadata or {})
-            merged["classification"] = new_classification
+            # ‼ DEEP-COPIED PER ROW. ``model_copy(update=..., deep=True)`` does
+            # NOT deep-copy the update VALUES — pydantic v2 applies them with
+            # ``copied.__dict__.update(update)`` AFTER the deepcopy — so
+            # handing the same dict to every row makes them share one mutable
+            # object, and that object is a live reference into
+            # ``preprocessing_result``. Measured before this copy: mutating one
+            # sibling's confidence changed every other sibling's AND the
+            # PreprocessingResult's. The ``deep=True`` below reads as a
+            # guarantee it does not provide.
+            merged["classification"] = copy.deepcopy(new_classification)
             update["metadata"] = merged
 
         new_evidence_list[i] = ev.model_copy(update=update, deep=True)
@@ -3731,6 +3793,15 @@ class InvestigationService:
                 by the global exception handler.
             AuthorizationError: user does not own the case. Mapped to
                 HTTP 403.
+            ValidationException: the case is TERMINAL. A closed or
+                resolved investigation accepts questions, not mutation —
+                the same refusal ``_handle_file_reclassification`` has
+                always made. Mapped to HTTP 422, which
+                ``PATCH /cases/{case_id}/evidence/{evidence_id}/classification``
+                already publishes; this adds a condition under an existing
+                code rather than a new code, so no contract bump is owed.
+                Raised AFTER the evidence lookup, so a missing evidence id is
+                still a 404 whatever state the case is in.
             ConflictError: evidence has no backing file —
                 reclassification requires stored raw bytes to re-extract.
                 Mapped to HTTP 409 with
@@ -3796,6 +3867,19 @@ class InvestigationService:
                 f"User {user_id} not authorized for case {case_id}"
             )
 
+        evidence_index: Optional[int] = None
+        for i, ev in enumerate(case.evidence or []):
+            if ev.evidence_id == evidence_id:
+                evidence_index = i
+                break
+        if evidence_index is None:
+            raise NotFoundError("Evidence", evidence_id)
+
+        evidence = case.evidence[evidence_index]
+        # AFTER the evidence lookup, so a closed case answers 404 for an
+        # evidence id that does not exist exactly as an open one does. Before
+        # the lookup it answered 422 there, which made the case's state
+        # decide what a missing row is called.
         # Terminal guard, matching ``_handle_file_reclassification`` — the
         # asymmetry between the two paths is closed here because THIS change
         # is what made it bite.
@@ -3825,15 +3909,6 @@ class InvestigationService:
                 {"case_state": case.state.value},
             )
 
-        evidence_index: Optional[int] = None
-        for i, ev in enumerate(case.evidence or []):
-            if ev.evidence_id == evidence_id:
-                evidence_index = i
-                break
-        if evidence_index is None:
-            raise NotFoundError("Evidence", evidence_id)
-
-        evidence = case.evidence[evidence_index]
         file_meta = case.find_uploaded_file(evidence.source_file_id)
         storage_ref = file_meta.storage_ref if file_meta else None
         if not storage_ref:
@@ -3889,11 +3964,28 @@ class InvestigationService:
         # row. Deliberately not fanned out to the siblings: the trail records
         # what was asked of this evidence, and stamping a request nobody made
         # onto a neighbouring row would make the observability trail lie.
-        updated_evidence = new_evidence_list[evidence_index].model_copy(
-            update={"metadata": new_evidence_metadata},
-            deep=True,
-        )
-        new_evidence_list[evidence_index] = updated_evidence
+        #
+        # CONDITIONAL, because this REPLACES the metadata the seam merged
+        # rather than adding to it. Unconditional, a result carrying no
+        # ``evidence_metadata`` set the addressed row's metadata to ``None``
+        # while its siblings kept the merged verdict — one file, two answers,
+        # which is the shape #1470 exists to close. Latent today because
+        # ``_build_result`` always writes the block; latent in the one row the
+        # caller actually asked about.
+        #
+        # Deep-copied for the reason the seam deep-copies: this block IS
+        # ``preprocessing_result.extraction_metadata["evidence_metadata"]``,
+        # and ``model_copy(deep=True)`` does not copy ``update`` values — so
+        # without this the persisted row holds a live reference into the
+        # preprocessing result.
+        if new_evidence_metadata is not None:
+            updated_evidence = new_evidence_list[evidence_index].model_copy(
+                update={"metadata": copy.deepcopy(new_evidence_metadata)},
+                deep=True,
+            )
+            new_evidence_list[evidence_index] = updated_evidence
+        else:
+            updated_evidence = new_evidence_list[evidence_index]
 
         # fm#918 exposure 1: this path writes ``UploadedFile.data_type``
         # without going through the turn seam, so nothing else rewrites

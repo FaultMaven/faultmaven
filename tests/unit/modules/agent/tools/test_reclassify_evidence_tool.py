@@ -148,6 +148,11 @@ class TestServiceDelegation:
         assert result.success is True
         assert result.data["evidence_id"] == "ev_abc"
         assert result.data["data_type"] == "logs_and_errors"
+        # The row's own claim summary, under a key that says so. Bare
+        # ``summary`` beside a note about the re-extracted FILE summary
+        # invited the model to read stale claim text as the fresh one.
+        assert "summary" not in result.data
+        assert result.data["evidence_summary"] == "Re-extracted"
         # Tool must pass trigger="agent_tool" for observability labelling.
         kwargs = service.reclassify_evidence.call_args.kwargs
         assert kwargs["trigger"] == "agent_tool"
