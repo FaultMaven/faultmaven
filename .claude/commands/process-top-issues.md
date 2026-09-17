@@ -102,8 +102,12 @@ Post one comment on `Queue`:
 ### Building
 | # | kind | why in this round | done when |
 
-One line on why the round is this size: five is a working batch size, not a
-rule, and complexity and dependency move it either way.
+One line on why the round is this size, in terms of **independent seams and
+the review rounds they will cost**, not item count: lanes are parallel and
+review is not, so three items on three seams is a bigger round than five on
+one, and an item whose own review will run several rounds — a security
+boundary, a storage change, anything shipping a new guard — is a round by
+itself.
 
 ### Needs your call (every blocked item, not only the new ones)
 | # | the question | options | my recommendation | unblocks |
@@ -180,12 +184,13 @@ Then per returned lane, in order:
    escalated, not iterated — unless it **blocks the merge**, in which case it
    goes back for as many rounds as the lane can clear it in, because
    escalating it would hand the owner a pull request you know is broken. **If
-   the lane cannot clear it without a ruling, pull it** — close the pull
-   request, record the question on the issue, return the item to the blocked
-   pile, and report it as not delivered. That is the loop's only other exit,
-   and without it the round cannot reach step 5 at all. Blocking means the change is
-   worse than the bug it fixes for someone who has not hit the bug. Say in
-   the result how many findings you filed rather than fixed.
+   the lane cannot clear it — for any reason, not only a ruling — pull it**:
+   close the pull request, record on the issue either the question or that
+   the lane could not clear it, return the item to the blocked pile, and
+   report it as not delivered. That is the loop's only other exit, and
+   without it the round cannot reach step 5 at all. Blocking means the
+   change is worse than the bug it fixes for someone who has not hit it.
+   Say in the result how many findings you filed rather than fixed.
 4. **Never relay a finding you could not reproduce by running it.**
 
 ## 5. Report and hand back

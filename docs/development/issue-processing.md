@@ -93,14 +93,15 @@ cheap: reading one narration file and one `git grep` caught both before any
 lane was dispatched. An item whose premise looks dead is still worth a round
 — as a **verification** lane, which proves by execution whether it
 reproduces, makes the covering guard bite under mutation, and either posts
-the evidence or fixes what survives. **Who closes
-it:** the owning agent, after re-running that evidence rather than relaying
-it, naming the pull request that actually fixed it — resolved with `gh pr
-view`, never inferred from a narration. Residue is filed separately rather
-than held against the issue. A result that is ambiguous — it reproduces only
-under one configuration, or the guard does not bite and making it bite is a
-design call — is not a closure: it goes to the blocked pile as a question,
-like any other pull.
+the evidence or fixes what survives.
+
+**Who closes a verified-fixed issue:** the owning agent, after re-running
+that evidence rather than relaying it, naming the pull request that actually
+fixed it — resolved with `gh pr view`, never inferred from a narration.
+Residue is filed separately rather than held against the issue. A result
+that is ambiguous — it reproduces only under one configuration, or the guard
+does not bite and making it bite is a design call — is not a closure: it
+goes to the blocked pile as a question, like any other pull.
 
 Rank the ready pile (see *Picking*), then post **one** comment, the round
 proposal, with three parts:
@@ -165,9 +166,9 @@ three pull requests: one needed no fix commit at all, the other two needed
 four and six, and each round found a defect in the fix before it — the last
 of them a boot gate the round before had added. Count the *independent
 seams* a batch touches rather than the items: three items on three seams is
-a bigger round than five on one. When a single item is large enough that its own review will
-run several rounds — a security boundary, a storage change, anything shipping
-a new guard — it is a round by itself.
+a bigger round than five on one. When a single item is large enough that its
+own review will run several rounds — a security boundary, a storage change,
+anything shipping a new guard — it is a round by itself.
 
 **Ranking is incremental.** A new issue is compared against the current
 candidates when it arrives, and that is the only comparison it gets. Nothing
@@ -210,11 +211,17 @@ Gates for a lane, each from a failure that cost real time:
   narrow on purpose: everything non-blocking is filed, and the round says how
   many findings it filed rather than fixed. **And it is bounded by the pull
   rule, which reaches an open pull request as well as a lane mid-build:** a
-  blocking finding the lane cannot clear without a ruling is pulled — the
-  owning agent closes the pull request, records the question on the issue,
-  returns the item to the blocked pile, and the result reports it as not
-  delivered. Closing a pull request is the one action on one the owning agent
-  may take; merging is never one. Without that exit this exception would be
+  blocking finding **the lane cannot clear** is pulled — the owning agent
+  closes the pull request, records on the issue either the question, if it
+  needs a ruling, or simply that the lane could not clear it, returns the
+  item to the blocked pile, and the result reports it as not delivered. The
+  condition is "cannot clear", not "needs a ruling": a finding that is merely
+  too hard trips none of the four escalation triggers, so gating the exit on
+  a ruling would leave that case with no exit at all — the same shape as the
+  leak this rule exists to close. "The lane could not clear it" is itself a
+  call for the owner: ship the bug, or take it on themselves. Closing a pull
+  request is the one action on one the owning agent may take; merging is
+  never one. Without that exit this exception would be
   the only state here the *round itself* cannot leave — step 5 could never
   run, so no other lane's work would reach the owner either, and holding the
   round up is precisely what the pull rule exists to prevent.
@@ -227,9 +234,9 @@ Gates for a lane, each from a failure that cost real time:
   disagreement is, so a finding a lane pushes back on gets checked and a
   finding it accepts does not. Round 1 reported an engine leak as fixed while
   half of it stood — the sibling fixture was fixed, the one named in the
-  review was not — and it was caught a round later by re-running the measurement
-  rather than re-reading the report. Re-run the thing that failed, not the
-  summary of it.
+  review was not — and it was caught a round later by re-running the
+  measurement rather than re-reading the report. Re-run the thing that
+  failed, not the summary of it.
 - **Exercise a guard through the path that runs it.** A direct call proves
   the guard's logic and nothing about where it is called from. Round 1
   shipped a boot gate that refused a database with no table, tested by
@@ -274,7 +281,7 @@ Two signals that this document is wrong rather than the work:
   step 1 is not finding the questions before the work starts.
 
 **A round raising the open count is not one of them.** Round 1 closed two
-issues and filed eleven, taking the open set from 63 to 72, and all but two
+issues and filed eleven, so the open set rose over the round, and all but two
 of the eleven came out of review. That is the process working: a review
 finding becomes an issue precisely so it is not silently carried, and the
 residue — issues surviving a week — is what says whether they drain. Judge a
