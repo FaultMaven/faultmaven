@@ -74,6 +74,24 @@ def _inline_refs(schema: Dict[str, Any]) -> Dict[str, Any]:
     return resolve(schema, set())
 
 
+def declares_a_type(sub: Any) -> bool:
+    """Whether *sub* is a schema that actually names a type.
+
+    ``"items" in node`` is NOT this test, and the difference is a 400:
+    ``List[Any]`` emits ``items: {}``, which passes a presence check and is
+    still an array with no declared element type. Measured on OpenAI strict —
+    ``In context=('properties', 'a', 'items'), schema must have a type`` — and
+    a bare ``{"type": "array"}`` is refused the same way on both OpenAI and
+    Gemini. Shared with ``GeminiProvider._resolve_refs_for_gemini`` so the two
+    boundaries cannot disagree about what counts as typed.
+    """
+    if not isinstance(sub, dict):
+        return False
+    return bool(
+        sub.get("type") or sub.get("enum") or sub.get("anyOf") or sub.get("$ref")
+    )
+
+
 class StrictSchemaUnsupported(Exception):
     """A schema cannot be expressed under OpenAI's strict subset.
 
@@ -214,6 +232,39 @@ def to_strict_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
             return node
 
         out = {k: v for k, v in node.items() if k not in _STRICT_UNSUPPORTED_KEYWORDS}
+
+        # `oneOf` and `allOf` are REJECTED by OpenAI strict — measured
+        # 2026-09-17, `'oneOf' is not permitted` / `'allOf' is not permitted`
+        # on gpt-4o-mini. Dropping them would leave the property as `{}`, which
+        # is a different 400 ("schema must have a type") and loses the
+        # constraint, so they are normalised into shapes the subset accepts:
+        # `oneOf` is `anyOf`'s exclusive twin, and `allOf`'s branches merge.
+        if "allOf" in out:
+            branches = out.pop("allOf")
+            merged = dict(out)
+            for branch in branches:
+                if isinstance(branch, dict):
+                    merged = {**branch, **merged}
+            out = merged
+        if "oneOf" in out and "anyOf" not in out:
+            out["anyOf"] = out.pop("oneOf")
+
+        # Every array needs a `items` that declares a type. OpenAI refuses
+        # `{"type": "array"}` ("array schema missing items") and `items: {}`
+        # ("schema must have a type") alike; a tuple emits `prefixItems` with
+        # no `items` and hits the first of those.
+        if out.get("type") == "array" and not declares_a_type(out.get("items")):
+            prefix = out.get("prefixItems")
+            if isinstance(prefix, list) and prefix and declares_a_type(prefix[0]):
+                out["items"] = copy.deepcopy(prefix[0])
+            else:
+                out["items"] = {"type": "string"}
+            logger.warning(
+                "strict_schema_downgrade: an array declared no item type; sent "
+                "as an array of %s. OpenAI strict rejects an untyped array "
+                "outright.",
+                out["items"].get("type", "?"),
+            )
 
         if out.get("type") == "object" or "properties" in out:
             # The discriminator is the PRESENCE of `properties`, not whether it

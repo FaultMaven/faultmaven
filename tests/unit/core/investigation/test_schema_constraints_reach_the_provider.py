@@ -38,7 +38,7 @@ from typing import Any, Dict, List, Literal, Tuple, Union
 
 import pytest
 from annotated_types import Ge, Le
-from pydantic import BaseModel, BeforeValidator, Field
+from pydantic import BaseModel, BeforeValidator, Field, ValidationError
 
 from faultmaven.core.investigation import schemas as engine_schemas
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
@@ -55,7 +55,10 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
     create_strategy_for_capability,
 )
-from faultmaven.utils.schema_converter import _STRICT_UNSUPPORTED_KEYWORDS
+from faultmaven.utils.schema_converter import (
+    _STRICT_UNSUPPORTED_KEYWORDS,
+    declares_a_type,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -261,19 +264,102 @@ def test_a_percentage_shaped_confidence_is_bounded_rather_than_rejected(
     """``95`` is what all three shipped Gemini models answer when the prompt
     talks in percentages and the constraint is not enforced.
 
-    It clamps to ``1.0`` — an overstatement, deliberately not rescaled to
-    ``0.95``: inferring intent from an out-of-range value is the
-    post-generation-correction pattern ``agent-behavioral-rules.md`` rejects.
-    The bound keeps the record; the decoder half gets the number right where a
-    provider enforces it.
+    It is recorded as ``UNRELIABLE_CONFIDENCE``, NOT as ``1.0`` and NOT
+    rescaled to ``0.95``. Rescaling infers intent, which
+    ``agent-behavioral-rules.md`` rejects; clamping to the ceiling is worse
+    still, because it asserts the maximum certainty for a number the model
+    never produced. The record survives, the number cannot drive a conclusion.
     """
-    assert getattr(model.model_validate(payload), field) == 1.0
+    assert (
+        getattr(model.model_validate(payload), field)
+        == engine_schemas.UNRELIABLE_CONFIDENCE
+    )
 
 
-def test_a_non_numeric_confidence_still_raises():
-    """The clamp bounds a number; it must not swallow a genuine type error."""
-    with pytest.raises(Exception):
+def test_a_non_numeric_confidence_still_raises_float_parsing():
+    """The clamp bounds a number; it must not swallow a genuine type error.
+
+    Asserting the error TYPE, not merely that something raised — a bare
+    ``pytest.raises(Exception)`` passes on a typo in the test itself.
+    """
+    with pytest.raises(ValidationError) as excinfo:
         engine_schemas.WorkingConclusionUpdate.model_validate({"likelihood": "high"})
+    assert [e["type"] for e in excinfo.value.errors()] == ["float_parsing"]
+
+
+@pytest.mark.parametrize(
+    "value, label",
+    [(float("nan"), "nan"), (float("inf"), "inf"), (float("-inf"), "-inf")],
+)
+def test_a_non_finite_confidence_is_rejected_not_recorded_as_certain(value, label):
+    """The regression the first clamp introduced.
+
+    Every NaN comparison is False, so ``min(1.0, nan)`` returned ``1.0`` — and
+    ``json.loads`` accepts bare ``NaN``/``Infinity``, which BEST_EFFORT output
+    is hand-parsed with. A hypothesis carrying no confidence at all was being
+    recorded as fully certain and fed to ``ConfidenceLevel.from_score``,
+    ranking and anchoring detection. ``main`` raised here; so must this.
+    """
+    with pytest.raises(ValidationError):
+        engine_schemas.HypothesisToAdd.model_validate(
+            {
+                "statement": "s",
+                "category": "environment",
+                "likelihood": value,
+                "rationale": "r",
+            }
+        )
+
+
+def test_a_boolean_confidence_is_rejected_rather_than_coerced_to_certain():
+    """Pydantic's lax mode turns ``True`` into ``1.0``. A bool carries no
+    magnitude, so recording it as maximum certainty is the same disease as the
+    NaN case. (Pre-existing — ``main`` does this too — fixed here because this
+    is the validator that now owns the field.)"""
+    with pytest.raises(ValidationError):
+        engine_schemas.HypothesisToAdd.model_validate(
+            {
+                "statement": "s",
+                "category": "environment",
+                "likelihood": True,
+                "rationale": "r",
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [("0.95", 0.95), ("95", engine_schemas.UNRELIABLE_CONFIDENCE)],
+)
+def test_a_quoted_number_is_coerced_before_it_is_bounded(value, expected):
+    """The clamp exists for FUNCTION_CALLING and BEST_EFFORT providers, whose
+    output is hand-parsed JSON — where a quoted number is a routine shape. A
+    clamp that passed strings through untouched let pydantic's lax coercion
+    turn ``"95"`` into ``95.0`` and raise, so the half aimed at those providers
+    missed the input they are most likely to send."""
+    assert (
+        engine_schemas.WorkingConclusionUpdate.model_validate(
+            {"likelihood": value}
+        ).likelihood
+        == expected
+    )
+
+
+def test_a_repaired_confidence_cannot_read_as_certain_or_as_causal_grounding():
+    """``UNRELIABLE_CONFIDENCE`` is not an arbitrary number.
+
+    It has to sit inside SPECULATION (``ConfidenceLevel.from_score < 0.5``) and
+    below the 0.6 causal-grounding floor the link schemas document, so a value
+    the model never produced can neither read as CONFIDENT/VERIFIED nor count
+    toward validating a node. Clamping to the CEILING — the first version —
+    did the opposite: it outranked genuinely-evidenced hypotheses.
+    """
+    from faultmaven.modules.case.domain.models import ConfidenceLevel
+
+    value = engine_schemas.UNRELIABLE_CONFIDENCE
+    assert 0.0 <= value < 0.5, "must be inside the SPECULATION band"
+    assert value < 0.6, "must be below the causal-grounding floor"
+    assert ConfidenceLevel.from_score(value) is ConfidenceLevel.SPECULATION
 
 
 def test_out_of_range_confidence_is_bounded_not_lost():
@@ -306,9 +392,12 @@ def test_out_of_range_confidence_is_bounded_not_lost():
     }
     parsed = engine._validate_with_degradation(payload, InvestigationResponse_Diagnosis)
 
+    unreliable = engine_schemas.UNRELIABLE_CONFIDENCE
     assert parsed.agent_response == "Looking into the pool."
-    assert parsed.state_updates.milestones.root_cause_likelihood == 1.0
-    assert [h.likelihood for h in parsed.state_updates.hypotheses_to_add] == [1.0], (
+    assert parsed.state_updates.milestones.root_cause_likelihood == unreliable
+    assert [h.likelihood for h in parsed.state_updates.hypotheses_to_add] == [
+        unreliable
+    ], (
         "the hypothesis was dropped instead of bounded — the backstop pruned "
         "it, which is the silent-loss failure this clamp exists to prevent"
     )
@@ -436,6 +525,7 @@ class _ExoticShapes(BaseModel):
     step: int = Field(multiple_of=5)  # -> multipleOf
     pair: Tuple[int, str]  # -> prefixItems, and an array with no `items`
     pet: Union[_Cat, _Dog] = Field(discriminator="kind")  # -> oneOf/discriminator
+    anys: List[Any]  # -> items: {}, an array whose item type is undeclared
 
 
 def _walk(node: Any):
@@ -493,6 +583,74 @@ def test_every_array_reaching_gemini_declares_its_item_type():
         for node in _walk(wire):
             if node.get("type") == "array":
                 assert "items" in node, f"array with no item type: {node}"
+
+
+def test_the_same_exotic_shapes_are_safe_on_the_OPENAI_path_too():
+    """The allowlist closed this class on the Gemini boundary; OpenAI strict has
+    its own, different refusals and needs its own repair.
+
+    Measured 2026-09-17 on gpt-4o-mini: `'oneOf' is not permitted`,
+    `'allOf' is not permitted`, `array schema missing items` and
+    `In context=(... 'items'), schema must have a type` are each a 400, while
+    `prefixItems`, `multipleOf`, `const` and `discriminator` are ACCEPTED — so
+    the two boundaries legitimately drop different things, and a guard that
+    only ran the Gemini path covered the half already fixed.
+    """
+    from faultmaven.utils.schema_converter import to_strict_schema
+
+    strict = to_strict_schema(_ExoticShapes.model_json_schema())
+    body = json.dumps(strict)
+
+    for refused in ("oneOf", "allOf", "uniqueItems"):
+        assert f'"{refused}"' not in body, f"{refused} is a 400 on OpenAI strict"
+    for node in _walk(strict):
+        if node.get("type") == "array":
+            assert declares_a_type(
+                node.get("items")
+            ), f"OpenAI strict refuses an array whose items declare no type: {node}"
+
+
+def test_oneof_and_allof_are_carried_across_rather_than_emptied():
+    """Dropping them leaves the property as ``{}`` while ``required`` still
+    names it — valid (Gemini measured 200) but entirely unconstrained, and for
+    ``allOf`` a REGRESSION: the old denylist passed it through and it measured
+    200 WITH its content. ``oneOf`` is ``anyOf``'s exclusive twin and ``allOf``
+    merges, so both keep their constraint in a shape both APIs read."""
+    wire = GeminiProvider._resolve_refs_for_gemini(_ExoticShapes.model_json_schema())
+
+    pet = wire["properties"]["pet"]
+    assert pet != {}, "the discriminated union was emptied instead of resolved"
+    assert pet.get("properties"), f"pet carries no constraint at all: {pet}"
+
+    class WithAllOf(BaseModel):
+        colour: Literal["red", "blue"] = Field(description="a colour")
+
+    merged = GeminiProvider._resolve_refs_for_gemini(WithAllOf.model_json_schema())
+    assert merged["properties"]["colour"].get("enum") == ["red", "blue"]
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda m: GeminiProvider._resolve_refs_for_gemini(m.model_json_schema()),
+        lambda m: __import__(
+            "faultmaven.utils.schema_converter", fromlist=["to_strict_schema"]
+        ).to_strict_schema(m.model_json_schema()),
+    ],
+    ids=["gemini", "openai-strict"],
+)
+def test_an_untyped_array_is_repaired_on_both_boundaries(build):
+    """``List[Any]`` emits ``items: {}``. A presence check (``"items" not in
+    node``) passes it straight through, which is why the predicate is
+    "declares a type" — and why the guard asserts the same predicate the code
+    uses rather than the weaker one."""
+
+    class WithAny(BaseModel):
+        xs: List[Any]
+
+    for node in _walk(build(WithAny)):
+        if node.get("type") == "array":
+            assert declares_a_type(node.get("items")), node
 
 
 def test_the_allowlist_is_the_published_schema_vocabulary():

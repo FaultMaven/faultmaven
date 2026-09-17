@@ -1259,6 +1259,8 @@ class GeminiProvider(BaseLLMProvider):
         """
         import copy
 
+        from faultmaven.utils.schema_converter import declares_a_type
+
         schema = copy.deepcopy(schema)
         defs = schema.pop("$defs", None) or {}
 
@@ -1290,7 +1292,7 @@ class GeminiProvider(BaseLLMProvider):
             if "const" in node and "enum" not in node:
                 node["enum"] = [node["const"]]
 
-            if node.get("type") == "array" and "items" not in node:
+            if node.get("type") == "array" and not declares_a_type(node.get("items")):
                 prefix = node.get("prefixItems")
                 if isinstance(prefix, list) and prefix and isinstance(prefix[0], dict):
                     node["items"] = resolve(copy.deepcopy(prefix[0]))
@@ -1303,15 +1305,19 @@ class GeminiProvider(BaseLLMProvider):
                             len(prefix),
                         )
                 else:
-                    # An array with neither items nor prefixItems is a 400.
+                    # An array whose `items` declares no type is a 400 too.
                     # `{"type": "string"}` is the permissive repair; warn,
                     # because the model is now being told something the source
                     # schema never said.
                     node["items"] = {"type": "string"}
                     logger.warning(
                         "gemini_schema_downgrade: an array property declared no "
-                        "item type; sent as an array of strings because Gemini "
-                        "rejects an array without `items`."
+                        "item type (`List[Any]` emits `items: {}`); sent as an "
+                        "array of strings. Gemini tolerates the untyped form, "
+                        "but OpenAI strict rejects it outright — `In "
+                        "context=('properties', 'a', 'items'), schema must have "
+                        "a type` — so the repair is shared rather than "
+                        "Gemini-specific."
                     )
 
             for field in set(node) - GeminiProvider._GEMINI_ALLOWED_FIELDS:
@@ -1329,6 +1335,29 @@ class GeminiProvider(BaseLLMProvider):
                     resolved = copy.deepcopy(defs[ref_name])
                     return resolve(resolved)
                 return {"type": "object"}
+
+            # ``allOf`` has no ``Schema`` spelling. Pydantic emits it for a
+            # ``$ref`` carrying sibling keywords, so dropping it leaves the
+            # property as ``{}`` — accepted by Gemini (measured 200) but
+            # entirely unconstrained, and a REGRESSION against the old denylist,
+            # which passed ``allOf`` through and measured 200 WITH its content.
+            # Merging the branches keeps the constraint in a shape Gemini reads.
+            if "allOf" in node:
+                merged = {k: v for k, v in node.items() if k != "allOf"}
+                for branch in node["allOf"]:
+                    resolved_branch = resolve(copy.deepcopy(branch))
+                    if isinstance(resolved_branch, dict):
+                        # Sibling keys on the node win, matching the $ref
+                        # convention in `_inline_refs`.
+                        merged = {**resolved_branch, **merged}
+                return resolve(merged) if "allOf" in merged else merged
+
+            # ``oneOf`` is ``anyOf``'s exclusive twin and has no ``Schema``
+            # spelling either; a discriminated Union emits it. Treat it exactly
+            # as ``anyOf`` rather than dropping the property to ``{}``.
+            if "oneOf" in node and "anyOf" not in node:
+                node = {**node, "anyOf": node["oneOf"]}
+                node.pop("oneOf", None)
 
             # Convert anyOf (Pydantic Optional pattern)
             if "anyOf" in node:

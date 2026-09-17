@@ -32,6 +32,8 @@ Without this pattern, LLM returning null causes Pydantic validation errors:
 Applied to 23 list fields across all schemas (see git blame for specific changes).
 """
 
+import logging
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -53,6 +55,8 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+logger = logging.getLogger(__name__)
 
 from faultmaven.modules.agent.domain.models.agentic import QueryIntent  # noqa: F401
 from faultmaven.modules.case.contracts import (
@@ -131,15 +135,87 @@ def _coerce_bare_int_to_new_index(v: Any) -> Any:
 IdRef = Annotated[str, BeforeValidator(_coerce_bare_int_to_new_index)]
 
 
+#: What an unusable-but-repairable confidence is recorded as.
+#:
+#: Deliberately inside the SPECULATION band (``ConfidenceLevel.from_score``:
+#: ``< 0.5``) and below the 0.6 causal-grounding floor the link schemas
+#: document, so a number the model did not actually produce can never read as
+#: CONFIDENT/VERIFIED and can never count as causal grounding. Mid-band rather
+#: than on an edge, so a future adjustment to those thresholds does not silently
+#: promote it.
+UNRELIABLE_CONFIDENCE = 0.25
+
+
 def _clamp_to_unit_interval(v):
     """Bound a probability-shaped value into ``[0, 1]`` before validation.
 
-    Non-numeric input is passed through untouched so a genuine type error still
-    surfaces as one; ``None`` reaches the ``Optional`` branch unchanged.
+    **Why this does not clamp to the ceiling.** The first version was
+    ``max(0.0, min(1.0, v))``, which is wrong in the one direction that
+    matters here. ``likelihood``/``confidence`` feed
+    ``ConfidenceLevel.from_score``, hypothesis ranking, anchoring detection and
+    ``root_cause_consistency``; a value the model never produced, recorded as
+    ``1.0``, outranks genuinely-evidenced hypotheses and can drive the
+    premature conclusion FaultMaven exists to prevent. A *missing* hypothesis
+    is recoverable next turn; a *falsely certain* one steers the investigation.
+    So a repaired value is recorded as ``UNRELIABLE_CONFIDENCE`` — the record
+    survives, the number cannot be load-bearing.
+
+    That understates a ``95`` that meant ``0.95``. Accepted deliberately:
+    recovering the ``0.95`` means inferring intent from an out-of-range value,
+    which is the post-generation-correction pattern
+    ``agent-behavioral-rules.md § Post-Generation Validators`` rejects. And
+    this path only runs where the provider did NOT enforce the bound — on the
+    shipped STRICT default the decoder returns ``0.95`` and nothing here fires.
+    A conservative default belongs on the degraded path.
+
+    The rules, and what each is for:
+
+    - ``bool`` is REJECTED. Pydantic's lax mode coerces ``True`` to ``1.0``, so
+      passing it through records "certain" for a value that carries no
+      magnitude at all. (Pre-existing: ``main`` does this too.)
+    - A **numeric string** is coerced first, then treated as a number.
+      FUNCTION_CALLING and BEST_EFFORT output is hand-parsed JSON, where a
+      quoted number is a routine shape — and those are exactly the providers
+      this clamp exists for, so missing ``"95"`` would miss its own audience.
+    - **NaN / ±Infinity are REJECTED**, restoring the pre-clamp behaviour.
+      ``json.loads`` accepts bare ``NaN``/``Infinity``, and every NaN
+      comparison is False, so ``min(1.0, nan)`` is ``nan``'s neighbour ``1.0``
+      — the clamp turned "no confidence at all" into "maximum certainty".
+      There is no information in a NaN to preserve, so it is not repaired; the
+      engine's backstop prunes the record exactly as it did before this fix.
+    - Anything else non-numeric passes through so pydantic raises its own
+      ``float_parsing``.
     """
-    if isinstance(v, bool) or not isinstance(v, (int, float)):
+    if isinstance(v, bool):
+        raise ValueError(
+            "a boolean is not a confidence value (pydantic would coerce it to 1.0)"
+        )
+
+    if isinstance(v, str):
+        try:
+            v = float(v.strip())
+        except (TypeError, ValueError):
+            return v  # let pydantic report float_parsing
+
+    if not isinstance(v, (int, float)):
         return v
-    return max(0.0, min(1.0, float(v)))
+
+    value = float(v)
+    if not math.isfinite(value):
+        raise ValueError(
+            "confidence must be a finite number (NaN/Infinity carry no magnitude)"
+        )
+    if 0.0 <= value <= 1.0:
+        return value
+
+    logger.warning(
+        "structured_output_degraded: confidence %r is outside [0, 1]; recorded "
+        "as %s (SPECULATION) rather than clamped to the ceiling — the record "
+        "is kept, the number is not trusted.",
+        value,
+        UNRELIABLE_CONFIDENCE,
+    )
+    return UNRELIABLE_CONFIDENCE
 
 
 # Every probability/confidence field in this module. ``ge``/``le`` alone are

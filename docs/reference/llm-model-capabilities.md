@@ -189,10 +189,27 @@ Two consequences:
 
 - `maxLength` is a **guide, not a stop**, on Gemini. Client-side length
   handling stays load-bearing; do not remove it on the strength of the schema.
-- `uniqueItems` is rejected outright by OpenAI (`'uniqueItems' is not
-  permitted`) and absent from Gemini's `Schema`, so it stays stripped — as do
-  `additionalProperties`, `const`, `oneOf`, `exclusiveMinimum`/`Maximum` and
-  `$schema`. (`const`'s constraint survives as a one-member `enum`.)
+- **Each boundary drops only what its own API refuses**, which is why the two
+  lists differ. Measured 2026-09-17:
+
+  | keyword | OpenAI strict | Gemini `Schema` | where it is dropped |
+  |---|---|---|---|
+  | `uniqueItems` | **400** `'uniqueItems' is not permitted` | absent | both |
+  | `oneOf` | **400** `'oneOf' is not permitted` | absent | normalised to `anyOf` on both |
+  | `allOf` | **400** `'allOf' is not permitted` | absent | branches merged on both |
+  | `exclusiveMinimum`/`Maximum` | accepted | absent | **Gemini only** — OpenAI enforces them |
+  | `multipleOf`, `prefixItems`, `const`, `discriminator` | accepted | absent | **Gemini only** |
+  | `additionalProperties`, `$schema` | required / ignored | absent | Gemini only |
+
+  `const`'s constraint survives the Gemini reduction as a one-member `enum`.
+  Putting a Gemini limit in the shared rewrite would take enforcement away from
+  OpenAI, which is the mistake fm#355 was about.
+- **Every array must declare a typed `items`.** Both APIs refuse
+  `{"type": "array"}` (`array schema missing items`) *and* `items: {}`
+  (`schema must have a type`) — the latter is what `List[Any]` emits, so a
+  presence check is not enough. A tuple's `prefixItems` supplies the type where
+  it can; otherwise the array is sent as an array of strings, with a warning,
+  because the alternative is a hard rejection.
 
 All six engine schemas are still accepted by gemini-3.7-flash,
 gemini-3.5-flash, gemini-3.5-flash-lite (both request shapes), gpt-4o-mini and
