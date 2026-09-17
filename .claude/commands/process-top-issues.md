@@ -29,11 +29,84 @@ there, so the operator never has to know.
 - `propose` — force a fresh proposal even if one is outstanding.
 - `build` — force the building step.
 
+## The piles are labels
+
+An issue's pile is a **label on that issue**, not a list in a shared blob:
+
+| label | pile |
+|---|---|
+| `pile:ready` | the answer is known; it needs work, not a call |
+| `pile:blocked` | needs an owner ruling, or a lane stopped on it |
+| `pile:yours` | only the owner can run it — live deployment, credentials |
+
+Create any that is missing before you use one; `gh issue edit` fails the
+**whole** edit on a label the repository does not have.
+
+**Read a pile as a query, never as a parse:**
+
+```bash
+gh issue list --state open --label pile:blocked --limit 500 \
+  --json number,title,labels,createdAt,body
+```
+
+`--state open` is why nothing needs a rule about carrying closed numbers
+forward: a closed issue is not in the answer.
+
+**Move an item with two separate edits, the add first:**
+
+```bash
+gh issue edit <n> --add-label pile:blocked      # then, as its own command:
+gh issue edit <n> --remove-label pile:ready
+```
+
+Each single-direction edit is one mutation. `--add-label X --remove-label Y`
+in one command is **not** one: `gh` fires two mutations concurrently, so a
+stop between them can leave either — and "neither label" reads as an unsorted
+arrival, which *Propose* would sort straight back into ready. Add first and
+the only intermediate is "both", which the reading rule below settles.
+
+**Reading, when the labels disagree:** more than one `pile:` label means
+**blocked**, or **yours** if blocked is not among them. The restrictive
+answer is deliberate and it is not symmetric: on a half-finished move *into*
+blocked it is already right, and on one *out of* blocked it costs a re-ask
+next proposal — which is the cheap direction to be wrong in, because the
+expensive one would be dispatching a lane at an item that was pulled. Say so
+in *Measurement* so a half-finished move is visible rather than merely safe.
+**No** `pile:` label means an unsorted arrival, which step 2 sorts — and
+nothing bare is ever dispatched either, because the dispatch rule in step 4
+asks for `pile:ready` rather than for the absence of the other two.
+
+Adding a label already present is a no-op and so is removing one that is
+absent, both exit 0, which is what makes every move below safe to repeat.
+That is obtained from the medium rather than argued for in prose, and it is
+why nothing here writes a marker recording that it has been.
+
+**Once, before the first round on this scheme**, the lists still written in
+the `Queue` body become labels. Run it, check the counts against the body's,
+and delete this block:
+
+```bash
+for n in 908 985 1167 1168 1206 1294 1442 1451 1461 1477 1478 1479; do
+  gh issue edit $n --add-label pile:blocked; done
+for n in 1251 1252; do gh issue edit $n --add-label pile:yours; done
+
+# everything else open and unlabelled is ready — except the Queue itself
+gh issue list --state open --limit 500 --json number,labels \
+  --jq '.[] | select([.labels[].name] | any(startswith("pile:")) | not)
+        | .number' \
+  | grep -vx 1456 | xargs -n1 -I{} gh issue edit {} --add-label pile:ready
+```
+
+It is re-runnable: the last command only touches issues that carry no pile
+label yet, and the first two are no-ops the second time. Check each pile's
+query against the list that body still carries, and only then delete both
+this block and those lists — an unrun migration answers every pile query with
+nothing, which would drop twelve standing questions out of the next proposal
+without saying so.
+
 ## The Queue
 
-Everything below reads or writes one pinned tracking issue titled exactly
-`Queue`. Its **body** holds the three piles, the ranked head in order and the
-round timestamp; its **last comment** is where the round has got to.
+One pinned tracking issue titled exactly `Queue`:
 
 ```bash
 gh issue list --state open --label tracking --search "Queue in:title" \
@@ -41,33 +114,26 @@ gh issue list --state open --label tracking --search "Queue in:title" \
 ```
 
 Create it if absent (`gh issue create --title Queue --label tracking`, then
-`gh issue pin`) and say so in the report.
+`gh issue pin`) and say so in the report. Its **last comment** is where the
+round has got to. Its **body** holds what a label cannot: the **ranked head**
+in order, the **round timestamp**, and a stamped snapshot of the three counts.
 
-**Writing the body.** Three steps write it — the settlement (1), the proposal
-(2) and a pull (4) — and each writes the *whole* body, because a PATCH on
-`body` replaces it. So:
+**Step 2 is the only writer of that body.** Membership is labels, so the
+settlement and a pull change piles without touching it — which is what lets
+the head live in a blob at all. Write it with `gh api -X PATCH` and read it
+back; `gh issue edit` can fail silently.
 
-- **Emit all three parts every time**: the piles, the ranked head in order,
-  and the timestamp. A write that emits the piles alone deletes the head, and
-  with it every rules-1-3 comparison ever made — which is what "losing a
-  comparison does not have to be undone" rests on. The rule-4 tier is not
-  written down; oldest-first is recoverable from the issues.
-- **The timestamp belongs to step 2.** Steps 1 and 4 carry forward the value
-  they read. Stamping it in step 1 would make step 2's own "what arrived
-  since the last round" read, seconds later, find nothing, and every issue
-  filed during the last round would be sorted into no pile at all.
-- **`gh api -X PATCH`, then read it back.** `gh issue edit` can fail
-  silently. At the pull site a write lost that way re-creates the leak the
-  write exists to close, and nothing else would ever say so.
-- **The owning agent makes every one of these writes.** A subagent never
-  touches the `Queue`. There is no compare-and-set here, so two lanes writing
-  at once would each compute from a read taken before the other's, and the
-  first pull's move to **blocked** would vanish — the same leak by a third
-  road.
-- **The body names only open issues.** Step 2 enforces that when it rebuilds;
-  steps 1 and 4 carry forward what they read, so the body can briefly name an
-  issue closed since. Nothing acts on those numbers in between, and step 2's
-  rebuild drops them.
+- **The ranked head orders; the labels decide.** A name in the head that no
+  longer carries `pile:ready` is skipped wherever the head is read. So a pull
+  does not have to edit the head, and a head naming a blocked or closed item
+  is stale rather than wrong.
+- **The counts are a snapshot, never read back.** Step 2 stamps them beside
+  the timestamp because the body is also what a person reads; every decision
+  takes its count from the query.
+- **The timestamp is step 2's.** It is what "what arrived since the last
+  round" is measured from.
+- **The rule-4 tier is not written down** — oldest-first is recoverable from
+  `createdAt`.
 
 ## 0. Locate the round
 
@@ -111,38 +177,38 @@ gh issue view <n> --json state,title,body,comments   # each cited issue
 Walk that table **one row at a time**. A row is an issue, the pull request
 that carried it and an outcome, so what you do is decided by the row in front
 of you and that issue's own state — never by another row, and never by the
-issue alone. Take the **first** row here that matches; the order is what
-lands on the fact rather than on the report of it, so a pull request the
-owner reopened and merged is settled as merged even where the round reported
-that item `pulled`:
+issue alone. Take the **first** row here that matches; the order lands on the
+fact rather than on the report of it, so a pull request the owner reopened
+and merged is settled as merged even where the round reported that item
+`pulled`:
 
 | the row | what you do |
 |---|---|
 | the issue is closed | nothing |
-| the issue is open, its pull request merged | close #<n> if every part it named is now delivered or re-filed, citing this pull request and the re-filings; otherwise edit #<n> down to the part that still stands — title and body — and put it back in **ready** as a fresh arrival, ranked against the current candidates and never left at its old rank. There is no third outcome |
-| its outcome is `pulled` | nothing. The pull recorded it on the issue and put it in **blocked** where it happened. The row may name no pull request at all — a lane pulled mid-build never opened one |
-| the issue is open, its pull request closed unmerged | the owner abandoned it — comment that the work was built and the pull request closed unmerged, link it, and move #<n> to **blocked**; the next proposal asks whether to build it another way or close it. Do not guess why |
+| the issue is open, its pull request merged | close #<n> if every part it named is now delivered or re-filed, citing this pull request and the re-filings; otherwise edit #<n> down to the part that still stands — title and body — and leave it `pile:ready`, to be ranked against the current candidates and never left at its old rank. There is no third outcome |
+| the round reported it `pulled` | `--add-label pile:blocked`, then `--remove-label pile:ready`. The pull did this when it happened; doing it again is a no-op, and doing it *now* is what repairs a label the pull failed to write. Say nothing more — the pull already recorded what stopped it. The row may name no pull request at all, because a lane pulled mid-build opened none |
+| the issue is open, its pull request closed unmerged | the owner abandoned it — comment that the work was built and the pull request closed unmerged, link it, then the same two label edits; the next proposal asks whether to build it another way or close it. Do not guess why |
 
 A row matching none of them — open, naming no pull request, and not `pulled` —
 is a malformed result. Say so under *Settled from last round* rather than
-guessing; the item stays wherever the last body put it. If several pull
-requests named one issue, the merged one decides.
+guessing; the item keeps the labels it has. If several pull requests named one
+issue, the merged one decides.
 
-**Every action above is safe to run twice**, so a stop between here and the
-proposal costs nothing — but safe is not silent. Read the issue before you
-write: a close on a closed issue, an edit down to a remainder the body
-already carries, and a re-rank are all no-ops. The abandonment comment is the
-one that is not, because it is free-form prose a re-run cannot reliably
-recognise as its own. That duplicate is the whole price of having no marker,
-and it was priced knowingly. Do not add a marker back — one used to be here,
-and it turned that stop into the one state this procedure could not leave.
+**Nothing above is a skip.** The `pulled` row does the full pile move and
+differs from the one below it only in staying quiet, so the round's report
+suppresses a comment and never carries state: lose the report and you get one
+comment too many, never an item in the wrong pile. That is the whole reason a
+label replaced the note this step used to write.
 
-Then **write the `Queue` body**, per *The Queue*, with the piles as the
-settlement leaves them. That write *is* the settlement: the piles are in that
-body and nowhere else, and step 2's rebuild reads open issues and the body,
-neither of which says an item was returned to blocked.
+**So the settlement is safe to run twice** — but safe is not silent. Every
+label edit is a no-op the second time, a close on a closed issue is a no-op,
+and an edit down to a remainder the body already carries changes nothing. The
+abandonment comment is the one that is not, because it is free-form prose a
+re-run cannot reliably recognise as its own. That duplicate is the whole
+price, and it was priced knowingly.
 
-Report what you settled under *Settled from last round* in the proposal.
+This step writes no `Queue` body. Report what you settled under *Settled from
+last round* in the proposal.
 
 Before the first round there is no result comment, so there is nothing to
 check and the round starts.
@@ -155,19 +221,18 @@ Read what arrived since the round timestamp in the `Queue` body:
 gh issue list --state open --limit 500 --json number,title,labels,createdAt,body
 ```
 
-Sort each new issue into **ready**, **blocked** or **yours** using *What
-escalates* in the procedure. The third pile is work no agent can do — a live
-deployment check, a console or credential an agent lacks. List it, never
-rank it into a round. Compare each new issue against the current candidates
-and place it; do not re-sort the backlog. Losing does not have to be undone
-— the item keeps its place and the pile drains past it. Move one up only if
-a trigger fired: a new priority label, another issue on the same seam, a
-citation.
+Label each issue carrying no `pile:` label — every new arrival, and anything
+a half-finished move left bare — using *What escalates* in the procedure.
+`pile:yours` is work no agent can do: a live deployment check, a console or
+credential an agent lacks. List it, never rank it into a round. Compare each
+new issue against the current candidates and place it; do not re-sort the
+backlog. Losing does not have to be undone — the item keeps its place and the
+pile drains past it. Move one up only if a trigger fired: a new priority
+label, another issue on the same seam, a citation.
 
-**Rebuild the piles from open issues.** Never carry a number forward from
-the last `Queue` body without checking it is still open: a *yours* item the
-owner has run and closed, and a blocked item closed by a "leave it" ruling,
-are closed on GitHub and nowhere else.
+The piles need no rebuilding: each is a query over open issues, so an item
+the owner closed — a *yours* item they ran, a blocked item closed by a "leave
+it" ruling — leaves by itself, and no number is ever carried forward.
 
 **The first thing the round's capacity buys is the oldest rule-4 item** —
 the oldest ready issue holding none of picking rules 1-3 — ahead of rules
@@ -214,11 +279,14 @@ and never omitted, or they leave every pile.
 
 ### Measurement
 <python scripts/backlog_metrics.py --weeks 8>
+Piles: ready <n> · blocked <n> · yours <n>
 Rule-4 tier: <n> ready items holding none of rules 1-3 (last round: <n>)
+Carrying more than one pile label: <none, or the numbers>
 ```
 
-Write the `Queue` body per *The Queue*: the three piles, **the ranked head in
-order**, and this round's timestamp, which is set here and nowhere else.
+Write the `Queue` body per *The Queue*: **the ranked head in order**, this
+round's timestamp, and the three counts as a snapshot. This is the only step
+that writes it.
 
 Then **stop and wait**. Do not build anything that has an open question
 against it.
@@ -229,15 +297,18 @@ Read the owner's reply. For each answered question, record the ruling as a
 comment on its own issue, then:
 
 - **implies work** — re-file the issue as the defect or feature that work
-  is, with the ruling as its spec, into **ready**.
-- **defers** ("(b) **for now**", "(3) **at a second tenant**") — leave it
-  **blocked** and record the condition that would revisit it. List it in the
-  next proposal as answered-and-waiting, not as a question, and re-read the
-  condition when you sort: it moves to ready the round it holds. Do not
-  close it: a deferral is "not yet", not "never".
+  is, with the ruling as its spec: `--add-label pile:ready`, then
+  `--remove-label pile:blocked`.
+- **defers** ("(b) **for now**", "(3) **at a second tenant**") — leave
+  `pile:blocked` where it is and record the condition that would revisit it.
+  List it in the next proposal as answered-and-waiting, not as a question,
+  and re-read the condition when you sort: it moves to ready the round it
+  holds. Do not close it: a deferral is "not yet", not "never".
 - **implies none** (the behaviour is right as it stands) — **close** the
-  issue there, quoting the ruling. Do not move it to ready.
-- **makes the work the owner's** — move it to **yours**.
+  issue there, quoting the ruling. Its labels stop mattering the moment it
+  closes, so leave them.
+- **makes the work the owner's** — `--add-label pile:yours`, then
+  `--remove-label pile:blocked`.
 
 A ruling lands in one of those four. If you cannot tell which, that is the
 next question, not a guess.
@@ -245,6 +316,11 @@ next question, not a guess.
 Unanswered questions stay blocked and go in the next proposal unchanged.
 
 ## 4. Build
+
+Dispatch from the ranked head, **skipping any item that no longer carries
+`pile:ready`** — a pull earlier in this step, or in a previous invocation of
+it, is why the head and the labels can disagree, and the label is the one
+that decides.
 
 One subagent per approved item, each with a self-contained prompt carrying:
 the issue and its full text, the ruling if it had one, what "done" means, and
@@ -274,11 +350,12 @@ anything unresolved.
 because the work turns out to be several rounds of it, or because it cannot
 be done from where the lane stands. Stop that lane, record on the issue the
 question if there is one and otherwise what stopped it, return the item to
-the blocked pile — **write the `Queue` body now**, per *The Queue*, because
-step 2 has already run and nothing else will write it — and carry on with the
-others. A re-entry into this step does not re-dispatch that item, whatever
-the proposal still lists: the body places it in **blocked** and the issue
-says what stopped it. Do not ask the owner mid-round and do not guess.
+the blocked pile — `--add-label pile:blocked` then `--remove-label
+pile:ready`, per *The piles are labels* — and carry on with the others. That
+is one issue's own labels, so it needs nothing from step 2 and collides with
+no other lane. A re-entry into this step will not re-dispatch it, whatever
+the proposal and the head still say, because the dispatch rule above reads
+the label. Do not ask the owner mid-round and do not guess.
 
 Then per returned lane, in order:
 
@@ -306,11 +383,11 @@ Then per returned lane, in order:
    escalating it would hand the owner a pull request you know is broken. **If
    the lane cannot clear it — for any reason, not only a ruling — pull it**:
    close the pull request, record on the issue either the question or that
-   the lane could not clear it, return the item to the blocked pile (write
-   the `Queue` body, as in the pull above), and give it a result row with
-   outcome `pulled` — that row is what stops the next round's settlement
-   reading your close as the owner's abandonment. That is the loop's only
-   other exit, and without it the round cannot reach step 5 at all.
+   the lane could not clear it, return the item to the blocked pile (the two
+   label edits, as in the pull above), and give it a result row with outcome
+   `pulled`, which is what keeps the next round's settlement from reading
+   your close as the owner's abandonment. That is the loop's only other
+   exit, and without it the round cannot reach step 5 at all.
    Blocking means the change is worse than the bug it fixes for someone who
    has not hit it. Say in the result how many findings you filed rather
    than fixed.
@@ -330,9 +407,10 @@ request: the next round's *Settle the last round* reads this table for its
 issue-to-pull-request pairs, and an issue missing from it is never settled.
 A pulled issue gets a row too. `outcome` is free text with **one reserved
 value** — `pulled`, lower case, which nothing but a pull may carry and which
-is the only value the next settlement reads. A mid-build pull's row names no
-pull request, because none was opened. The line below carries what stopped
-it.
+is the only value the next settlement reads. It decides whether that
+settlement posts an abandonment comment, and nothing else: the pile is the
+label either way. A mid-build pull's row names no pull request, because none
+was opened. The line below carries what stopped it.
 
 Pulled: #N — <the question, or what stopped the lane>
 Filed on the way: …
