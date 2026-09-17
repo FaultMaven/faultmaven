@@ -1785,6 +1785,19 @@ if _is_debug_enabled(settings=_debug_settings):
         "credential, the four operator diagnostics require platform admin",
         _debug_settings.server.environment.value if _debug_settings else "unknown",
     )
+    # Recorded, not only logged. Whether the operator flag lifted this router
+    # into a non-development environment is a security-relevant deployment fact,
+    # and a startup line is not an observable — it rolls out of `kubectl logs`
+    # long before anyone asks, so a runbook saying "grep for it" returns empty
+    # on a perfectly healthy pod and teaches the wrong conclusion.
+    # `GET /admin/config/status` reports it beside `kb_prefetch` and
+    # `first_party_consent_skip`, which are there for the same reason.
+    #
+    # Written by the branch that DID the mounting rather than re-derived later
+    # from settings or by walking the route table: a fact recorded where it
+    # happens cannot disagree with what happened, and it needs no second copy of
+    # the route-flattening idiom to read it back.
+    app.state.debug_endpoints_mounted = True
 
     @app.get(
         "/debug/routes",
@@ -2032,6 +2045,7 @@ else:
         "ENABLE_DEBUG_ENDPOINTS unset)",
         _debug_settings.server.environment.value if _debug_settings else "unknown",
     )
+    app.state.debug_endpoints_mounted = False
 
 # Modular monolith pivot: keep only core endpoints; advanced routes disabled
 # Protection monitoring is now handled by middleware and health endpoints

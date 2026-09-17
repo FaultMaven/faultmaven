@@ -479,6 +479,40 @@ def _kb_prefetch_is_effective(app, settings) -> bool:
     return getattr(getattr(app, "state", None), "knowledge_service", None) is not None
 
 
+def _debug_endpoints_are_mounted(app) -> bool:
+    """Did this process mount the ``/debug`` router? (#1493)
+
+    A security-relevant deployment fact, because ``_is_debug_enabled()`` is a
+    DISJUNCTION — ``env in (development, testing, test) OR
+    enable_debug_endpoints`` — so ``ENABLE_DEBUG_ENDPOINTS=true`` mounts the
+    router in staging and production too. Until this was reported, an operator
+    auditing a production cluster could not tell a deployment with the flag set
+    from one without it, short of probing ``/debug/config`` and telling 401 from
+    404. The only account of it was a startup log line, and a startup log is not
+    an observable: it has rolled out of ``kubectl logs`` on any pod that has been
+    up a while, so "grep for it" returns empty on a healthy deployment.
+
+    Reads the flag ``main`` writes at the mount itself rather than re-deriving
+    the answer. Two alternatives were available and both are worse. Recomputing
+    ``_is_debug_enabled()`` reports the POLICY, and the question is what this
+    process actually did — the same distinction ``_kb_prefetch_is_effective``
+    makes next door. Walking the route table for ``/debug`` reports the running
+    state correctly but needs a third copy of the route-flattening idiom, and a
+    flat ``app.routes`` scan would be wrong the moment those routes move onto an
+    ``APIRouter`` (#1492).
+
+    Defaults False for an app object that never ran the mount block at all — a
+    unit-test double, say — which is the safe direction: it under-reports a
+    surface rather than inventing one.
+
+    Mounted is not the same as exposed. Every route on the router requires an
+    authenticated caller and the four operator diagnostics require the platform
+    administrator role (#1474); this answers "is that surface present here",
+    which is the question a deployment audit asks.
+    """
+    return bool(getattr(getattr(app, "state", None), "debug_endpoints_mounted", False))
+
+
 def _suggestion_store_is_durable(app) -> bool:
     """Is the composed knowledge-suggestion store durable and worker-shared?
 
@@ -751,6 +785,26 @@ async def get_env_config_status(
                     "Set KB_PREFETCH_ENABLED=true|false. False with the "
                     "flag set means no knowledge service was composed for "
                     "this process — the KB is unavailable on both channels"
+                ),
+            ),
+            # The mount, not the knob — see ``_debug_endpoints_are_mounted``.
+            # Reported for every deployment rather than only when it is on,
+            # because "absent from the report" and "reported false" are the same
+            # thing to a human and very different things to an auditor.
+            "debug_endpoints": FeatureStatus(
+                enabled=_debug_endpoints_are_mounted(request.app),
+                description=(
+                    "The /debug router is mounted on this process (route "
+                    "table, config summary, LLM provider status, health echo). "
+                    "All four require the platform administrator role; the "
+                    "causal-graph route requires an authenticated caller"
+                ),
+                config_hint=(
+                    "Mounted automatically when ENVIRONMENT is "
+                    "development/testing/test, and in ANY environment — "
+                    "staging and production included — when "
+                    "ENABLE_DEBUG_ENDPOINTS=true. Unset the flag to remove the "
+                    "surface entirely"
                 ),
             ),
             "llm_tracing": FeatureStatus(

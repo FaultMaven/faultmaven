@@ -486,6 +486,24 @@ def test_every_entry_states_a_reason_and_every_deferral_names_its_issue():
             ), f"{method} {path}: a deferral must name the issue that tracks it"
 
 
+#: One built app per distinct configuration, for the whole module.
+#:
+#: ``rebuild_app()`` drops ``faultmaven.main`` from ``sys.modules`` and imports
+#: it again, re-running every router registration and all the DI wiring. Nine
+#: calls across this module resolve to four distinct configurations
+#: (development; production; production + the flag; staging), so five of the
+#: nine were rebuilding an app byte-identical to one already in hand.
+#:
+#: Safe to share because every consumer of ``_app_under`` READS — route tables
+#: and dependency trees — and none of them starts the app or mutates it. The one
+#: test that does both uses ``_served_under`` instead, which builds its own app
+#: each time precisely because it installs ``dependency_overrides`` and enters a
+#: lifespan; sharing one of those would leak an override between tests. The
+#: split between the two helpers is what makes this cache safe, so it is not an
+#: incidental difference.
+_APP_CACHE: dict[tuple, object] = {}
+
+
 def _app_under(**overrides):
     """The served app, built under a PINNED environment plus ``overrides``.
 
@@ -514,6 +532,10 @@ def _app_under(**overrides):
         PINNED_ENVIRONMENT,
     )
 
+    key = tuple(sorted(overrides.items()))
+    if key in _APP_CACHE:
+        return _APP_CACHE[key]
+
     saved_environ = dict(os.environ)
     saved_dotenv = (dotenv.load_dotenv, dotenv.dotenv_values)
     try:
@@ -521,16 +543,18 @@ def _app_under(**overrides):
         dotenv.dotenv_values = lambda *args, **kwargs: {}
 
         preserved = {
-            key: value
-            for key, value in os.environ.items()
-            if key in _SYSTEM_ENVIRONMENT_KEYS
+            key_: value
+            for key_, value in os.environ.items()
+            if key_ in _SYSTEM_ENVIRONMENT_KEYS
         }
         os.environ.clear()
         os.environ.update(preserved)
         os.environ.update(PINNED_ENVIRONMENT)
         os.environ.update(overrides)
         reset_settings()
-        return rebuild_app()
+        built = rebuild_app()
+        _APP_CACHE[key] = built
+        return built
     finally:
         dotenv.load_dotenv, dotenv.dotenv_values = saved_dotenv
         os.environ.clear()
@@ -871,66 +895,229 @@ def test_the_debug_router_in_production_is_an_explicit_opt_in():
 #: carries its deferrals — with the issue that closes them — and the allowlist
 #: fails in BOTH directions, so the class cannot grow quietly and closing #1491
 #: forces the entries out.
-MISORDERED_GATE_OPERATIONS: frozenset[tuple[str, str]] = frozenset(
-    {
-        ("DELETE", "/api/v1/cases/{case_id}"),
-        ("DELETE", "/api/v1/cases/{case_id}/data/{data_id}"),
-        ("DELETE", "/api/v1/cases/{case_id}/team-shares/{team_id}"),
-        ("DELETE", "/api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}"),
-        ("DELETE", "/api/v1/knowledge/documents/{document_id}"),
-        ("GET", "/api/v1/auth/oauth/authorize"),
-        ("GET", "/api/v1/cases"),
-        ("GET", "/api/v1/cases/{case_id}"),
-        ("GET", "/api/v1/cases/{case_id}/analytics"),
-        ("GET", "/api/v1/cases/{case_id}/data"),
-        ("GET", "/api/v1/cases/{case_id}/data/{data_id}"),
-        ("GET", "/api/v1/cases/{case_id}/messages"),
-        ("GET", "/api/v1/cases/{case_id}/report-recommendations"),
-        ("GET", "/api/v1/cases/{case_id}/reports"),
-        ("GET", "/api/v1/cases/{case_id}/reports/{report_id}/download"),
-        ("GET", "/api/v1/cases/{case_id}/ui"),
-        ("GET", "/api/v1/cases/{case_id}/uploaded-files"),
-        ("GET", "/api/v1/knowledge/analytics/search"),
-        ("GET", "/api/v1/knowledge/conversions"),
-        ("GET", "/api/v1/knowledge/conversions/by-case/{case_id}"),
-        ("GET", "/api/v1/knowledge/conversions/{conversion_id}"),
-        ("GET", "/api/v1/knowledge/documents/{document_id}"),
-        ("GET", "/api/v1/knowledge/documents/{document_id}/snippet"),
-        ("GET", "/api/v1/knowledge/drafts"),
-        ("GET", "/api/v1/knowledge/stats"),
-        ("GET", "/api/v1/knowledge/suggestions"),
-        ("GET", "/api/v1/knowledge/suggestions/{suggestion_id}"),
-        ("PATCH", "/api/v1/cases/{case_id}/evidence/{evidence_id}/classification"),
-        ("POST", "/api/v1/auth/oauth/authorize"),
-        ("POST", "/api/v1/cases"),
-        ("POST", "/api/v1/cases/search"),
-        ("POST", "/api/v1/cases/sessions/{session_id}/resume/{case_id}"),
-        ("POST", "/api/v1/cases/{case_id}/close"),
-        ("POST", "/api/v1/cases/{case_id}/extract-knowledge"),
-        ("POST", "/api/v1/cases/{case_id}/reports"),
-        ("POST", "/api/v1/cases/{case_id}/team-shares"),
-        ("POST", "/api/v1/cases/{case_id}/title"),
-        ("POST", "/api/v1/cases/{case_id}/turns"),
-        (
-            "POST",
-            "/api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}/verify",
-        ),
-        ("POST", "/api/v1/knowledge/convert"),
-        ("POST", "/api/v1/knowledge/documents"),
-        ("POST", "/api/v1/knowledge/documents/bulk-delete"),
-        ("POST", "/api/v1/knowledge/documents/bulk-update"),
-        ("POST", "/api/v1/knowledge/drafts/verify-batch"),
-        ("POST", "/api/v1/knowledge/runbooks/create"),
-        ("POST", "/api/v1/knowledge/scan"),
-        ("POST", "/api/v1/knowledge/suggestions/{suggestion_id}/approve"),
-        ("POST", "/api/v1/knowledge/suggestions/{suggestion_id}/reject"),
-        ("POST", "/api/v1/knowledge/suggestions/{suggestion_id}/remediate-pii"),
-        ("PUT", "/api/v1/cases/{case_id}"),
-        ("PUT", "/api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}"),
-        ("PUT", "/api/v1/knowledge/documents/{document_id}"),
-        ("PUT", "/api/v1/knowledge/suggestions/{suggestion_id}"),
-    }
-)
+#: The disposition for an operation that IS gated but resolves something else
+#: first. Its own word rather than ``_DEFERRED``, because the two say different
+#: things: ``_DEFERRED`` means "open although it should not be", and none of
+#: these is open — the gate runs, it just runs second.
+_MISORDERED = "misordered"
+
+MISORDERED_GATE_OPERATIONS: dict[tuple[str, str], tuple[str, str]] = {
+    ("DELETE", "/api/v1/cases/{case_id}"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("DELETE", "/api/v1/cases/{case_id}/data/{data_id}"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("DELETE", "/api/v1/cases/{case_id}/team-shares/{team_id}"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("DELETE", "/api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}"): (
+        _MISORDERED,
+        "service=_get_conversion_service resolves first. #1494.",
+    ),
+    ("DELETE", "/api/v1/knowledge/documents/{document_id}"): (
+        _MISORDERED,
+        "knowledge_service=get_knowledge_service resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/auth/oauth/authorize"): (
+        _MISORDERED,
+        "<decorator>=require_oauth_rate_limit_authorize resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/cases"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/cases/{case_id}"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/cases/{case_id}/analytics"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/cases/{case_id}/data"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/cases/{case_id}/data/{data_id}"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/cases/{case_id}/messages"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/cases/{case_id}/report-recommendations"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/cases/{case_id}/reports"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency, case_repository=get_case_repository resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/cases/{case_id}/reports/{report_id}/download"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency, case_repository=get_case_repository resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/cases/{case_id}/ui"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/cases/{case_id}/uploaded-files"): (
+        _MISORDERED,
+        "case_service=get_case_service resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/knowledge/analytics/search"): (
+        _MISORDERED,
+        "knowledge_service=get_knowledge_service resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/knowledge/conversions"): (
+        _MISORDERED,
+        "service=_get_conversion_service resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/knowledge/conversions/by-case/{case_id}"): (
+        _MISORDERED,
+        "service=_get_conversion_service resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/knowledge/conversions/{conversion_id}"): (
+        _MISORDERED,
+        "service=_get_conversion_service resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/knowledge/documents/{document_id}"): (
+        _MISORDERED,
+        "knowledge_service=get_knowledge_service resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/knowledge/documents/{document_id}/snippet"): (
+        _MISORDERED,
+        "knowledge_service=get_knowledge_service resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/knowledge/drafts"): (
+        _MISORDERED,
+        "service=_get_conversion_service resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/knowledge/stats"): (
+        _MISORDERED,
+        "knowledge_service=get_knowledge_service resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/knowledge/suggestions"): (
+        _MISORDERED,
+        "suggestion_service=get_suggestion_service resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/knowledge/suggestions/{suggestion_id}"): (
+        _MISORDERED,
+        "suggestion_service=get_suggestion_service resolves first. #1494.",
+    ),
+    ("PATCH", "/api/v1/cases/{case_id}/evidence/{evidence_id}/classification"): (
+        _MISORDERED,
+        "investigation_service=get_investigation_service resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/auth/oauth/authorize"): (
+        _MISORDERED,
+        "<decorator>=require_oauth_rate_limit_authorize resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/cases"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency, session_service=_di_get_session_service_dependency resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/cases/search"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/cases/sessions/{session_id}/resume/{case_id}"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency, session_service=_di_get_session_service_dependency resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/cases/{case_id}/close"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency, case_repository=get_case_repository resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/cases/{case_id}/extract-knowledge"): (
+        _MISORDERED,
+        "case_service=get_case_service, suggestion_service=get_suggestion_service resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/cases/{case_id}/reports"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/cases/{case_id}/team-shares"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/cases/{case_id}/title"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/cases/{case_id}/turns"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency, investigation_service=get_investigation_service resolves first. #1494.",
+    ),
+    (
+        "POST",
+        "/api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}/verify",
+    ): (
+        _MISORDERED,
+        "service=_get_conversion_service resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/knowledge/convert"): (
+        _MISORDERED,
+        "service=_get_conversion_service resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/knowledge/documents"): (
+        _MISORDERED,
+        "knowledge_service=get_knowledge_service resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/knowledge/documents/bulk-delete"): (
+        _MISORDERED,
+        "knowledge_service=get_knowledge_service resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/knowledge/documents/bulk-update"): (
+        _MISORDERED,
+        "knowledge_service=get_knowledge_service resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/knowledge/drafts/verify-batch"): (
+        _MISORDERED,
+        "service=_get_conversion_service resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/knowledge/runbooks/create"): (
+        _MISORDERED,
+        "service=_get_conversion_service resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/knowledge/scan"): (
+        _MISORDERED,
+        "service=_get_conversion_service resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/knowledge/suggestions/{suggestion_id}/approve"): (
+        _MISORDERED,
+        "suggestion_service=get_suggestion_service resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/knowledge/suggestions/{suggestion_id}/reject"): (
+        _MISORDERED,
+        "suggestion_service=get_suggestion_service resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/knowledge/suggestions/{suggestion_id}/remediate-pii"): (
+        _MISORDERED,
+        "suggestion_service=get_suggestion_service resolves first. #1494.",
+    ),
+    ("PUT", "/api/v1/cases/{case_id}"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("PUT", "/api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}"): (
+        _MISORDERED,
+        "service=_get_conversion_service resolves first. #1494.",
+    ),
+    ("PUT", "/api/v1/knowledge/documents/{document_id}"): (
+        _MISORDERED,
+        "knowledge_service=get_knowledge_service resolves first. #1494.",
+    ),
+    ("PUT", "/api/v1/knowledge/suggestions/{suggestion_id}"): (
+        _MISORDERED,
+        "suggestion_service=get_suggestion_service resolves first. #1494.",
+    ),
+}
 
 #: The four routes #1474 gated: the ones a bare anonymous GET can drive, which
 #: is what :func:`test_the_debug_routes_refuse_anonymous_and_non_operator_callers`
@@ -1449,6 +1636,64 @@ def test_the_debug_routes_refuse_anonymous_and_non_operator_callers():
 
 @pytest.mark.integration
 @pytest.mark.security
+@pytest.mark.parametrize(
+    "label,overrides,expected",
+    [
+        ("the shipped default", {"ENVIRONMENT": "development"}, True),
+        (
+            "the operator flag in production",
+            {"ENVIRONMENT": "production", "ENABLE_DEBUG_ENDPOINTS": "true"},
+            True,
+        ),
+        ("production, flag unset", {"ENVIRONMENT": "production"}, False),
+        ("staging, flag unset", {"ENVIRONMENT": "staging"}, False),
+    ],
+)
+def test_whether_the_debug_router_mounted_is_reported_not_only_logged(
+    label, overrides, expected
+):
+    """#1493: a startup log is not an observable.
+
+    Whether ``ENABLE_DEBUG_ENDPOINTS`` lifted the router into a non-development
+    environment is a security-relevant deployment fact whose only account was
+    one startup line — which has rolled out of ``kubectl logs`` on any pod that
+    has been up a while, so a runbook saying "grep for it" returns empty on a
+    healthy deployment and teaches the wrong conclusion. It is now reported by
+    ``GET /admin/config/status`` beside ``kb_prefetch`` and
+    ``first_party_consent_skip``, which are there for the same reason.
+
+    Driven through the built app rather than by calling
+    ``_is_debug_enabled()``, because the flag is written by the branch that
+    does the mounting and what is under test is that the report and the route
+    table agree. ``staging`` is a case of its own: it is neither development nor
+    production, the router does NOT mount there by default, and a log line that
+    called it production is one of the four claims #1493 lists.
+    """
+    served = _app_under(**overrides)
+    mounted = bool(_debug_routes(served))
+
+    assert mounted is expected, (
+        f"{label}: the debug router {'did not mount' if expected else 'mounted'}"
+        f" — expected {expected}. Routes: {_debug_routes(served)}"
+    )
+    assert getattr(served.state, "debug_endpoints_mounted", None) is expected, (
+        f"{label}: app.state.debug_endpoints_mounted is "
+        f"{getattr(served.state, 'debug_endpoints_mounted', None)!r}, but the "
+        f"route table says mounted={mounted}. The report and the mount are "
+        "taken in the same if/else and cannot be allowed to disagree"
+    )
+
+    from faultmaven.api.routes.admin_config import _debug_endpoints_are_mounted
+
+    assert _debug_endpoints_are_mounted(served) is expected, (
+        f"{label}: /admin/config/status would report "
+        f"{_debug_endpoints_are_mounted(served)} for a process whose route "
+        f"table says mounted={mounted}"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.security
 def test_no_gated_operation_resolves_a_collaborator_before_its_gate():
     """The ordering rule, applied to the WHOLE application.
 
@@ -1481,17 +1726,42 @@ def test_no_gated_operation_resolves_a_collaborator_before_its_gate():
         "nothing. A flat app.routes scan finds 20 of them"
     )
 
+    # The two categories ``_gate_failure`` conflates, separated on purpose.
+    # It fires for a route with NO auth dependency at all — correct, and
+    # expected for ``/auth/login``, ``/auth/register`` and the rest of the
+    # public surface, which the two guards above already decide about. Counting
+    # those here would produce a number that is mostly the public surface and an
+    # allowlist that is wrong. Only the second category is this guard's:
+    # operations that HAVE a gate with something resolving ahead of it.
     misordered = set()
+    ungated = set()
     for path, methods, route in routes:
-        if not (MANDATORY_AUTH_DEPENDENCIES & _dependency_names(route.dependant)):
-            continue  # ungated: the other guards' business, not this one
         if _gate_failure(route) is None:
             continue
+        gated = bool(MANDATORY_AUTH_DEPENDENCIES & _dependency_names(route.dependant))
         for method in methods:
-            if method not in {"HEAD", "OPTIONS"}:
-                misordered.add((method, path))
+            if method in {"HEAD", "OPTIONS"}:
+                continue
+            (misordered if gated else ungated).add((method, path))
 
-    new_offenders = misordered - MISORDERED_GATE_OPERATIONS
+    assert ungated, (
+        "no ungated operation was found, so the split above is not splitting "
+        "anything — either every route is now gated (report it, it would be "
+        "news) or the predicate stopped firing on the public surface"
+    )
+
+    for (method, path), (disposition, reason) in MISORDERED_GATE_OPERATIONS.items():
+        assert (
+            disposition == _MISORDERED
+        ), f"{method} {path}: unknown disposition {disposition!r}"
+        assert (
+            len(reason.strip()) > 20
+        ), f"{method} {path}: a reason has to name what resolves ahead of the gate"
+        assert (
+            "#" in reason
+        ), f"{method} {path}: a carried defect must name the issue that tracks it"
+
+    new_offenders = misordered - set(MISORDERED_GATE_OPERATIONS)
     assert not new_offenders, (
         "these operations carry an auth gate but resolve something else "
         "FIRST, so an anonymous caller reaches that collaborator and gets its "
@@ -1499,7 +1769,7 @@ def test_no_gated_operation_resolves_a_collaborator_before_its_gate():
         "decorator, ahead of every collaborator:\n" + _format(new_offenders)
     )
 
-    fixed = MISORDERED_GATE_OPERATIONS - misordered
+    fixed = set(MISORDERED_GATE_OPERATIONS) - misordered
     assert not fixed, (
         "these MISORDERED_GATE_OPERATIONS entries no longer name a "
         "mis-ordered operation — #1491 is closing, remove them:\n" + _format(fixed)
