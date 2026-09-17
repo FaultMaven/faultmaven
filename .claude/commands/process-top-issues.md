@@ -56,21 +56,35 @@ outstanding and stop. An open pull request from anything else — a change to
 this procedure, another person's branch — is not this check's business. Do
 not run a bare `gh pr list` and refuse on whatever it finds.
 
-Then settle each one. Not open is not the same as settled, and this is the
-only moment you see what the owner did — step 5 reported before the merges.
-Read the issue's own state, not the pull request's body: a lane that cited
-nothing leaves the same open issue as one that wrote `Refs`.
+Then settle. That check is per pull request; **the settlement is per
+issue** — one pull request may name several — so collect every issue those
+pull requests cited and settle each on its own state. Read the issue, not
+the pull request's body: a lane that cited nothing leaves the same open
+issue as one that wrote `Refs`.
 
 ```bash
-gh issue view <n> --json state            # the issue each of those PRs named
+gh issue view <n> --json state,title,body,comments   # each cited issue
 ```
 
-| the pull request | the issue | what you do |
+| the issue | its pull request | what you do |
 |---|---|---|
-| merged | closed | nothing; `Closes` did it |
-| merged | still open | close #<n> if every part it named is now delivered or re-filed, citing this pull request and the re-filings; otherwise edit #<n> down to the part that still stands — title and body — and put it back in **ready** as a fresh arrival, ranked against the current candidates and never left at its old rank. There is no third outcome |
-| closed unmerged, **not** reported as pulled | still open | the owner abandoned it. Comment on #<n> that the work was built and the pull request closed unmerged, link it, and move #<n> to **blocked**; the next proposal asks the owner whether to build it another way or close it. Do not guess why |
-| closed unmerged, reported as **pulled** | still open | nothing; you closed that one and #<n> is already blocked |
+| carries a `Settled by #<pr>` note | any | nothing; this step or the pull that closed that PR already did it |
+| closed | any | nothing |
+| open | merged | close #<n> if every part it named is now delivered or re-filed, citing this pull request and the re-filings; otherwise edit #<n> down to the part that still stands — title and body — and put it back in **ready** as a fresh arrival, ranked against the current candidates and never left at its old rank. There is no third outcome |
+| open | closed unmerged | the owner abandoned it. Comment that the work was built and the pull request closed unmerged, link it, and move #<n> to **blocked**; the next proposal asks the owner whether to build it another way or close it. Do not guess why |
+
+If several pull requests named one issue, the merged one decides. Then end
+every action above with one line on the issue:
+
+```
+Settled by #<pr>: closed | edited down to <remainder> | returned to blocked (abandoned) | pulled
+```
+
+That note is the only durable record the settlement ran — the proposal is
+written later — so without it an invocation that settles and then stops
+re-applies the whole table on the next run. **A pull writes the same note**
+when it closes a pull request, which is what keeps the abandonment row off
+one you closed yourself.
 
 Report what you settled under *Settled from last round* in the proposal.
 
@@ -87,8 +101,8 @@ gh issue list --state open --label tracking --search "Queue in:title" \
 ```
 
 Create it if absent (`gh issue create --title Queue --label tracking`, then
-`gh issue pin`) and say so in the report. Its body holds the two piles; the
-last comment holds the last round.
+`gh issue pin`) and say so in the report. Its body holds the three piles and
+the ranked head; the last comment holds the last round.
 
 Read what arrived since the last round's timestamp:
 
@@ -110,10 +124,12 @@ the last `Queue` body without checking it is still open: a *yours* item the
 owner has run and closed, and a blocked item closed by a "leave it" ruling,
 are closed on GitHub and nowhere else.
 
-**Every Building list carries the oldest rule-4 item** — the oldest ready
-issue holding none of picking rules 1-3 — whatever else is ranked, unless
-there is no such issue. Rules 1-3 outrank that tier every time, so without
-the reserved place it never drains.
+**The first thing the round's capacity buys is the oldest rule-4 item** —
+the oldest ready issue holding none of picking rules 1-3 — ahead of rules
+1-3, unless the tier is empty or the pinned items left no capacity at all.
+Rules 1-3 outrank that tier every time, so without the reserved place its
+drain rate is zero. It does not bound the wait: report the tier's size in
+*Measurement* so a tier growing across rounds is visible.
 
 **Then check the premise of the items you are about to list under
 *Building* — whatever their age, and before you write the comment.** `git
@@ -141,6 +157,10 @@ itself.
 ### Needs your call (every blocked item, not only the new ones)
 | # | the question | options | my recommendation | unblocks |
 
+Deferred items belong in this table too, with the ruling and the condition
+they wait on in place of the question and options. Listed, never re-asked —
+and never omitted, or they leave every pile.
+
 ### Yours to run (never ranked into a round)
 | # | what only you can do |
 
@@ -149,10 +169,14 @@ itself.
 
 ### Measurement
 <python scripts/backlog_metrics.py --weeks 8>
+Rule-4 tier: <n> ready items holding none of rules 1-3 (last round: <n>)
 ```
 
-Rewrite the `Queue` body with both piles and this round's timestamp. Use
-`gh api -X PATCH` and read it back; `gh issue edit` can fail silently.
+Rewrite the `Queue` body with the three piles, **the ranked head in order**
+and this round's timestamp. The head is what "losing a comparison does not
+have to be undone" rests on; the rule-4 tier is not written down, because
+oldest-first is recoverable from the issues. Use `gh api -X PATCH` and read
+it back; `gh issue edit` can fail silently.
 
 Then **stop and wait**. Do not build anything that has an open question
 against it.
@@ -162,11 +186,19 @@ against it.
 Read the owner's reply. For each answered question, record the ruling as a
 comment on its own issue, then:
 
-- **the ruling implies work** — re-file the issue as the defect or feature
-  that work is, with the ruling as its spec, and move it to the ready pile.
-- **the ruling implies none** ("leave it as it is") — close the issue there,
-  quoting the ruling. Do not move it to ready: ready means you can dispatch
-  a lane against it, and there is nothing here to dispatch.
+- **implies work** — re-file the issue as the defect or feature that work
+  is, with the ruling as its spec, into **ready**.
+- **defers** ("(b) **for now**", "(3) **at a second tenant**") — leave it
+  **blocked** and record the condition that would revisit it. List it in the
+  next proposal as answered-and-waiting, not as a question, and re-read the
+  condition when you sort: it moves to ready the round it holds. Do not
+  close it: a deferral is "not yet", not "never".
+- **implies none** (the behaviour is right as it stands) — **close** the
+  issue there, quoting the ruling. Do not move it to ready.
+- **makes the work the owner's** — move it to **yours**.
+
+A ruling lands in one of those four. If you cannot tell which, that is the
+next question, not a guess.
 
 Unanswered questions stay blocked and go in the next proposal unchanged.
 
@@ -185,8 +217,9 @@ Mechanics the prompt adds:
   unit-only), and `python scripts/check_contract_version.py` if
   `docs/reference/api/` moved. `Closes #<n>` only if the issue as written is
   delivered; otherwise `Refs #<n>`, plus a comment on #<n> naming what the
-  pull request delivered and which issues carry the rest. Step 1 of the next
-  round reads that comment to decide whether #<n> closes or is edited down.
+  pull request delivered and which issues carry the rest. The next round's
+  *Settle the last round* reads it to decide whether #<n> closes or is
+  edited down.
 - A feature lane produces a spec as an issue comment, not a file under
   `docs/working/`, which is gitignored.
 - An investigation lane commits its measurement script with a unit test.
@@ -228,11 +261,13 @@ Then per returned lane, in order:
    escalating it would hand the owner a pull request you know is broken. **If
    the lane cannot clear it — for any reason, not only a ruling — pull it**:
    close the pull request, record on the issue either the question or that
-   the lane could not clear it, return the item to the blocked pile, and
-   report it as not delivered. That is the loop's only other exit, and
-   without it the round cannot reach step 5 at all. Blocking means the
-   change is worse than the bug it fixes for someone who has not hit it.
-   Say in the result how many findings you filed rather than fixed.
+   the lane could not clear it, add the `Settled by #<pr>: pulled` note so
+   the next round does not read your close as the owner's, return the item
+   to the blocked pile, and report it as not delivered. That is the loop's
+   only other exit, and without it the round cannot reach step 5 at all.
+   Blocking means the change is worse than the bug it fixes for someone who
+   has not hit it. Say in the result how many findings you filed rather
+   than fixed.
 4. **Never relay a finding you could not reproduce by running it.**
 
 ## 5. Report and hand back
@@ -244,7 +279,7 @@ Comment on the round's proposal:
 
 | # | outcome | link | CI | review rounds |
 
-Pulled: #N — <the question, or what stopped the lane>; PR closed: <link>
+Pulled: #N — <the question, or what stopped the lane>
 Filed on the way: …
 Waiting on you: merge the pull requests above.
 ```

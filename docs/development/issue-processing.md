@@ -71,37 +71,52 @@ round does not start: report what is outstanding and stop. This is what
 bounds work in progress, and it is why nothing here tracks pull requests
 ageing in the background.
 
-**Not open is not the same as settled.** Step 5 reports *before* the merges,
-so this is the only moment an agent sees what the owner did, and each of the
-last round's pull requests has to leave its issue somewhere definite:
+**Not open is not the same as settled.** *Close out* reports before the
+merges, so this is the only moment an agent sees what the owner did, and
+every issue the last round's pull requests named has to end up somewhere
+definite.
 
-- **Merged, and the issue it named is closed** — `Closes` did that. Nothing
-  to do. The state is read off the issue rather than off the pull request's
-  body, because a lane that cited nothing at all leaves the same open issue
-  as one that wrote `Refs #<n>` — the citation for delivering part of an
-  issue, which closes nothing — and only the issue says so.
-- **Merged, and the issue it named is still open** — the lane delivered part
-  of it and split the rest, so the parent is still open, still ready, at the
-  rank that approved a premise now partly dead. The owning agent closes it
-  when every remaining part is delivered or re-filed, citing the pull
-  request and the re-filings; when a part still stands and was not re-filed,
-  the agent edits the parent down to that part — title and body — and
-  returns it to the ready pile as an arrival, ranked against the current
-  candidates, because the old rank was earned by the larger claim. There is
-  no third outcome: the parent either closes or gets smaller. Round 1 merged
-  two of these, #1467 and #1468, and both parents — #1447 and #918 — had to
-  be noticed and closed by hand.
-- **Closed unmerged, and the result did not report it as pulled** — the
-  owner abandoned it. Why is theirs to say, so the agent does not guess: it
-  records on the issue that the work was built and the pull request closed
-  unmerged, links it, and returns the item to the **blocked** pile, where
-  the next proposal puts the question back — build it another way, or close
-  it? Left in ready it sits at the rank that selected it with nothing to
-  move it, so the next round dispatches a lane to build the same fix again.
-- **Closed unmerged, and the result reported it as pulled** — settled
-  already. The owning agent closed that one itself and the item is in the
-  blocked pile; treating it as an abandonment would tell the owner they did
-  something they did not do.
+**The check is per pull request; the settlement is per issue.** One pull
+request routinely names several — round 2 delivers #1465, #1470 and #1471
+in one — so a rule keyed on the pull request has no answer for a merge that
+closed two of the three and left the other open. Collect the issues those
+pull requests cited, and settle each on its own state:
+
+- **Closed** — whatever closed it, nothing to do. The state is read off the
+  issue rather than off the pull request's body, because a lane that cited
+  nothing at all leaves the same open issue as one that wrote `Refs #<n>` —
+  the citation for delivering part of an issue, which closes nothing — and
+  only the issue says so.
+- **Open, and its pull request merged** — the lane delivered part of it and
+  split the rest, so the parent is still open, still ready, at the rank that
+  approved a premise now partly dead. The owning agent closes it when every
+  remaining part is delivered or re-filed, citing the pull request and the
+  re-filings; when a part still stands and was not re-filed, the agent edits
+  the parent down to that part — title and body — and returns it to the
+  ready pile as an arrival, ranked against the current candidates, because
+  the old rank was earned by the larger claim. There is no third outcome:
+  the parent either closes or gets smaller. Round 1 merged two of these,
+  #1467 and #1468, and both parents — #1447 and #918 — had to be noticed
+  and closed by hand.
+- **Open, and its pull request closed unmerged** — the owner abandoned it.
+  Why is theirs to say, so the agent does not guess: it records that the
+  work was built and the pull request closed unmerged, links it, and returns
+  the item to the **blocked** pile, where the next proposal puts the
+  question back — build it another way, or close it? Left in ready it sits
+  at the rank that selected it with nothing to move it, so the next round
+  dispatches a lane to build the same fix again.
+
+**Every one of those ends by writing a note on the issue, and a note already
+there ends the matter.** Settling mutates issues, and until the note exists
+the only record that it ran is the proposal, which is written later — so an
+invocation that settles and then stops re-applies the whole thing next time,
+editing the same parent down a second time and re-ranking it again. The note
+is also what tells a pull request the **agent** closed, in a pull, from one
+the owner abandoned: a pull writes the same note whenever it closes a pull
+request, so the abandonment case never fires on it, and a pull mid-build has
+no pull request to close and never reaches here at all. Reading the round's
+result prose for that instead would rest on a format this pass introduced,
+which round 1's result, written before it, does not carry.
 
 ### 1. Propose
 
@@ -155,12 +170,15 @@ proposal:
 2. **Needs your call** — every blocked item, the whole standing pile rather
    than only the new ones. Each gets the question in one sentence, the
    options, a recommendation, and what it unblocks. Answering should take
-   one word.
+   one word. An item already ruled on and **deferred** is listed here too,
+   carrying its ruling and the condition it waits on instead of a question:
+   it is shown, never re-asked, and dropping it from the list would take it
+   out of every pile.
 3. **Yours to run** — the third pile, listed so it is visible, never
    ranked.
-4. **Settled from last round** — what step 0 did with each of the previous
-   round's pull requests and the issue it named, one line each. It is the
-   only record that the settlement happened at all.
+4. **Settled from last round** — what *Settle the last round* did with each
+   issue the previous round's pull requests named, one line each. It is
+   where a settlement becomes visible to anyone but the agent.
 5. **Measurement** — the output of `python scripts/backlog_metrics.py`.
 
 ### 2. Owner answers
@@ -168,9 +186,9 @@ proposal:
 The owner approves or edits the round and answers whichever questions they
 choose to. An unanswered question is not a failure: that item stays blocked
 and appears again next round. An answered one moves its issue to the ready
-pile with the ruling recorded on it as its spec — unless the ruling is that
-nothing should be built, which closes the issue instead of moving it (see
-*What escalates*).
+pile with the ruling recorded on it as its spec — if that is where the
+ruling sends it. A ruling lands its issue in one of four places, and three
+of them are not ready: see *What escalates*.
 
 ### 3. Build
 
@@ -196,15 +214,16 @@ to deliver; this is the general case.
 
 Report each pull request with its CI state. The owner merges. A round is not
 over until every one is merged or explicitly abandoned — abandoned meaning
-closed unmerged, which leaves an item that step 0 of the next round returns
-to the blocked pile.
+the owner closed it unmerged, which *Settle the last round* turns back into
+a blocked item. A pull request the agent closed itself is a pull, settled
+where it happened, and not this.
 
 ### 5. Close out
 
 Post the result on the proposal comment: what merged, what was pulled and
 what stopped it, what was filed along the way. Then the next round can start
-— and it is that round's step 0 that settles these pull requests, because
-this report is written before the owner has merged any of them.
+— and it is that round's *Settle the last round* that does it, because this
+report is written before the owner has merged any of them.
 
 ## Picking
 
@@ -228,14 +247,24 @@ The ranking fills whatever capacity the pinned items leave. It decides
 *order*, not size; size is the judgement above.
 
 **The first thing that capacity buys is the oldest item in the rule-4
-tier**, ahead of rules 1-3, unless the tier is empty. Rules 1-3 outrank the
-tier every time, so without a reserved place a steady arrival of defects
-starves it indefinitely — the same leak with one more step in front of it.
-One slot bounds the wait by the size of the tier instead of leaving it
-unbounded, and it is also what reaches the already-fixed issues the premise
+tier**, ahead of rules 1-3, unless the pinned items left no capacity at all.
+Rules 1-3 outrank the tier every time, so without a reserved place the drain
+rate is exactly zero and every item in it is back where the missing rank
+left it. The slot is also what reaches the already-fixed issues the premise
 check cannot: that check runs on the items about to be built, so an issue
 whose fix landed months ago and is ranked nowhere is never checked against
 `main` at all. #907 was open 49 days after its fix.
+
+**One slot makes the drain non-zero. It does not bound the wait, and this
+document's own figures say so:** round 1 filed thirteen issues and five of
+them hold none of rules 1-3, so on those numbers the tier gained four in a
+round that a slot drains one from. No rule written here can serve a queue
+faster than it arrives, so the claim is the modest one — an item in the tier
+has a rank and a non-zero rate, which is a queue, where before it had no
+position at all, which was a leak. Whether the queue is fast enough is a
+measurement rather than a rule: the proposal reports the tier's size beside
+the residue, a tier growing across four rounds says so, and the lever in the
+meantime is the one that already exists — the owner pins.
 
 **Size is bounded by review capacity, not by lane capacity.** Lanes are
 cheap and parallel; review is neither, because a fix written to answer a
@@ -253,12 +282,17 @@ candidates when it arrives, and that is the only comparison it gets. Nothing
 re-sorts the whole backlog each round, which would be work proportional to
 the backlog for comparisons already made. Losing that comparison is not a
 state: the item keeps the place the comparison gave it, and the pile drains
-past it. Three things move an item up out of its turn — a new priority
-label, another issue on the same seam, a citation from a new issue — and an
-item that gets none of them still arrives, because rule 4 orders its tier
-and every round takes the oldest of that tier. An earlier draft listed a
-fourth trigger, "an age threshold recorded in the pile", which nothing ever
-recorded a value for. A trigger with no value is not an exit.
+past it. That only holds if the place survives the round, so the **ranked
+head** — the items holding rules 1-3, in order — is written into the `Queue`
+body and carried forward. The rule-4 tier is not, and needs not be: "oldest
+first" is recoverable from the issues themselves at any moment, which is why
+the tier is the part of the pile that costs no bookkeeping. Three things
+move an item up out of its turn — a new priority label, another issue on the
+same seam, a citation from a new issue — and an item that gets none of them
+still arrives, because rule 4 orders its tier and every round takes the
+oldest of it. An earlier draft listed a fourth trigger, "an age threshold
+recorded in the pile", which nothing ever recorded a value for. A trigger
+with no value is not an exit.
 
 ## Building
 
@@ -334,8 +368,9 @@ Gates for a lane, each from a failure that cost real time:
 
 ## What escalates
 
-The round asks the owner for exactly two things: the answers in step 2 and
-the merges in step 4. Between those, decide and record rather than ask.
+The round asks the owner for exactly two things: the answers in *Owner
+answers* and the merges in *Land*. Between those, decide and record rather
+than ask.
 
 A question belongs in the blocked pile, and therefore in a proposal, when any
 of these holds. Everything else an agent decides and records.
@@ -357,17 +392,36 @@ that case is not a question but the fact: the lane could not deliver it. The
 owner's call is then whether to ship the bug, take it on themselves, or drop
 it.
 
-Recording a decision is not the same as closing the issue, and a ruling
-lands one of two ways. When it **implies work**, the issue is re-filed as
-the defect or feature that work is, with the ruling as its spec, and the
-pull request that delivers it closes it — by `Closes`, or at the next
-round's step 0 if that pull request could only carry `Refs`. When it
-**implies none** — "leave it as it is" is a ruling, and it is the standing
-recommendation on #1168 — the owning agent closes the issue as it records
-the ruling, quoting it, and the issue never reaches the ready pile. Ready
-means a lane can be dispatched against it; there is nothing here to
-dispatch, and an item nobody can build waits in the pile in front of items
-somebody can.
+Recording a decision is not the same as closing the issue. A ruling puts its
+issue in exactly one of the four places an issue can be, and what the agent
+records says which:
+
+- **It implies work** — re-filed as the defect or feature that work is, with
+  the ruling as its spec, into **ready**. The pull request that delivers it
+  closes it: by `Closes`, or at the next round's *Settle the last round* if
+  that pull request could only carry `Refs`.
+- **It defers** — "not yet" rather than "never". The issue stays
+  **blocked**, with the ruling and the condition that would revisit it both
+  recorded, and the proposal lists it as answered-and-waiting rather than as
+  a question, so leaving it there costs the owner nothing. The owning agent
+  re-reads that condition each round as it sorts — being listed is what
+  gives the check somewhere to happen — and moves the issue to ready the
+  round the condition holds. A deferral naming no condition is not a
+  complete ruling, and asking for one is the next question.
+- **It implies none** — the behaviour is right as it stands, so the owning
+  agent **closes** the issue as it records the ruling, quoting it. It never
+  reaches ready: ready means a lane can be dispatched against it, and there
+  is nothing here to dispatch.
+- **It makes the work the owner's own** — into **yours**, listed every
+  proposal and never ranked.
+
+**Read the ruling before choosing among the last three, because on the
+standing pile a pure "implies none" is rare.** #1168's recommendation is
+"(b) **for now**" and its own row says it pairs with #1167, whose
+recommendation is "(1) now, (3) **at a second tenant**". Both are deferrals.
+Closing either on a "leave it" reading would shut a live tenant-isolation
+gap that is explicitly expected to be revisited, and break the pairing with
+nothing left to re-file against.
 
 ## How this is judged
 
@@ -376,15 +430,17 @@ the **residue**, meaning issues still open a week after filing. The raw open
 count moves with how hard the period looked rather than with how healthy the
 code is, and review alone accounts for about a third of everything filed.
 
-Two signals that this document is wrong rather than the work:
+Three signals that this document is wrong rather than the work:
 
 - Residue not falling across four rounds spanning at least four weeks.
-- Items pulled in step 3 more often than they are built, which would mean
-  step 1 is not finding the questions before the work starts.
+- Items pulled in *Build* more often than they are built, which would mean
+  *Propose* is not finding the questions before the work starts.
+- The rule-4 tier growing across four rounds, which means the reserved slot
+  is drawing from it slower than review is filling it.
 
-**A round raising the open count is not one of them.** Round 1 closed two
-issues and filed eleven, so the open set rose over the round, and all but two
-of the eleven came out of review. That is the process working: a review
+**A round raising the open count is not one of them.** Round 1 closed five
+issues and filed thirteen, so the open set rose over the round, and nine of
+the thirteen came out of review. That is the process working: a review
 finding becomes an issue precisely so it is not silently carried, and the
 residue — issues surviving a week — is what says whether they drain. Judge a
 round by what it *closed and filed*, and by whether the filed ones close
