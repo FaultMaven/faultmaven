@@ -81,6 +81,18 @@ beta gates that were neither ready nor blocked on a ruling. Calling them
 ready would have had them proposed every round and never built. They are
 listed in the proposal and never ranked into a round.
 
+**An open issue is not evidence the defect is live.** Before an item is
+ranked into a round, check its named code points against `origin/main`
+fetched now. Round 1 approved five P1s and two of them — #907 and #752 — had
+already been fixed, each by a pull request that solved the problem from
+another angle and never cited the issue it closed, leaving them open 49 and
+58 days after the fact. So issue age here measures linking hygiene as much as
+code health, and the check is cheap: reading one narration file and one
+`git grep` caught both before any lane was dispatched. An item whose premise
+looks dead is still worth a round — as a **verification** lane, which proves
+by execution whether it reproduces, makes the covering guard bite under
+mutation, and either posts the evidence or fixes what survives.
+
 Rank the ready pile (see *Picking*), then post **one** comment, the round
 proposal, with three parts:
 
@@ -137,6 +149,16 @@ Rank the ready pile by the first rule that applies:
 The ranking fills whatever capacity the pinned items leave. It decides
 *order*, not size; size is the judgement above.
 
+**Size is bounded by review capacity, not by lane capacity.** Lanes are
+cheap and parallel; review is neither, because a fix written to answer a
+review is new code that has to be reviewed again. Round 1's five items became
+three pull requests that took four review rounds each, and every round found
+a defect in the previous round's fix. Count the *independent seams* a batch
+touches rather than the items: three items on three seams is a bigger round
+than five on one. When a single item is large enough that its own review will
+run several rounds — a security boundary, a storage change, anything shipping
+a new guard — it is a round by itself.
+
 **Ranking is incremental.** A new issue is compared against the current
 candidates when it arrives, and that is the only comparison it gets. Nothing
 re-sorts the whole backlog each round, which would be work proportional to
@@ -170,11 +192,36 @@ Gates for a lane, each from a failure that cost real time:
   code that breaks is old code that read the old meaning.
 - **Review on the final head.** A fix written to answer a review is new code
   nobody has reviewed, so run the review again after it. A finding that
-  survives two rounds is escalated rather than iterated.
+  survives two rounds is escalated rather than iterated — **unless it blocks
+  the merge**, because escalation hands the owner a pull request, and a pull
+  request that refuses a fresh install or answers 500 where it promises 401
+  is not something to hand anyone. Blocking means the change is worse than
+  the bug it fixes for someone who has not hit the bug. That exception is
+  narrow on purpose: everything non-blocking is filed, and the round says how
+  many findings it filed rather than fixed.
 - **Verify, do not relay.** Act on a subagent's finding only with execution
-  evidence, and run a suggested remedy before adopting it.
+  evidence, and run a suggested remedy before adopting it. A remedy is
+  checked *before* it is asked for: in round 1 the suggested fix for a
+  session disclosure would have turned it into a 500 on the degraded path
+  that made the bug reachable, and the lane caught it by running it.
+- **Verify the fix, not only the finding.** The attention goes where the
+  disagreement is, so a finding a lane pushes back on gets checked and a
+  finding it accepts does not. Round 1 reported an engine leak as fixed while
+  half of it stood — the sibling fixture was fixed, the one named in the
+  review was not — and it was caught a round later by re-running the measurement
+  rather than re-reading the report. Re-run the thing that failed, not the
+  summary of it.
+- **Exercise a guard through the path that runs it.** A direct call proves
+  the guard's logic and nothing about where it is called from. Round 1
+  shipped a boot gate that refused a database with no table, tested by
+  calling it, and it ran *before* the migration that creates the table — so
+  it refused every first-ever install. Both the lane's test and the owning
+  agent's verification called it directly, which is why neither saw it. A
+  guard that runs at startup needs one test that drives startup.
 - **Port the whole tree.** Before reporting, the worktree is clean or every
-  remaining file is named.
+  remaining file is named. Clean is not the same as shipped: a lane in round
+  1 finished with 203 lines unstaged and the pull request head unmoved, so
+  the work existed only on disk.
 
 ## What escalates
 
@@ -206,6 +253,15 @@ Two signals that this document is wrong rather than the work:
 - Residue not falling across four rounds spanning at least four weeks.
 - Items pulled in step 3 more often than they are built, which would mean
   step 1 is not finding the questions before the work starts.
+
+**A round raising the open count is not one of them.** Round 1 closed two
+issues and filed eleven, taking the open set from 63 to 72, and all but two
+of the eleven came out of review. That is the process working: a review
+finding becomes an issue precisely so it is not silently carried, and the
+residue — issues surviving a week — is what says whether they drain. Judge a
+round by what it *closed and filed*, and by whether the filed ones close
+later; an agent that keeps the count flat by not writing findings down is
+failing, not succeeding.
 
 **Every fifth round, read this document as a state machine rather than as
 prose.** For each state an issue can be in, name what moves it out and who

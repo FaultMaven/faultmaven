@@ -78,6 +78,12 @@ Read what arrived since the last round's timestamp:
 gh issue list --state open --limit 500 --json number,title,labels,createdAt,body
 ```
 
+**Check the premise of anything you are about to rank.** `git fetch origin
+main` now, then confirm the issue's named code points still say what it says.
+Two of round 1's five approved P1s were already fixed by pull requests that
+never cited them. An item whose premise looks dead goes into the round as a
+**verification** lane, not a build lane.
+
 Sort each new issue into **ready**, **blocked** or **yours** using *What
 escalates* in the procedure. The third pile is work no agent can do — a live
 deployment check, a console or credential an agent lacks. List it, never
@@ -152,13 +158,28 @@ Then per returned lane, in order:
 
 1. **Verify.** Re-run the lane's test command yourself from its worktree and
    confirm the output matches what was reported. Confirm `git status` was
-   clean or every leftover file is named.
+   clean or every leftover file is named — and that the work is actually on
+   the pull request, not only on disk:
+
+   ```bash
+   git -C <worktree> rev-parse --short HEAD @{u}      # must agree
+   gh pr view <n> --json commits --jq '.commits[-1].oid[0:9]'
+   ```
+
+   Verify the *fixes* as well as the findings. A finding the lane pushed back
+   on gets your attention by default; one it accepted does not, and that is
+   where a half-done fix survives. Re-run the measurement that failed, not
+   the report of it.
 2. **Review.** `/code-review` on the pull request's final head. On-seam
    defect goes back to the lane for one fix commit; a design call becomes a
    question for the next proposal, not a mid-round interruption; an off-seam
    defect becomes a new issue carrying `Found while working on #<n>`.
 3. **Delta.** Re-review the new head. A finding surviving two rounds is
-   escalated, not iterated.
+   escalated, not iterated — unless it **blocks the merge**, in which case it
+   goes back however many rounds it takes, because escalating it would hand
+   the owner a pull request you know is broken. Blocking means the change is
+   worse than the bug it fixes for someone who has not hit the bug. Say in
+   the result how many findings you filed rather than fixed.
 4. **Never relay a finding you could not reproduce by running it.**
 
 ## 5. Report and hand back
