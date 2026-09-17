@@ -223,14 +223,31 @@ def entry_match_keys(entry: Dict[str, Any]) -> Set[str]:
 
 
 def is_clarification_entry(entry: Dict[str, Any]) -> bool:
-    """Is this stored entry one of the clarification choices?"""
-    intent = entry.get("intent") or {}
+    """Is this stored entry one of the clarification choices?
+
+    A non-dict ``intent`` answers False rather than raising. ``or {}`` does not
+    cover it — a TRUTHY non-dict (``"confirmation"``, from a legacy or
+    hand-written row) passes straight through and ``.get`` blows up on it. That
+    was reachable from BOTH sides of the seam: ``live_suggestions`` walks every
+    stored entry at the adoption site, so one such row turned every typed turn
+    on that case into a 500, and ``drop_clarifications_for_file`` runs it on the
+    write path answering ``PATCH /evidence/{id}/classification``.
+    """
+    intent = entry.get("intent")
+    if not isinstance(intent, dict):
+        return False
     return intent.get("type") == IntentType.FILE_RECLASSIFICATION.value
 
 
 def entry_file_id(entry: Dict[str, Any]) -> Optional[str]:
-    """The attachment a clarification entry targets, or None."""
-    intent = entry.get("intent") or {}
+    """The attachment a clarification entry targets, or None.
+
+    Same non-dict ``intent`` guard as ``is_clarification_entry``, for the same
+    reason: both are called on rows this module did not write.
+    """
+    intent = entry.get("intent")
+    if not isinstance(intent, dict):
+        return None
     file_id = intent.get("file_id")
     return file_id if isinstance(file_id, str) and file_id else None
 
@@ -277,7 +294,13 @@ def suggestion_is_live(
     instead would re-arm every pre-existing row permanently, since the paths
     that leave one behind are precisely the paths that never rewrite it.
     """
-    if not isinstance(entry, dict) or not entry.get("intent"):
+    # A non-dict ``intent`` is NOT live, and that is the read side of the
+    # asymmetry ``drop_clarifications_for_file`` argues on the write side:
+    # nothing downstream can act on it (the resolver hands what it finds to
+    # ``QueryIntent(**intent)``), so there is nothing to keep it alive for.
+    # The writer keeps such a row because it cannot read it; the reader
+    # refuses it for the same reason.
+    if not isinstance(entry, dict) or not isinstance(entry.get("intent"), dict):
         return False
 
     offered = entry_offered_turn(entry)
@@ -360,11 +383,14 @@ def drop_clarifications_for_file(
     returned for an empty result, which is the value the write site stores
     (``stored or None``) so the field has one empty state rather than two.
 
-    A non-dict entry is KEPT rather than inspected. It cannot be classified,
-    and this is a writer: dropping what it cannot read would delete a row's
-    contents on a guess. The reader is where such an entry dies —
-    ``suggestion_is_live`` refuses anything that is not a dict — so keeping it
-    here costs nothing and loses nothing.
+    An entry this function cannot classify is KEPT rather than inspected —
+    a non-dict entry, and a dict entry whose ``intent`` is not a dict either.
+    This is a WRITER on the request path of
+    ``PATCH /evidence/{id}/classification``: dropping what it cannot read would
+    delete a row's contents on a guess, and raising on it answers 500 to a
+    request that has nothing to do with the malformed row. The reader is where
+    such an entry dies — ``suggestion_is_live`` refuses both shapes — so
+    keeping it here costs nothing and loses nothing.
     """
     if not stored or not file_id:
         # ``or None`` on this path too. Returning ``stored`` verbatim gave the
