@@ -159,6 +159,7 @@ def test_identity_and_untenanted_tables_must_be_emptied():
         "organization_members",
         "sso_org_mappings",
         "oauth_authorization_codes",
+        "token_revocations",
         "operator_access_audit",
         "operator_access_grants",
     ):

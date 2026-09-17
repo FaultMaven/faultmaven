@@ -24,12 +24,17 @@ from faultmaven.modules.auth.domain.models.user import User
 logger = logging.getLogger(__name__)
 
 
-def _max_revocation_entry_ttl() -> int:
+def max_revocation_entry_ttl() -> int:
     """Ceiling, in seconds, on how long a revocation entry is held.
 
     Read from the schema bound on token lifetime rather than restated here, so
     the two cannot drift: if the permitted lifetime grows, the ceiling grows
     with it and an entry still outlives the token it revokes.
+
+    Public because BOTH revocation arms read it: the per-jti entries below, and
+    the per-user watermark in ``AuthService._watermark_ttl_seconds`` (#828).
+    One ceiling, so the two arms cannot come to disagree about how long a
+    revocation lasts.
 
     Imported inside the call, not at module scope: this module is deliberately
     free of settings imports at import time (see ``resolve_enterprise_claim``).
@@ -1108,7 +1113,7 @@ async def _revoke_token_by_jti(
             return
 
         # Revocation entry lives exactly as long as the token could be used
-        max_ttl = _max_revocation_entry_ttl()
+        max_ttl = max_revocation_entry_ttl()
         exp = payload.get("exp")
         if exp:
             expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
@@ -1817,7 +1822,7 @@ class ITokenRevocationStore(ABC):
       under-revoke silently on the generator ``validate_*`` paths, which —
       unlike ``AuthService.verify_token`` — do not ``require`` it. See
       ``docs/architecture/security/iam-design.md`` for the full limits
-      (clock skew, Redis-only durability, password-reset tokens).
+      (clock skew, where revocation state lives, password-reset tokens).
 
     Entries carry a TTL matching token expiration; once a token can no longer
     be presented, its revocation entry is redundant and expires.

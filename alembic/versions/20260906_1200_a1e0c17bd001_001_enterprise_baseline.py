@@ -1280,6 +1280,38 @@ def upgrade() -> None:
         ["expires_at"],
         unique=False,
     )
+    # Durable token revocation (#828). Standalone's cache is an in-process
+    # FakeRedis, so revocations lived only as long as the API process; this is
+    # where they live instead. Deliberately OUTSIDE RLS and with no FK to
+    # ``users``: the request-path revocation check runs before a tenant is
+    # bound (it is part of deciding whether the caller is anybody), and an
+    # ``ON DELETE CASCADE`` would erase a watermark at account deletion, one of
+    # the very flows that writes one. ``scope`` is half of the primary key so a
+    # ``jti`` — which arrives inside a token submitted to the unauthenticated
+    # RFC 7009 revoke endpoint — can never address a user's watermark row.
+    op.create_table(
+        "token_revocations",
+        sa.Column("scope", sa.String(length=8), nullable=False),
+        sa.Column("subject", sa.String(length=255), nullable=False),
+        sa.Column("revoked_at", sa.Float(), server_default="0", nullable=False),
+        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("(CURRENT_TIMESTAMP)"),
+            nullable=False,
+        ),
+        sa.CheckConstraint(
+            "scope IN ('jti', 'user')", name="token_revocations_scope_check"
+        ),
+        sa.PrimaryKeyConstraint("scope", "subject"),
+    )
+    op.create_index(
+        "idx_token_revocations_expires_at",
+        "token_revocations",
+        ["expires_at"],
+        unique=False,
+    )
     op.create_table(
         "organizations",
         sa.Column("organization_id", sa.String(length=36), nullable=False),
@@ -3971,6 +4003,8 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_organizations_owner_id"), table_name="organizations")
     op.drop_index(op.f("ix_organizations_enterprise_id"), table_name="organizations")
     op.drop_table("organizations")
+    op.drop_index("idx_token_revocations_expires_at", table_name="token_revocations")
+    op.drop_table("token_revocations")
     op.drop_index("idx_auth_codes_expires_at", table_name="oauth_authorization_codes")
     op.drop_table("oauth_authorization_codes")
     op.drop_table("config_overrides")

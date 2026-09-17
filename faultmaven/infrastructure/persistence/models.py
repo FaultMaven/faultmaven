@@ -1146,6 +1146,66 @@ class OAuthAuthorizationCodeModel(Base):
     __table_args__ = (Index("idx_auth_codes_expires_at", "expires_at"),)
 
 
+class TokenRevocationModel(Base):
+    """Durable token revocation state (#828).
+
+    The revocation store used to live only in the cache client, which in
+    standalone is the in-process FakeRedis singleton — so an API restart
+    resurrected every revoked-but-unexpired token. This table is the durable
+    backing the standalone store reads and writes instead; cloud keeps the
+    real-Redis store, where the cache is an external service.
+
+    **Two granularities, one table, provably disjoint keyspaces.** ``scope``
+    is ``'jti'`` (one token) or ``'user'`` (a per-user watermark), and it is
+    part of the primary key, so a ``jti`` value can never address a user's
+    watermark row. That separation is not a matter of trusting the jti: it
+    arrives inside a token submitted to ``POST /auth/oauth/revoke``, which RFC
+    7009 makes unauthenticated by design. A column is a stronger fence than the
+    Redis store's ``jti:``/``user:`` key segments, which are only distinct
+    because no jti may contain the other's literal prefix.
+
+    **Outside RLS.** The request-path revocation check runs before any tenant
+    is bound — it is part of deciding whether the caller is anybody at all — so
+    an enterprise policy here would hide the very row the check must find. The
+    same reasoning already exempts ``oauth_authorization_codes`` and
+    ``sso_org_mappings``. Nothing tenant-identifying is stored: a jti and a
+    user id, both opaque.
+
+    **No foreign key to ``users``.** ``ON DELETE CASCADE`` would erase a
+    watermark at exactly the moment it matters most — account deletion is one
+    of the flows that writes one (#769) — and the ``jti`` rows name no user at
+    all. Rows expire on their own instead.
+    """
+
+    __tablename__ = "token_revocations"
+
+    #: ``'jti'`` or ``'user'`` — see the class docstring for why this is part
+    #: of the key rather than a discriminator column beside it.
+    scope = Column(String(8), primary_key=True)
+    #: The revoked token's ``jti``, or the revoked user's id.
+    subject = Column(String(255), primary_key=True)
+    #: Watermark instant as a Unix timestamp, at full precision. Meaningful
+    #: only for ``scope='user'``; ``0`` on a ``jti`` row, which revokes
+    #: unconditionally. Float rather than an integer because
+    #: ``clear_user_revocation_if_before`` orders a login's pre-read capture
+    #: against it and cannot do that at second granularity (#831).
+    revoked_at = Column(Float, nullable=False, server_default="0")
+    #: When this entry may be forgotten. Reads filter on it, so an elapsed row
+    #: is already invisible whether or not anything has swept it — the Redis
+    #: TTL equivalent, minus the automatic delete.
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "scope IN ('jti', 'user')", name="token_revocations_scope_check"
+        ),
+        Index("idx_token_revocations_expires_at", "expires_at"),
+    )
+
+
 # ============================================================
 # Case Domain
 # ============================================================

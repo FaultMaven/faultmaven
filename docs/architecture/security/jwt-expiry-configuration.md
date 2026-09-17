@@ -33,11 +33,16 @@ advertises a token lifetime reads the same source:
   `container/providers/services.py::create_jwt_token_generator` (RS256/cloud —
   keys, issuer and audience still come from `settings.security`; only the
   lifetimes come from auth).
-- `AuthService._longest_token_lifetime_seconds` (the #769 revocation-watermark
-  bound) reads `settings.auth`. With one source, "the watermark outlives every
-  mintable token" is structural rather than a `max()` across halves.
-  (`AuthService` mints nothing itself: its parallel token-mint path was dead and
-  was removed in #853.)
+- `AuthService._watermark_ttl_seconds` (the #769 revocation-watermark bound)
+  reads **no** configured lifetime at all. It is held against
+  `MAX_TOKEN_LIFETIME_DAYS` — the schema ceiling these two fields are bounded
+  by — because the watermark has to outlive every token that could still be
+  presented, including tokens minted before an operator *lowered* the knob
+  (#828). Reading the current value covered every mint path but only under the
+  configuration in force at that instant; the ceiling is immune to the change.
+  The per-jti arm has read the same ceiling, through the same
+  `max_revocation_entry_ttl`, since #830. (`AuthService` mints nothing itself:
+  its parallel token-mint path was dead and was removed in #853.)
 - `OAuthService` and the SSO login service advertise `expires_in` from the same
   values the generator mints with, so advertised and actual lifetimes cannot
   diverge.
@@ -103,10 +108,13 @@ tokens**:
 - Setting **any** retired name — either generation, in **either letter case** —
   fails settings construction with a message naming the canonical retired
   spelling and its replacement.
-- `_longest_token_lifetime_seconds` equals the configured (single-source)
-  refresh lifetime, and **raises** rather than defaulting if the settings it is
-  handed report a non-positive lifetime (unreachable from the bounded source, so
-  reaching it means a mis-wiring that would silently under-cover revocation).
+- `_watermark_ttl_seconds` does **not** move with the configured lifetime: it
+  is `MAX_TOKEN_LIFETIME_DAYS` plus the #831 basis carry, whatever the two
+  knobs are set to, and it still covers tokens outstanding under the longest
+  permitted refresh lifetime after the knob has been lowered to the shortest.
+  (The mis-wiring raise it used to carry is gone with the settings read: a
+  constant cannot under-cover, and a guard that can no longer fire is one that
+  sits green for ever.)
 
 The env-name list the fixtures clear is derived from
 `RETIRED_JWT_EXPIRY_ENV_NAMES` plus the declared `validation_alias` of the
@@ -117,5 +125,5 @@ Mutation checks: rebinding the RS256 generator's lifetimes to a hardcoded
 default (simulating the old security-half read) must turn the cloud-mint test
 red; deleting the retired-spelling guard, narrowing it to exact case, or dropping
 a retired name from the map must each turn the corresponding rejection case red;
-restoring a silent fallback in `_longest_token_lifetime_seconds` must turn the
-mis-wiring test red.
+restoring the configured-lifetime read in `_watermark_ttl_seconds` must turn the
+watermark-ceiling tests red (it does — six of them, #828).

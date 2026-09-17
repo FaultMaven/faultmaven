@@ -884,22 +884,54 @@ def create_token_revocation_store(
     settings: FaultMavenSettings,
     cache_client: Any = None,
 ) -> Any:
-    """Create the deployment-wide token revocation store (real or FakeRedis).
+    """Create the deployment-wide token revocation store.
 
     Revoked tokens are tracked with TTL (matching token expiration). This is
     the SINGLE revocation store (#767): every revoke path writes to it and the
-    request-path check reads from it, all under one key prefix.
+    request-path check reads from it.
+
+    **Which implementation is a durability question, not a deployment name**
+    (#828). Revocation state that does not outlive the process is not
+    revocation: an API restart resurrects every revoked-but-unexpired token for
+    the remainder of its natural life — a refresh token revoked at logout for
+    up to ``JWT_REFRESH_TOKEN_EXPIRY_DAYS``, and a per-user watermark (role
+    downgrade, password change, admin revoke-tokens) for as long as it was
+    meant to cover. So the choice is made on the one property that matters:
+
+    - A real Redis outlives the API process, so cloud keeps
+      ``RedisTokenRevocationStore`` — including its per-request read, which is
+      the only store hit on the authenticated request path.
+    - The in-process FakeRedis stand-in does not. Standalone therefore gets
+      ``SqlTokenRevocationStore``, which writes to ``token_revocations`` in the
+      same database that already makes account deactivation survive a restart.
+
+    The predicate is ``is_fakeredis``, the one place that question is answered,
+    rather than ``settings.is_cloud``: a standalone deployment that HAS
+    configured a real Redis is served by it correctly, and a cloud deployment
+    can never reach the FakeRedis arm anyway (``fakeredis_or_fail`` refuses the
+    boot first). A missing client is treated as the non-durable case, because
+    the alternative is a store with no backing at all.
 
     Args:
         settings: FaultMavenSettings instance
-        cache_client: Async Redis-compatible client (always provided)
+        cache_client: Async Redis-compatible client (always provided in the
+            composition root; ``None`` is treated as no durable cache)
 
     Returns:
-        RedisTokenRevocationStore instance
+        A ``RedisTokenRevocationStore`` or a ``SqlTokenRevocationStore``
     """
+    from faultmaven.infrastructure.redis_client import is_fakeredis
     from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
         RedisTokenRevocationStore,
+        SqlTokenRevocationStore,
     )
+
+    if cache_client is None or is_fakeredis(cache_client):
+        logger.info(
+            "Token revocation store: database (the cache does not outlive the "
+            "process, so revocations would not survive a restart)"
+        )
+        return SqlTokenRevocationStore()
 
     return RedisTokenRevocationStore(
         cache_client,

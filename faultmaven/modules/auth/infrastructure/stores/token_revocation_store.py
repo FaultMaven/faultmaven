@@ -1,29 +1,65 @@
-"""Token Revocation Store Implementation.
+"""Token Revocation Store Implementations.
 
 The single revocation store for the whole deployment (issue #767): every
 revoke path (OAuth /revoke, refresh rotation in both auth modes, logout,
 admin per-user revocation) writes here, and the request-path check
-(``AuthService._is_revoked``) reads here. Redis expiry handles cleanup.
+(``AuthService._is_revoked``) reads here.
+
+**Two implementations, chosen by whether the cache outlives the process**
+(#828). ``create_token_revocation_store`` picks between them:
+
+- :class:`RedisTokenRevocationStore` — where the cache client is a real Redis,
+  i.e. cloud. Redis expiry handles cleanup, and the deployment-wide store is
+  shared across replicas.
+- :class:`SqlTokenRevocationStore` — where it is not. In standalone the cache
+  client is the in-process FakeRedis singleton, which has no persistence, so
+  an API restart resurrected every revoked-but-unexpired token for the
+  remainder of its natural life. Revocation there lives in
+  ``token_revocations`` instead, beside the account state (deactivation) that
+  already survived a restart.
+
+The two are held to ONE behaviour by a shared contract suite
+(``tests/unit/modules/auth/test_revocation_store_contract.py``), which is
+parametrised over both classes: a rule added to one and not the other fails
+there rather than in whichever deployment happens to run the other.
 
 Two granularities (see ``ITokenRevocationStore``): individual tokens by JTI,
 and whole users by revocation watermark (#769). Both live in this one store
 with TTLs matching token expiration.
 
-The key prefix comes from ``settings.security.token_revocation_prefix`` so
-writers and the reader can never disagree on the namespace. Per-token entries
-live under a ``jti:`` sub-namespace and per-user watermarks under ``user:``;
-see ``ITokenRevocationStore`` for why they must not overlap.
+In the Redis store the key prefix comes from
+``settings.security.token_revocation_prefix`` so writers and the reader can
+never disagree on the namespace. Per-token entries live under a ``jti:``
+sub-namespace and per-user watermarks under ``user:``; see
+``ITokenRevocationStore`` for why they must not overlap. The SQL store has no
+prefix to agree on — the table IS the namespace, and the two granularities are
+separated by a ``scope`` column that is half of the primary key.
 
-Deploy note: moving per-token entries under ``jti:`` orphans any revocation
-keys written by a previous build (they sat directly under the prefix), so
-tokens revoked before the upgrade are no longer seen as revoked. Acceptable
-pre-production; flush the ``{prefix}*`` keyspace on upgrade if any revoked
-refresh token must stay dead across it.
+Deploy note (Redis): moving per-token entries under ``jti:`` orphans any
+revocation keys written by a previous build (they sat directly under the
+prefix), so tokens revoked before the upgrade are no longer seen as revoked.
+Acceptable pre-production; flush the ``{prefix}*`` keyspace on upgrade if any
+revoked refresh token must stay dead across it. Standalone deployments crossing
+#828 are in the same position for a different reason: entries written to the
+in-process FakeRedis were never on disk to carry over.
 """
 
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import delete, select
+
+from faultmaven.infrastructure.persistence.database import get_db_session
+from faultmaven.infrastructure.persistence.models import TokenRevocationModel
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     ITokenRevocationStore,
 )
+
+#: ``scope`` values. Literals, not an enum: they are half of a primary key and
+#: a column CHECK constraint names the same two strings.
+_JTI_SCOPE = "jti"
+_USER_SCOPE = "user"
 
 
 class RedisTokenRevocationStore(ITokenRevocationStore):
@@ -112,3 +148,150 @@ class RedisTokenRevocationStore(ITokenRevocationStore):
 
     async def cleanup_expired(self) -> int:
         return 0  # Redis handles expiration automatically
+
+
+class SqlTokenRevocationStore(ITokenRevocationStore):
+    """Database implementation of the token revocation store (#828).
+
+    Used where the cache client does not outlive the process — standalone,
+    whose Redis is the in-process FakeRedis singleton. Same two granularities,
+    same rules, same ``ITokenRevocationStore``; the difference is only that the
+    state survives a restart.
+
+    #767 deliberately deleted a ``PostgresTokenRevocationStore`` because
+    NOTHING constructed it: the request-path check read Redis, so a database
+    row could not revoke anything and the class was dead code pretending to be
+    a control. This one is reintroduced with the opposite property — it is what
+    ``create_token_revocation_store`` returns in standalone, so it is the store
+    every revoke path writes to and the request path reads. What #767 removed
+    was an unwired second store; what this adds is the only store its
+    deployment has.
+
+    **Expiry is a predicate, not a sweeper.** Every read filters on
+    ``expires_at``, so an elapsed entry stops revoking at its deadline whether
+    or not anything has deleted it — the property Redis gets from TTL. Rows are
+    then reclaimed opportunistically: each WRITE deletes elapsed rows in its
+    own transaction, which bounds the table without a scheduled job that could
+    be forgotten at wiring time (nothing calls ``cleanup_expired``, in this
+    class or the Redis one). Writes are revocations, so the sweep runs rarely
+    and against an index.
+
+    **Session per operation**, as the sibling sessionless repositories: the
+    store is a process-wide singleton built at composition time, long before
+    any request, so it cannot hold one.
+    """
+
+    def __init__(self, session_factory=None):
+        """
+        Args:
+            session_factory: Async context manager yielding an ``AsyncSession``.
+                Defaults to the application's ``get_db_session``. A parameter
+                so a caller can bind a different database — which is also how
+                a restart is simulated in tests, by building a second store
+                over a second engine on the same file.
+        """
+        self._session_factory = session_factory or get_db_session
+
+    @staticmethod
+    def _deadline(ttl: int) -> datetime:
+        return datetime.now(timezone.utc) + timedelta(seconds=ttl)
+
+    async def _sweep(self, session) -> int:
+        """Delete entries that can no longer revoke anything."""
+        result = await session.execute(
+            delete(TokenRevocationModel).where(
+                TokenRevocationModel.expires_at <= datetime.now(timezone.utc)
+            )
+        )
+        # ``rowcount`` is -1 where a driver cannot report it; a sweep that
+        # could not count is "nothing to report", never a negative total.
+        return max(result.rowcount or 0, 0)
+
+    async def _upsert(
+        self, scope: str, subject: str, revoked_at: float, ttl: int
+    ) -> None:
+        async with self._session_factory() as session:
+            await self._sweep(session)
+            # Delete-then-insert rather than a dialect-specific upsert: the two
+            # dialects this baseline supports spell ``ON CONFLICT`` differently
+            # and a write here is rare enough that the extra statement costs
+            # nothing. A later revocation overwrites an earlier one
+            # unconditionally, matching ``SETEX`` and the interface's contract
+            # ("the caller has already decided to invalidate everything
+            # outstanding").
+            await session.execute(
+                delete(TokenRevocationModel).where(
+                    TokenRevocationModel.scope == scope,
+                    TokenRevocationModel.subject == subject,
+                )
+            )
+            session.add(
+                TokenRevocationModel(
+                    scope=scope,
+                    subject=subject,
+                    revoked_at=revoked_at,
+                    expires_at=self._deadline(ttl),
+                )
+            )
+
+    async def add_revoked_token(self, jti: str, ttl: int) -> None:
+        # ``revoked_at`` is meaningless on this arm — a jti entry revokes
+        # unconditionally — so it is stored as 0 rather than as a timestamp
+        # somebody could later mistake for a watermark.
+        await self._upsert(_JTI_SCOPE, jti, 0.0, ttl)
+
+    async def is_revoked(self, jti: str) -> bool:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(TokenRevocationModel.subject).where(
+                    TokenRevocationModel.scope == _JTI_SCOPE,
+                    TokenRevocationModel.subject == jti,
+                    TokenRevocationModel.expires_at > datetime.now(timezone.utc),
+                )
+            )
+            return result.first() is not None
+
+    async def revoke_user_tokens_before(
+        self, user_id: str, revoked_at: float, ttl: int
+    ) -> None:
+        await self._upsert(_USER_SCOPE, user_id, revoked_at, ttl)
+
+    async def is_user_revoked(self, user_id: str, issued_at: int) -> bool:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(TokenRevocationModel.revoked_at).where(
+                    TokenRevocationModel.scope == _USER_SCOPE,
+                    TokenRevocationModel.subject == user_id,
+                    TokenRevocationModel.expires_at > datetime.now(timezone.utc),
+                )
+            )
+            row = result.first()
+            if row is None:
+                return False
+            # Floored to whole seconds, exactly as the Redis arm does: the
+            # revocation rule is ``iat <= watermark`` at second granularity,
+            # and the fraction exists only so
+            # ``clear_user_revocation_if_before`` can order two instants.
+            return issued_at <= int(float(row[0]))
+
+    async def clear_user_revocation_if_before(
+        self, user_id: str, instant: float
+    ) -> bool:
+        async with self._session_factory() as session:
+            # ONE statement, for the same reason the Redis arm uses a Lua
+            # script: a read-then-delete in Python would let a revocation that
+            # landed between the two be deleted on the strength of the
+            # PREVIOUS watermark — the straddle (#831) this comparison exists
+            # to respect.
+            result = await session.execute(
+                delete(TokenRevocationModel).where(
+                    TokenRevocationModel.scope == _USER_SCOPE,
+                    TokenRevocationModel.subject == user_id,
+                    TokenRevocationModel.revoked_at < instant,
+                )
+            )
+            return bool(result.rowcount)
+
+    async def cleanup_expired(self) -> int:
+        async with self._session_factory() as session:
+            return await self._sweep(session)

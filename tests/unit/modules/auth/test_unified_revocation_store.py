@@ -333,15 +333,37 @@ class TestLocalRouteGeneratorFactory:
         assert await generator.validate_refresh_token(refresh) is None
 
 
+def _real_looking_redis():
+    """A working Redis whose type does not come from ``fakeredis``.
+
+    ``create_token_revocation_store`` now asks ``is_fakeredis`` whether the
+    cache outlives the process (#828), and only the Redis arm has a key prefix
+    to honour — so exercising that arm needs a client the predicate reads as
+    real. Subclassing the fake gives one that answers Redis commands while
+    being declared here rather than in ``fakeredis``, which is precisely what a
+    real client looks like to that predicate.
+    """
+    import fakeredis.aioredis as fakeredis_aio
+
+    cls = type("RealRedisStandIn", (fakeredis_aio.FakeRedis,), {})
+    cls.__module__ = __name__
+    return cls(decode_responses=True)
+
+
 class TestDIFactoryUsesConfiguredPrefix:
-    """create_token_revocation_store must honour the settings prefix."""
+    """create_token_revocation_store must honour the settings prefix.
+
+    Scoped to the Redis arm, the only one with a key namespace to get wrong:
+    the durable arm namespaces by table and ``scope`` column instead, and its
+    behaviour is pinned by the shared contract suite.
+    """
 
     async def test_factory_prefix(self):
         from faultmaven.container.providers.services import (
             create_token_revocation_store,
         )
 
-        redis = _fake_redis()
+        redis = _real_looking_redis()
         settings = SimpleNamespace(
             security=SimpleNamespace(token_revocation_prefix="revoked:token:")
         )

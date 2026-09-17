@@ -167,21 +167,25 @@ account already holds (#769). Deactivation remains the durable control — it
 stops the credential renewing — while the watermark closes the access-token
 expiry window.
 
-Two operational limits to know before relying on it:
+**Revocation survives a restart** (#828). Standalone records it in the
+`token_revocations` table rather than in the in-process FakeRedis it used to,
+so a restart during incident response no longer re-opens the window. Cloud is
+unchanged: its cache is a real Redis, which outlives the API pod. Deactivating
+as well as revoking is still the stronger move — it stops the credential
+renewing — but it is no longer the only control that survives.
 
-- **Revocation state lives only in Redis.** Standalone runs FakeRedis
-  in-process, so every watermark and revoked jti is lost on API restart, and
-  revoked-but-unexpired tokens become usable again for the remainder of their
-  lifetime. Deactivation (which is in the database) survives a restart;
-  revocation does not. Treat a restart during incident response as re-opening
-  the window, and deactivate as well as revoke.
+One operational limit to know before relying on it:
+
 - **Upgrading across the #769 key-namespace change orphans older entries.**
   Per-token keys moved from `{prefix}{jti}` to `{prefix}jti:{jti}`, so
   revocations recorded by an earlier build are no longer read. Access tokens
   age out within `JWT_ACCESS_TOKEN_EXPIRY_MINUTES`, but a refresh token revoked by
   rotation or logout would come back for its full lifetime. Flush the
   `{prefix}*` keyspace (default prefix `revoked:token:`) as part of that
-  upgrade if any previously revoked credential must stay dead.
+  upgrade if any previously revoked credential must stay dead. Standalone
+  deployments upgrading across #828 are in the same position for a different
+  reason: entries written to FakeRedis by an earlier build were never on disk
+  to carry over.
 
 ## Rolling back to dev-login
 
