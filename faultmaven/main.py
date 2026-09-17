@@ -382,6 +382,24 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
         is_multi_tenant=(requested_tenant_provider() == BUILTIN_MULTI)
     )
 
+    # Can the resolved revocation store reach its storage? Presence was checked
+    # at composition; this asks whether the table is there (#828). Revocation
+    # fails OPEN — `AuthService._is_revoked` swallows a read error into "not
+    # revoked" — so a missing `token_revocations` is a security control silently
+    # off, which is why it refuses the boot rather than warning.
+    #
+    # AFTER bootstrap, for the same reason the RLS guard above is: bootstrap is
+    # what runs the migrations (and creates `data/` in the first place), so a
+    # probe before it fails on every FIRST-EVER install — a brand-new Quick
+    # Start would refuse to boot, advised to re-provision a deployment that had
+    # never run (#828 delta review). Ordering is the whole of this gate's
+    # correctness, which is why it has a startup-sequence test and not only a
+    # direct-call one.
+    if not _is_test_environment(settings):
+        from .config.revocation_storage import validate_revocation_storage
+
+        await validate_revocation_storage(token_revocation_store)
+
     # ============================================================
     # Composition Root: Attach all services to app.state
     # ============================================================

@@ -334,7 +334,12 @@ class TestLocalRouteGeneratorFactory:
 
 
 class TestDIFactoryUsesConfiguredPrefix:
-    """create_token_revocation_store must honour the settings prefix."""
+    """create_token_revocation_store must honour the settings prefix.
+
+    Scoped to the Redis arm, the only one with a key namespace to get wrong:
+    the durable arm namespaces by table and ``scope`` column instead, and its
+    behaviour is pinned by the shared contract suite.
+    """
 
     async def test_factory_prefix(self):
         from faultmaven.container.providers.services import (
@@ -343,7 +348,13 @@ class TestDIFactoryUsesConfiguredPrefix:
 
         redis = _fake_redis()
         settings = SimpleNamespace(
-            security=SimpleNamespace(token_revocation_prefix="revoked:token:")
+            # Cloud: the arm that HAS a key prefix. The factory chooses on
+            # deployment mode, not on what the cache client turned out to be
+            # (#828 review), so this is what selects the Redis store — and a
+            # FakeRedis stands in for the real one perfectly well here, since
+            # nothing inspects its type any more.
+            is_cloud=True,
+            security=SimpleNamespace(token_revocation_prefix="revoked:token:"),
         )
         store = create_token_revocation_store(settings, cache_client=redis)
 

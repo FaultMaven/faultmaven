@@ -57,6 +57,7 @@ from faultmaven.modules.auth.infrastructure.stores.sso_ephemeral_store import (
     SSOEphemeralStore,
 )
 from faultmaven.providers.tenancy import factory as tenancy_factory
+from tests.utils import InMemoryRevocationStore
 
 #: The configured pair, as production wires it (JWT_ISSUER/JWT_AUDIENCE
 #: defaults). Deliberately not the literals the HS256 paths once hardcoded:
@@ -741,7 +742,7 @@ def _rs256_generator():
     generator = RS256JWTTokenGenerator(
         private_key=private_pem,
         public_key=public_pem,
-        revocation_store=MagicMock(),
+        revocation_store=InMemoryRevocationStore(),
         access_token_expire_minutes=15,
         refresh_token_expire_days=7,
         issuer=ISSUER,

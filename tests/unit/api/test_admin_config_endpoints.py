@@ -1170,6 +1170,193 @@ async def _web_search_feature(user, settings, app):
     return await _feature(user, settings, app, "web_search")
 
 
+def _store_over_a_real_schema(tmp_path, *, with_table: bool):
+    """A ``SqlTokenRevocationStore`` over SQLite, with or without its table.
+
+    ``with_table=False`` is the deployment this field exists for: standalone,
+    upgraded rather than re-provisioned, so the single in-place-edited baseline
+    was already stamped and ``token_revocations`` never appeared (#828 delta
+    review).
+    """
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from faultmaven.infrastructure.persistence.models import Base
+    from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
+        SqlTokenRevocationStore,
+    )
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'status.db'}")
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    created = {"done": False}
+
+    @asynccontextmanager
+    async def factory():
+        if with_table and not created["done"]:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            created["done"] = True
+        session = sessions()
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+
+    return SqlTokenRevocationStore(session_factory=factory), engine
+
+
+class TestTokenRevocationDurableAnswersWhetherRevocationIsInForce:
+    """The field claims revocations survive a restart. It has to mean it.
+
+    Two ways it used to be wrong: deciding by class NAME (a subclass of the
+    durable store reported non-durable), and deciding by TYPE ALONE (a store
+    whose table does not exist reported durable, with "…survive an API
+    restart", on exactly the deployment where the question is urgent).
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_subclass_of_the_durable_store_reports_durable(
+        self, mock_admin_user, mock_settings, rate_limited_app, tmp_path
+    ):
+        from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
+            SqlTokenRevocationStore,
+        )
+
+        store, engine = _store_over_a_real_schema(tmp_path, with_table=True)
+
+        class DeploymentSpecificStore(SqlTokenRevocationStore):
+            pass
+
+        rate_limited_app.state.token_revocation_store = DeploymentSpecificStore(
+            session_factory=store._session_factory
+        )
+        try:
+            feature = await _feature(
+                mock_admin_user,
+                mock_settings,
+                rate_limited_app,
+                "token_revocation_durable",
+            )
+        finally:
+            await engine.dispose()
+
+        assert feature.enabled is True
+        assert "DeploymentSpecificStore" in feature.description
+
+    @pytest.mark.asyncio
+    async def test_a_store_whose_table_is_missing_reports_not_durable(
+        self, mock_admin_user, mock_settings, rate_limited_app, tmp_path
+    ):
+        """The upgraded-not-wiped deployment (#828 delta review).
+
+        Type alone said durable here. Revocation is in fact OFF — every read
+        raises and ``AuthService._is_revoked`` returns False — so the one
+        observable added to answer "are my revocations in force?" was giving
+        the wrong answer in the only state where it matters.
+        """
+        store, engine = _store_over_a_real_schema(tmp_path, with_table=False)
+        rate_limited_app.state.token_revocation_store = store
+        try:
+            feature = await _feature(
+                mock_admin_user,
+                mock_settings,
+                rate_limited_app,
+                "token_revocation_durable",
+            )
+        finally:
+            await engine.dispose()
+
+        assert feature.enabled is False
+        assert "cannot read its storage" in feature.description
+        assert "token_revocations" in feature.description
+        # The exception TYPE, never the driver's message. SQLAlchemy's carries
+        # the full statement and its bound parameters, and this endpoint's body
+        # is not where a schema and live parameter values belong (#828 delta
+        # review). The detail is logged instead.
+        assert "OperationalError" in feature.description
+        for leaked in ("SELECT", "FROM token_revocations WHERE", "[parameters:"):
+            assert (
+                leaked not in feature.description
+            ), f"the driver message reached the API response body: {leaked!r}"
+
+    @pytest.mark.asyncio
+    async def test_a_cache_backed_store_reports_not_durable(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        import fakeredis.aioredis as fakeredis_aio
+
+        from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
+            RedisTokenRevocationStore,
+        )
+
+        rate_limited_app.state.token_revocation_store = RedisTokenRevocationStore(
+            fakeredis_aio.FakeRedis(decode_responses=True), key_prefix="revoked:token:"
+        )
+
+        feature = await _feature(
+            mock_admin_user, mock_settings, rate_limited_app, "token_revocation_durable"
+        )
+
+        assert feature.enabled is False
+        assert "held in the cache" in feature.description
+
+    @pytest.mark.asyncio
+    async def test_no_store_at_all_says_unenforceable_not_cached(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        """With no store there IS no cache holding anything (#767).
+
+        The description used to fall through to "Revocation state is held in
+        the cache", contradicting its own hint, because the branch keyed on
+        ``durable`` rather than on whether a store existed.
+        """
+        rate_limited_app.state.token_revocation_store = None
+
+        feature = await _feature(
+            mock_admin_user, mock_settings, rate_limited_app, "token_revocation_durable"
+        )
+
+        assert feature.enabled is False
+        assert "unenforceable" in feature.description
+        assert "held in the cache" not in feature.description
+
+    @pytest.mark.asyncio
+    async def test_a_store_that_is_falsy_is_still_a_store(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        """``is not None``, not truthiness.
+
+        A store defining ``__len__`` and currently empty reported "none" from
+        the name field while ``isinstance`` reported it durable — two halves of
+        one entry disagreeing about whether a store exists.
+        """
+        import fakeredis.aioredis as fakeredis_aio
+
+        from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
+            RedisTokenRevocationStore,
+        )
+
+        class EmptyIsFalsy(RedisTokenRevocationStore):
+            def __len__(self):
+                return 0
+
+        rate_limited_app.state.token_revocation_store = EmptyIsFalsy(
+            fakeredis_aio.FakeRedis(decode_responses=True), key_prefix="revoked:token:"
+        )
+
+        feature = await _feature(
+            mock_admin_user, mock_settings, rate_limited_app, "token_revocation_durable"
+        )
+
+        assert "EmptyIsFalsy" in feature.description
+        assert "none" not in feature.description
+
+
 def _pure_settings_answer(feature: str, settings) -> bool:
     """What a SETTINGS-ONLY implementation of ``feature`` would report.
 
@@ -1204,6 +1391,14 @@ def _pure_settings_answer(feature: str, settings) -> bool:
         # written as, and it reports True on a process that composed no
         # knowledge service and therefore pushes nothing.
         return bool(settings.knowledge.kb_prefetch_enabled)
+    if feature == "token_revocation_durable":
+        # The obvious version: "standalone means durable". It reports True on a
+        # standalone process whose store is the cache, and on one that composed
+        # no store at all — which is not non-durable but unenforceable (#767).
+        # Spelled as equality rather than `!= "cloud"` so an unconfigured
+        # settings object reports False: the deployment mode is always SET to
+        # something, so a negated test would be a constant True here.
+        return str(getattr(settings, "deployment_mode", "")) == "standalone"
     raise AssertionError(f"no settings-only stand-in defined for {feature}")
 
 
@@ -1768,12 +1963,53 @@ def _scenario_kb_prefetch(settings, app, monkeypatch, reality):
     app.state.knowledge_service = MagicMock() if reality else None
 
 
+def _scenario_token_revocation_durable(settings, app, monkeypatch, reality):
+    """The runtime fact withheld here is the store the container composed.
+
+    ``DEPLOYMENT_MODE`` is standalone in BOTH arms — that is the point. What
+    decides whether a revocation survives a restart is which class
+    ``create_token_revocation_store`` actually built and put on ``app.state``,
+    and an operator cannot read that off their config: #828's review found two
+    ways the resolution used to move underneath them (a Redis ping failure and
+    ``SKIP_SERVICE_CHECKS``). A settings-only implementation reports True on a
+    process whose store is the cache — or on one that composed no store at all,
+    where revocation is not merely non-durable but unenforceable (#767).
+    """
+    import tempfile
+    from pathlib import Path
+
+    import fakeredis.aioredis as fakeredis_aio
+
+    from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
+        RedisTokenRevocationStore,
+    )
+
+    settings.deployment_mode = "standalone"
+    if reality:
+        # A store over a REAL schema. A bare ``SqlTokenRevocationStore()`` binds
+        # the process-global ``get_db_session``, so under this file's mocked
+        # settings the engine is built from a MagicMock URL and the field's live
+        # probe correctly reports the store unreadable — which failed this
+        # scenario's own "capability present" arm (#828 delta review). The field
+        # now asserts readability, so the fixture has to supply it.
+        store, _engine = _store_over_a_real_schema(
+            Path(tempfile.mkdtemp(prefix="fm-scenario-")), with_table=True
+        )
+        app.state.token_revocation_store = store
+    else:
+        app.state.token_revocation_store = RedisTokenRevocationStore(
+            fakeredis_aio.FakeRedis(decode_responses=True),
+            key_prefix="revoked:token:",
+        )
+
+
 FEATURE_SCENARIOS = {
     "kb_prefetch": _scenario_kb_prefetch,
     "web_search": _scenario_web_search,
     "llm_tracing": _scenario_llm_tracing,
     "first_party_consent_skip": _scenario_first_party_consent_skip,
     "suggestion_store_worker_safe": _scenario_suggestion_store_worker_safe,
+    "token_revocation_durable": _scenario_token_revocation_durable,
 }
 
 

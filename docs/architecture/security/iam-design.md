@@ -383,11 +383,31 @@ shapes the response.
   issued at or before the revocation instant" is measured on the *revoker's*
   clock. If a minter's clock runs ahead by S seconds, tokens minted up to S
   seconds before the revocation can survive it.
-- Revocation state is Redis-only and is **not** durable in standalone
-  deployments, which run FakeRedis in-process: a restart clears every
-  watermark and revoked jti, restoring revoked-but-unexpired tokens for the
-  rest of their lifetime. Account deactivation is in the database and does
-  survive; revocation alone does not.
+- Revocation state outlives the API process on **standalone** (#828), where it
+  is written to `token_revocations`. **Cloud is a known gap, not a guarantee**:
+  it keeps the Redis store because that cache is an external service which
+  outlives the pod, but nothing in this repository mandates AOF/RDB
+  persistence — `fakeredis_or_fail` proves the client is not the in-process
+  stand-in, not that Redis survives its own restart. A Redis restart, or a
+  `maxmemory` eviction, resurrects every revoked-but-unexpired token, now for
+  up to the 90-day watermark ceiling. Open question rather than a shipped
+  property. Standalone, whose cache is the in-process FakeRedis stand-in, writes to
+  the `token_revocations` table instead, because a revocation that a restart
+  forgets is not a revocation. `create_token_revocation_store` chooses on
+  `DEPLOYMENT_MODE` and **not** on what the cache client turned out to be: a
+  Redis ping failure or `SKIP_SERVICE_CHECKS` substitutes FakeRedis at boot, so
+  the runtime probe made the store identity differ between two boots of one
+  deployment — and revocations written by one store are invisible to the other.
+  Both arms are held to one behaviour by a contract suite parametrised over the
+  two implementations. Which store a process actually resolved is reported as
+  `token_revocation_durable` by `GET /admin/config/status`.
+- The watermark is held against `MAX_TOKEN_LIFETIME_DAYS` — the longest
+  lifetime any permitted configuration can mint — not against the lifetime
+  currently configured (#828). Otherwise lowering
+  `JWT_REFRESH_TOKEN_EXPIRY_DAYS` while longer-lived tokens are outstanding
+  expires the watermark before them and brings them back, which durability
+  alone does not fix: a persisted row with too short a TTL is just as gone at
+  its deadline. The per-jti arm has read the same ceiling since #830.
 - A sign-in clears a watermark that predates it (below), so the reach of a
   revocation over a *reachable* account ends at that account's next login.
 
@@ -2202,9 +2222,11 @@ declaration on the security half — so each documented spelling worked in exact
 one mode and was silently inert in the other (#888). Settings construction now
 **rejects** either retired name with an error naming its replacement.
 
-`AuthService._longest_token_lifetime_seconds` reads that one source; a `max()`
-across settings halves is no longer needed because there is only one half to
-read.
+`AuthService._watermark_ttl_seconds` reads neither half. A revocation
+watermark has to outlive every token that could still be presented, including
+tokens minted before an operator lowered the knob, so it is held against the
+schema **ceiling** on token lifetime (`MAX_TOKEN_LIFETIME_DAYS`) rather than
+against whatever is configured at the moment of revocation (#828).
 
 ### Configuration File
 

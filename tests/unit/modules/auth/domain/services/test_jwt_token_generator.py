@@ -19,6 +19,7 @@ import pytest
 from faultmaven.models.exceptions import InvalidGrantError
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     RS256JWTTokenGenerator,
+    SequentialRevocationState,
 )
 
 #: The configured pair, as production wires it (JWT_ISSUER/JWT_AUDIENCE
@@ -85,6 +86,20 @@ def mock_revocation_store():
     store.is_user_revoked = AsyncMock(return_value=False)
     store.add_revoked_token = AsyncMock()
     store.revoke_user_tokens_before = AsyncMock()
+
+    # ``revocation_state`` is what the validate paths actually call, and it
+    # returns a PAIR. A bare AsyncMock returns a single Mock, which unpacks to
+    # "not enough values" and surfaces as a swallowed validation error rather
+    # than as a wrong answer — the #767 shape again, one level up. Borrowing
+    # the mixin production stores use keeps this double honest: the two stubs
+    # above stay the thing tests flip, and a store method added later that
+    # nothing here implements still fails loudly.
+    async def _revocation_state(jti, user_id, issued_at):
+        return await SequentialRevocationState.revocation_state(
+            store, jti, user_id, issued_at
+        )
+
+    store.revocation_state = _revocation_state
     return store
 
 

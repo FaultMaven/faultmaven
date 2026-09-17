@@ -25,7 +25,9 @@ Wherever a DDL element in this document is Tier 2, it is marked inline with **"T
 
 **Tenancy context in Local Deployment**: Under ADR-017 the **enterprise**, not the organization, is the isolation boundary. Local Deployment seeds exactly one `enterprises` row (`STANDALONE_ENTERPRISE_ID`, slug `default`) and one default `teams` row inside it — and **no organization row at all**: the organization is a billing target, and a deployment nobody pays for has none. `organization_members` is therefore empty in Local Deployment. `teams` and `team_members` tables exist in both schemas (per the no-divergence rule); the seeded default team gives the sharing substrate a scope to point at, but team-scoped sharing itself stays inert in standalone — there is no membership-population path (that is the Cloud management module). See the per-table applicability matrix in [deployment-schema-strategy.md §2](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md).
 
-**OAuth tables** (`oauth_authorization_codes`): Exists in both schemas but is only populated when `AUTH_MODE=oauth` (Cloud Deployment). Local Deployment uses `AUTH_MODE=local` (HS256 JWT) and never writes to it. Marked Cloud-only behavior in the per-table matrix. Token *revocation* has no SQL table: revoked JTIs live in the deployment-wide Redis revocation store (migration 031 dropped the never-written `oauth_revoked_tokens` table — #767).
+**OAuth tables** (`oauth_authorization_codes`): Exists in both schemas but is only populated when `AUTH_MODE=oauth` (Cloud Deployment). Local Deployment uses `AUTH_MODE=local` (HS256 JWT) and never writes to it. Marked Cloud-only behavior in the per-table matrix.
+
+**Token revocation** (`token_revocations`): Where revocation state lives is a durability question (#828). Cloud keeps it in the deployment-wide Redis store — a real Redis outlives the API pod, and this is the only store read on the authenticated request path. Local Deployment's cache is the in-process FakeRedis singleton, which does not, so it writes here instead: a revocation an API restart forgets is not a revocation. The table is deliberately outside RLS and carries no FK to `users` — the request-path check runs before any tenant is bound, and `ON DELETE CASCADE` would erase a watermark at account deletion, one of the flows that writes one. This is not the `oauth_revoked_tokens` table #767 removed: that one was never written by anything, so a row in it revoked nothing; this one is the only store its deployment has.
 
 **Session storage (v2.1)**: The SQL `sessions` table is **DELETED**. Auth sessions are Redis-only — see §5.3 below. There is no SQL session table in either deployment.
 
@@ -95,7 +97,7 @@ In development, the same SQLite-backed user store is used as in local deployment
 
 **Storage**: SQLite (Local Deployment) or PostgreSQL (Cloud Deployment) via SQLAlchemy ORM
 
-**Tables**: 14 tables (user domain). Three tiers answer three separate questions (ADR-017): the **enterprise** isolates (hard, RLS-enforced), the **organization** bills (a cost centre, no role in visibility), the **team** shares (formed by consent, may span organizations).
+**Tables**: 15 tables (user domain). Three tiers answer three separate questions (ADR-017): the **enterprise** isolates (hard, RLS-enforced), the **organization** bills (a cost centre, no role in visibility), the **team** shares (formed by consent, may span organizations).
 - `enterprises` - The isolation boundary. Top-tier tenancy container; every tenant-scoped row carries its `enterprise_id`
 - `users` - User accounts, anchored to exactly one enterprise
 - `organizations` - Billing targets (cost centres) inside an enterprise
@@ -110,6 +112,7 @@ In development, the same SQLite-backed user store is used as in local deployment
 - `oauth_authorization_codes` - OAuth PKCE authorization codes
 - `sso_org_mappings` - IdP organization → FaultMaven enterprise (untenanted; read pre-auth)
 - `sso_personal_enterprises` - IdP subject → the personal enterprise it owns (untenanted; read pre-auth)
+- `token_revocations` - Revoked JTIs and per-user revocation watermarks (untenanted; read pre-auth, on every authenticated request)
 
 ---
 
@@ -993,7 +996,7 @@ HAVING COUNT(*) > 5;
 - ✅ Isolation via `enterprises` + `users.enterprise_id`; billing via `organizations` + `organization_members`; sharing via `teams` + `team_invitations`
 - ✅ Full RBAC via `roles`, `permissions`, `role_permissions`
 - ✅ Audit trail via `user_audit_log`
-- ✅ SSO via `sso_provider` / `sso_provider_id` columns, `sso_org_mappings` (IdP org → enterprise) and `sso_personal_enterprises` (IdP subject → personal enterprise); OAuth code flow via `oauth_authorization_codes` (token revocation is Redis-only — #767)
+- ✅ SSO via `sso_provider` / `sso_provider_id` columns, `sso_org_mappings` (IdP org → enterprise) and `sso_personal_enterprises` (IdP subject → personal enterprise); OAuth code flow via `oauth_authorization_codes` (token revocation lives in `token_revocations` on standalone and in Redis on cloud — #767, #828)
 
 ---
 

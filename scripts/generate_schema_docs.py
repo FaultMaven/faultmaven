@@ -45,6 +45,7 @@ TABLE_DOMAIN = {
     "role_permissions": "user",
     "user_audit_log": "user",
     "oauth_authorization_codes": "user",
+    "token_revocations": "user",
     "operator_access_audit": "user",
     "operator_access_grants": "user",
     "sso_org_mappings": "user",

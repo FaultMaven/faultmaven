@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 from faultmaven.exceptions import ServiceError
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+    max_revocation_entry_ttl,
     revocation_reason,
 )
 
@@ -479,62 +480,50 @@ class AuthService:
             logger.error(f"Failed to revoke token: {e}")
             raise ServiceError(f"Token revocation failed: {e}")
 
-    def _longest_token_lifetime_seconds(self) -> int:
-        """Longest lifetime any token this deployment mints could have.
+    def _watermark_ttl_seconds(self) -> int:
+        """How long a per-user revocation watermark is held.
 
-        A per-user watermark that expired before the tokens it revokes would
-        resurrect them, so this must bound EVERY token type, not just the
-        obvious one.
+        A watermark that expired before the tokens it revokes would resurrect
+        them, so this must bound EVERY token that could still be presented —
+        not every token the CURRENT configuration would mint.
 
-        Expiry has a single source (``settings.auth``, #888) and every minting
-        path — the HS256/local generator and the RS256/cloud generator, which
-        since #853 are the only ones — takes its lifetimes from it. So "the
-        watermark outlives
-        every mintable token" is structural rather than a reconciliation across
-        configuration: reading that one source covers every mint path, and the
-        field bounds are the only mintable range there is.
+        That distinction is the whole change (#828 comment). This used to read
+        ``settings.auth`` at revocation time, which covers every mint path but
+        only under the configuration in force *at that instant*. An operator
+        who lowers ``JWT_REFRESH_TOKEN_EXPIRY_DAYS`` while tokens minted under
+        the previous value are still outstanding would then get a watermark
+        that expires before them, and those tokens come back — the same
+        resurrection the durable store fixes, reached from configuration
+        instead of from a restart. Durability does not fix it: a persisted row
+        with too short a TTL is just as gone at its deadline.
 
-        Access-token expiry is still folded in, because nothing ties
-        ``JWT_ACCESS_TOKEN_EXPIRY_MINUTES`` to the refresh expiry: at its schema
-        maximum (1 day) it exceeds the shortest permitted refresh lifetime and
-        must be covered exactly like the refresh case.
+        So the bound is ``MAX_TOKEN_LIFETIME_DAYS`` — the longest lifetime ANY
+        permitted configuration can mint, which the schema bounds make an
+        absolute — read through ``max_revocation_entry_ttl`` so this arm and
+        the per-jti arm cannot drift apart. The per-jti arm has read it since
+        #830, for the same three reasons, one of them literally this one ("a
+        token minted before an operator lowered the setting"). The watermark
+        was the arm that did not, because it has no ``exp`` of its own to cap.
 
         Padded by ``MAX_MINT_BASIS_CARRY_SECONDS`` (#831): the watermark keys
         on ``iat``, which is stamped from a pre-read basis that can trail the
         mint by up to the OAuth code's TTL bound, while ``exp`` is mint-time
         plus the lifetime — so a token's life measured from its *basis* (the
-        instant the watermark compares against) exceeds the configured
-        lifetime by up to that carry. Without the pad, a revoked pair minted
-        from a slowly-redeemed code would outlive the watermark entry that
-        revokes it and rotate back to life.
+        instant the watermark compares against) exceeds the configured lifetime
+        by up to that carry. Without the pad, a revoked pair minted from a
+        slowly-redeemed code would outlive the watermark entry that revokes it
+        and rotate back to life.
 
-        Attributes are read directly rather than via ``getattr`` defaults, and a
-        non-positive result raises: a missing or mis-wired settings half must
-        fail loudly here rather than silently under-cover.
+        Nothing configurable is read, which is why the mis-wired-settings raise
+        this method used to carry is gone: a constant cannot under-cover, and a
+        guard that can no longer fire is a guard that will sit green for ever.
+        The cost is a longer-lived entry — the ceiling rather than the
+        configured lifetime — which is one row per revoked user, expiring on
+        its own, against the resurrection of every token that user holds.
         """
         from faultmaven.config.settings import MAX_MINT_BASIS_CARRY_SECONDS
 
-        refresh_days = self._settings.auth.jwt_refresh_token_expire_days
-        access_minutes = self._settings.auth.jwt_access_token_expire_minutes
-        # Checked BEFORE the pad: a positive constant added first would hide a
-        # mis-wired settings half behind a small-but-positive total, silently
-        # under-covering — the exact failure this raise exists to name.
-        seconds = max(int(refresh_days) * 86400, int(access_minutes) * 60)
-        if seconds <= 0:
-            # Unreachable from a real settings object: expiry has one
-            # declaration and both its fields are bounded ``ge=1``. Getting here
-            # therefore means this service was handed something that is not the
-            # source the generators mint from — so any TTL derived here would
-            # bound nothing, and a non-positive one is rejected by SETEX
-            # outright. Defaulting would restore the exact under-coverage #769
-            # fixed, so name the mis-wiring instead.
-            raise RuntimeError(
-                "Token expiry is mis-wired: settings.auth reports a non-positive "
-                f"longest token lifetime (refresh_days={refresh_days!r}, "
-                f"access_minutes={access_minutes!r}). The revocation watermark "
-                "cannot be bounded, so no revocation may be recorded against it."
-            )
-        return seconds + MAX_MINT_BASIS_CARRY_SECONDS
+        return max_revocation_entry_ttl() + MAX_MINT_BASIS_CARRY_SECONDS
 
     async def revoke_user_tokens(
         self,
@@ -565,10 +554,10 @@ class AuthService:
         revoked_at = datetime.now(timezone.utc)
         # The watermark must outlive the longest-lived token that could still
         # be presented, or a long refresh token would outlive the entry that
-        # revokes it and spring back to life. There is one expiry source
-        # (`settings.auth`, the `JWT_*_EXPIRY_*` knobs) and every generator is
-        # constructed from it, so covering that source covers every mint path.
-        ttl = self._longest_token_lifetime_seconds()
+        # revokes it and spring back to life. That bound is the schema ceiling
+        # on token lifetime, not the currently configured one — see
+        # `_watermark_ttl_seconds` for why the difference is a resurrection.
+        ttl = self._watermark_ttl_seconds()
         try:
             # Full precision, not `int(...)`: the revocation rule still floors
             # it, but `clear_user_revocation_if_before` has to order this

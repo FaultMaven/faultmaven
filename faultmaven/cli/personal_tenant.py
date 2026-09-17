@@ -254,14 +254,31 @@ async def _resolve_auth_service() -> Any:
     """The auth service that owns the revocation watermark, or a refusal.
 
     Reuses ``fm-remove-org-member``'s own refusal for a store that cannot end a
-    session — in-process FakeRedis, or no client at all. A retirement that
-    reported success while every outstanding token stayed valid would be worse
-    than one that refused.
+    session. A retirement that reported success while every outstanding token
+    stayed valid would be worse than one that refused. The shared helper
+    refuses four shapes, and this docstring enumerates them so the two
+    commands' contracts cannot drift (#828 delta review):
+
+    * in-process FakeRedis — the watermark never leaves this process;
+    * a Redis store with no client — the write raises;
+    * the DATABASE store on a cloud deployment — whose API reads Redis, so the
+      row revokes nothing;
+    * the database store whose table is absent — the same write failure, on a
+      deployment upgraded rather than re-provisioned.
     """
     from faultmaven.cli.remove_org_member import _revocation_store_unusable
     from faultmaven.container import container
 
-    await container.initialize()
+    try:
+        await container.initialize()
+    except Exception as exc:  # noqa: BLE001 - any composition failure is a refusal
+        # Composition itself can now refuse (cloud with no Redis client,
+        # #828), and it did so before this function's own refusals could run —
+        # so the operator saw a traceback instead of `_Refused`.
+        raise _Refused(
+            f"Refusing to retire: this process could not be composed, so it "
+            f"cannot revoke ({type(exc).__name__}: {exc})."
+        ) from exc
     auth_service = container.get_auth_service()
     if auth_service is None:
         raise _Refused(
@@ -275,7 +292,7 @@ async def _resolve_auth_service() -> Any:
             "No token revocation store is wired, so the watermark cannot be "
             "written. Refusing to retire."
         )
-    unusable = _revocation_store_unusable(store)
+    unusable = await _revocation_store_unusable(store)
     if unusable is not None:
         raise _Refused(f"Refusing to retire: {unusable}.")
     return auth_service

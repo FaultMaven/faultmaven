@@ -1,12 +1,12 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-09-06 11:10 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-09-16 23:40 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
 ## Summary
 
-**41 tables** in the schema.
+**42 tables** in the schema.
 
 | Table | Columns | Primary Key | Foreign Keys |
 |-------|---------|-------------|--------------|
@@ -43,11 +43,12 @@
 | `roles` | 7 | `role_id` | — |
 | `solutions` | 29 | `solution_id` | cases, causal_nodes, enterprises, evidence, hypotheses, organizations |
 | `sso_org_mappings` | 5 | `provider, provider_org_id` | enterprises |
-| `sso_personal_enterprises` | 9 | `subject` | enterprises |
-| `team_invitations` | 10 | `invitation_id` | enterprises, teams, users |
+| `sso_personal_enterprises` | 9 | `subject, provider` | enterprises |
+| `team_invitations` | 12 | `invitation_id` | enterprises, teams, users |
 | `team_members` | 4 | `user_id, team_id` | teams, users |
 | `teams` | 7 | `team_id` | enterprises |
-| `turn_usage` | 5 | `billing_subject_kind, billing_subject_id, usage_date` | enterprises |
+| `token_revocations` | 5 | `scope, subject` | — |
+| `turn_usage` | 5 | `enterprise_id, billing_subject_kind, billing_subject_id, usage_date` | enterprises |
 | `uploaded_files` | 20 | `file_id` | cases, enterprises, organizations, users |
 | `user_audit_log` | 14 | `audit_id` | enterprises, organizations, users |
 | `users` | 22 | `user_id` | enterprises |
@@ -584,7 +585,7 @@ erDiagram
     }
     sso_personal_enterprises {
         VARCHAR subject PK
-        VARCHAR provider
+        VARCHAR provider PK
         VARCHAR enterprise_id FK
         VARCHAR provider_org_id
         BOOLEAN membership_confirmed
@@ -604,6 +605,8 @@ erDiagram
         DATETIME created_at
         DATETIME expires_at
         DATETIME accepted_at
+        VARCHAR revoked_by FK
+        DATETIME revoked_at
     }
     team_members {
         VARCHAR user_id PK
@@ -620,8 +623,15 @@ erDiagram
         DATETIME updated_at
         DATETIME deleted_at
     }
+    token_revocations {
+        VARCHAR scope PK
+        VARCHAR subject PK
+        FLOAT revoked_at
+        DATETIME expires_at
+        DATETIME created_at
+    }
     turn_usage {
-        VARCHAR enterprise_id FK
+        VARCHAR enterprise_id PK
         VARCHAR billing_subject_kind PK
         VARCHAR billing_subject_id PK
         DATE usage_date PK

@@ -14,7 +14,7 @@ import logging
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Dict, NamedTuple, Optional
+from typing import Callable, Dict, NamedTuple, Optional, Tuple
 
 import jwt
 
@@ -24,12 +24,17 @@ from faultmaven.modules.auth.domain.models.user import User
 logger = logging.getLogger(__name__)
 
 
-def _max_revocation_entry_ttl() -> int:
+def max_revocation_entry_ttl() -> int:
     """Ceiling, in seconds, on how long a revocation entry is held.
 
     Read from the schema bound on token lifetime rather than restated here, so
     the two cannot drift: if the permitted lifetime grows, the ceiling grows
     with it and an entry still outlives the token it revokes.
+
+    Public because BOTH revocation arms read it: the per-jti entries below, and
+    the per-user watermark in ``AuthService._watermark_ttl_seconds`` (#828).
+    One ceiling, so the two arms cannot come to disagree about how long a
+    revocation lasts.
 
     Imported inside the call, not at module scope: this module is deliberately
     free of settings imports at import time (see ``resolve_enterprise_claim``).
@@ -1108,7 +1113,7 @@ async def _revoke_token_by_jti(
             return
 
         # Revocation entry lives exactly as long as the token could be used
-        max_ttl = _max_revocation_entry_ttl()
+        max_ttl = max_revocation_entry_ttl()
         exp = payload.get("exp")
         if exp:
             expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
@@ -1165,15 +1170,34 @@ async def revocation_reason(revocation_store, payload: Dict) -> Optional[str]:
     rounding errors.
     """
     jti = payload.get("jti")
-    if jti and await revocation_store.is_revoked(jti):
-        return "token_revoked"
-
     user_id = payload.get("sub")
-    issued_at = payload.get("iat")
-    if user_id and issued_at is not None:
-        if await revocation_store.is_user_revoked(user_id, int(issued_at)):
-            return "user_revoked"
+    raw_iat = payload.get("iat")
+    issued_at = None
+    if user_id and raw_iat is not None:
+        # Coerced INSIDE a try, and only for the watermark arm. A malformed
+        # ``iat`` is a property of the watermark's inputs, not of the jti, and
+        # letting it raise here turned a revoked-jti answer into an exception
+        # that ``AuthService._is_revoked`` swallows into "not revoked" — a
+        # revoked token accepted because a DIFFERENT claim was malformed (#828
+        # delta review). Nothing to match a watermark against is the same
+        # outcome as a claim that cannot be read: only the jti arm applies.
+        try:
+            issued_at = int(raw_iat)
+        except (TypeError, ValueError):
+            issued_at = None
+    if issued_at is None:
+        user_id = None
 
+    # ONE call, so a store whose reads cost something can answer both arms in
+    # one round trip (#828 review). Which answer WINS, and what a missing claim
+    # means, stay here: the rule is what must not be duplicated per store.
+    token_revoked, user_revoked = await revocation_store.revocation_state(
+        jti, user_id, issued_at
+    )
+    if token_revoked:
+        return "token_revoked"
+    if user_revoked:
+        return "user_revoked"
     return None
 
 
@@ -1817,7 +1841,7 @@ class ITokenRevocationStore(ABC):
       under-revoke silently on the generator ``validate_*`` paths, which —
       unlike ``AuthService.verify_token`` — do not ``require`` it. See
       ``docs/architecture/security/iam-design.md`` for the full limits
-      (clock skew, Redis-only durability, password-reset tokens).
+      (clock skew, where revocation state lives, password-reset tokens).
 
     Entries carry a TTL matching token expiration; once a token can no longer
     be presented, its revocation entry is redundant and expires.
@@ -1862,11 +1886,23 @@ class ITokenRevocationStore(ABC):
                 the fraction is significant — ``is_user_revoked`` floors it,
                 but ``clear_user_revocation_if_before`` orders against it)
             ttl: Time to live in seconds; must outlive the longest-lived token
-                the deployment issues MEASURED FROM ITS BASIS — the configured
-                lifetime plus ``MAX_MINT_BASIS_CARRY_SECONDS``, since ``iat``
-                (what the watermark compares against) can trail the mint by up
-                to the hand-off artifact's TTL (#831) — or tokens could
-                outlive the watermark that revokes them
+                the deployment issues MEASURED FROM ITS BASIS — the schema
+                CEILING on token lifetime (``MAX_TOKEN_LIFETIME_DAYS``) plus
+                ``MAX_MINT_BASIS_CARRY_SECONDS``, since ``iat`` (what the
+                watermark compares against) can trail the mint by up to the
+                hand-off artifact's TTL (#831) — or tokens could outlive the
+                watermark that revokes them.
+
+                **The ceiling, NOT the configured lifetime** (#828). Sizing
+                against the current configuration covers every mint path, but
+                only under the configuration in force at the moment of
+                revocation: an operator lowering
+                ``JWT_REFRESH_TOKEN_EXPIRY_DAYS`` while longer-lived tokens are
+                outstanding gets a watermark that expires before them. At the
+                shipped defaults the difference is 13x (7 days against 90), so
+                an implementer sizing storage from the old rule would
+                under-provision by that much. ``AuthService._watermark_ttl_seconds``
+                is the one caller and computes it.
         """
         ...
 
@@ -1880,6 +1916,37 @@ class ITokenRevocationStore(ABC):
 
         Returns:
             True if the user has a watermark at or after ``issued_at``
+        """
+        ...
+
+    @abstractmethod
+    async def revocation_state(
+        self,
+        jti: Optional[str],
+        user_id: Optional[str],
+        issued_at: Optional[int],
+    ) -> Tuple[bool, bool]:
+        """Both arms' raw answers for one token: ``(token_revoked, user_revoked)``.
+
+        Deliberately not a second revocation rule: it returns the two booleans
+        and composes nothing. ``revocation_reason`` remains the one place that
+        decides which answer wins and what a missing claim means, so a store
+        implementing this cannot drift from the rule — only from the number of
+        round trips it takes to answer.
+
+        **Abstract, like every other method here.** It is the one the request
+        path actually calls, so a store that does not implement it fails on
+        every authenticated request — and ``AuthService._is_revoked`` turns that
+        into "not revoked", so the symptom is revocation silently OFF rather
+        than an error anybody sees. A concrete default on this class would let a
+        subclass inherit an answer it never considered; instead the two shapes
+        are offered explicitly and an implementer picks one:
+
+        * :class:`SequentialRevocationState` — the obvious pair of calls, right
+          for any store whose reads are free (Redis, the in-memory doubles);
+        * a hand-written override — for a store whose reads each cost something.
+          ``SqlTokenRevocationStore`` answers in one session and one query,
+          because two cost 17.7ms per request against 9.3ms for one (#828).
         """
         ...
 
@@ -1948,3 +2015,32 @@ class ITokenRevocationStore(ABC):
             Count of entries cleaned up
         """
         ...
+
+
+class SequentialRevocationState:
+    """``revocation_state`` for a store whose reads are free.
+
+    The obvious pair of calls, with the short-circuit the request path has
+    always had: a revoked jti means the watermark is never consulted. Mixed in
+    rather than defaulted on :class:`ITokenRevocationStore`, so that answering
+    both arms in two round trips is a CHOICE a store records in its bases — a
+    store that ought to batch cannot acquire this by forgetting to think about
+    it, and `MagicMock(spec=ITokenRevocationStore)` covers the method because
+    the interface declares it.
+
+    Mix in BEFORE the interface, so this wins the MRO::
+
+        class MyStore(SequentialRevocationState, ITokenRevocationStore): ...
+    """
+
+    async def revocation_state(
+        self,
+        jti: Optional[str],
+        user_id: Optional[str],
+        issued_at: Optional[int],
+    ) -> Tuple[bool, bool]:
+        if jti and await self.is_revoked(jti):
+            return True, False
+        if user_id and issued_at is not None:
+            return False, await self.is_user_revoked(user_id, issued_at)
+        return False, False

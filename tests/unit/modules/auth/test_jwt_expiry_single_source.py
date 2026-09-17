@@ -341,94 +341,104 @@ class TestRetiredSpellingIsRejected:
         assert settings.auth.jwt_refresh_token_expire_days == 11
 
 
-class TestRevocationWatermarkTracksTheSingleSource:
-    """The #769 watermark TTL is derived from the one configurable lifetime.
+class TestTheRevocationWatermarkOutlivesEveryOutstandingToken:
+    """The watermark TTL is the schema CEILING on token lifetime (#828).
 
-    With a single source, "the watermark outlives every mintable token" is
-    structural: the value the generators mint with is the value this reads.
+    It used to be the lifetime *currently configured* — which covers every mint
+    path, but only under the configuration in force at the moment of
+    revocation. Lower ``JWT_REFRESH_TOKEN_EXPIRY_DAYS`` while tokens minted
+    under the old value are still outstanding and the watermark expires first,
+    and those tokens come back. Same resurrection as the restart this issue is
+    about, reached from configuration instead: a persisted row with too short a
+    TTL is just as gone at its deadline, so durability does not fix it.
+
+    The per-jti arm has been held against the absolute ceiling since #830 for
+    exactly these reasons — one of its three is literally "a token minted
+    before an operator lowered the setting". This is the arm that had no
+    ``exp`` of its own to cap and so never got one.
     """
 
-    @pytest.mark.parametrize("minutes,days", LIFETIME_PAIRS)
-    def test_watermark_ttl_is_refresh_lifetime_plus_basis_carry(
-        self, monkeypatch, minutes, days
-    ):
+    @staticmethod
+    def _ceiling() -> int:
+        from faultmaven.config.settings import (
+            MAX_MINT_BASIS_CARRY_SECONDS,
+            MAX_TOKEN_LIFETIME_DAYS,
+        )
+
+        return MAX_TOKEN_LIFETIME_DAYS * 86400 + MAX_MINT_BASIS_CARRY_SECONDS
+
+    @staticmethod
+    def _service(monkeypatch, minutes: int, days: int):
         monkeypatch.setenv("JWT_SECRET_KEY", SECRET)
         settings = _configured_settings(monkeypatch, minutes, days)
 
         from faultmaven.modules.auth.domain.services import auth_service as auth_module
 
         monkeypatch.setattr(auth_module, "get_settings", lambda: settings)
-        service = auth_module.AuthService(revocation_store=_revocation_store())
+        return auth_module.AuthService(revocation_store=_revocation_store())
 
-        from faultmaven.config.settings import MAX_MINT_BASIS_CARRY_SECONDS
+    @pytest.mark.parametrize("minutes,days", LIFETIME_PAIRS)
+    def test_the_ttl_does_not_move_with_the_configured_lifetime(
+        self, monkeypatch, minutes, days
+    ):
+        service = self._service(monkeypatch, minutes, days)
 
-        # The pad is the #831 basis carry: iat (what the watermark compares
-        # against) can trail the mint by up to the hand-off artifact's TTL,
-        # while exp is mint-time plus the lifetime — so the entry must cover
-        # lifetime + carry, or a revoked pair minted from a slowly-redeemed
-        # code would outlive the watermark and rotate back to life.
-        assert (
-            service._longest_token_lifetime_seconds()
-            == days * 86400 + MAX_MINT_BASIS_CARRY_SECONDS
+        assert service._watermark_ttl_seconds() == self._ceiling()
+
+    def test_a_watermark_written_after_a_lowered_expiry_still_covers_the_old_one(
+        self, monkeypatch
+    ):
+        """The comment's finding on #828, as the sequence that produces it.
+
+        Tokens are outstanding under the LONGEST permitted refresh lifetime;
+        the operator then lowers the knob to the shortest; a revocation is
+        recorded. The watermark must still outlive those tokens.
+        """
+        from faultmaven.config.settings import MAX_REFRESH_TOKEN_EXPIRY_DAYS
+
+        outstanding = MAX_REFRESH_TOKEN_EXPIRY_DAYS * 86400
+        service = self._service(monkeypatch, 15, 1)
+
+        assert service._watermark_ttl_seconds() >= outstanding
+
+    def test_the_pad_is_the_mint_basis_carry(self, monkeypatch):
+        """``iat`` — what the watermark compares against — can trail the mint by
+        up to the hand-off artifact's TTL (#831), while ``exp`` is mint-time
+        plus the lifetime. Without the pad a revoked pair minted from a
+        slowly-redeemed code outlives the entry that revokes it."""
+        from faultmaven.config.settings import (
+            MAX_MINT_BASIS_CARRY_SECONDS,
+            MAX_TOKEN_LIFETIME_DAYS,
         )
 
-    def test_watermark_covers_a_maximal_access_lifetime(self, monkeypatch):
-        """Access expiry is covered too: nothing ties it to the refresh knob.
-
-        At its schema maximum (1 day) it exceeds the shortest permitted refresh
-        lifetime, so the bound must be the max of the two, not the refresh one.
-        """
-        monkeypatch.setenv("JWT_SECRET_KEY", SECRET)
-        settings = _configured_settings(monkeypatch, 1440, 1)
-
-        from faultmaven.modules.auth.domain.services import auth_service as auth_module
-
-        monkeypatch.setattr(auth_module, "get_settings", lambda: settings)
-        service = auth_module.AuthService(revocation_store=_revocation_store())
-
-        from faultmaven.config.settings import MAX_MINT_BASIS_CARRY_SECONDS
+        service = self._service(monkeypatch, 15, 7)
 
         assert (
-            service._longest_token_lifetime_seconds()
-            == 1440 * 60 + MAX_MINT_BASIS_CARRY_SECONDS
+            service._watermark_ttl_seconds() - MAX_TOKEN_LIFETIME_DAYS * 86400
+            == MAX_MINT_BASIS_CARRY_SECONDS
         )
 
-    def test_a_non_positive_lifetime_raises_instead_of_defaulting(self, monkeypatch):
-        """A mis-wired source fails loudly; it does not default to 7 days.
+    def test_both_revocation_arms_read_one_ceiling(self, monkeypatch):
+        """The per-jti cap and the watermark must not come to disagree about
+        how long a revocation lasts, so they read the same function."""
+        from faultmaven.config.settings import MAX_MINT_BASIS_CARRY_SECONDS
+        from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+            max_revocation_entry_ttl,
+        )
 
-        This branch is unreachable from the real source — one declaration, both
-        fields bounded ``ge=1`` — which is precisely why a silent fallback there
-        was worse than none: it could only ever fire when this service is reading
-        something the generators do NOT mint from, and would then write every
-        watermark against a TTL no token respects. That is the #769 defect, so
-        the mis-wiring is named rather than papered over.
-        """
-        monkeypatch.setenv("JWT_SECRET_KEY", SECRET)
-        settings = _configured_settings(monkeypatch, 15, 7)
+        service = self._service(monkeypatch, 15, 7)
 
-        from faultmaven.modules.auth.domain.services import auth_service as auth_module
-
-        monkeypatch.setattr(auth_module, "get_settings", lambda: settings)
-        service = auth_module.AuthService(revocation_store=_revocation_store())
-
-        # Assignment, not construction: the bounds make this unconstructible, and
-        # what is under test is the behaviour when the object read here is not
-        # the bounded source.
-        settings.auth.jwt_refresh_token_expire_days = 0
-        settings.auth.jwt_access_token_expire_minutes = 0
-
-        with pytest.raises(RuntimeError, match="mis-wired"):
-            service._longest_token_lifetime_seconds()
+        assert (
+            service._watermark_ttl_seconds()
+            == max_revocation_entry_ttl() + MAX_MINT_BASIS_CARRY_SECONDS
+        )
 
     @pytest.mark.asyncio
-    async def test_a_mis_wired_source_records_no_revocation(self, monkeypatch):
-        """The raise reaches the caller rather than being swallowed into a TTL.
-
-        A revocation the store never accepted must not read as successful, so the
-        failure has to propagate out of ``revoke_user_tokens`` too.
-        """
+    async def test_the_recorded_ttl_is_what_the_store_receives(self, monkeypatch):
+        """Not just the helper: the value that reaches the store is the one
+        that decides whether a revocation survives."""
         monkeypatch.setenv("JWT_SECRET_KEY", SECRET)
-        settings = _configured_settings(monkeypatch, 15, 7)
+        settings = _configured_settings(monkeypatch, 15, 1)
 
         from faultmaven.modules.auth.domain.services import auth_service as auth_module
 
@@ -436,10 +446,7 @@ class TestRevocationWatermarkTracksTheSingleSource:
         store = _revocation_store()
         service = auth_module.AuthService(revocation_store=store)
 
-        settings.auth.jwt_refresh_token_expire_days = 0
-        settings.auth.jwt_access_token_expire_minutes = 0
+        await service.revoke_user_tokens("user-828")
 
-        with pytest.raises(RuntimeError, match="mis-wired"):
-            await service.revoke_user_tokens("user-888")
-
-        store.revoke_user_tokens_before.assert_not_awaited()
+        store.revoke_user_tokens_before.assert_awaited_once()
+        assert store.revoke_user_tokens_before.await_args.args[2] == self._ceiling()

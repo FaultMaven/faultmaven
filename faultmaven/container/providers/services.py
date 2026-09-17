@@ -884,27 +884,89 @@ def create_token_revocation_store(
     settings: FaultMavenSettings,
     cache_client: Any = None,
 ) -> Any:
-    """Create the deployment-wide token revocation store (real or FakeRedis).
+    """Create the deployment-wide token revocation store.
 
     Revoked tokens are tracked with TTL (matching token expiration). This is
     the SINGLE revocation store (#767): every revoke path writes to it and the
-    request-path check reads from it, all under one key prefix.
+    request-path check reads from it.
+
+    **Which implementation is a durability question** (#828). Revocation state
+    that does not outlive the process is not revocation: an API restart
+    resurrects every revoked-but-unexpired token for the remainder of its
+    natural life — a refresh token revoked at logout for up to
+    ``JWT_REFRESH_TOKEN_EXPIRY_DAYS``, and a per-user watermark (role
+    downgrade, password change, admin revoke-tokens) for as long as it was
+    meant to cover.
+
+    - **Cloud** keeps ``RedisTokenRevocationStore``. Its cache is a real Redis,
+      an external service that outlives the API POD, and this is the only store
+      hit on the authenticated request path. Note what that does and does not
+      buy: ``fakeredis_or_fail`` proves the client is not the in-process
+      stand-in, NOT that Redis persists. Nothing here mandates AOF/RDB, so a
+      Redis restart or a ``maxmemory`` eviction resurrects every
+      revoked-but-unexpired token. Cloud durability is a known gap, not a
+      property this function delivers.
+    - **Standalone** gets ``SqlTokenRevocationStore``, which writes to
+      ``token_revocations`` in the same database that already makes account
+      deactivation survive a restart.
+
+    **Keyed on DEPLOYMENT_MODE, not on what the cache turned out to be**
+    (#828 review). Asking ``is_fakeredis(cache_client)`` looks more precise and
+    is worse, because it makes the store's identity a RUNTIME property that can
+    differ between two boots of the same deployment: ``get_async_redis_client``
+    substitutes FakeRedis whenever real Redis fails its ping (standalone warns
+    rather than raising), and ``SKIP_SERVICE_CHECKS=true`` substitutes it
+    outright. A standalone deployment with real Redis would then resolve the
+    SQL store for that process's life, be unable to see anything already in
+    Redis, and flip back on the next healthy boot — orphaning whatever it
+    wrote. Configuration cannot flap, so the store is the same one every boot.
+
+    The cost of that choice is a standalone deployment that HAS configured real
+    Redis: it now pays a database read per authenticated request instead of a
+    cache read. That is the correct trade — its Redis was never required to be
+    durable either (no AOF is mandated anywhere), so the previous behaviour was
+    "revocation survives a restart if your Redis happened to be configured for
+    it", which is not a property anything could rely on.
 
     Args:
         settings: FaultMavenSettings instance
-        cache_client: Async Redis-compatible client (always provided)
+        cache_client: Async Redis-compatible client. Required under cloud.
 
     Returns:
-        RedisTokenRevocationStore instance
+        A ``RedisTokenRevocationStore`` or a ``SqlTokenRevocationStore``
+
+    Raises:
+        RedisUnavailableError: Cloud with no cache client. Falling back to the
+            database store there would write revocations somewhere the API pods
+            do not read — the silent divergence this function exists to
+            prevent — so it refuses instead. Unreachable in a real boot:
+            ``create_redis_client`` already refuses under cloud, so this is the
+            backstop for a composition that bypassed it.
     """
+    from faultmaven.infrastructure.redis_client import RedisUnavailableError
     from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
         RedisTokenRevocationStore,
+        SqlTokenRevocationStore,
     )
 
-    return RedisTokenRevocationStore(
-        cache_client,
-        key_prefix=settings.security.token_revocation_prefix,
+    if settings.is_cloud:
+        if cache_client is None:
+            raise RedisUnavailableError(
+                "Cloud requires a Redis client for the token revocation store. "
+                "Refusing to fall back to the database store: the API reads "
+                "Redis here, so revocations written to token_revocations would "
+                "revoke nothing while every write path reported success."
+            )
+        return RedisTokenRevocationStore(
+            cache_client,
+            key_prefix=settings.security.token_revocation_prefix,
+        )
+
+    logger.info(
+        "Token revocation store: database (revocations must survive a restart; "
+        "reported as token_revocation_durable on GET /admin/config/status)"
     )
+    return SqlTokenRevocationStore()
 
 
 def create_signing_token_generator(

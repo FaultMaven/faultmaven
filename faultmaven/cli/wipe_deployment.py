@@ -161,6 +161,11 @@ MUST_BE_EMPTY = frozenset(
         "sso_personal_enterprises",
         "team_invitations",
         "team_members",
+        # Token revocation state (#828). Untenanted for the same reason as the
+        # SSO tables — the request-path check runs before a tenant is bound —
+        # so a tenant-scoped wipe misses it, and a surviving watermark would
+        # belong to the previous deployment's account ids.
+        "token_revocations",
         "user_audit_log",
         "users",
         # The per-UTC-day turn ledger (ADR-016 D5.3, re-keyed on a billing

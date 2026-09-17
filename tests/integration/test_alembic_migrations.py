@@ -128,7 +128,8 @@ def get_current_revision(database_url: str) -> str:
 # Every table the baseline creates (ADR-017). ``turn_usage`` replaces the
 # organization-keyed ``organization_turn_usage``, ``sso_personal_enterprises``
 # replaces ``sso_personal_orgs``, and ``team_invitations`` is new: the consent
-# record a team forms by.
+# record a team forms by. ``token_revocations`` (#828) is where revocation
+# state lives when the cache does not outlive the process.
 EXPECTED_TABLES = [
     "alembic_version",
     "case_actions",
@@ -168,6 +169,7 @@ EXPECTED_TABLES = [
     "team_invitations",
     "team_members",
     "teams",
+    "token_revocations",
     "turn_usage",
     "uploaded_files",
     "user_audit_log",

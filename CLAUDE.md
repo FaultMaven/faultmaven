@@ -943,7 +943,7 @@ alembic downgrade -1
 
 ### Key Tables (4 domains)
 
-**User domain:** `users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `team_invitations`, `user_audit_log`, `oauth_authorization_codes`
+**User domain:** `users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `team_invitations`, `user_audit_log`, `oauth_authorization_codes`, `token_revocations`
 
 **Case domain:** `cases`, `case_messages`, `case_actions`, `case_tags`, `case_checkpoints`, `case_entities`, `evidence`, `hypotheses`, `hypothesis_evidence`, `solutions`, `uploaded_files`, `investigation_sessions`, `reports`, `conversion_jobs`, `conversion_drafts`
 
@@ -965,7 +965,7 @@ All tables have SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/
 
 One migration: `001_enterprise_baseline` (revision `a1e0c17bd001`,
 `alembic/versions/20260906_1200_a1e0c17bd001_001_enterprise_baseline.py`). It
-creates all 41 tables, the RLS policies, the append-only operator triggers, the
+creates all 42 tables, the RLS policies, the append-only operator triggers, the
 last-admin constraint trigger, and the seed rows (the Standalone enterprise, the
 Standalone default team, the RBAC roles and permissions). `downgrade()` drops
 everything — there is one migration, so there is no history to step back
