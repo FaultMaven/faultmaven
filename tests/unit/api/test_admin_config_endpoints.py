@@ -153,6 +153,12 @@ def mock_settings():
     settings.tools.web_search_engine_id = None
     settings.is_cloud = False  # standalone (canonical DEPLOYMENT_MODE, ADR-004)
     settings.server.environment = MagicMock(value="development")
+    # Explicit for the same reason as ``kb_prefetch_enabled`` above: the fixture
+    # models "configures nothing", and an auto-created MagicMock attribute is
+    # truthy, which would make the settings-only stand-in for
+    # ``debug_endpoints`` a constant True and its arm unable to discriminate.
+    # False is also the shipped default (``Field(default=False)``).
+    settings.server.enable_debug_endpoints = False
     # A real int, not a MagicMock: the endpoint compares it (#1214 reports
     # whether the per-worker suggestion store is worker-safe), and a bare
     # MagicMock attribute would make every test here fail on the comparison
@@ -1399,6 +1405,13 @@ def _pure_settings_answer(feature: str, settings) -> bool:
         # settings object reports False: the deployment mode is always SET to
         # something, so a negated test would be a constant True here.
         return str(getattr(settings, "deployment_mode", "")) == "standalone"
+    if feature == "debug_endpoints":
+        # The obvious version: echo the flag. It reports True for every
+        # deployment with ENABLE_DEBUG_ENDPOINTS set — which is what the
+        # operator typed, not whether the surface is present on the pod in front
+        # of them — and False on a development process that mounts the router
+        # with the flag unset, which is the shipped default.
+        return bool(settings.server.enable_debug_endpoints)
     raise AssertionError(f"no settings-only stand-in defined for {feature}")
 
 
@@ -2003,7 +2016,38 @@ def _scenario_token_revocation_durable(settings, app, monkeypatch, reality):
         )
 
 
+def _scenario_debug_endpoints(settings, app, monkeypatch, reality):
+    """The runtime fact withheld here is whether THIS PROCESS mounted the router.
+
+    ``ENABLE_DEBUG_ENDPOINTS`` is set in BOTH arms — that is the point, and it
+    is the whole reason #1493 asked for this field. The flag is a policy; the
+    mount is what a given process did with it, and the two come apart in ways an
+    operator cannot read off their own configuration: the router also mounts
+    with the flag unset whenever ``ENVIRONMENT`` is development/testing/test, and
+    it does not mount on a process whose module-level block never ran under that
+    configuration at all.
+
+    A settings-only implementation would report True for every deployment with
+    the flag set, which tells an operator auditing a cluster the one thing they
+    already knew — they typed it — instead of whether the surface is present on
+    the pod in front of them.
+
+    ``main`` writes the flag at the mount itself, so the fact withheld here is
+    exactly the fact the endpoint reads.
+    """
+    settings.server.enable_debug_endpoints = True
+    if reality:
+        app.state.debug_endpoints_mounted = True
+    else:
+        # Not "set False" — REMOVED, which is the state of an app object whose
+        # mount block never ran. The reader defaults False for it, and that
+        # default is the behaviour under test.
+        if hasattr(app.state, "debug_endpoints_mounted"):
+            delattr(app.state, "debug_endpoints_mounted")
+
+
 FEATURE_SCENARIOS = {
+    "debug_endpoints": _scenario_debug_endpoints,
     "kb_prefetch": _scenario_kb_prefetch,
     "web_search": _scenario_web_search,
     "llm_tracing": _scenario_llm_tracing,
