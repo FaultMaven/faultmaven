@@ -395,12 +395,30 @@ Answer:"""
 
         answer = annotate_if_truncated(response.content.strip(), response)
 
-        # Extract sources using config (KB-specific)
+        # Provenance is a USE set, not the retrieval set. The relevance floor
+        # above is a gate on the BATCH — it refuses synthesis when the best
+        # chunk is at the noise floor — so a batch that clears it on one strong
+        # chunk still carries the weak remainder, and citing every chunk
+        # published their titles as sources for an answer they had no part in.
+        # Measured: on-topic chunks land at 0.59-0.75 and unrelated ones at
+        # 0.36-0.41 (see UnifiedKBConfig.relevance_threshold), so one chunk at
+        # 0.51 was enough to attribute the answer to four at 0.36.
+        #
+        # Only the SOURCES narrow. The synthesis context above is untouched, so
+        # the model reads exactly what it read before; what changes is which
+        # titles the answer is allowed to claim. A chunk below the floor may
+        # still contribute a detail — it just cannot be offered to the user as
+        # the authority for the answer.
+        #
+        # The cited set can never be empty where synthesis proceeded: the floor
+        # passed because some chunk was at or above it, and that chunk is here.
+        cited = (
+            [c for c in chunks if c.get("score", 0.0) >= threshold]
+            if threshold is not None
+            else chunks
+        )
         sources = list(
-            set(
-                self._kb_config.extract_source_name(chunk["metadata"])
-                for chunk in chunks
-            )
+            set(self._kb_config.extract_source_name(c["metadata"]) for c in cited)
         )
 
         avg_score = sum(chunk["score"] for chunk in chunks) / len(chunks)
