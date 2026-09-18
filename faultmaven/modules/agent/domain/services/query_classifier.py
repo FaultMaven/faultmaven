@@ -56,31 +56,97 @@ _TIMESTAMP_PATTERNS = [
 # whatever its phrasing, and suppresses the semantic scope check downstream — so
 # what it matches had better be a status code. ``[45]\d{2}`` matched any
 # three-digit number in the range, which is mostly NOT status codes: 443 and 465
-# are ports, 500 is a money amount or a row count, 450 is a latency. A single
-# false match routed a question into directed analysis and kept it there.
+# are ports, 500 is a money amount or a row count, 450 is a latency.
 #
-# The set is closed and small, so enumerate it rather than guess from shape.
-# Codes are the IANA-registered 4xx/5xx plus the widely-deployed unofficial ones
-# a user is likely to paste (Cloudflare's 52x, nginx's 499).
-_HTTP_STATUS_CODES = (
-    # 4xx client errors
-    "400 401 402 403 404 405 406 407 408 409 410 411 412 413 414 415 416 417 "
-    "418 421 422 423 424 425 426 428 429 431 451 499 "
-    # 5xx server errors
-    "500 501 502 503 504 505 506 507 508 510 511 520 521 522 523 524 525 526"
-).split()
+# A frozenset, not a whitespace-joined string: order is irrelevant here, and a
+# split string makes the separator load-bearing — dropping one space silently
+# fuses two codes into an unmatchable six-digit token.
+_HTTP_STATUS_CODES = frozenset(
+    {
+        # 4xx client errors (IANA-registered)
+        "400",
+        "401",
+        "402",
+        "403",
+        "404",
+        "405",
+        "406",
+        "407",
+        "408",
+        "409",
+        "410",
+        "411",
+        "412",
+        "413",
+        "414",
+        "415",
+        "416",
+        "417",
+        "418",
+        "421",
+        "422",
+        "423",
+        "424",
+        "425",
+        "426",
+        "428",
+        "429",
+        "431",
+        "451",
+        # 4xx unofficial but routinely logged: nginx
+        "444",
+        "494",
+        "495",
+        "496",
+        "497",
+        "498",
+        "499",
+        # 5xx server errors (IANA-registered)
+        "500",
+        "501",
+        "502",
+        "503",
+        "504",
+        "505",
+        "506",
+        "507",
+        "508",
+        "510",
+        "511",
+        # 5xx unofficial but routinely logged: Apache/cPanel, Cloudflare, upstream
+        "509",
+        "520",
+        "521",
+        "522",
+        "523",
+        "524",
+        "525",
+        "526",
+        "527",
+        "529",
+        "530",
+        "598",
+        "599",
+    }
+)
 
-# Two adjacency rules the code set alone cannot express, because the numbers
-# involved ARE valid status codes:
+# Three adjacency rules. The first two keep a code from matching a FRAGMENT of a
+# longer number, which ``\b`` alone does not do — a word boundary falls either
+# side of "." and ",", so "$23,500", "0.503", "1.500 seconds" and "1.404.2" all
+# offered up a bogus status code. The third separates a code used as a LABEL
+# from one used as a status, which the code set cannot express because the
+# numbers involved are genuinely valid codes:
 #
-#   - Followed IMMEDIATELY by "(" — a label carrying a qualifier rather than a
-#     status. 401(k) and 403(b) are retirement plans, 501(c)(3) is a tax
-#     status. The binding must be tight: "502 (Bad Gateway)" is a real code
-#     with an explanatory parenthetical, and the space is what tells them
-#     apart.
-#   - Preceded by a currency symbol — an amount. "$500 in fees" is money.
+#   - not part of a decimal or thousands-grouped number, either side
+#   - not immediately behind a currency symbol, with or without a space
+#   - not carrying a single-letter parenthetical: 401(k) and 403(b) are
+#     retirement plans, 501(c)(3) is a tax status. Scoped to ONE lowercase
+#     letter so "502(Bad Gateway)" — a real code in an ordinary log shape —
+#     still matches, and tolerant of a space so "401 (k)" is caught too.
 _STATUS_CODE_PATTERN = re.compile(
-    r"(?<![$£€¥])\b(?:" + "|".join(_HTTP_STATUS_CODES) + r")\b(?!\()"
+    r"(?<![\d.,$£€¥₹])(?<![$£€¥₹] )\b(?:"
+    + "|".join(sorted(_HTTP_STATUS_CODES))
+    + r")\b(?![.,]\d)(?!\s?\([a-z]\))"
 )
 
 # Error keywords that indicate specific technical conditions

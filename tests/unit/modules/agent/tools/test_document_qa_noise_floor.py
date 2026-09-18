@@ -230,5 +230,8 @@ class TestProvenanceIsAUseSet:
         eligible = {
             f"Doc {i}" for i, s in enumerate(scores) if s >= config.relevance_threshold
         }
-        assert set(result["sources"]) <= eligible
-        assert result["sources"], "synthesis ran, so something must be citable"
+        # Equality, not containment. A subset assertion cannot tell "cite every
+        # chunk that cleared the floor" from "cite only the best one" — the
+        # under-citation direction, which is what a later edit is most likely to
+        # break, and which misattributes an answer just as badly.
+        assert set(result["sources"]) == eligible

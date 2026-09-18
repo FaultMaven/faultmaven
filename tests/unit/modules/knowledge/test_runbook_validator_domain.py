@@ -130,11 +130,15 @@ def test_off_vocab_domain_is_error():
 # ---------------------------------------------------------------------------
 
 
-def test_ingestion_gate_derives_from_the_published_territory():
-    """``VALID_DOMAINS`` is the contract's tuple, not a second literal.
+def test_ingestion_gate_matches_the_published_territory():
+    """The two copies of the vocabulary hold the same values, in the same order.
 
-    The property, not an instance: re-literalising either side fails this
-    regardless of which domains the taxonomy happens to hold.
+    They cannot be ONE definition: kb-toolkit's cross-repo parity gate reads
+    ``VALID_DOMAINS`` out of the AST with ``ast.literal_eval``, so deriving it
+    from the contract crashes that gate instead of comparing it — in the other
+    repo's CI, against this repo's default branch, where nothing here would
+    catch it. So the drift check lives here instead, and it is a real check
+    rather than a restatement of an assignment.
     """
     assert VALID_DOMAINS == list(TROUBLESHOOTING_DOMAINS)
 
@@ -195,3 +199,29 @@ def test_both_renderings_cover_the_same_vocabulary():
     scope = describe_troubleshooting_scope()
     for name in TROUBLESHOOTING_DOMAINS:
         assert name in short and name in scope
+
+
+def test_conversion_side_domain_keywords_stay_inside_the_vocabulary():
+    """The case→runbook converter stamps `domain`; the gate then validates it.
+
+    ``_DOMAIN_KEYWORDS`` is a SECOND, un-derived copy of the vocabulary on the
+    producing side of the same gate, with its own key set and its own
+    ``application`` fallback. Nothing related them, so renaming a domain here
+    left the converter stamping a value the validator rejects — case-to-runbook
+    conversion failing at ingestion, with no test in between.
+
+    A subset check rather than equality: the converter needs keywords only for
+    domains it can actually infer, and `application` is deliberately keyword-free
+    because it is the catch-all.
+    """
+    from faultmaven.modules.knowledge.domain.models.conversion import (
+        _DOMAIN_KEYWORDS,
+        _resolve_domain,
+    )
+
+    unknown = set(_DOMAIN_KEYWORDS) - set(TROUBLESHOOTING_DOMAINS)
+    assert not unknown, f"converter can stamp domains the gate rejects: {unknown}"
+
+    # The fallback must itself be in the vocabulary, or a case matching no
+    # keyword produces a draft that cannot be ingested.
+    assert _resolve_domain("nothing here matches any keyword") in VALID_DOMAINS

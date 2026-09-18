@@ -123,11 +123,28 @@ _STAGE_PHRASE = {
     "treatment": "working on the fix",
 }
 
-_CAPABILITIES = (
-    "I can investigate a problem you describe, analyze the logs, configs and "
-    "metrics you share, search your team's runbooks and past fixes, and track "
-    "hypotheses until a fix is verified."
-)
+
+def _capabilities() -> str:
+    """The answer to "what can you do", stated deterministically.
+
+    This lane resolves BEFORE the aside lanes — ``HELP_RE`` whole-message
+    matches "help", "what can you do", "how can you help me" — and answers with
+    no LLM in the loop, so the scope rules written into the aside prompts never
+    apply to it. It therefore has to carry the territory itself, or the one
+    surface most likely to be asked the question is the one that cannot answer
+    it.
+    """
+    from faultmaven.modules.knowledge.contracts import (
+        describe_troubleshooting_domains,
+    )
+
+    return (
+        "I can investigate a problem you describe, analyze the logs, configs and "
+        "metrics you share, search your team's runbooks and past fixes, and track "
+        "hypotheses until a fix is verified. I work on troubleshooting engineering "
+        f"systems — {describe_troubleshooting_domains()} — and a technology like "
+        "Kubernetes, Linux or Windows can fall in several of those at once."
+    )
 
 
 def _title(case: Any) -> str:
@@ -219,9 +236,9 @@ def _opener(kind: OrientationKind, fresh: bool) -> str:
         )
     if kind == OrientationKind.HELP:
         return (
-            "I'm FaultMaven, an AI troubleshooting copilot. " + _CAPABILITIES
+            "I'm FaultMaven, an AI troubleshooting copilot. " + _capabilities()
             if fresh
-            else _CAPABILITIES
+            else _capabilities()
         )
     return ""
 
@@ -325,7 +342,7 @@ def build_orientation(case: Any, kind: OrientationKind) -> dict[str, Any]:
     # ── Fresh inquiry ─────────────────────────────────────────────────
     opener = _opener(kind, fresh=True)
     if kind == OrientationKind.EMPTY:
-        opener = "I'm FaultMaven, an AI troubleshooting copilot. " + _CAPABILITIES
+        opener = "I'm FaultMaven, an AI troubleshooting copilot. " + _capabilities()
     body = (
         "To start, describe the problem you're seeing — symptoms, error messages, "
         "when it started — or share logs, configs or metrics."

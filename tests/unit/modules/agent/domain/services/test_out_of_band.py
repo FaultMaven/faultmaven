@@ -232,7 +232,7 @@ class TestAnswer:
         """
         from faultmaven.modules.knowledge.contracts import TROUBLESHOOTING_DOMAINS
 
-        for kind in (OutOfBandKind.OFF_TOPIC, OutOfBandKind.AGENT_META):
+        for kind in OutOfBandKind:  # iterate, so a new lane is covered too
             prompt = build_answer_prompt(_case(), "can you help me?", kind)
             for domain in TROUBLESHOOTING_DOMAINS:
                 assert domain in prompt, f"{kind.value} prompt omits {domain!r}"

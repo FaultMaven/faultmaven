@@ -1139,7 +1139,7 @@ def classify_query(user_message: str, has_attachments: bool) -> QueryClassificat
     """Heuristic classification — no LLM call."""
 ```
 
-**Entity detection** (compiled regex): timestamps (`\d{1,2}:\d{2}`, ISO dates, month-day), HTTP status codes (`[45]\d{2}`), error keywords (OOM, segfault, timeout, connection refused, etc.), service names (nginx, redis, postgres, etc.), IP addresses.
+**Entity detection** (compiled regex): timestamps (`\d{1,2}:\d{2}`, ISO dates, month-day), HTTP status codes (the enumerated 4xx/5xx set, not `[45]\d{2}` — most numbers in that range are ports, latencies or amounts, and this entity is a hard case anchor), error keywords (OOM, segfault, timeout, connection refused, etc.), service names (nginx, redis, postgres, etc.), IP addresses.
 
 **Classification logic:**
 

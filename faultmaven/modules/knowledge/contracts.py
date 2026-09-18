@@ -316,12 +316,16 @@ from faultmaven.modules.knowledge.domain.models.suggestion import (
 #: This vocabulary already existed as ``runbook_validator.VALID_DOMAINS``, where
 #: it gates KB ingestion: a runbook declaring a domain outside this set is
 #: rejected. It is published here because the *agent* side needs the same answer
-#: to "what is FaultMaven for?" and had been carrying four improvised prose
-#: versions of it instead — "engineering work" in the out-of-band classifier,
-#: "technical questions" in INQUIRY triage, "complex technical incidents" in the
-#: identity block, and nothing at all on the case model. Those drifted, and a
-#: question in none of these domains was investigated as though it were in all
-#: of them.
+#: to "what is FaultMaven for?" and was improvising its own prose versions
+#: instead — "engineering work" in the out-of-band classifier, "technical
+#: questions" in INQUIRY triage — while the case model carried no domain at all.
+#:
+#: What is converted so far: the self-knowledge profile, both aside lanes, the
+#: every-turn self-reference rule, and the orientation reply. What is NOT: the
+#: two classifier prose versions named above, which decide which LANE a message
+#: enters and therefore run BEFORE any of the converted sites. Until those are
+#: converted the router and the answer prompts still judge scope by different
+#: words — say so rather than reading this constant as proof they agree.
 #:
 #: Read it as a SHARED VOCABULARY, never as an admission gate. FaultMaven
 #: answers questions outside these domains — the taxonomy tells the agent when

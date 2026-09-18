@@ -27,7 +27,6 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from faultmaven.exceptions import ValidationException
-from faultmaven.modules.knowledge.contracts import TROUBLESHOOTING_DOMAINS
 from faultmaven.modules.knowledge.domain.models.conversion import (
     QualityScore,
     ValidationResult,
@@ -306,12 +305,27 @@ REQUIRED_SECTIONS = [
     "Sources",
 ]
 
-#: The ingestion gate's view of the domain taxonomy. The vocabulary itself now
-#: lives in the module's contracts, because the agent side needs the same answer
-#: to "what is FaultMaven for?" — see ``TROUBLESHOOTING_DOMAINS`` for why. Kept
-#: as a list under its original name so the cross-repo parity test and the error
-#: message below read exactly as before; there is one definition, not two.
-VALID_DOMAINS = list(TROUBLESHOOTING_DOMAINS)
+#: The ingestion gate's view of the domain taxonomy. The same vocabulary is
+#: published to the agent side as ``TROUBLESHOOTING_DOMAINS`` (with glosses) —
+#: see there for why the agent needs it.
+#:
+#: ‼ This MUST stay a literal list. kb-toolkit's cross-repo parity gate
+#: (``scripts/check_vocab_cross_repo.py``) reads it out of the AST with
+#: ``ast.literal_eval`` and never imports this module, so ``list(...)`` of
+#: anything is an ``ast.Call`` it cannot evaluate — it dies with a ValueError
+#: rather than reporting a vocabulary diff, and that gate runs in the OTHER
+#: repo's CI against this repo's default branch, so nothing here catches it.
+#: Drift between the two copies is caught instead by
+#: ``test_ingestion_gate_matches_the_published_territory``.
+VALID_DOMAINS = [
+    "database",
+    "networking",
+    "compute",
+    "application",
+    "security",
+    "storage",
+    "messaging",
+]
 
 VALID_SCOPES = ["global", "team", "personal"]
 
