@@ -105,20 +105,46 @@ MANDATORY_AUTH_DEPENDENCIES = frozenset(
 # Dependencies that live in an auth module but do not, by themselves, make a
 # route refuse anonymous callers. Listed explicitly so that the set above can
 # be trusted as complete rather than merely plausible.
-NON_MANDATORY_AUTH_DEPENDENCIES = frozenset(
+# The groups below were one flat set with comments. They are named separately
+# because a second question is asked of them elsewhere and the answer differs by
+# group: `test_no_unauthenticated_operations._gate_failure` asks "may this
+# resolve BEFORE the auth gate?", and for a service provider the answer is no —
+# that is the #1467 shape, where an anonymous caller reaches the collaborator
+# and gets its 500 instead of the 401. Importing the flat union there would
+# excuse 51 real instances. The union is preserved for this module's own use.
+
+#: Optional authentication: returns None instead of raising, so it cannot
+#: pre-empt a refusal.
+OPTIONAL_AUTH_DEPENDENCIES = frozenset(
     {
-        # Optional authentication: returns None instead of raising.
         "faultmaven.api.v1.auth_dependencies.extract_bearer_token",
         "faultmaven.api.v1.auth_dependencies.get_current_user_optional",
-        # Service providers — they resolve collaborators, not identity.
+    }
+)
+
+#: Service providers — they resolve collaborators, not identity. Harmless to a
+#: route's auth CLASSIFICATION, and the one thing that must not resolve before
+#: the gate.
+SERVICE_PROVIDER_DEPENDENCIES = frozenset(
+    {
         "faultmaven.api.middleware.auth.get_auth_service",
         "faultmaven.api.v1.auth_dependencies.get_user_store",
         "faultmaven.modules.auth.api.oauth.get_oauth_service",
         "faultmaven.modules.auth.api.sso.get_sso_login_service",
-        # Deployment-mode gate: 404s outside local auth mode. /login and
-        # /register are deliberately reachable without credentials.
+    }
+)
+
+#: Refusals a route makes ON PURPOSE before anyone is authenticated, and which
+#: are therefore correct AHEAD of an auth gate.
+#:
+#: Rate limiters answer 429 and apply equally to anonymous callers — that is the
+#: whole point of them, and moving the auth gate in front would exempt every
+#: unauthenticated caller from the limit on an OAuth endpoint. The deployment
+#: mode gate 404s outside local auth mode; ``/login`` and ``/register`` are
+#: deliberately reachable without credentials.
+DELIBERATE_PRE_AUTH_REFUSALS = frozenset(
+    {
         "faultmaven.modules.auth.api.auth.require_local_mode",
-        # Rate limiters: 429, and they apply equally to anonymous callers.
         "faultmaven.modules.auth.api.rate_limiting.require_oauth_rate_limit_authorize",
         "faultmaven.modules.auth.api.rate_limiting.require_oauth_rate_limit_revoke",
         "faultmaven.modules.auth.api.rate_limiting.require_oauth_rate_limit_token",
@@ -126,6 +152,12 @@ NON_MANDATORY_AUTH_DEPENDENCIES = frozenset(
         "faultmaven.modules.auth.api.rate_limiting.require_sso_rate_limit_exchange",
         "faultmaven.modules.auth.api.rate_limiting.require_sso_rate_limit_login",
     }
+)
+
+NON_MANDATORY_AUTH_DEPENDENCIES = (
+    OPTIONAL_AUTH_DEPENDENCIES
+    | SERVICE_PROVIDER_DEPENDENCIES
+    | DELIBERATE_PRE_AUTH_REFUSALS
 )
 
 

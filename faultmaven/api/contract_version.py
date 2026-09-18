@@ -261,9 +261,12 @@ asked to accept, and it belongs to a person.
 # — so a route that mounts only outside production is missing from their route
 # tables too, and their counts agree about it vacuously. Measured under
 # `ENVIRONMENT=development`, the shipped default: `/debug/routes`,
-# `/debug/health`, `/debug/config` and `/debug/llm-providers` are served with no
-# auth dependency, and `GET /debug/config` answers an anonymous caller 200 with
-# a six-key configuration summary.
+# `/debug/health`, `/debug/config` and `/debug/llm-providers` WERE served with
+# no auth dependency, and `GET /debug/config` answered an anonymous caller 200
+# with a six-key configuration summary. Past tense since #1474 closed them with
+# `require_platform_admin`; the entry stays because it is what this version
+# number records, and a changelog that silently acquires today's behaviour is
+# not one.
 #
 # They are covered now by the same rule applied to the served app rather than to
 # the artifact. Asserting the gate those entries lean on corrected a second

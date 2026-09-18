@@ -26,18 +26,29 @@ Nothing here may have import side effects — that is the whole point.
 #
 # The reference documents the **maximal deployed surface**: every route the
 # product can serve, so one generated client covers every deployment. Debug
-# endpoints are the exception — they are excluded because this pins
-# `ENVIRONMENT=production`, where they mount only if an operator sets
-# `ENABLE_DEBUG_ENDPOINTS`, so they are not part of the surface a generated
-# client should assume. (They are not "development-only": that flag mounts them
-# anywhere. They require the platform administrator role — #1474.) Excluding
-# OAuth and SSO would leave the document advertising
+# endpoints are the exception, and it takes BOTH halves of the disjunction
+# `_is_debug_enabled()` tests: `ENVIRONMENT=production` below rules out the
+# automatic mount, and `ENABLE_DEBUG_ENDPOINTS` is ruled out by this module
+# EMPTYING the environment down to `_SYSTEM_ENVIRONMENT_KEYS`, so the flag
+# cannot arrive from the caller's shell.
+#
+# That flag is deliberately NOT added to the pin below. Pinning it would make
+# the reason self-evident here and would cost a real property elsewhere:
+# `test_openapi_generation_is_pinned.py` detects loss of the `os.environ.clear()`
+# step precisely BY exporting `ENABLE_DEBUG_ENDPOINTS=true` hostilely and
+# relying on nothing in PINNED_ENVIRONMENT overwriting it. A pinned value makes
+# that test pass with the clear removed. The emptying is the mechanism, and it
+# is the tested one. (Debug endpoints are not "development-only" either: that
+# flag mounts them anywhere. They require the platform administrator role —
+# #1474.) Excluding OAuth and SSO would leave the document advertising
 # `/auth/oauth/authorize` and `/auth/sso/login` from `GET /auth/config` while
 # describing neither.
 PINNED_ENVIRONMENT = {
     # Building a document must not reach a database, Redis or an LLM provider.
     "SKIP_SERVICE_CHECKS": "true",
-    # Not development: excludes the debug router.
+    # Not development: with ENABLE_DEBUG_ENDPOINTS absent, this is what keeps
+    # the debug router out. The flag is deliberately NOT pinned here — see the
+    # note above.
     "ENVIRONMENT": "production",
     # Only present to satisfy the startup validator that rejects wildcard CORS
     # in production. CORS is middleware — it appears nowhere in the document.

@@ -1,8 +1,11 @@
 """Admin Configuration Routes (Dashboard Phase 1a)
 
 Production-ready admin endpoints for LLM configuration and environment status.
-Replaces dev-only /debug/llm-providers and /debug/config endpoints with
-authenticated, key-masked equivalents suitable for the dashboard.
+These are the always-mounted, key-masked equivalents of /debug/llm-providers and
+/debug/config, with response models and no flag. Those two are NOT "dev-only":
+ENABLE_DEBUG_ENDPOINTS mounts the debug router in any environment (#1493), and
+since #1474 they carry the same require_platform_admin these do — so the pair is
+duplicated surface with strictly worse properties, not a development fallback.
 
 Endpoints:
 - GET  /api/v1/admin/llm/config      — LLM provider status and fallback chain
@@ -479,6 +482,47 @@ def _kb_prefetch_is_effective(app, settings) -> bool:
     return getattr(getattr(app, "state", None), "knowledge_service", None) is not None
 
 
+def _debug_endpoints_are_mounted(app) -> bool:
+    """Does this process SERVE the ``/debug`` router? (#1493)
+
+    A security-relevant deployment fact, because ``_is_debug_enabled()`` is a
+    DISJUNCTION — ``env == development OR enable_debug_endpoints`` — so
+    ``ENABLE_DEBUG_ENDPOINTS=true`` mounts the router in staging and production
+    too. Until this was reported, an operator auditing a production cluster
+    could not tell a deployment with the flag set from one without it, short of
+    probing ``/debug/config`` and telling 401 from 404. The only account of it
+    was a startup log line, and a startup log is not an observable: it has
+    rolled out of ``kubectl logs`` on any pod that has been up a while, so
+    "grep for it" returns empty on a healthy deployment.
+
+    Reads the ROUTE TABLE. The first version read a flag written by the branch
+    of ``main`` that does the mounting, which is wrong for a security
+    observable in a way the two failure directions make plain: an app composed
+    any other way — a test harness, a future composition root, anything that
+    builds the router without going through that branch — reports ``false``
+    while serving ``/debug/config``, and "no, that pod has no debug surface" is
+    the answer that ends an audit early. Over-reporting would merely waste
+    someone's time; this under-reports, which is the direction that costs.
+
+    Recomputing ``_is_debug_enabled()`` was the other candidate and is also
+    wrong: that reports the POLICY, and the question is what this process
+    actually serves — the same distinction ``_kb_prefetch_is_effective`` makes
+    next door.
+
+    Mounted is not the same as exposed. Every route on the router requires an
+    authenticated caller and the four operator diagnostics require the platform
+    administrator role (#1474); this answers "is that surface present here",
+    which is the question a deployment audit asks.
+    """
+    from faultmaven.api.route_enumeration import serves_path_prefix
+
+    try:
+        return serves_path_prefix(app, "/debug")
+    except Exception:  # pragma: no cover - a report must not break the report
+        logger.warning("Could not enumerate routes to report debug endpoints")
+        return False
+
+
 def _suggestion_store_is_durable(app) -> bool:
     """Is the composed knowledge-suggestion store durable and worker-shared?
 
@@ -751,6 +795,27 @@ async def get_env_config_status(
                     "Set KB_PREFETCH_ENABLED=true|false. False with the "
                     "flag set means no knowledge service was composed for "
                     "this process — the KB is unavailable on both channels"
+                ),
+            ),
+            # The mount, not the knob — see ``_debug_endpoints_are_mounted``.
+            # Reported for every deployment rather than only when it is on,
+            # because "absent from the report" and "reported false" are the same
+            # thing to a human and very different things to an auditor.
+            "debug_endpoints": FeatureStatus(
+                enabled=_debug_endpoints_are_mounted(request.app),
+                description=(
+                    "The /debug router is mounted on this process (route "
+                    "table, config summary, LLM provider status, health echo). "
+                    "All four require the platform administrator role; the "
+                    "causal-graph route requires an authenticated caller"
+                ),
+                config_hint=(
+                    "Mounted automatically when ENVIRONMENT=development, and "
+                    "in ANY environment — staging and production included — "
+                    "when ENABLE_DEBUG_ENDPOINTS=true. On the shipped "
+                    "development default the router mounts with the flag "
+                    "unset, so clearing the flag removes the surface only "
+                    "where ENVIRONMENT is staging or production"
                 ),
             ),
             "llm_tracing": FeatureStatus(

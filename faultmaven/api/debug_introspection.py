@@ -1,4 +1,8 @@
-"""Pure serializers for the dev-only debug endpoints.
+"""Pure serializers for the debug endpoints.
+
+NOT development-only: ENABLE_DEBUG_ENDPOINTS mounts the /debug router in any
+environment, staging and production included (#1493). Every route it serves
+requires an authenticated caller.
 
 Extracted from the ``/debug/cases/{id}/causal-graph`` route so the payload shape
 is unit-testable without booting the app (the route stays a thin wrapper that

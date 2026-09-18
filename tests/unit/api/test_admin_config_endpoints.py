@@ -153,6 +153,12 @@ def mock_settings():
     settings.tools.web_search_engine_id = None
     settings.is_cloud = False  # standalone (canonical DEPLOYMENT_MODE, ADR-004)
     settings.server.environment = MagicMock(value="development")
+    # Explicit for the same reason as ``kb_prefetch_enabled`` above: the fixture
+    # models "configures nothing", and an auto-created MagicMock attribute is
+    # truthy, which would make the settings-only stand-in for
+    # ``debug_endpoints`` a constant True and its arm unable to discriminate.
+    # False is also the shipped default (``Field(default=False)``).
+    settings.server.enable_debug_endpoints = False
     # A real int, not a MagicMock: the endpoint compares it (#1214 reports
     # whether the per-worker suggestion store is worker-safe), and a bare
     # MagicMock attribute would make every test here fail on the comparison
@@ -1399,6 +1405,13 @@ def _pure_settings_answer(feature: str, settings) -> bool:
         # settings object reports False: the deployment mode is always SET to
         # something, so a negated test would be a constant True here.
         return str(getattr(settings, "deployment_mode", "")) == "standalone"
+    if feature == "debug_endpoints":
+        # The obvious version: echo the flag. It reports True for every
+        # deployment with ENABLE_DEBUG_ENDPOINTS set — which is what the
+        # operator typed, not whether the surface is present on the pod in front
+        # of them — and False on a development process that mounts the router
+        # with the flag unset, which is the shipped default.
+        return bool(settings.server.enable_debug_endpoints)
     raise AssertionError(f"no settings-only stand-in defined for {feature}")
 
 
@@ -2003,7 +2016,35 @@ def _scenario_token_revocation_durable(settings, app, monkeypatch, reality):
         )
 
 
+def _scenario_debug_endpoints(settings, app, monkeypatch, reality):
+    """The runtime fact withheld here is whether this process SERVES the router.
+
+    ``ENABLE_DEBUG_ENDPOINTS`` is set in BOTH arms — that is the point, and it
+    is the whole reason #1493 asked for this field. The flag is a policy; what
+    the process serves is the fact. The two come apart in ways an operator
+    cannot read off their configuration: the router also mounts with the flag
+    unset when ``ENVIRONMENT=development``, and it does not mount on a process
+    whose composition never built it.
+
+    A settings-only implementation reports True for every deployment with the
+    flag set, which tells an auditor the one thing they already knew — they
+    typed it — instead of whether the surface is present on the pod in front of
+    them.
+
+    The ON arm adds a real ``/debug`` route to the app under test, because the
+    reader walks the route table; the OFF arm leaves the app without one. Both
+    arms keep the flag set, so nothing here can be satisfied by reading it.
+    """
+    settings.server.enable_debug_endpoints = True
+    if reality:
+
+        @app.get("/debug/config")
+        async def _debug_config_probe():  # pragma: no cover
+            return {}
+
+
 FEATURE_SCENARIOS = {
+    "debug_endpoints": _scenario_debug_endpoints,
     "kb_prefetch": _scenario_kb_prefetch,
     "web_search": _scenario_web_search,
     "llm_tracing": _scenario_llm_tracing,

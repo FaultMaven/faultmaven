@@ -615,9 +615,17 @@ FaultMaven JWT tokens carry two separate tenancy claims, because they answer two
 > [!IMPORTANT]
 > The `enterprise_id` claim is **always present** — it is minted from `users.enterprise_id`, which is NOT NULL — and is the sole isolation input from the token onward: there is deliberately no fallback to reading the user row when it is absent, because a token predating the cutover is refused rather than honoured. Under `TENANT_PROVIDER=multi` a verified request that reaches a tenanted endpoint without a usable `enterprise_id` claim is refused with a 403 by `bind_request_enterprise_context`, never silently scoped to the Standalone enterprise (which the request contextvar defaults to for exactly this reason — its default must never leak into a multi-tenant decision). Single-tenant is unchanged: the Standalone sentinel is the correct claim, because that user *is* the deployment's sole tenant. `organization_id`, by contrast, is genuinely optional: `None` means nobody pays for this account, which is an ordinary, un-refused state — see `resolve_enterprise_claim` and `resolve_billing_organization` in `jwt_token_generator.py`. There is no `app.current_org_id` session variable anywhere in the stack; RLS keys exclusively on `app.current_enterprise_id`.
 
-### Environment-Based Endpoint Exposure
+### Conditional Endpoint Exposure
 
-Certain endpoints are only available in specific environments:
+Which endpoints are mounted depends on three independent things — the auth
+mode, `ENVIRONMENT`, and the `ENABLE_DEBUG_ENDPOINTS` operator switch. It is not
+a question of environment ALONE, which is the part that surprised people:
+`ENABLE_DEBUG_ENDPOINTS` mounts the debug router in staging and production too,
+which is how those routes came to be served to anonymous callers in production
+behind an operator flag (#1474). `ENVIRONMENT` is the other half of that
+disjunction and mounts the router on `development` — and only `development`,
+since the enum admits development/staging/production. Mounting and
+authentication are separate questions, and every endpoint below answers both:
 
 ```python
 # Endpoint visibility by auth mode

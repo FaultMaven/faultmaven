@@ -76,10 +76,23 @@ the ``api-contract-drift`` CI job, and reading it means a reviewer can diff the
 allowlist against the same file the change publishes.
 """
 
+import contextlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from typing import NamedTuple
 
 import pytest
+
+import faultmaven.api.routes.admin_config  # noqa: E402
+
+# The version gate lives in ONE place, ``faultmaven/api/route_enumeration.py``,
+# and this module drives THAT rather than keeping a fourth copy. The tests below
+# monkeypatch ``route_enumeration.iter_route_contexts``, which is why the import
+# is at module level there: a function-local import cannot be patched, and the
+# >= 0.139 arm would then be unexecuted on the pinned ``fastapi==0.136.0`` that
+# CI and the image install.
+from faultmaven.api import route_enumeration  # noqa: E402
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CONTRACT = PROJECT_ROOT / "docs" / "reference" / "api" / "openapi.json"
@@ -485,6 +498,24 @@ def test_every_entry_states_a_reason_and_every_deferral_names_its_issue():
             ), f"{method} {path}: a deferral must name the issue that tracks it"
 
 
+#: One built app per distinct configuration, for the whole module.
+#:
+#: ``rebuild_app()`` drops ``faultmaven.main`` from ``sys.modules`` and imports
+#: it again, re-running every router registration and all the DI wiring. Nine
+#: calls across this module resolve to four distinct configurations
+#: (development; production; production + the flag; staging), so five of the
+#: nine were rebuilding an app byte-identical to one already in hand.
+#:
+#: Safe to share because every consumer of ``_app_under`` READS — route tables
+#: and dependency trees — and none of them starts the app or mutates it. The one
+#: test that does both uses ``_served_under`` instead, which builds its own app
+#: each time precisely because it installs ``dependency_overrides`` and enters a
+#: lifespan; sharing one of those would leak an override between tests. The
+#: split between the two helpers is what makes this cache safe, so it is not an
+#: incidental difference.
+_APP_CACHE: dict[tuple, object] = {}
+
+
 def _app_under(**overrides):
     """The served app, built under a PINNED environment plus ``overrides``.
 
@@ -513,6 +544,81 @@ def _app_under(**overrides):
         PINNED_ENVIRONMENT,
     )
 
+    key = tuple(sorted(overrides.items()))
+    if key in _APP_CACHE:
+        return _APP_CACHE[key]
+
+    saved_environ = dict(os.environ)
+    saved_dotenv = (dotenv.load_dotenv, dotenv.dotenv_values)
+    try:
+        dotenv.load_dotenv = lambda *args, **kwargs: None
+        dotenv.dotenv_values = lambda *args, **kwargs: {}
+
+        preserved = {
+            key_: value
+            for key_, value in os.environ.items()
+            if key_ in _SYSTEM_ENVIRONMENT_KEYS
+        }
+        os.environ.clear()
+        os.environ.update(preserved)
+        os.environ.update(PINNED_ENVIRONMENT)
+        os.environ.update(overrides)
+        reset_settings()
+        built = rebuild_app()
+        _APP_CACHE[key] = built
+        return built
+    finally:
+        dotenv.load_dotenv, dotenv.dotenv_values = saved_dotenv
+        os.environ.clear()
+        os.environ.update(saved_environ)
+        reset_settings()
+
+
+@contextlib.contextmanager
+def _served_under(**overrides):
+    """``_app_under``, but the pin stays in force while the app is USED.
+
+    ``_app_under`` restores ``os.environ`` and calls ``reset_settings()`` in its
+    ``finally``, which is right for a caller that only wants the route table:
+    the app is built under the pin and nothing else in the session is disturbed.
+    It is wrong for a caller that starts the app and issues requests, because
+    everything that reads settings at REQUEST time — the protection preset, the
+    auth mode, the tenant provider, the storage backends — then reads whatever
+    the session's ambient environment happens to hold. That makes the assertions
+    a function of the machine, which is the hazard ``_app_under``'s own
+    docstring says it exists to stop ("An earlier version overrode two variables
+    and inherited the rest; that is the bug this docstring exists to stop coming
+    back").
+
+    It also contains a leak that is only reachable by starting the app: the
+    lifespan applies a configuration preset and pins BLAS/OMP thread counts, so
+    it WRITES to ``os.environ``. Measured on this box, entering the lifespan and
+    leaving it added ``KMP_DUPLICATE_LIB_OK``, ``KMP_INIT_AT_FORK``,
+    ``MKL_NUM_THREADS``, ``OMP_NUM_THREADS``, ``OPENBLAS_NUM_THREADS`` and
+    ``TORCHINDUCTOR_CACHE_DIR`` to the pytest process, where they outlive the
+    test. Restoring the snapshot on the way out is what keeps a module that
+    starts an app from changing the environment every later module runs under.
+
+    An override of ``None`` REMOVES the key. ``PINNED_ENVIRONMENT`` exists to
+    build a *document* and therefore pins ``AUTH_MODE=oauth`` plus WorkOS
+    placeholders to mount the SSO router — which is fine for describing routes
+    and fatal for starting the app, because the DI container then imports
+    ``workos``, a Cloud-only dependency absent from the Standalone install
+    (measured: ``RuntimeError: DI Container initialization failed: No module
+    named 'workos'``). A caller that starts the app says which deployment shape
+    it is exercising instead of inheriting one.
+    """
+    import os
+
+    import dotenv
+
+    from faultmaven.config.settings import reset_settings
+    from tests.integration._app_rebuild import rebuild_app
+    from tests.integration.api.test_openapi_documents_auth import (
+        _SYSTEM_ENVIRONMENT_KEYS,
+        PINNED_ENVIRONMENT,
+    )
+
     saved_environ = dict(os.environ)
     saved_dotenv = (dotenv.load_dotenv, dotenv.dotenv_values)
     try:
@@ -527,9 +633,13 @@ def _app_under(**overrides):
         os.environ.clear()
         os.environ.update(preserved)
         os.environ.update(PINNED_ENVIRONMENT)
-        os.environ.update(overrides)
+        for key, value in overrides.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
         reset_settings()
-        return rebuild_app()
+        yield rebuild_app()
     finally:
         dotenv.load_dotenv, dotenv.dotenv_values = saved_dotenv
         os.environ.clear()
@@ -537,60 +647,89 @@ def _app_under(**overrides):
         reset_settings()
 
 
-def _debug_routes(app) -> list[str]:
-    from fastapi.routing import APIRoute
+def _debug_feature_config_hint() -> str:
+    """The ``config_hint`` ``GET /admin/config/status`` publishes for the router.
 
+    Built by calling the endpoint's own feature assembly would mean standing up
+    settings and a request; the string is a literal, so it is read from the
+    source between two markers instead. If the entry is renamed the markers stop
+    matching and the caller's emptiness check fails rather than passing over a
+    string it never found.
+    """
+    source = Path(faultmaven.api.routes.admin_config.__file__).read_text()
+    start = source.find('"debug_endpoints": FeatureStatus(')
+    if start == -1:
+        return ""
+    end = source.find("),", source.find("config_hint=(", start))
+    return source[start:end] if end != -1 else ""
+
+
+def _served_api_routes(app):
+    """Every served API operation, as ``(path, methods, dependant)``.
+
+    Delegates to ``faultmaven.api.route_enumeration``, which is the production
+    code ``GET /debug/routes`` and the ``/admin/config/status`` mount reading
+    also use. A guard that reimplemented the enumeration would be asserting
+    about its own copy rather than about what the application does — and the
+    three copies this replaced had already drifted: two skipped empty paths, one
+    demanded a ``dependant`` and one did not.
+    """
+    return route_enumeration.iter_served_routes(app)
+
+
+def _debug_routes(app) -> list[str]:
     return sorted(
-        route.path
-        for route in app.routes
-        if isinstance(route, APIRoute) and route.path.startswith("/debug")
+        path
+        for path, _methods, _dependant in _served_api_routes(app)
+        if path.startswith("/debug")
     )
 
 
 def _qualified(call) -> str:
-    """``module.name`` for a dependency callable — the spelling both predicates use."""
-    import inspect
+    """The sibling's ``_qualified_name``, delegated rather than copied.
 
-    module = getattr(inspect.getmodule(call), "__name__", "")
-    name = getattr(call, "__name__", type(call).__name__)
-    return f"{module}.{name}" if module else name
+    Beside ``MANDATORY_AUTH_DEPENDENCIES``, which this module already takes from
+    that module so the two "cannot drift about what 'authenticated' means".
+    Defining a second qualifier here would be the same drift one layer down, and
+    the cost is on the record: two copies of the walk below already disagreed
+    about depth once — one recursed, one read the top level only — so a route
+    gated through a composite was "authenticated" to one and "no auth at all" to
+    the other, on the same app in the same run. Delegating rather than importing
+    at module scope because every other cross-module reference here is a
+    function-local import too.
+    """
+    from tests.integration.api.test_openapi_documents_auth import _qualified_name
+
+    return _qualified_name(call)
 
 
 def _dependency_names(dependant, seen=None) -> set[str]:
-    """Every dependency in ``dependant``'s SUBTREE, qualified.
+    """The sibling's transitive dependency walk. See :func:`_qualified`."""
+    from tests.integration.api.test_openapi_documents_auth import (
+        _dependency_names as _sibling_walk,
+    )
 
-    One walk, used by both :func:`_open_served_operations` ("is this route
-    gated at all?") and :func:`_gate_failure` ("does the gate resolve first?").
-    They were two copies that disagreed about depth: the first recursed, the
-    second read only the top level, so a route gated through a composite
-    dependency was "authenticated" to one and "no auth at all" to the other, on
-    the same app in the same run.
-    """
-    seen = seen if seen is not None else set()
-    for dependency in dependant.dependencies:
-        seen.add(_qualified(dependency.call))
-        _dependency_names(dependency, seen)
-    return seen
+    return _sibling_walk(dependant, seen)
 
 
 def _open_served_operations(app, prefix: str) -> set[tuple[str, str]]:
-    """Served operations under ``prefix`` whose tree contains no mandatory auth."""
-    from fastapi.routing import APIRoute
+    """Served operations under ``prefix`` whose tree contains no mandatory auth.
 
-    # Spelled as ``test_openapi_documents_auth.py`` spells it, and IMPORTED
-    # from it rather than copied, so the two cannot drift about what
-    # "authenticated" means.
+    Over ``_served_api_routes``, not a flat ``app.routes`` scan — see there for
+    why a flat scan sees 20 of 144 on this FastAPI, and why that is the gap this
+    module's own recommended follow-up would open.
+    """
     from tests.integration.api.test_openapi_documents_auth import (
         MANDATORY_AUTH_DEPENDENCIES,
     )
 
     return {
-        (method, route.path)
-        for route in app.routes
-        if isinstance(route, APIRoute) and route.path.startswith(prefix)
-        for method in route.methods
+        (method, path)
+        for path, methods, dependant in _served_api_routes(app)
+        if path.startswith(prefix)
+        for method in methods
         if method not in {"HEAD", "OPTIONS"}
-        and not (MANDATORY_AUTH_DEPENDENCIES & _dependency_names(route.dependant))
+        and not (MANDATORY_AUTH_DEPENDENCIES & _dependency_names(dependant))
     }
 
 
@@ -703,14 +842,11 @@ def test_the_debug_router_in_production_is_an_explicit_opt_in():
     # is present" and "the gate resolves first" are separate claims, and this is
     # the only place the second one is made about the routes AS MOUNTED BY THE
     # FLAG rather than as mounted by the environment.
-    from fastapi.routing import APIRoute
-
     mis_ordered = {
-        route.path: failure
-        for route in opted_in_app.routes
-        if isinstance(route, APIRoute)
-        and route.path in _ALL_DEBUG_PATHS
-        and (failure := _gate_failure(route)) is not None
+        path: failure
+        for path, _methods, dependant in _served_api_routes(opted_in_app)
+        if path in _ALL_DEBUG_PATHS
+        and (failure := _gate_failure(dependant)) is not None
     }
     assert not mis_ordered, (
         "the operator flag mounted these debug routes in PRODUCTION with "
@@ -718,6 +854,241 @@ def test_the_debug_router_in_production_is_an_explicit_opt_in():
         + "\n".join(f"{path}: {reason}" for path, reason in mis_ordered.items())
     )
 
+
+#: Operations that ARE gated but resolve a collaborator before the gate — the
+#: #1467 shape, carried rather than fixed. **#1494.**
+#:
+#: The predicate below is quantified over the WHOLE application, not over the
+#: five debug routes it was written for, because a rule applied to five routes
+#: out of 147 is a rule about five routes. Run app-wide it reports 51
+#: operations, every one of them a SERVICE provider: an anonymous caller to
+#: ``GET /api/v1/cases/{case_id}`` reaches
+#: ``_di_get_case_service_dependency`` before the gate, and whatever that
+#: provider does on a degraded deployment is what the caller gets in place of
+#: the 401 the route promises. Not a disclosure — the gate still runs if the
+#: provider succeeds — a wrong refusal, and the class #1447 was.
+#:
+#: They are NOT fixed here: 51 operations across ``case``, ``knowledge``,
+#: ``auth`` and the shared ``api/v1`` dependencies is a wide mechanical change
+#: that wants its own review. They are carried the way ``PUBLIC_OPERATIONS``
+#: carries its deferrals — with the issue that closes them — and the allowlist
+#: fails in BOTH directions, so the class cannot grow quietly and closing #1494
+#: forces the entries out.
+#: The disposition for an operation that IS gated but resolves something else
+#: first. Its own word rather than ``_DEFERRED``, because the two say different
+#: things: ``_DEFERRED`` means "open although it should not be", and none of
+#: these is open — the gate runs, it just runs second.
+_MISORDERED = "misordered"
+
+MISORDERED_GATE_OPERATIONS: dict[tuple[str, str], tuple[str, str]] = {
+    ("DELETE", "/api/v1/cases/{case_id}"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("DELETE", "/api/v1/cases/{case_id}/data/{data_id}"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("DELETE", "/api/v1/cases/{case_id}/team-shares/{team_id}"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("DELETE", "/api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}"): (
+        _MISORDERED,
+        "service=_get_conversion_service resolves first. #1494.",
+    ),
+    ("DELETE", "/api/v1/knowledge/documents/{document_id}"): (
+        _MISORDERED,
+        "knowledge_service=get_knowledge_service resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/cases"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/cases/{case_id}"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/cases/{case_id}/analytics"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/cases/{case_id}/data"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/cases/{case_id}/data/{data_id}"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/cases/{case_id}/messages"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/cases/{case_id}/report-recommendations"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/cases/{case_id}/reports"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency, case_repository=get_case_repository resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/cases/{case_id}/reports/{report_id}/download"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency, case_repository=get_case_repository resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/cases/{case_id}/ui"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/cases/{case_id}/uploaded-files"): (
+        _MISORDERED,
+        "case_service=get_case_service resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/knowledge/analytics/search"): (
+        _MISORDERED,
+        "knowledge_service=get_knowledge_service resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/knowledge/conversions"): (
+        _MISORDERED,
+        "service=_get_conversion_service resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/knowledge/conversions/by-case/{case_id}"): (
+        _MISORDERED,
+        "service=_get_conversion_service resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/knowledge/conversions/{conversion_id}"): (
+        _MISORDERED,
+        "service=_get_conversion_service resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/knowledge/documents/{document_id}"): (
+        _MISORDERED,
+        "knowledge_service=get_knowledge_service resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/knowledge/documents/{document_id}/snippet"): (
+        _MISORDERED,
+        "knowledge_service=get_knowledge_service resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/knowledge/drafts"): (
+        _MISORDERED,
+        "service=_get_conversion_service resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/knowledge/stats"): (
+        _MISORDERED,
+        "knowledge_service=get_knowledge_service resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/knowledge/suggestions"): (
+        _MISORDERED,
+        "suggestion_service=get_suggestion_service resolves first. #1494.",
+    ),
+    ("GET", "/api/v1/knowledge/suggestions/{suggestion_id}"): (
+        _MISORDERED,
+        "suggestion_service=get_suggestion_service resolves first. #1494.",
+    ),
+    ("PATCH", "/api/v1/cases/{case_id}/evidence/{evidence_id}/classification"): (
+        _MISORDERED,
+        "investigation_service=get_investigation_service resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/cases"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency, session_service=_di_get_session_service_dependency resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/cases/search"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/cases/sessions/{session_id}/resume/{case_id}"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency, session_service=_di_get_session_service_dependency resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/cases/{case_id}/close"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency, case_repository=get_case_repository resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/cases/{case_id}/extract-knowledge"): (
+        _MISORDERED,
+        "case_service=get_case_service, suggestion_service=get_suggestion_service resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/cases/{case_id}/reports"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/cases/{case_id}/team-shares"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/cases/{case_id}/title"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/cases/{case_id}/turns"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency, investigation_service=get_investigation_service resolves first. #1494.",
+    ),
+    (
+        "POST",
+        "/api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}/verify",
+    ): (
+        _MISORDERED,
+        "service=_get_conversion_service resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/knowledge/convert"): (
+        _MISORDERED,
+        "service=_get_conversion_service resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/knowledge/documents"): (
+        _MISORDERED,
+        "knowledge_service=get_knowledge_service resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/knowledge/documents/bulk-delete"): (
+        _MISORDERED,
+        "knowledge_service=get_knowledge_service resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/knowledge/documents/bulk-update"): (
+        _MISORDERED,
+        "knowledge_service=get_knowledge_service resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/knowledge/drafts/verify-batch"): (
+        _MISORDERED,
+        "service=_get_conversion_service resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/knowledge/runbooks/create"): (
+        _MISORDERED,
+        "service=_get_conversion_service resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/knowledge/scan"): (
+        _MISORDERED,
+        "service=_get_conversion_service resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/knowledge/suggestions/{suggestion_id}/approve"): (
+        _MISORDERED,
+        "suggestion_service=get_suggestion_service resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/knowledge/suggestions/{suggestion_id}/reject"): (
+        _MISORDERED,
+        "suggestion_service=get_suggestion_service resolves first. #1494.",
+    ),
+    ("POST", "/api/v1/knowledge/suggestions/{suggestion_id}/remediate-pii"): (
+        _MISORDERED,
+        "suggestion_service=get_suggestion_service resolves first. #1494.",
+    ),
+    ("PUT", "/api/v1/cases/{case_id}"): (
+        _MISORDERED,
+        "case_service=_di_get_case_service_dependency resolves first. #1494.",
+    ),
+    ("PUT", "/api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}"): (
+        _MISORDERED,
+        "service=_get_conversion_service resolves first. #1494.",
+    ),
+    ("PUT", "/api/v1/knowledge/documents/{document_id}"): (
+        _MISORDERED,
+        "knowledge_service=get_knowledge_service resolves first. #1494.",
+    ),
+    ("PUT", "/api/v1/knowledge/suggestions/{suggestion_id}"): (
+        _MISORDERED,
+        "suggestion_service=get_suggestion_service resolves first. #1494.",
+    ),
+}
 
 #: The four routes #1474 gated: the ones a bare anonymous GET can drive, which
 #: is what :func:`test_the_debug_routes_refuse_anonymous_and_non_operator_callers`
@@ -742,13 +1113,43 @@ _DEBUG_PATHS = (
 _ALL_DEBUG_PATHS = _DEBUG_PATHS + ("/debug/cases/{case_id}/causal-graph",)
 
 
+def _resolution_order(dependant) -> list:
+    """Every dependency in the tree, in the order FastAPI actually resolves it.
+
+    POST-order, measured rather than assumed. ``solve_dependencies`` walks
+    ``dependant.dependencies`` in order and solves each one's sub-dependencies
+    before the dependency itself, so a collaborator nested inside a composite
+    runs before the composite — and therefore before anything that follows it at
+    the top level. Instrumented on fastapi 0.141.1, with tracer callables that
+    record when they run:
+
+        @app.get("/o", dependencies=[Depends(outer), Depends(top2)])
+        async def h(): ...
+        where outer(a=Depends(inner_a), b=Depends(inner_b))
+
+        actual call order -> ['inner_a', 'inner_b', 'outer', 'top2']
+        pre-order         -> ['outer', 'inner_a', 'inner_b', 'top2']   <- wrong
+        post-order        -> ['inner_a', 'inner_b', 'outer', 'top2']   <- matches
+
+    Reading only the TOP level, which is what this predicate did at first, makes
+    the whole composite one opaque entry: a collaborator declared ahead of the
+    gate INSIDE it is invisible, the route is reported correctly gated, and an
+    anonymous caller still gets the collaborator's 500.
+    """
+    order = []
+    for dependency in dependant.dependencies:
+        order.extend(_resolution_order(dependency))
+        order.append(dependency)
+    return order
+
+
 #: The only dependency permitted to resolve ahead of an auth gate.
 #:
 #: ``bind_request_enterprise_context`` is declared as a GLOBAL on ``app`` — the
 #: module docstring's "the app's only global dependency is the tenant binder,
 #: not authentication" — and FastAPI puts app-level dependencies at the front of
-#: every route's dependant. So it is index 0 on every route in the application
-#: and no route can be written that does not have it first.
+#: every route's dependant. So it is first on every route in the application and
+#: no route can be written that does not have it first.
 #:
 #: Naming it rather than discriminating structurally is deliberate. The obvious
 #: structural rule — "ignore anything FastAPI built without a parameter name" —
@@ -757,7 +1158,12 @@ _ALL_DEBUG_PATHS = _DEBUG_PATHS + ("/debug/cases/{case_id}/causal-graph",)
 #: ``dependencies=[Depends(service), Depends(require_platform_admin)]`` passed a
 #: rule written to forbid exactly that, while an anonymous GET answered 500.
 #: An allowlist of one cannot make that mistake: everything not named here is
-#: reported, wherever it was declared.
+#: reported, wherever and however deep it was declared.
+#:
+#: This is not the whole excusal — see ``_gate_failure``, which also excuses the
+#: refusals a route makes ON PURPOSE before anyone is authenticated. Those are
+#: named in the sibling module beside ``MANDATORY_AUTH_DEPENDENCIES``, not here,
+#: because they are shared vocabulary rather than this predicate's private list.
 _PERMITTED_BEFORE_A_GATE = frozenset(
     {
         "faultmaven.api.middleware.tenant_scope.bind_request_enterprise_context",
@@ -765,51 +1171,110 @@ _PERMITTED_BEFORE_A_GATE = frozenset(
 )
 
 
-def _gate_failure(route) -> str | None:
+def _gate_failure(dependant) -> str | None:
     """``None`` if an auth gate resolves before every other dependency.
 
     "First" is not literally "index 0": the tenant binder above is, on every
     route. So the property asserted is that nothing EXCEPT the binder resolves
-    ahead of the gate — which covers #1467's finding (a gate declared as a
-    trailing handler parameter, behind a service) and the decorator-list
-    ordering that a name-based rule missed.
-
-    The gate's position is the first TOP-LEVEL dependency whose subtree
-    contains a mandatory auth dependency, so a gate reached through a composite
-    (``Depends(get_current_user_id)``, which depends on
-    ``require_authentication``) is found where it actually resolves rather than
-    reported absent.
+    ahead of the gate, over the whole tree in
+    :func:`_resolution_order` — which covers all three shapes measured so far: a
+    gate declared as a trailing handler parameter behind a service (#1467), a
+    collaborator ahead of the gate in the same ``dependencies=[...]``, and a
+    collaborator ahead of the gate inside a composite dependency.
     """
     from tests.integration.api.test_openapi_documents_auth import (
+        DELIBERATE_PRE_AUTH_REFUSALS,
         MANDATORY_AUTH_DEPENDENCIES,
+        OPTIONAL_AUTH_DEPENDENCIES,
     )
 
-    top_level = route.dependant.dependencies
+    # Deliberately ahead of the gate, and CORRECT there. A rate limiter answers
+    # 429 and must apply to callers who never authenticate — putting the auth
+    # gate in front of it would exempt every anonymous caller from the limit on
+    # an OAuth endpoint. Optional authentication returns None rather than
+    # raising, so it cannot pre-empt a refusal either.
+    #
+    # Taken from the sibling's NAMED GROUPS rather than from its flat
+    # ``NON_MANDATORY_AUTH_DEPENDENCIES``, and the reason is a principle, not a
+    # measured difference — stated that way because the measurement says
+    # otherwise and the honest version is the useful one.
+    #
+    # Measured: on this application both give the same answer, 51. The union's
+    # extra members are its four SERVICE PROVIDERS, and none of the nine
+    # dependencies currently found ahead of a gate is one of them — the blockers
+    # are case/knowledge service providers, which the sibling never listed
+    # because its own question was about auth-module dependencies only.
+    #
+    # The narrow import is still the right one. The union's members are grouped
+    # by "lives in an auth module and does not by itself refuse an anonymous
+    # caller"; what this predicate needs is "may correctly resolve BEFORE the
+    # gate", and for a service provider the answer is no — that IS the #1467
+    # shape. Importing the union would make the predicate silently excuse
+    # ``get_auth_service`` or ``get_oauth_service`` the day one of them is
+    # declared ahead of a gate, with nothing to notice. The mutation that swaps
+    # them (M24) therefore kills nothing today, which is reported rather than
+    # hidden.
+    excusable = (
+        _PERMITTED_BEFORE_A_GATE
+        | DELIBERATE_PRE_AUTH_REFUSALS
+        | OPTIONAL_AUTH_DEPENDENCIES
+    )
+
+    order = _resolution_order(dependant)
     gates = [
         index
-        for index, dependency in enumerate(top_level)
-        if MANDATORY_AUTH_DEPENDENCIES & _dependency_names(dependency)
-        or _qualified(dependency.call) in MANDATORY_AUTH_DEPENDENCIES
+        for index, dependency in enumerate(order)
+        if _qualified(dependency.call) in MANDATORY_AUTH_DEPENDENCIES
     ]
     if not gates:
         return (
             "no mandatory auth dependency at all; resolved: "
-            f"{[_qualified(d.call) for d in top_level]}"
+            f"{[_qualified(d.call) for d in order]}"
         )
+
+    # Two things legitimately resolve before the gate, and both are excluded by
+    # the SUBTREE rather than by the name — because post-order puts a
+    # dependency's children ahead of the dependency itself, so permitting only
+    # the parent's name permits nothing that actually runs first. Measured on
+    # ``/debug/config``: positions 0 and 1 are ``get_auth_service`` and
+    # ``get_organization_repository``, the tenant binder's own children, and the
+    # binder is not reached until position 2.
+    #
+    # 1. The gate's own machinery. ``require_platform_admin`` pulls
+    #    ``require_authentication``, which pulls ``get_current_user_optional``,
+    #    ``extract_bearer_token``, ``get_auth_service`` and the ``HTTPBearer``
+    #    scheme. They are how the gate does its job; counting them as "ahead of
+    #    the gate" reports every correctly gated route in the application.
+    # 2. Whatever ``excusable`` names, with its subtree — the app-level tenant
+    #    binder, and the refusals a route makes on purpose before anyone is
+    #    authenticated (rate limiters, optional auth).
+    #
+    # Excluded by ``id`` rather than by name, so a collaborator that happens to
+    # share a name with something in either tree is still reported.
+    first = min(gates)
+    excused = {id(d) for d in _resolution_order(order[first])}
+    for dependency in order:
+        if _qualified(dependency.call) in excusable:
+            excused.add(id(dependency))
+            excused.update(id(d) for d in _resolution_order(dependency))
 
     early = [
         f"{dependency.name or '<decorator>'}={_qualified(dependency.call)}"
-        for index, dependency in enumerate(top_level)
-        if index < min(gates)
-        and _qualified(dependency.call) not in _PERMITTED_BEFORE_A_GATE
+        for index, dependency in enumerate(order)
+        if index < first and id(dependency) not in excused
     ]
     if early:
         return (
-            f"these dependencies resolve BEFORE the auth gate: {early}. Declare "
-            "the gate first — on the decorator "
-            "(``dependencies=[Depends(require_platform_admin)]``) and ahead of "
-            "anything else in that list — or an anonymous caller reaches them "
-            "and gets their failure instead of the refusal"
+            f"these dependencies resolve BEFORE the auth gate: {early}. If they "
+            "are SERVICE providers, declare the gate ahead of them — on the "
+            "decorator (``dependencies=[Depends(require_platform_admin)]``), "
+            "before anything else in that list, and not behind a collaborator "
+            "inside a composite — or an anonymous caller reaches them and gets "
+            "their failure instead of the refusal. If one is a DELIBERATE "
+            "pre-auth refusal (a rate limiter answering 429, which must apply "
+            "to callers who never authenticate), do NOT move the gate in front "
+            "of it — that would exempt anonymous callers from the limit. Add it "
+            "to DELIBERATE_PRE_AUTH_REFUSALS in test_openapi_documents_auth.py."
         )
     return None
 
@@ -893,11 +1358,11 @@ def test_a_gate_declared_after_a_service_parameter_is_not_a_gate():
     routes = {
         route.path: route for route in probe.routes if isinstance(route, APIRoute)
     }
-    assert _gate_failure(routes["/gate-on-the-decorator"]) is None, (
+    assert _gate_failure(routes["/gate-on-the-decorator"].dependant) is None, (
         "the predicate rejected a correctly gated route — it is not a rule, it "
         "is an outage"
     )
-    assert _gate_failure(routes["/gate-through-two-wrappers"]) is None, (
+    assert _gate_failure(routes["/gate-through-two-wrappers"].dependant) is None, (
         "the predicate did not find an auth gate two wrappers deep, so "
         "_dependency_names is not reaching the whole subtree. Both predicates "
         "read that one walk: _open_served_operations would report this route "
@@ -907,7 +1372,7 @@ def test_a_gate_declared_after_a_service_parameter_is_not_a_gate():
         _dependency_names(routes["/gate-through-two-wrappers"].dependant)
     ), "the shared walk does not reach a dependency two levels down"
     for path in ("/gate-after-the-parameter", "/gate-after-a-decorator-collaborator"):
-        assert _gate_failure(routes[path]) is not None, (
+        assert _gate_failure(routes[path].dependant) is not None, (
             f"the predicate accepted {path}, where a collaborator resolves "
             "ahead of the gate — it is not discriminating, and every route it "
             "passes is unchecked"
@@ -955,13 +1420,11 @@ def test_the_debug_gate_resolves_before_anything_the_handler_declares():
     — so it is the one route on the router that most needs watching, and the
     one an "only the routes #1474 touched" scope would have skipped.
     """
-    from fastapi.routing import APIRoute
-
     served = _app_under(ENVIRONMENT="development")
     routes = {
-        route.path: route
-        for route in served.routes
-        if isinstance(route, APIRoute) and route.path in _ALL_DEBUG_PATHS
+        path: dependant
+        for path, _methods, dependant in _served_api_routes(served)
+        if path in _ALL_DEBUG_PATHS
     }
 
     missing = set(_ALL_DEBUG_PATHS) - set(routes)
@@ -969,8 +1432,8 @@ def test_the_debug_gate_resolves_before_anything_the_handler_declares():
 
     failures = {
         path: failure
-        for path, route in sorted(routes.items())
-        if (failure := _gate_failure(route)) is not None
+        for path, dependant in sorted(routes.items())
+        if (failure := _gate_failure(dependant)) is not None
     }
     assert not failures, "\n".join(
         f"{path}: {reason}" for path, reason in failures.items()
@@ -1027,6 +1490,7 @@ def test_the_debug_routes_refuse_anonymous_and_non_operator_callers():
     resolves first. The flag path keeps both structural guarantees; what it
     cannot have, in an environment with no Redis, is an HTTP round trip.
     """
+    import os
     from datetime import UTC, datetime
 
     from fastapi.testclient import TestClient
@@ -1055,50 +1519,722 @@ def test_the_debug_routes_refuse_anonymous_and_non_operator_callers():
             roles=roles,
         )
 
-    served = _app_under(ENVIRONMENT="development")
-    assert _debug_routes(served), "the debug router did not mount"
+    # Snapshotted around the whole thing because the RESTORE is a claim this
+    # test makes and nothing else checks. The lifespan applies a configuration
+    # preset and pins BLAS/OMP thread counts, so starting the app WRITES to
+    # ``os.environ``; without ``_served_under``'s restore those variables
+    # outlive the test and every later module in the session runs under them.
+    # Measured before the restore existed: six added here, more on a box with a
+    # fuller ``.env``. A mutation that removed the restore passed the whole
+    # module until this assertion was added.
+    environment_before = dict(os.environ)
 
-    # ``raise_server_exceptions=False`` so a handler that raises is reported by
-    # the assertion that names the caller identity, rather than as a bare
-    # traceback out of ``client.get`` with no indication of which of the three
-    # was in play.
-    with TestClient(served, raise_server_exceptions=False) as client:
-        for path in _DEBUG_PATHS:
-            anonymous = client.get(path)
-            assert anonymous.status_code == 401, (
-                f"GET {path} answered {anonymous.status_code} to a caller with "
-                f"no credential: {anonymous.text[:200]}"
-            )
+    # ``_served_under``, not ``_app_under``: this is the one test here that
+    # STARTS the app and issues requests, so the pin has to outlive the build.
+    # Under ``_app_under`` the lifespan and every request ran on whatever the
+    # session's ambient environment held, which made the protection preset, the
+    # auth mode, the tenant provider and the storage backends a function of the
+    # machine — and let the lifespan's preset application and BLAS thread
+    # pinning leak six variables into the pytest process.
+    with _served_under(
+        ENVIRONMENT="development",
+        # A self-hosted deployment, stated rather than inherited: this is the
+        # shape whose 8090 is published on 0.0.0.0 with no proxy, which is the
+        # audience #1474 is about. The WorkOS placeholders are removed because
+        # they are a document-building fixture, not a deployment.
+        AUTH_MODE="local",
+        OAUTH_ENABLED="false",
+        WORKOS_API_KEY=None,
+        WORKOS_CLIENT_ID=None,
+        WORKOS_REDIRECT_URI=None,
+    ) as served:
+        assert _debug_routes(served), "the debug router did not mount"
 
-        served.dependency_overrides[require_authentication] = lambda: _user(["user"])
-        try:
+        # ``raise_server_exceptions=False`` so a handler that raises is reported
+        # by the assertion that names the caller identity, rather than as a bare
+        # traceback out of ``client.get`` with no indication of which of the
+        # three was in play.
+        client_cm = TestClient(served, raise_server_exceptions=False)
+        with client_cm as client:
             for path in _DEBUG_PATHS:
-                signed_in = client.get(path)
-                assert signed_in.status_code == 403, (
-                    f"GET {path} answered {signed_in.status_code} to an "
-                    "authenticated NON-operator; the gate is "
-                    "require_platform_admin, not require_authentication: "
-                    f"{signed_in.text[:200]}"
+                anonymous = client.get(path)
+                assert anonymous.status_code == 401, (
+                    f"GET {path} answered {anonymous.status_code} to a caller with "
+                    f"no credential: {anonymous.text[:200]}"
                 )
 
             served.dependency_overrides[require_authentication] = lambda: _user(
-                ["user", "admin", "platform_admin"]
+                ["user"]
             )
-            for path in _DEBUG_PATHS:
-                operator = client.get(path)
-                assert operator.status_code == 200, (
-                    f"GET {path} answered {operator.status_code} to a platform "
-                    "administrator — #1474 gated these routes, it did not "
-                    f"remove them: {operator.text[:200]}"
+            try:
+                for path in _DEBUG_PATHS:
+                    signed_in = client.get(path)
+                    assert signed_in.status_code == 403, (
+                        f"GET {path} answered {signed_in.status_code} to an "
+                        "authenticated NON-operator; the gate is "
+                        "require_platform_admin, not require_authentication: "
+                        f"{signed_in.text[:200]}"
+                    )
+
+                served.dependency_overrides[require_authentication] = lambda: _user(
+                    ["user", "admin", "platform_admin"]
                 )
-                assert expected_key[path] in operator.json(), (
-                    f"GET {path} answered 200 to a platform administrator but "
-                    f"without {expected_key[path]!r}: the handler caught its "
-                    "own failure and reported success. "
-                    f"{operator.text[:200]}"
+                for path in _DEBUG_PATHS:
+                    operator = client.get(path)
+                    assert operator.status_code == 200, (
+                        f"GET {path} answered {operator.status_code} to a platform "
+                        "administrator — #1474 gated these routes, it did not "
+                        f"remove them: {operator.text[:200]}"
+                    )
+                    assert expected_key[path] in operator.json(), (
+                        f"GET {path} answered 200 to a platform administrator but "
+                        f"without {expected_key[path]!r}: the handler caught its "
+                        "own failure and reported success. "
+                        f"{operator.text[:200]}"
+                    )
+
+                # ``/debug/routes`` claims in its own docstring to be "a
+                # strictly larger surface than the published contract". That
+                # was FALSE until this change: the handler walked ``app.routes``
+                # flat, which on FastAPI >= 0.139 sees one ``_IncludedRouter``
+                # placeholder per ``include_router`` — 24 of 147 routes, a
+                # strict SUBSET of the contract, with an operator told "not
+                # registered" about a hundred routes that are. Asserted rather
+                # than described, because a flattener that quietly stops
+                # flattening looks exactly like one that works.
+                reported = {
+                    row["path"] for row in client.get("/debug/routes").json()["routes"]
+                }
+                published = set(served.openapi()["paths"])
+                assert published <= reported, (
+                    "GET /debug/routes does not report every route the "
+                    "contract publishes, so it is not the larger surface it "
+                    "says it is. Missing: "
+                    f"{sorted(published - reported)}"
                 )
-        finally:
-            served.dependency_overrides.clear()
+            finally:
+                served.dependency_overrides.clear()
+
+    assert dict(os.environ) == environment_before, (
+        "starting the app changed the process environment and it was not put "
+        "back. Added: "
+        f"{sorted(set(os.environ) - set(environment_before))}; removed: "
+        f"{sorted(set(environment_before) - set(os.environ))}; changed: "
+        f"{sorted(k for k in set(os.environ) & set(environment_before) if os.environ[k] != environment_before[k])}"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "label,overrides,expected",
+    [
+        ("the shipped default", {"ENVIRONMENT": "development"}, True),
+        (
+            "the operator flag in production",
+            {"ENVIRONMENT": "production", "ENABLE_DEBUG_ENDPOINTS": "true"},
+            True,
+        ),
+        ("production, flag unset", {"ENVIRONMENT": "production"}, False),
+        ("staging, flag unset", {"ENVIRONMENT": "staging"}, False),
+    ],
+)
+def test_whether_the_debug_router_mounted_is_reported_not_only_logged(
+    label, overrides, expected
+):
+    """#1493: a startup log is not an observable.
+
+    Whether ``ENABLE_DEBUG_ENDPOINTS`` lifted the router into a non-development
+    environment is a security-relevant deployment fact whose only account was
+    one startup line — which has rolled out of ``kubectl logs`` on any pod that
+    has been up a while, so a runbook saying "grep for it" returns empty on a
+    healthy deployment and teaches the wrong conclusion. It is now reported by
+    ``GET /admin/config/status`` beside ``kb_prefetch`` and
+    ``first_party_consent_skip``, which are there for the same reason.
+
+    Driven through the built app rather than by calling
+    ``_is_debug_enabled()``, because the flag is written by the branch that
+    does the mounting and what is under test is that the report and the route
+    table agree. ``staging`` is a case of its own: it is neither development nor
+    production, the router does NOT mount there by default, and a log line that
+    called it production is one of the four claims #1493 lists.
+    """
+    from faultmaven.api.routes.admin_config import _debug_endpoints_are_mounted
+
+    served = _app_under(**overrides)
+    mounted = bool(_debug_routes(served))
+
+    assert mounted is expected, (
+        f"{label}: the debug router {'did not mount' if expected else 'mounted'}"
+        f" — expected {expected}. Routes: {_debug_routes(served)}"
+    )
+    assert _debug_endpoints_are_mounted(served) is expected, (
+        f"{label}: /admin/config/status would report "
+        f"{_debug_endpoints_are_mounted(served)} for a process whose route "
+        f"table says mounted={mounted}"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.security
+def test_the_mount_report_does_not_depend_on_how_the_app_was_composed():
+    """The reason it reads the route table and not a flag ``main`` sets.
+
+    The first version of this reported ``app.state.debug_endpoints_mounted``,
+    written by the branch of ``main`` that does the mounting. That is wrong for
+    a security-audit observable, and the two failure directions are not
+    symmetric: an app composed ANY other way — a harness, a future composition
+    root, anything that builds the router without going through that branch —
+    answered "no debug surface here" while serving ``/debug/config``. Telling an
+    auditor no about a pod that has it is the answer that ends the
+    investigation; over-reporting would only have wasted someone's time.
+
+    Built here without ``main`` at all, which is precisely the case the flag
+    could not see.
+    """
+    from fastapi import FastAPI
+
+    from faultmaven.api.routes.admin_config import _debug_endpoints_are_mounted
+
+    hand_composed = FastAPI()
+
+    @hand_composed.get("/debug/config")
+    async def _config():  # pragma: no cover
+        return {}
+
+    assert _debug_endpoints_are_mounted(hand_composed) is True, (
+        "an app that serves /debug/config reported no debug surface — the "
+        "report is keyed on how the app was built rather than on what it serves"
+    )
+
+    bare = FastAPI()
+
+    @bare.get("/healthz")
+    async def _healthz():  # pragma: no cover
+        return {}
+
+    assert _debug_endpoints_are_mounted(bare) is False, (
+        "an app with no /debug route reported one, so the predicate is a "
+        "constant and the assertion above proves nothing"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.security
+def test_no_gated_operation_resolves_a_collaborator_before_its_gate():
+    """The ordering rule, applied to the WHOLE application.
+
+    #1467 found the rule on one route; #1474 wrote a reusable predicate for it
+    and then quantified it over a five-element tuple, which is a rule about five
+    routes. Run app-wide it reports 51 operations of the same shape — carried in
+    ``MISORDERED_GATE_OPERATIONS`` with the issue that closes them (#1494), not
+    fixed here, because they span four modules and want their own review.
+
+    What this guard is FOR is that the class stops growing. It fails in both
+    directions, like ``PUBLIC_OPERATIONS``: a newly mis-ordered operation is not
+    in the allowlist and fails, and an entry that has since been fixed is stale
+    and fails too.
+
+    Scoped to operations that ARE gated. An operation with no auth dependency at
+    all is a different finding and belongs to the two guards above, which is why
+    ``_gate_failure``'s "no mandatory auth dependency at all" answer is filtered
+    out here rather than double-reported.
+    """
+    from tests.integration.api.test_openapi_documents_auth import (
+        MANDATORY_AUTH_DEPENDENCIES,
+    )
+
+    served = _app_under(ENVIRONMENT="production")
+    routes = _served_api_routes(served)
+
+    assert len(routes) > 100, (
+        f"only {len(routes)} API routes were found — the enumeration is not "
+        "seeing the composed application, and this guard measured almost "
+        "nothing. On FastAPI >= 0.139 a flat app.routes scan finds 20 of 144; "
+        "on the pinned 0.136 it finds all of them, so a shortfall here means "
+        "something else"
+    )
+
+    # The two categories ``_gate_failure`` conflates, separated on purpose.
+    # It fires for a route with NO auth dependency at all — correct, and
+    # expected for ``/auth/login``, ``/auth/register`` and the rest of the
+    # public surface, which the two guards above already decide about. Counting
+    # those here would produce a number that is mostly the public surface and an
+    # allowlist that is wrong. Only the second category is this guard's:
+    # operations that HAVE a gate with something resolving ahead of it.
+    misordered = set()
+    ungated = set()
+    for path, methods, dependant in routes:
+        if _gate_failure(dependant) is None:
+            continue
+        gated = bool(MANDATORY_AUTH_DEPENDENCIES & _dependency_names(dependant))
+        for method in methods:
+            if method in {"HEAD", "OPTIONS"}:
+                continue
+            (misordered if gated else ungated).add((method, path))
+
+    assert ungated, (
+        "no ungated operation was found, so the split above is not splitting "
+        "anything — either every route is now gated (report it, it would be "
+        "news) or the predicate stopped firing on the public surface"
+    )
+
+    for (method, path), (disposition, reason) in MISORDERED_GATE_OPERATIONS.items():
+        assert (
+            disposition == _MISORDERED
+        ), f"{method} {path}: unknown disposition {disposition!r}"
+        assert (
+            len(reason.strip()) > 20
+        ), f"{method} {path}: a reason has to name what resolves ahead of the gate"
+        assert (
+            "#" in reason
+        ), f"{method} {path}: a carried defect must name the issue that tracks it"
+
+    new_offenders = misordered - set(MISORDERED_GATE_OPERATIONS)
+    assert not new_offenders, (
+        "these operations carry an auth gate but resolve something else "
+        "FIRST, so an anonymous caller reaches that collaborator and gets its "
+        "failure instead of the 401 (the #1467 shape). Declare the gate on the "
+        "decorator, ahead of every collaborator:\n" + _format(new_offenders)
+    )
+
+    fixed = set(MISORDERED_GATE_OPERATIONS) - misordered
+    assert not fixed, (
+        "these MISORDERED_GATE_OPERATIONS entries no longer name a "
+        "mis-ordered operation — #1494 is closing, remove them:\n" + _format(fixed)
+    )
+
+
+# ---------------------------------------------------------------------------
+# The FastAPI >= 0.139 arm of ``_served_api_routes``, made reachable on the
+# version that actually ships.
+#
+# ``requirements/{test,dev,cloud}.txt`` all pin ``fastapi==0.136.0`` — that is
+# what CI installs and what the Dockerfile builds — and ``iter_route_contexts``
+# does not exist there, so the whole flattening arm takes the ``is None``
+# branch. A test that only drives a real app would therefore leave it
+# unexecuted in CI and any regression would ship green. Measured:
+#
+#     fastapi==0.136.0: `from fastapi.routing import iter_route_contexts`
+#                       -> ImportError
+#
+# Same shape, and the same reasoning, as the fm#1305 arm in
+# ``tests/unit/api/middleware/test_composed_route_policy.py``: drive it with
+# stand-ins for what the flattener really yields, and keep a live arm that
+# becomes real the moment the pin moves.
+# ---------------------------------------------------------------------------
+
+
+class _StubContext:
+    """A ``RouteContext``-shaped record, as ``iter_route_contexts`` yields one.
+
+    ``dependant`` is ALWAYS an attribute, defaulting to ``None`` — which is the
+    real shape. ``RouteContext.__getattr__`` proxies to a record where
+    ``dependant`` is a declared field with a ``None`` default, so a context that
+    carries it unset answers ``hasattr`` truthfully and hands back ``None``. An
+    earlier stub omitted the attribute entirely; that made the helper's
+    ``hasattr`` check look effective against a shape FastAPI never yields, while
+    the shape it does yield sailed through and failed later inside the tree
+    walk. The check is ``getattr(...) is None`` for that reason, and this stub
+    is what proves it.
+    """
+
+    def __init__(self, path, methods=frozenset(), route=None, dependant=None):
+        self.path = path
+        self.methods = methods
+        self.route = route
+        self.dependant = dependant
+
+
+def _route_and_trees():
+    """An APIRoute whose own dependant differs from the one that resolves.
+
+    Built by hand rather than by ``include_router`` because on the pinned
+    version ``include_router`` copies eagerly and the two trees are the SAME
+    object — there would be nothing to tell apart, which is exactly why the
+    difference is invisible to CI without this.
+    """
+    from fastapi import Depends, FastAPI
+    from fastapi.routing import APIRoute
+
+    from faultmaven.api.v1.auth_dependencies import require_platform_admin
+
+    probe = FastAPI()
+
+    @probe.get("/leaf")
+    async def _leaf(caller=Depends(require_platform_admin)):  # pragma: no cover
+        return {}
+
+    route = [r for r in probe.routes if isinstance(r, APIRoute)][0]
+
+    gated = FastAPI(dependencies=[Depends(require_platform_admin)])
+
+    @gated.get("/leaf")
+    async def _gated():  # pragma: no cover
+        return {}
+
+    resolved = [r for r in gated.routes if isinstance(r, APIRoute)][0].dependant
+    return route, resolved
+
+
+@pytest.mark.integration
+@pytest.mark.security
+def test_the_flattener_arm_reads_the_contexts_dependant_not_the_routes(monkeypatch):
+    """The >= 0.139 arm, executed on the pinned 0.136.
+
+    The bug this forbids is subtle and was shipped once: flattening with
+    ``iter_route_contexts`` for the PATH while still reading ``route.dependant``
+    for the TREE. Measured on the composed app under 0.141.1, that is wrong for
+    **132 of 147 routes**, and all 132 lose the app-level tenant binder — so a
+    gate contributed by ``include_router(..., dependencies=[...])`` is invisible
+    and its whole router reads as OPEN, while a collaborator contributed the
+    same way resolves ahead of the route's own gate with ``_gate_failure``
+    answering ``None``.
+    """
+    import tests.integration.api.test_no_unauthenticated_operations as module
+
+    route, resolved = _route_and_trees()
+    assert route.dependant is not resolved, "the fixture does not distinguish them"
+
+    monkeypatch.setattr(
+        route_enumeration,
+        "iter_route_contexts",
+        lambda routes: [
+            _StubContext("/pre/leaf", frozenset({"GET"}), route, resolved),
+            _StubContext("", frozenset(), None, None),  # a Mount: no APIRoute
+        ],
+    )
+
+    served = module._served_api_routes(SimpleNamespace(routes=[]))
+
+    assert [s.path for s in served] == ["/pre/leaf"], (
+        "the arm did not run, or it kept a context whose route is not an " "APIRoute"
+    )
+    assert served[0].methods == frozenset({"GET"})
+    assert served[0].dependant is resolved, (
+        "the flattened arm returned the ROUTE's dependant. On >= 0.139 that is "
+        "the handler's tree only — the path comes from the context and the tree "
+        "must come from the same place"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.security
+def test_a_context_without_a_dependant_is_refused_rather_than_defaulted(monkeypatch):
+    """Falling back to ``route.dependant`` would be silent and wrong.
+
+    If a future FastAPI stops carrying ``dependant`` on the context, the helper
+    must say so. Defaulting would reinstate the 132-route defect above with
+    every test still green, which is the failure mode this module exists to
+    prevent rather than demonstrate.
+    """
+    import tests.integration.api.test_no_unauthenticated_operations as module
+
+    route, _resolved = _route_and_trees()
+    monkeypatch.setattr(
+        route_enumeration,
+        "iter_route_contexts",
+        # dependant defaults to None: the shape a FastAPI that stopped
+        # populating it would really yield.
+        lambda routes: [_StubContext("/pre/leaf", {"GET"}, route)],
+    )
+
+    with pytest.raises(RuntimeError, match="carries no resolved dependant"):
+        module._served_api_routes(SimpleNamespace(routes=[]))
+
+
+@pytest.mark.integration
+@pytest.mark.security
+def test_the_pre_0_139_arm_is_the_flat_scan(monkeypatch):
+    """And it is CORRECT there, not a degraded fallback.
+
+    On the pinned ``fastapi==0.136.0`` ``include_router`` copies eagerly, with
+    the prefix merged into the path and the contributed dependencies merged into
+    the route's own dependant. Measured, on a router included at
+    ``prefix="/pre"`` with an app-level dependency, a router-level one and a
+    handler parameter:
+
+        0.136.0  flat APIRoute paths -> ['/direct', '/pre/leaf']
+                 route.dependant     -> [app_global, router_gate, handler_dep]
+        0.141.1  flat APIRoute paths -> ['/direct']
+                 route.dependant     -> [handler_dep]
+
+    So this arm is not second best on the shipped version — it is exactly right,
+    and the flattening arm above is forward protection for the pin moving.
+    """
+    from fastapi import Depends, FastAPI
+
+    import tests.integration.api.test_no_unauthenticated_operations as module
+    from faultmaven.api.v1.auth_dependencies import require_platform_admin
+
+    monkeypatch.setattr(route_enumeration, "iter_route_contexts", None)
+
+    app = FastAPI()
+
+    @app.get("/plain")
+    async def _plain(caller=Depends(require_platform_admin)):  # pragma: no cover
+        return {}
+
+    served = module._served_api_routes(app)
+    paths = {s.path for s in served}
+
+    assert "/plain" in paths, "the flat arm did not run"
+    entry = next(s for s in served if s.path == "/plain")
+    assert entry.methods == frozenset({"GET"})
+    assert (
+        _gate_failure(entry.dependant) is None
+    ), "the flat arm handed back a tree the predicate cannot read"
+
+
+def _flattener_is_available() -> bool:
+    """Does THIS interpreter's FastAPI expose the route flattener? (>= 0.139)
+
+    Asked as a function rather than read off the module-level name, because
+    ``skipif(iter_route_contexts is None, ...)`` folds to a literal on the
+    pinned 0.136 and ``test_skip_guards_can_evaluate`` refuses it — correctly:
+    a condition fixed at authoring time "is not a guard; it is a disabled test
+    wearing a guard's clothes". This one queries the installed package, so it
+    answers differently on a different install, which is what the guard asks
+    for and what is actually true here.
+    """
+    try:
+        from fastapi.routing import iter_route_contexts  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+@pytest.mark.integration
+@pytest.mark.security
+@pytest.mark.skipif(
+    not _flattener_is_available(),
+    reason="fastapi < 0.139 copies included routes in eagerly; nothing to flatten",
+)
+def test_a_really_included_router_is_flattened_with_its_resolved_tree():
+    """The live arm. Skipped on the pin, real the moment it moves.
+
+    Kept beside the injected ones rather than instead of them: the stubs prove
+    the code does the right thing with the shape, and this proves the shape is
+    the one FastAPI really produces.
+
+    **This is the blind spot ``test_skip_guards_can_evaluate`` names in its own
+    docstring** — "a guard whose condition is real but true in every job that
+    exists". Every CI job installs ``fastapi==0.136.0``, so this test does not
+    run anywhere today and its green is worth nothing. That is stated rather
+    than papered over, and it is exactly why the two injected tests above exist:
+    they carry the real coverage of the flattening arm on the pinned version,
+    and this one only becomes load-bearing when the pin moves.
+    """
+    from fastapi import APIRouter, Depends, FastAPI
+
+    import tests.integration.api.test_no_unauthenticated_operations as module
+    from faultmaven.api.v1.auth_dependencies import require_platform_admin
+
+    sub = APIRouter()
+
+    @sub.get("/leaf")
+    async def _leaf():  # pragma: no cover
+        return {}
+
+    app = FastAPI(dependencies=[Depends(require_platform_admin)])
+    app.include_router(sub, prefix="/pre")
+
+    served = {s.path: s for s in module._served_api_routes(app)}
+
+    assert "/pre/leaf" in served, (
+        "the effective path was not recovered — an unprefixed '/leaf' here "
+        "means the walk reached original_router instead of the flattener"
+    )
+    assert _gate_failure(served["/pre/leaf"].dependant) is None, (
+        "the app-level gate is absent from the tree this helper returned, so "
+        "it read route.dependant rather than the context's"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.security
+def test_a_rate_limiter_ahead_of_the_gate_is_not_reported_as_misordered():
+    """The one pre-gate collaborator that must stay pre-gate.
+
+    ``GET`` and ``POST /api/v1/auth/oauth/authorize`` declare
+    ``dependencies=[Depends(require_oauth_rate_limit_authorize)]`` — the limiter
+    FIRST, deliberately. A rate limiter answers 429 and has to apply to callers
+    who never authenticate; that is what it is for. They were carried in
+    ``MISORDERED_GATE_OPERATIONS`` for one round, and the failure message told a
+    maintainer to "declare the gate ahead of every collaborator". Following that
+    on these two routes would have exempted every anonymous caller from the
+    limit on an OAuth endpoint — the allowlist instructing a future round into a
+    vulnerability.
+
+    Pinned as a property rather than fixed as two paths: the predicate excuses
+    ``DELIBERATE_PRE_AUTH_REFUSALS``, which lives beside
+    ``MANDATORY_AUTH_DEPENDENCIES`` in the sibling because it is shared
+    vocabulary.
+
+    The second half is about which set is imported. The excusal must NOT be the
+    flat ``NON_MANDATORY_AUTH_DEPENDENCIES``: that union also contains the four
+    service providers, and a service provider ahead of a gate IS the #1467
+    shape. Measured honestly — today both sets give the same answer (51),
+    because none of the nine dependencies currently found ahead of a gate is one
+    of those four. So this is a guard against a future excusal, not a present
+    difference, and it is asserted structurally (the groups stay disjoint)
+    rather than by a count that would pass either way.
+    """
+    from tests.integration.api.test_openapi_documents_auth import (
+        DELIBERATE_PRE_AUTH_REFUSALS,
+        MANDATORY_AUTH_DEPENDENCIES,
+        NON_MANDATORY_AUTH_DEPENDENCIES,
+        OPTIONAL_AUTH_DEPENDENCIES,
+        SERVICE_PROVIDER_DEPENDENCIES,
+    )
+
+    limiter = (
+        "faultmaven.modules.auth.api.rate_limiting.require_oauth_rate_limit_authorize"
+    )
+    assert limiter in DELIBERATE_PRE_AUTH_REFUSALS
+
+    served = _app_under(ENVIRONMENT="production")
+    # Keyed on method as well as path, NOT on path alone: GET and POST
+    # /authorize are two route objects sharing one path, so a dict keyed on
+    # path keeps whichever came last and silently drops the other. That is not
+    # hypothetical — written that way, deleting the limiter from GET left this
+    # test passing, so the half an unauthenticated client reaches first in the
+    # PKCE flow was guarded by nothing.
+    authorize = [
+        (f"{'/'.join(sorted(methods))} {path}", dependant)
+        for path, methods, dependant in _served_api_routes(served)
+        if path == "/api/v1/auth/oauth/authorize"
+    ]
+    assert len(authorize) == 2, (
+        "expected both GET and POST /api/v1/auth/oauth/authorize to be served "
+        f"and measured, got {[name for name, _ in authorize]} — if a method was "
+        "removed this test is no longer measuring what it claims"
+    )
+
+    for path, dependant in authorize:
+        names = _dependency_names(dependant)
+        assert limiter in names, (
+            f"{path} no longer carries the OAuth authorize rate limiter — if it "
+            "moved, this test is measuring a route that no longer has the shape"
+        )
+        assert MANDATORY_AUTH_DEPENDENCIES & names, (
+            f"{path} carries no auth gate at all, so 'the limiter precedes the "
+            "gate' is not the property under test here"
+        )
+        order = [_qualified(d.call) for d in _resolution_order(dependant)]
+        gate = min(
+            index
+            for index, name in enumerate(order)
+            if name in MANDATORY_AUTH_DEPENDENCIES
+        )
+        assert order.index(limiter) < gate, (
+            f"{path}: the limiter no longer resolves before the auth gate. If "
+            "that was deliberate, an anonymous caller is now unlimited on an "
+            "OAuth endpoint — check it"
+        )
+        assert _gate_failure(dependant) is None, (
+            f"{path}: reported as mis-ordered although the only thing ahead of "
+            "the gate is a deliberate pre-auth refusal. Carrying it in the "
+            "allowlist tells a maintainer to move the gate in front of the "
+            "limiter, which removes rate limiting from anonymous callers"
+        )
+        assert path not in {
+            key[1] for key in MISORDERED_GATE_OPERATIONS
+        }, f"{path} is back in MISORDERED_GATE_OPERATIONS; it is not a defect"
+
+    # Structural, because a count would pass either way today.
+    assert SERVICE_PROVIDER_DEPENDENCIES <= NON_MANDATORY_AUTH_DEPENDENCIES, (
+        "the flat union no longer contains the service providers, so importing "
+        "it would no longer be the hazard this test is about — re-derive"
+    )
+    assert not (SERVICE_PROVIDER_DEPENDENCIES & OPTIONAL_AUTH_DEPENDENCIES), (
+        "a service provider is listed as an optional auth dependency — that "
+        "group is imported into the excusal too, so this would excuse ahead of "
+        "a gate exactly the shape the predicate exists to find"
+    )
+    assert not (SERVICE_PROVIDER_DEPENDENCIES & DELIBERATE_PRE_AUTH_REFUSALS), (
+        "a service provider is listed as a deliberate pre-auth refusal — the "
+        "two groups have merged and the predicate now excuses the #1467 shape"
+    )
+    assert SERVICE_PROVIDER_DEPENDENCIES, (
+        "the service-provider group is empty, so the disjointness assertion "
+        "above holds vacuously"
+    )
+    assert MISORDERED_GATE_OPERATIONS, (
+        "the carried set is empty: either #1494 closed, or the excusal widened "
+        "to the flat union and swallowed all 51"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.security
+def test_no_published_remediation_names_an_unsettable_environment():
+    """A remediation string must name values an operator can actually set.
+
+    This is #1493's class, caught once as an instance and now as a rule. The
+    predicate behind the debug router reads
+    ``env in ("development", "testing", "test")``, so three plausible-looking
+    values got written into the places that TELL AN OPERATOR WHAT TO DO — the
+    ``enable_debug_endpoints`` field description, ``CLAUDE.md``, and the
+    ``config_hint`` that ``GET /admin/config/status`` returns over HTTP. Two of
+    the three cannot be set:
+
+        Environment admits  : development, staging, production
+        ENVIRONMENT=testing : ValidationError, not a debug mount
+
+    So the remediation sent an operator to set a value that raises at startup,
+    after which ``get_settings()`` fails and the app falls to its degraded
+    fallback — the advice does not merely not work, it breaks the thing it
+    claims to configure.
+
+    Scoped to strings published as guidance, and to the one variable whose value
+    space is a closed enum. It deliberately does NOT read the predicate in
+    ``main``: that the code tests for unsettable strings is a separate,
+    documented fact, and demanding they agree would force those dead strings to
+    be deleted — a behaviour change this is not making.
+
+    It matches the FORM ``ENVIRONMENT=<value>`` / ``ENVIRONMENT is a/b/c`` and
+    cannot tell naming a value from warning against one, so prose that cites an
+    unsettable value as a counterexample has to cite it without that form. That
+    is a real cost and it is the right way round: the rule stays mechanical, and
+    the one place it bites a true sentence is prose a human can reword. It found
+    exactly that case in ``CLAUDE.md`` on its first run.
+    """
+    import re
+
+    from faultmaven.config.settings import Environment, ServerSettings
+
+    settable = {member.value for member in Environment}
+    assert settable, "the Environment enum is empty; this guard measures nothing"
+
+    published: dict[str, str] = {
+        "settings.enable_debug_endpoints.description": (
+            ServerSettings.model_fields["enable_debug_endpoints"].description or ""
+        ),
+        "admin_config.debug_endpoints.config_hint": _debug_feature_config_hint(),
+        "CLAUDE.md": "\n".join(
+            line
+            for line in (PROJECT_ROOT / "CLAUDE.md").read_text().splitlines()
+            if "ENABLE_DEBUG_ENDPOINTS" in line or "ENVIRONMENT=" in line
+        ),
+    }
+    for where, text in published.items():
+        assert text.strip(), f"{where}: read empty, so this guard checked nothing"
+
+    offenders: list[str] = []
+    for where, text in published.items():
+        named = set(re.findall(r"ENVIRONMENT=([a-z]+)", text))
+        for run in re.findall(r"ENVIRONMENT is ([a-z/]+)", text):
+            named.update(part for part in run.split("/") if part)
+        for value in sorted(named - settable):
+            offenders.append(f"{where}: names ENVIRONMENT={value!r}")
+
+    assert not offenders, (
+        "these published strings tell an operator to set an ENVIRONMENT value "
+        f"the enum does not admit {sorted(settable)} — setting it raises at "
+        "startup, so the remediation breaks what it claims to configure:\n  "
+        + "\n  ".join(offenders)
+    )
 
 
 @pytest.mark.integration
