@@ -147,17 +147,23 @@ def _capabilities() -> str:
     )
 
 
-def _title(case: Any) -> str:
+def case_subject(case: Any, limit: int = _TITLE_CHARS) -> str:
     """The case's subject, or "" while it still carries the placeholder title.
 
-    The route answers the turn BEFORE auto-titling runs, titling is best-effort,
-    and older cases kept the placeholder forever — so ``Case-260905-3`` is a
-    normal thing to find here, and quoting it as the subject reads as nonsense.
+    Auto-titling runs after the reply is generated and needs ~200 characters of
+    user content, titling is best-effort, and older cases kept the placeholder
+    forever — so ``Case-260905-3`` is a normal thing to find here, and quoting
+    it as the subject reads as nonsense.
+
+    Public and shared, because every surface that names the case to a user owes
+    the same answer: the orientation chips, the aside prompts and the aside
+    fallback. A second copy of this is a second place the placeholder contract
+    lives, and that regex already needs two date widths.
     """
     title = str(getattr(case, "title", "") or "").strip()
     if is_default_case_title(title):
         return ""
-    return title[:_TITLE_CHARS]
+    return title[:limit]
 
 
 def _first_sentence(text: str, limit: int) -> str:
@@ -217,9 +223,24 @@ def last_investigation_message(case: Any, limit: int = _ASK_CHARS) -> Optional[s
     return None
 
 
+def describe_issue_follow_up() -> dict[str, Any]:
+    """The one "tell me what is wrong" chip, for every lane that has no
+    investigation to point back to.
+
+    Shared so a user does not meet two names for the same action one turn
+    apart: the greeting lane offered this wording first, and the aside lane
+    needs it whenever a case has no investigation history yet.
+    """
+    return {
+        "label": "Describe your issue",
+        "action_type": "FREE_SPEECH",
+        "hints": ["symptoms", "error messages", "timeline", "affected services"],
+    }
+
+
 def back_to_investigation_follow_up(case: Any) -> dict[str, Any]:
     """The one "resume the investigation" chip both aside lanes offer."""
-    title = _title(case)
+    title = case_subject(case)
     return {
         "label": f"Back to: {title[:60]}" if title else "Back to the investigation",
         "action_type": "FREE_SPEECH",
@@ -250,7 +271,7 @@ def build_orientation(case: Any, kind: OrientationKind) -> dict[str, Any]:
     shape the service's deterministic handlers already return.
     """
     state = getattr(case, "state", None)
-    title = _title(case)
+    title = case_subject(case)
     inquiry = getattr(case, "inquiry", None)
     proposed = (
         str(getattr(inquiry, "proposed_problem_statement", "") or "").strip()
@@ -350,16 +371,7 @@ def build_orientation(case: Any, kind: OrientationKind) -> dict[str, Any]:
     return {
         "agent_response": " ".join(p for p in (opener, body) if p),
         "suggested_follow_ups": [
-            {
-                "label": "Describe your issue",
-                "action_type": "FREE_SPEECH",
-                "hints": [
-                    "symptoms",
-                    "error messages",
-                    "timeline",
-                    "affected services",
-                ],
-            },
+            describe_issue_follow_up(),
             {
                 "label": "Share error logs from the affected service",
                 "action_type": "EVIDENCE",

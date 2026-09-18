@@ -266,6 +266,36 @@ class TestOutOfBandTurn:
         labels = [a.label for a in resp.suggested_actions]
         assert any(label.startswith("Back to: Nightly OOM kills") for label in labels)
 
+    async def test_follow_ups_offer_the_issue_chip_with_no_history(
+        self, engine, recording_case_repository, case
+    ):
+        """A case with no investigation turns has nothing to point back to.
+
+        Built as the honest opening shape rather than by blanking one field:
+        INQUIRY, an unconfirmed problem statement, the placeholder title, an
+        empty turn history and a clock at zero. Zeroing ``messages`` alone would
+        have left a case that is mid-investigation by every other durable signal
+        and pinned that disagreement as correct.
+        """
+        case.state = CaseState.INQUIRY
+        case.title = "Case-260918-3"
+        case.inquiry.problem_statement_confirmed = False
+        case.inquiry.decided_to_investigate = False
+        case.messages = []
+        case.turn_history = []
+        case.current_turn = 0
+        assert case.investigation_turn_count == 0
+
+        service = _service(engine, recording_case_repository, InMemoryTurnLedger())
+        resp, *_ = await _turn(service, recording_case_repository, case)
+        labels = [a.label for a in resp.suggested_actions]
+        # Matches the chip's BOTH forms. `startswith("Back to:")` alone is
+        # vacuous here: this case carries the placeholder title, so the chip
+        # renders "Back to the investigation" with no colon and the assertion
+        # passes even when the predicate has been regressed.
+        assert not any(label.startswith("Back to") for label in labels), labels
+        assert "Describe your issue" in labels
+
     async def test_agent_meta_skips_the_engine_without_a_triage_call(
         self, engine, recording_case_repository, case
     ):
