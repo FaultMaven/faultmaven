@@ -14,6 +14,10 @@ from __future__ import annotations
 
 import pytest
 
+from faultmaven.modules.knowledge.contracts import (
+    TROUBLESHOOTING_DOMAINS,
+    describe_troubleshooting_domains,
+)
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     VALID_DOMAINS,
     RunbookValidator,
@@ -114,3 +118,31 @@ def test_off_vocab_domain_is_error():
     errors = _domain_errors(_runbook("kubernetes"))
     assert errors
     assert "kubernetes" in errors[0]
+
+
+# ---------------------------------------------------------------------------
+# Single-source property: the ingestion gate and the published territory are
+# the SAME vocabulary. Before this, the agent side had no access to the
+# taxonomy and carried four improvised prose versions of it instead; a second
+# literal here is how that starts again.
+# ---------------------------------------------------------------------------
+
+
+def test_ingestion_gate_derives_from_the_published_territory():
+    """``VALID_DOMAINS`` is the contract's tuple, not a second literal.
+
+    The property, not an instance: re-literalising either side fails this
+    regardless of which domains the taxonomy happens to hold.
+    """
+    assert VALID_DOMAINS == list(TROUBLESHOOTING_DOMAINS)
+
+
+def test_every_domain_reaches_the_prose_renderer():
+    """A prompt stating the territory cannot silently omit a domain.
+
+    Prompts render the taxonomy through one helper so the several sites that
+    name it cannot drift; that only holds if the helper is total.
+    """
+    rendered = describe_troubleshooting_domains()
+    for domain in TROUBLESHOOTING_DOMAINS:
+        assert domain in rendered

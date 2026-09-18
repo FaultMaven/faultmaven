@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from faultmaven.exceptions import ValidationException
+from faultmaven.modules.knowledge.contracts import TROUBLESHOOTING_DOMAINS
 from faultmaven.modules.knowledge.domain.models.conversion import (
     QualityScore,
     ValidationResult,
@@ -305,15 +306,12 @@ REQUIRED_SECTIONS = [
     "Sources",
 ]
 
-VALID_DOMAINS = [
-    "database",
-    "networking",
-    "compute",
-    "application",
-    "security",
-    "storage",
-    "messaging",
-]
+#: The ingestion gate's view of the domain taxonomy. The vocabulary itself now
+#: lives in the module's contracts, because the agent side needs the same answer
+#: to "what is FaultMaven for?" — see ``TROUBLESHOOTING_DOMAINS`` for why. Kept
+#: as a list under its original name so the cross-repo parity test and the error
+#: message below read exactly as before; there is one definition, not two.
+VALID_DOMAINS = list(TROUBLESHOOTING_DOMAINS)
 
 VALID_SCOPES = ["global", "team", "personal"]
 

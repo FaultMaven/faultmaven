@@ -304,3 +304,49 @@ from faultmaven.modules.knowledge.domain.models.suggestion import (
 # The actual KnowledgeService implementation uses IVectorStore interface
 # from infrastructure layer, which is correct for vertical modules.
 # ============================================================
+
+
+# ============================================================
+# Domain Taxonomy — FaultMaven's territory
+# ============================================================
+
+#: The engineering domains FaultMaven troubleshoots, and the single definition
+#: of its territory.
+#:
+#: This vocabulary already existed as ``runbook_validator.VALID_DOMAINS``, where
+#: it gates KB ingestion: a runbook declaring a domain outside this set is
+#: rejected. It is published here because the *agent* side needs the same answer
+#: to "what is FaultMaven for?" and had been carrying four improvised prose
+#: versions of it instead — "engineering work" in the out-of-band classifier,
+#: "technical questions" in INQUIRY triage, "complex technical incidents" in the
+#: identity block, and nothing at all on the case model. Those drifted, and a
+#: question in none of these domains was investigated as though it were in all
+#: of them.
+#:
+#: Read it as a SHARED VOCABULARY, never as an admission gate. FaultMaven
+#: answers questions outside these domains — the taxonomy tells the agent when
+#: it is speaking outside its expertise, not when to refuse. Being lenient about
+#: what gets answered while being precise about what gets investigated is the
+#: point; a topic gate built on this constant would defeat it.
+#:
+#: Hand-maintained in lock-step with the kb-toolkit producer side; grow it here
+#: and there together, never by loosening the ingestion gate.
+TROUBLESHOOTING_DOMAINS: Tuple[str, ...] = (
+    "database",
+    "networking",
+    "compute",
+    "application",
+    "security",
+    "storage",
+    "messaging",
+)
+
+
+def describe_troubleshooting_domains() -> str:
+    """The territory as one prose clause, for prompts that must state scope.
+
+    One renderer so the several prompt sites that name the domain cannot drift
+    back into four different phrasings — which is the condition this module
+    exists to end.
+    """
+    return ", ".join(TROUBLESHOOTING_DOMAINS)
