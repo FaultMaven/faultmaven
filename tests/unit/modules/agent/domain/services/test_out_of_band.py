@@ -112,6 +112,42 @@ class TestTriage:
             is None
         )
 
+    def test_router_classifies_by_subject_not_by_genre(self):
+        """Category 2 was an enumeration of GENRES, so a serious off-domain
+        question matched neither category.
+
+        "small talk, jokes, trivia, creative writing, personal chat" describes a
+        register. A sincere, detailed question about personal finance or
+        medicine is none of those and is not engineering either, so the model
+        reasonably answered 3 — which the strict parse reads as incident work.
+        That is how a retirement-account question was investigated for nine
+        turns. The boundary has to be stated as a boundary.
+        """
+        prompt = OutOfBandTriage._build_prompt(_case(), "how much can I contribute?")
+        assert "by its SUBJECT" in prompt
+        assert "NOT limited to" in prompt
+        assert "does not make a subject engineering" in prompt
+
+    def test_router_knows_the_published_territory(self):
+        """The site that ROUTES must use the same vocabulary as the sites that
+        ANSWER, or scope is judged by two different definitions — and the router
+        runs first, so its definition is the one that decides."""
+        from faultmaven.modules.knowledge.contracts import TROUBLESHOOTING_DOMAINS
+
+        prompt = OutOfBandTriage._build_prompt(_case(), "is the pool exhausted?")
+        for domain in TROUBLESHOOTING_DOMAINS:
+            assert domain in prompt, f"router prompt omits {domain!r}"
+
+    def test_router_ties_break_toward_incident_work(self):
+        """Leniency, stated in the prompt rather than left to the parse.
+
+        A wrong 2 on a symptom report does not refuse the user — it tags the
+        turn an aside and erases the report from every later prompt. The parse
+        already fails toward incident; the instruction makes the model do so too.
+        """
+        prompt = OutOfBandTriage._build_prompt(_case(), "something is odd")
+        assert "could plausibly be engineering, answer 1" in prompt
+
     async def test_prompt_shows_the_previous_agent_message_and_fences_the_user(self):
         triage, router = self._triage("1")
         case = _case(

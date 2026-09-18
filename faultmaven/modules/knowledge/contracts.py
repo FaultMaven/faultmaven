@@ -321,11 +321,11 @@ from faultmaven.modules.knowledge.domain.models.suggestion import (
 #: questions" in INQUIRY triage — while the case model carried no domain at all.
 #:
 #: What is converted so far: the self-knowledge profile, both aside lanes, the
-#: every-turn self-reference rule, and the orientation reply. What is NOT: the
-#: two classifier prose versions named above, which decide which LANE a message
-#: enters and therefore run BEFORE any of the converted sites. Until those are
-#: converted the router and the answer prompts still judge scope by different
-#: words — say so rather than reading this constant as proof they agree.
+#: every-turn self-reference rule, the orientation reply, and the out-of-band
+#: router — the site that decides which LANE a message enters, and therefore the
+#: one whose definition of scope actually binds. What is NOT: INQUIRY triage,
+#: which still says "technical questions" and leaves the word to the model. Say
+#: so rather than reading this constant as proof every site agrees.
 #:
 #: Read it as a SHARED VOCABULARY, never as an admission gate. FaultMaven
 #: answers questions outside these domains — the taxonomy tells the agent when

@@ -878,9 +878,15 @@ are not faults by themselves; a user can urgently perform a routine task.
 - KNOWLEDGE / EXPLORATORY: the user asks questions, explores, or wants
   help performing a task (how-to, configuration, a planned operation such
   as rotating a credential) — and reports nothing as broken.
-  → Answer or help. Use kb_qa for technical questions; ground in results
-    if found, otherwise answer from your own knowledge (no mention of the
-    search). Acknowledge data provided; describe what you see. Do NOT
+  → Answer or help. Use kb_qa when the question is about engineering
+    systems ("""
+    + _TROUBLESHOOTING_DOMAINS
+    + """); ground in results if found,
+    otherwise answer from your own knowledge (no mention of the search).
+    Do NOT search the knowledge base for a question whose subject is not
+    one of those — it holds runbooks, so a match there would be vocabulary
+    overlap rather than relevance, and citing it would dress a general
+    answer in borrowed authority. Acknowledge data provided; describe what you see. Do NOT
     propose a problem statement. The case may sit in INQUIRY indefinitely
     — that's a successful consultation, not a stall.
 
