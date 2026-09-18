@@ -210,6 +210,9 @@ gh issue list --state open --limit 500 --json number,title,labels,createdAt,body
 
 Label each issue carrying no `pile:` label — every new arrival, and anything
 a half-finished move left bare — using *What escalates* in the procedure.
+**Except the `Queue` issue itself, which is in no pile**: it is the board, not
+an item on it, and a `pile:ready` on it would be open, singly-labelled and
+returned by the ready query, so step 4 would dispatch a lane at the board.
 `pile:yours` is work no agent can do: a live deployment check, a console or
 credential an agent lacks. List it, never rank it into a round. Compare each
 new issue against the current candidates and place it; do not re-sort the
