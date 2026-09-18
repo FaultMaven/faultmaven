@@ -289,7 +289,11 @@ class TestOutOfBandTurn:
         service = _service(engine, recording_case_repository, InMemoryTurnLedger())
         resp, *_ = await _turn(service, recording_case_repository, case)
         labels = [a.label for a in resp.suggested_actions]
-        assert not any(label.startswith("Back to:") for label in labels)
+        # Matches the chip's BOTH forms. `startswith("Back to:")` alone is
+        # vacuous here: this case carries the placeholder title, so the chip
+        # renders "Back to the investigation" with no colon and the assertion
+        # passes even when the predicate has been regressed.
+        assert not any(label.startswith("Back to") for label in labels), labels
         assert "Describe your issue" in labels
 
     async def test_agent_meta_skips_the_engine_without_a_triage_call(
