@@ -8,6 +8,7 @@ entity detection and phrasing analysis. No LLM involved — this is deterministi
 import pytest
 
 from faultmaven.modules.agent.domain.services.query_classifier import (
+    _HTTP_STATUS_CODES,
     ProcessingMode,
     QueryClassification,
     _extract_entities,
@@ -574,3 +575,75 @@ class TestAgentSelfReference:
             classify_query("How do you retrieve the runbook for postgres OOM?").mode
             == ProcessingMode.KNOWLEDGE_QUERY
         )
+
+
+# ============================================================
+# Status-code extraction means what it claims
+# ============================================================
+
+
+class TestStatusCodeExtractionIsNotShapeMatching:
+    """``status_codes`` is a HARD case anchor, so a false match is expensive.
+
+    It pins a message to the investigation whatever the phrasing and suppresses
+    the semantic scope check downstream. The extractor used to match any
+    three-digit number in 400-599, which is mostly not status codes — ports,
+    money, latencies, row counts — and one false match routed a question into
+    directed analysis and kept it there.
+    """
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "what is port 443 for?",  # a port
+            "p99 latency hit 450ms",  # a latency (unit suffix)
+            "we processed 456 rows",  # a count
+            "the retry budget is 590",  # a bare quantity
+        ],
+    )
+    def test_numbers_that_are_not_status_codes_are_not_extracted(self, message):
+        assert "status_codes" not in _extract_entities(message)
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Explain common 401(k) contribution errors",  # retirement plan
+            "we filed as a 501(c)(3)",  # tax status
+            "my 403(b) rollover failed",  # retirement plan
+        ],
+    )
+    def test_a_code_bound_to_a_qualifier_is_a_label_not_a_status(self, message):
+        """The number IS a valid code — only the tight binding separates them."""
+        assert "status_codes" not in _extract_entities(message)
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "the API returned 502 (Bad Gateway)",  # spaced parenthetical
+            "nginx logged 504 at 14:02",
+            "503 Service Unavailable from the upstream",
+            "we are seeing 429 on the write path",
+        ],
+    )
+    def test_real_status_codes_still_anchor(self, message):
+        """The narrowing must not cost recall on actual incident reports."""
+        assert "status_codes" in _extract_entities(message)
+
+    def test_currency_prefixed_numbers_are_amounts(self):
+        assert "status_codes" not in _extract_entities("I got $500 in fees")
+
+    def test_every_extractable_code_is_a_defined_status_code(self):
+        r"""The property, not an instance: the extractor's range IS the code set.
+
+        Sweeps the whole numeric band the old shape-matcher accepted, so a
+        later widening back toward ``[45]\d{2}`` fails here regardless of which
+        number happens to expose it.
+        """
+        for n in range(400, 600):
+            extracted = _extract_entities(f"saw {n} on the request").get(
+                "status_codes", []
+            )
+            if extracted:
+                assert (
+                    str(n) in _HTTP_STATUS_CODES
+                ), f"{n} extracted as a status code but is not a defined one"
