@@ -83,24 +83,50 @@ class StrictSchemaUnsupported(Exception):
     """
 
 
-#: JSON-Schema keywords OpenAI's strict subset does not accept. They are
-#: descriptive rather than structural: dropping them narrows nothing about which
-#: documents validate, so removing them cannot make a wrong response pass.
-#: ``default`` in particular is meaningless once every property is required.
+#: JSON-Schema keywords this rewrite drops.
+#:
+#: Two kinds, and only the first is about the API refusing them:
+#:
+#: 1. ``uniqueItems`` — measured rejected outright: ``400 Invalid schema for
+#:    response_format 'r': In context=('properties', 'tags'), 'uniqueItems' is
+#:    not permitted.`` (gpt-4o-mini and gpt-5.6-luna, 2026-09-17). It was
+#:    MISSING from this list, so a schema emitting it would have been a 400.
+#:    None of the six response schemas do, so adding it closes a latent case
+#:    rather than changing behaviour.
+#: 2. ``default``, ``examples``, ``format`` — accepted, but dropped on purpose.
+#:    ``default`` is meaningless once every property is required; ``examples``
+#:    is documentation; ``format`` is a *coercion* rather than a narrowing
+#:    (``format: date-time`` on a summary field measured turning the answer
+#:    into a timestamp on both OpenAI models), and nothing in the engine wants
+#:    that.
+#:
+#: The **narrowing** keywords are NOT dropped any more (fm#355).
+#: ``minimum``/``maximum``/``minLength``/``maxLength``/``minItems``/``maxItems``/
+#: ``pattern`` decide which documents validate, so dropping them asked the model
+#: for a value range the Pydantic model then rejected client-side — the engine's
+#: ``likelihood: float = Field(ge=0, le=1)`` fields reached the wire as bare
+#: numbers and came back as ``95``. Measured accepted on gpt-4o-mini and
+#: gpt-5.6-luna (``maxLength: 20`` → a 20-character answer, ``pattern:
+#: ^[a-z ]+$`` → lowercase) and on gemini-3.7-flash / gemini-3.5-flash /
+#: gemini-3.5-flash-lite via both ``responseSchema`` and
+#: ``functionDeclarations`` (2026-09-17). The old comment here called them
+#: "descriptive rather than structural"; they are the opposite, which is what
+#: made the claim costly. See ``GeminiProvider._GEMINI_UNSUPPORTED_FIELDS``
+#: for how hard each one bites on Gemini — ``minimum``/``maximum`` are
+#: enforced, ``maxLength`` is honoured rather than hard-enforced, so the
+#: client-side checks stay.
+#:
+#: ``exclusiveMinimum``/``exclusiveMaximum`` stay dropped: OpenAI accepts them,
+#: but they are absent from Gemini's ``Schema`` type, and no engine schema emits
+#: them — so carrying them would be an unmeasured wire change for no gain.
 _STRICT_UNSUPPORTED_KEYWORDS = frozenset(
     {
         "default",
-        "minimum",
-        "maximum",
+        "examples",
+        "format",
         "exclusiveMinimum",
         "exclusiveMaximum",
-        "minLength",
-        "maxLength",
-        "minItems",
-        "maxItems",
-        "pattern",
-        "format",
-        "examples",
+        "uniqueItems",
     }
 )
 

@@ -18,7 +18,7 @@ Three properties keep that from coming back:
 from __future__ import annotations
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import faultmaven.core.investigation.schemas as schemas
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
@@ -304,14 +304,26 @@ def test_a_recursive_definition_is_refused_not_leaked():
 
 
 def test_unsupported_keywords_are_stripped():
-    """OpenAI's subset rejects them. They are descriptive, so removing them
-    cannot let a wrong response validate."""
+    """Only the keywords that are genuinely descriptive, or that the API
+    refuses, are dropped.
+
+    ``default`` is meaningless once every property is required. The keywords
+    that decide which documents VALIDATE are not dropped any more (fm#355) —
+    dropping them asked the model for values the Python model then rejected.
+    """
 
     class Bounded(BaseModel):
-        ratio: float = 0.5
+        ratio: float = Field(0.5, ge=0.0, le=1.0)
 
     schema = to_strict_schema(Bounded.model_json_schema())
-    assert "default" not in schema["properties"]["ratio"]
+    ratio = schema["properties"]["ratio"]
+    assert "default" not in ratio
+
+    # A defaulted field becomes required-but-nullable, so the bounds live on the
+    # non-null branch of the union.
+    bounded = [b for b in ratio["anyOf"] if b.get("type") != "null"][0]
+    assert bounded["minimum"] == 0.0
+    assert bounded["maximum"] == 1.0
 
 
 # ---------------------------------------------------------------------------
