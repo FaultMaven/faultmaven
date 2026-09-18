@@ -117,34 +117,67 @@ its own state:
   at the rank that selected it with nothing to move it, so the next round
   dispatches a lane to build the same fix again.
 
-**Every one of those ends by writing a note on the issue naming the pull
-request it settled, and a note naming that pull request ends the matter.**
-Settling mutates issues, and until the note exists the only record that it
-ran is the proposal, which is written later — so an invocation that settles
-and then stops re-applies the whole thing next time, editing the same parent
-down a second time and re-ranking it again. **The note has to name the pull
-request, not merely exist:** an issue is settled once per pull request that
-carries it, and a parent edited down is built again later under another one.
-A guard that fires on any note at all would skip that second settlement, and
-every settlement after it, leaving the issue open at a stale rank forever —
-which is the `Refs`-merged parent again, re-created permanently by the
-mechanism meant to prevent re-application. The note is also what tells a
-pull request the **agent** closed, in a pull, from one the owner abandoned:
-a pull writes the same note whenever it closes a pull request, so the
-abandonment case never fires on it, and a pull mid-build has no pull request
-to close and never reaches here at all. Reading the round's result prose for
-that instead would rest on a format this pass introduced, which round 1's
-result, written before it, does not carry.
+**Every one of those is safe to repeat**, and it is the medium rather than
+the prose that makes it so. A pile is a **label on the issue**, so a move is
+`--add-label` then `--remove-label` on that one issue: adding a label already
+present is a no-op, removing an absent one is a no-op, and neither reads
+anything another step might be writing. A re-run of the settlement re-derives
+the same labels and changes nothing. Safe is not the same as silent — the
+abandonment comment is free-form prose a re-run cannot reliably recognise as
+its own, so it may be posted twice — but one duplicate comment is the entire
+price.
+
+**Three consecutive attempts tried to buy that with prose, and each bought a
+leak.** The piles used to be lists inside one shared blob — the `Queue` issue
+body, which has no compare-and-set, no transaction and no schema. Every fix
+added a rule about *when* to write the blob, and each rule was another
+unsynchronised writer. The sharpest of them wrote a `Settled by #<pr>` marker
+on each issue and skipped any already carrying one, which made the stop it was
+built for **unrecoverable**: the marker was on the issue while the piles were
+in the body, so a re-run read the marker and did nothing while *Propose*
+rebuilt the item straight back into ready at its old rank. Its replacement
+moved the blob write earlier and left a pull's move unwritten; the fix for
+*that* left the item named in the ranked head, which is what a round
+dispatched from at the time. Three roads to one leak, on two files, by three
+careful lanes. The wall was the blob. **A label has the properties the prose
+kept failing to state**, and it has them by construction: one issue, one
+atomic edit, no shared object, and a pile that is a query rather than a parse.
+
+**What survives in the `Queue` body is what a label cannot hold** — the ranked
+head, in order, and the round timestamp. *Propose* is its only writer, so it
+has no concurrency left to get wrong, and the head is an ordering over
+membership rather than membership itself: **a name the ready query no longer
+returns is skipped wherever the head is read.** *Build* states that predicate
+in full and it is the only one. That is why a pull writes one label and
+nothing else, and why a head naming a blocked, pulled or closed item is stale
+rather than wrong.
+
+**A pull request the agent closed is told from one the owner abandoned by
+the result table**, which reports that issue's outcome as `pulled`. It
+decides whether the settlement posts an abandonment comment, and nothing
+else: the pile move runs either way, so the row that reads it is not a skip,
+and losing the report costs one comment too many rather than an item in the
+wrong pile. An earlier draft objected to reading the round's result at all,
+on the ground that it rested on a format that pass had just introduced. That
+objection is spent — the table is already where the settlement gets its
+pairs — and it would not matter here in any case, because no state rides on
+the answer.
 
 ### 1. Propose
 
-Sort every issue filed since the last round into three piles:
+Sort every issue filed since the last round into three piles, by labelling
+it — the label **is** the pile, and an issue carrying none is one nobody has
+sorted yet:
 
-- **ready** — the answer is known; it needs work, not a call.
-- **blocked** — it needs a ruling before anyone can build it.
-- **yours** — the work itself is the owner's and no agent can do it: a
+- **`pile:ready`** — the answer is known; it needs work, not a call.
+- **`pile:blocked`** — it needs a ruling before anyone can build it.
+- **`pile:yours`** — the work itself is the owner's and no agent can do it: a
   live-deployment check, or anything needing a credential or console an
   agent does not have.
+
+Each pile is then a query over open issues, which is why nothing here has a
+rule about carrying a closed number forward: a closed issue is not in the
+answer.
 
 The third pile exists because running this procedure on 2026-09-16 found two
 beta gates that were neither ready nor blocked on a ruling. Calling them
@@ -216,7 +249,8 @@ One lane per approved item, in its own worktree, autonomous. The gates under
 **No question is asked while building.** If a lane cannot deliver its item,
 the item is **pulled**: the lane stops, what stopped it is recorded on the
 issue — the question if there is one, otherwise the fact — the item returns
-to the blocked pile, and it appears in the next proposal. The other lanes
+to the blocked pile — one label on one issue, which collides with nothing
+another lane is doing — and it appears in the next proposal. The other lanes
 carry on. Half-built work is not left behind and the round is not held up.
 
 **"Cannot deliver", not "needs a ruling".** Needing a ruling is the common
@@ -300,20 +334,26 @@ anything shipping a new guard — it is a round by itself.
 
 **Ranking is incremental.** A new issue is compared against the current
 candidates when it arrives, and that is the only comparison it gets. Nothing
-re-sorts the whole backlog each round, which would be work proportional to
-the backlog for comparisons already made. Losing that comparison is not a
-state: the item keeps the place the comparison gave it, and the pile drains
-past it. That only holds if the place survives the round, so the **ranked
-head** — the items holding rules 1-3, in order — is written into the `Queue`
-body and carried forward. The rule-4 tier is not, and needs not be: "oldest
-first" is recoverable from the issues themselves at any moment, which is why
-the tier is the part of the pile that costs no bookkeeping. Three things
-move an item up out of its turn — a new priority label, another issue on the
-same seam, a citation from a new issue — and an item that gets none of them
-still arrives, because rule 4 orders its tier and every round takes the
-oldest of it. An earlier draft listed a fourth trigger, "an age threshold
-recorded in the pile", which nothing ever recorded a value for. A trigger
-with no value is not an exit.
+re-sorts the whole backlog each round, which would be work proportional to the
+backlog for comparisons already made. Losing that comparison is not a state:
+the item keeps the place the comparison gave it, and the pile drains past it.
+That only holds if the place survives the round, so the **ranked head** — the
+items holding rules 1-3, in order — is written into the `Queue` body and
+carried forward. An order is the one thing a label cannot hold, and it is safe
+there because *Propose* is that body's only writer and because the head
+decides nothing on its own: membership is the label, so a name the dispatch
+predicate no longer admits — blocked, mid-move, pulled or closed — is skipped
+rather than obeyed. *Build* states it; note that the mid-move case is the one
+the ready query alone does not catch, which is why that predicate has two
+conditions and not one. The rule-4 tier is not written down, and needs not be:
+"oldest first" is recoverable from the issues themselves at any moment, so the
+tier is the part of the pile that costs no bookkeeping. Three things move an
+item up out of its turn — a new priority label, another issue on the same
+seam, a citation from a new issue — and an item that gets none of them still
+arrives, because rule 4 orders its tier and every round takes the oldest of
+it. An earlier draft listed a fourth trigger, "an age threshold recorded in
+the pile", which nothing ever recorded a value for. A trigger with no value is
+not an exit.
 
 ## Building
 
@@ -351,20 +391,20 @@ Gates for a lane, each from a failure that cost real time:
   mid-build:** a blocking finding **the lane cannot clear** is pulled — the
   owning agent closes the pull request, records on the issue either the
   question, if it needs a ruling, or simply that the lane could not clear
-  it, adds the settlement note naming that pull request so the next round
-  reads the close as a pull rather than as the owner's abandonment, returns
-  the item to the blocked pile, and the result reports it as not delivered.
-  The condition is "cannot clear", not "needs a ruling": a
-  finding that is merely too hard trips none of the four escalation
-  triggers, so gating the exit on a ruling would leave that case with no
-  exit at all — the same shape as the leak this rule exists to close. "The
-  lane could not clear it" is itself a call for the owner: ship the bug, or
-  take it on themselves. Closing a pull request is the one action on one the
-  owning agent may take; merging is never one. Without that exit this
-  exception would be the only state here the *round itself* cannot leave —
-  step 5 could never run, so no other lane's work would reach the owner
-  either, and holding the round up is precisely what the pull rule exists to
-  prevent.
+  it, returns the item to the blocked pile — one label on that issue — and
+  reports it in the result as
+  `pulled` rather than delivered, which is also what tells the next round's
+  settlement that this close was not the owner's. The condition is "cannot
+  clear", not "needs a ruling": a finding that is merely too hard trips none
+  of the four escalation triggers, so gating the exit on a ruling would
+  leave that case with no exit at all — the same shape as the leak this rule
+  exists to close. "The lane could not clear it" is itself a call for the
+  owner: ship the bug, or take it on themselves. Closing a pull request is
+  the one action on one the owning agent may take; merging is never one.
+  Without that exit this exception would be the only state here the *round
+  itself* cannot leave — step 5 could never run, so no other lane's work
+  would reach the owner either, and holding the round up is precisely what
+  the pull rule exists to prevent.
 - **Verify, do not relay.** Act on a subagent's finding only with execution
   evidence, and run a suggested remedy before adopting it. A remedy is
   checked *before* it is asked for: in round 1 the suggested fix for a
