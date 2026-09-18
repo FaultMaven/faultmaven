@@ -86,12 +86,14 @@ from faultmaven.modules.agent.domain.services.orientation import (
     OrientationKind,
     back_to_investigation_follow_up,
     build_orientation,
+    describe_issue_follow_up,
     detect_orientation,
 )
 from faultmaven.modules.agent.domain.services.out_of_band import (
     OutOfBandKind,
     OutOfBandTriage,
     answer_out_of_band,
+    has_investigation_history,
 )
 from faultmaven.modules.agent.domain.services.query_classifier import (
     ProcessingMode,
@@ -3649,8 +3651,16 @@ class InvestigationService:
         )
         return {
             "agent_response": agent_response,
+            # The chips have to agree with the reply. Offering "Back to: X" on a
+            # case with no investigation history points the user at work that
+            # never happened; the greeting lane's own wording is what belongs
+            # there, and sharing it keeps one action from having two names.
             "suggested_follow_ups": [
-                back_to_investigation_follow_up(case),
+                (
+                    back_to_investigation_follow_up(case)
+                    if has_investigation_history(case)
+                    else describe_issue_follow_up()
+                ),
                 {"label": "Ask another question", "action_type": "FREE_SPEECH"},
             ],
             "case_updated": case,

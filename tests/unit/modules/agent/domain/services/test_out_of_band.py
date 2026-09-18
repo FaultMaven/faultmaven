@@ -34,12 +34,47 @@ HAIKU = (
 )
 
 
-def _case(**kw):
+def _case(
+    *,
+    title: str = "Nightly OOM kills of postgres",
+    state: str = "investigating",
+    messages: list | None = None,
+    investigation_turns: int = 2,
+):
+    """A case double, with every field it stands in for named explicitly.
+
+    Keyword-only and exhaustive on purpose. The previous version accepted
+    ``**kw`` and read only ``messages``, so ``_case(title="Case-260918-3")``
+    silently returned the default title and every assertion about placeholder
+    handling passed against a string that never entered the system.
+
+    ``investigation_turns`` is the double's half of ``investigation_turn_count``
+    — the real property derives it from the message clock minus out-of-band
+    turns — and it defaults to a case already under way, because that is what
+    most of this suite is about. Use :func:`_fresh_case` for the other shape.
+    """
+    # The double models the CLOCK, not a number, because the predicate asks
+    # about the turn before this one — ``process_turn`` advances the clock
+    # early and records the outcome late. A double that answered with a bare
+    # count would hide exactly that off-by-one.
+    current_turn = investigation_turns + 1
     return SimpleNamespace(
-        title="Nightly OOM kills of postgres",
-        state=SimpleNamespace(value="investigating"),
-        messages=kw.get("messages", []),
+        title=title,
+        state=SimpleNamespace(value=state),
+        messages=messages if messages is not None else [],
+        current_turn=current_turn,
+        investigation_turn_at=lambda n, _t=investigation_turns: max(0, min(n, _t)),
     )
+
+
+def _fresh_case(**kw):
+    """A case with no investigation history — the shape a first message meets.
+
+    Asides and orientation replies both record ``TurnOutcome.OUT_OF_BAND``, so
+    a case can have exchanges and still be this shape.
+    """
+    kw.setdefault("state", "inquiry")
+    return _case(investigation_turns=0, **kw)
 
 
 class TestNeedsLlmTriage:
@@ -189,8 +224,8 @@ class TestTriage:
         """
         prompt = OutOfBandTriage._build_prompt(_case(), "something is odd")
         assert (
-            "If the message could bear on the incident or on engineering, "
-            "answer 1.\n" in prompt
+            "If the message could bear on engineering work at all, answer 1.\n"
+            in prompt
         )
 
     async def test_prompt_shows_the_previous_agent_message_and_fences_the_user(self):
@@ -244,6 +279,70 @@ class TestContinuationGates:
         c = QueryClassification(ProcessingMode.DIRECTED_ANALYSIS, {}, 0.5)
         assert await OutOfBandTriage(router).triage(_case(), "lol ok", c) is None
         router.route.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "what is 401k error?",  # "error" — the word that decided a case
+            "lol ok",  # under the word floor
+            "should I be worried?",  # continuation vocabulary
+            "I tried the rollback",
+            "db down",  # terse, entity-free, and a real report
+        ],
+    )
+    async def test_no_message_continues_a_case_with_no_history(self, message):
+        """The gates preserve a status quo; with no investigation turns there is
+        none, so nothing reads as a continuation of it.
+
+        The property, not an instance: whatever vocabulary a message carries,
+        it cannot be more of something that has not happened.
+        """
+        router = MagicMock()
+        router.route = AsyncMock(return_value=SimpleNamespace(content="1"))
+        c = QueryClassification(ProcessingMode.DIRECTED_ANALYSIS, {}, 0.5)
+        await OutOfBandTriage(router).triage(_fresh_case(), message, c)
+        router.route.assert_called_once()
+
+    @pytest.mark.parametrize("message", ["lol ok", "I tried the rollback"])
+    async def test_the_gates_re_arm_once_a_turn_has_been_investigated(self, message):
+        """The exemption is scoped to "no investigation history", and one
+        investigation turn ends it."""
+        router = MagicMock()
+        router.route = AsyncMock(return_value=SimpleNamespace(content="2"))
+        c = QueryClassification(ProcessingMode.DIRECTED_ANALYSIS, {}, 0.5)
+        assert await OutOfBandTriage(router).triage(_case(), message, c) is None
+        router.route.assert_not_called()
+
+    async def test_asides_do_not_end_the_exemption(self):
+        """Stated honestly, because it is not "turn 1".
+
+        An aside records OUT_OF_BAND and so does not advance the investigation
+        count — a case whose only exchanges were asides still has no
+        investigation history, and its next message is still the first
+        substantive one. The gates stay off across a run of asides rather than
+        re-arming after the first, and that is the intended behaviour.
+        """
+        router = MagicMock()
+        router.route = AsyncMock(return_value=SimpleNamespace(content="1"))
+        c = QueryClassification(ProcessingMode.DIRECTED_ANALYSIS, {}, 0.5)
+        await OutOfBandTriage(router).triage(_fresh_case(), "should I check?", c)
+        router.route.assert_called_once()
+
+    def test_the_rubric_is_written_for_whichever_case_it_judges(self):
+        """Category 1's examples name an incident and a previous assistant turn.
+
+        On a case with no history both are void by construction, and a rubric
+        whose positive class has no referent is the worst possible context for
+        the most ambiguous input — a terse opening report. So that branch names
+        the shape instead.
+        """
+        fresh = OutOfBandTriage._build_prompt(_fresh_case(), "db down")
+        assert "however short, vague or unpunctuated" in fresh
+        assert "an answer to the assistant's question" not in fresh
+
+        live = OutOfBandTriage._build_prompt(_case(), "did that help?")
+        assert "an answer to the assistant's question" in live
+        assert "however short, vague or unpunctuated" not in live
 
     async def test_timeout_is_incident(self, monkeypatch):
         import faultmaven.modules.agent.domain.services.out_of_band as oob
@@ -352,6 +451,63 @@ class TestAnswer:
         )
         assert "Answer whatever the user asks" in prompt
         assert "not the same as claiming it as something you do" in prompt
+
+    @pytest.mark.parametrize("case_factory", [_case, _fresh_case])
+    def test_every_answer_prompt_stays_small(self, case_factory):
+        """``build_answer_prompt``'s contract is that it is small and fixed-size.
+
+        Parametrized over BOTH shapes: an earlier version bounded only the
+        mid-investigation branch, which left the path every new case takes
+        unguarded — and that path renders the larger of the two.
+        """
+        prompt = build_answer_prompt(case_factory(), HAIKU, OutOfBandKind.OFF_TOPIC)
+        assert len(prompt) < 2500
+
+    def test_a_case_with_no_history_is_not_called_an_aside(self):
+        """Every paragraph of the prompt has to agree.
+
+        The identity block, the standing block and the task's opening sentence
+        are three consecutive paragraphs, and a version that branched only the
+        standing block told the model in one breath that no investigation
+        exists and in the next that the message "is not about the incident".
+        """
+        prompt = build_answer_prompt(
+            _fresh_case(), "what is the 2026 401k limit?", OutOfBandKind.OFF_TOPIC
+        )
+        assert "no investigation history" in prompt
+        assert "aside from it" not in prompt
+        assert "not about the incident" not in prompt
+        assert "offering to return to the investigation" not in prompt
+
+    def test_a_case_under_way_keeps_its_aside_framing(self):
+        """The change is scoped to cases with no history and nothing else."""
+        prompt = build_answer_prompt(_case(), HAIKU, OutOfBandKind.OFF_TOPIC)
+        assert "This message is an aside from it" in prompt
+        assert "offering to return to the investigation" in prompt
+
+    def test_no_surface_quotes_a_placeholder_title(self):
+        """A case carries ``Case-YYMMDD-N`` until auto-titling has enough
+        content, so this is the normal shape on an early turn, not an edge one.
+        """
+        placeholder = _case(title="Case-260918-3")
+        assert placeholder.title == "Case-260918-3"  # the fixture really set it
+        for text in (
+            build_answer_prompt(placeholder, "x", OutOfBandKind.OFF_TOPIC),
+            OutOfBandTriage._build_prompt(placeholder, "x"),
+            fallback_answer(placeholder, OutOfBandKind.OFF_TOPIC),
+        ):
+            assert "Case-260918-3" not in text
+
+    def test_the_fallback_does_not_assert_the_topic_was_out_of_scope(self):
+        """It is reached when the model could not be called at all.
+
+        The classifier's verdict is what routed the message here; claiming that
+        verdict was right — to a user whose opening report may simply have been
+        misjudged — is a claim this path cannot stand behind.
+        """
+        text = fallback_answer(_fresh_case(), OutOfBandKind.OFF_TOPIC)
+        assert "outside what I work on" not in text
+        assert "can't reach a model" in text
 
     def test_prompt_for_agent_meta_carries_the_profile(self):
         prompt = build_answer_prompt(
