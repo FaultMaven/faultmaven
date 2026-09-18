@@ -274,6 +274,10 @@ class OutOfBandTriage:
 
     @staticmethod
     def _build_prompt(case: Any, message: str) -> str:
+        from faultmaven.modules.knowledge.contracts import (
+            describe_troubleshooting_scope,
+        )
+
         title = str(getattr(case, "title", "") or "")[:200]
         previous = _last_assistant_message(case)
         previous_block = (
@@ -293,11 +297,22 @@ class OutOfBandTriage:
             "operating the affected systems: a symptom, data, a follow-up, an "
             "answer to the assistant's question, an acknowledgement or decision "
             '("yes", "done", "go ahead"), a technical or general-engineering '
-            "question, a request for next steps.\n"
-            "2. Out of band — unrelated to the incident and to engineering work: "
-            "small talk, jokes, trivia, creative writing, personal chat, a "
-            "request to change the subject.\n"
+            "question, a request for next steps. Engineering here means:\n"
+            f"{describe_troubleshooting_scope()}\n"
+            "A technology such as Kubernetes, Linux or Windows is engineering "
+            "whatever is being asked about it.\n"
+            "2. Out of band — unrelated to the incident AND to engineering "
+            "work: small talk, jokes, trivia, creative writing, personal chat, "
+            "a request to change the subject. NOT limited to those: a sincere, "
+            "detailed question belongs here too when its subject is something "
+            "else entirely — personal finance, tax, law, medicine, travel, "
+            "cooking, sport.\n"
+            "Judge the SUBJECT, not the register. A message is not incident "
+            "work merely because it is serious or full of numbers, and it is "
+            "not out of band merely because it is casual or brief.\n"
             "3. Unclear.\n\n"
+            "If the message could bear on the incident or on engineering, "
+            "answer 1.\n"
             "Answer with ONLY the digit 1, 2, or 3. Do not explain."
         )
 
@@ -374,10 +389,14 @@ def build_answer_prompt(case: Any, message: str, kind: OutOfBandKind) -> str:
         )
     else:
         task = (
-            "The user's message is not about the incident (small talk, trivia, "
-            "or a creative request). Answer it briefly and in good humour — at "
-            "most about 80 words, and a short form for anything creative. "
-            "Answer factual questions correctly; if you are not sure, say so.\n"
+            "The user's message is not about the incident. It may be small "
+            "talk, a joke or a creative request — or an entirely sincere "
+            "question about something you do not work on. Do not assume which: "
+            "answer what was actually asked, briefly, matching their register "
+            "rather than imposing one. Keep it to about 80 words; a short form "
+            "for anything creative. Answer factual questions correctly, say so "
+            "plainly when you are not sure, and do not dress a general answer "
+            "up as expertise.\n"
         )
     return (
         f"{_identity_rules(kind)}\n\n"
@@ -404,9 +423,9 @@ def fallback_answer(case: Any, kind: OutOfBandKind) -> str:
             f"to {title}?"
         )
     return (
-        "Happy to chat, but I can't answer that one right now — I work on "
-        "troubleshooting engineering systems. Shall we get back "
-        f"to {title}?"
+        "That one is outside what I work on — I troubleshoot engineering "
+        "systems — and I can't reach a model to answer it properly just now. "
+        f"Shall we get back to {title}?"
     )
 
 

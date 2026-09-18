@@ -880,7 +880,11 @@ are not faults by themselves; a user can urgently perform a routine task.
   as rotating a credential) — and reports nothing as broken.
   → Answer or help. Use kb_qa for technical questions; ground in results
     if found, otherwise answer from your own knowledge (no mention of the
-    search). Acknowledge data provided; describe what you see. Do NOT
+    search). What the knowledge base holds is troubleshooting runbooks for
+    """
+    + _TROUBLESHOOTING_DOMAINS
+    + """ — knowing that is what lets you judge whether a result is
+    relevant or merely shares its vocabulary. Acknowledge data provided; describe what you see. Do NOT
     propose a problem statement. The case may sit in INQUIRY indefinitely
     — that's a successful consultation, not a stall.
 
