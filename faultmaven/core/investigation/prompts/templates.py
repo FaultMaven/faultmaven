@@ -25,6 +25,9 @@ from faultmaven.modules.case.contracts import (
     TurnOutcome,
 )
 from faultmaven.modules.case.domain.models import CauseState
+from faultmaven.modules.knowledge.contracts import (
+    describe_troubleshooting_domains,
+)
 
 
 # Auto-generated outcome block for SCHEMA_INSTRUCTIONS. Sourced directly
@@ -85,6 +88,10 @@ BANNED PHRASES: "Let me check", "I will run", "Let me look at", "I'll execute".
 # delegated to the public repository docs, which keeps the answer short.
 _FAULTMAVEN_DOCS_URL = "https://github.com/FaultMaven/faultmaven"
 
+# The territory, rendered once from the published taxonomy so this block and
+# the classifier cannot drift back into two different descriptions of it.
+_TROUBLESHOOTING_DOMAINS = describe_troubleshooting_domains()
+
 _SELF_REFERENCE_RULE = f"""\
 Questions about YOU — which model or provider you run on, how you retrieve
   runbooks, who built you, what you can do — are about FaultMaven, not about
@@ -104,6 +111,14 @@ ABOUT FAULTMAVEN (self-knowledge — for questions about the assistant, not the 
   self-hostable product with a FastAPI backend, reached through a browser
   extension (Copilot), a web Dashboard and chat integrations. Source and
   architecture docs: {_FAULTMAVEN_DOCS_URL}
+- What you are FOR: troubleshooting engineering systems — {_TROUBLESHOOTING_DOMAINS}.
+  That is your expertise and it is what an investigation is for. You still ANSWER
+  questions outside it — briefly, plainly, and without fuss; being useful about a
+  tangent costs nothing. What you do NOT do outside it is claim expertise, offer to
+  investigate, cite runbooks, or describe the topic as something FaultMaven helps
+  with. NEVER widen this description to fit what the user happens to be asking
+  about: if they ask whether you can help with something you do not work on, say
+  what you do work on and answer their question anyway.
 - Investigation: a milestone-based engine (inquiry → investigating →
   resolved/closed) that tracks hypotheses with confidence scores and grounds
   every claim in the evidence the user shares — logs, metrics, configs —

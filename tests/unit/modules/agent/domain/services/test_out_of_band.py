@@ -221,6 +221,34 @@ class TestAnswer:
         assert "ABOUT FAULTMAVEN" not in prompt
         assert len(prompt) < 2500
 
+    def test_every_answering_lane_carries_the_scope_constraint(self):
+        """Both aside lanes fence capability claims to the published territory.
+
+        The property, not an instance: whatever the taxonomy holds, every lane
+        that can answer "can you help me with X?" must name it. The two lanes
+        once disagreed one turn apart — the aside lane offered help with
+        personal finance, the meta lane correctly described engineering
+        incidents — because only one of them carried any scope at all.
+        """
+        from faultmaven.modules.knowledge.contracts import TROUBLESHOOTING_DOMAINS
+
+        for kind in (OutOfBandKind.OFF_TOPIC, OutOfBandKind.AGENT_META):
+            prompt = build_answer_prompt(_case(), "can you help me?", kind)
+            for domain in TROUBLESHOOTING_DOMAINS:
+                assert domain in prompt, f"{kind.value} prompt omits {domain!r}"
+
+    def test_scope_constraint_fences_claims_without_refusing(self):
+        """Leniency is explicit: the rule bans over-claiming, not answering.
+
+        A scope statement that reads as "decline anything off-topic" would be a
+        topic gate, which is the failure this work exists to avoid.
+        """
+        prompt = build_answer_prompt(
+            _case(), "how do I budget?", OutOfBandKind.OFF_TOPIC
+        )
+        assert "Answer whatever the user asks" in prompt
+        assert "not the same as claiming it as something you do" in prompt
+
     def test_prompt_for_agent_meta_carries_the_profile(self):
         prompt = build_answer_prompt(
             _case(), "what model are you?", OutOfBandKind.AGENT_META
