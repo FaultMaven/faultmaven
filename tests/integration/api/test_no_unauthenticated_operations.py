@@ -2084,6 +2084,7 @@ def test_a_rate_limiter_ahead_of_the_gate_is_not_reported_as_misordered():
         DELIBERATE_PRE_AUTH_REFUSALS,
         MANDATORY_AUTH_DEPENDENCIES,
         NON_MANDATORY_AUTH_DEPENDENCIES,
+        OPTIONAL_AUTH_DEPENDENCIES,
         SERVICE_PROVIDER_DEPENDENCIES,
     )
 
@@ -2093,14 +2094,24 @@ def test_a_rate_limiter_ahead_of_the_gate_is_not_reported_as_misordered():
     assert limiter in DELIBERATE_PRE_AUTH_REFUSALS
 
     served = _app_under(ENVIRONMENT="production")
-    authorize = {
-        path: dependant
-        for path, _methods, dependant in _served_api_routes(served)
+    # Keyed on method as well as path, NOT on path alone: GET and POST
+    # /authorize are two route objects sharing one path, so a dict keyed on
+    # path keeps whichever came last and silently drops the other. That is not
+    # hypothetical — written that way, deleting the limiter from GET left this
+    # test passing, so the half an unauthenticated client reaches first in the
+    # PKCE flow was guarded by nothing.
+    authorize = [
+        (f"{'/'.join(sorted(methods))} {path}", dependant)
+        for path, methods, dependant in _served_api_routes(served)
         if path == "/api/v1/auth/oauth/authorize"
-    }
-    assert authorize, "the OAuth authorize route is not served; nothing measured"
+    ]
+    assert len(authorize) == 2, (
+        "expected both GET and POST /api/v1/auth/oauth/authorize to be served "
+        f"and measured, got {[name for name, _ in authorize]} — if a method was "
+        "removed this test is no longer measuring what it claims"
+    )
 
-    for path, dependant in authorize.items():
+    for path, dependant in authorize:
         names = _dependency_names(dependant)
         assert limiter in names, (
             f"{path} no longer carries the OAuth authorize rate limiter — if it "
@@ -2135,6 +2146,11 @@ def test_a_rate_limiter_ahead_of_the_gate_is_not_reported_as_misordered():
     assert SERVICE_PROVIDER_DEPENDENCIES <= NON_MANDATORY_AUTH_DEPENDENCIES, (
         "the flat union no longer contains the service providers, so importing "
         "it would no longer be the hazard this test is about — re-derive"
+    )
+    assert not (SERVICE_PROVIDER_DEPENDENCIES & OPTIONAL_AUTH_DEPENDENCIES), (
+        "a service provider is listed as an optional auth dependency — that "
+        "group is imported into the excusal too, so this would excuse ahead of "
+        "a gate exactly the shape the predicate exists to find"
     )
     assert not (SERVICE_PROVIDER_DEPENDENCIES & DELIBERATE_PRE_AUTH_REFUSALS), (
         "a service provider is listed as a deliberate pre-auth refusal — the "
