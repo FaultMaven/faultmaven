@@ -112,41 +112,86 @@ class TestTriage:
             is None
         )
 
-    def test_router_classifies_by_subject_not_by_genre(self):
-        """Category 2 was an enumeration of GENRES, so a serious off-domain
-        question matched neither category.
+    @staticmethod
+    def _categories(prompt: str) -> tuple[str, str]:
+        """Slice category 1 and category 2 out of the router prompt.
 
-        "small talk, jokes, trivia, creative writing, personal chat" describes a
-        register. A sincere, detailed question about personal finance or
-        medicine is none of those and is not engineering either, so the model
-        reasonably answered 3 — which the strict parse reads as incident work.
-        That is how a retirement-account question was investigated for nine
-        turns. The boundary has to be stated as a boundary.
+        Asserted per SEGMENT, not over the whole prompt: a phrase that survives
+        somewhere else does not show the category still says it. An earlier
+        version of these tests passed while category 2 had been rewritten to a
+        closed genre list, because the phrases they looked for happened to live
+        in category 1.
         """
-        prompt = OutOfBandTriage._build_prompt(_case(), "how much can I contribute?")
-        assert "by its SUBJECT" in prompt
-        assert "NOT limited to" in prompt
-        assert "does not make a subject engineering" in prompt
+        one = prompt[prompt.index("1. Incident work") : prompt.index("2. Out of band")]
+        two = prompt[prompt.index("2. Out of band") : prompt.index("3. Unclear")]
+        return one, two
 
-    def test_router_knows_the_published_territory(self):
-        """The site that ROUTES must use the same vocabulary as the sites that
-        ANSWER, or scope is judged by two different definitions — and the router
-        runs first, so its definition is the one that decides."""
-        from faultmaven.modules.knowledge.contracts import TROUBLESHOOTING_DOMAINS
+    def test_out_of_band_is_a_boundary_not_a_genre_list(self):
+        """Category 2 was an enumeration of REGISTERS, so a serious off-domain
+        question matched neither category and the model answered 3 — which the
+        strict parse reads as incident work. That is how a retirement-account
+        question was investigated for nine turns.
+        """
+        _, two = self._categories(OutOfBandTriage._build_prompt(_case(), "x"))
+        assert "NOT limited to those" in two
+        assert "sincere, detailed question belongs here too" in two
+
+    def test_out_of_band_still_requires_BOTH_conjuncts(self):
+        """Not-engineering alone is not enough — it must also be unrelated to
+        the incident. Dropping that conjunct routes 'do we need to notify the
+        regulator?' to the aside lane, which answers with no case evidence and
+        erases the turn from every later prompt.
+        """
+        _, two = self._categories(OutOfBandTriage._build_prompt(_case(), "x"))
+        assert "unrelated to the incident AND to engineering work" in two
+
+    def test_incident_work_keeps_its_general_engineering_catch_all(self):
+        """Category 1 cannot be only the seven domains, or a software-craft
+        question ('what does git rebase -i do?') belongs to neither category."""
+        one, _ = self._categories(OutOfBandTriage._build_prompt(_case(), "x"))
+        assert "a technical or general-engineering question" in one
+
+    def test_a_topic_change_request_still_has_a_home(self):
+        """The module's own motivating aside is a request to change the subject;
+        with no anchor it falls to 3, which the parse reads as incident work."""
+        _, two = self._categories(OutOfBandTriage._build_prompt(_case(), "x"))
+        assert "a request to change the subject" in two
+
+    def test_register_judgement_cuts_both_ways(self):
+        """A one-directional 'serious does not mean engineering' tells the model
+        to discount the strongest signal an entity-free symptom paste carries —
+        numbers. The rule has to be symmetric or it biases toward the aside lane.
+        """
+        prompt = OutOfBandTriage._build_prompt(_case(), "x")
+        assert "not incident work merely because it is serious" in prompt
+        assert "not out of band merely because it is casual" in prompt
+
+    def test_router_knows_the_published_territory_with_its_glosses(self):
+        """The router MAPS a message onto the taxonomy, and the glossed form is
+        the one documented as supporting that decision; bare nouns are for sites
+        that only state what may be claimed."""
+        from faultmaven.modules.knowledge.contracts import (
+            TROUBLESHOOTING_DOMAINS,
+            describe_troubleshooting_scope,
+        )
 
         prompt = OutOfBandTriage._build_prompt(_case(), "is the pool exhausted?")
         for domain in TROUBLESHOOTING_DOMAINS:
             assert domain in prompt, f"router prompt omits {domain!r}"
+        assert describe_troubleshooting_scope() in prompt
 
     def test_router_ties_break_toward_incident_work(self):
-        """Leniency, stated in the prompt rather than left to the parse.
+        """Leniency stated in the prompt, not left to the parse.
 
-        A wrong 2 on a symptom report does not refuse the user — it tags the
-        turn an aside and erases the report from every later prompt. The parse
-        already fails toward incident; the instruction makes the model do so too.
+        Asserted as a WHOLE sentence: an earlier version asserted a prefix, and
+        passed when the sentence was inverted to '... answer 1 is WRONG - answer
+        2 instead.'
         """
         prompt = OutOfBandTriage._build_prompt(_case(), "something is odd")
-        assert "could plausibly be engineering, answer 1" in prompt
+        assert (
+            "If the message could bear on the incident or on engineering, "
+            "answer 1.\n" in prompt
+        )
 
     async def test_prompt_shows_the_previous_agent_message_and_fences_the_user(self):
         triage, router = self._triage("1")

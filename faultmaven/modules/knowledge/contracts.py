@@ -320,12 +320,20 @@ from faultmaven.modules.knowledge.domain.models.suggestion import (
 #: instead — "engineering work" in the out-of-band classifier, "technical
 #: questions" in INQUIRY triage — while the case model carried no domain at all.
 #:
-#: What is converted so far: the self-knowledge profile, both aside lanes, the
-#: every-turn self-reference rule, the orientation reply, and the out-of-band
-#: router — the site that decides which LANE a message enters, and therefore the
-#: one whose definition of scope actually binds. What is NOT: INQUIRY triage,
-#: which still says "technical questions" and leaves the word to the model. Say
-#: so rather than reading this constant as proof every site agrees.
+#: Converted: the self-knowledge profile, both aside lanes, the every-turn
+#: self-reference rule, the orientation reply, and the out-of-band router — the
+#: site that decides which LANE a message enters, and therefore the one whose
+#: definition of scope actually binds.
+#:
+#: NOT converted, on purpose: INQUIRY triage still says "use kb_qa for technical
+#: questions" and leaves "technical" to the model. It names this vocabulary only
+#: to say what the knowledge base HOLDS, never to decide what may be searched. A
+#: draft of that change did gate the search on these seven names and was
+#: reverted: it is the admission gate the paragraph above forbids, it is
+#: redundant with the retrieval relevance floor, which already declines to
+#: answer from off-topic chunks, and it justified itself with a claim about KB
+#: contents that a prompt cannot make (#943). Do not "finish the migration" by
+#: reinstating it.
 #:
 #: Read it as a SHARED VOCABULARY, never as an admission gate. FaultMaven
 #: answers questions outside these domains — the taxonomy tells the agent when
