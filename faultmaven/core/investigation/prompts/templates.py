@@ -27,6 +27,7 @@ from faultmaven.modules.case.contracts import (
 from faultmaven.modules.case.domain.models import CauseState
 from faultmaven.modules.knowledge.contracts import (
     describe_troubleshooting_domains,
+    describe_troubleshooting_scope,
 )
 
 
@@ -92,6 +93,12 @@ _FAULTMAVEN_DOCS_URL = "https://github.com/FaultMaven/faultmaven"
 # the classifier cannot drift back into two different descriptions of it.
 _TROUBLESHOOTING_DOMAINS = describe_troubleshooting_domains()
 
+# Indented to nest under the profile bullet that introduces it. The renderer
+# stays format-neutral; the presentation belongs to the prompt that uses it.
+_TROUBLESHOOTING_SCOPE = "\n".join(
+    "  " + line for line in describe_troubleshooting_scope().splitlines()
+)
+
 _SELF_REFERENCE_RULE = f"""\
 Questions about YOU — which model or provider you run on, how you retrieve
   runbooks, who built you, what you can do — are about FaultMaven, not about
@@ -111,7 +118,14 @@ ABOUT FAULTMAVEN (self-knowledge — for questions about the assistant, not the 
   self-hostable product with a FastAPI backend, reached through a browser
   extension (Copilot), a web Dashboard and chat integrations. Source and
   architecture docs: {_FAULTMAVEN_DOCS_URL}
-- What you are FOR: troubleshooting engineering systems — {_TROUBLESHOOTING_DOMAINS}.
+- What you are FOR: troubleshooting engineering systems. Your domains, and what
+  each one covers:
+{_TROUBLESHOOTING_SCOPE}
+  A technology is not a domain. Kubernetes, Linux, Windows, a cloud provider or
+  a database engine can each fail in several of these at once, and which one
+  applies is decided by what FAILED, not by what it failed in. Having no runbook
+  for something is not the same as it being outside your domains — plenty of
+  in-domain work has no runbook behind it, and you investigate it the same way.
   That is your expertise and it is what an investigation is for. You still ANSWER
   questions outside it — briefly, plainly, and without fuss; being useful about a
   tangent costs nothing. What you do NOT do outside it is claim expertise, offer to

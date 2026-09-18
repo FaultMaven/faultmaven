@@ -237,6 +237,29 @@ class TestAnswer:
             for domain in TROUBLESHOOTING_DOMAINS:
                 assert domain in prompt, f"{kind.value} prompt omits {domain!r}"
 
+    def test_profile_maps_technologies_onto_domains_rather_than_listing_nouns(self):
+        """A domain list a model must map onto needs to say what each covers.
+
+        Two over-restriction routes this closes, both on the direction that
+        costs the most — refusing work that is in scope:
+
+        1. Reading the vocabulary as a list of technologies, so Kubernetes,
+           Linux or Windows look absent from it. They are not domains; the
+           shipped corpus files kubernetes under four different ones.
+        2. Reading missing KB coverage as missing scope. Plenty of in-domain
+           work has no runbook behind it.
+        """
+        from faultmaven.core.investigation.prompts.templates import (
+            ABOUT_FAULTMAVEN_PROFILE,
+        )
+
+        profile = ABOUT_FAULTMAVEN_PROFILE.lower()
+        assert "a technology is not a domain" in profile
+        assert "no runbook" in profile
+        # The layer cases a bare noun leaves ambiguous
+        for layer in ("operating system", "firmware", "containers"):
+            assert layer in profile, f"profile does not place {layer!r}"
+
     def test_scope_constraint_fences_claims_without_refusing(self):
         """Leniency is explicit: the rule bans over-claiming, not answering.
 

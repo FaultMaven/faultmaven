@@ -15,8 +15,10 @@ from __future__ import annotations
 import pytest
 
 from faultmaven.modules.knowledge.contracts import (
+    _DOMAIN_GLOSSES,
     TROUBLESHOOTING_DOMAINS,
     describe_troubleshooting_domains,
+    describe_troubleshooting_scope,
 )
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     VALID_DOMAINS,
@@ -146,3 +148,50 @@ def test_every_domain_reaches_the_prose_renderer():
     rendered = describe_troubleshooting_domains()
     for domain in TROUBLESHOOTING_DOMAINS:
         assert domain in rendered
+
+
+# ---------------------------------------------------------------------------
+# Glosses: what each domain COVERS, so the agent can map a user's words onto a
+# vertical. Seven bare nouns cannot support that mapping — an agent left to
+# guess whether firmware or a Windows service belongs to "compute" may guess
+# no, and refusing work it should do is the expensive direction.
+# ---------------------------------------------------------------------------
+
+
+def test_no_domain_can_exist_without_a_gloss():
+    """The vocabulary is derived from the glosses, so this holds by shape.
+
+    Asserted anyway because the derivation is the thing worth protecting: a
+    future edit that re-literalises the tuple silently reintroduces bare nouns
+    for any domain it adds.
+    """
+    assert tuple(_DOMAIN_GLOSSES) == TROUBLESHOOTING_DOMAINS
+    for name, gloss in _DOMAIN_GLOSSES.items():
+        assert gloss.strip(), f"{name} has no gloss"
+
+
+def test_gloss_order_is_the_vocabulary_order():
+    """Order is part of the contract — the cross-repo parity gate compares
+    the sequence element by element, so a reordered mapping breaks it."""
+    assert list(_DOMAIN_GLOSSES) == list(TROUBLESHOOTING_DOMAINS)
+
+
+def test_scope_rendering_is_total():
+    """Every domain reaches the mapping-form rendering, with its gloss."""
+    rendered = describe_troubleshooting_scope()
+    for name, gloss in _DOMAIN_GLOSSES.items():
+        assert name in rendered
+        assert gloss.split("—")[0].strip() in rendered
+
+
+def test_both_renderings_cover_the_same_vocabulary():
+    """The short form and the mapping form cannot drift apart.
+
+    They are used in different prompts — one where length is the cost, one
+    where classification is the job — and a domain present in only one of them
+    is a lane that disagrees with another about the territory.
+    """
+    short = describe_troubleshooting_domains()
+    scope = describe_troubleshooting_scope()
+    for name in TROUBLESHOOTING_DOMAINS:
+        assert name in short and name in scope
