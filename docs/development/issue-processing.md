@@ -374,6 +374,51 @@ Gates for a lane, each from a failure that cost real time:
   if it did not look there: the repository's oldest guard has been green for
   eight months while watching three directories that contain none of the
   violations it exists to catch.
+- **Read CI for the regression check; never recompute it.** The question is
+  "did this branch break something that worked", and CI answers it on both
+  sides for nothing. It runs `pytest tests/` twice on every push — standalone
+  and cloud — and it runs on every merge to `main`, so the merge base already
+  carries a verdict. Ask for it **by commit**, never by listing runs and
+  grepping: `gh run list --branch main --limit 60` and `--limit 5` return
+  different pages, so the grep form reports "no run" for commits that have one.
+
+  ```bash
+  ci_verdict() {   # green on BOTH sides = no regression. Anything else is not a pass.
+    gh api "repos/FaultMaven/faultmaven/commits/$(git rev-parse "$1")/check-runs" --paginate --jq '
+      [.check_runs[] | select(.name | test("^Test (Standalone|Cloud)$"))]
+      | group_by(.name) | map(max_by(.started_at))
+      | if length == 0 then "NO RUN - not a pass"
+        else map("\(.name)=\(.conclusion // .status)") | join("  ") end'
+  }
+  ci_verdict <merge-base>;  ci_verdict <pull-request head>
+  ```
+
+  `max_by(.started_at)` is load-bearing: a commit can carry several runs — a
+  re-push or a second branch at the same commit re-triggers it — and the newest
+  is the one that describes the current state. **Green base plus green head is
+  the whole check.** A red head against a green base is this branch's regression, with
+  no comparison needed. Only when the base is *also* red does a comparison
+  arise, and then it is a diff of the two CI runs' failure lists.
+
+  **Never use a local run as the baseline.** Locally `main` fails around six
+  tests on the pinned dependencies while CI is green on that same commit, so
+  a local baseline measures the box. Round 3 spent **15.3 hours of wall clock
+  on 32 whole-suite runs — 64% of a 24-hour session** — building failure-set
+  comparisons to work around that local-only problem, and re-ran the base side
+  separately for three pull requests that shared one merge base. The base side
+  of a comparison is a constant: it belongs to the merge base, not to the pull
+  request and not to the review round.
+
+- **Blame a finding before acting on it.** `git blame` the line to the commit
+  that introduced it. A finding in code the branch added only to answer an
+  earlier review round is not on the issue's seam however true it is, and the
+  test is: *would this line exist if review had never run?* If not, file it.
+  On fm#1498 every one of round 4's fourteen findings blamed to a
+  review-response commit and none to the fix — the fix had drawn no finding in
+  four rounds, its responses ran to twice its size, and it should have shipped
+  after the first round. A review loop with no scope gate generates the
+  defects it then finds.
+
 - **Enumerate the consumers before changing a producer.** When a field's
   meaning, a written value or a placeholder changes, list what reads it and
   show the search that found them. This is the regression class here — the

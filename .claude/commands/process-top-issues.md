@@ -336,9 +336,10 @@ Mechanics the prompt adds:
 - Defect, chore and investigation lanes work in a fresh worktree on
   `origin/main` fetched now:
   `git worktree add -b fix/<n>-<slug> .claude/worktrees/<n> origin/main`.
-  Before pushing: `black`, `ruff`, `lint-imports`, `pytest tests/` (not
-  unit-only), and `python scripts/check_contract_version.py` if
-  `docs/reference/api/` moved. `Closes #<n>` only if the issue as written is
+  Before pushing: `black`, `ruff`, `lint-imports`, the tests that cover the
+  change, and `python scripts/check_contract_version.py` if
+  `docs/reference/api/` moved. **Not the whole suite** — see *Read CI for the
+  regression check* below. A docs-only diff runs no tests at all. `Closes #<n>` only if the issue as written is
   delivered; otherwise `Refs #<n>`, plus a comment on #<n> naming what the
   pull request delivered and which issues carry the rest. The next round's
   *Settle the last round* reads it to decide whether #<n> closes or is
