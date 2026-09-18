@@ -304,3 +304,101 @@ from faultmaven.modules.knowledge.domain.models.suggestion import (
 # The actual KnowledgeService implementation uses IVectorStore interface
 # from infrastructure layer, which is correct for vertical modules.
 # ============================================================
+
+
+# ============================================================
+# Domain Taxonomy — FaultMaven's territory
+# ============================================================
+
+#: The engineering domains FaultMaven troubleshoots, and the single definition
+#: of its territory.
+#:
+#: This vocabulary already existed as ``runbook_validator.VALID_DOMAINS``, where
+#: it gates KB ingestion: a runbook declaring a domain outside this set is
+#: rejected. It is published here because the *agent* side needs the same answer
+#: to "what is FaultMaven for?" and was improvising its own prose versions
+#: instead — "engineering work" in the out-of-band classifier, "technical
+#: questions" in INQUIRY triage — while the case model carried no domain at all.
+#:
+#: What is converted so far: the self-knowledge profile, both aside lanes, the
+#: every-turn self-reference rule, and the orientation reply. What is NOT: the
+#: two classifier prose versions named above, which decide which LANE a message
+#: enters and therefore run BEFORE any of the converted sites. Until those are
+#: converted the router and the answer prompts still judge scope by different
+#: words — say so rather than reading this constant as proof they agree.
+#:
+#: Read it as a SHARED VOCABULARY, never as an admission gate. FaultMaven
+#: answers questions outside these domains — the taxonomy tells the agent when
+#: it is speaking outside its expertise, not when to refuse. Being lenient about
+#: what gets answered while being precise about what gets investigated is the
+#: point; a topic gate built on this constant would defeat it.
+#:
+#: Hand-maintained in lock-step with the kb-toolkit producer side; grow it here
+#: and there together, never by loosening the ingestion gate.
+#: Each domain with what it covers. The gloss is load-bearing, not decoration:
+#: a bare noun leaves the agent to infer for itself whether a question about a
+#: BIOS setting, a Windows service or a Kubernetes scheduler belongs to any of
+#: these, and an agent that guesses "no" refuses work it should do — the
+#: expensive direction.
+#:
+#: Glosses name LAYERS and RESPONSIBILITIES, never technologies, because a
+#: technology is not a domain. ``kubernetes`` appears in the shipped corpus
+#: under compute, security, storage AND networking, and ``aws-ec2`` under two;
+#: which vertical a runbook belongs to is decided by what failed, not by what
+#: it failed in. The technology is the separate ``service`` field.
+_DOMAIN_GLOSSES: Dict[str, str] = {
+    "database": (
+        "relational and non-relational data stores — queries, connections, "
+        "replication, locking, indexes, capacity"
+    ),
+    "networking": (
+        "how traffic reaches a service — DNS, routing, load balancers, "
+        "proxies, service mesh, TLS, reachability"
+    ),
+    "compute": (
+        "the machines and what runs on them — hosts, VMs and containers, the "
+        "operating system and firmware beneath them (Linux, Windows, BIOS), "
+        "and the schedulers that place workloads"
+    ),
+    "application": (
+        "code and the runtimes it runs in — memory, concurrency, framework "
+        "behaviour, build and deploy pipelines, infrastructure-as-code"
+    ),
+    "security": (
+        "identity, authorization, secrets and certificates — who may do what, "
+        "and the credentials that prove it"
+    ),
+    "storage": (
+        "persistence beneath a workload — volumes, filesystems, object "
+        "stores, attachment, capacity, durability"
+    ),
+    "messaging": (
+        "asynchronous transport between services — queues, topics, brokers, "
+        "consumers, backlog and delivery"
+    ),
+}
+
+#: The vocabulary itself. Derived from the glosses so a domain cannot exist
+#: without one, and ordered by them — the cross-repo parity gate compares this
+#: sequence element by element, so insertion order is part of the contract.
+TROUBLESHOOTING_DOMAINS: Tuple[str, ...] = tuple(_DOMAIN_GLOSSES)
+
+
+def describe_troubleshooting_domains() -> str:
+    """The territory as one short clause, where only the names are needed.
+
+    Used where the text is read on every turn and length is a real cost, or
+    where the point is what may be CLAIMED rather than how to classify.
+    """
+    return ", ".join(TROUBLESHOOTING_DOMAINS)
+
+
+def describe_troubleshooting_scope() -> str:
+    """The territory with its glosses, for prompts that must MAP onto it.
+
+    The longer form belongs wherever the agent decides whether a question is
+    its kind of work. That decision is a mapping from the user's words to a
+    vertical, and a list of seven bare nouns does not support it.
+    """
+    lines = [f"- {name}: {gloss}" for name, gloss in _DOMAIN_GLOSSES.items()]
+    return "\n".join(lines)

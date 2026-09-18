@@ -176,3 +176,62 @@ class TestNoiseFloorRefuse:
 
         llm_router.route.assert_called_once()
         assert result["chunk_count"] == 3
+
+
+class TestProvenanceIsAUseSet:
+    """Sources name the chunks that could have answered, not everything fetched.
+
+    The floor above gates the BATCH: it refuses synthesis when the best chunk
+    is noise. A batch that clears it on one strong chunk still carries the weak
+    remainder, and citing all of them attributed the answer to runbooks that had
+    no part in it — the observed failure was a retirement-account question
+    answered under ``Sources: [Terraform Plan Failures], [Prometheus Alerts Not
+    Firing]``, which reads to a user as corroboration.
+    """
+
+    @pytest.mark.asyncio
+    async def test_below_floor_chunks_are_not_cited(self):
+        """One chunk over the floor must not publish the titles of those under it.
+
+        Scores are the measured bands: a single on-topic chunk just over the
+        0.5 threshold alongside the unrelated-domain cluster at 0.36-0.41.
+        """
+        chunks = _make_chunks([0.512, 0.413, 0.396, 0.371, 0.358])
+        tool, llm_router = _make_tool(UnifiedKBConfig(), chunks)
+
+        result = await tool.answer_question(
+            question="postgres connection pool exhausted",
+            scope_id=None,
+            k=5,
+            filters={"$or": [{"scope": "global"}]},
+        )
+
+        llm_router.route.assert_called_once()  # synthesis DID run
+        assert result["sources"] == ["Doc 0"]
+
+    @pytest.mark.asyncio
+    async def test_every_cited_source_clears_the_floor(self):
+        """The property, not an instance: no citation without its own score.
+
+        Holds for any mix and any threshold, so re-tuning the floor cannot
+        silently re-widen provenance.
+        """
+        scores = [0.741, 0.634, 0.502, 0.442, 0.369]
+        config = UnifiedKBConfig()
+        tool, _ = _make_tool(config, _make_chunks(scores))
+
+        result = await tool.answer_question(
+            question="nginx upstream timeout",
+            scope_id=None,
+            k=5,
+            filters={"$or": [{"scope": "global"}]},
+        )
+
+        eligible = {
+            f"Doc {i}" for i, s in enumerate(scores) if s >= config.relevance_threshold
+        }
+        # Equality, not containment. A subset assertion cannot tell "cite every
+        # chunk that cleared the floor" from "cite only the best one" — the
+        # under-citation direction, which is what a later edit is most likely to
+        # break, and which misattributes an answer just as badly.
+        assert set(result["sources"]) == eligible

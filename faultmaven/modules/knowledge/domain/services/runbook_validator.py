@@ -305,6 +305,18 @@ REQUIRED_SECTIONS = [
     "Sources",
 ]
 
+#: The ingestion gate's view of the domain taxonomy. The same vocabulary is
+#: published to the agent side as ``TROUBLESHOOTING_DOMAINS`` (with glosses) —
+#: see there for why the agent needs it.
+#:
+#: ‼ This MUST stay a literal list. kb-toolkit's cross-repo parity gate
+#: (``scripts/check_vocab_cross_repo.py``) reads it out of the AST with
+#: ``ast.literal_eval`` and never imports this module, so ``list(...)`` of
+#: anything is an ``ast.Call`` it cannot evaluate — it dies with a ValueError
+#: rather than reporting a vocabulary diff, and that gate runs in the OTHER
+#: repo's CI against this repo's default branch, so nothing here catches it.
+#: Drift between the two copies is caught instead by
+#: ``test_ingestion_gate_matches_the_published_territory``.
 VALID_DOMAINS = [
     "database",
     "networking",

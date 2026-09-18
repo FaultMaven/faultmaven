@@ -221,6 +221,57 @@ class TestAnswer:
         assert "ABOUT FAULTMAVEN" not in prompt
         assert len(prompt) < 2500
 
+    def test_every_answering_lane_carries_the_scope_constraint(self):
+        """Both aside lanes fence capability claims to the published territory.
+
+        The property, not an instance: whatever the taxonomy holds, every lane
+        that can answer "can you help me with X?" must name it. The two lanes
+        once disagreed one turn apart — the aside lane offered help with
+        personal finance, the meta lane correctly described engineering
+        incidents — because only one of them carried any scope at all.
+        """
+        from faultmaven.modules.knowledge.contracts import TROUBLESHOOTING_DOMAINS
+
+        for kind in OutOfBandKind:  # iterate, so a new lane is covered too
+            prompt = build_answer_prompt(_case(), "can you help me?", kind)
+            for domain in TROUBLESHOOTING_DOMAINS:
+                assert domain in prompt, f"{kind.value} prompt omits {domain!r}"
+
+    def test_profile_maps_technologies_onto_domains_rather_than_listing_nouns(self):
+        """A domain list a model must map onto needs to say what each covers.
+
+        Two over-restriction routes this closes, both on the direction that
+        costs the most — refusing work that is in scope:
+
+        1. Reading the vocabulary as a list of technologies, so Kubernetes,
+           Linux or Windows look absent from it. They are not domains; the
+           shipped corpus files kubernetes under four different ones.
+        2. Reading missing KB coverage as missing scope. Plenty of in-domain
+           work has no runbook behind it.
+        """
+        from faultmaven.core.investigation.prompts.templates import (
+            ABOUT_FAULTMAVEN_PROFILE,
+        )
+
+        profile = ABOUT_FAULTMAVEN_PROFILE.lower()
+        assert "a technology is not a domain" in profile
+        assert "no runbook" in profile
+        # The layer cases a bare noun leaves ambiguous
+        for layer in ("operating system", "firmware", "containers"):
+            assert layer in profile, f"profile does not place {layer!r}"
+
+    def test_scope_constraint_fences_claims_without_refusing(self):
+        """Leniency is explicit: the rule bans over-claiming, not answering.
+
+        A scope statement that reads as "decline anything off-topic" would be a
+        topic gate, which is the failure this work exists to avoid.
+        """
+        prompt = build_answer_prompt(
+            _case(), "how do I budget?", OutOfBandKind.OFF_TOPIC
+        )
+        assert "Answer whatever the user asks" in prompt
+        assert "not the same as claiming it as something you do" in prompt
+
     def test_prompt_for_agent_meta_carries_the_profile(self):
         prompt = build_answer_prompt(
             _case(), "what model are you?", OutOfBandKind.AGENT_META

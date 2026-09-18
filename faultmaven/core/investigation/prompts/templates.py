@@ -25,6 +25,10 @@ from faultmaven.modules.case.contracts import (
     TurnOutcome,
 )
 from faultmaven.modules.case.domain.models import CauseState
+from faultmaven.modules.knowledge.contracts import (
+    describe_troubleshooting_domains,
+    describe_troubleshooting_scope,
+)
 
 
 # Auto-generated outcome block for SCHEMA_INSTRUCTIONS. Sourced directly
@@ -85,6 +89,16 @@ BANNED PHRASES: "Let me check", "I will run", "Let me look at", "I'll execute".
 # delegated to the public repository docs, which keeps the answer short.
 _FAULTMAVEN_DOCS_URL = "https://github.com/FaultMaven/faultmaven"
 
+# The territory, rendered once from the published taxonomy so this block and
+# the classifier cannot drift back into two different descriptions of it.
+_TROUBLESHOOTING_DOMAINS = describe_troubleshooting_domains()
+
+# Indented to nest under the profile bullet that introduces it. The renderer
+# stays format-neutral; the presentation belongs to the prompt that uses it.
+_TROUBLESHOOTING_SCOPE = "\n".join(
+    "  " + line for line in describe_troubleshooting_scope().splitlines()
+)
+
 _SELF_REFERENCE_RULE = f"""\
 Questions about YOU — which model or provider you run on, how you retrieve
   runbooks, who built you, what you can do — are about FaultMaven, not about
@@ -93,6 +107,11 @@ Questions about YOU — which model or provider you run on, how you retrieve
   routes work across multiple LLM providers and retrieves runbooks from a
   vector knowledge base (ChromaDB, BGE-M3 embeddings); you are not told which
   model serves this deployment (the operator can see it under LLM Config).
+  What you work on is troubleshooting engineering systems: {_TROUBLESHOOTING_DOMAINS}.
+  A technology is not a domain — Kubernetes, Linux, Windows, a cloud provider or
+  a database engine each fail in several of those, and having no runbook for
+  something does not put it outside them. Answer questions outside them too;
+  just never describe such a topic as something FaultMaven helps with.
   Point to {_FAULTMAVEN_DOCS_URL} for detail. NEVER ask for FaultMaven's own
   configuration, manifests or logs as case evidence, and never guess a vendor
   or model name.\
@@ -104,6 +123,21 @@ ABOUT FAULTMAVEN (self-knowledge — for questions about the assistant, not the 
   self-hostable product with a FastAPI backend, reached through a browser
   extension (Copilot), a web Dashboard and chat integrations. Source and
   architecture docs: {_FAULTMAVEN_DOCS_URL}
+- What you are FOR: troubleshooting engineering systems. That is your expertise
+  and it is what an investigation is for. You still ANSWER questions outside it —
+  briefly, plainly, and without fuss; being useful about a tangent costs nothing.
+  What you do NOT do outside it is claim expertise, offer to investigate, cite
+  runbooks, or describe the topic as something FaultMaven helps with. NEVER widen
+  this description to fit what the user happens to be asking about: if they ask
+  whether you can help with something you do not work on, say what you do work on
+  and answer their question anyway.
+  A technology is not a domain. Kubernetes, Linux, Windows, a cloud provider or a
+  database engine can each fail in several of your domains at once, and which one
+  applies is decided by what FAILED, not by what it failed in. Having no runbook
+  for something is not the same as it being outside your domains — plenty of
+  in-domain work has no runbook behind it, and you investigate it the same way.
+  Your domains, and what each one covers:
+{_TROUBLESHOOTING_SCOPE}
 - Investigation: a milestone-based engine (inquiry → investigating →
   resolved/closed) that tracks hypotheses with confidence scores and grounds
   every claim in the evidence the user shares — logs, metrics, configs —

@@ -50,8 +50,104 @@ _TIMESTAMP_PATTERNS = [
     ),  # Mon DD
 ]
 
-# HTTP status codes: 4xx, 5xx
-_STATUS_CODE_PATTERN = re.compile(r"\b[45]\d{2}\b")
+# HTTP status codes: the DEFINED 4xx/5xx codes, not every number in 400-599.
+#
+# This entity is a hard case anchor — it pins a message to the investigation
+# whatever its phrasing, and suppresses the semantic scope check downstream — so
+# what it matches had better be a status code. ``[45]\d{2}`` matched any
+# three-digit number in the range, which is mostly NOT status codes: 443 and 465
+# are ports, 500 is a money amount or a row count, 450 is a latency.
+#
+# A frozenset, not a whitespace-joined string: order is irrelevant here, and a
+# split string makes the separator load-bearing — dropping one space silently
+# fuses two codes into an unmatchable six-digit token.
+_HTTP_STATUS_CODES = frozenset(
+    {
+        # 4xx client errors (IANA-registered)
+        "400",
+        "401",
+        "402",
+        "403",
+        "404",
+        "405",
+        "406",
+        "407",
+        "408",
+        "409",
+        "410",
+        "411",
+        "412",
+        "413",
+        "414",
+        "415",
+        "416",
+        "417",
+        "418",
+        "421",
+        "422",
+        "423",
+        "424",
+        "425",
+        "426",
+        "428",
+        "429",
+        "431",
+        "451",
+        # 4xx unofficial but routinely logged: nginx
+        "444",
+        "494",
+        "495",
+        "496",
+        "497",
+        "498",
+        "499",
+        # 5xx server errors (IANA-registered)
+        "500",
+        "501",
+        "502",
+        "503",
+        "504",
+        "505",
+        "506",
+        "507",
+        "508",
+        "510",
+        "511",
+        # 5xx unofficial but routinely logged: Apache/cPanel, Cloudflare, upstream
+        "509",
+        "520",
+        "521",
+        "522",
+        "523",
+        "524",
+        "525",
+        "526",
+        "527",
+        "529",
+        "530",
+        "598",
+        "599",
+    }
+)
+
+# Three adjacency rules. The first two keep a code from matching a FRAGMENT of a
+# longer number, which ``\b`` alone does not do — a word boundary falls either
+# side of "." and ",", so "$23,500", "0.503", "1.500 seconds" and "1.404.2" all
+# offered up a bogus status code. The third separates a code used as a LABEL
+# from one used as a status, which the code set cannot express because the
+# numbers involved are genuinely valid codes:
+#
+#   - not part of a decimal or thousands-grouped number, either side
+#   - not immediately behind a currency symbol, with or without a space
+#   - not carrying a single-letter parenthetical: 401(k) and 403(b) are
+#     retirement plans, 501(c)(3) is a tax status. Scoped to ONE lowercase
+#     letter so "502(Bad Gateway)" — a real code in an ordinary log shape —
+#     still matches, and tolerant of a space so "401 (k)" is caught too.
+_STATUS_CODE_PATTERN = re.compile(
+    r"(?<![\d.,$£€¥₹])(?<![$£€¥₹] )\b(?:"
+    + "|".join(sorted(_HTTP_STATUS_CODES))
+    + r")\b(?![.,]\d)(?!\s?\([a-z]\))"
+)
 
 # Error keywords that indicate specific technical conditions
 _ERROR_KEYWORDS = frozenset(

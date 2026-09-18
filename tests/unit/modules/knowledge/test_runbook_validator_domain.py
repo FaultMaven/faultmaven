@@ -14,6 +14,12 @@ from __future__ import annotations
 
 import pytest
 
+from faultmaven.modules.knowledge.contracts import (
+    _DOMAIN_GLOSSES,
+    TROUBLESHOOTING_DOMAINS,
+    describe_troubleshooting_domains,
+    describe_troubleshooting_scope,
+)
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     VALID_DOMAINS,
     RunbookValidator,
@@ -114,3 +120,108 @@ def test_off_vocab_domain_is_error():
     errors = _domain_errors(_runbook("kubernetes"))
     assert errors
     assert "kubernetes" in errors[0]
+
+
+# ---------------------------------------------------------------------------
+# Single-source property: the ingestion gate and the published territory are
+# the SAME vocabulary. Before this, the agent side had no access to the
+# taxonomy and carried four improvised prose versions of it instead; a second
+# literal here is how that starts again.
+# ---------------------------------------------------------------------------
+
+
+def test_ingestion_gate_matches_the_published_territory():
+    """The two copies of the vocabulary hold the same values, in the same order.
+
+    They cannot be ONE definition: kb-toolkit's cross-repo parity gate reads
+    ``VALID_DOMAINS`` out of the AST with ``ast.literal_eval``, so deriving it
+    from the contract crashes that gate instead of comparing it — in the other
+    repo's CI, against this repo's default branch, where nothing here would
+    catch it. So the drift check lives here instead, and it is a real check
+    rather than a restatement of an assignment.
+    """
+    assert VALID_DOMAINS == list(TROUBLESHOOTING_DOMAINS)
+
+
+def test_every_domain_reaches_the_prose_renderer():
+    """A prompt stating the territory cannot silently omit a domain.
+
+    Prompts render the taxonomy through one helper so the several sites that
+    name it cannot drift; that only holds if the helper is total.
+    """
+    rendered = describe_troubleshooting_domains()
+    for domain in TROUBLESHOOTING_DOMAINS:
+        assert domain in rendered
+
+
+# ---------------------------------------------------------------------------
+# Glosses: what each domain COVERS, so the agent can map a user's words onto a
+# vertical. Seven bare nouns cannot support that mapping — an agent left to
+# guess whether firmware or a Windows service belongs to "compute" may guess
+# no, and refusing work it should do is the expensive direction.
+# ---------------------------------------------------------------------------
+
+
+def test_no_domain_can_exist_without_a_gloss():
+    """The vocabulary is derived from the glosses, so this holds by shape.
+
+    Asserted anyway because the derivation is the thing worth protecting: a
+    future edit that re-literalises the tuple silently reintroduces bare nouns
+    for any domain it adds.
+    """
+    assert tuple(_DOMAIN_GLOSSES) == TROUBLESHOOTING_DOMAINS
+    for name, gloss in _DOMAIN_GLOSSES.items():
+        assert gloss.strip(), f"{name} has no gloss"
+
+
+def test_gloss_order_is_the_vocabulary_order():
+    """Order is part of the contract — the cross-repo parity gate compares
+    the sequence element by element, so a reordered mapping breaks it."""
+    assert list(_DOMAIN_GLOSSES) == list(TROUBLESHOOTING_DOMAINS)
+
+
+def test_scope_rendering_is_total():
+    """Every domain reaches the mapping-form rendering, with its gloss."""
+    rendered = describe_troubleshooting_scope()
+    for name, gloss in _DOMAIN_GLOSSES.items():
+        assert name in rendered
+        assert gloss.split("—")[0].strip() in rendered
+
+
+def test_both_renderings_cover_the_same_vocabulary():
+    """The short form and the mapping form cannot drift apart.
+
+    They are used in different prompts — one where length is the cost, one
+    where classification is the job — and a domain present in only one of them
+    is a lane that disagrees with another about the territory.
+    """
+    short = describe_troubleshooting_domains()
+    scope = describe_troubleshooting_scope()
+    for name in TROUBLESHOOTING_DOMAINS:
+        assert name in short and name in scope
+
+
+def test_conversion_side_domain_keywords_stay_inside_the_vocabulary():
+    """The case→runbook converter stamps `domain`; the gate then validates it.
+
+    ``_DOMAIN_KEYWORDS`` is a SECOND, un-derived copy of the vocabulary on the
+    producing side of the same gate, with its own key set and its own
+    ``application`` fallback. Nothing related them, so renaming a domain here
+    left the converter stamping a value the validator rejects — case-to-runbook
+    conversion failing at ingestion, with no test in between.
+
+    A subset check rather than equality: the converter needs keywords only for
+    domains it can actually infer, and `application` is deliberately keyword-free
+    because it is the catch-all.
+    """
+    from faultmaven.modules.knowledge.domain.models.conversion import (
+        _DOMAIN_KEYWORDS,
+        _resolve_domain,
+    )
+
+    unknown = set(_DOMAIN_KEYWORDS) - set(TROUBLESHOOTING_DOMAINS)
+    assert not unknown, f"converter can stamp domains the gate rejects: {unknown}"
+
+    # The fallback must itself be in the vocabulary, or a case matching no
+    # keyword produces a draft that cannot be ingested.
+    assert _resolve_domain("nothing here matches any keyword") in VALID_DOMAINS
