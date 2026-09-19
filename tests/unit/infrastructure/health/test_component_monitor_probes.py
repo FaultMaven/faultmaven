@@ -13,11 +13,16 @@ what decides whether a failure reaches a Kubernetes probe as a non-200.
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from typing import Any, Optional
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.infrastructure.health import (
+    component_monitor as component_monitor_module,
+)
 from faultmaven.infrastructure.health.component_monitor import (
     ComponentHealthMonitor,
     HealthStatus,
@@ -98,8 +103,14 @@ def _sanitizer(*, probed: bool, analyzer: bool, redacts: bool = True) -> Any:
     sanitizer.analyzer_available = analyzer
     sanitizer.anonymizer_available = analyzer
     sanitizer.pattern_replacements = [("a", "b")] * 14
+    sanitizer.apply_regex_redaction = MagicMock(
+        side_effect=lambda text, registry: (
+            "health probe from <IP>" if redacts else text
+        )
+    )
+    # The probe must never call this one; leaving it wired proves it does not.
     sanitizer.sanitize = MagicMock(
-        side_effect=lambda text: "health probe from <IP>" if redacts else text
+        side_effect=AssertionError("probe used sanitize(), which reaches Presidio")
     )
     return sanitizer
 
@@ -237,8 +248,20 @@ async def test_sanitizer_unhealthy_when_nothing_is_redacted(monkeypatch):
 
 
 async def test_sanitizer_unhealthy_when_redaction_raises(monkeypatch):
-    sanitizer = _sanitizer(probed=True, analyzer=True)
-    sanitizer.sanitize = MagicMock(side_effect=RuntimeError("pseudonym key missing"))
+    """A real sanitizer whose key derivation fails, not a mock.
+
+    ``_hashed_placeholder`` reaches ``resolve_pseudonym_key``, which raises on
+    cloud when ``REDACTION_PSEUDONYM_KEY`` is unset — redaction is genuinely
+    broken there, and the probe must say so.
+    """
+    from faultmaven.infrastructure.security.redaction import DataSanitizer
+
+    sanitizer = _real_sanitizer_in_cloud_posture()
+    monkeypatch.setattr(
+        DataSanitizer,
+        "_hashed_placeholder",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("pseudonym key missing")),
+    )
     _use_container(monkeypatch, _FakeContainer(sanitizer=sanitizer))
     out = await ComponentHealthMonitor()._check_sanitizer_health()
     assert out["status"] is HealthStatus.UNHEALTHY
@@ -653,3 +676,203 @@ async def test_metadata_does_not_outlive_the_probe_that_reported_it(monkeypatch)
     )
     await monitor.check_component_health("vector_store")
     assert monitor.component_health["vector_store"].metadata == {}
+
+
+# --------------------------------------------------------------------------
+# No probe may hang — an unbounded probe does not report a hung dependency,
+# it becomes one. Both production probes and the startup probe read /health,
+# so the endpoint's worst case is set by the slowest component.
+# --------------------------------------------------------------------------
+
+
+async def test_a_hanging_probe_is_abandoned_at_its_deadline(monkeypatch):
+    """The guard for the whole class: a probe that never returns is cut off.
+
+    Without it a hung ChromaDB or Presidio stops `/health` answering,
+    readiness empties the Service in ~60s and liveness SIGKILLs every pod at
+    ~4 min — and the restart cannot help, because the vector store's
+    constructor talks to the same hung endpoint inside the lifespan.
+    """
+    monkeypatch.setattr(component_monitor_module, "_PROBE_TIMEOUT_SECONDS", 0.05)
+    monitor = ComponentHealthMonitor()
+
+    async def _hang(_name: str):
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(monitor, "_perform_health_check", _hang)
+
+    health = await asyncio.wait_for(
+        monitor.check_component_health("vector_store"), timeout=5
+    )
+    assert health.status is HealthStatus.UNHEALTHY
+    assert "did not answer" in health.last_error
+    assert health.probe_failures_24h == 1
+
+
+async def test_a_hanging_probe_does_not_take_the_others_with_it(monkeypatch):
+    """One hung dependency must not cost the report of the other seven.
+
+    `wait_for(gather(...))` would discard every result on cancellation, which
+    is why the sweep uses `asyncio.wait`.
+    """
+    monkeypatch.setattr(component_monitor_module, "_PROBE_TIMEOUT_SECONDS", 30)
+    monkeypatch.setattr(
+        component_monitor_module, "_ALL_COMPONENTS_TIMEOUT_SECONDS", 0.05
+    )
+    monitor = ComponentHealthMonitor()
+
+    async def _one_hangs(name: str):
+        if name == "vector_store":
+            await asyncio.sleep(30)
+        return {"status": HealthStatus.HEALTHY, "metadata": {}}
+
+    monkeypatch.setattr(monitor, "_perform_health_check", _one_hangs)
+
+    results = await asyncio.wait_for(monitor.check_all_components(), timeout=5)
+
+    assert set(results) == set(monitor.component_health)
+    assert results["vector_store"].status is HealthStatus.UNHEALTHY
+    assert "sweep budget" in results["vector_store"].last_error
+    assert results["database"].status is HealthStatus.HEALTHY
+
+
+async def test_the_sweep_budget_fits_inside_the_startup_probe_timeout():
+    """Both budgets are chosen against the probe that reads `/health`.
+
+    The startupProbe's `timeoutSeconds: 5` is the tightest, and the whole
+    response has to fit inside it. Raising either constant past that
+    re-introduces the hang this file exists to prevent.
+    """
+    assert component_monitor_module._PROBE_TIMEOUT_SECONDS < 5.0
+    assert component_monitor_module._ALL_COMPONENTS_TIMEOUT_SECONDS < 5.0
+    assert (
+        component_monitor_module._PROBE_TIMEOUT_SECONDS
+        <= component_monitor_module._ALL_COMPONENTS_TIMEOUT_SECONDS
+    )
+
+
+async def test_probe_threads_never_come_from_the_shared_executor():
+    """`wait_for` bounds the await, not the thread.
+
+    Work already running in an executor is not cancellable, so a hung
+    dependency strands one worker per probe. On `asyncio.to_thread`'s default
+    executor that pool is shared with the request path — `asanitize` above
+    all — and six probes a minute would starve it. A small dedicated pool
+    caps the leak and confines it to health checking.
+    """
+    executor = component_monitor_module._PROBE_EXECUTOR
+    assert executor._max_workers <= 8, "the leak must stay small and bounded"
+
+    # Behavioural, not a substring scan: run something through the helper and
+    # read the thread it actually landed on.
+    thread_name = await ComponentHealthMonitor._in_probe_thread(
+        threading.current_thread
+    )
+    assert thread_name.name.startswith("fm-health-probe"), thread_name.name
+
+    default_executor = asyncio.get_running_loop()._default_executor
+    assert default_executor is None or default_executor is not executor
+
+
+# --------------------------------------------------------------------------
+# The sanitizer probe must not reach Presidio, and must not touch the breaker
+# that gates real redaction.
+#
+# These use a REAL DataSanitizer on purpose. The `_sanitizer()` double above
+# is a MagicMock whose `sanitize` is a lambda, so the real call path is never
+# on it — which is exactly how the probe came to POST /analyze every ten
+# seconds without any test noticing.
+# --------------------------------------------------------------------------
+
+
+def _real_sanitizer_in_cloud_posture():
+    """A real sanitizer with Presidio established, as cloud has it."""
+    from faultmaven.infrastructure.security.redaction import DataSanitizer
+
+    sanitizer = DataSanitizer()
+    sanitizer.presidio_probed = True
+    sanitizer.analyzer_available = True
+    sanitizer.anonymizer_available = True
+    return sanitizer
+
+
+async def test_the_sanitizer_probe_cannot_reach_presidio(monkeypatch):
+    """The privacy-critical twin of the vector-store breaker guard.
+
+    `sanitize()` routes to `_apply_presidio` whenever `analyzer_available` is
+    true, which is the shipped cloud posture — so the probe would POST
+    `/analyze` through `call_external_sync` on every probe interval.
+    """
+    from faultmaven.infrastructure.security.redaction import DataSanitizer
+
+    sanitizer = _real_sanitizer_in_cloud_posture()
+    _use_container(monkeypatch, _FakeContainer(sanitizer=sanitizer))
+
+    with patch.object(
+        DataSanitizer,
+        "_apply_presidio",
+        side_effect=AssertionError("the health probe reached Presidio"),
+    ) as presidio:
+        out = await ComponentHealthMonitor()._check_sanitizer_health()
+
+    assert presidio.call_count == 0
+    assert out["status"] is HealthStatus.HEALTHY
+    assert out["metadata"]["redaction_verified"] is True
+
+
+async def test_the_sanitizer_probe_leaves_the_redaction_breaker_alone(monkeypatch):
+    """A probe every ten seconds must not decide when the breaker opens.
+
+    Resetting `failure_count` on each probe success means three consecutive
+    REAL failures are rarely observed, so the breaker stops opening when
+    traffic needs it; and driving it the other way opens it with no user
+    traffic, which under the cloud fail-closed posture turns every turn into
+    a `RedactionUnavailableError`.
+    """
+    sanitizer = _real_sanitizer_in_cloud_posture()
+    sanitizer.circuit_breaker.failure_count = 2
+    before_state = sanitizer.circuit_breaker.state
+    _use_container(monkeypatch, _FakeContainer(sanitizer=sanitizer))
+
+    out = await ComponentHealthMonitor()._check_sanitizer_health()
+
+    assert out["status"] is HealthStatus.HEALTHY
+    assert sanitizer.circuit_breaker.failure_count == 2, "probe reset the count"
+    assert sanitizer.circuit_breaker.state == before_state
+
+
+async def test_the_sanitizer_probe_still_detects_broken_redaction(monkeypatch):
+    """Staying off the network must not cost the probe its teeth."""
+    sanitizer = _real_sanitizer_in_cloud_posture()
+    sanitizer._compiled_patterns = []
+    _use_container(monkeypatch, _FakeContainer(sanitizer=sanitizer))
+
+    out = await ComponentHealthMonitor()._check_sanitizer_health()
+
+    assert out["status"] is HealthStatus.UNHEALTHY
+    assert out["metadata"]["redaction_verified"] is False
+
+
+def test_the_regex_entry_point_has_no_path_to_presidio():
+    """Structural, so no configuration can route the probe to the network.
+
+    Over the AST, not the text: the docstring names ``_apply_presidio`` in
+    order to explain why it is absent, and a substring scan would read that
+    as the very thing it is forbidding.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from faultmaven.infrastructure.security.redaction import DataSanitizer
+
+    tree = ast.parse(
+        textwrap.dedent(inspect.getsource(DataSanitizer.apply_regex_redaction))
+    )
+    referenced = {
+        node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+    } | {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+
+    assert "_apply_presidio" not in referenced
+    assert "analyzer_available" not in referenced
+    assert "sanitize_text_with_registry" not in referenced

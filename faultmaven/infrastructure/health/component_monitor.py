@@ -19,10 +19,50 @@ endpoint carries the verdict in its status code and why.
 import asyncio
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+
+#: Deadline for a single component probe.
+#:
+#: A probe with no deadline does not report a hung dependency, it BECOMES one:
+#: ``/health`` stops answering, and since production points liveness, readiness
+#: and startup probes at it, a hung ChromaDB or Presidio empties the Service in
+#: ~60s and SIGKILLs every pod at ~4 min — the exact outcome the fatal/degraded
+#: split exists to prevent, reached by latency instead of by status code. None
+#: of the underlying clients bounds itself anywhere near a probe interval:
+#: chromadb is built with ``timeout=None``, the Presidio path is 21s worst case
+#: (10s + 1s backoff + 10s), and redis sits at ``socket_timeout=10`` — which
+#: already EQUALS readiness's own ``timeoutSeconds``.
+#:
+#: 3s because the tightest probe timeout that reads ``/health`` is the
+#: startupProbe's 5s, and the whole response must fit inside it.
+_PROBE_TIMEOUT_SECONDS = 3.0
+
+#: Deadline for a full ``check_all_components`` sweep. Above the per-probe
+#: deadline (the probes run concurrently, so one slow probe should not eat the
+#: sweep) and still inside the 5s startup timeout.
+_ALL_COMPONENTS_TIMEOUT_SECONDS = 4.0
+
+#: Probes run their blocking work HERE, never on ``asyncio.to_thread``'s
+#: default executor.
+#:
+#: ``wait_for`` bounds the *await*, not the thread: ``run_in_executor`` work
+#: that has already started is not cancellable, so a hung dependency strands
+#: one worker per probe for as long as the dependency hangs. On the default
+#: executor (``min(32, cpu+4)`` workers, shared with everything else) six
+#: probes a minute would exhaust it in minutes and then starve every other
+#: ``to_thread`` caller in the process — ``DataSanitizer.asanitize`` above all,
+#: which is on the request path. A small dedicated pool CONFINES that: the
+#: leak is capped at ``max_workers`` threads, nothing outside health checks
+#: can be starved by it, and once the pool is full a further probe's work item
+#: is merely queued — so it is cancelled unstarted when its ``wait_for``
+#: expires, and the component reports unhealthy, which is the truth.
+_PROBE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="fm-health-probe"
+)
 
 #: Redis key the session-store probe asks about. It is never written, so the
 #: probe is a pure read: EXISTS on an absent key is O(1) and allocates nothing.
@@ -101,10 +141,17 @@ class ComponentHealthMonitor:
         - ``database``    — no fallback, fails per-pod (pool, DNS, partition),
                             and every route that does anything touches it.
         - ``redis`` /
-          ``session_store`` — standalone silently substitutes in-process
-                            FakeRedis, and token revocation has a
-                            database-backed implementation as well, so "Redis
-                            is gone" does not imply "this pod is useless".
+          ``session_store`` — every replica shares one Redis, so a Redis
+                            outage is never the per-pod fault readiness
+                            exists to catch, and marking every pod unready
+                            converts a partial outage into a total one. Note
+                            what is NOT an argument here: cloud keeps
+                            ``RedisTokenRevocationStore``
+                            (``create_token_revocation_store`` keys on
+                            DEPLOYMENT_MODE, not on what the cache turned out
+                            to be), so there is no database-backed revocation
+                            fallback in the only deployment where readiness
+                            matters.
         - ``vector_store``,
           ``knowledge_base`` — retrieval degrades; turns, uploads and every
                             read still work.
@@ -176,7 +223,18 @@ class ComponentHealthMonitor:
         )
 
     async def check_component_health(self, component_name: str) -> ComponentHealth:
-        """Check health of a specific component.
+        """Check health of a specific component, under a deadline.
+
+        The deadline is the point. A dependency that HANGS is the common
+        failure — chromadb is constructed with ``timeout=None``, and behind
+        the cluster's auth proxy a stalled read sits for ``proxy_read_timeout
+        300s`` — and an unbounded probe does not report it, it joins it:
+        ``/health`` stops answering, and every probe that reads ``/health``
+        acts on the silence.
+
+        A component that exceeds its deadline is UNHEALTHY, not UNKNOWN. "Did
+        not answer in time" is a fact about the dependency, not an absence of
+        information, and it is the same answer the caller would get.
 
         Args:
             component_name: Name of component to check
@@ -196,7 +254,10 @@ class ComponentHealthMonitor:
 
         try:
             # Perform component-specific health check
-            health_result = await self._perform_health_check(component_name)
+            health_result = await asyncio.wait_for(
+                self._perform_health_check(component_name),
+                timeout=_PROBE_TIMEOUT_SECONDS,
+            )
             response_time = (time.time() - start_time) * 1000
 
             # Update component health
@@ -221,13 +282,25 @@ class ComponentHealthMonitor:
             return component_health
 
         except Exception as e:
-            self.logger.error(f"Health check failed for {component_name}: {e}")
+            # `asyncio.TimeoutError` IS `TimeoutError` on 3.11+, so this arm
+            # catches the deadline too; name it, because "timed out" and
+            # "raised" are different findings to whoever reads last_error.
+            if isinstance(e, asyncio.TimeoutError):
+                error = (
+                    f"probe exceeded {_PROBE_TIMEOUT_SECONDS:g}s and was "
+                    "abandoned (the dependency did not answer)"
+                )
+                self.logger.error(f"Health check timed out for {component_name}")
+            else:
+                error = str(e)
+                self.logger.error(f"Health check failed for {component_name}: {e}")
 
             # Update with error status
             component_health = self.component_health[component_name]
             component_health.status = HealthStatus.UNHEALTHY
             component_health.response_time_ms = (time.time() - start_time) * 1000
-            component_health.last_error = str(e)
+            component_health.last_error = error
+            component_health.metadata = {}
             component_health.last_check = datetime.now(timezone.utc)
             self._record_health_history(
                 component_name,
@@ -412,6 +485,16 @@ class ComponentHealthMonitor:
         """Result for "the container has not wired anything yet"."""
         return {"status": HealthStatus.UNKNOWN, "error": reason, "metadata": {}}
 
+    @staticmethod
+    async def _in_probe_thread(fn: Callable[..., Any], *args: Any) -> Any:
+        """Run blocking probe work on the health pool, never the shared one.
+
+        See ``_PROBE_EXECUTOR``: this is what keeps a hung dependency from
+        consuming the default executor that the request path shares.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(_PROBE_EXECUTOR, fn, *args)
+
     def _service_state(self, container: Any, name: str) -> Optional[Dict[str, Any]]:
         """Non-``None`` when ``name`` is absent from a wired container.
 
@@ -473,8 +556,8 @@ class ComponentHealthMonitor:
         # `_ensure_initialized` constructs provider SDK clients on first use.
         # That is local work with no network, and it is idempotent, so the
         # cost lands once on the first probe after boot.
-        available = await asyncio.to_thread(registry.get_available_providers)
-        summary = await asyncio.to_thread(registry.get_provider_health_summary)
+        available = await self._in_probe_thread(registry.get_available_providers)
+        summary = await self._in_probe_thread(registry.get_provider_health_summary)
         unhealthy = sorted(
             name
             for name, state in summary.items()
@@ -606,7 +689,7 @@ class ComponentHealthMonitor:
 
         try:
             # chromadb's client is synchronous; keep it off the event loop.
-            count = await asyncio.to_thread(collection.count)
+            count = await self._in_probe_thread(collection.count)
         except Exception as e:
             return {"status": HealthStatus.UNHEALTHY, "error": str(e), "metadata": {}}
 
@@ -650,14 +733,31 @@ class ComponentHealthMonitor:
         return {"status": HealthStatus.HEALTHY, "metadata": metadata}
 
     async def _check_sanitizer_health(self) -> Dict[str, Any]:
-        """Redact a fixed string and check something was actually redacted.
+        """Redact a fixed string through the REGEX path and check it changed.
 
-        A local functional assertion rather than an HTTP probe of the Presidio
-        services: those sit behind a circuit breaker with a threshold of
-        three, and a ten-second probe would drive it. Presidio's reachability
-        is reported from the flags the sanitizer latched at construction, and
-        regex-only operation is DEGRADED rather than healthy — it is the
-        documented fallback, but it is not the configured behaviour.
+        ``apply_regex_redaction``, never ``sanitize()``. ``sanitize()`` is only
+        local when Presidio was never established: once ``analyzer_available``
+        is true — the shipped cloud posture — it POSTs ``/analyze`` through
+        ``call_external_sync``, and that records on the circuit breaker that
+        gates real redaction. Both directions are wrong. A flaky analyzer:
+        probe successes every ten seconds keep resetting ``failure_count``, so
+        three consecutive real failures are rarely observed and the breaker
+        stops opening when traffic needs it. A hung analyzer: the probe alone
+        opens it in ~60s with no user traffic at all, and under the cloud
+        fail-closed posture an open breaker makes every turn raise
+        ``RedactionUnavailableError``.
+
+        This is the same hazard as
+        ``test_vector_store_avoids_the_production_circuit_breaker`` guards for
+        ChromaDB — a health check must not change the behaviour it measures —
+        and it is worse here because the client it would perturb is the one
+        enforcing PII redaction. The regex entry point cannot reach the
+        network at all, so the property is structural rather than incidental.
+
+        Presidio's reachability is still reported, from the flags the
+        sanitizer latched at construction; regex-only operation where Presidio
+        was configured is DEGRADED, and where it was never configured is
+        healthy.
         """
         container = self._live_container()
         if container is None:
@@ -669,8 +769,8 @@ class ComponentHealthMonitor:
 
         sanitizer = container.sanitizer
         try:
-            redacted = await asyncio.to_thread(
-                sanitizer.sanitize, _SANITIZER_PROBE_INPUT
+            redacted = await self._in_probe_thread(
+                sanitizer.apply_regex_redaction, _SANITIZER_PROBE_INPUT, {}
             )
         except Exception as e:
             return {"status": HealthStatus.UNHEALTHY, "error": str(e), "metadata": {}}
@@ -790,35 +890,72 @@ class ComponentHealthMonitor:
         ]
 
     async def check_all_components(self) -> Dict[str, ComponentHealth]:
-        """Check health of all registered components.
+        """Check every registered component concurrently, under a sweep budget.
+
+        Each probe already carries its own deadline; this is the backstop for
+        anything that escapes it — a probe that does not observe cancellation
+        promptly, or a future registration that forgets its own bound. The
+        whole sweep is what ``/health`` waits on, so an unbounded sweep is an
+        unbounded endpoint whatever the individual probes promise.
+
+        ``asyncio.wait`` rather than ``wait_for(gather(...))``: cancelling a
+        gather discards the results of the probes that DID answer, and a
+        report that loses seven components because the eighth hung is worse
+        than the hang.
 
         Returns:
             Dictionary mapping component names to their health status
         """
-        health_results = {}
+        names = list(self.component_health.keys())
+        tasks = {
+            asyncio.ensure_future(self.check_component_health(name)): name
+            for name in names
+        }
 
-        # Run health checks concurrently
-        tasks = [
-            self.check_component_health(component_name)
-            for component_name in self.component_health.keys()
-        ]
+        done, pending = await asyncio.wait(
+            tasks.keys(), timeout=_ALL_COMPONENTS_TIMEOUT_SECONDS
+        )
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for task in pending:
+            task.cancel()
 
-        for i, result in enumerate(results):
-            component_name = list(self.component_health.keys())[i]
-            if isinstance(result, Exception):
-                self.logger.error(f"Health check failed for {component_name}: {result}")
+        health_results: Dict[str, ComponentHealth] = {}
+
+        for task in pending:
+            component_name = tasks[task]
+            self.logger.error(
+                f"Health check exceeded the sweep budget for {component_name}"
+            )
+            health_results[component_name] = ComponentHealth(
+                component_name=component_name,
+                status=HealthStatus.UNHEALTHY,
+                response_time_ms=_ALL_COMPONENTS_TIMEOUT_SECONDS * 1000,
+                last_error=(
+                    f"probe exceeded the {_ALL_COMPONENTS_TIMEOUT_SECONDS:g}s "
+                    "sweep budget and was abandoned"
+                ),
+                dependencies=self.component_health[component_name].dependencies,
+                fatal=self.component_health[component_name].fatal,
+            )
+
+        for task in done:
+            component_name = tasks[task]
+            error = task.exception()
+            if error is not None:
+                self.logger.error(f"Health check failed for {component_name}: {error}")
                 health_results[component_name] = ComponentHealth(
                     component_name=component_name,
                     status=HealthStatus.UNHEALTHY,
                     response_time_ms=0.0,
-                    last_error=str(result),
+                    last_error=str(error),
+                    dependencies=self.component_health[component_name].dependencies,
+                    fatal=self.component_health[component_name].fatal,
                 )
             else:
-                health_results[component_name] = result
+                health_results[component_name] = task.result()
 
-        return health_results
+        # Preserve registration order; `asyncio.wait` returns unordered sets.
+        return {name: health_results[name] for name in names}
 
     def get_dependency_map(self) -> Dict[str, List[str]]:
         """Get dependency mapping for all components.
