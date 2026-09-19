@@ -27,7 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 
-from faultmaven.exceptions import LLMException
+from faultmaven.exceptions import LLMErrorCategory, LLMException, declared_llm_category
 from faultmaven.infrastructure.llm.providers.base import ProviderConfig
 from faultmaven.infrastructure.llm.providers.local_provider import LocalProvider
 
@@ -188,6 +188,83 @@ async def test_llamacpp_fallback_transport_is_typed_and_retryable():
     assert posted[1].endswith("/completion"), posted
     assert exc_info.value.retryable is True
     assert "llama.cpp" in str(exc_info.value)
+
+
+# An OpenAI-shaped overflow body, and the parameter rejection that must NOT be
+# read as one. Synthetic on the Ollama transport (Ollama's own error body is a
+# bare ``{"error": "..."}`` string) — the invariant under test is that each
+# transport hands its body to ``extract_provider_error_code``, which is the
+# step a transport added later would forget.
+_OVERFLOW_BODY = (
+    '{"error":{"message":"This model\'s maximum context length is 4096 '
+    'tokens","type":"invalid_request_error","code":"context_length_exceeded"}}'
+)
+_PARAM_ERROR_BODY = (
+    '{"error":{"message":"Unsupported parameter","type":"invalid_request_error"'
+    ',"code":"unsupported_parameter"}}'
+)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("label,base_url,model,endpoint", _TRANSPORTS)
+@pytest.mark.parametrize(
+    "body,expected",
+    [
+        (_OVERFLOW_BODY, LLMErrorCategory.CONTEXT_OVERFLOW),
+        (_PARAM_ERROR_BODY, LLMErrorCategory.REQUEST_REJECTED),
+    ],
+    ids=["overflow", "rejected_parameter"],
+)
+async def test_each_transport_classifies_from_the_error_body(
+    label, base_url, model, endpoint, body, expected
+):
+    """#509 — every transport must classify, not just the one that is tested.
+
+    The category is what the engine keys COMPRESS_MEMORY off now. A transport
+    that raises without reading its body leaves an overflow unclassified, and
+    an unclassified overflow hard-fails the turn instead of degrading. Both
+    rows are needed: with only the overflow row, a transport that stamped
+    CONTEXT_OVERFLOW on every 400 would pass.
+    """
+    session, posted = _recording_session(lambda: _status_ctx(400, body))
+    provider = LocalProvider(_config(base_url, model))
+    with patch("aiohttp.ClientSession", return_value=session):
+        with pytest.raises(LLMException) as exc_info:
+            await provider.generate("hello")
+
+    assert posted and posted[0].endswith(endpoint), (label, posted)
+    assert exc_info.value.category is expected, (label, exc_info.value.category)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_llamacpp_fallback_transport_classifies_too():
+    """The third transport, reached only through the 404 fallback."""
+    posted: list = []
+
+    def _session_factory(*args, **kwargs):
+        def _post(url, *a, **kw):
+            posted.append(url)
+            if len(posted) == 1:
+                return _status_ctx(404, "not found")
+            return _status_ctx(400, _OVERFLOW_BODY)
+
+        session = MagicMock()
+        session.post = MagicMock(side_effect=_post)
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+        return session
+
+    provider = LocalProvider(_config("http://localhost:8080/v1", "llama-model"))
+    with patch("aiohttp.ClientSession", side_effect=_session_factory):
+        with pytest.raises(LLMException) as exc_info:
+            await provider.generate("hello")
+
+    # BOTH transports were actually exercised, in order.
+    assert len(posted) == 2, posted
+    assert posted[1].endswith("/completion"), posted
+    assert declared_llm_category(exc_info.value) is (LLMErrorCategory.CONTEXT_OVERFLOW)
 
 
 @pytest.mark.unit

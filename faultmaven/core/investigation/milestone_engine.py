@@ -99,16 +99,13 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     work_gate_crossed_total,
 )
 from faultmaven.core.investigation.llm_error_handler import (
-    CONTEXT_OVERFLOW_PHRASES,
     LLMErrorHandler,
     OutputTruncationError,
     classify_token_limit_reason,
     is_output_truncation_error,
     is_truncated_json_error,
 )
-from faultmaven.core.investigation.progress_monitor import (
-    ProgressMonitor,
-)
+from faultmaven.core.investigation.progress_monitor import ProgressMonitor
 from faultmaven.core.investigation.prompts.context_builder import (
     structural_index_is_searchable,
 )
@@ -149,7 +146,7 @@ from faultmaven.core.investigation.working_conclusion_generator import (
     generate_working_conclusion,
     is_early_stage_conclusion,
 )
-from faultmaven.exceptions import TOKEN_LIMIT
+from faultmaven.exceptions import TOKEN_LIMIT, LLMErrorCategory, declared_llm_category
 from faultmaven.infrastructure.llm.json_response import (
     json_payload_text,
     loads_llm_json,
@@ -1176,18 +1173,25 @@ def _is_context_length_error(exc: Exception) -> bool:
     generic Pydantic phrase ``"string too long"``, which fire on ordinary
     request-validation errors and would trigger needless fallback retries.
 
-    Two shapes reach here. A **raw provider exception** (proxy/aggregator path)
-    carries the overflow wording in its message. The **retry-loop path**
-    (``with_retry`` → ``handle_error`` classifies the overflow as
-    ``COMPRESS_MEMORY`` → ``_generate_structured_output_inner`` re-raises a
-    ``MilestoneEngineError``) has already consumed the provider's wording, but it
-    stamps the shared ``TOKEN_LIMIT`` error_code on the raised exception. Recognizing
-    that deterministic engine signal — and walking the ``__cause__`` chain in case
-    it is wrapped — is what makes the degrade-recovery in
-    ``_generate_structured_output`` actually reachable for an overflow that
-    surfaced through the retry loop. Without it a *recoverable* overflow fails the
-    turn instead of degrading to the minimal fallback prompt (the NO-COLLAPSE
-    guarantee; #662).
+    Two shapes reach here, and each has its own authoritative signal.
+
+    The **retry-loop path** (``with_retry`` → ``handle_error`` classifies the
+    overflow as ``COMPRESS_MEMORY`` → ``_generate_structured_output_inner``
+    re-raises a ``MilestoneEngineError``) stamps the shared ``TOKEN_LIMIT``
+    error_code on the raised exception. Recognizing that deterministic engine
+    signal — and walking the ``__cause__`` chain in case it is wrapped — is
+    what makes the degrade-recovery in ``_generate_structured_output`` actually
+    reachable for an overflow that surfaced through the retry loop. Without it
+    a *recoverable* overflow fails the turn instead of degrading to the minimal
+    fallback prompt (the NO-COLLAPSE guarantee; #662).
+
+    A **raw provider exception** (proxy/aggregator path) carries the typed
+    ``LLMErrorCategory`` the provider boundary stamped on it (#509). This used
+    to re-match ``CONTEXT_OVERFLOW_PHRASES`` — the same tuple the error handler
+    matched, imported from it so the two could not drift. Asking the exception
+    what it IS removes the drift question rather than managing it: there is one
+    classification, made once, and both readers get the same answer because
+    there is only one answer.
     """
     # Deterministic engine signal from the retry-loop path (see docstring).
     # ``seen`` bounds the walk: ``__cause__`` is assignable, so a hand-built cycle
@@ -1203,10 +1207,7 @@ def _is_context_length_error(exc: Exception) -> bool:
         seen.add(id(cursor))
         cursor = cursor.__cause__
 
-    msg = str(getattr(exc, "message", "") or exc).lower()
-    # Shared with llm_error_handler.is_token_limit_error so the two overflow
-    # classifiers cannot drift (see CONTEXT_OVERFLOW_PHRASES).
-    return any(p in msg for p in CONTEXT_OVERFLOW_PHRASES)
+    return declared_llm_category(exc) is LLMErrorCategory.CONTEXT_OVERFLOW
 
 
 def _apply_symptom_retraction(
@@ -9848,6 +9849,7 @@ class MilestoneEngine:
             raise MilestoneEngineError(
                 f"Structured output generation failed: {detail}",
                 error_code=error_result.error_code,
+                category=error_result.category,
             )
         else:
             raise MilestoneEngineError(
@@ -13142,8 +13144,22 @@ class MilestoneEngineError(Exception):
     Carries an optional ``error_code`` (e.g. ``QUOTA_EXHAUSTED``) so the API
     layer can map the failure to a precise HTTP status and user-facing message
     instead of a generic 500.
+
+    ``category`` relays the provider's typed ``LLMErrorCategory`` (#509) when
+    this error was raised on behalf of one. It has to be RELAYED rather than
+    inherited from ``__cause__`` because the retry-loop path deliberately does
+    NOT chain the provider exception (chaining would put an HTTP 400 on the
+    chain and re-route the documented ``TOKEN_LIMIT`` -> 503 to a 502). Without
+    it the degrade metric loses its reason label, which is what the folded-in
+    provider wording used to supply.
     """
 
-    def __init__(self, message: str, error_code: Optional[str] = None):
+    def __init__(
+        self,
+        message: str,
+        error_code: Optional[str] = None,
+        category: Optional[LLMErrorCategory] = None,
+    ):
         super().__init__(message)
         self.error_code = error_code
+        self.category = category

@@ -311,31 +311,93 @@ NO-COLLAPSE guarantee). The recovery is two layers that compose:
 
 The load-bearing seam is that `_is_context_length_error` keys on the deterministic
 engine signal (the shared `TOKEN_LIMIT` error_code, walking the `__cause__` chain),
-not only on provider phrasing in the message — because the retry loop has already
+not on provider phrasing in the message — because the retry loop has already
 consumed the provider's wording by the time the error reaches layer 2. Keying on
 the message alone left the degrade path unreachable, so a recoverable overflow
 hard-failed instead of degrading (#662). If even the minimal prompt overflows,
 the `TOKEN_LIMIT` error propagates and the API boundary maps it to a retryable
 503 — a genuinely over-limit turn, the only case that is not silently degraded.
 
+Its second reader — the direct-propagation path, where a raw provider exception
+reaches layer 2 without passing through the retry loop — is the typed
+`LLMErrorCategory` (#509, below). That used to be the same tuple of provider
+phrases the error handler matched, imported from it so the two could not drift.
+
 `TOKEN_LIMIT` is defined once in `faultmaven/exceptions.py` beside
 `QUOTA_EXHAUSTED`, because three modules participate in it (error handler sets it,
 engine reads it, API boundary maps it) and a typo in any one would silently
 disable the degrade path rather than fail loudly.
 
-**Output truncation shares this path.** `is_token_limit_error` also matches
-truncation signatures (a response cut off at the generation cap, so the JSON fails
-to parse), which likewise yield `TOKEN_LIMIT`. Those turns therefore also get the
-minimal-prompt retry. That is a smaller *input* rather than a larger output cap,
-so it is not a targeted fix — the inner loop's `max_tokens` escalation is — but it
-frees budget and is strictly better than the hard failure it replaced.
+**Output truncation shares this path.** A response cut off at the generation cap
+likewise yields `TOKEN_LIMIT`, once the `max_tokens` ladder is spent — it travels
+as the engine's typed `OutputTruncationError` and is dispatched on type, never
+mistaken for an input overflow. Those turns therefore also get the minimal-prompt
+retry. That is a smaller *input* rather than a larger output cap, so it is not a
+targeted fix — the inner loop's `max_tokens` escalation is — but it frees budget
+and is strictly better than the hard failure it replaced.
+
+### 2.y Typed error categories (#509)
+
+**Which failure a provider reported is decided once, at the provider boundary.**
+`LLMException` carries an `LLMErrorCategory` — `CONTEXT_OVERFLOW`,
+`OUTPUT_TRUNCATION`, `REQUEST_REJECTED`, `TRANSIENT`, `UNKNOWN` — derived in
+`faultmaven/exceptions.py:classify_llm_error` from the `status_code` and the
+machine-readable code the provider publishes in its error body
+(`providers/base.py:extract_provider_error_code`). Everything downstream —
+`is_token_limit_error`, `is_output_truncation_error`,
+`classify_token_limit_reason`, `_is_context_length_error` — asks the exception
+WHAT it is. None of them reads a message.
+
+Four tiers, in strict precedence order:
+
+| Tier | Signal | Example |
+|---|---|---|
+| 1 | The provider's machine-readable error code | OpenAI `context_length_exceeded`, `unsupported_parameter`; Anthropic `overloaded_error`; Gemini `RESOURCE_EXHAUSTED` |
+| 2 | That provider's wording, read against its own body | Anthropic "prompt is too long: 250000 > 200000"; Gemini "…exceeds the maximum number of tokens allowed" |
+| 3 | The HTTP status | 5xx / 429 → `TRANSIENT`; any other 4xx → `REQUEST_REJECTED` |
+| 4 | — | `UNKNOWN` |
+
+Tier 2 exists because tier 1 does not cover everyone: OpenAI-compatible
+providers publish a code narrow enough to mean something, while Anthropic and
+Gemini publish nothing narrower than the undifferentiated 400 family
+(`invalid_request_error`, `INVALID_ARGUMENT`), which covers an overflow and a
+bad parameter alike. Mapping those would assert a distinction the provider did
+not make, so they fall through. What changed in #509 is not that prose
+disappeared but **where it is read**: once, against the provider's own
+response, instead of against every exception that reached the engine.
+
+Tier 2 outranks tier 3 deliberately — a gateway can answer 5xx with an overflow
+body, and reading that as merely transient would spend every retry re-sending
+the same oversized prompt and then fail the turn instead of degrading.
+
+A provider that observes a failure itself, with no HTTP error to read, declares
+its category instead: Gemini on `finishReason=MAX_TOKENS` passes
+`category=OUTPUT_TRUNCATION`, and the engine's own `OutputTruncationError`
+declares the same. An explicit category always wins over the derivation.
+
+**The category rides alongside `error_code`, never instead of it.**
+`TOKEN_LIMIT` remains the signal the #662 degrade selects on, and
+`ErrorResult.category` / `MilestoneEngineError.category` relay the typed fact
+past the deliberately unchained re-raise so the degrade metric keeps its reason
+label.
+
+**Retryability follows the same rule.** `RetryConfig.retryable_patterns` — a
+list of sentences (`"rate limit"`, `"500"`, `"bad gateway"`, `"timeout"`) — is
+gone. Its tier is reached only by an untyped third-party exception, and reads
+that exception's structure instead: a status it carries
+(`aiohttp.ClientResponseError.status`, `httpx.HTTPStatusError.response.status_code`)
+or its class name (`httpx.ReadTimeout`, `redis.exceptions.ConnectionError`).
+A class name is API surface a library cannot change without a breaking release;
+a message is not. That is also what closes #1287's shape for good: "timed out"
+and "timeout" are the same class, so the spelling cannot diverge from the list
+again.
 
 **How truncation is detected (#1094).** There are three triggers, and only the
 third is direct:
 
 | Trigger | Fires when | Blind to |
 |---|---|---|
-| `is_output_truncation_error` — provider wording | The provider *raises* on the cut. Only Gemini does, and only on structured requests | Every other provider, which returns HTTP 200 with a cut body |
+| `is_output_truncation_error` — the provider's declared `OUTPUT_TRUNCATION` category | The provider *raises* on the cut. Only Gemini does, and only on structured requests | Every other provider, which returns HTTP 200 with a cut body |
 | `is_truncated_json_error` — parse position | The body fails to parse *at its end* | Prose (a cut sentence is valid text), and a cut that lands on syntactically complete JSON |
 | `LLMResponse.stop_reason` — the provider says so | Any provider reports `MAX_TOKENS` | Only providers that supply no signal at all (`UNKNOWN`) |
 

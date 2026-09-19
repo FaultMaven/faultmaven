@@ -249,6 +249,221 @@ LLM_CONFIG_ERROR = "LLM_CONFIG_ERROR"
 SERVICE_SCOPED_ERROR_CODES = frozenset({QUOTA_EXHAUSTED, PROVIDER_AUTH_FAILED})
 
 
+# ---------------------------------------------------------------------------
+# Typed LLM failure categories (#509)
+# ---------------------------------------------------------------------------
+#
+# WHAT KIND of failure the provider reported, decided ONCE at the provider
+# boundary and carried on the exception. Before this, every downstream
+# consumer re-derived the answer by matching substrings of provider prose:
+# ``CONTEXT_OVERFLOW_PHRASES`` in the engine's error handler, the same tuple
+# again in ``milestone_engine``, and ``RetryConfig.retryable_patterns`` for
+# retryability. Nine providers word errors differently and may reword them at
+# any release, and — worse — those global lists were applied to EVERY message
+# that reached the engine, including messages the engine itself composed and
+# messages from non-LLM dependencies. That is how a ``host:port`` containing
+# "404" became MODEL_NOT_FOUND and how an OpenAI "Unsupported parameter:
+# 'max_tokens'" 400 became "Context too large".
+#
+# The category is the contract those consumers read instead. It is derived
+# where the provider's own response is in hand and is authoritative there;
+# downstream code asks WHAT the failure was, never HOW it was worded.
+
+
+class LLMErrorCategory(str, Enum):
+    """The recovery-selecting fact about an LLM failure.
+
+    Deliberately about the FAILURE, not the remedy: the engine decides
+    COMPRESS_MEMORY / FAIL / RETRY from this, and a different consumer may
+    decide differently, but neither has to read provider prose to do it.
+    """
+
+    #: The prompt did not fit the model's context window. Retrying the
+    #: identical request cannot help; shrinking the INPUT is the only remedy
+    #: (the minimal-prompt degrade, #662).
+    CONTEXT_OVERFLOW = "context_overflow"
+
+    #: The provider cut the ANSWER at the generation cap. The prompt fit; the
+    #: response did not. First remedy is a larger cap, not a smaller prompt.
+    OUTPUT_TRUNCATION = "output_truncation"
+
+    #: The request itself was refused as malformed/unsupported — a wrong
+    #: parameter, an unsupported value, a schema the model will not compile.
+    #: Permanent for THIS request shape and for it alone, so it must never be
+    #: read as an overflow (which would loop on futile compression) nor as a
+    #: transient (which would loop on an identical request).
+    REQUEST_REJECTED = "request_rejected"
+
+    #: The provider failed in a way that may not recur: 5xx, rate limiting,
+    #: overload, a transport fault.
+    TRANSIENT = "transient"
+
+    #: Nothing authoritative said which of the above it is. Never collapsed
+    #: into one of them — "no signal" and "signal says no" are different
+    #: answers, and a consumer that cannot tell them apart fails open.
+    UNKNOWN = "unknown"
+
+
+# Machine-readable error codes providers publish in their error bodies, mapped
+# to what they MEAN. This is the authoritative tier: a code is part of a
+# provider's API contract in a way a sentence is not.
+#
+# Deliberately absent are the GENERIC 400-family codes — OpenAI/Anthropic
+# ``invalid_request_error``, Gemini ``INVALID_ARGUMENT``, vLLM
+# ``BadRequestError``. Each of those covers BOTH an overflow and a bad
+# parameter, so mapping them would assert a distinction the provider did not
+# make. They fall through to the wording tier below, which is what still has
+# to separate them. That is the honest limit of "classify off the error code":
+# OpenAI-compatible providers publish ``context_length_exceeded``, Anthropic
+# and Gemini publish nothing narrower than the 400 family.
+_PROVIDER_ERROR_CODE_CATEGORIES: Dict[str, "LLMErrorCategory"] = {
+    # OpenAI-compatible (OpenAI, Groq, Fireworks, OpenRouter, vLLM)
+    "context_length_exceeded": LLMErrorCategory.CONTEXT_OVERFLOW,
+    "string_above_max_length": LLMErrorCategory.CONTEXT_OVERFLOW,
+    "unsupported_parameter": LLMErrorCategory.REQUEST_REJECTED,
+    "unsupported_value": LLMErrorCategory.REQUEST_REJECTED,
+    "invalid_value": LLMErrorCategory.REQUEST_REJECTED,
+    "unsupported_country_region_territory": LLMErrorCategory.REQUEST_REJECTED,
+    "rate_limit_exceeded": LLMErrorCategory.TRANSIENT,
+    "server_error": LLMErrorCategory.TRANSIENT,
+    # Anthropic error ``type`` values
+    "overloaded_error": LLMErrorCategory.TRANSIENT,
+    "api_error": LLMErrorCategory.TRANSIENT,
+    # Google API ``status`` values (Gemini)
+    "resource_exhausted": LLMErrorCategory.TRANSIENT,
+    "unavailable": LLMErrorCategory.TRANSIENT,
+    "deadline_exceeded": LLMErrorCategory.TRANSIENT,
+    "internal": LLMErrorCategory.TRANSIENT,
+}
+
+
+# LAST-RESORT provider WORDING, consulted only when no machine code decided.
+#
+# These are two of the three tuples that used to live in the engine
+# (``CONTEXT_OVERFLOW_PHRASES`` and ``_PARAM_ERROR_GUARD_PHRASES``; the third,
+# ``_OUTPUT_TRUNCATION_PHRASES``, is deleted outright — see below). What
+# changed is not that prose disappeared —
+# Anthropic and Gemini give us nothing else — but WHERE it is read: once, at
+# the provider boundary, against the provider's own response body. Downstream
+# nothing matches text, so the engine's own messages, a ``host:port``, a JSON
+# decoder's complaint and a ChromaDB outage can no longer be classified as
+# LLM failures by accident.
+#
+# Length/window-specific on purpose: NO bare "token" and NO bare "too long",
+# both of which fire on ordinary request-validation errors.
+_CONTEXT_OVERFLOW_WORDING: tuple = (
+    "context length",
+    "context window",
+    "maximum context",
+    "context_length_exceeded",
+    "too many tokens",
+    "reduce the length of the messages",
+    "prompt is too long",
+    "input is too long",
+    "maximum context length",
+    "exceeds the maximum context",
+    # Gemini's 400 body, whose ``status`` is the undifferentiated
+    # ``INVALID_ARGUMENT``: "The input token count (1200000) exceeds the
+    # maximum number of tokens allowed (1048576)." None of the phrases above
+    # match it, so before #509 the shipped default provider's own overflow
+    # reached the engine unclassified and HARD-FAILED the turn instead of
+    # degrading. Narrow enough not to fire on a parameter-shape 400: it names
+    # a maximum NUMBER OF TOKENS, not a bare "token" or "too long".
+    "exceeds the maximum number of tokens",
+)
+
+# There is deliberately NO wording tier for OUTPUT_TRUNCATION. A cut answer
+# arrives as an ordinary HTTP 200 with a short body, so no error body ever
+# reports one — the party that notices is the party that must declare it:
+# the Gemini adapter, which sees ``finishReason: MAX_TOKENS`` and passes
+# ``category=OUTPUT_TRUNCATION``, and the engine's own
+# ``OutputTruncationError``, which carries the same. The predecessor tuple
+# (``"truncated"``, ``"finishreason=max_tokens"``) existed only to recognise
+# that one Gemini raise by its sentence; keeping it would have left a 4xx body
+# that merely says "request truncated" routed to the max_tokens ladder, which
+# cannot help a rejected request.
+
+# A wrong/unsupported request parameter is a config error, NOT an overflow;
+# reading it as one masks the real cause and loops on futile compression
+# (e.g. OpenAI "Unsupported parameter: 'max_tokens' ... use
+# 'max_completion_tokens'"). Checked FIRST so a message carrying both
+# vocabularies is read as the rejection it is.
+_REQUEST_REJECTED_WORDING: tuple = (
+    "unsupported parameter",
+    "unsupported_parameter",
+    "is not supported with this model",
+)
+
+
+def classify_llm_error(
+    status_code: Optional[int] = None,
+    provider_error_code: Optional[str] = None,
+    message: str = "",
+) -> LLMErrorCategory:
+    """Classify a provider failure, preferring the most authoritative signal.
+
+    Four tiers, in strict precedence order:
+
+    1. The provider's own machine-readable error code, where it publishes one
+       narrow enough to mean something (``context_length_exceeded``,
+       ``unsupported_parameter``, ``overloaded_error``, ``RESOURCE_EXHAUSTED``).
+    2. Provider WORDING, for the providers whose 400 family is undifferentiated
+       — Anthropic's "prompt is too long", Gemini's "input token count …
+       exceeds". Read here and nowhere else.
+    3. The HTTP status: 5xx and 429 are transient, every other 4xx is a
+       rejection of this request shape.
+    4. ``UNKNOWN`` — no status, no code, no recognised wording.
+
+    ``OUTPUT_TRUNCATION`` is never derived here — it is only ever declared, by
+    the party that watched the answer get cut. So a body that says "input
+    truncated: context length exceeded" is read as the overflow it is
+    reporting, rather than as an ambiguity to be resolved by precedence.
+
+    The status tier is LAST, not first, on purpose: a gateway can answer 5xx
+    with an overflow body, and treating that as merely transient would spend
+    every retry re-sending the same oversized prompt and then fail the turn
+    instead of degrading (#662's NO-COLLAPSE guarantee).
+    """
+    code = (provider_error_code or "").strip().lower()
+    if code:
+        mapped = _PROVIDER_ERROR_CODE_CATEGORIES.get(code)
+        if mapped is not None:
+            return mapped
+
+    text = (message or "").lower()
+    if any(p in text for p in _REQUEST_REJECTED_WORDING):
+        return LLMErrorCategory.REQUEST_REJECTED
+    if any(p in text for p in _CONTEXT_OVERFLOW_WORDING):
+        return LLMErrorCategory.CONTEXT_OVERFLOW
+
+    if status_code is not None:
+        if status_code >= 500 or status_code == 429:
+            return LLMErrorCategory.TRANSIENT
+        return LLMErrorCategory.REQUEST_REJECTED
+
+    return LLMErrorCategory.UNKNOWN
+
+
+def declared_llm_category(error: BaseException) -> Optional[LLMErrorCategory]:
+    """The first genuine ``LLMErrorCategory`` on the ``__cause__`` chain.
+
+    ``None`` means nobody classified this failure — never ``UNKNOWN``, which is
+    a provider-boundary verdict of "I looked and could not tell". A consumer
+    that cannot distinguish "not an LLM failure at all" from "an LLM failure of
+    unknown kind" fails open on both.
+
+    The value must be a genuine ``LLMErrorCategory``. ``getattr`` alone would
+    accept a ``Mock``'s auto-attribute (truthy, and equal to nothing) or a
+    string left by some other layer, and a bare string would silently never
+    match an ``is`` comparison downstream.
+    """
+    for cursor in walk_cause_chain(error):
+        category = getattr(cursor, "category", None)
+        if isinstance(category, LLMErrorCategory):
+            return category
+    return None
+
+
 # Billing/quota-exhaustion markers found in provider error bodies. These signal
 # a PERMANENT account-level condition — out of credits, billing not enabled, or a
 # hard spend/quota cap — that NO amount of retrying or waiting will clear; only an
@@ -314,6 +529,16 @@ class LLMException(FaultMavenException):
             ``QUOTA_EXHAUSTED`` for billing/quota exhaustion). Auto-detected from
             the message/status when not passed explicitly. ``None`` for ordinary
             transient/config errors.
+        provider_error_code: The machine-readable code the provider put in its
+            error body (OpenAI ``context_length_exceeded``, Anthropic
+            ``overloaded_error``, Gemini ``RESOURCE_EXHAUSTED``). Providers
+            extract it with
+            ``infrastructure.llm.providers.base.extract_provider_error_code``.
+        category: ``LLMErrorCategory`` — WHAT KIND of failure this is (#509).
+            Derived from ``status_code`` + ``provider_error_code`` + the
+            provider's wording unless the raiser passes one. Always set; never
+            ``None``. This is what the engine keys COMPRESS_MEMORY / FAIL /
+            RETRY off, in place of the substring lists it used to carry.
         retryable: Whether the error is worth retrying. Derived from
             status_code when provided, otherwise defaults to False (fail fast).
             - 429 → retryable (rate limited; transient, succeeds once the
@@ -336,9 +561,12 @@ class LLMException(FaultMavenException):
         status_code: Optional[int] = None,
         retryable: Optional[bool] = None,
         error_code: Optional[str] = None,
+        provider_error_code: Optional[str] = None,
+        category: Optional[LLMErrorCategory] = None,
         **kwargs,
     ):
         self.status_code = status_code
+        self.provider_error_code = provider_error_code
 
         # Auto-classify permanent billing/quota exhaustion from the provider
         # body. Every provider folds the upstream error text into the message,
@@ -364,6 +592,31 @@ class LLMException(FaultMavenException):
             self.retryable = status_code >= 500 or status_code == 429
         else:
             self.retryable = False
+
+        # WHAT KIND of failure this is (#509), decided here — the one place
+        # that holds the provider's status, its machine-readable error code and
+        # its own wording at the same time. Every downstream consumer reads
+        # this instead of re-matching the message.
+        #
+        # ``category`` may be passed explicitly by a provider that observed the
+        # failure itself rather than reading it off an HTTP response — Gemini's
+        # ``finishReason=MAX_TOKENS`` is the shipped example. An explicit value
+        # always wins: the raiser knows more than any derivation can.
+        #
+        # Deliberately does NOT feed ``retryable``. That flag is a separate,
+        # already-reviewed derivation from the HTTP contract, and the two
+        # answer different questions: an overflow can arrive on a retryable
+        # 5xx, and the engine's overflow branch is what must win there, not a
+        # re-derived flag.
+        self.category: LLMErrorCategory = (
+            category
+            if category is not None
+            else classify_llm_error(
+                status_code=status_code,
+                provider_error_code=provider_error_code,
+                message=message,
+            )
+        )
         super().__init__(message, **kwargs)
 
 

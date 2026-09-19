@@ -28,7 +28,7 @@ from faultmaven.core.investigation.milestone_engine import (
     MilestoneEngineError,
     _is_context_length_error,
 )
-from faultmaven.exceptions import TOKEN_LIMIT
+from faultmaven.exceptions import TOKEN_LIMIT, LLMErrorCategory, LLMException
 
 pytestmark = pytest.mark.unit
 
@@ -59,11 +59,36 @@ def test_walks_cause_chain_for_token_limit():
         assert _is_context_length_error(outer) is True
 
 
-def test_still_matches_raw_provider_phrase():
-    """The direct-propagation path (raw provider exception) must keep working —
-    the message still carries the provider's overflow wording."""
-    exc = Exception("prompt is too long: 250000 tokens > 200000 maximum")
+def test_still_recognizes_a_raw_provider_overflow():
+    """The direct-propagation path (raw provider exception) must keep working.
+
+    It used to work by matching the provider's wording in the message. It now
+    works by reading the category the provider boundary stamped on the
+    exception (#509); the wording is still what DERIVED that category for
+    Anthropic, whose 400 family publishes no narrower code, but it is derived
+    once, there, against Anthropic's own body.
+    """
+    exc = LLMException(
+        "prompt is too long: 250000 tokens > 200000 maximum", status_code=400
+    )
+    assert exc.category is LLMErrorCategory.CONTEXT_OVERFLOW
     assert _is_context_length_error(exc) is True
+
+
+def test_an_unclassified_exception_is_not_an_overflow():
+    """The other half, and the point of the change.
+
+    Any exception whose message happened to contain an overflow phrase used to
+    reach the degrade path — including messages the engine composed itself and
+    failures from dependencies that are not providers at all. Saying the words
+    is not reporting the condition.
+    """
+    assert (
+        _is_context_length_error(
+            Exception("prompt is too long: 250000 tokens > 200000 maximum")
+        )
+        is False
+    )
 
 
 def test_non_overflow_engine_code_is_not_context_length():
@@ -250,10 +275,7 @@ async def test_inner_raise_does_not_chain_provider_exception():
     chain — otherwise the HTTP boundary reads the provider 400 first."""
     from pydantic import BaseModel
 
-    from faultmaven.core.investigation.llm_error_handler import (
-        ErrorAction,
-        ErrorResult,
-    )
+    from faultmaven.core.investigation.llm_error_handler import ErrorAction, ErrorResult
     from faultmaven.exceptions import LLMException
 
     class _Schema(BaseModel):
@@ -325,9 +347,7 @@ async def test_degraded_prompt_tells_the_agent_it_has_no_tools():
     agent is invited to search what it cannot reach, and the user cannot tell a
     context-starved answer from a normal one. Pin that the notice is appended and
     that it states both facts: reduced context AND no tools."""
-    from faultmaven.core.investigation.prompts.templates import (
-        DEGRADED_NO_TOOLS_NOTICE,
-    )
+    from faultmaven.core.investigation.prompts.templates import DEGRADED_NO_TOOLS_NOTICE
 
     engine = _make_engine()
     case = MagicMock()
@@ -361,10 +381,17 @@ async def test_degraded_prompt_tells_the_agent_it_has_no_tools():
 @pytest.mark.asyncio
 async def test_output_truncation_also_takes_the_degrade_path():
     """The D-path. Output truncation also classifies as TOKEN_LIMIT, so it
-    reaches this recovery too — via the error_code, since truncation wording is
-    NOT in CONTEXT_OVERFLOW_PHRASES. Pins that it degrades rather than failing,
-    and that it is labeled as truncation (not silently counted as an overflow)
-    so a rising truncation share is visible in the metric."""
+    reaches this recovery too — via the error_code, which is what selects the
+    degrade. Pins that it degrades rather than failing, and that it is labeled
+    as truncation (not silently counted as an overflow) so a rising truncation
+    share is visible in the metric.
+
+    The label used to come from matching the JSON decoder's wording
+    ("Unterminated string") in the re-raised engine message. It now comes from
+    the category the engine's own ``OutputTruncationError`` declares and
+    ``with_retry`` relays onto the ``ErrorResult`` — the re-raise deliberately
+    does NOT chain, so relaying is the only way the fact survives (#509).
+    """
     from faultmaven.core.investigation.llm_error_handler import (
         RECOVERY_REASON_OUTPUT_TRUNCATION,
         classify_token_limit_reason,
@@ -374,6 +401,7 @@ async def test_output_truncation_also_takes_the_degrade_path():
         "Structured output generation failed: Context too large. "
         "(Unterminated string starting at line 3)",
         error_code=TOKEN_LIMIT,
+        category=LLMErrorCategory.OUTPUT_TRUNCATION,
     )
     # It must reach the recovery, and be attributed to truncation.
     assert _is_context_length_error(truncated) is True
@@ -414,29 +442,41 @@ def test_recovery_reason_classification():
         RECOVERY_REASON_INPUT_OVERFLOW,
         RECOVERY_REASON_OUTPUT_TRUNCATION,
         RECOVERY_REASON_UNCLASSIFIED,
+        OutputTruncationError,
         classify_token_limit_reason,
     )
 
     assert (
-        classify_token_limit_reason(Exception("prompt is too long: 250000 > 200000"))
+        classify_token_limit_reason(
+            LLMException("prompt is too long: 250000 > 200000", status_code=400)
+        )
         == RECOVERY_REASON_INPUT_OVERFLOW
     )
+    # The engine's own typed truncation signal declares its category, so the
+    # label no longer depends on which vocabulary the cut was noticed in — the
+    # provider's ("finishReason=MAX_TOKENS") or CPython's ("Unterminated
+    # string"), which share no words at all.
     assert (
-        classify_token_limit_reason(Exception("EOF while parsing a value"))
+        classify_token_limit_reason(OutputTruncationError("cut", cap_reached=True))
         == RECOVERY_REASON_OUTPUT_TRUNCATION
     )
-    # Pure engine signal, provider wording gone -> reported, never guessed.
+    # Pure engine signal, nothing classified -> reported, never guessed.
     assert (
         classify_token_limit_reason(
             MilestoneEngineError("boom", error_code=TOKEN_LIMIT)
         )
         == RECOVERY_REASON_UNCLASSIFIED
     )
-    # Both kinds present (the engine folds provider text into its message):
-    # input-overflow wins, because that is what the recovery is designed for.
+    # An exception that merely SAYS one of these things is not a report of it.
+    assert (
+        classify_token_limit_reason(Exception("prompt is too long ... truncated"))
+        == RECOVERY_REASON_UNCLASSIFIED
+    )
+    # Both readings available at the boundary: input-overflow wins, because
+    # that is what the recovery is designed for.
     assert (
         classify_token_limit_reason(
-            Exception("prompt is too long ... unterminated string")
+            LLMException("input truncated: prompt is too long", status_code=400)
         )
         == RECOVERY_REASON_INPUT_OVERFLOW
     )
@@ -454,6 +494,7 @@ async def test_degrade_emits_the_recovery_metric_with_its_reason():
         "Structured output generation failed: Context too large. "
         "(prompt is too long: 250000 > 200000)",
         error_code=TOKEN_LIMIT,
+        category=LLMErrorCategory.CONTEXT_OVERFLOW,
     )
     inner = AsyncMock(side_effect=[overflow, MagicMock(name="degraded")])
     metric = MagicMock()

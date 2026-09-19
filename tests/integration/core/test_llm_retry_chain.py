@@ -289,9 +289,11 @@ def test_billing_signal_latches_past_trailing_transient():
 # ``error_code=UNKNOWN_ERROR``. The two halves disagreed about the same
 # condition purely because one of them was a sentence.
 #
-# The assertion is the PROVIDER CALL COUNT, not the phrase list. Asserting
-# ``"timed out" in retryable_patterns`` would pass by construction and
-# discriminate nothing.
+# The assertion is the PROVIDER CALL COUNT, not the classifier's internals.
+# Asserting ``"timed out" in retryable_patterns`` would have passed by
+# construction and discriminated nothing — and #509 has since deleted that
+# list entirely, so the last-resort tier reads the exception's TYPE rather
+# than its sentence and the two spellings are no longer distinguishable.
 #
 # The four rows run through ONE harness — same client, same ``call_external``
 # invocation, same deadline, same handler — and only the provider's behaviour

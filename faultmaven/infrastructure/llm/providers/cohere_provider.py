@@ -18,7 +18,13 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
 
-from .base import BaseLLMProvider, LLMResponse, ProviderConfig, normalize_stop_reason
+from .base import (
+    BaseLLMProvider,
+    LLMResponse,
+    ProviderConfig,
+    extract_provider_error_code,
+    normalize_stop_reason,
+)
 
 
 class CohereProvider(BaseLLMProvider):
@@ -161,6 +167,7 @@ class CohereProvider(BaseLLMProvider):
                         raise LLMException(
                             f"Cohere API error {response.status}: {error_text}",
                             status_code=response.status,
+                            provider_error_code=extract_provider_error_code(error_text),
                         )
 
                     data = await response.json()

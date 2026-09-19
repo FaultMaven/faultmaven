@@ -27,6 +27,7 @@ from faultmaven.core.investigation.prompts.templates import (  # noqa: E402
     get_fallback_prompt_for_case,
     get_prompt_for_case,
 )
+from faultmaven.exceptions import LLMException  # noqa: E402
 from faultmaven.modules.case.domain.models import JournalEntry  # noqa: E402
 
 PROVIDER, MODEL = "openai", "gpt-4"
@@ -137,9 +138,7 @@ def test_fallback_preserves_journal():
 
 def test_fallback_journal_digest_keeps_newest_not_oldest():
     """With more high-signal entries than the cap, the NEWEST must survive."""
-    from faultmaven.core.investigation.prompts.templates import (
-        _fallback_journal_digest,
-    )
+    from faultmaven.core.investigation.prompts.templates import _fallback_journal_digest
 
     case = _case_with_current_turn_upload()
     case.investigation_journal = [
@@ -183,11 +182,12 @@ def test_starvation_routes_to_fallback(monkeypatch):
 # ---------------------------------------------------------------------------
 # Runtime context-length error classifier
 # ---------------------------------------------------------------------------
-class _Err(Exception):
-    def __init__(self, msg, status_code=None):
-        self.message = msg
-        self.status_code = status_code
-        super().__init__(msg)
+# An overflow is something a PROVIDER reported, so these are built the way a
+# provider builds one — ``LLMException`` with the status the API answered,
+# which is what makes ``LLMErrorCategory`` authoritative (#509). Before that,
+# any exception at all was classified by matching its sentence.
+def _Err(msg, status_code=400):
+    return LLMException(msg, status_code=status_code)
 
 
 @pytest.mark.parametrize(
@@ -197,12 +197,25 @@ class _Err(Exception):
         (_Err("Please reduce the length of the messages"), True),
         (_Err("prompt is too long: 200000 tokens"), True),
         (_Err("bad request: too many tokens", 400), True),
+        # Gemini's overflow body, whose only code is the undifferentiated
+        # INVALID_ARGUMENT. Unrecognised before #509 — the shipped default
+        # provider's own overflow hard-failed the turn instead of degrading.
+        (
+            _Err(
+                "The input token count (1200000) exceeds the maximum number of "
+                "tokens allowed (1048576).",
+                400,
+            ),
+            True,
+        ),
         (_Err("invalid api key", 401), False),
-        (_Err("connection reset"), False),
+        (_Err("connection reset", 502), False),
         # Tightened: these must NOT be misclassified as context overflow.
         (_Err("string too long", 400), False),  # generic Pydantic validation
         (_Err("invalid token parameter", 400), False),  # bare 400 + 'token'
         (_Err("max_tokens must be <= 4096", 400), False),
+        # An exception nobody classified is not an overflow, whatever it says.
+        (Exception("This model's maximum context length is 8192 tokens"), False),
     ],
 )
 def test_context_length_classifier(exc, expected):
