@@ -261,3 +261,67 @@ class TestCompositionWithNoSigningKey:
 
         assert len(observables) == 1, observables
         assert await user_service.redis_client.keys("password_reset:*") == []
+
+
+# =============================================================================
+# The billing-organization resolver's enterprise binding
+# =============================================================================
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_the_billing_resolver_binds_the_enterprise_for_the_read():
+    """The read is scoped to the enterprise it was asked about, then unscoped.
+
+    This binding is the whole reason the adapter exists rather than the
+    repository being handed to the generator directly. No mint path is
+    authenticated — ``/auth/login``, ``/auth/refresh``, the OAuth token exchange
+    and the SSO exchange all arrive with no ``Authorization`` header — so the
+    global ``bind_request_enterprise_context`` dependency has bound the
+    non-tenant sentinel by the time a mint runs, and ``get_current_enterprise_id``
+    would hand PostgreSQL's RLS a tenant that owns no organization rows. The
+    claim would then be omitted for every account that has one, forever, with
+    nothing failing.
+
+    The restore matters just as much: a mint can happen inside a request that
+    already has a binding, and leaking this one would silently re-scope every
+    query after it.
+    """
+    from faultmaven.config.tenant_context import (
+        get_current_enterprise_id,
+        set_current_enterprise_id,
+    )
+    from faultmaven.container.providers.services import (
+        create_billing_organization_resolver,
+    )
+
+    bound_during_read = []
+
+    class _Repository:
+        async def list_user_organizations(self, user_id):
+            bound_during_read.append(get_current_enterprise_id())
+            return []
+
+    resolve = create_billing_organization_resolver(_Repository())
+
+    ambient = "00000000-0000-0000-0000-0000000000ff"
+    set_current_enterprise_id(ambient)
+    await resolve("user-1", "22222222-2222-2222-2222-222222222222")
+
+    assert bound_during_read == ["22222222-2222-2222-2222-222222222222"]
+    assert get_current_enterprise_id() == ambient
+
+
+@pytest.mark.unit
+def test_no_organization_repository_means_no_resolver():
+    """Standalone has no organization row at all (ADR-017 D8).
+
+    ``None`` here is the steady state that makes the generators mint exactly
+    what they minted before the claim was resolvable, not a degraded mode.
+    """
+    from faultmaven.container.providers.services import (
+        create_billing_organization_resolver,
+    )
+
+    assert create_billing_organization_resolver(None) is None
