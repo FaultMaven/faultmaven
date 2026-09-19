@@ -29,10 +29,11 @@ Put probe scripts inside the tree they are probing.
 from __future__ import annotations
 
 import logging
+from unittest.mock import MagicMock
 
 import pytest
 
-from faultmaven.config.settings import FaultMavenSettings
+from faultmaven.config.settings import FaultMavenSettings, TenantProvider
 from faultmaven.container import DIContainer
 from faultmaven.container.providers.services import register_services
 from faultmaven.container.registry import DependencyRegistry
@@ -271,7 +272,7 @@ class TestCompositionWithNoSigningKey:
 @pytest.mark.unit
 @pytest.mark.security
 @pytest.mark.asyncio
-async def test_the_billing_resolver_binds_the_enterprise_for_the_read():
+async def test_the_billing_resolver_binds_the_enterprise_for_the_read(monkeypatch):
     """The read is scoped to the enterprise it was asked about, then unscoped.
 
     This binding is the whole reason the adapter exists rather than the
@@ -295,6 +296,12 @@ async def test_the_billing_resolver_binds_the_enterprise_for_the_read():
     from faultmaven.container.providers.services import (
         create_billing_organization_resolver,
     )
+    from faultmaven.providers.tenancy import factory as tenancy_factory
+
+    # The resolver only exists under multi-tenant (see the gate test below).
+    settings = MagicMock()
+    settings.providers.tenant_provider = TenantProvider.MULTI
+    monkeypatch.setattr(tenancy_factory, "get_settings", lambda: settings)
 
     bound_during_read = []
 
@@ -315,13 +322,48 @@ async def test_the_billing_resolver_binds_the_enterprise_for_the_read():
 
 @pytest.mark.unit
 def test_no_organization_repository_means_no_resolver():
-    """Standalone has no organization row at all (ADR-017 D8).
-
-    ``None`` here is the steady state that makes the generators mint exactly
-    what they minted before the claim was resolvable, not a degraded mode.
-    """
+    """No repository to ask, nothing to resolve."""
     from faultmaven.container.providers.services import (
         create_billing_organization_resolver,
     )
 
     assert create_billing_organization_resolver(None) is None
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "provider,wired",
+    [
+        pytest.param(TenantProvider.SINGLE, False, id="single-tenant-not-wired"),
+        pytest.param(TenantProvider.MULTI, True, id="multi-tenant-wired"),
+    ],
+)
+def test_the_resolver_is_wired_exactly_when_an_organization_can_exist(
+    monkeypatch, provider, wired
+):
+    """The gate is the SAME predicate the request binder keys on (A1).
+
+    ``create_organization_repository`` returns ``None`` only on an import
+    failure, so without this gate a standalone deployment wired a live resolver
+    and ran a join per mint whose every answer the binder then discarded:
+    under anything but ``multi``, ``bind_request_enterprise_context`` sets the
+    request's billing organization to ``None`` unconditionally (ADR-017 D8).
+
+    Pinning it here is what makes three things agree that previously did not —
+    this function's docstring, the generators' un-wired path, and production.
+    """
+    from faultmaven.config.settings import TenantProvider as _TP
+    from faultmaven.container.providers.services import (
+        create_billing_organization_resolver,
+    )
+    from faultmaven.providers.tenancy import factory as tenancy_factory
+
+    settings = MagicMock()
+    settings.providers.tenant_provider = provider
+    monkeypatch.setattr(tenancy_factory, "get_settings", lambda: settings)
+    assert provider in (_TP.SINGLE, _TP.MULTI)
+
+    resolver = create_billing_organization_resolver(object())
+
+    assert (resolver is not None) is wired

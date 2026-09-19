@@ -12,11 +12,14 @@ This module contains factory functions for business logic services:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional, Sequence
 
 if TYPE_CHECKING:
     from faultmaven.config.settings import FaultMavenSettings
     from faultmaven.container.base import BaseDIContainer
+    from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+        OrganizationResolver,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -473,14 +476,26 @@ def create_organization_repository() -> Any | None:
         return None
 
 
-def create_billing_organization_resolver(organization_repository: Any) -> Any | None:
+def create_billing_organization_resolver(
+    organization_repository: Any,
+) -> Optional[OrganizationResolver]:
     """How the token mint reads who pays for an account (ADR-017 D5).
 
     Returns the callable the JWT generators resolve the ``organization_id``
-    claim through, or ``None`` when there is no repository to ask. ``None`` is
-    a steady state, not a degrade: a standalone deployment has no organization
-    row at all (D8), so there is nothing to resolve and the claim is correctly
-    never minted.
+    claim through, or ``None`` when no organization can exist to resolve.
+
+    **Wired exactly when an organization can exist.** That is
+    ``TENANT_PROVIDER=multi`` and nothing else, and it is the *same* predicate
+    ``bind_request_enterprise_context`` keys on: under anything else the binder
+    unconditionally sets the request's billing organization to ``None`` (ADR-017
+    D8 — a standalone deployment seeds no organization row). So under
+    single-tenant a resolved claim could not survive being presented anyway, and
+    resolving it would be a join per mint whose every answer is discarded. Gating
+    here keeps the mint and the binder agreeing on one rule rather than two.
+
+    ``None`` is therefore a steady state, not a degrade — and it is what makes
+    the generators' un-wired path the real standalone path rather than a branch
+    production never takes.
 
     The adapter exists to do the one thing the repository cannot do for itself:
     **bind the enterprise the read is scoped to.** No mint path is
@@ -505,12 +520,25 @@ def create_billing_organization_resolver(organization_repository: Any) -> Any | 
     if organization_repository is None:
         return None
 
+    # Deferred: both pull in settings, which must not be imported at module
+    # import time here any more than in the generator module.
     from faultmaven.config.tenant_context import (
         get_current_enterprise_id,
         set_current_enterprise_id,
     )
+    from faultmaven.providers.tenancy.factory import (
+        BUILTIN_MULTI,
+        requested_tenant_provider,
+    )
 
-    async def resolve_organizations(user_id: str, enterprise_id: str) -> Any:
+    if requested_tenant_provider() != BUILTIN_MULTI:
+        logger.debug(
+            "Billing organization resolver not wired: no organization can "
+            "exist under this tenancy (ADR-017 D8)"
+        )
+        return None
+
+    async def resolve_organizations(user_id: str, enterprise_id: str) -> Sequence[Any]:
         previous = get_current_enterprise_id()
         set_current_enterprise_id(enterprise_id)
         try:
@@ -1021,7 +1049,7 @@ def create_signing_token_generator(
     settings: FaultMavenSettings,
     revocation_store: Any,
     auth_service: Any,
-    resolve_organizations: Any = None,
+    resolve_organizations: Optional["OrganizationResolver"] = None,
 ) -> Any:
     """Create the generator THIS deployment signs with (mode-aware, #959).
 
@@ -1062,7 +1090,7 @@ def create_jwt_token_generator(
     settings: FaultMavenSettings,
     revocation_store: Any,
     auth_service: Any,
-    resolve_organizations: Any = None,
+    resolve_organizations: Optional["OrganizationResolver"] = None,
 ) -> Any:
     """Create the RS256 JWT token generator used by the OAuth service.
 
