@@ -534,10 +534,11 @@ class OAuthServiceImpl(IOAuthService):
             )
 
         # Generate access token and refresh token
-        access_token = await self.token_generator.generate_access_token(
-            user, state_read_at=state_read_at
-        )
-        refresh_token = await self.token_generator.generate_refresh_token(
+        # One resolution for both halves (#1517 review): sequential mints
+        # resolve the billing organization twice, and a membership write
+        # or a transient failure between them splits the pair
+        # irrecoverably — the refresh token is its only carrier.
+        access_token, refresh_token = await self.token_generator.generate_token_pair(
             user, state_read_at=state_read_at
         )
 
@@ -702,22 +703,26 @@ class OAuthServiceImpl(IOAuthService):
                 error_code="ENTERPRISE_UNAVAILABLE",
             )
 
-        # Generate new access token
-        new_access_token = await self.token_generator.generate_access_token(
-            user, state_read_at=state_read_at
-        )
-
-        # Rotate the refresh token: the presented token is single-use. Matches
-        # POST /auth/refresh, so both refresh paths carry the same contract and a
-        # client can persist the rotated token unconditionally.
+        # Mint the new pair. Rotating the refresh token is the point: the
+        # presented one is single-use, matching POST /auth/refresh so both
+        # refresh paths carry the same contract and a client can persist the
+        # rotated token unconditionally.
+        #
+        # One resolution for both halves (#1517 review): sequential mints
+        # resolve the billing organization twice, and a membership write or a
+        # transient failure between them splits the pair irrecoverably — which
+        # on THIS path is how the claim would be lost for good, since rotation
+        # is the only thing that carries it forward.
         #
         # Mint BEFORE revoking, as /auth/refresh does. Revoking first would mean
         # a failure to mint leaves the caller holding a revoked credential and
         # no replacement — a lockout only an operator can undo. This order costs
         # nothing: if the revoke fails the caller simply retries with a token
         # that is still valid.
-        new_refresh_token = await self.token_generator.generate_refresh_token(
-            user, state_read_at=state_read_at
+        new_access_token, new_refresh_token = (
+            await self.token_generator.generate_token_pair(
+                user, state_read_at=state_read_at
+            )
         )
         await self.token_generator.revoke_refresh_token(refresh_token)
         logger.debug(

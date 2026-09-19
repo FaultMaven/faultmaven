@@ -12,11 +12,14 @@ This module contains factory functions for business logic services:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional, Sequence
 
 if TYPE_CHECKING:
     from faultmaven.config.settings import FaultMavenSettings
     from faultmaven.container.base import BaseDIContainer
+    from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+        OrganizationResolver,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -471,6 +474,79 @@ def create_organization_repository() -> Any | None:
 
         traceback.print_exc()
         return None
+
+
+def create_billing_organization_resolver(
+    organization_repository: Any,
+) -> Optional[OrganizationResolver]:
+    """How the token mint reads who pays for an account (ADR-017 D5).
+
+    Returns the callable the JWT generators resolve the ``organization_id``
+    claim through, or ``None`` when no organization can exist to resolve.
+
+    **Wired exactly when an organization can exist.** That is
+    ``TENANT_PROVIDER=multi`` and nothing else, and it is the *same* predicate
+    ``bind_request_enterprise_context`` keys on: under anything else the binder
+    unconditionally sets the request's billing organization to ``None`` (ADR-017
+    D8 — a standalone deployment seeds no organization row). So under
+    single-tenant a resolved claim could not survive being presented anyway, and
+    resolving it would be a join per mint whose every answer is discarded. Gating
+    here keeps the mint and the binder agreeing on one rule rather than two.
+
+    ``None`` is therefore a steady state, not a degrade — and it is what makes
+    the generators' un-wired path the real standalone path rather than a branch
+    production never takes.
+
+    The adapter exists to do the one thing the repository cannot do for itself:
+    **bind the enterprise the read is scoped to.** No mint path is
+    authenticated — ``/auth/login``, ``/auth/refresh``, the OAuth token exchange
+    and the SSO exchange all arrive with no ``Authorization`` header — so by the
+    time any of them mints, the global ``bind_request_enterprise_context``
+    dependency has bound the NON-tenant sentinel, and a membership read under it
+    matches no row PostgreSQL RLS would show. Without this, the claim would be
+    resolvable in principle and never resolved in fact.
+
+    The enterprise bound is the one going into the same token, so RLS and the
+    explicit check in ``resolve_billing_organization`` agree by construction,
+    and the organization named by the claim is one
+    ``tenant_scope._validated_billing_organization`` will still accept when the
+    token is presented. The previous binding is restored on the way out: a mint
+    can happen inside a request that has one, and leaking this one would
+    re-scope everything after it.
+
+    It decides nothing. Which organization (if any) reaches the claim is
+    ``resolve_billing_organization``'s call, and only its.
+    """
+    if organization_repository is None:
+        return None
+
+    # Deferred: both pull in settings, which must not be imported at module
+    # import time here any more than in the generator module.
+    from faultmaven.config.tenant_context import (
+        get_current_enterprise_id,
+        set_current_enterprise_id,
+    )
+    from faultmaven.providers.tenancy.factory import (
+        BUILTIN_MULTI,
+        requested_tenant_provider,
+    )
+
+    if requested_tenant_provider() != BUILTIN_MULTI:
+        logger.debug(
+            "Billing organization resolver not wired: no organization can "
+            "exist under this tenancy (ADR-017 D8)"
+        )
+        return None
+
+    async def resolve_organizations(user_id: str, enterprise_id: str) -> Sequence[Any]:
+        previous = get_current_enterprise_id()
+        set_current_enterprise_id(enterprise_id)
+        try:
+            return await organization_repository.list_user_organizations(user_id)
+        finally:
+            set_current_enterprise_id(previous)
+
+    return resolve_organizations
 
 
 def create_enterprise_repository() -> Any | None:
@@ -973,6 +1049,7 @@ def create_signing_token_generator(
     settings: FaultMavenSettings,
     revocation_store: Any,
     auth_service: Any,
+    resolve_organizations: Optional["OrganizationResolver"] = None,
 ) -> Any:
     """Create the generator THIS deployment signs with (mode-aware, #959).
 
@@ -986,6 +1063,9 @@ def create_signing_token_generator(
         settings: FaultMavenSettings instance
         revocation_store: Token revocation tracking store
         auth_service: The service that resolved this deployment's RSA pair
+        resolve_organizations: Membership lookup for the billing claim, from
+            ``create_billing_organization_resolver``. ``None`` resolves no
+            claim.
 
     Returns:
         An IJWTTokenGenerator (HS256 under local mode, RS256 otherwise)
@@ -1002,6 +1082,7 @@ def create_signing_token_generator(
         revocation_store,
         private_key=auth_service.signing_private_key,
         public_key=auth_service.verification_public_key,
+        resolve_organizations=resolve_organizations,
     )
 
 
@@ -1009,6 +1090,7 @@ def create_jwt_token_generator(
     settings: FaultMavenSettings,
     revocation_store: Any,
     auth_service: Any,
+    resolve_organizations: Optional["OrganizationResolver"] = None,
 ) -> Any:
     """Create the RS256 JWT token generator used by the OAuth service.
 
@@ -1027,6 +1109,9 @@ def create_jwt_token_generator(
         settings: FaultMavenSettings instance
         revocation_store: Token revocation tracking store
         auth_service: The service that resolved this deployment's RSA pair
+        resolve_organizations: Membership lookup for the billing claim, from
+            ``create_billing_organization_resolver``. ``None`` resolves no
+            claim.
 
     Returns:
         RS256JWTTokenGenerator instance
@@ -1046,6 +1131,7 @@ def create_jwt_token_generator(
         revocation_store,
         private_key=auth_service.signing_private_key,
         public_key=auth_service.verification_public_key,
+        resolve_organizations=resolve_organizations,
     )
 
 
@@ -1235,6 +1321,24 @@ def register_services(container: BaseDIContainer) -> None:
     container.auth_service = auth_service
     container._register_service("auth_service", auth_service)
 
+    # Organization Repository (create before the token generators, which resolve
+    # the billing claim through it, and before TenantProvider, which resolves the
+    # implicit org through it via constructor injection below). Org/team
+    # *management* is the hosted admin composed module (ADR-010 D4); the core
+    # keeps only the repository substrate.
+    organization_repository = create_organization_repository()
+    container.organization_repository = organization_repository
+    if organization_repository:
+        container._register_service("organization_repository", organization_repository)
+
+    # How a mint learns who pays for the account (ADR-017 D5). One resolver for
+    # both generators, so the two signing surfaces cannot come to disagree about
+    # what an account's billing organization is. None under standalone, where no
+    # organization row exists and the claim is correctly never minted.
+    billing_organization_resolver = create_billing_organization_resolver(
+        organization_repository
+    )
+
     # The deployment's signing surface. Mode-aware and built once here, so the
     # answer to "which generator does this deployment sign with" has a single
     # home rather than one copy per consumer (#959).
@@ -1248,7 +1352,10 @@ def register_services(container: BaseDIContainer) -> None:
     # path rejects every token this generator mints.
     try:
         signing_generator = create_signing_token_generator(
-            settings, token_revocation_store, auth_service
+            settings,
+            token_revocation_store,
+            auth_service,
+            resolve_organizations=billing_organization_resolver,
         )
         container.signing_token_generator = signing_generator
         container._register_service("signing_token_generator", signing_generator)
@@ -1297,6 +1404,7 @@ def register_services(container: BaseDIContainer) -> None:
                 settings,
                 revocation_store=token_revocation_store,
                 auth_service=auth_service,
+                resolve_organizations=billing_organization_resolver,
             )
         except SigningKeyUnavailableError as e:
             # Handled the same way as the signing generator above rather than
@@ -1338,15 +1446,6 @@ def register_services(container: BaseDIContainer) -> None:
             )
     else:
         logger.info("OAuth service disabled (using dev-login mode)")
-
-    # Organization Repository (create before TenantProvider, which resolves the
-    # implicit org through it via constructor injection below). Org/team
-    # *management* is the hosted admin composed module (ADR-010 D4); the core
-    # keeps only the repository substrate.
-    organization_repository = create_organization_repository()
-    container.organization_repository = organization_repository
-    if organization_repository:
-        container._register_service("organization_repository", organization_repository)
 
     # Enterprise Repository (create before TenantProvider; SingleTenantProvider
     # uses it for default-enterprise bootstrap).

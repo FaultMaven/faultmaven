@@ -106,6 +106,12 @@ async def authenticated_client(test_user):
     mock_token_generator.generate_refresh_token = AsyncMock(
         return_value="test_refresh_token_456"
     )
+    # Production mints both halves through ONE call so a single tenancy
+    # resolution covers the pair (#1517 review); stubbing only the two singles
+    # would leave this double describing a shape production no longer uses.
+    mock_token_generator.generate_token_pair = AsyncMock(
+        return_value=("test_access_token_123", "test_refresh_token_456")
+    )
     mock_token_generator.validate_refresh_token = AsyncMock(
         return_value={
             "sub": test_user.user_id,

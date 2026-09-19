@@ -52,6 +52,12 @@ def mock_token_generator():
     generator = AsyncMock()
     generator.generate_access_token = AsyncMock(return_value="access_token_123")
     generator.generate_refresh_token = AsyncMock(return_value="refresh_token_456")
+    # Production mints both halves through ONE call so a single tenancy
+    # resolution covers the pair (#1517 review); stubbing the two singles alone
+    # would leave this double describing a shape production no longer uses.
+    generator.generate_token_pair = AsyncMock(
+        return_value=("access_token_123", "refresh_token_456")
+    )
     generator.validate_refresh_token = AsyncMock(
         return_value={"sub": "user_123", "type": "refresh"}
     )
@@ -280,11 +286,9 @@ class TestCodeExchange:
         # Verify code marked as used
         mock_code_repository.claim_code.assert_called_once_with(authorization_code)
 
-        # Verify tokens generated (with the user object returned by repository)
-        mock_token_generator.generate_access_token.assert_called_once_with(
-            user_obj, state_read_at=ANY
-        )
-        mock_token_generator.generate_refresh_token.assert_called_once_with(
+        # Verify the pair was minted ONCE, from one tenancy resolution, with
+        # the user object the repository returned.
+        mock_token_generator.generate_token_pair.assert_called_once_with(
             user_obj, state_read_at=ANY
         )
 
@@ -464,8 +468,9 @@ class TestRefreshToken:
         and depend on this contract holding unconditionally.
         """
         presented = "presented_refresh_token"
-        mock_token_generator.generate_refresh_token.return_value = (
-            "rotated_refresh_token"
+        mock_token_generator.generate_token_pair.return_value = (
+            "access_token_123",
+            "rotated_refresh_token",
         )
 
         user_obj = Mock()

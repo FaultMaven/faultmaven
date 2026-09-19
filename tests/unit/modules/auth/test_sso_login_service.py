@@ -191,6 +191,14 @@ class FakeTokenGenerator:
     async def generate_refresh_token(self, user, *, state_read_at):
         return f"refresh-{user.user_id}"
 
+    async def generate_token_pair(self, user, *, state_read_at):
+        # The pair API is how production mints both halves (#1517 review):
+        # one tenancy resolution, so the pair cannot split.
+        return (
+            await self.generate_access_token(user, state_read_at=state_read_at),
+            await self.generate_refresh_token(user, state_read_at=state_read_at),
+        )
+
 
 class FakeSessionService:
     def __init__(self):

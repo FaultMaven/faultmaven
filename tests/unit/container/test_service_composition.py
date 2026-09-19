@@ -29,10 +29,11 @@ Put probe scripts inside the tree they are probing.
 from __future__ import annotations
 
 import logging
+from unittest.mock import MagicMock
 
 import pytest
 
-from faultmaven.config.settings import FaultMavenSettings
+from faultmaven.config.settings import FaultMavenSettings, TenantProvider
 from faultmaven.container import DIContainer
 from faultmaven.container.providers.services import register_services
 from faultmaven.container.registry import DependencyRegistry
@@ -261,3 +262,108 @@ class TestCompositionWithNoSigningKey:
 
         assert len(observables) == 1, observables
         assert await user_service.redis_client.keys("password_reset:*") == []
+
+
+# =============================================================================
+# The billing-organization resolver's enterprise binding
+# =============================================================================
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_the_billing_resolver_binds_the_enterprise_for_the_read(monkeypatch):
+    """The read is scoped to the enterprise it was asked about, then unscoped.
+
+    This binding is the whole reason the adapter exists rather than the
+    repository being handed to the generator directly. No mint path is
+    authenticated — ``/auth/login``, ``/auth/refresh``, the OAuth token exchange
+    and the SSO exchange all arrive with no ``Authorization`` header — so the
+    global ``bind_request_enterprise_context`` dependency has bound the
+    non-tenant sentinel by the time a mint runs, and ``get_current_enterprise_id``
+    would hand PostgreSQL's RLS a tenant that owns no organization rows. The
+    claim would then be omitted for every account that has one, forever, with
+    nothing failing.
+
+    The restore matters just as much: a mint can happen inside a request that
+    already has a binding, and leaking this one would silently re-scope every
+    query after it.
+    """
+    from faultmaven.config.tenant_context import (
+        get_current_enterprise_id,
+        set_current_enterprise_id,
+    )
+    from faultmaven.container.providers.services import (
+        create_billing_organization_resolver,
+    )
+    from faultmaven.providers.tenancy import factory as tenancy_factory
+
+    # The resolver only exists under multi-tenant (see the gate test below).
+    settings = MagicMock()
+    settings.providers.tenant_provider = TenantProvider.MULTI
+    monkeypatch.setattr(tenancy_factory, "get_settings", lambda: settings)
+
+    bound_during_read = []
+
+    class _Repository:
+        async def list_user_organizations(self, user_id):
+            bound_during_read.append(get_current_enterprise_id())
+            return []
+
+    resolve = create_billing_organization_resolver(_Repository())
+
+    ambient = "00000000-0000-0000-0000-0000000000ff"
+    set_current_enterprise_id(ambient)
+    await resolve("user-1", "22222222-2222-2222-2222-222222222222")
+
+    assert bound_during_read == ["22222222-2222-2222-2222-222222222222"]
+    assert get_current_enterprise_id() == ambient
+
+
+@pytest.mark.unit
+def test_no_organization_repository_means_no_resolver():
+    """No repository to ask, nothing to resolve."""
+    from faultmaven.container.providers.services import (
+        create_billing_organization_resolver,
+    )
+
+    assert create_billing_organization_resolver(None) is None
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "provider,wired",
+    [
+        pytest.param(TenantProvider.SINGLE, False, id="single-tenant-not-wired"),
+        pytest.param(TenantProvider.MULTI, True, id="multi-tenant-wired"),
+    ],
+)
+def test_the_resolver_is_wired_exactly_when_an_organization_can_exist(
+    monkeypatch, provider, wired
+):
+    """The gate is the SAME predicate the request binder keys on (A1).
+
+    ``create_organization_repository`` returns ``None`` only on an import
+    failure, so without this gate a standalone deployment wired a live resolver
+    and ran a join per mint whose every answer the binder then discarded:
+    under anything but ``multi``, ``bind_request_enterprise_context`` sets the
+    request's billing organization to ``None`` unconditionally (ADR-017 D8).
+
+    Pinning it here is what makes three things agree that previously did not —
+    this function's docstring, the generators' un-wired path, and production.
+    """
+    from faultmaven.config.settings import TenantProvider as _TP
+    from faultmaven.container.providers.services import (
+        create_billing_organization_resolver,
+    )
+    from faultmaven.providers.tenancy import factory as tenancy_factory
+
+    settings = MagicMock()
+    settings.providers.tenant_provider = provider
+    monkeypatch.setattr(tenancy_factory, "get_settings", lambda: settings)
+    assert provider in (_TP.SINGLE, _TP.MULTI)
+
+    resolver = create_billing_organization_resolver(object())
+
+    assert (resolver is not None) is wired

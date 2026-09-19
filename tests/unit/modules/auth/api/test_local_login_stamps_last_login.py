@@ -129,6 +129,14 @@ class _StubTokenGenerator:
     async def generate_refresh_token(self, user, state_read_at=None) -> str:
         return "refresh-token-1127"
 
+    async def generate_token_pair(self, user, *, state_read_at=None):
+        # The pair API is how production mints both halves (#1517 review):
+        # one tenancy resolution, so the pair cannot split.
+        return (
+            await self.generate_access_token(user, state_read_at),
+            await self.generate_refresh_token(user, state_read_at),
+        )
+
 
 def _fake_request(user_store):
     return SimpleNamespace(

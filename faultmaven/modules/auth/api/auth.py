@@ -130,6 +130,16 @@ def _build_local_jwt_generator(revocation_store):
             ``get_token_revocation_store`` (#767). The request-path check in
             AuthService reads the same instance, so tokens revoked through
             this generator are rejected on every API endpoint.
+
+    No billing-organization resolver is wired here, deliberately. This
+    generator only ever signs LOCAL-mode tokens, and local mode cannot be
+    multi-tenant: ``TENANT_PROVIDER='multi'`` requires ``DEPLOYMENT_MODE=cloud``
+    (``providers/tenancy/factory.py``) and cloud requires ``AUTH_MODE='oauth'``
+    (``config/deployment_coherence.py``), so local + multi is refused at
+    startup — and a standalone deployment seeds no organization row at all
+    (ADR-017 D8). Wiring a resolver here would therefore add a per-mint join
+    that can only ever return nothing. See
+    ``create_billing_organization_resolver``, which gates on the same rule.
     """
     from faultmaven.modules.auth.domain.services.jwt_token_generator import (
         SigningKeyUnavailableError,
@@ -480,13 +490,15 @@ async def local_login(
         settings = get_settings()
         jwt_generator = _build_local_jwt_generator(revocation_store)
 
-        access_token = await jwt_generator.generate_access_token(
-            user, state_read_at=state_read_at
-        )
-        # Refresh token lets the client mint a new access token via
+        # One resolution for both halves (#1517 review): sequential mints
+        # resolve the billing organization twice, and a membership write
+        # or a transient failure between them splits the pair
+        # irrecoverably — the refresh token is its only carrier.
+        #
+        # The refresh token lets the client mint a new access token via
         # POST /auth/refresh instead of being forced to re-login when the
         # short-lived access token expires.
-        refresh_token = await jwt_generator.generate_refresh_token(
+        access_token, refresh_token = await jwt_generator.generate_token_pair(
             user, state_read_at=state_read_at
         )
 
@@ -646,10 +658,11 @@ async def local_register(
         settings = get_settings()
         jwt_generator = _build_local_jwt_generator(revocation_store)
 
-        access_token = await jwt_generator.generate_access_token(
-            user, state_read_at=state_read_at
-        )
-        refresh_token = await jwt_generator.generate_refresh_token(
+        # One resolution for both halves (#1517 review): sequential mints
+        # resolve the billing organization twice, and a membership write
+        # or a transient failure between them splits the pair
+        # irrecoverably — the refresh token is its only carrier.
+        access_token, refresh_token = await jwt_generator.generate_token_pair(
             user, state_read_at=state_read_at
         )
 
@@ -852,10 +865,11 @@ async def refresh_tokens(
             )
 
         # 3. Mint a fresh pair.
-        new_access_token = await jwt_generator.generate_access_token(
-            user, state_read_at=state_read_at
-        )
-        new_refresh_token = await jwt_generator.generate_refresh_token(
+        # One resolution for both halves (#1517 review): sequential mints
+        # resolve the billing organization twice, and a membership write
+        # or a transient failure between them splits the pair
+        # irrecoverably — the refresh token is its only carrier.
+        new_access_token, new_refresh_token = await jwt_generator.generate_token_pair(
             user, state_read_at=state_read_at
         )
 

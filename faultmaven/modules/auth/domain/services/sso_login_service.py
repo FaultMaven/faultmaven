@@ -1389,10 +1389,11 @@ class SSOLoginService:
         if organization_id:
             user.organization_id = organization_id
 
-        access_token = await self._tokens.generate_access_token(
-            user, state_read_at=state_read_at
-        )
-        refresh_token = await self._tokens.generate_refresh_token(
+        # One resolution for both halves (#1517 review): sequential mints
+        # resolve the billing organization twice, and a membership write
+        # or a transient failure between them splits the pair
+        # irrecoverably — the refresh token is its only carrier.
+        access_token, refresh_token = await self._tokens.generate_token_pair(
             user, state_read_at=state_read_at
         )
 
