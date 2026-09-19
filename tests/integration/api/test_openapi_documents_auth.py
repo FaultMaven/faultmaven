@@ -111,7 +111,9 @@ MANDATORY_AUTH_DEPENDENCIES = frozenset(
 # resolve BEFORE the auth gate?", and for a service provider the answer is no —
 # that is the #1467 shape, where an anonymous caller reaches the collaborator
 # and gets its 500 instead of the 401. Importing the flat union there would
-# excuse 51 real instances. The union is preserved for this module's own use.
+# excuse the four service providers below the day one of them lands ahead of a
+# gate; measured, the two sets answer the same today (29 mis-ordered
+# operations, #1494). The union is preserved for this module's own use.
 
 #: Optional authentication: returns None instead of raising, so it cannot
 #: pre-empt a refusal.

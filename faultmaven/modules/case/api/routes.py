@@ -841,6 +841,7 @@ def require_case_not_terminal(case) -> None:
             },
         }
     },
+    dependencies=[Depends(require_authentication)],
 )
 @trace("api_delete_case")
 async def delete_case(
@@ -981,7 +982,12 @@ async def _di_get_creator_service_channel(
         return None
 
 
-@router.post("", response_model=CaseSummary, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=CaseSummary,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_authentication)],
+)
 @trace("api_create_case")
 async def create_case(
     request: CaseCreateRequest,
@@ -1152,7 +1158,9 @@ async def create_case(
         )
 
 
-@router.get("", response_model=CaseListResponse)
+@router.get(
+    "", response_model=CaseListResponse, dependencies=[Depends(require_authentication)]
+)
 @trace("api_list_cases")
 async def list_cases(
     response: Response,
@@ -1407,7 +1415,11 @@ async def get_case_service_health(
         }
 
 
-@router.get("/{case_id}", response_model=CaseDetail)
+@router.get(
+    "/{case_id}",
+    response_model=CaseDetail,
+    dependencies=[Depends(require_authentication)],
+)
 @trace("api_get_case")
 async def get_case(
     case_id: str,
@@ -1471,7 +1483,11 @@ async def get_case(
         )
 
 
-@router.get("/{case_id}/ui", response_model=CaseUIResponse)
+@router.get(
+    "/{case_id}/ui",
+    response_model=CaseUIResponse,
+    dependencies=[Depends(require_authentication)],
+)
 @trace("api_get_case_ui")
 async def get_case_ui(
     request: Request,
@@ -1566,7 +1582,11 @@ async def get_case_ui(
         )
 
 
-@router.put("/{case_id}", status_code=status.HTTP_200_OK)
+@router.put(
+    "/{case_id}",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_authentication)],
+)
 @trace("api_update_case")
 async def update_case(
     case_id: str,
@@ -1696,7 +1716,11 @@ async def update_case(
         )
 
 
-@router.post("/{case_id}/title", response_model=TitleResponse)
+@router.post(
+    "/{case_id}/title",
+    response_model=TitleResponse,
+    dependencies=[Depends(require_authentication)],
+)
 @trace("api_generate_case_title")
 async def generate_case_title(
     case_id: str,
@@ -2671,7 +2695,11 @@ async def _generate_title_with_llm(
         return fallback, "fallback"
 
 
-@router.post("/search", response_model=List[CaseSummary])
+@router.post(
+    "/search",
+    response_model=List[CaseSummary],
+    dependencies=[Depends(require_authentication)],
+)
 @trace("api_search_cases")
 async def search_cases(
     request: CaseSearchRequest,
@@ -2700,7 +2728,11 @@ async def search_cases(
         )
 
 
-@router.get("/{case_id}/analytics", response_model=Dict[str, Any])
+@router.get(
+    "/{case_id}/analytics",
+    response_model=Dict[str, Any],
+    dependencies=[Depends(require_authentication)],
+)
 @trace("api_get_case_analytics")
 async def get_case_analytics(
     case_id: str,
@@ -2736,7 +2768,11 @@ async def get_case_analytics(
 
 
 # Conversation thread retrieval (messages)
-@router.get("/{case_id}/messages", response_model=CaseMessagesResponse)
+@router.get(
+    "/{case_id}/messages",
+    response_model=CaseMessagesResponse,
+    dependencies=[Depends(require_authentication)],
+)
 @trace("api_get_case_messages_enhanced")
 async def get_case_messages_enhanced(
     case_id: str,
@@ -2808,7 +2844,11 @@ async def get_case_messages_enhanced(
 # Session-case integration endpoints
 
 
-@router.post("/sessions/{session_id}/resume/{case_id}", response_model=Dict[str, Any])
+@router.post(
+    "/sessions/{session_id}/resume/{case_id}",
+    response_model=Dict[str, Any],
+    dependencies=[Depends(require_authentication)],
+)
 @trace("api_resume_case_in_session")
 async def resume_case_in_session(
     session_id: str,
@@ -2973,7 +3013,11 @@ async def resume_case_in_session(
 # ============================================================
 
 
-@router.post("/{case_id}/turns", response_model=TurnResponse)
+@router.post(
+    "/{case_id}/turns",
+    response_model=TurnResponse,
+    dependencies=[Depends(require_authentication)],
+)
 @trace("api_submit_turn")
 async def submit_turn(
     case_id: str,
@@ -3485,7 +3529,7 @@ async def reclassify_evidence(
 # Case-scoped data management endpoints
 
 
-@router.get("/{case_id}/data")
+@router.get("/{case_id}/data", dependencies=[Depends(require_authentication)])
 @trace("api_list_case_data")
 async def list_case_data(
     case_id: str,
@@ -3529,7 +3573,7 @@ async def list_case_data(
         return JSONResponse(status_code=200, content=[], headers={"X-Total-Count": "0"})
 
 
-@router.get("/{case_id}/data/{data_id}")
+@router.get("/{case_id}/data/{data_id}", dependencies=[Depends(require_authentication)])
 @trace("api_get_case_data")
 async def get_case_data(
     case_id: str,
@@ -3596,6 +3640,7 @@ async def upload_case_data_gone(case_id: str):
             },
         }
     },
+    dependencies=[Depends(require_authentication)],
 )
 @trace("api_delete_case_data")
 async def delete_case_data(
@@ -3673,7 +3718,9 @@ def _recommendation_unavailable_detail(unreadable: bool) -> str:
     )
 
 
-@router.get("/{case_id}/report-recommendations")
+@router.get(
+    "/{case_id}/report-recommendations", dependencies=[Depends(require_authentication)]
+)
 @trace("api_get_report_recommendations")
 async def get_report_recommendations(
     case_id: str,
@@ -3819,7 +3866,7 @@ async def get_report_recommendations(
         )
 
 
-@router.post("/{case_id}/reports")
+@router.post("/{case_id}/reports", dependencies=[Depends(require_authentication)])
 @trace("api_generate_case_reports")
 async def generate_case_reports(
     case_id: str,
@@ -3882,7 +3929,7 @@ async def generate_case_reports(
         raise HTTPException(status_code=500, detail="Failed to generate reports")
 
 
-@router.get("/{case_id}/reports")
+@router.get("/{case_id}/reports", dependencies=[Depends(require_authentication)])
 @trace("api_get_case_reports")
 async def get_case_reports(
     request: Request,
@@ -3996,7 +4043,10 @@ def _draft_to_runbook_report(case_id: str, draft: dict) -> dict:
     }
 
 
-@router.get("/{case_id}/reports/{report_id}/download")
+@router.get(
+    "/{case_id}/reports/{report_id}/download",
+    dependencies=[Depends(require_authentication)],
+)
 @trace("api_download_case_report")
 async def download_case_report(
     case_id: str,
@@ -4085,7 +4135,7 @@ async def download_case_report(
 # ============================================================
 
 
-@router.post("/{case_id}/close")
+@router.post("/{case_id}/close", dependencies=[Depends(require_authentication)])
 @trace("api_close_case")
 async def close_case(
     case_id: str,
@@ -4568,6 +4618,7 @@ async def get_evidence_details(
     summary="Share Case With Team",
     description="Share a case with a Team (ADR-013 §D4). Owner-only; the Team must "
     "be one the caller belongs to. Idempotent.",
+    dependencies=[Depends(require_authentication)],
 )
 async def share_case_with_team(
     case_id: str = Path(..., description="Case ID"),
@@ -4605,6 +4656,7 @@ async def share_case_with_team(
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Unshare Case From Team",
     description="Remove a case's share to a Team (ADR-013 §D4). Owner-only.",
+    dependencies=[Depends(require_authentication)],
 )
 async def unshare_case_from_team(
     case_id: str = Path(..., description="Case ID"),
