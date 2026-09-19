@@ -210,26 +210,24 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 duration
             )
 
-            # Track performance in coordinator
-            if context.performance_tracker:
-                exceeds_threshold, threshold = (
-                    context.performance_tracker.record_timing(
-                        layer="api", operation="request_processing", duration=duration
-                    )
-                )
-
-                # Log performance warning if needed
-                if exceeds_threshold:
-                    LoggingCoordinator.log_once(
-                        operation_key=f"performance_warning:{context.correlation_id}",
-                        logger=logger,
-                        level="warning",
-                        message=f"Slow request detected: {request.method} {request.url.path} "
-                        f"took {duration:.3f}s (threshold: {threshold:.3f}s)",
-                        duration_seconds=duration,
-                        threshold_seconds=threshold,
-                        correlation_id=context.correlation_id,
-                    )
+            # No per-request latency verdict is emitted here, deliberately
+            # (#1346). Request duration is published to the histogram three
+            # lines above, per route template, and that is the whole latency
+            # signal: `FaultMavenAPIHighLatency` alerts on a p95 recording rule
+            # derived from `http_request_duration_seconds_bucket`, and the
+            # "Request completed" line below already carries `duration_seconds`
+            # on EVERY request for anyone reading logs.
+            #
+            # What used to be here compared `duration` against a single
+            # `api: 0.1` constant and logged "Slow request detected" at
+            # WARNING. Every investigation turn makes at least one LLM call —
+            # measured 5.9s to 15.0s on healthy turns against a real case, and
+            # 27-34ms for /health — so one number cannot serve both
+            # populations, and 100ms fired on all healthy traffic on the
+            # product's main path. A WARNING that fires on every turn is
+            # indistinguishable from a real regression, which is what made a
+            # latency regression invisible. A percentile is the right
+            # instrument for this and a per-event log line cannot express one.
 
             # Determine log level based on request type and status
             # Reduce verbosity for heartbeat 404s to prevent log spam

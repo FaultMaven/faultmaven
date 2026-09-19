@@ -173,36 +173,67 @@ class TestPerformanceTracker:
         assert isinstance(tracker.layer_timings, dict)
         assert len(tracker.layer_timings) == 0
 
-        # Check default thresholds
+        # Check default thresholds. No "api" entry: see #1346 and the guard
+        # below — whole-request latency is not a per-layer constant.
         expected_thresholds = {
-            "api": 0.1,
             "service": 0.5,
             "core": 0.3,
             "infrastructure": 1.0,
         }
         assert tracker.thresholds == expected_thresholds
 
+    def test_no_api_layer_threshold(self):
+        """#1346: the ``api`` layer carries no latency constant.
+
+        It was 0.1s, and whole-request duration was recorded against it, so
+        every investigation turn (5.9-15.0s measured against a real case)
+        tripped it while every health probe (27-34ms) sat three orders of
+        magnitude below. A constant that fires on all healthy traffic is not
+        an alertable signal. Request latency is published to
+        ``http_request_duration_seconds`` instead, where a per-route
+        percentile can be computed.
+        """
+        tracker = PerformanceTracker()
+
+        assert "api" not in tracker.thresholds
+
+        # The 0.1s constant specifically is gone: an api timing now takes
+        # record_timing's generic fallback.
+        _exceeds, threshold = tracker.record_timing("api", "request_processing", 14.95)
+
+        assert threshold == 1.0, "an unexpected api timing takes the generic fallback"
+
+        # Note what this does NOT make safe: 14.95s exceeds the 1.0s fallback
+        # just as it exceeded 0.1s, because the fallback is a per-OPERATION
+        # default and a whole request is not an operation. What fixes #1346 is
+        # therefore not a better constant but that whole-request duration is
+        # no longer recorded against a layer at all. That the middleware
+        # records none, on either of the two channels a recorded timing feeds
+        # (the WARNING and the request summary's violation count), is pinned
+        # behaviourally in
+        # tests/unit/api/middleware/test_logging_middleware_metrics.py.
+
     def test_record_timing_within_threshold(self):
         """Test recording timing that doesn't exceed threshold."""
         tracker = PerformanceTracker()
 
-        # Record API timing within threshold
-        exceeds, threshold = tracker.record_timing("api", "test_operation", 0.05)
+        # Record core timing within threshold
+        exceeds, threshold = tracker.record_timing("core", "test_operation", 0.05)
 
         assert not exceeds
-        assert threshold == 0.1
-        assert tracker.layer_timings["api.test_operation"] == 0.05
+        assert threshold == 0.3
+        assert tracker.layer_timings["core.test_operation"] == 0.05
 
     def test_record_timing_exceeds_threshold(self):
         """Test recording timing that exceeds threshold."""
         tracker = PerformanceTracker()
 
-        # Record API timing that exceeds threshold
-        exceeds, threshold = tracker.record_timing("api", "slow_operation", 0.2)
+        # Record core timing that exceeds threshold
+        exceeds, threshold = tracker.record_timing("core", "slow_operation", 0.5)
 
         assert exceeds
-        assert threshold == 0.1
-        assert tracker.layer_timings["api.slow_operation"] == 0.2
+        assert threshold == 0.3
+        assert tracker.layer_timings["core.slow_operation"] == 0.5
 
     def test_record_timing_unknown_layer(self):
         """Test recording timing for unknown layer uses default threshold."""
@@ -299,8 +330,8 @@ class TestLoggingCoordinator:
 
         # Add performance violations
         ctx.performance_tracker.record_timing(
-            "api", "slow_op", 0.2
-        )  # Exceeds 0.1s threshold
+            "core", "slow_op", 0.5
+        )  # Exceeds 0.3s threshold
 
         # End request
         summary = coordinator.end_request()

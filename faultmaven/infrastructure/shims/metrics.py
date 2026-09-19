@@ -435,10 +435,60 @@ request_counter = Counter(
     labelnames=["method", "endpoint", "status_code"],
 )
 
+# Buckets spanning what this API actually serves, which prometheus_client's
+# defaults do not (#1346). Those stop at a highest finite bucket of 10.0s, and
+# once a quantile lands in the overflow bucket `histogram_quantile` reports the
+# largest FINITE bound rather than the observation — `promql/quantile.go`
+# returns `buckets[len(buckets)-2].UpperBound` for the last bucket — so every
+# such request is reported as exactly 10.0s however long it really took. On the
+# product's main path the instrument was blind exactly where the question is.
+# Measured end to end on gemini-3.7-flash
+# against a real case: healthy investigation turns 5.9s, 9.7s, 10.3s, 15.0s
+# (latency rises with accumulated context), a turn against a hung provider
+# 68.7s, /health 27-34ms, /readiness 16-20ms. Two of the four healthy turns
+# and the pathological one all landed in the same +Inf bucket, so a 10.3s
+# healthy turn and a 68.7s hung one were the same observation to every
+# percentile computed from this histogram — both reported as 10.0s, the
+# largest finite bound. Including `faultmaven:slo_api_latency_p95:5m`, which
+# `FaultMavenAPIHighLatency` alerts on.
+#
+# The first fourteen are prometheus_client's defaults unchanged, so every
+# existing recording rule and dashboard keeps the resolution it had below 10s
+# (probes and ordinary CRUD live there). The extension is additive:
+#   15.0  - just above the slowest healthy turn measured (15.0s)
+#   20.0, 30.0 - resolution over the early-regression range above healthy
+#   60.0  - below the hung-provider turn (68.7s), so it is separated from a
+#           slow-but-healthy one rather than sharing its bucket
+#   120.0 - AGENT_REQUEST_TIMEOUT's default: past this a request has outlived
+#           its own declared budget, which is a different fault from latency
+_HTTP_DURATION_BUCKETS = (
+    0.005,
+    0.01,
+    0.025,
+    0.05,
+    0.075,
+    0.1,
+    0.25,
+    0.5,
+    0.75,
+    1.0,
+    2.5,
+    5.0,
+    7.5,
+    10.0,
+    15.0,
+    20.0,
+    30.0,
+    60.0,
+    120.0,
+    float("inf"),
+)
+
 request_duration = Histogram(
     "http_request_duration_seconds",
     "HTTP request duration in seconds",
     labelnames=["method", "endpoint"],
+    buckets=_HTTP_DURATION_BUCKETS,
 )
 
 active_sessions = Gauge(
