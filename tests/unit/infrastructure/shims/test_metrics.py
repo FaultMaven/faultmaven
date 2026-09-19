@@ -420,7 +420,14 @@ class TestHttpDurationBucketsSpanRealTraffic:
                 "sys.stderr.write('@@'+json.dumps("
                 "[str(b) for b in request_duration._upper_bounds])+'@@')",
             ],
-            env={**os.environ, "ENABLE_METRICS": "true"},
+            # Hand the child this interpreter's own import path, so the probe
+            # resolves `faultmaven` exactly as the parent does however CI
+            # installed it (editable, wheel, or src layout on sys.path).
+            env={
+                **os.environ,
+                "ENABLE_METRICS": "true",
+                "PYTHONPATH": os.pathsep.join(p for p in sys.path if p),
+            },
             capture_output=True,
             text=True,
             timeout=120,
