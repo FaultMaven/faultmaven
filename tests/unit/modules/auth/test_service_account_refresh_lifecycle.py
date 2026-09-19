@@ -262,7 +262,10 @@ class TestServiceAccountRefreshLifecycle:
         no replacement if the mint failed — a lockout only an operator can undo.
         """
         order: list[str] = []
-        real_mint = token_generator.generate_refresh_token
+        # The rotation mints the PAIR in one call (#1517 review), so that is
+        # what has to be observed — wrapping generate_refresh_token would
+        # record nothing and the ordering assertion would pass vacuously.
+        real_mint = token_generator.generate_token_pair
         real_revoke = token_generator.revoke_refresh_token
 
         async def mint(user, **kwargs):
@@ -273,7 +276,7 @@ class TestServiceAccountRefreshLifecycle:
             order.append("revoke")
             return await real_revoke(token)
 
-        token_generator.generate_refresh_token = mint
+        token_generator.generate_token_pair = mint
         token_generator.revoke_refresh_token = revoke
 
         await oauth_service.refresh_access_token(
