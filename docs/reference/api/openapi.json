@@ -14521,7 +14521,7 @@
     },
     "/health": {
       "get": {
-        "description": "Enhanced health check endpoint with component-specific metrics and SLA monitoring.",
+        "description": "Component health and SLA detail. Always answers 200; read `status`.\n\nThis is the **liveness** surface: production points its liveness *and*\nstartup probes here, and a liveness probe that fails on a dependency\nrestarts a pod that restarting cannot fix \u2014 during a database outage that\nreplaces a degraded service with a crash-looping one whose recovery is\nthen delayed by kubelet backoff. So a failing dependency is reported in\nthe body and never in the status code. The verdict that gates traffic\nlives on `/readiness`, which is the question a status code can answer\nwithout that side effect.",
         "operationId": "health_check_health_get",
         "responses": {
           "200": {
@@ -14755,7 +14755,7 @@
     },
     "/readiness": {
       "get": {
-        "description": "Readiness probe: return unready if Redis or ChromaDB are unavailable.",
+        "description": "Readiness probe: 503 when a component fatal to serving is unhealthy.\n\nThis is the endpoint whose status code carries a verdict, and the only\none \u2014 a Kubernetes readiness failure removes the pod from its Service\nwithout restarting it, which is exactly the action a dependency outage\nwarrants. `/health` deliberately stays 200; see its docstring.\n\nOnly components declared fatal are probed (today: `database`). Every\nadditional dependency in this gate is another way to stop serving\nrequests that could have been served, so a component that merely degrades\nthe answer \u2014 the vector store, the knowledge base, the LLM router \u2014 is\nreported at `/health` and does not appear here. Prior to #1515 this\nendpoint pulled the pod when ChromaDB was absent, which pulls a pod that\ncan still read cases, accept evidence and authenticate.\n\nA component we could not determine (UNKNOWN \u2014 typically the container has\nnot finished wiring) is not treated as unhealthy: \"we cannot tell\" must\nnever be the reason a pod leaves the Service.",
         "operationId": "readiness_readiness_get",
         "responses": {
           "200": {
@@ -14765,6 +14765,9 @@
               }
             },
             "description": "Successful Response"
+          },
+          "503": {
+            "description": "Not ready to serve traffic"
           }
         },
         "summary": "Readiness"

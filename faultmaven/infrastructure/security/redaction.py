@@ -103,6 +103,14 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             and not settings.protection.sanitize_pii
         )
 
+        # Whether Presidio was actually REACHED FOR, recorded here rather than
+        # re-derived by consumers. `analyzer_available = False` collapses two
+        # unrelated states — "we never tried, by configuration" and "we tried
+        # and it did not answer" — and only the second is a fault. The health
+        # probe needs to tell them apart or it reports every standalone
+        # deployment as degraded forever, which is how a signal gets ignored.
+        self.presidio_probed = not (skip_checks or protection_disabled)
+
         # Test service connectivity only when protection is enabled
         if skip_checks or protection_disabled:
             self.analyzer_available = False

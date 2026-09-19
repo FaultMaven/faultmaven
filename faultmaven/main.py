@@ -41,7 +41,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -2204,7 +2204,17 @@ async def get_capabilities(request: Request):
 
 @app.get("/health")
 async def health_check():
-    """Enhanced health check endpoint with component-specific metrics and SLA monitoring."""
+    """Component health and SLA detail. Always answers 200; read `status`.
+
+    This is the **liveness** surface: production points its liveness *and*
+    startup probes here, and a liveness probe that fails on a dependency
+    restarts a pod that restarting cannot fix — during a database outage that
+    replaces a degraded service with a crash-looping one whose recovery is
+    then delayed by kubelet backoff. So a failing dependency is reported in
+    the body and never in the status code. The verdict that gates traffic
+    lives on `/readiness`, which is the question a status code can answer
+    without that side effect.
+    """
     from .infrastructure.health.component_monitor import component_monitor
     from .infrastructure.health.sla_tracker import sla_tracker
 
@@ -2234,12 +2244,12 @@ async def health_check():
         for component_name, component_health in component_health_results.items():
             health_status["components"][component_name] = {
                 "status": component_health.status.value,
+                "fatal": component_health.fatal,
                 "response_time_ms": component_health.response_time_ms,
                 "last_error": component_health.last_error,
-                "uptime_seconds": component_health.uptime_seconds,
-                "sla_current": component_health.sla_current,
-                "error_count_24h": component_health.error_count_24h,
-                "success_count_24h": component_health.success_count_24h,
+                "probe_availability_24h": component_health.probe_availability_24h,
+                "probe_failures_24h": component_health.probe_failures_24h,
+                "probe_successes_24h": component_health.probe_successes_24h,
                 "dependencies": component_health.dependencies,
                 "metadata": component_health.metadata,
             }
@@ -2403,7 +2413,7 @@ async def health_check_dependencies():
                 component_name: {
                     "status": health.status.value,
                     "response_time_ms": health.response_time_ms,
-                    "sla_current": health.sla_current,
+                    "probe_availability_24h": health.probe_availability_24h,
                     "last_error": health.last_error,
                     "dependencies": health.dependencies,
                     "metadata": health.metadata,
@@ -2431,21 +2441,50 @@ async def health_check_dependencies():
         }
 
 
-@app.get("/readiness")
-async def readiness():
-    """Readiness probe: return unready if Redis or ChromaDB are unavailable."""
-    try:
-        from .container import container
+@app.get(
+    "/readiness",
+    responses={503: {"description": "Not ready to serve traffic"}},
+)
+async def readiness(response: Response):
+    """Readiness probe: 503 when a component fatal to serving is unhealthy.
 
-        await container.initialize()
-        if getattr(container, "session_store", None) is None:
-            return {"status": "unready", "reason": "redis_unavailable"}
-        if getattr(container, "vector_store", None) is None:
-            return {"status": "unready", "reason": "chromadb_unavailable"}
-        return {"status": "ready"}
+    This is the endpoint whose status code carries a verdict, and the only
+    one — a Kubernetes readiness failure removes the pod from its Service
+    without restarting it, which is exactly the action a dependency outage
+    warrants. `/health` deliberately stays 200; see its docstring.
+
+    Only components declared fatal are probed (today: `database`). Every
+    additional dependency in this gate is another way to stop serving
+    requests that could have been served, so a component that merely degrades
+    the answer — the vector store, the knowledge base, the LLM router — is
+    reported at `/health` and does not appear here. Prior to #1515 this
+    endpoint pulled the pod when ChromaDB was absent, which pulls a pod that
+    can still read cases, accept evidence and authenticate.
+
+    A component we could not determine (UNKNOWN — typically the container has
+    not finished wiring) is not treated as unhealthy: "we cannot tell" must
+    never be the reason a pod leaves the Service.
+    """
+    from .infrastructure.health.component_monitor import component_monitor
+
+    try:
+        ready, detail = await component_monitor.check_serving_readiness()
     except Exception as e:
+        # A probe that cannot run says so, and fails OPEN. A bug in the check
+        # must not be able to empty the Service.
         logger.warning(f"Readiness probe failed: {e}")
-        return {"status": "unready", "reason": "dependency_check_failed"}
+        return {"status": "ready", "reason": "readiness_check_unavailable"}
+
+    if ready:
+        return {"status": "ready", "components": detail["components"]}
+
+    response.status_code = 503
+    return {
+        "status": "unready",
+        "reason": "fatal_component_unhealthy",
+        "blocking": detail["blocking"],
+        "components": detail["components"],
+    }
 
 
 @app.get("/health/logging")
@@ -2534,8 +2573,8 @@ async def health_check_component(component_name: str):
                 "status": component_health.status.value,
                 "response_time_ms": component_health.response_time_ms,
                 "last_error": component_health.last_error,
-                "uptime_seconds": component_health.uptime_seconds,
-                "sla_current": component_health.sla_current,
+                "fatal": component_health.fatal,
+                "probe_availability_24h": component_health.probe_availability_24h,
                 "dependencies": component_health.dependencies,
                 "metadata": component_health.metadata,
             },

@@ -1,8 +1,19 @@
 """
 Component Health Monitoring
 
-Provides detailed health monitoring for individual components with
-SLA tracking and dependency relationship mapping.
+Every check in this module performs real I/O against the dependency it names,
+or reports ``UNKNOWN``. There are no simulated checks: a check that cannot
+fail is indistinguishable from no check at all, which is what #1515 was.
+
+**Fatal vs degraded.** Each component declares ``fatal`` — whether the process
+can still usefully answer requests without it. A component is fatal only when
+all three hold: it has no fallback, it can fail for *this pod alone*, and with
+it down essentially no request can be served. ``database`` is the only one that
+qualifies. Everything else is degraded: visible in the body, never a reason to
+pull a pod from its Service or restart it. The distinction is load-bearing
+because a non-200 on a probe path turns a dependency outage into a restart
+loop; see the ``/health`` and ``/readiness`` handlers in ``main.py`` for which
+endpoint carries the verdict in its status code and why.
 """
 
 import asyncio
@@ -11,7 +22,15 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+#: Redis key the session-store probe asks about. It is never written, so the
+#: probe is a pure read: EXISTS on an absent key is O(1) and allocates nothing.
+_SESSION_PROBE_KEY = "__faultmaven_health_probe__"
+
+#: Input for the sanitizer's local functional probe. Must contain something the
+#: redaction pattern table is expected to match, or the probe proves nothing.
+_SANITIZER_PROBE_INPUT = "health probe from 10.11.12.13"
 
 
 class HealthStatus(Enum):
@@ -25,19 +44,25 @@ class HealthStatus(Enum):
 
 @dataclass
 class ComponentHealth:
-    """Represents the health status of a single component."""
+    """Represents the health status of a single component.
+
+    The three 24h figures measure *this monitor's own probes* — the only
+    per-component history the process keeps — and are named for that. They are
+    not request-level SLA: request availability is the SLA tracker's job, fed
+    by the logging middleware and the LLM router.
+    """
 
     component_name: str
     status: HealthStatus
     response_time_ms: float
     last_error: Optional[str] = None
-    uptime_seconds: float = 0.0
-    sla_current: float = 100.0
+    probe_availability_24h: float = 100.0
     metadata: Dict[str, Any] = field(default_factory=dict)
     dependencies: List[str] = field(default_factory=list)
     last_check: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    error_count_24h: int = 0
-    success_count_24h: int = 0
+    probe_failures_24h: int = 0
+    probe_successes_24h: int = 0
+    fatal: bool = False
 
 
 @dataclass
@@ -59,7 +84,8 @@ class ComponentHealthMonitor:
         self.component_health: Dict[str, ComponentHealth] = {}
         self.dependency_map: Dict[str, DependencyMapping] = {}
         self.health_history: Dict[str, List[Tuple[datetime, HealthStatus, float]]] = {}
-        self.sla_thresholds: Dict[str, Dict[str, float]] = {}
+        #: Components whose failure means the process cannot usefully serve.
+        self.fatal_components: Set[str] = set()
         # RLS-bypass posture (role attributes + table ownership) is static for the
         # life of the process/DB role, so determine it once and reuse it — the
         # per-probe DB cost then stays just the SELECT 1 connectivity check.
@@ -67,69 +93,61 @@ class ComponentHealthMonitor:
         self._initialize_default_components()
 
     def _initialize_default_components(self) -> None:
-        """Initialize monitoring for default FaultMaven components."""
+        """Initialize monitoring for default FaultMaven components.
+
+        ``fatal`` is argued per component; see the module docstring for the
+        three-part test. Only ``database`` passes it:
+
+        - ``database``    — no fallback, fails per-pod (pool, DNS, partition),
+                            and every route that does anything touches it.
+        - ``redis`` /
+          ``session_store`` — standalone silently substitutes in-process
+                            FakeRedis, and token revocation has a
+                            database-backed implementation as well, so "Redis
+                            is gone" does not imply "this pod is useless".
+        - ``vector_store``,
+          ``knowledge_base`` — retrieval degrades; turns, uploads and every
+                            read still work.
+        - ``llm_provider`` — the router has fallback chains, the non-LLM
+                            surface keeps working, and every replica shares
+                            the same providers, so gating readiness on it
+                            would convert a partial outage into a total one.
+        - ``sanitizer``   — degrades to regex-only redaction by design.
+        - ``tracer``      — observability only.
+        """
         default_components = {
-            "database": {
-                "dependencies": [],
-                "sla_thresholds": {"response_time_ms": 100, "availability": 99.9},
-                "critical": True,
-            },
-            "llm_provider": {
-                "dependencies": ["database"],
-                "sla_thresholds": {"response_time_ms": 2000, "availability": 99.5},
-                "critical": True,
-            },
+            "database": {"dependencies": [], "fatal": True},
+            "llm_provider": {"dependencies": [], "fatal": False},
             "knowledge_base": {
                 "dependencies": ["database", "vector_store"],
-                "sla_thresholds": {"response_time_ms": 500, "availability": 99.0},
-                "critical": False,
+                "fatal": False,
             },
-            "session_store": {
-                "dependencies": ["redis"],
-                "sla_thresholds": {"response_time_ms": 50, "availability": 99.9},
-                "critical": True,
-            },
-            "vector_store": {
-                "dependencies": [],
-                "sla_thresholds": {"response_time_ms": 300, "availability": 99.0},
-                "critical": False,
-            },
-            "redis": {
-                "dependencies": [],
-                "sla_thresholds": {"response_time_ms": 10, "availability": 99.9},
-                "critical": True,
-            },
-            "sanitizer": {
-                "dependencies": [],
-                "sla_thresholds": {"response_time_ms": 100, "availability": 99.5},
-                "critical": True,
-            },
-            "tracer": {
-                "dependencies": [],
-                "sla_thresholds": {"response_time_ms": 50, "availability": 95.0},
-                "critical": False,
-            },
+            "session_store": {"dependencies": ["redis"], "fatal": False},
+            "vector_store": {"dependencies": [], "fatal": False},
+            "redis": {"dependencies": [], "fatal": False},
+            "sanitizer": {"dependencies": [], "fatal": False},
+            "tracer": {"dependencies": [], "fatal": False},
         }
 
         for component, config in default_components.items():
             self.register_component(
                 component,
                 dependencies=config["dependencies"],
-                sla_thresholds=config["sla_thresholds"],
+                fatal=config["fatal"],
             )
 
     def register_component(
         self,
         component_name: str,
         dependencies: Optional[List[str]] = None,
-        sla_thresholds: Optional[Dict[str, float]] = None,
+        fatal: bool = False,
     ) -> None:
         """Register a component for health monitoring.
 
         Args:
             component_name: Name of the component to monitor
             dependencies: List of components this component depends on
-            sla_thresholds: SLA thresholds for this component
+            fatal: Whether the process cannot usefully serve without it
         """
         # Initialize component health
         self.component_health[component_name] = ComponentHealth(
@@ -137,6 +155,7 @@ class ComponentHealthMonitor:
             status=HealthStatus.UNKNOWN,
             response_time_ms=0.0,
             dependencies=dependencies or [],
+            fatal=fatal,
         )
 
         # Set up dependency mapping
@@ -144,9 +163,10 @@ class ComponentHealthMonitor:
             component=component_name, critical_dependencies=dependencies or []
         )
 
-        # Set SLA thresholds
-        if sla_thresholds:
-            self.sla_thresholds[component_name] = sla_thresholds
+        if fatal:
+            self.fatal_components.add(component_name)
+        else:
+            self.fatal_components.discard(component_name)
 
         # Initialize health history
         self.health_history[component_name] = []
@@ -185,23 +205,18 @@ class ComponentHealthMonitor:
             component_health.response_time_ms = response_time
             component_health.last_error = health_result.get("error")
             component_health.last_check = datetime.now(timezone.utc)
-            component_health.metadata.update(health_result.get("metadata", {}))
+            # Replace rather than merge: a key the probe no longer reports is a
+            # key that is no longer true, and merging would keep serving the
+            # last value it ever had as if it were current.
+            component_health.metadata = dict(health_result.get("metadata", {}))
 
-            # Update success/error counts
-            if health_result["status"] == HealthStatus.HEALTHY:
-                component_health.success_count_24h += 1
-            else:
-                component_health.error_count_24h += 1
-                if health_result.get("error"):
-                    component_health.last_error = health_result["error"]
-
-            # Calculate SLA
-            component_health.sla_current = self._calculate_sla(component_name)
-
-            # Record in history
+            # Record in history FIRST — the 24h figures below are derived from
+            # the window, not accumulated in counters. Counters never expired,
+            # so a "24h" count was really a lifetime count.
             self._record_health_history(
                 component_name, component_health.status, response_time
             )
+            self._refresh_probe_stats(component_health)
 
             return component_health
 
@@ -214,7 +229,12 @@ class ComponentHealthMonitor:
             component_health.response_time_ms = (time.time() - start_time) * 1000
             component_health.last_error = str(e)
             component_health.last_check = datetime.now(timezone.utc)
-            component_health.error_count_24h += 1
+            self._record_health_history(
+                component_name,
+                HealthStatus.UNHEALTHY,
+                component_health.response_time_ms,
+            )
+            self._refresh_probe_stats(component_health)
 
             return component_health
 
@@ -372,180 +392,382 @@ class ComponentHealthMonitor:
             "reasons": reasons,
         }
 
-    async def _check_llm_provider_health(self) -> Dict[str, Any]:
-        """Check LLM provider health."""
-        try:
-            # Check if LLM providers are responsive
-            await asyncio.sleep(0.05)  # Simulate LLM health check
+    @staticmethod
+    def _live_container() -> Optional[Any]:
+        """The DI container, but only once its lifespan initialisation ran.
 
+        Before that, every service attribute is simply absent, which is not a
+        failure — it is "nothing has been wired yet". Returning ``None`` keeps
+        the caller from reporting an unhealthy dependency when what is really
+        true is that we cannot tell.
+        """
+        try:
+            from faultmaven.container import container
+        except Exception:  # pragma: no cover - import-time failure
+            return None
+        return container if getattr(container, "_initialized", False) else None
+
+    @staticmethod
+    def _unavailable(reason: str) -> Dict[str, Any]:
+        """Result for "the container has not wired anything yet"."""
+        return {"status": HealthStatus.UNKNOWN, "error": reason, "metadata": {}}
+
+    def _service_state(self, container: Any, name: str) -> Optional[Dict[str, Any]]:
+        """Non-``None`` when ``name`` is absent from a wired container.
+
+        Distinguishes a service that was *deliberately* turned off (degraded —
+        the operator asked for this) from one whose construction *failed*
+        (unhealthy). Collapsing the two makes a supported configuration look
+        broken, which is how a health signal gets ignored.
+        """
+        if getattr(container, name, None) is not None:
+            return None
+
+        registry = getattr(container, "_registry", None)
+        error = None
+        if registry is not None:
+            for failed_name, failed_error in registry.get_failed_services():
+                if failed_name == name:
+                    error = failed_error or "service failed to initialize"
+                    break
+        if error is not None:
             return {
-                "status": HealthStatus.HEALTHY,
-                "metadata": {
-                    "active_providers": ["fireworks", "openai"],
-                    "failed_providers": [],
-                    "average_response_time": 1200,
-                    "rate_limit_remaining": 95,
-                },
+                "status": HealthStatus.UNHEALTHY,
+                "error": error,
+                "metadata": {"wired": False},
             }
-        except Exception as e:
+        return {
+            "status": HealthStatus.DEGRADED,
+            "error": f"{name} is not enabled in this deployment",
+            "metadata": {"wired": False},
+        }
+
+    async def _check_llm_provider_health(self) -> Dict[str, Any]:
+        """Report what the LLM router can route to, without spending a call.
+
+        No provider in the catalogue exposes an unbilled liveness endpoint —
+        the only real connectivity test in this codebase is a completion, and
+        billing one every ten seconds per pod is not a health check. So this
+        reads the state the router already keeps from *real* traffic: which
+        providers initialised with credentials, which the registry has marked
+        unhealthy after consecutive failures, and whether the router's own
+        circuit breaker is open. Those numbers are observed, not simulated.
+        """
+        container = self._live_container()
+        if container is None:
+            return self._unavailable("container not initialized")
+
+        absent = self._service_state(container, "llm_provider")
+        if absent is not None:
+            return absent
+
+        router = container.llm_provider
+        registry = getattr(router, "registry", None)
+        if registry is None:
+            return {
+                "status": HealthStatus.UNKNOWN,
+                "error": "router exposes no provider registry",
+                "metadata": {},
+            }
+
+        # `_ensure_initialized` constructs provider SDK clients on first use.
+        # That is local work with no network, and it is idempotent, so the
+        # cost lands once on the first probe after boot.
+        available = await asyncio.to_thread(registry.get_available_providers)
+        summary = await asyncio.to_thread(registry.get_provider_health_summary)
+        unhealthy = sorted(
+            name
+            for name, state in summary.items()
+            if state.get("health") == "unhealthy"
+        )
+
+        breaker = getattr(router, "circuit_breaker", None)
+        breaker_state = getattr(breaker, "state", None)
+
+        metadata: Dict[str, Any] = {
+            "available_providers": sorted(available),
+            "unhealthy_providers": unhealthy,
+        }
+        if breaker_state is not None:
+            metadata["circuit_breaker"] = breaker_state
+        metrics = getattr(router, "connection_metrics", None)
+        if isinstance(metrics, dict):
+            for key in ("total_calls", "successful_calls", "failed_calls"):
+                if key in metrics:
+                    metadata[key] = metrics[key]
+
+        if not available:
+            return {
+                "status": HealthStatus.UNHEALTHY,
+                "error": "no LLM provider is configured with usable credentials",
+                "metadata": metadata,
+            }
+        if breaker_state == "open":
             return {
                 "status": HealthStatus.DEGRADED,
-                "error": str(e),
-                "metadata": {
-                    "active_providers": ["fireworks"],
-                    "failed_providers": ["openai"],
-                    "fallback_active": True,
-                },
+                "error": "LLM router circuit breaker is open",
+                "metadata": metadata,
             }
+        if unhealthy:
+            return {
+                "status": HealthStatus.DEGRADED,
+                "error": f"providers marked unhealthy: {', '.join(unhealthy)}",
+                "metadata": metadata,
+            }
+        return {"status": HealthStatus.HEALTHY, "metadata": metadata}
 
     async def _check_knowledge_base_health(self) -> Dict[str, Any]:
-        """Check knowledge base health."""
-        try:
-            await asyncio.sleep(0.02)  # Simulate KB query
+        """Query ``knowledge_items``; report the count only where it is true.
 
-            return {
-                "status": HealthStatus.HEALTHY,
-                "metadata": {
-                    "document_count": 1250,
-                    "index_size_mb": 45.2,
-                    "search_cache_hit_rate": 0.88,
-                },
-            }
+        On PostgreSQL this session carries no tenant scope, so RLS answers for
+        an empty tenant and a count would come back a confident zero — a new
+        fabrication in place of the old ``document_count: 1250``. There the
+        probe asks the cheaper question it can actually use, ``LIMIT 1``,
+        which still proves the table is reachable. Paying for a ``COUNT(*)``
+        every ten seconds to discard the answer would be the worst of both.
+        """
+        from sqlalchemy import func, literal, select
+
+        from faultmaven.infrastructure.persistence.database import get_db_session
+        from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
+
+        try:
+            async with get_db_session() as session:
+                dialect = session.get_bind().dialect.name
+                if dialect == "postgresql":
+                    await session.execute(
+                        select(literal(1)).select_from(KnowledgeItemModel).limit(1)
+                    )
+                    count = None
+                else:
+                    count = await session.scalar(
+                        select(func.count()).select_from(KnowledgeItemModel)
+                    )
         except Exception as e:
-            return {"status": HealthStatus.UNHEALTHY, "error": str(e)}
+            return {"status": HealthStatus.UNHEALTHY, "error": str(e), "metadata": {}}
+
+        metadata: Dict[str, Any] = {"backend": dialect}
+        if count is not None:
+            metadata["knowledge_items"] = int(count)
+        return {"status": HealthStatus.HEALTHY, "metadata": metadata}
 
     async def _check_session_store_health(self) -> Dict[str, Any]:
-        """Check session store health."""
-        try:
-            await asyncio.sleep(0.005)  # Simulate Redis operation
+        """Read through the session store itself, not just its socket.
 
-            return {
-                "status": HealthStatus.HEALTHY,
-                "metadata": {
-                    "active_sessions": 150,
-                    "memory_usage_mb": 12.5,
-                    "hit_rate": 0.97,
-                },
-            }
+        ``redis`` below pings the connection; this asks the store for a key it
+        will never find. Same socket, one layer up — so a wrapper that is
+        misconfigured while the connection is fine still shows up here.
+        """
+        container = self._live_container()
+        if container is None:
+            return self._unavailable("container not initialized")
+
+        absent = self._service_state(container, "session_store")
+        if absent is not None:
+            return absent
+
+        store = container.session_store
+        try:
+            await store.exists(_SESSION_PROBE_KEY)
         except Exception as e:
-            return {"status": HealthStatus.UNHEALTHY, "error": str(e)}
+            return {"status": HealthStatus.UNHEALTHY, "error": str(e), "metadata": {}}
+
+        return {
+            "status": HealthStatus.HEALTHY,
+            "metadata": {
+                "backend": _redis_backend_name(getattr(store, "redis_client", None))
+            },
+        }
 
     async def _check_vector_store_health(self) -> Dict[str, Any]:
-        """Check vector store health."""
-        try:
-            await asyncio.sleep(0.03)  # Simulate vector search
+        """Count the KB collection, which is both liveness and the real size.
 
+        Deliberately reaches the collection directly rather than through
+        ``ChromaDBVectorStore.count()``: that path shares a circuit breaker
+        with production traffic, and a probe every ten seconds would keep
+        resetting the failure count that breaker exists to accumulate.
+        """
+        container = self._live_container()
+        if container is None:
+            return self._unavailable("container not initialized")
+
+        absent = self._service_state(container, "vector_store")
+        if absent is not None:
+            return absent
+
+        store = container.vector_store
+        collection = getattr(store, "collection", None)
+        if collection is None:
             return {
-                "status": HealthStatus.HEALTHY,
-                "metadata": {
-                    "collection_count": 5,
-                    "total_vectors": 15000,
-                    "index_status": "ready",
-                },
+                "status": HealthStatus.UNHEALTHY,
+                "error": "vector store exposes no collection",
+                "metadata": {},
             }
+
+        try:
+            # chromadb's client is synchronous; keep it off the event loop.
+            count = await asyncio.to_thread(collection.count)
         except Exception as e:
-            return {"status": HealthStatus.UNHEALTHY, "error": str(e)}
+            return {"status": HealthStatus.UNHEALTHY, "error": str(e), "metadata": {}}
+
+        metadata: Dict[str, Any] = {"vectors": int(count)}
+        name = getattr(store, "collection_name", None)
+        if name:
+            metadata["collection"] = name
+        client = getattr(store, "client", None)
+        if client is not None:
+            metadata["client"] = type(client).__name__
+        return {"status": HealthStatus.HEALTHY, "metadata": metadata}
 
     async def _check_redis_health(self) -> Dict[str, Any]:
-        """Check Redis health."""
-        try:
-            await asyncio.sleep(0.001)  # Simulate Redis ping
+        """PING the Redis connection the session store is built on.
 
-            return {
-                "status": HealthStatus.HEALTHY,
-                "metadata": {
-                    "memory_usage_mb": 25.1,
-                    "connected_clients": 8,
-                    "uptime_seconds": 86400,
-                },
-            }
+        Reports which backend answered, because standalone silently
+        substitutes in-process FakeRedis when the configured server is
+        unreachable. A PING that only ever reaches a fake is worth knowing
+        about; that substitution is otherwise a single warning at boot.
+        """
+        container = self._live_container()
+        if container is None:
+            return self._unavailable("container not initialized")
+
+        absent = self._service_state(container, "redis_client")
+        if absent is not None:
+            return absent
+
+        client = container.redis_client
+        try:
+            await client.ping()
         except Exception as e:
-            return {"status": HealthStatus.UNHEALTHY, "error": str(e)}
+            return {"status": HealthStatus.UNHEALTHY, "error": str(e), "metadata": {}}
+
+        metadata: Dict[str, Any] = {"backend": _redis_backend_name(client)}
+        try:
+            metadata["keys"] = int(await client.dbsize())
+        except Exception:
+            # DBSIZE is a nicety; a PING that answered is the health signal.
+            pass
+        return {"status": HealthStatus.HEALTHY, "metadata": metadata}
 
     async def _check_sanitizer_health(self) -> Dict[str, Any]:
-        """Check data sanitizer health."""
+        """Redact a fixed string and check something was actually redacted.
+
+        A local functional assertion rather than an HTTP probe of the Presidio
+        services: those sit behind a circuit breaker with a threshold of
+        three, and a ten-second probe would drive it. Presidio's reachability
+        is reported from the flags the sanitizer latched at construction, and
+        regex-only operation is DEGRADED rather than healthy — it is the
+        documented fallback, but it is not the configured behaviour.
+        """
+        container = self._live_container()
+        if container is None:
+            return self._unavailable("container not initialized")
+
+        absent = self._service_state(container, "sanitizer")
+        if absent is not None:
+            return absent
+
+        sanitizer = container.sanitizer
         try:
-            await asyncio.sleep(0.01)  # Simulate sanitization check
-
-            return {
-                "status": HealthStatus.HEALTHY,
-                "metadata": {"models_loaded": True, "pii_detection_accuracy": 0.96},
-            }
+            redacted = await asyncio.to_thread(
+                sanitizer.sanitize, _SANITIZER_PROBE_INPUT
+            )
         except Exception as e:
-            return {"status": HealthStatus.UNHEALTHY, "error": str(e)}
+            return {"status": HealthStatus.UNHEALTHY, "error": str(e), "metadata": {}}
 
-    async def _check_tracer_health(self) -> Dict[str, Any]:
-        """Check tracer health."""
-        try:
-            await asyncio.sleep(0.005)  # Simulate trace operation
+        probed = bool(getattr(sanitizer, "presidio_probed", False))
+        analyzer = getattr(sanitizer, "analyzer_available", None)
+        anonymizer = getattr(sanitizer, "anonymizer_available", None)
+        metadata: Dict[str, Any] = {
+            "redaction_verified": redacted != _SANITIZER_PROBE_INPUT,
+            "presidio_configured": probed,
+        }
+        if probed:
+            # Only meaningful once Presidio was reached for; otherwise both
+            # flags are False by configuration and say nothing.
+            metadata["presidio_analyzer"] = bool(analyzer)
+            metadata["presidio_anonymizer"] = bool(anonymizer)
+        patterns = getattr(sanitizer, "pattern_replacements", None)
+        if patterns is not None:
+            metadata["redaction_patterns"] = len(patterns)
 
+        if redacted == _SANITIZER_PROBE_INPUT:
             return {
-                "status": HealthStatus.HEALTHY,
-                "metadata": {
-                    "tracing_enabled": True,
-                    "traces_sent_24h": 2500,
-                    "export_failures": 0,
-                },
+                "status": HealthStatus.UNHEALTHY,
+                "error": "sanitizer returned its input unredacted",
+                "metadata": metadata,
             }
-        except Exception as e:
+        if probed and not analyzer:
             return {
                 "status": HealthStatus.DEGRADED,
-                "error": str(e),
-                "metadata": {"tracing_enabled": False, "fallback_mode": True},
+                "error": "Presidio analyzer unavailable; regex-only redaction",
+                "metadata": metadata,
             }
+        return {"status": HealthStatus.HEALTHY, "metadata": metadata}
+
+    async def _check_tracer_health(self) -> Dict[str, Any]:
+        """Ask whether a traced call would actually record a span right now.
+
+        ``tracing_is_effective()`` live-reads the Opik SDK rather than a
+        config flag, so it separates "tracing is off" (fine) from "tracing is
+        configured on and silently recording nothing" (degraded).
+        """
+        from faultmaven.config.settings import get_settings
+        from faultmaven.infrastructure.observability.tracing import tracing_is_effective
+
+        try:
+            effective = bool(tracing_is_effective())
+            enabled = bool(get_settings().observability.opik_enabled)
+        except Exception as e:
+            return {"status": HealthStatus.UNHEALTHY, "error": str(e), "metadata": {}}
+
+        metadata: Dict[str, Any] = {"enabled": enabled, "effective": effective}
+
+        container = self._live_container()
+        tracer = getattr(container, "tracer", None) if container else None
+        metrics = getattr(tracer, "connection_metrics", None)
+        if isinstance(metrics, dict):
+            for key in ("total_calls", "successful_calls", "failed_calls"):
+                if key in metrics:
+                    metadata[key] = metrics[key]
+
+        if enabled and not effective:
+            return {
+                "status": HealthStatus.DEGRADED,
+                "error": "tracing is enabled but no span would be recorded",
+                "metadata": metadata,
+            }
+        return {"status": HealthStatus.HEALTHY, "metadata": metadata}
 
     async def _generic_health_check(self, component_name: str) -> Dict[str, Any]:
-        """Generic health check for unknown components."""
-        try:
-            # Basic connectivity/availability check
-            await asyncio.sleep(0.01)
+        """An unregistered component has no probe, and says so.
 
-            return {
-                "status": HealthStatus.HEALTHY,
-                "metadata": {
-                    "type": "generic",
-                    "last_check": datetime.now(timezone.utc).isoformat(),
-                },
-            }
-        except Exception as e:
-            return {"status": HealthStatus.UNKNOWN, "error": str(e)}
+        There is nothing to call, so the honest answer is UNKNOWN. Returning
+        HEALTHY here would mean any name at all could be reported healthy.
+        """
+        return {
+            "status": HealthStatus.UNKNOWN,
+            "error": f"no health probe is defined for '{component_name}'",
+            "metadata": {},
+        }
 
-    def _calculate_sla(self, component_name: str) -> float:
-        """Calculate current SLA for a component based on recent history."""
-        if component_name not in self.health_history:
-            return 100.0
+    def _refresh_probe_stats(self, health: ComponentHealth) -> None:
+        """Recompute the 24h probe figures from the pruned history window.
 
-        # Calculate SLA based on last 24 hours
-        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=24)
-        recent_history = [
-            (timestamp, status, response_time)
-            for timestamp, status, response_time in self.health_history[component_name]
-            if timestamp >= cutoff_time
-        ]
-
-        if not recent_history:
-            return 100.0
-
-        # Calculate uptime percentage
-        healthy_checks = len(
-            [s for _, s, _ in recent_history if s == HealthStatus.HEALTHY]
+        A probe counts as *available* unless it came back UNHEALTHY: DEGRADED
+        means the dependency answered and is doing reduced work, which is
+        availability. Whether it is degraded is a separate axis and is already
+        in ``status``. Counting degraded as downtime would make availability
+        and status the same signal, reported twice.
+        """
+        window = self.health_history.get(health.component_name, [])
+        total = len(window)
+        failures = sum(1 for _, status, _ in window if status == HealthStatus.UNHEALTHY)
+        health.probe_failures_24h = failures
+        health.probe_successes_24h = total - failures
+        health.probe_availability_24h = (
+            round(((total - failures) / total) * 100, 2) if total else 100.0
         )
-        total_checks = len(recent_history)
-
-        sla = (healthy_checks / total_checks) * 100 if total_checks > 0 else 100.0
-
-        # Apply response time penalties if thresholds are configured
-        if component_name in self.sla_thresholds:
-            threshold = self.sla_thresholds[component_name].get("response_time_ms")
-            if threshold:
-                slow_responses = len(
-                    [rt for _, _, rt in recent_history if rt > threshold]
-                )
-                if slow_responses > 0:
-                    penalty = (slow_responses / total_checks) * 5  # Up to 5% penalty
-                    sla = max(0.0, sla - penalty)
-
-        return round(sla, 2)
 
     def _record_health_history(
         self, component_name: str, status: HealthStatus, response_time: float
@@ -629,54 +851,94 @@ class ComponentHealthMonitor:
         if not self.component_health:
             return HealthStatus.UNKNOWN, {"reason": "No components registered"}
 
-        # Count components by status
-        status_counts = {}
-        critical_unhealthy = []
+        status_counts: Dict[str, int] = {}
+        fatal_unhealthy: List[str] = []
 
         for component_name, health in self.component_health.items():
             status = health.status
             status_counts[status.value] = status_counts.get(status.value, 0) + 1
 
-            # Check if critical component is unhealthy
-            dependencies = self.dependency_map.get(component_name)
-            if (
-                dependencies
-                and dependencies.critical_dependencies
-                and status != HealthStatus.HEALTHY
-            ):
-                critical_unhealthy.append(component_name)
+            # Fatal means "cannot serve", so only UNHEALTHY counts. DEGRADED
+            # is a component that still works (the database reports it for an
+            # RLS-bypassing role), and UNKNOWN means we could not tell — and
+            # "we could not tell" must never be the reason a pod is taken out
+            # of service.
+            if health.fatal and status == HealthStatus.UNHEALTHY:
+                fatal_unhealthy.append(component_name)
 
-        # Determine overall status
-        if critical_unhealthy:
+        if fatal_unhealthy:
             overall_status = HealthStatus.UNHEALTHY
-            reason = f"Critical components unhealthy: {', '.join(critical_unhealthy)}"
+            reason = (
+                "Components fatal to serving are unhealthy: "
+                f"{', '.join(fatal_unhealthy)}"
+            )
         elif status_counts.get("unhealthy", 0) > 0:
             overall_status = HealthStatus.DEGRADED
             reason = f"{status_counts['unhealthy']} components unhealthy"
         elif status_counts.get("degraded", 0) > 0:
             overall_status = HealthStatus.DEGRADED
             reason = f"{status_counts['degraded']} components degraded"
+        elif status_counts.get("unknown", 0) > 0:
+            overall_status = HealthStatus.DEGRADED
+            reason = f"{status_counts['unknown']} components not determinable"
         else:
             overall_status = HealthStatus.HEALTHY
             reason = "All components healthy"
 
-        # Calculate overall SLA
-        sla_values = [
-            health.sla_current
-            for health in self.component_health.values()
-            if health.sla_current > 0
+        # Availability of this monitor's own probes over the retained window —
+        # a real measurement now that the probes do real I/O, and named for
+        # what it measures rather than borrowing the word "SLA" from the
+        # request-level tracker, which measures something else entirely.
+        availabilities = [
+            health.probe_availability_24h for health in self.component_health.values()
         ]
-        overall_sla = sum(sla_values) / len(sla_values) if sla_values else 100.0
+        probe_availability = (
+            sum(availabilities) / len(availabilities) if availabilities else 100.0
+        )
 
         summary = {
             "reason": reason,
             "component_counts": status_counts,
-            "overall_sla": round(overall_sla, 2),
-            "critical_unhealthy": critical_unhealthy,
+            "probe_availability_24h": round(probe_availability, 2),
+            "fatal_unhealthy": fatal_unhealthy,
             "total_components": len(self.component_health),
         }
 
         return overall_status, summary
+
+    async def check_serving_readiness(self) -> Tuple[bool, Dict[str, Any]]:
+        """Can this process usefully serve requests right now?
+
+        Checks only the components declared fatal, because readiness gates
+        traffic and every extra dependency in that gate is another way to pull
+        a pod that could still have served. Returns ``(ready, detail)``.
+        """
+        names = sorted(self.fatal_components)
+        results = await asyncio.gather(
+            *(self.check_component_health(name) for name in names),
+            return_exceptions=True,
+        )
+
+        blocking: List[str] = []
+        detail: Dict[str, Any] = {}
+        for name, result in zip(names, results):
+            if isinstance(result, BaseException):
+                self.logger.error(f"Readiness check failed for {name}: {result}")
+                blocking.append(name)
+                detail[name] = {"status": HealthStatus.UNHEALTHY.value}
+                continue
+            detail[name] = {
+                "status": result.status.value,
+                "response_time_ms": round(result.response_time_ms, 2),
+            }
+            if result.status == HealthStatus.UNHEALTHY:
+                blocking.append(name)
+
+        return not blocking, {
+            "checked": names,
+            "blocking": blocking,
+            "components": detail,
+        }
 
     def get_component_metrics(self, component_name: str) -> Dict[str, Any]:
         """Get detailed metrics for a specific component.
@@ -708,20 +970,33 @@ class ComponentHealthMonitor:
             "component_name": component_name,
             "current_status": health.status.value,
             "current_response_time_ms": health.response_time_ms,
-            "sla_current": health.sla_current,
+            "fatal": health.fatal,
+            "probe_availability_24h": health.probe_availability_24h,
             "last_error": health.last_error,
             "last_check": health.last_check.isoformat(),
             "dependencies": health.dependencies,
             "metadata": health.metadata,
-            "metrics_24h": {
-                "success_count": health.success_count_24h,
-                "error_count": health.error_count_24h,
+            "probes_24h": {
+                "success_count": health.probe_successes_24h,
+                "error_count": health.probe_failures_24h,
                 "avg_response_time_ms": round(avg_response_time, 2),
                 "max_response_time_ms": round(max_response_time, 2),
                 "min_response_time_ms": round(min_response_time, 2),
                 "total_checks": len(history),
             },
         }
+
+
+def _redis_backend_name(client: Any) -> str:
+    """``"fakeredis"`` or ``"redis"`` — which implementation answered."""
+    if client is None:
+        return "unknown"
+    try:
+        from faultmaven.infrastructure.redis_client import is_fakeredis
+
+        return "fakeredis" if is_fakeredis(client) else "redis"
+    except Exception:  # pragma: no cover - import-time failure
+        return "unknown"
 
 
 # Global component health monitor instance
