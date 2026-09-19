@@ -22,7 +22,7 @@ annotated-types==0.7.0
     # via pydantic
 anthropic==0.96.0
     # via faultmaven (pyproject.toml)
-anyio==4.13.0
+anyio==4.15.1
     # via
     #   faultmaven (pyproject.toml)
     #   anthropic
@@ -641,7 +641,7 @@ typer==0.24.1
     #   chromadb
     #   huggingface-hub
     #   transformers
-typing-extensions==4.15.0
+typing-extensions==4.16.0
     # via
     #   faultmaven (pyproject.toml)
     #   aiohttp
