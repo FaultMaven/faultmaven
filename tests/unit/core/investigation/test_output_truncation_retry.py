@@ -206,8 +206,7 @@ async def test_an_overflow_wearing_truncation_wording_still_compresses():
     the COMPRESS_MEMORY path on the first attempt, not two wasted calls later.
     """
     both = LLMException(
-        "Request rejected: input truncated, context length exceeded",
-        status_code=400,
+        "Request rejected: input truncated, context length exceeded", retryable=True
     )
     assert is_output_truncation_error(both) is False
 
