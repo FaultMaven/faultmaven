@@ -42,7 +42,7 @@ from faultmaven.core.investigation.milestone_engine import (
     MilestoneEngineError,
     _is_context_length_error,
 )
-from faultmaven.exceptions import TOKEN_LIMIT, LLMException
+from faultmaven.exceptions import TOKEN_LIMIT, LLMErrorCategory, LLMException
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
     StructuredOutputMode,
@@ -66,11 +66,17 @@ COMPLETE = '{"agent_response": "the kubelet on node-3 is out of disk"}'
 MALFORMED = '{"agent_response": tru}'
 
 # What Gemini raises from inside generate() when a structured request hits the
-# output cap: there is no body to parse, so the parse block never runs.
+# output cap: there is no body to parse, so the parse block never runs. The
+# DECLARED category is the signal the ladder reads (#509) — a cut answer is an
+# HTTP 200 with a short body, so no error body ever reports one and the party
+# that watched it happen is the only party that can say so. That the real
+# adapter declares it is pinned in
+# ``tests/unit/infrastructure/llm/providers/test_error_category_at_the_boundary.py``.
 GEMINI_TRUNCATION = LLMException(
     "Response truncated due to token limit (finishReason=MAX_TOKENS). "
     "Response length: 8000 chars. Increase max_tokens parameter or simplify prompt.",
     retryable=True,
+    category=LLMErrorCategory.OUTPUT_TRUNCATION,
 )
 
 
@@ -166,9 +172,30 @@ def test_a_schema_violation_is_not_truncation():
     assert is_truncated_json_error(exc_info.value, '{"agent_response": 17}') is False
 
 
-def test_provider_truncation_is_recognized_from_its_own_wording():
-    """The one site where wording is the only evidence there is."""
+def test_provider_truncation_is_recognized_from_its_declared_category():
+    """The one site where the provider itself is the only witness.
+
+    Was ``..._from_its_own_wording``, matching the literal
+    "finishreason=max_tokens" in the sentence the adapter happened to write —
+    a coupling the adapter's own comment had to warn against rewording.
+    """
     assert is_output_truncation_error(GEMINI_TRUNCATION) is True
+
+
+def test_the_same_sentence_without_a_declaration_is_not_truncation():
+    """The discriminating half. Nothing may infer a cut answer from prose:
+    a 4xx body that merely says "request truncated" is a rejected request, and
+    routing it to the max_tokens ladder spends attempts a bigger cap cannot
+    help (#509)."""
+    assert (
+        is_output_truncation_error(
+            LLMException(
+                "Response truncated due to token limit " "(finishReason=MAX_TOKENS).",
+                status_code=400,
+            )
+        )
+        is False
+    )
 
 
 @pytest.mark.asyncio
@@ -179,7 +206,8 @@ async def test_an_overflow_wearing_truncation_wording_still_compresses():
     the COMPRESS_MEMORY path on the first attempt, not two wasted calls later.
     """
     both = LLMException(
-        "Request rejected: input truncated, context length exceeded", retryable=True
+        "Request rejected: input truncated, context length exceeded",
+        status_code=400,
     )
     assert is_output_truncation_error(both) is False
 

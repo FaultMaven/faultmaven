@@ -5,6 +5,7 @@ This module defines the abstract base class that all LLM providers must implemen
 ensuring consistent behavior and configuration across all provider implementations.
 """
 
+import json
 import logging
 import time
 from abc import ABC, abstractmethod
@@ -107,6 +108,59 @@ def normalize_stop_reason(raw: Any) -> StopReason:
     if not text:
         return StopReason.UNKNOWN
     return _STOP_REASON_ALIASES.get(text, StopReason.UNKNOWN)
+
+
+def extract_provider_error_code(body: Any) -> Optional[str]:
+    """The machine-readable error code from a provider's error response body.
+
+    The counterpart to :func:`normalize_stop_reason` for the failure path
+    (#509): every provider publishes a code and every provider nests it
+    somewhere different, so the extraction lives here once and the nine
+    adapters each pass the result to ``LLMException(provider_error_code=...)``,
+    where :func:`faultmaven.exceptions.classify_llm_error` turns it into a
+    typed category.
+
+    Shapes handled, in the order they are preferred:
+
+    * ``{"error": {"code": "context_length_exceeded"}}`` — OpenAI, Groq,
+      Fireworks, OpenRouter, vLLM's OpenAI-compatible surface.
+    * ``{"error": {"status": "RESOURCE_EXHAUSTED"}}`` — Google/Gemini. Its
+      sibling ``code`` is the HTTP status as an INTEGER, which is why numeric
+      values are skipped rather than stringified: "400" is not an error code,
+      and admitting it would let the code tier answer for every 400.
+    * ``{"error": {"type": "overloaded_error"}}`` — Anthropic, and the OpenAI
+      family's coarser fallback when ``code`` is absent.
+    * ``{"type": "BadRequestError"}`` / ``{"code": "..."}`` at top level —
+      vLLM and Ollama.
+
+    Returns ``None`` for a body that is not JSON, not an object, or carries no
+    string code — Cohere's ``{"message": "..."}`` is the shipped example.
+    ``None`` means "no machine signal", which is what makes the wording tier
+    downstream reachable; it is never confused with a code that says nothing.
+    """
+    if not isinstance(body, str) or not body.strip():
+        return None
+    try:
+        parsed = json.loads(body)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+
+    containers = []
+    error_obj = parsed.get("error")
+    if isinstance(error_obj, dict):
+        containers.append(error_obj)
+    containers.append(parsed)
+
+    for container in containers:
+        for key in ("code", "status", "type"):
+            value = container.get(key)
+            # ``bool`` is an ``int`` subclass; both are HTTP-status-shaped
+            # noise here, not codes.
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
 
 
 class ReasoningIntent(str, Enum):

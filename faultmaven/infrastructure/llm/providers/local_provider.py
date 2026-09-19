@@ -21,6 +21,7 @@ from .base import (
     LLMResponse,
     ProviderConfig,
     StopReason,
+    extract_provider_error_code,
     normalize_stop_reason,
 )
 
@@ -369,6 +370,7 @@ class LocalProvider(BaseLLMProvider):
                     raise LLMException(
                         f"Ollama API error {response.status}: {error_text}",
                         status_code=response.status,
+                        provider_error_code=extract_provider_error_code(error_text),
                     )
 
                 data = await response.json()
@@ -452,7 +454,11 @@ class LocalProvider(BaseLLMProvider):
                         error_text = await response.text()
                         error_msg = f"Local OpenAI-compatible API error {response.status}: {error_text}"
                         self.logger.error(f"HTTP Error: {error_msg}")
-                        raise LLMException(error_msg, status_code=response.status)
+                        raise LLMException(
+                            error_msg,
+                            status_code=response.status,
+                            provider_error_code=extract_provider_error_code(error_text),
+                        )
 
                     data = await response.json()
                     self.logger.debug(f"Response data: {data}")
@@ -601,6 +607,7 @@ class LocalProvider(BaseLLMProvider):
                     raise LLMException(
                         f"Raw llama.cpp server API error {response.status}: {error_text}",
                         status_code=response.status,
+                        provider_error_code=extract_provider_error_code(error_text),
                     )
 
                 data = await response.json()

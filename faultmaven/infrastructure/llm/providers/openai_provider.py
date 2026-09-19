@@ -21,6 +21,7 @@ from .base import (
     LLMResponse,
     ProviderConfig,
     ReasoningIntent,
+    extract_provider_error_code,
     normalize_stop_reason,
 )
 
@@ -649,6 +650,7 @@ class OpenAIProvider(BaseLLMProvider):
                         raise LLMException(
                             f"OpenAI API error {response.status}: {error_text}",
                             status_code=response.status,
+                            provider_error_code=extract_provider_error_code(error_text),
                         )
 
                     data = await response.json()

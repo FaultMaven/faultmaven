@@ -14,6 +14,7 @@ from faultmaven.core.investigation.llm_error_handler import (
     LLMErrorHandler,
     RetryConfig,
 )
+from faultmaven.exceptions import LLMErrorCategory, LLMException
 
 
 @pytest.fixture
@@ -36,38 +37,71 @@ class TestErrorClassification:
     """Test error type classification."""
 
     def test_retryable_rate_limit_error(self, handler):
-        """Rate limit errors should be retryable."""
-        error = Exception("Rate limit exceeded, please slow down")
-        assert handler.is_retryable_error(error) is True
+        """Rate limiting is retryable because the STATUS says 429 (#509).
 
-    def test_retryable_connection_error(self, handler):
-        """Untyped connection wording still reaches the phrase fallback.
-
-        Was ``test_retryable_timeout_error``, which asserted that "Connection
-        timeout after 30s" is retryable and read as coverage for timeouts. It
-        never was: the string matches on ``"connection"``, so it passed
-        identically with ``"timeout"`` present or absent from the list and could
-        not have caught #1287. Renamed to say what it actually measures. Real
-        timeout coverage is ``TestTypedRetryability`` below, which asserts on
-        types rather than sentences.
+        Was written against the sentence "Rate limit exceeded, please slow
+        down" and a ``"rate limit"`` phrase. A provider that reworded that
+        sentence — or a body that merely quoted it — decided retryability;
+        the 429 it arrived with did not.
         """
-        error = Exception("Connection timeout after 30s")
+        error = LLMException("opaque provider body", status_code=429)
         assert handler.is_retryable_error(error) is True
 
-    def test_retryable_503_error(self, handler):
-        """503 errors should be retryable."""
-        error = Exception("Service returned 503 status code")
-        assert handler.is_retryable_error(error) is True
+    def test_retryable_transport_failure_by_class(self, handler):
+        """An untyped transport failure is retryable because of WHAT IT IS.
+
+        Was ``test_retryable_connection_error``, asserting that the sentence
+        "Connection timeout after 30s" is retryable via a ``"connection"``
+        phrase. The class name is the signal now: a library cannot rename
+        ``ConnectError`` without a breaking release, and can reword its message
+        in a patch.
+
+        The message here deliberately contains NONE of the words the deleted
+        list held, so it can only pass structurally.
+        """
+
+        class ConnectError(Exception):
+            pass
+
+        assert handler.is_retryable_error(ConnectError("could not reach peer")) is True
+
+    def test_retryable_5xx_by_carried_status(self, handler):
+        """An untyped exception that CARRIES a status is classified by it.
+
+        Was two tests matching ``"503"`` and ``"502"`` anywhere in a message —
+        the same matcher that read a ``host:port`` of ``:8404`` as a status
+        (#1287). ``aiohttp.ClientResponseError`` exposes ``.status``; this
+        stands in for it with a message that quotes no number at all.
+        """
+
+        class _Response(Exception):
+            def __init__(self, status):
+                super().__init__("upstream failed")
+                self.status = status
+
+        assert handler.is_retryable_error(_Response(503)) is True
+        assert handler.is_retryable_error(_Response(502)) is True
+        # ...and the same reading makes a 4xx permanent, which the phrase
+        # list could not express at all.
+        assert handler.is_retryable_error(_Response(400)) is False
+
+    def test_a_status_shaped_number_in_the_message_decides_nothing(self, handler):
+        """The #1287 shape, now impossible rather than merely ordered around.
+
+        "Cannot connect to host 10.0.0.5:8503" used to be retryable because it
+        contains "503"... and "…:8404" used to be MODEL_NOT_FOUND. Only the
+        class name may speak for an untyped exception, so a number in the text
+        is inert — and here the class is a plain ``Exception``.
+        """
+        assert (
+            handler.is_retryable_error(Exception("proxy reported 503 over capacity"))
+            is False
+        )
 
     def test_non_retryable_error(self, handler):
         """Regular errors should not be retryable."""
         error = Exception("Invalid JSON format in response")
         assert handler.is_retryable_error(error) is False
-
-    def test_retryable_502_bad_gateway(self, handler):
-        """502 Bad Gateway (string-pattern path) should be retryable."""
-        error = Exception("Upstream returned 502 Bad Gateway")
-        assert handler.is_retryable_error(error) is True
 
     def test_llm_exception_5xx_is_retryable_authoritative(self, handler):
         """LLMException with 5xx status must be retryable via typed metadata,
@@ -112,8 +146,24 @@ class TestErrorClassification:
 
     def test_token_limit_error(self, handler):
         """Token limit errors should be detected."""
-        error = Exception("Request exceeds maximum context length")
+        error = LLMException("Request exceeds maximum context length", status_code=400)
         assert handler.is_token_limit_error(error) is True
+
+    def test_token_limit_needs_a_declaration_not_a_sentence(self, handler):
+        """A bare exception that merely SAYS "context length" is not evidence.
+
+        The whole of #509: an overflow is something a provider reported, and
+        the provider boundary is where that is decided. An untyped exception
+        carrying the same words reached this classifier from anywhere — the
+        engine's own composed text, a wrapped ChromaDB failure, a test double
+        — and was answered for.
+        """
+        assert (
+            handler.is_token_limit_error(
+                Exception("Request exceeds maximum context length")
+            )
+            is False
+        )
 
     @pytest.mark.parametrize(
         "msg",
@@ -128,8 +178,13 @@ class TestErrorClassification:
         ],
     )
     def test_real_overflow_detected(self, handler, msg):
-        """Genuine context overflow still triggers compress."""
-        assert handler.is_token_limit_error(Exception(msg)) is True
+        """Genuine context overflow still triggers compress.
+
+        Constructed the way a provider constructs it — ``LLMException`` with
+        the 400 the API answered — because that is what makes the category the
+        boundary derives authoritative (#509).
+        """
+        assert handler.is_token_limit_error(LLMException(msg, status_code=400)) is True
 
     @pytest.mark.parametrize(
         "msg",
@@ -142,8 +197,8 @@ class TestErrorClassification:
     def test_truncation_is_not_read_as_an_input_overflow(self, handler, msg):
         """The prompt fit; the ANSWER did not. Compressing memory is not the
         first remedy for that — raising the generation cap is — so truncation
-        must not enter the COMPRESS_MEMORY branch by wording alone."""
-        assert handler.is_token_limit_error(Exception(msg)) is False
+        must not enter the COMPRESS_MEMORY branch."""
+        assert handler.is_token_limit_error(LLMException(msg, status_code=400)) is False
 
     def test_truncation_retryability_comes_from_the_typed_signal(self, handler):
         """Not from matching words in a message.
@@ -193,7 +248,7 @@ class TestErrorClassification:
     def test_config_and_param_errors_not_token_limit(self, handler, msg):
         """A request-shape / parameter error is NOT a token-limit overflow —
         matching it would mask the real cause and loop on futile compression."""
-        assert handler.is_token_limit_error(Exception(msg)) is False
+        assert handler.is_token_limit_error(LLMException(msg, status_code=400)) is False
 
 
 class TestDelayCalculation:
@@ -234,7 +289,7 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_token_limit_triggers_compress(self, handler):
         """Token limit errors should trigger memory compression."""
-        error = Exception("Context length exceeded")
+        error = LLMException("Context length exceeded", status_code=400)
         result = await handler.handle_error(error)
 
         assert result.action == ErrorAction.COMPRESS_MEMORY
@@ -243,7 +298,7 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_retryable_error_retries(self, fast_handler):
         """Retryable errors should trigger retry."""
-        error = Exception("Rate limit exceeded")
+        error = LLMException("Rate limit exceeded", status_code=429)
         result = await fast_handler.handle_error(error, retry_count=0)
 
         assert result.action == ErrorAction.RETRY
@@ -252,7 +307,7 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_retry_exhausted_fails(self, handler):
         """Exhausted retries should fail."""
-        error = Exception("Rate limit exceeded")
+        error = LLMException("Rate limit exceeded", status_code=429)
         result = await handler.handle_error(error, retry_count=3)
 
         assert result.action == ErrorAction.FAIL
@@ -282,7 +337,7 @@ class TestWithRetry:
             nonlocal call_count
             call_count += 1
             if call_count < 2:
-                raise Exception("Rate limit exceeded")
+                raise LLMException("Rate limit exceeded", status_code=429)
             return "success"
 
         result, error = await fast_handler.with_retry(failing_then_success)
@@ -323,7 +378,9 @@ class TestWithRetry:
         into their message TEXT; they deliberately do not chain it onto
         __cause__, which would outrank the engine error_code at the HTTP
         boundary (see ErrorResult.original_exception)."""
-        boom = Exception("This model's maximum context length is 8192 tokens")
+        boom = LLMException(
+            "This model's maximum context length is 8192 tokens", status_code=400
+        )
         operation = AsyncMock(side_effect=boom)
 
         result, error = await handler.with_retry(operation=operation)
@@ -332,6 +389,9 @@ class TestWithRetry:
         assert error is not None
         assert error.error_code == "TOKEN_LIMIT"
         assert error.original_exception is boom
+        # The typed category rides alongside, so the engine can relay it onto
+        # the MilestoneEngineError it raises without chaining (#509).
+        assert error.category is LLMErrorCategory.CONTEXT_OVERFLOW
 
 
 class TestErrorTracking:
@@ -508,9 +568,12 @@ class TestTypedRetryability:
         class _Untyped(Exception):
             pass
 
-        # No declaration anywhere, but the message matches a phrase.
-        assert handler.is_retryable_error(_Untyped("upstream 503")) is True
-        # No declaration, no phrase → the honest answer is False.
+        # No declaration anywhere, but the STRUCTURE says transient: the
+        # exception carries a status. (It used to be a "503" in the message.)
+        carrying_status = _Untyped("upstream failed")
+        carrying_status.status_code = 503
+        assert handler.is_retryable_error(carrying_status) is True
+        # No declaration, nothing structural → the honest answer is False.
         assert handler.is_retryable_error(_Untyped("something odd")) is False
 
     def test_non_bool_retryable_is_not_a_declaration(self, handler):
@@ -577,33 +640,42 @@ class TestTypedRetryability:
         assert handler.is_retryable_error(a) is False
 
     def test_the_fix_was_not_a_respelling(self):
-        """``"timed out"`` must never be added to the phrase list.
+        """No message-phrase list may come back (#509).
 
-        Structural, and deliberately paired with the behavioural tests above —
-        on its own it would restate the patch. Its job is to fail if someone
-        "fixes" a future timeout mismatch by adding the missing spelling instead
-        of typing the raise site.
-
-        ``"timeout"`` itself STAYS and is asserted present. Deleting it was a
-        regression: the type rule only reaches exceptions inheriting from the
-        builtin ``TimeoutError``, and ``httpx``/``redis`` timeouts do not — see
-        ``test_third_party_timeouts_keep_their_phrase_fallback``.
+        The predecessor of this test asserted the CONTENTS of
+        ``RetryConfig.retryable_patterns`` — that ``"timeout"`` was present and
+        ``"timed out"`` absent — to stop a future timeout mismatch being
+        "fixed" by adding the missing spelling. The list is gone, so the
+        assertion is now about its absence: the two spellings are the same
+        class under the structural rule, and the question cannot be reopened by
+        adding a third.
         """
         cfg = RetryConfig()
-        assert "timeout" in cfg.retryable_patterns
-        assert "timed out" not in cfg.retryable_patterns
+        assert not hasattr(cfg, "retryable_patterns")
+        # Nor anywhere else on the config: a tuple of sentences under any name
+        # is the same mistake.
+        assert not [
+            name
+            for name, value in vars(cfg).items()
+            if isinstance(value, (tuple, list, frozenset, set))
+        ], vars(cfg)
 
-    def test_third_party_timeouts_keep_their_phrase_fallback(self, handler):
+    def test_third_party_timeouts_are_retryable_by_class(self, handler):
         """A timeout class that does NOT inherit from builtin ``TimeoutError``
         still has to classify as retryable.
 
-        The type rule (tier 3) is not a superset of the phrase it replaced.
-        ``aiohttp.ServerTimeoutError`` does subclass the builtin, but
+        The ``isinstance`` rule (tier 3) is not a superset of the phrase it
+        replaced. ``aiohttp.ServerTimeoutError`` does subclass the builtin, but
         ``httpx.ReadTimeout`` and ``redis.exceptions.TimeoutError`` inherit from
-        their own bases and declare no ``retryable`` — so with ``"timeout"``
-        deleted they went from retryable to PERMANENT. Written against the real
-        classes rather than a stand-in, because the whole finding is about what
-        those libraries actually inherit from.
+        their own bases and declare no ``retryable`` — so when the ``"timeout"``
+        phrase was once deleted they went from retryable to PERMANENT.
+
+        #509 deleted that phrase list for good, which is why this test is now
+        load-bearing rather than a backstop: these two are carried by the
+        CLASS-NAME rule in ``_transient_by_structure``, and their messages
+        below are the real ones, which a library may reword at any release.
+        Written against the real classes rather than a stand-in, because the
+        whole finding is about what those libraries actually inherit from.
         """
         third_party = []
         try:
@@ -700,7 +772,7 @@ class TestDeclarationOutranksProse:
             assert result.error_code == expected, (message, result.error_code)
 
         overflow = await fast_handler.handle_error(
-            Exception("prompt is too long: 250000 > 200000"), 0
+            LLMException("prompt is too long: 250000 > 200000", status_code=400), 0
         )
         assert overflow.action == ErrorAction.COMPRESS_MEMORY
 
@@ -792,6 +864,94 @@ class TestDeclarationOutranksProse:
         )
         assert result.action == ErrorAction.ESCALATE
         assert result.error_code == QUOTA_EXHAUSTED
+
+
+class TestRecoveryFollowsTheDeclaredCategory:
+    """#509 — the engine selects a recovery from WHAT the failure was.
+
+    The recovery-selecting question used to be answered by matching the
+    provider's sentence, in this module and again in ``milestone_engine``, from
+    one shared tuple. These pin the route end to end on the shapes providers
+    actually raise, including the two that a sentence gets wrong.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_declared_overflow_compresses_and_keeps_TOKEN_LIMIT(
+        self, fast_handler
+    ):
+        """``error_code=TOKEN_LIMIT`` is the signal the #662 minimal-prompt
+        degrade keys on. The typed category rides ALONGSIDE it, never instead
+        of it — swapping the code would silently disable the degrade."""
+        from faultmaven.exceptions import TOKEN_LIMIT
+
+        result = await fast_handler.handle_error(
+            LLMException(
+                "OpenAI API error 400: this model's maximum context length is "
+                "8192 tokens",
+                status_code=400,
+                provider_error_code="context_length_exceeded",
+            ),
+            0,
+        )
+        assert result.action == ErrorAction.COMPRESS_MEMORY
+        assert result.error_code == TOKEN_LIMIT
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_parameter_does_not_compress(self, fast_handler):
+        """The failure the issue was filed about.
+
+        OpenAI's "Unsupported parameter: 'max_tokens' ... use
+        'max_completion_tokens'" was read as a context overflow, reported to
+        the user as "Context too large", and answered with compression that
+        could never help. The provider publishes
+        ``code: unsupported_parameter`` and always did.
+        """
+        result = await fast_handler.handle_error(
+            LLMException(
+                "OpenAI API error 400: Unsupported parameter: 'max_tokens' is "
+                "not supported with this model. Use 'max_completion_tokens' "
+                "instead.",
+                status_code=400,
+                provider_error_code="unsupported_parameter",
+            ),
+            0,
+        )
+        assert result.action != ErrorAction.COMPRESS_MEMORY
+        assert result.error_code != "TOKEN_LIMIT"
+
+    @pytest.mark.asyncio
+    async def test_the_code_outranks_a_message_that_reads_the_other_way(
+        self, fast_handler
+    ):
+        """A body whose PROSE says overflow and whose CODE says rejected
+        parameter. Under the old matcher the prose won, because the prose was
+        all anyone read."""
+        result = await fast_handler.handle_error(
+            LLMException(
+                "API error 400: maximum context length is 8192 tokens",
+                status_code=400,
+                provider_error_code="unsupported_parameter",
+            ),
+            0,
+        )
+        assert result.action != ErrorAction.COMPRESS_MEMORY
+
+    @pytest.mark.asyncio
+    async def test_an_unclassified_exception_saying_the_words_does_not_compress(
+        self, fast_handler
+    ):
+        """POSITIVE CONTROL for the change itself.
+
+        The same sentence, on an exception no provider classified, must no
+        longer reach the compression branch. This is the behaviour that let the
+        engine's own composed messages and non-provider failures select an LLM
+        recovery.
+        """
+        result = await fast_handler.handle_error(
+            Exception("this model's maximum context length is 8192 tokens"), 0
+        )
+        assert result.action != ErrorAction.COMPRESS_MEMORY
+        assert result.error_code == "UNKNOWN_ERROR"
 
 
 class TestConfigErrorClassification:

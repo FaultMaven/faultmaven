@@ -31,6 +31,8 @@ from faultmaven.exceptions import (
     QUOTA_EXHAUSTED,
     TOKEN_LIMIT,
     TURN_BUDGET_EXHAUSTED,
+    LLMErrorCategory,
+    declared_llm_category,
     is_billing_error,
     walk_cause_chain,
 )
@@ -46,51 +48,20 @@ LLM_BREAKER_SERVICE = "LLM_Providers"
 
 T = TypeVar("T")
 
-# Context-window overflow phrases (the prompt is too large for the window).
-# SHARED with milestone_engine._is_context_length_error (which imports this
-# tuple) so the two overflow classifiers cannot drift — a provider's overflow
-# wording (e.g. Cohere's "too many tokens") must route the same way through
-# either path. Deliberately length/window-specific: NO bare "token" or bare
-# "too long" (those fire on ordinary request-validation errors).
-CONTEXT_OVERFLOW_PHRASES: Tuple[str, ...] = (
-    "context length",
-    "context window",
-    "maximum context",
-    "context_length_exceeded",
-    "too many tokens",
-    "reduce the length of the messages",
-    "prompt is too long",
-    "input is too long",
-    "maximum context length",
-    "exceeds the maximum context",
-)
-
-# Output truncated at the generation cap: the response body is cut off, so the
-# JSON fails to parse. Distinct from input overflow — the prompt fit, the
-# ANSWER did not — and it has its own recovery ladder (raise max_tokens, then
-# degrade the prompt), driven by the typed ``OutputTruncationError`` below.
+# WHICH failure a provider reported is decided at the PROVIDER BOUNDARY and
+# travels on ``LLMException.category`` (``faultmaven.exceptions``, #509). This
+# module used to carry three tuples of provider prose —
+# ``CONTEXT_OVERFLOW_PHRASES``, ``_OUTPUT_TRUNCATION_PHRASES``,
+# ``_PARAM_ERROR_GUARD_PHRASES`` — and match every exception that reached it
+# against all three. That was wrong twice over: nine providers word errors
+# differently and may reword them at any release, and the lists were applied to
+# messages that never came from a provider at all (the engine's own composed
+# text, a JSON decoder's complaint, a ``host:port`` that happened to contain
+# "404"). The classifiers below now ASK what the failure was.
 #
-# These phrases are for *reporting* (``classify_token_limit_reason``) and for
-# the one site where wording is the only evidence available
-# (``is_output_truncation_error``: a provider that reports the cut before there
-# is any body to inspect). They are NOT how the parse site decides — see
-# ``is_truncated_json_error``, which tests position instead of text.
-_OUTPUT_TRUNCATION_PHRASES: Tuple[str, ...] = (
-    "truncated",
-    "unterminated",  # truncated JSON string
-    "eof while parsing",  # Pydantic/JSON parse of a cut-off body
-    "finishreason=max_tokens",  # Gemini surfaces the output-cap reason
-)
-
-# A wrong/unsupported request parameter is a config error, NOT a token limit;
-# matching it as one masks the real cause and loops on futile compression
-# (e.g. OpenAI "Unsupported parameter: 'max_tokens' ... use
-# 'max_completion_tokens'").
-_PARAM_ERROR_GUARD_PHRASES: Tuple[str, ...] = (
-    "unsupported parameter",
-    "unsupported_parameter",
-    "is not supported with this model",
-)
+# Nothing here reads provider wording any more. The one text-shaped test left
+# in this module, ``is_truncated_json_error``, tests a POSITION in a body the
+# engine itself parsed — not a phrase, and not a provider's.
 
 
 class OutputTruncationError(Exception):
@@ -120,30 +91,33 @@ class OutputTruncationError(Exception):
     def __init__(self, message: str, cap_reached: bool = False):
         super().__init__(message)
         self.cap_reached = cap_reached
+        # Declares WHAT it is in the same vocabulary a provider uses (#509), so
+        # the degrade metric can label it without anyone re-reading a message.
+        # It has to declare rather than inherit: the engine builds this from a
+        # JSON decoder's complaint as often as from a provider error, and the
+        # re-raise that carries it to the degrade path is deliberately NOT
+        # chained.
+        self.category = LLMErrorCategory.OUTPUT_TRUNCATION
 
 
 def is_output_truncation_error(error: BaseException) -> bool:
     """True when a *provider* reports it cut the response at the generation cap.
 
-    Text-based by necessity: this is the one site where the provider's own
-    wording is the only evidence there is. Gemini raises on
+    Reads the category the provider DECLARED (#509). Gemini raises on
     ``finishReason=MAX_TOKENS`` from inside ``generate()``, before any body
-    exists to inspect. The parse-time site has the body and uses the sharper
-    positional test in ``is_truncated_json_error`` instead.
+    exists to inspect, and says so with
+    ``category=LLMErrorCategory.OUTPUT_TRUNCATION``; a provider that reports the
+    cut in an HTTP error body is classified from that body at the boundary. The
+    parse-time site has the body and uses the sharper positional test in
+    ``is_truncated_json_error`` instead.
 
-    Input overflow wins when a message carries both vocabularies — a gateway
-    that says "input truncated: context length exceeded" is reporting that the
-    PROMPT did not fit, and raising the generation cap cannot help. Same
-    precedence as ``classify_token_limit_reason``, so the two never disagree
-    about which failure a single message is.
+    Input overflow wins when a single failure could be read either way — a
+    gateway that says "input truncated: context length exceeded" is reporting
+    that the PROMPT did not fit, and raising the generation cap cannot help.
+    That precedence is settled once, inside ``classify_llm_error``, so this and
+    ``classify_token_limit_reason`` cannot disagree about it.
     """
-    msg = str(getattr(error, "message", "") or error).lower()
-    # A wrong/unsupported request parameter is a config error, not a cut body.
-    if any(guard in msg for guard in _PARAM_ERROR_GUARD_PHRASES):
-        return False
-    if any(p in msg for p in CONTEXT_OVERFLOW_PHRASES):
-        return False
-    return any(p in msg for p in _OUTPUT_TRUNCATION_PHRASES)
+    return declared_llm_category(error) is LLMErrorCategory.OUTPUT_TRUNCATION
 
 
 def is_truncated_json_error(error: BaseException, content: Any) -> bool:
@@ -187,20 +161,102 @@ RECOVERY_REASON_UNCLASSIFIED = "unclassified"
 def classify_token_limit_reason(error: BaseException) -> str:
     """Which class of token failure *error* is, for metric labeling.
 
-    Lives here so the phrase lists stay encapsulated with the classifier that
-    owns them (same reason ``CONTEXT_OVERFLOW_PHRASES`` is shared rather than
-    copied). Input overflow is checked FIRST: a message can carry both kinds of
-    wording once the engine folds the provider text into its own message, and
-    the input-overflow reading is the one the recovery is designed for.
-    ``unclassified`` covers a pure engine ``TOKEN_LIMIT`` signal whose provider
-    wording did not survive — reportable, not an error.
+    Reads the declared category rather than re-deriving one, so the label and
+    the recovery can never disagree about the same failure. ``unclassified``
+    covers a pure engine ``TOKEN_LIMIT`` signal that reached the degrade path
+    without a provider exception on its ``__cause__`` chain — reportable, not
+    an error.
     """
-    msg = str(getattr(error, "message", "") or error).lower()
-    if any(p in msg for p in CONTEXT_OVERFLOW_PHRASES):
+    category = declared_llm_category(error)
+    if category is LLMErrorCategory.CONTEXT_OVERFLOW:
         return RECOVERY_REASON_INPUT_OVERFLOW
-    if any(p in msg for p in _OUTPUT_TRUNCATION_PHRASES):
+    if category is LLMErrorCategory.OUTPUT_TRUNCATION:
         return RECOVERY_REASON_OUTPUT_TRUNCATION
     return RECOVERY_REASON_UNCLASSIFIED
+
+
+# Class-name fragments naming a transport failure, for the LAST-RESORT tier of
+# :meth:`LLMErrorHandler.is_retryable_error` (#509).
+#
+# This replaced a list of message PHRASES ("rate limit", "500", "bad gateway",
+# "connection", "timeout", …). The tier it serves is reached only by an
+# exception that declares no ``retryable`` anywhere on its ``__cause__`` chain
+# and is not a typed engine or builtin-timeout signal — i.e. an untyped
+# third-party exception. Nothing FaultMaven raises should reach it.
+#
+# A class NAME is API surface: ``httpx.ReadTimeout`` and
+# ``redis.exceptions.TimeoutError`` are names their libraries publish and
+# cannot rename without a breaking release. A message is not, which is the
+# whole of #509 and the worked example in #1287 — "timed out after 30.0s"
+# against a list containing ``"timeout"``, which is not a substring of "timed
+# out". Under the name rule those two spellings are the same class and the
+# question does not arise.
+#
+# Measured, and the reason the rule is by name rather than by ``isinstance``:
+# ``aiohttp.ServerTimeoutError`` DOES inherit from the builtin ``TimeoutError``
+# (so the type tier above already catches it), but ``httpx.TimeoutException``,
+# ``httpx.ReadTimeout``, ``httpx.ConnectError``, ``redis.exceptions.TimeoutError``
+# and ``redis.exceptions.ConnectionError`` inherit from NEITHER builtin, and
+# declare no ``retryable``. Deleting the old phrase list without this rule
+# turned every one of them from retryable to PERMANENT — a regression a
+# previous review caught, and the reason ``"timeout"`` was kept in the phrase
+# list at the time.
+_TRANSIENT_TYPE_NAME_FRAGMENTS: Tuple[str, ...] = (
+    "timeout",
+    "timedout",
+    "connect",  # ConnectError, ConnectionError, ClientConnectorError, …
+)
+
+
+def _declared_http_status(exc: BaseException) -> Optional[int]:
+    """An HTTP status this exception object carries, if it carries one.
+
+    Structural, not textual: ``aiohttp.ClientResponseError.status``,
+    ``LLMException.status_code``, ``httpx.HTTPStatusError.response.status_code``.
+    Reading the number off the object is what the old ``"500"``/``"502"``/…
+    phrases were approximating — badly, since a ``host:port`` of ``:8404`` also
+    contains one.
+
+    Bounded to 100–599 and rejecting ``bool`` (an ``int`` subclass) so an
+    unrelated attribute of the same name cannot answer, and so a ``Mock``'s
+    auto-attribute — which is not an ``int`` — never does.
+    """
+
+    def _as_status(value: Any) -> Optional[int]:
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        return value if 100 <= value <= 599 else None
+
+    for attr in ("status_code", "status"):
+        status = _as_status(getattr(exc, attr, None))
+        if status is not None:
+            return status
+    response = getattr(exc, "response", None)
+    if response is not None:
+        for attr in ("status_code", "status"):
+            status = _as_status(getattr(response, attr, None))
+            if status is not None:
+                return status
+    return None
+
+
+def _transient_by_structure(error: BaseException) -> bool:
+    """Last-resort retryability for an exception that declared none.
+
+    Reads the exception's own STRUCTURE — a status it carries, or the class it
+    is — walking the ``__cause__`` chain like every other classifier here. A
+    status settles the question outright (5xx and 429 transient, every other
+    4xx permanent) rather than continuing the walk: it is the most
+    authoritative thing an undeclared exception has.
+    """
+    for cursor in walk_cause_chain(error):
+        status = _declared_http_status(cursor)
+        if status is not None:
+            return status >= 500 or status == 429
+        name = type(cursor).__name__.lower()
+        if any(fragment in name for fragment in _TRANSIENT_TYPE_NAME_FRAGMENTS):
+            return True
+    return False
 
 
 class ErrorAction(str, Enum):
@@ -221,60 +277,6 @@ class RetryConfig:
     max_delay_seconds: float = 30.0
     exponential_base: float = 2.0
 
-    # LAST-RESORT error message patterns. Reached only for an exception that
-    # declares no ``retryable`` flag anywhere on its ``__cause__`` chain and is
-    # not a typed engine or timeout signal — i.e. an untyped third-party
-    # exception whose wording is genuinely all there is. All 5xx codes are
-    # listed explicitly because partial matching ("50") would catch unrelated
-    # numbers.
-    #
-    # Nothing FaultMaven raises should need this list, and a fix that ADDS a
-    # phrase here is almost always the wrong one: prose is not a contract, the
-    # raising code is free to reword it, and nothing couples the two. #1287 is
-    # the worked example — "timed out after 30.0s" against a list containing
-    # ``"timeout"``, which is not a substring of ``"timed out"``. The fix was to
-    # make the raising site declare ``retryable`` (``ExternalCallTimeout``) and
-    # to dispatch ``TimeoutError`` on type. What it must NOT be is a second
-    # spelling here: ``"timed out"`` is deliberately absent, and adding it would
-    # move the decision back into prose for every future reword.
-    #
-    # ``"timeout"`` itself STAYS, and deleting it was a regression caught in
-    # review. The type rule above only covers exceptions that inherit from the
-    # builtin ``TimeoutError``; several clients this process talks to do not.
-    # Measured: ``aiohttp.ServerTimeoutError`` does inherit from it, but
-    # ``httpx.TimeoutException`` and ``redis.exceptions.TimeoutError`` do not,
-    # and they declare no ``retryable`` either — so with the phrase gone,
-    # ``redis.exceptions.TimeoutError("Timeout reading from socket")`` and
-    # ``httpx.ReadTimeout("Read timeout")`` went from retryable to PERMANENT.
-    # A last-resort phrase for third-party wording is exactly what this list is
-    # for; the mistake in #1287 was relying on it for FaultMaven's OWN raise
-    # sites, not having it at all.
-    #
-    # Truncation is deliberately NOT extended here either. The engine raises
-    # ``OutputTruncationError`` for it, which is dispatched on type before any
-    # of this runs; adding JSON-decoder phrasing would only add entries that
-    # never decide anything (and, as #513 showed, entries that look like
-    # coverage while matching nothing real). The two provider-worded phrases
-    # below predate that signal and stay as a floor for a truncation that
-    # somehow surfaces outside the structured-output loop.
-    retryable_patterns: Tuple[str, ...] = (
-        "rate limit",
-        "over capacity",
-        "500",
-        "502",
-        "503",
-        "504",
-        "429",
-        "bad gateway",
-        "gateway timeout",
-        "timeout",
-        "connection",
-        "temporary",
-        "overloaded",
-        "truncated",
-        "finishreason=max_tokens",
-    )
-
 
 @dataclass
 class ErrorResult:
@@ -293,6 +295,12 @@ class ErrorResult:
     # the __cause__ chain would override that code at the HTTP boundary. Set in
     # ``with_retry``.
     original_exception: Optional[BaseException] = None
+    # The provider's typed ``LLMErrorCategory`` for the triggering exception,
+    # when one declared it (#509). Relayed rather than re-derived downstream:
+    # the engine re-raises WITHOUT ``raise ... from``, so the provider
+    # exception is not on the resulting ``__cause__`` chain and nothing
+    # downstream could recover this by walking. Set in ``with_retry``.
+    category: Optional[LLMErrorCategory] = None
 
 
 class LLMErrorHandler:
@@ -324,17 +332,19 @@ class LLMErrorHandler:
         3. ``TimeoutError`` by TYPE — a deadline expiring means the call did not
            finish, which no message needs to say. This catches a bare
            ``asyncio.TimeoutError`` from any ``wait_for`` that is not wrapped
-           (``str()`` on one is the EMPTY STRING, so the phrase fallback below
-           can never see a timeout at all).
-        4. Only then, phrase matching — a last resort for untyped third-party
-           exceptions whose wording is all there is.
+           (``str()`` on one is the EMPTY STRING, so a message-based fallback
+           could never see a timeout at all).
+        4. Only then :func:`_transient_by_structure` — a last resort for
+           untyped third-party exceptions, reading a status they carry or the
+           class they are. Never their wording (#509).
 
         Tier 2 replaced an ``isinstance(cursor, LLMException)`` test. Keying on
         one concrete class meant every other typed exception — including the
         timeout ``BaseExternalClient`` raises for the LLM router — fell to tier
         4 and was classified by prose. That prose said "timed out"; the phrase
-        list said "timeout"; a hung provider got zero retries while a provider's
-        own 504 timeout got three (#1287).
+        list of the day said "timeout"; a hung provider got zero retries while a
+        provider's own 504 timeout got three (#1287). Tier 4 no longer reads
+        prose at all, so that class of mismatch is gone rather than moved.
 
         The flag must be a genuine ``bool``. ``getattr`` alone would accept a
         ``Mock``'s auto-attribute (truthy — every mocked error retryable
@@ -358,8 +368,7 @@ class LLMErrorHandler:
         if any(isinstance(c, TimeoutError) for c in walk_cause_chain(error)):
             return True
 
-        error_str = str(error).lower()
-        return any(pattern in error_str for pattern in self.config.retryable_patterns)
+        return _transient_by_structure(error)
 
     @staticmethod
     def _declares_retryable(error: BaseException) -> Optional[bool]:
@@ -419,25 +428,25 @@ class LLMErrorHandler:
     def is_token_limit_error(self, error: Exception) -> bool:
         """Check if an error is a context-window overflow.
 
-        Input overflow only: the prompt is too large for the context window, so
-        COMPRESS_MEMORY is the direct remedy. Output truncation is a different
-        failure with a different first remedy (raise the generation cap) and
-        reaches COMPRESS_MEMORY only after that ladder is spent — it travels as
-        ``OutputTruncationError`` and is dispatched on type, never matched here.
+        Reads the category the provider boundary declared (#509), never the
+        message. Input overflow only: the prompt is too large for the context
+        window, so COMPRESS_MEMORY is the direct remedy. Output truncation is a
+        different failure with a different first remedy (raise the generation
+        cap) and reaches COMPRESS_MEMORY only after that ladder is spent — it
+        travels as ``OutputTruncationError`` and is dispatched on type.
 
-        A request-shape 400 that merely *names* a token parameter — e.g.
-        OpenAI's "Unsupported parameter: 'max_tokens' is not supported with this
-        model. Use 'max_completion_tokens' instead." — is a non-retryable config
-        error, NOT a context overflow. Matching it here masked the real cause as
-        "Context too large" and sent the engine into a futile compression loop,
-        so we key on specific overflow signatures and never on the bare word
-        "token"/"max_tokens", and bail early on unsupported-parameter errors.
+        The two failures this must never confuse it with are both settled by
+        the category rather than re-tested here. A request-shape 400 that
+        merely *names* a token parameter — OpenAI's "Unsupported parameter:
+        'max_tokens' is not supported with this model" — is
+        ``REQUEST_REJECTED``, and the provider publishes
+        ``code: unsupported_parameter`` to say so; reading it as an overflow is
+        what masked the real cause as "Context too large" and sent the engine
+        into a futile compression loop. A cut ANSWER is ``OUTPUT_TRUNCATION``.
+        Neither can reach this branch, and neither depends on a phrase list
+        being kept in step with nine providers' prose.
         """
-        error_str = str(error).lower()
-        # A wrong/unsupported request parameter is a config error, not a limit.
-        if any(guard in error_str for guard in _PARAM_ERROR_GUARD_PHRASES):
-            return False
-        return any(p in error_str for p in CONTEXT_OVERFLOW_PHRASES)
+        return declared_llm_category(error) is LLMErrorCategory.CONTEXT_OVERFLOW
 
     def calculate_delay(self, retry_count: int) -> float:
         """Calculate delay for next retry using exponential backoff."""
@@ -593,10 +602,13 @@ class LLMErrorHandler:
         # every attempt re-sending the same oversized prompt.
         #
         # Safe to put ahead of the gate, unlike the classifiers below it: this
-        # one keys on multi-word overflow SIGNATURES ("context length",
-        # "prompt is too long", …), never on a bare number, so no ``host:port``
-        # can reach it. That difference is the whole reason the ordering splits
-        # here rather than moving every classifier to one side.
+        # one reads a category the PROVIDER declared about its own failure
+        # (#509), so nothing about the message text — a ``host:port``, the
+        # engine's own wording, a JSON decoder's complaint — can reach it. That
+        # difference is the whole reason the ordering splits here rather than
+        # moving every classifier to one side. (``is_auth_error`` and
+        # ``is_model_not_found_error`` below still match text, which is why
+        # they stay behind the gate; narrowing those is out of scope here.)
         if self.is_token_limit_error(error):
             return ErrorResult(
                 action=ErrorAction.COMPRESS_MEMORY,
@@ -909,6 +921,7 @@ class LLMErrorHandler:
                 # real message (see ErrorResult.original_exception — callers fold
                 # it into their message text, deliberately NOT onto __cause__).
                 error_result.original_exception = e
+                error_result.category = declared_llm_category(e)
                 last_error_result = error_result
 
                 if error_result.action == ErrorAction.RETRY:

@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import aiohttp
 
-from faultmaven.exceptions import LLMException
+from faultmaven.exceptions import LLMErrorCategory, LLMException
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
@@ -26,6 +26,7 @@ from .base import (
     ReasoningIntent,
     StopReason,
     ToolCall,
+    extract_provider_error_code,
     normalize_stop_reason,
 )
 
@@ -664,6 +665,7 @@ class GeminiProvider(BaseLLMProvider):
                         raise LLMException(
                             f"Gemini API request failed: {response.status} - {error_text}",
                             status_code=response.status,
+                            provider_error_code=extract_provider_error_code(error_text),
                         )
 
                     response_data = await response.json()
@@ -764,9 +766,12 @@ class GeminiProvider(BaseLLMProvider):
 
         # Truncation handling stays behaviour-preserving for STRUCTURED calls:
         # a cut JSON body is unusable, and the engine's max_tokens ladder is
-        # driven by this raise (`is_output_truncation_error` matches the literal
-        # "finishreason=max_tokens" in the message — do not reword it without
-        # migrating that classifier in the same change).
+        # driven by this raise. The signal the ladder reads is the DECLARED
+        # ``category=OUTPUT_TRUNCATION`` below, not the wording — this provider
+        # observes the cut itself (there is no HTTP error and no error body to
+        # classify), so it is the raiser's job to say what it saw (#509). The
+        # literal "finishReason=MAX_TOKENS" stays in the message for
+        # diagnostics only, and rewording it no longer breaks anything.
         #
         # The gate moved off `content` deliberately: it used to be
         # `if content and ...`, which only ever fired because the sentinel above
@@ -783,6 +788,7 @@ class GeminiProvider(BaseLLMProvider):
                     f"Response length: {len(content)} chars. "
                     "Increase max_tokens parameter or simplify prompt.",
                     retryable=True,
+                    category=LLMErrorCategory.OUTPUT_TRUNCATION,
                 )
             else:
                 # Unstructured text: partial content is still valuable, and a
