@@ -165,3 +165,119 @@ class TestLoggedClientIpMatchesEnforcementIdentity:
         )
 
         assert context["client_ip"] == attacker
+
+
+@pytest.mark.unit
+class TestNoPerRequestLatencyVerdict:
+    """#1346: a slow request must not produce a WARNING of its own.
+
+    ``LoggingMiddleware`` used to compare whole-request duration against a
+    single ``api: 0.1`` constant and log ``"Slow request detected: ... took
+    4.812s (threshold: 0.100s)"`` at WARNING. Every investigation turn makes
+    at least one LLM call — 5.9s to 15.0s measured on healthy turns against a
+    real case — so the line fired on all healthy traffic on the product's main
+    path and no alert could be built on it.
+
+    The clock is driven to a realistic duration rather than to some token
+    value above a small threshold: a guard that only proves "0.2s does not
+    warn" would keep passing if somebody re-introduced the constant at 5.0s.
+    """
+
+    def _request_taking(self, seconds: float, caplog):
+        """Drive one request whose measured duration is ``seconds``.
+
+        The clock is advanced by the ROUTE HANDLER rather than by counting
+        ``time.time()`` calls, so the fake means "the handler took `seconds`"
+        no matter how many times anything on the path reads the clock. An
+        earlier version handed out a fixed pair of ticks and silently measured
+        0.0s because something reads the clock before ``start_time`` is taken
+        — which the positive-control test below is what caught.
+        """
+        now = [1000.0]
+
+        app = FastAPI()
+        app.add_middleware(LoggingMiddleware)
+
+        @app.post("/api/v1/cases/{case_id}/turns")
+        async def turn(case_id: str):
+            now[0] = 1000.0 + seconds
+            return {"id": case_id}
+
+        client = TestClient(app)
+
+        with caplog.at_level("DEBUG"):
+            with patch(
+                "faultmaven.api.middleware.logging.time.time",
+                side_effect=lambda: now[0],
+            ):
+                response = client.post("/api/v1/cases/abc-123/turns")
+
+        assert response.status_code == 200
+        return caplog.records
+
+    def test_a_multi_second_request_emits_no_warning(self, caplog, metrics_mocks):
+        """The reported symptom, at the duration the issue reported it at."""
+        records = self._request_taking(4.812, caplog)
+
+        offending = [
+            r
+            for r in records
+            if r.levelno >= 30 and "slow request" in r.getMessage().lower()
+        ]
+        assert not offending, (
+            "a healthy multi-second turn logged a latency warning: "
+            f"{[r.getMessage() for r in offending]}"
+        )
+
+    def test_the_slowest_measured_healthy_turn_emits_no_warning(
+        self, caplog, metrics_mocks
+    ):
+        """15.0s — the slowest healthy turn measured — is still not a fault."""
+        records = self._request_taking(14.95, caplog)
+
+        assert not [r for r in records if r.levelno >= 30], (
+            "no record at WARNING or above belongs to a healthy turn: "
+            f"{[(r.levelname, r.getMessage()) for r in records if r.levelno >= 30]}"
+        )
+
+    def test_a_healthy_turn_is_not_counted_as_a_performance_violation(
+        self, caplog, metrics_mocks
+    ):
+        """The second channel a recorded timing feeds.
+
+        ``LoggingCoordinator.end_request`` re-derives violations from
+        ``performance_tracker.layer_timings`` against the same thresholds, so
+        removing only the WARNING would have left the summary line still
+        reporting a violation on every healthy turn. Nothing records a
+        whole-request timing now, so there is nothing for it to count.
+        """
+        records = self._request_taking(14.95, caplog)
+
+        summary = [r for r in records if "Request summary" in r.getMessage()]
+        assert summary, "the summary line is the second consumer of the timing"
+        assert (
+            "0 performance violations" in summary[0].getMessage()
+        ), f"a healthy turn was counted as a violation: {summary[0].getMessage()}"
+
+    def test_the_duration_is_still_observed_and_still_logged(
+        self, caplog, metrics_mocks
+    ):
+        """Positive control: deleting the verdict must not delete the signal.
+
+        Without this, a middleware that failed to run at all would satisfy the
+        two assertions above. The duration has to survive on both channels —
+        the histogram (what alerting reads) and the completion line (what a
+        self-hosted operator with no Prometheus reads).
+        """
+        _, duration_metric, _ = metrics_mocks
+        records = self._request_taking(4.812, caplog)
+
+        observed = duration_metric.labels.return_value.observe.call_args[0][0]
+        assert observed == pytest.approx(4.812)
+        assert duration_metric.labels.call_args.kwargs["endpoint"] == (
+            "/api/v1/cases/{case_id}/turns"
+        )
+
+        completion = [r for r in records if "Request completed" in r.getMessage()]
+        assert completion, "the completion line is the log-side latency signal"
+        assert "4.812s" in completion[0].getMessage()

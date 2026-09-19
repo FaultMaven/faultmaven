@@ -317,3 +317,120 @@ class TestNoOpMetricEdgeCases:
             with pytest.raises(ValueError):
                 with histogram.time():
                     raise ValueError("Test exception")
+
+
+class TestHttpDurationBucketsSpanRealTraffic:
+    """#1346: the request histogram must be able to express this API's latency.
+
+    Deleting the per-request "Slow request detected" WARNING hands latency
+    alerting entirely to ``http_request_duration_seconds`` — which the
+    deployment scrapes and which ``FaultMavenAPIHighLatency`` alerts on via a
+    p95 recording rule. That is only an improvement if the histogram can
+    actually resolve the range the product serves.
+
+    It could not. The metric was created with no ``buckets`` argument, so it
+    used prometheus_client's defaults, whose highest finite bucket is 10.0s —
+    below the slowest healthy investigation turn measured. ``histogram_quantile``
+    returns +Inf once the quantile lands in the overflow bucket, so a healthy
+    turn and a hung-provider turn were the same observation to every percentile
+    computed from it.
+    """
+
+    # Measured end to end on gemini-3.7-flash against a real case.
+    HEALTH_PROBE = 0.030  # /health, 27-34ms
+    ORDINARY_READ = 0.4  # a DB-backed read
+    HEALTHY_TURN = 14.95  # slowest healthy turn (turn 4, deepest context)
+    HUNG_PROVIDER_TURN = 68.7  # retry ladder against a hung provider -> 503
+
+    @staticmethod
+    def _bucket_reached(buckets, observation):
+        """The lowest bucket boundary ``observation`` falls into.
+
+        Two durations that reach the same boundary are indistinguishable to
+        any percentile computed from the histogram.
+        """
+        prometheus_client = pytest.importorskip("prometheus_client")
+
+        registry = prometheus_client.CollectorRegistry()
+        histogram = prometheus_client.Histogram(
+            "probe_duration_seconds",
+            "Bucket-reach probe",
+            buckets=buckets,
+            registry=registry,
+        )
+        histogram.observe(observation)
+
+        counts = [
+            (float(sample.labels["le"]), sample.value)
+            for metric in registry.collect()
+            for sample in metric.samples
+            if sample.name.endswith("_bucket")
+        ]
+        return min(le for le, value in counts if value > 0)
+
+    def test_a_healthy_turn_and_a_hung_one_are_distinguishable(self):
+        """The property the whole decision rests on."""
+        from faultmaven.infrastructure.shims.metrics import _HTTP_DURATION_BUCKETS
+
+        healthy = self._bucket_reached(_HTTP_DURATION_BUCKETS, self.HEALTHY_TURN)
+        hung = self._bucket_reached(_HTTP_DURATION_BUCKETS, self.HUNG_PROVIDER_TURN)
+
+        assert healthy != hung, (
+            f"a {self.HEALTHY_TURN}s healthy turn and a "
+            f"{self.HUNG_PROVIDER_TURN}s hung one both reach bucket le={healthy}; "
+            "no percentile over this histogram can tell them apart"
+        )
+        assert healthy != float("inf"), (
+            "the slowest healthy turn measured falls in the overflow bucket, "
+            "so histogram_quantile reports +Inf for the product's main path"
+        )
+
+    def test_the_fast_end_keeps_its_resolution(self):
+        """Widening the tail must not coarsen probes and ordinary reads."""
+        from faultmaven.infrastructure.shims.metrics import _HTTP_DURATION_BUCKETS
+
+        probe = self._bucket_reached(_HTTP_DURATION_BUCKETS, self.HEALTH_PROBE)
+        read = self._bucket_reached(_HTTP_DURATION_BUCKETS, self.ORDINARY_READ)
+
+        assert probe != read
+        assert probe <= 0.05, "a 30ms health probe must not need a 100ms+ bucket"
+
+    def test_the_shipped_metric_is_wired_to_these_buckets(self):
+        """The call site, not just the constant.
+
+        Run out of process: the module registers its metrics in
+        prometheus_client's global REGISTRY at import, and metrics are
+        disabled in-process here (so ``request_duration`` is a NoOpMetric with
+        no bounds to read). A subprocess with ENABLE_METRICS=true exercises
+        the real call site without contaminating this session's registry.
+        """
+        import json
+        import os
+        import subprocess
+        import sys
+
+        from faultmaven.infrastructure.shims.metrics import _HTTP_DURATION_BUCKETS
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import json,sys;"
+                "from faultmaven.infrastructure.shims.metrics import request_duration;"
+                "sys.stderr.write('@@'+json.dumps("
+                "[str(b) for b in request_duration._upper_bounds])+'@@')",
+            ],
+            env={**os.environ, "ENABLE_METRICS": "true"},
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert result.returncode == 0, result.stderr[-2000:]
+        marked = result.stderr.split("@@")
+        assert len(marked) >= 3, f"probe produced no result: {result.stderr[-2000:]}"
+        bounds = [float(b) for b in json.loads(marked[-2])]
+
+        assert bounds == list(_HTTP_DURATION_BUCKETS), (
+            "http_request_duration_seconds is not using the buckets chosen for "
+            "this API's measured latency range"
+        )

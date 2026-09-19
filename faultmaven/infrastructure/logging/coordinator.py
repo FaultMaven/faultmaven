@@ -678,10 +678,26 @@ class PerformanceTracker:
     """
 
     def __init__(self):
-        """Initialize with default performance thresholds per layer."""
+        """Initialize with default performance thresholds per layer.
+
+        There is deliberately no ``api`` entry (#1346). It was ``0.1``, and the
+        only thing that ever recorded against it was whole-request duration in
+        ``api/middleware/logging.py`` — where every investigation turn spends
+        seconds inside an LLM call (5.9-15.0s measured) and every health probe
+        spends tens of milliseconds. No single constant serves both, so the
+        request-latency verdict moved to the ``http_request_duration_seconds``
+        histogram, which can express a per-route percentile. Nothing records
+        an ``api`` timing now; an unexpected one would take the 1.0s fallback
+        in ``record_timing`` rather than a threshold nobody chose.
+
+        The remaining three are per-OPERATION budgets for
+        ``UnifiedLogger.operation()`` (``services/base.py`` records ``service``,
+        ``infrastructure/base_client.py`` records ``infrastructure``) — a
+        bounded unit of work, not a whole request, which is why they are not
+        affected by the above.
+        """
         self.layer_timings: Dict[str, float] = {}
         self.thresholds = {
-            "api": 0.1,  # 100ms - API should be fast
             "service": 0.5,  # 500ms - Service orchestration
             "core": 0.3,  # 300ms - Core domain logic
             "infrastructure": 1.0,  # 1s - External calls can be slower

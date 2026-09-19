@@ -157,9 +157,9 @@ class TestLoggingPerformanceOverhead:
         def tracking_operation():
             nonlocal counter
             exceeds, threshold = tracker.record_timing(
-                "api", f"operation_{counter % 10}", 0.1
+                "core", f"operation_{counter % 10}", 0.1
             )
-            assert threshold == 0.1
+            assert threshold == 0.3
             counter += 1
 
         measured_time = self.measure_operation_robust(tracking_operation, iterations)
