@@ -12,10 +12,11 @@ every log line named the proxy and forensics attributed a flood to the wrong
 party, while the limit that refused it had been applied to somebody else.
 """
 
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from faultmaven.api.middleware.logging import LoggingMiddleware
@@ -42,6 +43,10 @@ def client():
     @app.get("/api/v1/cases/{case_id}")
     async def get_case(case_id: str):
         return {"id": case_id}
+
+    @app.get("/api/v1/cases/{case_id}/gone")
+    async def gone(case_id: str):
+        raise HTTPException(status_code=404, detail="no such case")
 
     @app.get("/boom")
     async def boom():
@@ -97,9 +102,153 @@ class TestHttpMetricsRecording:
     def test_4xx_counts_as_served_for_sla(self, client, metrics_mocks):
         _, _, sla = metrics_mocks
 
-        client.get("/no/such/route")
+        # A 404 on a MATCHED route: the service surface answered, and it
+        # answered correctly. (A 404 on no route at all is `unmatched` and is
+        # not observed — see TestSlaObservationIsTheServiceSurface.)
+        client.get("/api/v1/cases/abc-123/gone")
 
         assert sla.record_request_metrics.call_args.kwargs["success"] is True
+
+
+# Measured on this box against the running stack, 2026-09-19 (40 samples):
+# /readiness 5-14 ms, /health 67-83 ms. Three real investigation turns on
+# gemini-3.7-flash took 6.18 / 5.70 / 5.98 s; #1522 measured 5.88-14.95 s.
+PROBE_SECONDS = 0.083
+TURN_SECONDS = 14.95
+
+
+def _drive(template: str, seconds: float, *, method: str = "get", boom: bool = False):
+    """One request to ``template`` that takes ``seconds``; returns the mocks.
+
+    The clock is advanced by the ROUTE HANDLER, not by a fixed list of ticks:
+    anything on the path may read ``time.time()`` any number of times, and a
+    side_effect list silently measured 0.0s when it did.
+
+    Returns ``(counter, duration, sla, response)``.
+    """
+    now = [1000.0]
+
+    app = FastAPI()
+    app.add_middleware(LoggingMiddleware)
+
+    async def handler():
+        now[0] = 1000.0 + seconds
+        if boom:
+            raise RuntimeError("kaboom")
+        return {"ok": True}
+
+    getattr(app, method)(template)(handler)
+    client = TestClient(app, raise_server_exceptions=False)
+    url = re.sub(r"\{[^}]+\}", "sample-id", template)
+
+    with (
+        patch("faultmaven.api.middleware.logging.request_counter") as counter,
+        patch("faultmaven.api.middleware.logging.request_duration") as duration,
+        patch("faultmaven.api.middleware.logging.sla_tracker") as sla,
+    ):
+        counter.labels.return_value = MagicMock()
+        duration.labels.return_value = MagicMock()
+        with patch(
+            "faultmaven.api.middleware.logging.time.time", side_effect=lambda: now[0]
+        ):
+            response = client.request(method.upper(), url)
+        return counter, duration, sla, response
+
+
+@pytest.mark.unit
+class TestSlaObservationIsTheServiceSurface:
+    """#1523: the SLA tracker observes real API traffic, not the pollers.
+
+    Kubelet polls ``/health`` and ``/readiness`` and Prometheus scrapes
+    ``/metrics``; on any deployment they outnumber real requests by orders of
+    magnitude and never 5xx. Feeding them in made BOTH tracker numbers
+    describe the pollers: a p95 that is the probe p95 (66.7 ms measured on
+    this box while three real 6-second turns were in the same window), and an
+    availability whose denominator is ~97% requests that cannot fail.
+
+    The excluded set is byte-for-byte the one every API SLO recording rule in
+    ``faultmaven-enterprise-infra`` already excludes —
+    ``endpoint!~"/health.*|/metrics.*|/readiness.*|unmatched"``.
+    """
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/health",
+            "/health/sla",
+            "/health/components/{name}",
+            "/readiness",
+            "/metrics",
+            "/metrics/performance",
+        ],
+    )
+    def test_a_probe_endpoint_is_not_observed(self, path):
+        _, duration, sla, response = _drive(path, PROBE_SECONDS)
+
+        assert response.status_code == 200
+        sla.record_request_metrics.assert_not_called()
+        # Positive control: the request really ran and really was timed, so
+        # "not observed" cannot be satisfied by a middleware that did nothing.
+        assert duration.labels.return_value.observe.call_args[0][0] == pytest.approx(
+            PROBE_SECONDS
+        )
+
+    def test_an_unmatched_path_is_not_observed(self):
+        app = FastAPI()
+        app.add_middleware(LoggingMiddleware)
+        client = TestClient(app, raise_server_exceptions=False)
+
+        with (
+            patch("faultmaven.api.middleware.logging.request_counter") as counter,
+            patch("faultmaven.api.middleware.logging.request_duration"),
+            patch("faultmaven.api.middleware.logging.sla_tracker") as sla,
+        ):
+            counter.labels.return_value = MagicMock()
+            response = client.get("/no/such/route/9999")
+
+        assert response.status_code == 404
+        assert counter.labels.call_args.kwargs["endpoint"] == "unmatched"
+        sla.record_request_metrics.assert_not_called()
+
+    def test_the_products_main_path_is_observed_at_its_real_duration(self):
+        """A 14.95s turn — the slowest healthy one measured — is real traffic.
+
+        This is the half that must not be over-filtered. It also pins the
+        DURATION, so a filter that recorded turns but measured them at 0.0s
+        (which would restore probe-shaped numbers by another route) fails.
+        """
+        _, _, sla, response = _drive(
+            "/api/v1/cases/{case_id}/turns", TURN_SECONDS, method="post"
+        )
+
+        assert response.status_code == 200
+        sla.record_request_metrics.assert_called_once()
+        args, kwargs = sla.record_request_metrics.call_args
+        assert args[0] == "api"
+        assert args[1] == pytest.approx(TURN_SECONDS * 1000.0)
+        assert kwargs["success"] is True
+
+    def test_an_exception_on_a_probe_is_not_observed_either(self):
+        """Both recording sites, or the filter leaks on the failure path."""
+        _, duration, sla, response = _drive("/health", PROBE_SECONDS, boom=True)
+
+        assert response.status_code == 500
+        sla.record_request_metrics.assert_not_called()
+        assert duration.labels.return_value.observe.call_args[0][0] == pytest.approx(
+            PROBE_SECONDS
+        )
+
+    def test_an_exception_on_the_service_surface_is_observed_as_a_failure(self):
+        _, _, sla, response = _drive(
+            "/api/v1/cases/{case_id}/turns", TURN_SECONDS, method="post", boom=True
+        )
+
+        assert response.status_code == 500
+        sla.record_request_metrics.assert_called_once()
+        assert sla.record_request_metrics.call_args.args[1] == pytest.approx(
+            TURN_SECONDS * 1000.0
+        )
+        assert sla.record_request_metrics.call_args.kwargs["success"] is False
 
 
 INGRESS = "10.42.0.7"

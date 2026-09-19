@@ -50,6 +50,40 @@ def _endpoint_label(request: Request) -> str:
     return getattr(route, "path", None) or "unmatched"
 
 
+# Endpoint labels that are NOT the service surface. Byte-for-byte the set
+# `faultmaven-enterprise-infra` already excludes in every API SLO recording
+# rule — `endpoint!~"/health.*|/metrics.*|/readiness.*|unmatched"` — and a
+# PromQL `=~` is fully anchored, so `/health.*` is exactly `startswith`.
+# Keeping one definition matters more than the edge cases inside it (an
+# operator reading /health/sla is excluded too, which is correct: they are not
+# a user of the product either).
+_NON_SERVICE_ENDPOINT_PREFIXES = ("/health", "/metrics", "/readiness")
+
+
+def _is_service_surface(endpoint: str) -> bool:
+    """Whether this route template counts as real API traffic.
+
+    Kubelet polls `/health` and `/readiness` on a fixed interval and
+    Prometheus scrapes `/metrics`, so on any deployment those outnumber real
+    requests by orders of magnitude and never fail. Feeding them to the SLA
+    tracker makes both of its numbers describe the pollers instead of the API:
+    a p95 of 83 ms that is the probe p95, and an availability whose
+    denominator is ~97% requests that cannot 5xx, so a real error rate is
+    divided by ~30 before it is compared to a 0.1% floor.
+
+    It also makes the answer depend on the traffic MIX rather than on the
+    service: the same code and the same budget read `breached` at p95=1268 ms
+    in production and `meeting` at p95=83 ms 82 minutes after a restart
+    (#1523). Excluded, an idle deployment reports `unknown` — which is what
+    the SLO rules already say about themselves ("With only probe traffic the
+    ratio is 0/0 = NaN → nothing fires ... no real traffic means no SLO
+    violation").
+    """
+    return endpoint != "unmatched" and not endpoint.startswith(
+        _NON_SERVICE_ENDPOINT_PREFIXES
+    )
+
+
 def _attribution_suffix(user_id: Optional[str], enterprise_id: Optional[str]) -> str:
     """The human-readable ``[user: …][enterprise: …]`` tail of a request line.
 
@@ -193,14 +227,21 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             # Calculate duration
             duration = time.time() - start_time
 
-            # Feed the SLA tracker: 5xx counts against availability, 4xx is a
-            # served (client-side) outcome
-            sla_tracker.record_request_metrics(
-                "api", duration * 1000.0, success=response.status_code < 500
-            )
-
-            # Prometheus HTTP metrics (no-ops when metrics are disabled)
             endpoint = _endpoint_label(request)
+
+            # Feed the SLA tracker: 5xx counts against availability, 4xx is a
+            # served (client-side) outcome. Probe and scanner traffic is left
+            # out — see _is_service_surface.
+            if _is_service_surface(endpoint):
+                sla_tracker.record_request_metrics(
+                    "api", duration * 1000.0, success=response.status_code < 500
+                )
+
+            # Prometheus HTTP metrics (no-ops when metrics are disabled). These
+            # DO carry every request: the label is per route template, so the
+            # probe/non-probe split is made by the query rather than at
+            # recording time, and excluding them here would take away the
+            # probe-latency series an operator may legitimately want.
             request_counter.labels(
                 method=request.method,
                 endpoint=endpoint,
@@ -285,11 +326,20 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             # Calculate duration for failed requests
             duration = time.time() - start_time
 
-            # Unhandled exception = failed request for SLA purposes
-            sla_tracker.record_request_metrics("api", duration * 1000.0, success=False)
+            endpoint = _endpoint_label(request)
+
+            # Unhandled exception = failed request for SLA purposes, on the
+            # same surface the success path records (see _is_service_surface).
+            # A probe that throws is a real fault, but it is the component
+            # monitor's to report: counting it here would put the pollers back
+            # in the denominator, and one exception among thousands of probe
+            # 200s is diluted to invisibility anyway.
+            if _is_service_surface(endpoint):
+                sla_tracker.record_request_metrics(
+                    "api", duration * 1000.0, success=False
+                )
 
             # Unhandled exceptions surface as 500s
-            endpoint = _endpoint_label(request)
             request_counter.labels(
                 method=request.method, endpoint=endpoint, status_code="500"
             ).inc()
