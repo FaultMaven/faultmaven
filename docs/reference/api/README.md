@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 7.0.0
+**Version:** 7.1.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -4581,7 +4581,16 @@ retires it, and its pending invitations are revoked with it.
 
 **Health Check**
 
-Enhanced health check endpoint with component-specific metrics and SLA monitoring.
+Component health and SLA detail. Always answers 200; read `status`.
+
+This is the **liveness** surface: production points its liveness *and*
+startup probes here, and a liveness probe that fails on a dependency
+restarts a pod that restarting cannot fix — during a database outage that
+replaces a degraded service with a crash-looping one whose recovery is
+then delayed by kubelet backoff. So a failing dependency is reported in
+the body and never in the status code. The verdict that gates traffic
+lives on `/readiness`, which is the question a status code can answer
+without that side effect.
 
 **Auth:** None — this operation is reachable unauthenticated.
 
@@ -4776,13 +4785,31 @@ Get real-time performance metrics.
 
 **Readiness**
 
-Readiness probe: return unready if Redis or ChromaDB are unavailable.
+Readiness probe: 503 when a component fatal to serving is unhealthy.
+
+This is the endpoint whose status code carries a verdict, and the only
+one — a Kubernetes readiness failure removes the pod from its Service
+without restarting it, which is exactly the action a dependency outage
+warrants. `/health` deliberately stays 200; see its docstring.
+
+Only components declared fatal are probed (today: `database`). Every
+additional dependency in this gate is another way to stop serving
+requests that could have been served, so a component that merely degrades
+the answer — the vector store, the knowledge base, the LLM router — is
+reported at `/health` and does not appear here. Prior to #1515 this
+endpoint pulled the pod when ChromaDB was absent, which pulls a pod that
+can still read cases, accept evidence and authenticate.
+
+A component we could not determine (UNKNOWN — typically the container has
+not finished wiring) is not treated as unhealthy: "we cannot tell" must
+never be the reason a pod leaves the Service.
 
 **Auth:** None — this operation is reachable unauthenticated.
 
 **Responses:**
 
 - `200` — Successful Response
+- `503` — Not ready to serve traffic
 
 ---
 

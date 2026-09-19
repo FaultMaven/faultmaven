@@ -466,11 +466,21 @@ class SLATracker:
         Args:
             time_window_hours: Time window to calculate summary over
 
+        Components with no observations in the window are UNKNOWN, and are
+        excluded from the average and from the best/worst ranking: their
+        ``availability_percentage`` is zero because nothing was measured, not
+        because nothing succeeded. Averaging that zero in is how a deployment
+        where only ``api`` had ever been observed reported an overall SLA of
+        20.0 — one measured 100 divided across five components (#1515).
+        ``overall_sla`` is ``None`` when nothing at all has been observed,
+        which is the honest answer to "what is our availability" before any
+        request has arrived.
+
         Returns:
             Dictionary with SLA summary information
         """
         summary = {
-            "overall_sla": 0.0,
+            "overall_sla": None,
             "components": {},
             "active_breaches": 0,
             "total_breaches_24h": 0,
@@ -482,8 +492,8 @@ class SLATracker:
             return summary
 
         component_slas = []
-        worst_sla = 100.0
-        best_sla = 0.0
+        worst_sla = None
+        best_sla = None
         worst_component = None
         best_component = None
 
@@ -497,19 +507,22 @@ class SLATracker:
                 "error_rate": metrics.error_rate_percentage,
                 "breaches_24h": metrics.breaches_24h,
             }
-
-            component_slas.append(metrics.availability_percentage)
             summary["total_breaches_24h"] += metrics.breaches_24h
 
-            if metrics.availability_percentage < worst_sla:
+            if metrics.status is SLAStatus.UNKNOWN:
+                continue
+
+            component_slas.append(metrics.availability_percentage)
+
+            if worst_sla is None or metrics.availability_percentage < worst_sla:
                 worst_sla = metrics.availability_percentage
                 worst_component = component_name
 
-            if metrics.availability_percentage > best_sla:
+            if best_sla is None or metrics.availability_percentage > best_sla:
                 best_sla = metrics.availability_percentage
                 best_component = component_name
 
-        # Calculate overall SLA as average of component SLAs
+        # Calculate overall SLA as average of the components actually observed
         if component_slas:
             summary["overall_sla"] = round(sum(component_slas) / len(component_slas), 2)
 

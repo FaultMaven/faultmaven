@@ -298,12 +298,16 @@ class TestReportShapes:
         }
         assert api_entry["sla"] == 100.0
         assert api_entry["status"] == "meeting"
-        # api is the only component with data -> best performer
+        # api is the only component with data, so it is both the best and the
+        # worst performer. It used to be only the best, because a component
+        # with NO observations reported 0.0 availability and so ranked below
+        # it — the same "unknown read as zero" that made overall_sla 20.0 on
+        # a healthy deployment (#1515). Unobserved components are now ranked
+        # nowhere and averaged nowhere.
         assert summary["best_performing_component"] == "api"
-        assert summary["worst_performing_component"] is not None
-        assert summary["worst_performing_component"] != "api"
+        assert summary["worst_performing_component"] == "api"
         assert summary["active_breaches"] == 0
-        assert isinstance(summary["overall_sla"], float)
+        assert summary["overall_sla"] == 100.0
 
     def test_sla_summary_counts_active_breaches(self, tracker):
         _record_many(tracker, "api", 90, success=True)

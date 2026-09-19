@@ -103,6 +103,14 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             and not settings.protection.sanitize_pii
         )
 
+        # Whether Presidio was actually REACHED FOR, recorded here rather than
+        # re-derived by consumers. `analyzer_available = False` collapses two
+        # unrelated states — "we never tried, by configuration" and "we tried
+        # and it did not answer" — and only the second is a fault. The health
+        # probe needs to tell them apart or it reports every standalone
+        # deployment as degraded forever, which is how a signal gets ignored.
+        self.presidio_probed = not (skip_checks or protection_disabled)
+
         # Test service connectivity only when protection is enabled
         if skip_checks or protection_disabled:
             self.analyzer_available = False
@@ -339,6 +347,48 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
         """
         return self.sanitize_text_with_registry(text, {})
 
+    def apply_regex_redaction(
+        self,
+        text: str,
+        entity_registry: Dict[str, Dict[str, str]],
+    ) -> str:
+        """The regex half of detection, on its own — never touches Presidio.
+
+        Split out of :meth:`sanitize_text_with_registry` so that a caller
+        needing redaction it can *prove* stays in-process has one to call. The
+        health probe is that caller: reaching Presidio from a probe means an
+        HTTP round trip every ten seconds through ``call_external_sync``,
+        which records on the circuit breaker that gates real redaction — probe
+        successes reset the failure count so three consecutive real failures
+        are never observed, and a hung analyzer opens the breaker with no user
+        traffic at all. Under a fail-closed posture that turns every turn into
+        a ``RedactionUnavailableError``.
+
+        A structural guarantee, not a convention: there is no call into
+        ``_apply_presidio`` from here, so no configuration can route this
+        through the network.
+        """
+        if not text or not isinstance(text, str):
+            return text
+
+        def _get_placeholder(entity_type: str, value: str) -> str:
+            if entity_type not in entity_registry:
+                entity_registry[entity_type] = {}
+            type_map = entity_registry[entity_type]
+            if value not in type_map:
+                type_map[value] = self._hashed_placeholder(entity_type, value)
+            return type_map[value]
+
+        sanitized_text = text
+        for pattern, entity_type in self._compiled_patterns:
+
+            def _indexed_replacer(match: re.Match, _type: str = entity_type) -> str:
+                return _get_placeholder(_type, match.group(0))
+
+            sanitized_text = pattern.sub(_indexed_replacer, sanitized_text)
+
+        return sanitized_text
+
     def sanitize_text_with_registry(
         self,
         text: str,
@@ -358,23 +408,8 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
         if not text or not isinstance(text, str):
             return text
 
-        sanitized_text = text
-
-        def _get_placeholder(entity_type: str, value: str) -> str:
-            if entity_type not in entity_registry:
-                entity_registry[entity_type] = {}
-            type_map = entity_registry[entity_type]
-            if value not in type_map:
-                type_map[value] = self._hashed_placeholder(entity_type, value)
-            return type_map[value]
-
         # Regex patterns are local and cannot fail-open — always applied.
-        for pattern, entity_type in self._compiled_patterns:
-
-            def _indexed_replacer(match: re.Match, _type: str = entity_type) -> str:
-                return _get_placeholder(_type, match.group(0))
-
-            sanitized_text = pattern.sub(_indexed_replacer, sanitized_text)
+        sanitized_text = self.apply_regex_redaction(text, entity_registry)
 
         # Presidio (cards/emails/SSNs) — gated on the analyzer only (the
         # anonymizer service is unused; we replace in-process). When the analyzer

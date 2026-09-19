@@ -721,7 +721,19 @@ def test_application_uses_configuration_defaults():
             assert response.status_code == 200
 
             data = response.json()
-            assert data["status"] == "healthy"
+            assert data["status"] in {"healthy", "degraded", "unhealthy"}
+
+            # "Works with defaults" is that nothing FATAL to serving is down —
+            # not that every optional subsystem happens to be running on the
+            # runner. This used to assert `== "healthy"`, which only held
+            # because seven of the eight component checks were constants
+            # (#1515): with real checks, a job that sets
+            # VECTOR_STORAGE_TYPE=inmemory and SKIP_SERVICE_CHECKS=true has a
+            # deliberately disabled vector store and honestly reports
+            # "degraded". Asserting the fatal set instead keeps the test
+            # biting on the thing that would actually mean the defaults are
+            # broken — the database.
+            assert data["summary"]["fatal_unhealthy"] == []
 
 
 def test_health_endpoint_configuration_info():
