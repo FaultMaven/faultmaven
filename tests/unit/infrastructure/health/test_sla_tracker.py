@@ -8,20 +8,33 @@ observations (no simulation). These tests verify:
 - Breach detection (availability + error rate), counting, and recovery
 - Time-window exclusion of old observations
 - Throughput is informational only (never a breach condition)
+- Latency is measured and published but never judged (#1523)
+- The published object cannot contradict itself (#1523)
 - Breach severity for total outage (actual_value == 0) does not divide by zero
 - Prometheus gauge publishing runs cleanly with NoOp shims
 - Summary / detail report shapes
 """
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from faultmaven.infrastructure.health.sla_tracker import (
+    SLAMetrics,
     SLAStatus,
     SLAThresholds,
     SLATracker,
 )
+
+# Durations measured end to end on gemini-3.7-flash against a real case
+# (#1522), in milliseconds. The slowest healthy turn is the one that matters:
+# a guard written at 200ms would survive the budget coming back at 5s.
+HEALTHY_TURN_MS = [5880.0, 9650.0, 10310.0, 14950.0]
+SLOWEST_HEALTHY_TURN_MS = 14950.0
+# /health and /readiness, 40 samples on the dev box (5-83ms); the cluster
+# reports 16-34ms. Three orders of magnitude below a turn.
+PROBE_MS = 83.0
 
 
 @pytest.fixture
@@ -139,8 +152,6 @@ class TestBreachRecovery:
             SLAThresholds(
                 component_name="svc",
                 min_availability=90.0,
-                max_response_time_p95=10_000.0,
-                max_response_time_p99=20_000.0,
                 max_error_rate=10.0,
                 min_throughput=1.0,
             ),
@@ -233,6 +244,242 @@ class TestThroughputInformational:
 
 
 @pytest.mark.unit
+class TestLatencyIsMeasuredNotJudged:
+    """#1523: no latency budget, because no single number can be right here.
+
+    ``api`` aggregates health probes (83ms) and investigation turns (up to
+    14.95s) — a ~500x spread — and ``llm_provider`` aggregates nine providers.
+    The shipped 200ms budget reported ``breached`` in production at
+    p95=1268ms on a 100%-available API, then ``meeting`` at p95=83ms 82
+    minutes after a restart: the verdict tracked the traffic MIX, not the
+    service. The per-route verdict lives in Prometheus
+    (``faultmaven:slo_api_latency_p95:5m`` → ``FaultMavenAPIHighLatency``).
+    """
+
+    def test_the_slowest_healthy_turn_does_not_breach(self, tracker):
+        """The regression itself, at the duration it was measured at.
+
+        Written at 14.95s rather than at some token value above 200ms so it
+        fails for ANY latency budget a future change could reinstate below
+        the slowest healthy turn — not just for the 200ms one that was there.
+        """
+        for duration_ms in HEALTHY_TURN_MS:
+            tracker.record_request_metrics("api", duration_ms, success=True)
+
+        metrics = tracker.calculate_sla_metrics("api")
+
+        assert metrics.response_time_p95 == SLOWEST_HEALTHY_TURN_MS
+        assert metrics.status == SLAStatus.MEETING, (
+            "a fully available API serving healthy investigation turns must "
+            f"not be BREACHED; active breaches: "
+            f"{[b.metric_type for b in tracker.active_breaches.get('api', [])]}"
+        )
+        assert not tracker.active_breaches.get("api")
+
+    def test_probe_latency_does_not_breach_either(self, tracker):
+        """The other population. Both pass, which is the point.
+
+        If one of these two ever fails while the other passes, a single
+        number has been reintroduced and it is discriminating between
+        populations rather than between healthy and broken.
+        """
+        _record_many(tracker, "api", 40, success=True, duration_ms=PROBE_MS)
+
+        assert tracker.calculate_sla_metrics("api").status == SLAStatus.MEETING
+
+    def test_no_latency_condition_exists_at_all(self, tracker):
+        """Read from the one function both consumers use, not from a name.
+
+        ``_breach_checks`` is what ``_determine_sla_status`` and
+        ``_check_sla_breaches`` each read, so this is the complete set of
+        things that can make a component BREACHED.
+        """
+        _record_many(tracker, "api", 10, success=True, duration_ms=PROBE_MS)
+        metrics = tracker.calculate_sla_metrics("api")
+        thresholds = tracker.component_thresholds["api"]
+
+        conditions = {mt for mt, *_ in tracker._breach_checks(metrics, thresholds)}
+
+        assert conditions == {"availability", "error_rate"}
+
+    def test_the_measurement_is_still_published(self, tracker):
+        """Positive control: removing the verdict must not remove the number.
+
+        Without this, deleting the percentile computation outright would
+        satisfy every assertion above.
+        """
+        for duration_ms in HEALTHY_TURN_MS:
+            tracker.record_request_metrics("api", duration_ms, success=True)
+
+        summary = tracker.get_sla_summary()
+        details = tracker.get_component_sla_details("api")
+
+        assert summary["components"]["api"]["response_time_p95"] == (
+            SLOWEST_HEALTHY_TURN_MS
+        )
+        assert details["current_metrics"]["response_time_p95"] == (
+            SLOWEST_HEALTHY_TURN_MS
+        )
+        assert details["current_metrics"]["response_time_p50"] == 9650.0
+
+
+@pytest.mark.unit
+class TestPublishedObjectIsSelfConsistent:
+    """#1523: ``status`` never contradicts the numbers printed beside it.
+
+    Production served this, and it is what the issue is named for::
+
+        "api": {"sla": 100.0, "status": "breached",
+                "response_time_p95": 1268.3, "error_rate": 0.0}
+
+    100% available, zero errors, and breached. A reader cannot act on that.
+    """
+
+    def test_full_availability_is_never_breached(self, tracker):
+        """The exact combination the issue reports, at turn latencies."""
+        for duration_ms in HEALTHY_TURN_MS:
+            tracker.record_request_metrics("api", duration_ms, success=True)
+
+        entry = tracker.get_sla_summary()["components"]["api"]
+
+        assert entry["sla"] == 100.0
+        assert entry["error_rate"] == 0.0
+        assert entry["status"] == "meeting", (
+            "sla=100.0 + error_rate=0.0 + status=breached is the defect: "
+            f"got {entry}"
+        )
+
+    @pytest.mark.parametrize(
+        "successes,failures,duration_ms",
+        [
+            (100, 0, SLOWEST_HEALTHY_TURN_MS),  # healthy, slow
+            (40, 0, PROBE_MS),  # healthy, fast
+            (99, 1, SLOWEST_HEALTHY_TURN_MS),  # 1% errors, slow
+            (0, 10, SLOWEST_HEALTHY_TURN_MS),  # total outage, slow
+            (0, 10, PROBE_MS),  # total outage, fast
+        ],
+    )
+    def test_breached_is_always_explained_by_the_same_object(
+        self, tracker, successes, failures, duration_ms
+    ):
+        """BREACHED implies one of the two published numbers is past its floor.
+
+        Latency is published too, but it cannot be the reason — so a reader
+        holding only the summary entry can always name the cause.
+        """
+        _record_many(tracker, "api", successes, success=True, duration_ms=duration_ms)
+        _record_many(tracker, "api", failures, success=False, duration_ms=duration_ms)
+
+        entry = tracker.get_sla_summary()["components"]["api"]
+        thresholds = tracker.component_thresholds["api"]
+
+        if entry["status"] == "breached":
+            assert (
+                entry["sla"] < thresholds.min_availability
+                or entry["error_rate"] > thresholds.max_error_rate
+            ), f"nothing in {entry} explains the verdict"
+        else:
+            assert (
+                entry["sla"] >= thresholds.min_availability
+                and entry["error_rate"] <= thresholds.max_error_rate
+            ), f"{entry} is past a threshold but not reported as breached"
+
+    def test_status_and_active_breaches_cannot_disagree(self, tracker):
+        """Both readers of ``_breach_checks``, on the same window.
+
+        They used to hold separate copies of the comparisons; one object
+        reporting ``meeting`` beside two active breaches is the failure that
+        invites.
+        """
+        _record_many(tracker, "api", 90, success=True)
+        _record_many(tracker, "api", 10, success=False)
+        breached = tracker.calculate_sla_metrics("api")
+        assert breached.status is SLAStatus.BREACHED
+        assert tracker.active_breaches["api"]
+
+        # api's floor is 99.9% available, so 10 failures need >=10k requests
+        # beside them before the window is healthy again.
+        _record_many(tracker, "api", 19_990, success=True)
+        recovered = tracker.calculate_sla_metrics("api")
+
+        assert recovered.status is SLAStatus.MEETING
+        assert tracker.active_breaches["api"] == []
+
+    def test_compliance_flags_are_exactly_the_breach_conditions(self, tracker):
+        """``compliance`` is the per-condition view of the same verdict."""
+        _record_many(tracker, "api", 90, success=True)
+        _record_many(tracker, "api", 10, success=False)
+
+        details = tracker.get_component_sla_details("api")
+        metrics = tracker.component_metrics["api"]
+        thresholds = tracker.component_thresholds["api"]
+
+        expected_keys = {
+            f"{mt}_compliance" for mt, *_ in tracker._breach_checks(metrics, thresholds)
+        }
+        assert set(details["compliance"]) == expected_keys
+
+        breached_now = {b.metric_type for b in tracker.active_breaches["api"]}
+        for metric_type, *_ in tracker._breach_checks(metrics, thresholds):
+            compliant = details["compliance"][f"{metric_type}_compliance"]
+            assert compliant is (metric_type not in breached_now)
+
+    def test_an_unobserved_component_claims_no_compliance(self, tracker):
+        """``status: unknown`` must not ship ``availability_compliance: false``.
+
+        The zeroed metrics mean "not measured" (#1515). Comparing them
+        published a failing verdict for database / knowledge_base /
+        session_store on every deployment, none of which anything records for.
+        """
+        details = tracker.get_component_sla_details("database")
+
+        assert details["current_metrics"]["status"] == "unknown"
+        assert details["compliance"] == {
+            "availability_compliance": None,
+            "error_rate_compliance": None,
+        }
+
+    def test_at_risk_is_not_produced(self, tracker):
+        """Recorded, not asserted as desirable: AT_RISK is arithmetically dead.
+
+        ``availability_margin < alert_threshold`` requires availability below
+        ``0.95 * min_availability``, which is strictly inside "below
+        min_availability" and so returned BREACHED first. That was equally
+        true before the latency terms were removed. Making it reachable means
+        choosing a warning margin, and there is no measurement here to choose
+        one from — inventing a second round figure is the defect #1523 is
+        about. This test exists so the next reader learns it from the suite
+        rather than from a silent gauge.
+        """
+        thresholds = tracker.component_thresholds["api"]
+        assert thresholds.alert_threshold <= 100.0
+
+        for availability in (100.0, 99.95, 99.9, 99.89, 95.0, 94.0, 50.0, 0.0):
+            metrics = SLAMetrics(
+                component_name="api",
+                availability_percentage=availability,
+                response_time_p50=PROBE_MS,
+                response_time_p95=SLOWEST_HEALTHY_TURN_MS,
+                response_time_p99=SLOWEST_HEALTHY_TURN_MS,
+                error_rate_percentage=100.0 - availability,
+                throughput_per_minute=1.0,
+                status=SLAStatus.MEETING,
+            )
+            assert (
+                tracker._determine_sla_status("api", metrics) is not SLAStatus.AT_RISK
+            )
+
+    def test_a_deployment_can_still_declare_a_stricter_floor(self, tracker):
+        """``replace`` on the dataclass: the two live knobs still bite."""
+        strict = replace(tracker.component_thresholds["api"], min_availability=100.0)
+        tracker.set_sla_thresholds("api", strict)
+        _record_many(tracker, "api", 999, success=True)
+        _record_many(tracker, "api", 1, success=False)
+
+        assert tracker.calculate_sla_metrics("api").status is SLAStatus.BREACHED
+
+
+@pytest.mark.unit
 class TestBreachSeverity:
     """Severity calculation handles edge values safely."""
 
@@ -244,10 +491,7 @@ class TestBreachSeverity:
     def test_higher_is_worse_metric_severity(self, tracker):
         assert tracker._determine_breach_severity("error_rate", 2.0, 1.0) == "critical"
         assert tracker._determine_breach_severity("error_rate", 1.6, 1.0) == "high"
-        assert (
-            tracker._determine_breach_severity("response_time_p95", 1.25, 1.0)
-            == "medium"
-        )
+        assert tracker._determine_breach_severity("error_rate", 1.25, 1.0) == "medium"
         assert tracker._determine_breach_severity("error_rate", 1.1, 1.0) == "low"
 
 
@@ -337,8 +581,16 @@ class TestReportShapes:
         assert current["response_time_p50"] == 20.0
         assert current["status"] == "meeting"
         assert details["sla_thresholds"]["min_availability"] == 99.9
-        assert details["compliance"]["availability_compliance"] is True
-        assert details["compliance"]["error_rate_compliance"] is True
+        assert set(details["sla_thresholds"]) == {
+            "min_availability",
+            "max_error_rate",
+            "min_throughput",
+            "alert_threshold",
+        }, "no latency budget is published, because none exists (#1523)"
+        assert details["compliance"] == {
+            "availability_compliance": True,
+            "error_rate_compliance": True,
+        }
         assert details["breaches"]["active_breaches"] == []
         assert details["breaches"]["recent_breaches"] == []
         assert details["breaches"]["total_breaches_7d"] == 0

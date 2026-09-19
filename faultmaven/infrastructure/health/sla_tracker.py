@@ -1,8 +1,42 @@
 """
 SLA Tracker
 
-Tracks and reports Service Level Agreement metrics for FaultMaven components
-with configurable thresholds and alerting capabilities.
+Tracks and reports Service Level Agreement metrics for FaultMaven components.
+
+**What ``status`` means here: is the component SERVING?** It is derived from
+availability and error rate, and from nothing else. Those two are the same
+quantity seen twice (``error_rate == 100 - availability``) and both are
+published beside ``status`` in every response this module produces, so the
+verdict and the numbers under it cannot disagree.
+
+**Latency is reported, never judged.** ``response_time_p50/p95/p99`` are
+measurements; no threshold turns them into a breach. Two reasons, both
+measured (#1523):
+
+* *One number cannot describe this component.* ``api`` aggregates every HTTP
+  route: a health probe is 5-83 ms on the dev box (16-34 ms in the cluster)
+  and an investigation turn is 5.7-15.0 s — a ~500x spread. ``llm_provider``
+  aggregates nine providers and every model within them. Whatever single
+  budget you pick either fires on healthy traffic or is vacuous, and which of
+  the two you get is decided by the traffic MIX rather than by the service:
+  the shipped 200 ms budget read ``breached`` at p95=1268 ms in production on
+  a fully-available API, then read ``meeting`` at p95=83 ms 82 minutes after a
+  restart, with no code change and no incident either time.
+* *There is no measurement to set a number from.* 55 non-probe requests in 24
+  hours is not a distribution. Replacing 200 ms with a different round figure
+  would repeat the defect at a new value.
+
+The latency VERDICT lives in Prometheus, which has the dimensions this tracker
+does not: ``http_request_duration_seconds`` per route template (read by
+``faultmaven:slo_api_latency_p95:5m`` → ``FaultMavenAPIHighLatency``, which
+already excludes probe endpoints) and ``llm_latency`` per provider+model. An
+in-process deque, per replica, reset on restart, with no route dimension, was
+never going to be that instrument. The measurement stays here and on the
+``sla_response_time_p95_seconds`` gauge, because a self-hosted operator with no
+Prometheus still wants to see it.
+
+``min_throughput`` is likewise capacity context only — a quiet system is not
+violating an SLA (see ``_breach_checks``).
 """
 
 import logging
@@ -15,6 +49,10 @@ from typing import Any, Deque, Dict, List, Optional, Tuple
 # Bound per-component memory: at a sustained 100 req/min this covers >24h,
 # which is the widest SLA window we calculate over.
 _MAX_OBSERVATIONS_PER_COMPONENT = 200_000
+
+# Breach metrics where a HIGHER actual value is the worse one, for severity
+# scaling. The complement (availability) is scaled the other way up.
+_HIGHER_IS_WORSE = frozenset({"error_rate"})
 
 
 class SLAStatus(Enum):
@@ -45,15 +83,39 @@ class SLAMetrics:
 
 @dataclass
 class SLAThresholds:
-    """SLA thresholds for a component."""
+    """SLA thresholds for a component.
+
+    Only ``min_availability`` and ``max_error_rate`` produce a verdict.
+    ``min_throughput`` is capacity context, and there is deliberately no
+    latency budget — see the module docstring for the measurement that
+    removed it (#1523).
+    """
 
     component_name: str
     min_availability: float = 99.9  # Percentage
-    max_response_time_p95: float = 1000.0  # Milliseconds
-    max_response_time_p99: float = 2000.0  # Milliseconds
     max_error_rate: float = 1.0  # Percentage
-    min_throughput: float = 10.0  # Requests per minute
+    min_throughput: float = 10.0  # Requests per minute — context, never a breach
     alert_threshold: float = 95.0  # Percentage of SLA before alerting
+
+
+def _compliance(
+    metrics: SLAMetrics, thresholds: SLAThresholds
+) -> Dict[str, Optional[bool]]:
+    """Per-condition verdicts, or ``None`` each where nothing was observed.
+
+    One key per condition in ``SLATracker._breach_checks``, so
+    ``False`` here and a breach there are the same event.
+    """
+    if metrics.status is SLAStatus.UNKNOWN:
+        return {"availability_compliance": None, "error_rate_compliance": None}
+    return {
+        "availability_compliance": (
+            metrics.availability_percentage >= thresholds.min_availability
+        ),
+        "error_rate_compliance": (
+            metrics.error_rate_percentage <= thresholds.max_error_rate
+        ),
+    }
 
 
 @dataclass
@@ -92,40 +154,30 @@ class SLATracker:
             "api": SLAThresholds(
                 component_name="api",
                 min_availability=99.9,
-                max_response_time_p95=200.0,
-                max_response_time_p99=500.0,
                 max_error_rate=0.5,
                 min_throughput=100.0,
             ),
             "llm_provider": SLAThresholds(
                 component_name="llm_provider",
                 min_availability=99.5,
-                max_response_time_p95=2000.0,
-                max_response_time_p99=5000.0,
                 max_error_rate=2.0,
                 min_throughput=20.0,
             ),
             "database": SLAThresholds(
                 component_name="database",
                 min_availability=99.95,
-                max_response_time_p95=100.0,
-                max_response_time_p99=200.0,
                 max_error_rate=0.1,
                 min_throughput=500.0,
             ),
             "knowledge_base": SLAThresholds(
                 component_name="knowledge_base",
                 min_availability=99.0,
-                max_response_time_p95=500.0,
-                max_response_time_p99=1000.0,
                 max_error_rate=1.0,
                 min_throughput=50.0,
             ),
             "session_store": SLAThresholds(
                 component_name="session_store",
                 min_availability=99.9,
-                max_response_time_p95=50.0,
-                max_response_time_p99=100.0,
                 max_error_rate=0.5,
                 min_throughput=200.0,
             ),
@@ -269,6 +321,46 @@ class SLATracker:
         )
         return ended + active
 
+    @staticmethod
+    def _breach_checks(
+        metrics: SLAMetrics, thresholds: SLAThresholds
+    ) -> List[Tuple[str, float, float, bool]]:
+        """Every breach condition, each with its verdict.
+
+        ``(metric_type, actual_value, threshold_value, is_breach)``.
+
+        ONE definition, read by both ``_determine_sla_status`` ("does anything
+        breach?") and ``_check_sla_breaches`` ("which, and by how much?").
+        They used to carry separate copies of the same comparisons, which is a
+        standing invitation for ``status`` and ``active_breaches`` to disagree
+        inside a single response.
+
+        Both conditions are the availability question asked twice
+        (``error_rate == 100 - availability``), which is what makes
+        ``status: breached`` legible next to the ``sla`` and ``error_rate``
+        printed beside it: one of those two numbers is always past its
+        threshold when the verdict is BREACHED.
+
+        Latency is absent on purpose and throughput is absent on purpose —
+        see the module docstring. A quiet system (low demand) is not violating
+        its SLA, and a slow one is judged by Prometheus, which knows which
+        route or which model was slow.
+        """
+        return [
+            (
+                "availability",
+                metrics.availability_percentage,
+                thresholds.min_availability,
+                metrics.availability_percentage < thresholds.min_availability,
+            ),
+            (
+                "error_rate",
+                metrics.error_rate_percentage,
+                thresholds.max_error_rate,
+                metrics.error_rate_percentage > thresholds.max_error_rate,
+            ),
+        ]
+
     def _determine_sla_status(
         self, component_name: str, metrics: SLAMetrics
     ) -> SLAStatus:
@@ -286,43 +378,25 @@ class SLATracker:
 
         thresholds = self.component_thresholds[component_name]
 
-        # Check for breaches
-        breaches = []
-
-        if metrics.availability_percentage < thresholds.min_availability:
-            breaches.append("availability")
-
-        if metrics.response_time_p95 > thresholds.max_response_time_p95:
-            breaches.append("response_time_p95")
-
-        if metrics.response_time_p99 > thresholds.max_response_time_p99:
-            breaches.append("response_time_p99")
-
-        if metrics.error_rate_percentage > thresholds.max_error_rate:
-            breaches.append("error_rate")
-
-        # Throughput is deliberately NOT a breach condition: a quiet system
-        # (low demand) is not violating its SLA. min_throughput stays in the
-        # thresholds for display/capacity context only.
-
-        # Determine status
-        if breaches:
+        if any(is_breach for *_, is_breach in self._breach_checks(metrics, thresholds)):
             return SLAStatus.BREACHED
 
-        # Check if at risk (within alert threshold)
+        # AT_RISK: approaching the availability floor without having crossed
+        # it. NOTE this arm is unreachable for any alert_threshold <= 100,
+        # because "within 95% of the floor" (availability < 0.95 *
+        # min_availability) is strictly inside "below the floor", which
+        # returned BREACHED above. That was already true before the latency
+        # terms were removed — a p95 within 95% of its budget likewise implied
+        # the budget was already exceeded — so nothing regressed here and
+        # nothing is preserved by keeping it. Making the value reachable means
+        # choosing a warning margin, and this lane has no measurement to choose
+        # one from; inventing a second round figure is the defect #1523 is
+        # about. Tracked separately rather than guessed at.
         availability_margin = (
             metrics.availability_percentage / thresholds.min_availability
         ) * 100
-        response_time_margin = (
-            (thresholds.max_response_time_p95 / metrics.response_time_p95) * 100
-            if metrics.response_time_p95 > 0
-            else 100.0
-        )
 
-        if (
-            availability_margin < thresholds.alert_threshold
-            or response_time_margin < thresholds.alert_threshold
-        ):
+        if availability_margin < thresholds.alert_threshold:
             return SLAStatus.AT_RISK
 
         return SLAStatus.MEETING
@@ -355,40 +429,13 @@ class SLATracker:
         if component_name not in self.active_breaches:
             self.active_breaches[component_name] = []
 
-        # Check each metric for breaches
-        breach_checks = [
-            (
-                "availability",
-                metrics.availability_percentage,
-                thresholds.min_availability,
-                "less_than",
-            ),
-            (
-                "response_time_p95",
-                metrics.response_time_p95,
-                thresholds.max_response_time_p95,
-                "greater_than",
-            ),
-            (
-                "response_time_p99",
-                metrics.response_time_p99,
-                thresholds.max_response_time_p99,
-                "greater_than",
-            ),
-            (
-                "error_rate",
-                metrics.error_rate_percentage,
-                thresholds.max_error_rate,
-                "greater_than",
-            ),
-            # throughput intentionally excluded — see _determine_sla_status
-        ]
-
-        for metric_type, actual_value, threshold_value, comparison in breach_checks:
-            is_breach = (
-                comparison == "greater_than" and actual_value > threshold_value
-            ) or (comparison == "less_than" and actual_value < threshold_value)
-
+        # The same conditions _determine_sla_status read, with their verdicts
+        for (
+            metric_type,
+            actual_value,
+            threshold_value,
+            is_breach,
+        ) in self._breach_checks(metrics, thresholds):
             # Find existing active breach for this metric
             existing_breach = None
             for breach in self.active_breaches[component_name]:
@@ -443,8 +490,7 @@ class SLATracker:
             Severity level: "low", "medium", "high", or "critical"
         """
         # Calculate how far the breach is from the threshold
-        if metric_type in ["response_time_p95", "response_time_p99", "error_rate"]:
-            # For metrics where higher is worse
+        if metric_type in _HIGHER_IS_WORSE:
             ratio = actual_value / threshold_value if threshold_value > 0 else 2.0
         else:
             # For metrics where lower is worse (availability); an actual of 0
@@ -475,6 +521,14 @@ class SLATracker:
         ``overall_sla`` is ``None`` when nothing at all has been observed,
         which is the honest answer to "what is our availability" before any
         request has arrived.
+
+        Per component the entry carries ``sla``, ``status``,
+        ``response_time_p95``, ``error_rate`` and ``breaches_24h``.
+        ``response_time_p95`` is the only one of those that is a pure
+        measurement: it feeds no verdict, and ``status`` is decided by the
+        other two. ``sla == 100.0`` therefore implies ``status == "meeting"``,
+        and ``status == "breached"`` implies one of ``sla`` / ``error_rate``
+        is past its threshold — the reader can always see why (#1523).
 
         Returns:
             Dictionary with SLA summary information
@@ -539,6 +593,11 @@ class SLATracker:
     def get_component_sla_details(self, component_name: str) -> Dict[str, Any]:
         """Get detailed SLA information for a specific component.
 
+        ``current_metrics`` carries the latency percentiles and the throughput
+        as **measurements**; ``sla_thresholds`` and ``compliance`` carry only
+        what produces a verdict. See the module docstring for why latency has
+        no budget here.
+
         Args:
             component_name: Name of the component
 
@@ -598,22 +657,25 @@ class SLATracker:
             },
             "sla_thresholds": {
                 "min_availability": thresholds.min_availability,
-                "max_response_time_p95": thresholds.max_response_time_p95,
-                "max_response_time_p99": thresholds.max_response_time_p99,
                 "max_error_rate": thresholds.max_error_rate,
                 "min_throughput": thresholds.min_throughput,
                 "alert_threshold": thresholds.alert_threshold,
             },
-            "compliance": {
-                "availability_compliance": metrics.availability_percentage
-                >= thresholds.min_availability,
-                "response_time_compliance": metrics.response_time_p95
-                <= thresholds.max_response_time_p95,
-                "error_rate_compliance": metrics.error_rate_percentage
-                <= thresholds.max_error_rate,
-                "throughput_compliance": metrics.throughput_per_minute
-                >= thresholds.min_throughput,
-            },
+            # Exactly the conditions that decide `status`, so the two can be
+            # read against each other: every False here is a breach and every
+            # breach is a False here. `response_time_compliance` is gone with
+            # the latency budget, and `throughput_compliance` is gone because
+            # it reported "non-compliant" for a condition the tracker
+            # declares can never breach — on a healthy 2 req/min deployment
+            # against min_throughput=100 it read False forever (#1523).
+            #
+            # `None` where nothing was observed, for the same reason #1515
+            # stopped averaging an unobserved component in as 0% available:
+            # the zeroed metrics mean "not measured", and comparing them
+            # published `availability_compliance: false` beside
+            # `status: unknown` on every component nothing records for
+            # (database, knowledge_base, session_store — all three, always).
+            "compliance": _compliance(metrics, thresholds),
             "breaches": {
                 "active_breaches": active_breaches,
                 "recent_breaches": recent_breaches[-10:],  # Last 10 breaches
