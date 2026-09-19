@@ -394,8 +394,8 @@ OrganizationResolver = Callable[[str, str], Awaitable[Sequence[Any]]]
 def resolve_billing_organization(
     user: User,
     *,
+    enterprise_claim: str,
     organizations: Optional[Sequence[Any]] = None,
-    enterprise_claim: Optional[str] = None,
 ) -> Optional[str]:
     """Resolve the ``organization_id`` claim — BILLING context, nothing more.
 
@@ -411,6 +411,10 @@ def resolve_billing_organization(
     and every consumer reads "no organization" rather than a sentinel it might
     later mistake for a tenant.
 
+    **No usable enterprise, no organization** — checked first, and above both
+    inputs below. It is a property of the *token*, not of either source, so
+    neither a read nor an attached value can get past it.
+
     Two inputs, in strict precedence:
 
     * ``organizations`` — the account's memberships, as read from
@@ -419,74 +423,117 @@ def resolve_billing_organization(
       is the positive answer "nobody pays for this account", not a failure to
       find out.
     * the organization attached to ``user`` — consulted only when nothing was
-      read (``organizations is None``). Nothing ever *originates* a value there;
-      the OAuth token exchange and ``/auth/refresh`` re-attach what the previous
-      token carried, which is how a claim survives a rotation. Keeping this arm
-      is what makes an un-wired deployment byte-identical to its former self.
+      read (``organizations is None``), which is every deployment where an
+      organization cannot exist (see ``create_billing_organization_resolver``).
+      Nothing ever *originates* a value there; the OAuth token exchange and
+      ``/auth/refresh`` re-attach what the previous token carried, which is how
+      a claim survives a rotation.
 
-    Three rules on the authoritative arm, all of which omit rather than guess:
+    Rules on the authoritative arm, all of which omit rather than guess:
 
-    1. **At most one organization** (D5). More than one is a data defect, not a
-       choice to make: logged and refused. Counted before the enterprise filter
-       below, so a second membership cannot be explained away by discarding it.
-    2. **Same enterprise only.** The organization must belong to the enterprise
-       whose id is going into the *same token*.
+    1. **Same enterprise only**, applied *before* counting. The organization
+       must belong to the enterprise whose id is going into the *same token*;
        ``tenant_scope._validated_billing_organization`` re-checks this when the
-       token is presented, so a claim that fails here would be minted only to be
+       token is presented, so a claim failing it would be minted only to be
        dropped at bind time — visible as nothing at all.
-    3. **Absence is the answer.** No membership omits the key. Never a sentinel,
+    2. **At most one organization** (D5), counted over what rule 1 left. More
+       than one is a data defect, not a choice to make: logged and refused.
+       Counting before scoping would instead refuse the *innocent* account that
+       merely carries one stale row in another enterprise.
+    3. **Active only.** A deactivated organization must not bill, and must not
+       uncap: with no ``daily_turn_cap`` override an organization is uncapped,
+       so minting its claim would make deactivation *raise* the members'
+       ceiling. The repository's list filters ``deleted_at`` only, so this gate
+       lives here.
+    4. **Absence is the answer.** No membership omits the key. Never a sentinel,
        never an empty string.
 
     Args:
         user: User the token is being minted for.
+        enterprise_claim: The ``enterprise_id`` going into the same token, which
+            an organization must belong to. Required rather than defaulted: a
+            caller that omitted it would silently take the falsy path and get
+            ``None`` for every account.
         organizations: The account's memberships, or ``None`` when none were
             read. See the precedence above.
-        enterprise_claim: The ``enterprise_id`` going into the same token, which
-            an organization must belong to. Falsy (an unanchored account under
-            multi-tenant) admits no organization at all.
 
     Returns:
         The billing organization id, or ``None`` when the account is in none.
     """
+    # FIRST, and above the attached-value arm: an account with no usable
+    # enterprise gets no organization, whichever input it came from. Such an
+    # account is already minting a dead token (see _NO_ENTERPRISE_CLAIM), and a
+    # token naming an organization beside an empty enterprise is the exact
+    # shape this contract forbids. Below the attached arm this rule was
+    # unreachable, because a falsy enterprise also means nothing was read: the
+    # re-attached value on a refresh then minted precisely that token.
+    if not enterprise_claim:
+        return None
+
     if organizations is None:
         return getattr(user, "organization_id", None) or None
 
-    if not enterprise_claim:
-        # An account with no usable enterprise is already minting a dead token
-        # (see _NO_ENTERPRISE_CLAIM). Naming an organization on it would be a
-        # billing subject for a request that will be refused.
+    # SCOPE FIRST, THEN COUNT. Counting the raw result would let one stale
+    # membership in another enterprise suppress a legitimate in-scope claim —
+    # refusing the wrong account, which is still a refusal but not the one
+    # ADR-017 D5 is about. What D5 bounds is how many organizations bill an
+    # account *within its own enterprise*, so that is what is counted.
+    owned = [
+        organization
+        for organization in organizations
+        if getattr(organization, "organization_id", None)
+        and getattr(organization, "enterprise_id", None) == enterprise_claim
+    ]
+
+    if not owned:
+        if organizations:
+            # Everything the account has is out of scope. Silence here would
+            # lose the signal the pre-scoping order used to give: an account
+            # whose only membership names another enterprise gets no claim, and
+            # that is worth saying rather than looking like "no membership".
+            logger.error(
+                "Omitting the billing organization claim for user %s: all %d "
+                "membership(s) name another enterprise than the one being "
+                "minted (%s). The request binder would drop such a claim "
+                "anyway.",
+                getattr(user, "user_id", "<unknown>"),
+                len(organizations),
+                enterprise_claim,
+            )
         return None
 
-    if len(organizations) > 1:
+    if len(owned) > 1:
         logger.error(
             "Omitting the billing organization claim for user %s: %d "
-            "memberships found and ADR-017 D5 allows at most one. This is a "
-            "data defect in organization_members; the mint will not guess "
-            "which one pays.",
+            "memberships in enterprise %s, and ADR-017 D5 allows at most one. "
+            "This is a data defect in organization_members; the mint will not "
+            "guess which one pays.",
             getattr(user, "user_id", "<unknown>"),
-            len(organizations),
+            len(owned),
+            enterprise_claim,
         )
         return None
 
-    if not organizations:
-        return None
+    organization = owned[0]
 
-    organization = organizations[0]
-    organization_id = getattr(organization, "organization_id", None)
-    if not organization_id:
-        return None
-
-    if getattr(organization, "enterprise_id", None) != enterprise_claim:
-        logger.error(
+    # A deactivated organization must not bill, and must not UNCAP either.
+    # An organization with no ``daily_turn_cap`` override is uncapped
+    # (SOURCE_COMPANY_UNCAPPED), so minting the claim for a deactivated
+    # organization would remove its members' turn cap rather than stop them —
+    # deactivation would raise the ceiling it is meant to lower. The
+    # repository's list filters ``deleted_at`` only, so the gate belongs here.
+    # Absent means refused: the domain model always carries the field, so a
+    # missing one is an unknown, and the restrictive answer is the safe one.
+    if not getattr(organization, "is_active", False):
+        logger.warning(
             "Omitting the billing organization claim for user %s: "
-            "organization %s belongs to another enterprise than the one being "
-            "minted. The request binder would drop this claim anyway.",
+            "organization %s is not active.",
             getattr(user, "user_id", "<unknown>"),
-            organization_id,
+            getattr(organization, "organization_id", "<unknown>"),
         )
         return None
 
-    return organization_id
+    return getattr(organization, "organization_id")
 
 
 async def _resolve_memberships(
@@ -514,7 +561,11 @@ async def _resolve_memberships(
 
     user_id = getattr(user, "user_id", None)
     if not user_id:
-        return ()
+        # Nothing was asked, so the answer is "not consulted" — not the
+        # authoritative empty one. Returning () here would have contradicted
+        # the contract three lines above and silently overridden an attached
+        # value with a read that never happened.
+        return None
 
     try:
         return await resolve_organizations(user_id, enterprise_claim)
@@ -549,7 +600,7 @@ async def _tenancy_claims(
         user, enterprise_claim, resolve_organizations
     )
     organization_id = resolve_billing_organization(
-        user, organizations=organizations, enterprise_claim=enterprise_claim
+        user, enterprise_claim=enterprise_claim, organizations=organizations
     )
     if organization_id:
         claims["organization_id"] = organization_id
@@ -581,6 +632,26 @@ class IJWTTokenGenerator(ABC):
 
         Returns:
             JWT access token string
+        """
+        ...
+
+    @abstractmethod
+    async def generate_token_pair(
+        self, user: User, *, state_read_at: datetime
+    ) -> Tuple[str, str]:
+        """Mint an access + refresh token from ONE tenancy resolution.
+
+        Callers minting BOTH tokens must use this rather than calling the two
+        generators in sequence: sequential calls resolve the billing
+        organization twice, and a membership write or a transient failure
+        between them splits the pair irrecoverably. See the implementations.
+
+        Args:
+            user: User to mint the pair for.
+            state_read_at: See ``generate_access_token`` (#831).
+
+        Returns:
+            ``(access_token, refresh_token)``.
         """
         ...
 
@@ -830,6 +901,51 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         Returns:
             JWT access token string
         """
+        return self._sign_access_token(
+            user,
+            state_read_at,
+            await _tenancy_claims(user, self._resolve_organizations),
+        )
+
+    async def generate_token_pair(
+        self, user: User, *, state_read_at: datetime
+    ) -> Tuple[str, str]:
+        """Mint an access + refresh token from ONE tenancy resolution.
+
+        **The way to mint a pair.** Calling the two generators in sequence
+        resolves the billing organization twice, in two transactions at two
+        instants, and that is a correctness bug before it is a cost: a
+        membership written between the two reads, or a transient failure
+        hitting only one of them, splits the pair into an access token that
+        names the organization and a refresh token that does not. The refresh
+        token is the ONLY carrier of the claim across rotation, so the split
+        does not heal — the next rotation mints from the half that lost it and
+        the attribution is gone permanently and silently. Resolving once also
+        halves the hot-path cost, but that is the smaller half of the reason.
+
+        Args:
+            user: User to mint the pair for.
+            state_read_at: See interface (#831) — the SAME basis for both
+                halves, which is the other thing a split pair loses.
+
+        Returns:
+            ``(access_token, refresh_token)``.
+        """
+        tenancy = await _tenancy_claims(user, self._resolve_organizations)
+        return (
+            self._sign_access_token(user, state_read_at, tenancy),
+            self._sign_refresh_token(user, state_read_at, tenancy),
+        )
+
+    def _sign_access_token(
+        self, user: User, state_read_at: datetime, tenancy: Dict[str, str]
+    ) -> str:
+        """Sign one access token from ALREADY-RESOLVED tenancy claims.
+
+        Split from the public method so ``generate_token_pair`` can mint
+        both halves from a single resolution — see its docstring for why
+        resolving twice is a correctness bug and not merely a cost.
+        """
         _refuse_if_deactivated(user, "access")
 
         issued_at = _mint_instant(state_read_at)
@@ -844,7 +960,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             "sub": user.user_id,
             "username": user.username,
             "email": user.email if hasattr(user, "email") else "",
-            **(await _tenancy_claims(user, self._resolve_organizations)),
+            **tenancy,
             "roles": user.roles if hasattr(user, "roles") else ["user"],
             "scopes": [
                 "openid",
@@ -908,6 +1024,21 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         Returns:
             JWT refresh token string
         """
+        return self._sign_refresh_token(
+            user,
+            state_read_at,
+            await _tenancy_claims(user, self._resolve_organizations),
+        )
+
+    def _sign_refresh_token(
+        self, user: User, state_read_at: datetime, tenancy: Dict[str, str]
+    ) -> str:
+        """Sign one refresh token from ALREADY-RESOLVED tenancy claims.
+
+        Split from the public method so ``generate_token_pair`` can mint
+        both halves from a single resolution — see its docstring for why
+        resolving twice is a correctness bug and not merely a cost.
+        """
         _refuse_if_deactivated(user, "refresh")
 
         issued_at = _mint_instant(state_read_at)
@@ -926,7 +1057,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             "aud": self.audience,
             "jti": jti,
             "type": "refresh",
-            **(await _tenancy_claims(user, self._resolve_organizations)),
+            **tenancy,
         }
 
         token = jwt.encode(
@@ -1452,6 +1583,51 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         Returns:
             JWT access token string
         """
+        return self._sign_access_token(
+            user,
+            state_read_at,
+            await _tenancy_claims(user, self._resolve_organizations),
+        )
+
+    async def generate_token_pair(
+        self, user: User, *, state_read_at: datetime
+    ) -> Tuple[str, str]:
+        """Mint an access + refresh token from ONE tenancy resolution.
+
+        **The way to mint a pair.** Calling the two generators in sequence
+        resolves the billing organization twice, in two transactions at two
+        instants, and that is a correctness bug before it is a cost: a
+        membership written between the two reads, or a transient failure
+        hitting only one of them, splits the pair into an access token that
+        names the organization and a refresh token that does not. The refresh
+        token is the ONLY carrier of the claim across rotation, so the split
+        does not heal — the next rotation mints from the half that lost it and
+        the attribution is gone permanently and silently. Resolving once also
+        halves the hot-path cost, but that is the smaller half of the reason.
+
+        Args:
+            user: User to mint the pair for.
+            state_read_at: See interface (#831) — the SAME basis for both
+                halves, which is the other thing a split pair loses.
+
+        Returns:
+            ``(access_token, refresh_token)``.
+        """
+        tenancy = await _tenancy_claims(user, self._resolve_organizations)
+        return (
+            self._sign_access_token(user, state_read_at, tenancy),
+            self._sign_refresh_token(user, state_read_at, tenancy),
+        )
+
+    def _sign_access_token(
+        self, user: User, state_read_at: datetime, tenancy: Dict[str, str]
+    ) -> str:
+        """Sign one access token from ALREADY-RESOLVED tenancy claims.
+
+        Split from the public method so ``generate_token_pair`` can mint
+        both halves from a single resolution — see its docstring for why
+        resolving twice is a correctness bug and not merely a cost.
+        """
         _refuse_if_deactivated(user, "access")
 
         issued_at = _mint_instant(state_read_at)
@@ -1469,7 +1645,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             "email": user.email if hasattr(user, "email") else "",
             # enterprise_id = isolation (always present); organization_id =
             # billing (present only when an organization pays for this account).
-            **(await _tenancy_claims(user, self._resolve_organizations)),
+            **tenancy,
             "roles": user.roles if hasattr(user, "roles") else ["user"],
             "scopes": [
                 "openid",
@@ -1533,6 +1709,21 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         Returns:
             JWT refresh token string
         """
+        return self._sign_refresh_token(
+            user,
+            state_read_at,
+            await _tenancy_claims(user, self._resolve_organizations),
+        )
+
+    def _sign_refresh_token(
+        self, user: User, state_read_at: datetime, tenancy: Dict[str, str]
+    ) -> str:
+        """Sign one refresh token from ALREADY-RESOLVED tenancy claims.
+
+        Split from the public method so ``generate_token_pair`` can mint
+        both halves from a single resolution — see its docstring for why
+        resolving twice is a correctness bug and not merely a cost.
+        """
         _refuse_if_deactivated(user, "refresh")
 
         issued_at = _mint_instant(state_read_at)
@@ -1551,7 +1742,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             "aud": self.audience,  # Audience
             "jti": jti,  # JWT ID (unique identifier)
             "type": "refresh",  # Token type
-            **(await _tenancy_claims(user, self._resolve_organizations)),
+            **tenancy,
         }
 
         token = jwt.encode(

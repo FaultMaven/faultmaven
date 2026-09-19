@@ -415,11 +415,14 @@ async def test_single_tenant_mints_no_organization_claim_either(
 
 @pytest.mark.unit
 def test_resolve_billing_organization_invents_nothing():
-    assert resolve_billing_organization(_user(enterprise_id="e")) is None
+    assert (
+        resolve_billing_organization(_user(enterprise_id="e"), enterprise_claim="e")
+        is None
+    )
 
     user = _user(enterprise_id="e")
     user.organization_id = BILLING_ORG
-    assert resolve_billing_organization(user) == BILLING_ORG
+    assert resolve_billing_organization(user, enterprise_claim="e") == BILLING_ORG
 
 
 @pytest.mark.unit
@@ -437,7 +440,10 @@ def test_the_two_resolvers_read_two_different_fields(as_tenant_provider):
     user.organization_id = BILLING_ORG
 
     assert resolve_enterprise_claim(user) == REAL_ENTERPRISE
-    assert resolve_billing_organization(user) == BILLING_ORG
+    assert (
+        resolve_billing_organization(user, enterprise_claim=REAL_ENTERPRISE)
+        == BILLING_ORG
+    )
 
 
 # =============================================================================
@@ -451,7 +457,9 @@ def test_the_two_resolvers_read_two_different_fields(as_tenant_provider):
 # =============================================================================
 
 
-def _organization(*, organization_id=BILLING_ORG, enterprise_id=REAL_ENTERPRISE):
+def _organization(
+    *, organization_id=BILLING_ORG, enterprise_id=REAL_ENTERPRISE, is_active=True
+):
     """A real ``Organization``, not a stand-in.
 
     The resolution reads two of its fields and compares one against the
@@ -464,6 +472,7 @@ def _organization(*, organization_id=BILLING_ORG, enterprise_id=REAL_ENTERPRISE)
         enterprise_id=enterprise_id,
         name="Acme",
         slug="acme",
+        is_active=is_active,
         created_at=now,
         updated_at=now,
     )
@@ -692,3 +701,226 @@ async def test_the_metering_subject_follows_the_claim(
 
     assert subject.kind == expected_kind
     assert subject.subject_id == expected_id
+
+
+# =============================================================================
+# Review fixes (fm#1517) — each of these fails without its fix
+# =============================================================================
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_a_deactivated_organization_is_refused(as_tenant_provider, caplog):
+    """Deactivating an organization must not UNCAP its members (A2).
+
+    An organization with no ``daily_turn_cap`` override is uncapped
+    (``SOURCE_COMPANY_UNCAPPED``), so minting the claim for a deactivated
+    organization would remove its members' turn cap rather than stop them —
+    deactivation would raise the ceiling it exists to lower. The repository's
+    list filters ``deleted_at`` only, so the gate has to be at the mint.
+    """
+    as_tenant_provider(TenantProvider.MULTI)
+    generator, verify = _rs256_generator(
+        resolve_organizations=_resolver(_organization(is_active=False))
+    )
+
+    with caplog.at_level("WARNING"):
+        token = await _mint(
+            generator, "generate_access_token", _user(enterprise_id=REAL_ENTERPRISE)
+        )
+
+    claims = jwt.decode(token, audience=AUDIENCE, issuer=ISSUER, **verify)
+    assert "organization_id" not in claims
+    assert "not active" in caplog.text
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_a_stale_foreign_membership_does_not_suppress_the_real_one(
+    as_tenant_provider,
+):
+    """Scope to the enterprise, THEN count (A3).
+
+    Counting the raw result first meant one in-scope membership plus one stale
+    row in another enterprise was logged as a D5 data defect and the legitimate
+    claim suppressed — refusing the innocent account. D5 bounds how many
+    organizations bill an account *within its own enterprise*, so that is what
+    must be counted.
+    """
+    as_tenant_provider(TenantProvider.MULTI)
+    stale = _organization(
+        organization_id="66666666-6666-6666-6666-666666666666",
+        enterprise_id="99999999-9999-9999-9999-999999999999",
+    )
+    generator, verify = _rs256_generator(
+        resolve_organizations=_resolver(stale, _organization())
+    )
+
+    token = await _mint(
+        generator, "generate_access_token", _user(enterprise_id=REAL_ENTERPRISE)
+    )
+
+    claims = jwt.decode(token, audience=AUDIENCE, issuer=ISSUER, **verify)
+    assert claims["organization_id"] == BILLING_ORG
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_two_in_scope_memberships_still_refuse(as_tenant_provider, caplog):
+    """Scoping first must not weaken D5 for the case it is actually about."""
+    as_tenant_provider(TenantProvider.MULTI)
+    second = _organization(organization_id="55555555-5555-5555-5555-555555555555")
+    generator, verify = _rs256_generator(
+        resolve_organizations=_resolver(_organization(), second)
+    )
+
+    with caplog.at_level("ERROR"):
+        token = await _mint(
+            generator, "generate_access_token", _user(enterprise_id=REAL_ENTERPRISE)
+        )
+
+    claims = jwt.decode(token, audience=AUDIENCE, issuer=ISSUER, **verify)
+    assert "organization_id" not in claims
+    assert "2 memberships" in caplog.text
+
+
+@pytest.mark.unit
+@pytest.mark.security
+def test_an_unanchored_account_gets_no_organization_from_the_attached_value():
+    """The unanchored rule outranks BOTH inputs (A4).
+
+    Below the attached-value arm this was unreachable: a falsy enterprise claim
+    also means nothing was read, so ``organizations is None`` won and the value
+    re-attached by ``/auth/refresh`` minted an ``organization_id`` beside an
+    empty ``enterprise_id`` — the exact token the contract forbids.
+    """
+    user = _user(enterprise_id=None)
+    user.organization_id = BILLING_ORG
+
+    assert resolve_billing_organization(user, enterprise_claim="") is None
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_an_unanchored_multi_tenant_mint_carries_no_organization(
+    as_tenant_provider,
+):
+    """The same rule, end to end on the path that produced the bad token."""
+    as_tenant_provider(TenantProvider.MULTI)
+    generator, verify = _rs256_generator(
+        resolve_organizations=_resolver(_organization())
+    )
+    user = _user(enterprise_id=None)
+    user.organization_id = BILLING_ORG
+
+    token = await _mint(generator, "generate_refresh_token", user)
+
+    claims = jwt.decode(
+        token, audience=AUDIENCE, issuer=ISSUER, options={"verify_exp": False}, **verify
+    )
+    assert claims["enterprise_id"] == ""
+    assert "organization_id" not in claims
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_an_unidentifiable_user_does_not_override_the_attached_value(
+    as_tenant_provider,
+):
+    """``None`` means not consulted; ``()`` means consulted and empty (A5).
+
+    With no user id the resolver is never called, so the honest answer is "not
+    consulted" — returning the authoritative-empty answer instead would let a
+    read that never happened silently discard an attached value.
+    """
+    as_tenant_provider(TenantProvider.MULTI)
+    called = []
+
+    async def resolve(user_id, enterprise_id):
+        called.append(user_id)
+        return []
+
+    generator, verify = _rs256_generator(resolve_organizations=resolve)
+    user = _user(enterprise_id=REAL_ENTERPRISE)
+    user.user_id = ""
+    user.organization_id = BILLING_ORG
+
+    token = await _mint(generator, "generate_access_token", user)
+
+    claims = jwt.decode(token, audience=AUDIENCE, issuer=ISSUER, **verify)
+    assert called == []
+    assert claims["organization_id"] == BILLING_ORG
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.asyncio
+@pytest.mark.parametrize("build_generator", GENERATORS)
+async def test_a_pair_is_minted_from_one_resolution(
+    as_tenant_provider, build_generator
+):
+    """One resolution per pair, and both halves carry it (A6).
+
+    Resolving per token opened two transactions at two instants, so a
+    membership written between them — or a failure hitting only one — split the
+    pair into an access token naming the organization and a refresh token
+    without it. The refresh token is the claim's only carrier across rotation,
+    so that split never heals. Asserting the call COUNT is the point: asserting
+    only that both tokens agree would pass on two reads that happened to agree.
+    """
+    as_tenant_provider(TenantProvider.MULTI)
+    asked = []
+    generator, verify = build_generator(
+        resolve_organizations=_resolver(_organization(), records=asked)
+    )
+
+    access, refresh = await generator.generate_token_pair(
+        _user(enterprise_id=REAL_ENTERPRISE),
+        state_read_at=datetime.now(timezone.utc),
+    )
+
+    assert len(asked) == 1
+    for token in (access, refresh):
+        claims = jwt.decode(token, audience=AUDIENCE, issuer=ISSUER, **verify)
+        assert claims["organization_id"] == BILLING_ORG
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_a_pair_cannot_split_when_the_membership_changes_mid_mint(
+    as_tenant_provider,
+):
+    """The failure the single resolution exists to prevent.
+
+    The resolver answers differently on its second call. Under the old
+    per-token resolution that produced an access token with the organization
+    and a refresh token without it; sharing one resolution makes the second
+    answer unreachable within a pair.
+    """
+    as_tenant_provider(TenantProvider.MULTI)
+    answers = [[_organization()], []]
+
+    async def resolve(user_id, enterprise_id):
+        return answers.pop(0) if answers else []
+
+    generator, verify = _rs256_generator(resolve_organizations=resolve)
+
+    access, refresh = await generator.generate_token_pair(
+        _user(enterprise_id=REAL_ENTERPRISE),
+        state_read_at=datetime.now(timezone.utc),
+    )
+
+    access_claims = jwt.decode(access, audience=AUDIENCE, issuer=ISSUER, **verify)
+    refresh_claims = jwt.decode(refresh, audience=AUDIENCE, issuer=ISSUER, **verify)
+    assert (
+        access_claims.get("organization_id")
+        == refresh_claims.get("organization_id")
+        == BILLING_ORG
+    )
+    assert answers == [[]]
