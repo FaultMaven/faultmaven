@@ -30,6 +30,31 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
+# 7.1.0 — MINOR. `GET /readiness` publishes a **503**, which it could not
+# answer before (#1515). It is the Kubernetes readiness probe, and it now
+# returns 503 when a component fatal to serving — today only `database` — is
+# unhealthy, instead of reporting `{"status": "unready"}` with a 200 that no
+# probe could act on.
+#
+# The honest statement of what changed, because it is more than an addition:
+# the DECLARED surface grew (`['200'] -> ['200', '503']`, which is what the
+# differ reports), but the code for an unready answer also changed from 200 to
+# 503, and a status code changing is normally MAJOR.
+#
+# MINOR because of who the contract is with. It is with faultmaven-copilot,
+# faultmaven-dashboard and faultmaven-slack-agent, and none of them calls
+# `/readiness` — it is a kubelet probe path, and as of this change not even
+# the kubelet points at it (both production probes are on `/health`, which
+# this PR deliberately leaves at 200 always; see its handler docstring for
+# why a liveness probe must not fail on a dependency). So the question the
+# clients are being asked — "can this break you" — has a measured answer of
+# no. A reviewer who reads an undeclared probe response as part of the
+# contract should make this 8.0.0; the fact it turns on is stated above
+# rather than buried, so that call can be made without re-deriving it.
+#
+# `/health` is unchanged in the contract: still 200, and its only edit is the
+# docstring that says so on purpose.
+
 # 7.0.0 — MAJOR. Four published operations that admitted an anonymous caller
 # now refuse one, and a query FILTER that let a caller name whose sessions to
 # list is REMOVED (#1447 §1/§2). A caller that succeeded with no credential
@@ -1509,4 +1534,4 @@ asked to accept, and it belongs to a person.
 # and absent must read as "no": a client treating a missing value as
 # unknown-therefore-fine renders the dead control again, which is the whole
 # failure being closed.
-API_CONTRACT_VERSION = "7.0.0"
+API_CONTRACT_VERSION = "7.1.0"
