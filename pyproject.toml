@@ -62,7 +62,11 @@ dependencies = [
     # with BGE-M3 encode work); >=3.14: request-smuggling/parse GHSA fixes
     "aiohttp[speedups]>=3.14.0",
     "aiofiles>=23.2.1",
-    "anyio>=4.3.0",
+    # Floor raised past CVE-2026-63374 / CVE-2026-64847 (both fixed in 4.14.2).
+    # The lockfiles are what pip-audit reads, but a consumer resolving from this
+    # file directly — or any future re-resolution — would otherwise be free to
+    # select 4.13.0 again and reintroduce both advisories with CI still green.
+    "anyio>=4.15.1",
     "requests>=2.31.0",
     "PyJWT>=2.13.0",  # >=2.13.0: GHSA key-confusion (HS256 forgery) fix
     # RS256 JWT keys; >=50.0.0: PKCS#7 EnvelopedData Bleichenbacher oracle
