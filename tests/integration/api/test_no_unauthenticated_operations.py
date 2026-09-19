@@ -860,20 +860,31 @@ def test_the_debug_router_in_production_is_an_explicit_opt_in():
 #:
 #: The predicate below is quantified over the WHOLE application, not over the
 #: five debug routes it was written for, because a rule applied to five routes
-#: out of 147 is a rule about five routes. Run app-wide it reports 51
+#: out of 147 is a rule about five routes. Run app-wide it first reported 51
 #: operations, every one of them a SERVICE provider: an anonymous caller to
-#: ``GET /api/v1/cases/{case_id}`` reaches
-#: ``_di_get_case_service_dependency`` before the gate, and whatever that
-#: provider does on a degraded deployment is what the caller gets in place of
-#: the 401 the route promises. Not a disclosure — the gate still runs if the
-#: provider succeeds — a wrong refusal, and the class #1447 was.
+#: ``GET /api/v1/knowledge/documents/{document_id}`` reaches
+#: ``get_knowledge_service`` before the gate, and whatever that provider does
+#: on a degraded deployment is what the caller gets in place of the 401 the
+#: route promises. Not a disclosure — the gate still runs if the provider
+#: succeeds — a wrong refusal, and the class #1447 was.
 #:
-#: They are NOT fixed here: 51 operations across ``case``, ``knowledge``,
-#: ``auth`` and the shared ``api/v1`` dependencies is a wide mechanical change
-#: that wants its own review. They are carried the way ``PUBLIC_OPERATIONS``
-#: carries its deferrals — with the issue that closes them — and the allowlist
-#: fails in BOTH directions, so the class cannot grow quietly and closing #1494
-#: forces the entries out.
+#: **29 remain.** The 22 behind ``_di_get_case_service_dependency`` were fixed
+#: as #1494's first slice: their gate moved onto the decorator's
+#: ``dependencies=[...]``, ahead of every collaborator, with the
+#: ``current_user`` parameter kept where the handler reads the principal — all
+#: 22 do. Their behaviour is pinned by
+#: ``tests/integration/security/test_unauthenticated_case_surface.py``, which
+#: drives them against providers made to RAISE, because on that router a
+#: service-less app is not a measurement: ``get_case_service`` returns ``None``
+#: rather than raising and ``check_case_service_available`` turns that into a
+#: 401 of its own, so 19 of the 22 answered 401 with the defect fully present.
+#:
+#: The other 29 — 26 under ``knowledge``, 3 under ``cases`` behind a DIFFERENT
+#: provider (``get_case_service``, ``get_suggestion_service``,
+#: ``get_investigation_service``) — are still carried rather than fixed. They
+#: are carried the way ``PUBLIC_OPERATIONS`` carries its deferrals — with the
+#: issue that closes them — and the allowlist fails in BOTH directions, so the
+#: class cannot grow quietly and closing #1494 forces the entries out.
 #: The disposition for an operation that IS gated but resolves something else
 #: first. Its own word rather than ``_DEFERRED``, because the two say different
 #: things: ``_DEFERRED`` means "open although it should not be", and none of
@@ -881,18 +892,6 @@ def test_the_debug_router_in_production_is_an_explicit_opt_in():
 _MISORDERED = "misordered"
 
 MISORDERED_GATE_OPERATIONS: dict[tuple[str, str], tuple[str, str]] = {
-    ("DELETE", "/api/v1/cases/{case_id}"): (
-        _MISORDERED,
-        "case_service=_di_get_case_service_dependency resolves first. #1494.",
-    ),
-    ("DELETE", "/api/v1/cases/{case_id}/data/{data_id}"): (
-        _MISORDERED,
-        "case_service=_di_get_case_service_dependency resolves first. #1494.",
-    ),
-    ("DELETE", "/api/v1/cases/{case_id}/team-shares/{team_id}"): (
-        _MISORDERED,
-        "case_service=_di_get_case_service_dependency resolves first. #1494.",
-    ),
     ("DELETE", "/api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}"): (
         _MISORDERED,
         "service=_get_conversion_service resolves first. #1494.",
@@ -900,46 +899,6 @@ MISORDERED_GATE_OPERATIONS: dict[tuple[str, str], tuple[str, str]] = {
     ("DELETE", "/api/v1/knowledge/documents/{document_id}"): (
         _MISORDERED,
         "knowledge_service=get_knowledge_service resolves first. #1494.",
-    ),
-    ("GET", "/api/v1/cases"): (
-        _MISORDERED,
-        "case_service=_di_get_case_service_dependency resolves first. #1494.",
-    ),
-    ("GET", "/api/v1/cases/{case_id}"): (
-        _MISORDERED,
-        "case_service=_di_get_case_service_dependency resolves first. #1494.",
-    ),
-    ("GET", "/api/v1/cases/{case_id}/analytics"): (
-        _MISORDERED,
-        "case_service=_di_get_case_service_dependency resolves first. #1494.",
-    ),
-    ("GET", "/api/v1/cases/{case_id}/data"): (
-        _MISORDERED,
-        "case_service=_di_get_case_service_dependency resolves first. #1494.",
-    ),
-    ("GET", "/api/v1/cases/{case_id}/data/{data_id}"): (
-        _MISORDERED,
-        "case_service=_di_get_case_service_dependency resolves first. #1494.",
-    ),
-    ("GET", "/api/v1/cases/{case_id}/messages"): (
-        _MISORDERED,
-        "case_service=_di_get_case_service_dependency resolves first. #1494.",
-    ),
-    ("GET", "/api/v1/cases/{case_id}/report-recommendations"): (
-        _MISORDERED,
-        "case_service=_di_get_case_service_dependency resolves first. #1494.",
-    ),
-    ("GET", "/api/v1/cases/{case_id}/reports"): (
-        _MISORDERED,
-        "case_service=_di_get_case_service_dependency, case_repository=get_case_repository resolves first. #1494.",
-    ),
-    ("GET", "/api/v1/cases/{case_id}/reports/{report_id}/download"): (
-        _MISORDERED,
-        "case_service=_di_get_case_service_dependency, case_repository=get_case_repository resolves first. #1494.",
-    ),
-    ("GET", "/api/v1/cases/{case_id}/ui"): (
-        _MISORDERED,
-        "case_service=_di_get_case_service_dependency resolves first. #1494.",
     ),
     ("GET", "/api/v1/cases/{case_id}/uploaded-files"): (
         _MISORDERED,
@@ -989,41 +948,9 @@ MISORDERED_GATE_OPERATIONS: dict[tuple[str, str], tuple[str, str]] = {
         _MISORDERED,
         "investigation_service=get_investigation_service resolves first. #1494.",
     ),
-    ("POST", "/api/v1/cases"): (
-        _MISORDERED,
-        "case_service=_di_get_case_service_dependency, session_service=_di_get_session_service_dependency resolves first. #1494.",
-    ),
-    ("POST", "/api/v1/cases/search"): (
-        _MISORDERED,
-        "case_service=_di_get_case_service_dependency resolves first. #1494.",
-    ),
-    ("POST", "/api/v1/cases/sessions/{session_id}/resume/{case_id}"): (
-        _MISORDERED,
-        "case_service=_di_get_case_service_dependency, session_service=_di_get_session_service_dependency resolves first. #1494.",
-    ),
-    ("POST", "/api/v1/cases/{case_id}/close"): (
-        _MISORDERED,
-        "case_service=_di_get_case_service_dependency, case_repository=get_case_repository resolves first. #1494.",
-    ),
     ("POST", "/api/v1/cases/{case_id}/extract-knowledge"): (
         _MISORDERED,
         "case_service=get_case_service, suggestion_service=get_suggestion_service resolves first. #1494.",
-    ),
-    ("POST", "/api/v1/cases/{case_id}/reports"): (
-        _MISORDERED,
-        "case_service=_di_get_case_service_dependency resolves first. #1494.",
-    ),
-    ("POST", "/api/v1/cases/{case_id}/team-shares"): (
-        _MISORDERED,
-        "case_service=_di_get_case_service_dependency resolves first. #1494.",
-    ),
-    ("POST", "/api/v1/cases/{case_id}/title"): (
-        _MISORDERED,
-        "case_service=_di_get_case_service_dependency resolves first. #1494.",
-    ),
-    ("POST", "/api/v1/cases/{case_id}/turns"): (
-        _MISORDERED,
-        "case_service=_di_get_case_service_dependency, investigation_service=get_investigation_service resolves first. #1494.",
     ),
     (
         "POST",
@@ -1071,10 +998,6 @@ MISORDERED_GATE_OPERATIONS: dict[tuple[str, str], tuple[str, str]] = {
     ("POST", "/api/v1/knowledge/suggestions/{suggestion_id}/remediate-pii"): (
         _MISORDERED,
         "suggestion_service=get_suggestion_service resolves first. #1494.",
-    ),
-    ("PUT", "/api/v1/cases/{case_id}"): (
-        _MISORDERED,
-        "case_service=_di_get_case_service_dependency resolves first. #1494.",
     ),
     ("PUT", "/api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}"): (
         _MISORDERED,
@@ -1199,11 +1122,13 @@ def _gate_failure(dependant) -> str | None:
     # measured difference — stated that way because the measurement says
     # otherwise and the honest version is the useful one.
     #
-    # Measured: on this application both give the same answer, 51. The union's
-    # extra members are its four SERVICE PROVIDERS, and none of the nine
-    # dependencies currently found ahead of a gate is one of them — the blockers
-    # are case/knowledge service providers, which the sibling never listed
-    # because its own question was about auth-module dependencies only.
+    # Measured: on this application both give the same answer, 29 (51 before
+    # #1494's first slice moved the 22 case-service routes' gates onto their
+    # decorators). The union's extra members are its four SERVICE PROVIDERS,
+    # and none of the six dependencies currently found ahead of a gate is one
+    # of them — the blockers are case/knowledge service providers, which the
+    # sibling never listed because its own question was about auth-module
+    # dependencies only.
     #
     # The narrow import is still the right one. The union's members are grouped
     # by "lives in an auth module and does not by itself refuse an anonymous
@@ -1726,9 +1651,11 @@ def test_no_gated_operation_resolves_a_collaborator_before_its_gate():
 
     #1467 found the rule on one route; #1474 wrote a reusable predicate for it
     and then quantified it over a five-element tuple, which is a rule about five
-    routes. Run app-wide it reports 51 operations of the same shape — carried in
-    ``MISORDERED_GATE_OPERATIONS`` with the issue that closes them (#1494), not
-    fixed here, because they span four modules and want their own review.
+    routes. Run app-wide it first reported 51 operations of the same shape. 22
+    of them — the ``_di_get_case_service_dependency`` seam — are fixed; the
+    remaining 29 are carried in ``MISORDERED_GATE_OPERATIONS`` with the issue
+    that closes them (#1494), because they span three more modules and want
+    their own review.
 
     What this guard is FOR is that the class stops growing. It fails in both
     directions, like ``PUBLIC_OPERATIONS``: a newly mis-ordered operation is not
@@ -2074,8 +2001,8 @@ def test_a_rate_limiter_ahead_of_the_gate_is_not_reported_as_misordered():
     The second half is about which set is imported. The excusal must NOT be the
     flat ``NON_MANDATORY_AUTH_DEPENDENCIES``: that union also contains the four
     service providers, and a service provider ahead of a gate IS the #1467
-    shape. Measured honestly — today both sets give the same answer (51),
-    because none of the nine dependencies currently found ahead of a gate is one
+    shape. Measured honestly — today both sets give the same answer (29),
+    because none of the six dependencies currently found ahead of a gate is one
     of those four. So this is a guard against a future excusal, not a present
     difference, and it is asserted structurally (the groups stay disjoint)
     rather than by a count that would pass either way.
@@ -2162,7 +2089,7 @@ def test_a_rate_limiter_ahead_of_the_gate_is_not_reported_as_misordered():
     )
     assert MISORDERED_GATE_OPERATIONS, (
         "the carried set is empty: either #1494 closed, or the excusal widened "
-        "to the flat union and swallowed all 51"
+        "to the flat union and swallowed the remaining 29"
     )
 
 
