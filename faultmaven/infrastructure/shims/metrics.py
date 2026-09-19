@@ -437,17 +437,20 @@ request_counter = Counter(
 
 # Buckets spanning what this API actually serves, which prometheus_client's
 # defaults do not (#1346). Those stop at a highest finite bucket of 10.0s, and
-# `histogram_quantile` returns +Inf as soon as the quantile lands in the
-# overflow bucket — so on the product's main path the instrument was blind
-# exactly where the question is. Measured end to end on gemini-3.7-flash
+# once a quantile lands in the overflow bucket `histogram_quantile` reports the
+# largest FINITE bound rather than the observation — `promql/quantile.go`
+# returns `buckets[len(buckets)-2].UpperBound` for the last bucket — so every
+# such request is reported as exactly 10.0s however long it really took. On the
+# product's main path the instrument was blind exactly where the question is.
+# Measured end to end on gemini-3.7-flash
 # against a real case: healthy investigation turns 5.9s, 9.7s, 10.3s, 15.0s
 # (latency rises with accumulated context), a turn against a hung provider
 # 68.7s, /health 27-34ms, /readiness 16-20ms. Two of the four healthy turns
-# and the pathological one all landed in the same +Inf bucket, making a
-# 10.3s healthy turn and a 68.7s hung one indistinguishable to any percentile
-# computed from this histogram — including
-# `faultmaven:slo_api_latency_p95:5m`, which `FaultMavenAPIHighLatency` alerts
-# on.
+# and the pathological one all landed in the same +Inf bucket, so a 10.3s
+# healthy turn and a 68.7s hung one were the same observation to every
+# percentile computed from this histogram — both reported as 10.0s, the
+# largest finite bound. Including `faultmaven:slo_api_latency_p95:5m`, which
+# `FaultMavenAPIHighLatency` alerts on.
 #
 # The first fourteen are prometheus_client's defaults unchanged, so every
 # existing recording rule and dashboard keeps the resolution it had below 10s

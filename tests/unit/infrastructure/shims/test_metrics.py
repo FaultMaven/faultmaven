@@ -9,6 +9,7 @@ Verifies that the shim works correctly:
 """
 
 import os
+import warnings
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -330,10 +331,12 @@ class TestHttpDurationBucketsSpanRealTraffic:
 
     It could not. The metric was created with no ``buckets`` argument, so it
     used prometheus_client's defaults, whose highest finite bucket is 10.0s —
-    below the slowest healthy investigation turn measured. ``histogram_quantile``
-    returns +Inf once the quantile lands in the overflow bucket, so a healthy
-    turn and a hung-provider turn were the same observation to every percentile
-    computed from it.
+    below the slowest healthy investigation turn measured. Once a quantile
+    lands in the overflow bucket ``histogram_quantile`` reports the largest
+    FINITE bound rather than the observation (``promql/quantile.go`` returns
+    ``buckets[len(buckets)-2].UpperBound`` for the last bucket), so a 10.31s
+    healthy turn and a 68.7s hung one were both reported as exactly 10.0s —
+    the same observation to every percentile computed from it.
     """
 
     # Measured end to end on gemini-3.7-flash against a real case.
@@ -346,27 +349,72 @@ class TestHttpDurationBucketsSpanRealTraffic:
     def _bucket_reached(buckets, observation):
         """The lowest bucket boundary ``observation`` falls into.
 
-        Two durations that reach the same boundary are indistinguishable to
-        any percentile computed from the histogram.
+        Prometheus buckets are cumulative and labelled ``le``, so an
+        observation increments every bucket whose bound is at or above it and
+        the lowest such bound is the finest placement the histogram can make.
+        Two durations that reach the same bound are indistinguishable to any
+        percentile computed from it.
+
+        Computed rather than measured, deliberately. ``prometheus_client`` is
+        an OPTIONAL dependency — ``requirements/cloud.txt`` carries it,
+        ``test.txt`` and ``dev.txt`` do not — so building a real ``Histogram``
+        here made both reach guards below skip silently in Test Standalone,
+        the job most likely to regress. ``test_the_reach_rule_matches_prometheus``
+        checks this arithmetic against a real Histogram wherever the library
+        does exist.
         """
-        prometheus_client = pytest.importorskip("prometheus_client")
+        return min(bound for bound in buckets if observation <= bound)
 
-        registry = prometheus_client.CollectorRegistry()
-        histogram = prometheus_client.Histogram(
-            "probe_duration_seconds",
-            "Bucket-reach probe",
-            buckets=buckets,
-            registry=registry,
-        )
-        histogram.observe(observation)
+    def test_the_reach_rule_matches_prometheus(self):
+        """Fidelity check for the helper above, where the library exists.
 
-        counts = [
-            (float(sample.labels["le"]), sample.value)
-            for metric in registry.collect()
-            for sample in metric.samples
-            if sample.name.endswith("_bucket")
-        ]
-        return min(le for le, value in counts if value > 0)
+        The helper encodes ``le`` semantics by hand; this is what would catch
+        it being written with the comparison the wrong way round.
+        """
+        try:
+            import prometheus_client
+        except ImportError:
+            warnings.warn(
+                "prometheus_client is absent here, so the bucket-reach rule "
+                "is UNVERIFIED against a real Histogram in this job. It is an "
+                "optional dependency (requirements/cloud.txt only). The reach "
+                "guards themselves still ran — only this fidelity check did not.",
+                stacklevel=2,
+            )
+            pytest.skip("prometheus_client not installed (optional dependency)")
+
+        from faultmaven.infrastructure.shims.metrics import _HTTP_DURATION_BUCKETS
+
+        for observation in (
+            self.HEALTH_PROBE,
+            self.ORDINARY_READ,
+            self.HEALTHY_TURN,
+            self.HUNG_PROVIDER_TURN,
+            # Exactly on a bound. The only observation that distinguishes
+            # `le` (<=, what Prometheus does: this reaches 10.0) from `<`
+            # (which would push it into the 15.0 bucket), so without it the
+            # comparison could be written the wrong way round undetected.
+            10.0,
+        ):
+            registry = prometheus_client.CollectorRegistry()
+            histogram = prometheus_client.Histogram(
+                "probe_duration_seconds",
+                "Bucket-reach probe",
+                buckets=_HTTP_DURATION_BUCKETS,
+                registry=registry,
+            )
+            histogram.observe(observation)
+
+            measured = min(
+                float(sample.labels["le"])
+                for metric in registry.collect()
+                for sample in metric.samples
+                if sample.name.endswith("_bucket") and sample.value > 0
+            )
+
+            assert measured == self._bucket_reached(
+                _HTTP_DURATION_BUCKETS, observation
+            ), f"the reach rule disagrees with prometheus_client at {observation}s"
 
     def test_a_healthy_turn_and_a_hung_one_are_distinguishable(self):
         """The property the whole decision rests on."""
@@ -382,7 +430,8 @@ class TestHttpDurationBucketsSpanRealTraffic:
         )
         assert healthy != float("inf"), (
             "the slowest healthy turn measured falls in the overflow bucket, "
-            "so histogram_quantile reports +Inf for the product's main path"
+            "so histogram_quantile reports the largest finite bound for the "
+            "product's main path however long a request really took"
         )
 
     def test_the_fast_end_keeps_its_resolution(self):
@@ -396,29 +445,49 @@ class TestHttpDurationBucketsSpanRealTraffic:
         assert probe <= 0.05, "a 30ms health probe must not need a 100ms+ bucket"
 
     def test_the_shipped_metric_is_wired_to_these_buckets(self):
-        """The call site, not just the constant.
+        """The call site, not just the constant — asserted in BOTH worlds.
 
-        Run out of process: the module registers its metrics in
+        Run out of process because the module registers its metrics in
         prometheus_client's global REGISTRY at import, and metrics are
         disabled in-process here (so ``request_duration`` is a NoOpMetric with
         no bounds to read). A subprocess with ENABLE_METRICS=true exercises
         the real call site without contaminating this session's registry.
+
+        ``prometheus_client`` is an OPTIONAL dependency: ``cloud.txt`` carries
+        it, ``test.txt`` and ``dev.txt`` do not. The shim gates on
+        ``PROMETHEUS_AVAILABLE and metrics_enabled`` — BOTH — so setting
+        ENABLE_METRICS is not sufficient to make a real ``Histogram``
+        reachable, and an unconditional bounds assertion failed Test
+        Standalone while passing Test Cloud. Rather than skip in the job most
+        likely to regress, each world gets the strongest assertion it admits:
+        the real bounds where the library is present, the NoOp degradation
+        where it is not. The degraded arm warns, so a run that never checked
+        the bounds says so in its output instead of looking identical to one
+        that did.
         """
         import json
         import os
         import subprocess
         import sys
 
-        from faultmaven.infrastructure.shims.metrics import _HTTP_DURATION_BUCKETS
+        from faultmaven.infrastructure.shims.metrics import (
+            _HTTP_DURATION_BUCKETS,
+            PROMETHEUS_AVAILABLE,
+        )
 
         result = subprocess.run(
             [
                 sys.executable,
                 "-c",
                 "import json,sys;"
-                "from faultmaven.infrastructure.shims.metrics import request_duration;"
-                "sys.stderr.write('@@'+json.dumps("
-                "[str(b) for b in request_duration._upper_bounds])+'@@')",
+                "from faultmaven.infrastructure.shims import metrics as m;"
+                "d=m.request_duration;"
+                "sys.stderr.write('@@'+json.dumps({"
+                "'prometheus_available': m.PROMETHEUS_AVAILABLE,"
+                "'metrics_active': m.is_metrics_active(),"
+                "'type': type(d).__name__,"
+                "'bounds': [str(b) for b in getattr(d,'_upper_bounds',[])] or None"
+                "})+'@@')",
             ],
             # Hand the child this interpreter's own import path, so the probe
             # resolves `faultmaven` exactly as the parent does however CI
@@ -435,9 +504,34 @@ class TestHttpDurationBucketsSpanRealTraffic:
         assert result.returncode == 0, result.stderr[-2000:]
         marked = result.stderr.split("@@")
         assert len(marked) >= 3, f"probe produced no result: {result.stderr[-2000:]}"
-        bounds = [float(b) for b in json.loads(marked[-2])]
+        report = json.loads(marked[-2])
 
-        assert bounds == list(_HTTP_DURATION_BUCKETS), (
+        assert report["prometheus_available"] is PROMETHEUS_AVAILABLE, (
+            "the probe and this session disagree about whether "
+            "prometheus_client is installed, so the probe is not measuring "
+            "this environment"
+        )
+
+        if not report["prometheus_available"]:
+            warnings.warn(
+                "prometheus_client is absent here, so the shipped buckets are "
+                "UNVERIFIED in this job — only the NoOp degradation was "
+                "checked. It is an optional dependency (requirements/cloud.txt "
+                "only); Test Cloud is what asserts the bounds.",
+                stacklevel=2,
+            )
+            assert report["metrics_active"] is False
+            assert report["type"] == "NoOpMetric", (
+                "without prometheus_client the shim must degrade to NoOpMetric, "
+                f"not {report['type']}"
+            )
+            assert report["bounds"] is None
+            return
+
+        assert (
+            report["metrics_active"] is True
+        ), "ENABLE_METRICS=true with the library present must activate metrics"
+        assert [float(b) for b in report["bounds"]] == list(_HTTP_DURATION_BUCKETS), (
             "http_request_duration_seconds is not using the buckets chosen for "
             "this API's measured latency range"
         )
