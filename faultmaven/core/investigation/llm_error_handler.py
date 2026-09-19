@@ -103,19 +103,21 @@ class OutputTruncationError(Exception):
 def is_output_truncation_error(error: BaseException) -> bool:
     """True when a *provider* reports it cut the response at the generation cap.
 
-    Reads the category the provider DECLARED (#509). Gemini raises on
+    Reads the category the raiser DECLARED (#509), and only that. This one
+    category is never DERIVED: a cut answer arrives as an ordinary HTTP 200
+    with a short body, so no error body ever reports one, and the party that
+    watched it happen is the only party that can say so. Gemini raises on
     ``finishReason=MAX_TOKENS`` from inside ``generate()``, before any body
-    exists to inspect, and says so with
-    ``category=LLMErrorCategory.OUTPUT_TRUNCATION``; a provider that reports the
-    cut in an HTTP error body is classified from that body at the boundary. The
-    parse-time site has the body and uses the sharper positional test in
+    exists to inspect, and passes
+    ``category=LLMErrorCategory.OUTPUT_TRUNCATION``; the parse-time site has
+    the body and uses the sharper positional test in
     ``is_truncated_json_error`` instead.
 
-    Input overflow wins when a single failure could be read either way — a
-    gateway that says "input truncated: context length exceeded" is reporting
-    that the PROMPT did not fit, and raising the generation cap cannot help.
-    That precedence is settled once, inside ``classify_llm_error``, so this and
-    ``classify_token_limit_reason`` cannot disagree about it.
+    The predecessor matched the literal "finishreason=max_tokens" in Gemini's
+    sentence, a coupling the adapter's own comment had to warn against
+    rewording. A body that merely SAYS "truncated" is now read as whatever it
+    actually is — usually a rejected request, which a bigger generation cap
+    cannot help.
     """
     return declared_llm_category(error) is LLMErrorCategory.OUTPUT_TRUNCATION
 
