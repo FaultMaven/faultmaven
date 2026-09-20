@@ -1094,7 +1094,7 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | Admin | `GET /admin/users` | List the operator's own organization's users — platform-admin only. Confined to the caller's tenant (#1318), `total` included |
 | Admin | `GET /admin/users/{id}` | User details — platform-admin only; a user of another organization answers the same 404 an absent id does |
 | Admin | `POST /admin/users/{id}/roles` | Assign an org-scoped role — platform-admin only, own tenant only |
-| Admin | `GET /admin/llm/config` | LLM provider status and fallback chain |
+| Admin | `GET /admin/llm/config` | LLM provider status, fallback chain, and `role_routing` — the resolved (provider, model) for every capability role with its provenance (#1206). The anchor describes only the roles that FOLLOW it: classifier/synthesis/multimodal ship pinned elsewhere, so each row names the env key that decided it, whether the provider was set for that role or `inherited`, and whether it is actually initialized (an uncredentialed pin is inert and falls back to the chain). Read-only — role keys are not in the override allowlist |
 | Admin | `POST /admin/llm/config/test` | Test provider connection |
 | Admin | `GET /admin/config/status` | Environment configuration status |
 | Admin | `GET /admin/cases` | Cross-tenant case list (all users/orgs) — platform-admin only, audited. Deployment-split (ADR-012 D9): standalone returns full summaries (`view: "full"`), cloud returns ambient metadata with no title/description (`view: "metadata"`); titles need break-glass. 403 under `TENANT_PROVIDER=multi` (RLS would make the list silently partial) |
