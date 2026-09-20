@@ -30,6 +30,7 @@ from faultmaven.modules.auth.domain.services.auth_service import (
     AuthenticationError,
     AuthService,
     PartialKeyConfigurationError,
+    RevocationStateUnknownError,
     TokenRevocationError,
 )
 from tests.utils import (
@@ -336,13 +337,20 @@ class TestTokenVerificationWithRevocation:
             )
 
     @pytest.mark.asyncio
-    async def test_revocation_check_fails_open_on_store_error(
+    async def test_revocation_check_fails_closed_on_store_error(
         self, auth_service_with_store, sample_user_data, revocation_store
     ):
-        """Store outage on the request path fails OPEN (documented posture).
+        """Store outage on the request path fails CLOSED (#1478).
 
-        Access tokens are short-lived; availability wins on the per-request
-        check. Refresh validation in the generators fails closed instead.
+        This asserted the opposite until #1478. Failing open meant a revoked
+        token was ACCEPTED whenever the store could not be read, with a log
+        line as the only signal — the availability argument held only while
+        standalone's store was the in-process FakeRedis singleton and could not
+        fail, and #828/#1469 moved it onto a SQLite table.
+
+        The full posture — both deployments' real stores, the narrowed catch,
+        the counter and the distinct 503 each request path answers — lives in
+        ``tests/unit/modules/auth/test_revocation_fails_closed.py``.
         """
         token = forge_access_token(
             auth_service_with_store,
@@ -357,10 +365,12 @@ class TestTokenVerificationWithRevocation:
 
         revocation_store.is_revoked = boom
 
-        claims = await auth_service_with_store.verify_token_with_revocation_check(
-            token, token_type="access"
-        )
-        assert claims["sub"] == sample_user_data["user_id"]
+        with pytest.raises(RevocationStateUnknownError) as exc_info:
+            await auth_service_with_store.verify_token_with_revocation_check(
+                token, token_type="access"
+            )
+
+        assert exc_info.value.kind == "ConnectionError"
 
 
 # ============================================================

@@ -42,6 +42,7 @@ from faultmaven.api.operator_user_scope import OperatorUserScope
 from faultmaven.exceptions import ServiceError
 from faultmaven.modules.auth.domain.services.auth_service import (
     AuthService,
+    RevocationStateUnknownError,
     TokenRevocationError,
 )
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
@@ -742,9 +743,12 @@ class TestStoreContract:
         so anyone can drive ``add_revoked_token`` with an arbitrary jti. If the
         two namespaces overlapped, a jti of ``user:<victim>`` would write the
         victim's watermark key with the literal body ``"revoked"`` — and the
-        watermark read would then raise on ``int("revoked")``, disabling
-        per-user revocation for that victim on the fail-open request path while
-        locking them out of refresh on the fail-closed generator path.
+        watermark read would then raise on ``int("revoked")``. Before #1478
+        that disabled per-user revocation for the victim on the fail-open
+        request path while locking them out of refresh on the fail-closed
+        generator path; both paths refuse now, so the same forgery would lock
+        the victim out entirely. The namespace separation is what prevents
+        either outcome.
         """
         redis = _fake_redis()
         store = _store(redis)
@@ -1005,8 +1009,20 @@ class TestServiceFailurePosture:
         )
         assert order == ["save", "revoke"], "remove_role must persist first"
 
-    async def test_request_path_fails_open_on_store_read_failure(self):
-        """Documented posture (#767): the request path prefers availability."""
+    async def test_request_path_fails_closed_on_store_read_failure(self):
+        """Posture since #1478: the request path REFUSES rather than accepting.
+
+        It preferred availability under #767, on the reasoning that access
+        tokens are short-lived. That reasoning was written when this
+        deployment's store was the in-process FakeRedis singleton and could not
+        fail; #828/#1469 put standalone's check on a SQLite table and made the
+        path reachable, at which point "prefer availability" meant "accept
+        revoked tokens during a database blip, silently".
+
+        The per-user arm specifically: this drives ``is_user_revoked``, so it
+        pins the watermark half of the rule as well as the jti half the sibling
+        module covers.
+        """
         store = _store()
         generator = _generator(store)
         auth_service = _auth_service(store)
@@ -1019,7 +1035,7 @@ class TestServiceFailurePosture:
 
         store.is_user_revoked = boom
 
-        claims = await auth_service.verify_token_with_revocation_check(
-            access, token_type="access"
-        )
-        assert claims["sub"] == USER_ID
+        with pytest.raises(RevocationStateUnknownError):
+            await auth_service.verify_token_with_revocation_check(
+                access, token_type="access"
+            )

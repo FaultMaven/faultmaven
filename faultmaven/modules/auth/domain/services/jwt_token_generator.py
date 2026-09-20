@@ -1471,10 +1471,14 @@ async def revocation_reason(revocation_store, payload: Dict) -> Optional[str]:
         # Coerced INSIDE a try, and only for the watermark arm. A malformed
         # ``iat`` is a property of the watermark's inputs, not of the jti, and
         # letting it raise here turned a revoked-jti answer into an exception
-        # that ``AuthService._is_revoked`` swallows into "not revoked" — a
+        # that ``AuthService._is_revoked`` swallowed into "not revoked" — a
         # revoked token accepted because a DIFFERENT claim was malformed (#828
-        # delta review). Nothing to match a watermark against is the same
-        # outcome as a claim that cannot be read: only the jti arm applies.
+        # delta review). That check fails closed now (#1478), so the same
+        # malformation would refuse the request instead; the coercion stays
+        # inside the try either way, because refusing a request over a bad
+        # ``iat`` on a token whose jti answers cleanly is still the wrong
+        # answer. Nothing to match a watermark against is the same outcome as
+        # a claim that cannot be read: only the jti arm applies.
         try:
             issued_at = int(raw_iat)
         except (TypeError, ValueError):
@@ -2317,9 +2321,13 @@ class ITokenRevocationStore(ABC):
 
         **Abstract, like every other method here.** It is the one the request
         path actually calls, so a store that does not implement it fails on
-        every authenticated request — and ``AuthService._is_revoked`` turns that
-        into "not revoked", so the symptom is revocation silently OFF rather
-        than an error anybody sees. A concrete default on this class would let a
+        every authenticated request — and before #1478 ``AuthService._is_revoked``
+        turned that into "not revoked", so the symptom was revocation silently
+        OFF rather than an error anybody saw. The check fails closed now, and
+        the resulting ``AttributeError`` is a programming error rather than a
+        store read failure, so it is deliberately NOT laundered into
+        "revocation state unknown" — but an abstract method is still what stops
+        the question arising. A concrete default on this class would let a
         subclass inherit an answer it never considered; instead the two shapes
         are offered explicitly and an implementer picks one:
 

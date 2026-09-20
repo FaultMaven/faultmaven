@@ -137,9 +137,12 @@ class RedisTokenRevocationStore(SequentialRevocationState, ITokenRevocationStore
             return False
         if isinstance(raw, bytes):
             raw = raw.decode()
-        # A malformed watermark raises, and the caller's error posture decides:
-        # the request path fails open, generator validation fails closed. Both
-        # are preferable to silently guessing at a corrupt value here.
+        # A malformed watermark raises, and the caller's error posture
+        # decides. Both paths refuse now (#1478 for the request path, always
+        # for generator validation); a ``ValueError`` is deliberately not in
+        # ``AuthService.STORE_READ_FAILURES``, so the request path refuses it
+        # as an unclassified error rather than labelling a corrupt value a
+        # storage fault. Either is preferable to silently guessing here.
         #
         # `float` then `int`, so a watermark written by a pre-fraction build
         # ("1700000000") reads identically to one written by this one.
@@ -281,9 +284,12 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
             # session factory made durability — the entire point of #828 — an
             # undocumented property of the injected callable: handed the
             # idiomatic ``async_sessionmaker()``, every revocation was dropped
-            # on exit, and ``AuthService._is_revoked`` fails open, so the
-            # control would simply have been off with a log line as the only
-            # signal.
+            # on exit — and because ``AuthService._is_revoked`` failed open at
+            # the time, the control would simply have been off with a log line
+            # as the only signal. (That check fails closed since #1478, but a
+            # dropped write is invisible to it either way: there is nothing to
+            # read and nothing raises. The commit is what fixes this, not the
+            # read posture.)
             await session.commit()
 
     async def add_revoked_token(self, jti: str, ttl: int) -> None:

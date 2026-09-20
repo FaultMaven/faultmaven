@@ -969,11 +969,12 @@ async def get_env_config_status(
 
         # And then PROBE it. Being the database store is necessary, not
         # sufficient: on a standalone deployment upgraded rather than wiped,
-        # `token_revocations` does not exist, every read raises, and
-        # `AuthService._is_revoked` turns that into "not revoked". Deciding this
-        # field by type alone reported `enabled=true` with "…survive an API
-        # restart" on exactly that deployment — the wrong answer in the one
-        # state where the question is urgent.
+        # `token_revocations` does not exist and every read raises — which
+        # since #1478 means every authenticated request is refused 503 rather
+        # than silently accepted. Deciding this field by type alone reported
+        # `enabled=true` with "…survive an API restart" on exactly that
+        # deployment — the wrong answer in the one state where the question is
+        # urgent.
         #
         # Live rather than cached at startup: the field answers "are my
         # revocations in force NOW", and a value cached at boot would keep

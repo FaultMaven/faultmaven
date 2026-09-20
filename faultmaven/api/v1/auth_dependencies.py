@@ -31,6 +31,7 @@ from typing import Optional
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from faultmaven.api.exception_handlers import revocation_state_unknown_http_exception
 from faultmaven.api.middleware.auth import get_auth_service
 from faultmaven.config.tenant_context import (
     UNSCOPED_REQUEST_MSG,
@@ -41,6 +42,7 @@ from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.auth.domain.services.auth_service import (
     AuthenticationError,
     AuthService,
+    RevocationStateUnknownError,
     TokenRevocationError,
 )
 
@@ -274,6 +276,15 @@ async def get_current_user_optional(
     except AuthenticationError as e:
         logger.debug(f"JWT validation failed: {e.message} ({e.error_code})")
         return None
+    except RevocationStateUnknownError as e:
+        # NOT `return None` (#1478). Returning None here would make the
+        # downstream `require_authentication` answer the same 401 a missing
+        # header gets, so an unreadable revocation store would be reported to
+        # the caller — and to whoever is paged — as "not signed in". This is a
+        # service-availability refusal, and the clause above already
+        # establishes that those are raised rather than swallowed.
+        logger.warning("Revocation state unknown (%s): refusing the request", e.kind)
+        raise revocation_state_unknown_http_exception()
     except HTTPException:
         # Re-raise service availability errors (from get_auth_service)
         raise

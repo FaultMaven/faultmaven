@@ -19,12 +19,15 @@ Design Reference: TASK-017 JWT Authentication & Authorization Middleware
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import jwt
+from redis.exceptions import RedisError
+from sqlalchemy.exc import SQLAlchemyError
 
 from faultmaven.config.settings import get_settings
 
@@ -39,8 +42,49 @@ from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     max_revocation_entry_ttl,
     revocation_reason,
 )
+from faultmaven.modules.auth.infrastructure.metrics.revocation_metrics import (
+    revocation_state_unknown_total,
+)
 
 logger = logging.getLogger(__name__)
+
+#: Exception families that mean "the revocation store could not answer" (#1478).
+#:
+#: The catch in ``_is_revoked`` is narrowed to these rather than to ``Exception``
+#: because the two are not the same finding. A store read failure is a *storage*
+#: condition an operator acts on; a ``TypeError`` or ``AttributeError`` is a bug
+#: in our own code, and reporting one to a caller as "we could not read the
+#: revocation store" sends them — and whoever is paged — after the wrong thing.
+#: A programming error therefore propagates unclassified, which still REFUSES
+#: the request (the callers' own catch-alls answer 401); what it does not do is
+#: get counted, or named, as a storage fault.
+#:
+#: What actually reaches here, traced per deployment:
+#:
+#: * **standalone** (``SqlTokenRevocationStore`` on SQLite, since #1469/#828) —
+#:   ``sqlalchemy.exc.OperationalError`` for a write lock held past
+#:   ``busy_timeout``, a disk-full condition, or the mid-migration window where
+#:   ``token_revocations`` is absent. All of those are ``SQLAlchemyError``.
+#: * **cloud** (``RedisTokenRevocationStore``, and ``SqlTokenRevocationStore``
+#:   on PostgreSQL) — ``redis.exceptions.RedisError`` (connection reset, command
+#:   timeout, ``BusyLoadingError`` while a replica loads its RDB) and
+#:   ``sqlalchemy.exc.TimeoutError`` for pool exhaustion, which is also a
+#:   ``SQLAlchemyError``.
+#: * **both** — ``OSError`` beneath either driver (a socket error, ``ENOSPC``),
+#:   which is also what the builtin ``ConnectionError`` and ``TimeoutError``
+#:   subclass; ``asyncio.TimeoutError`` is the builtin ``TimeoutError`` on the
+#:   supported Python versions, and is listed for the reader rather than for
+#:   the type system.
+#:
+#: ``redis`` is importable in every deployment, cloud extra or not: the core
+#: ``fakeredis[lua]`` dependency requires it, and the Redis arm's code is
+#: compiled in both deployments even though only cloud resolves it.
+STORE_READ_FAILURES: tuple[type[BaseException], ...] = (
+    OSError,
+    asyncio.TimeoutError,
+    SQLAlchemyError,
+    RedisError,
+)
 
 
 class AuthenticationError(Exception):
@@ -56,6 +100,43 @@ class TokenRevocationError(Exception):
     """Raised when token has been revoked."""
 
     def __init__(self, message: str = "Token has been revoked"):
+        self.message = message
+        super().__init__(message)
+
+
+class RevocationStateUnknownError(Exception):
+    """The revocation store could not be read, so the request is refused (#1478).
+
+    **A different statement from every other refusal on this path**, which is
+    the whole point of it being its own type. ``TokenRevocationError`` says
+    *this credential is dead*; ``AuthenticationError`` says *this credential is
+    not one we accept*. This one says *we do not know*, and the remedy differs
+    accordingly: the caller re-authenticates for the first two and retries for
+    this one, while the operator looks at the credential for the first two and
+    at storage for this one. Answering all three as a bare 401 made the third
+    indistinguishable from the first — and before #1478 it was not answered at
+    all, because the check swallowed the failure and ACCEPTED the token.
+
+    Deliberately NOT a subclass of ``AuthenticationError``: three call sites
+    catch that type and turn it into "unauthenticated", which would put this
+    condition straight back into the shape it exists to escape.
+
+    ``kind`` is the failing exception's class name — the publishable half of a
+    storage fault, matching what ``GET /admin/config/status`` reports and what
+    the counter is labelled by. The driver's message stays in the log, because
+    SQLAlchemy's carries the full statement and its bound parameters.
+    """
+
+    #: Distinct from every other auth error code, so a client and an operator
+    #: can tell "revoked" from "could not find out".
+    error_code = "REVOCATION_STATE_UNKNOWN"
+
+    def __init__(
+        self,
+        kind: str,
+        message: str = "Revocation state could not be determined",
+    ):
+        self.kind = kind
         self.message = message
         super().__init__(message)
 
@@ -495,6 +576,11 @@ class AuthService:
         Raises:
             AuthenticationError: Invalid or expired token
             TokenRevocationError: Token has been revoked
+            RevocationStateUnknownError: The revocation store could not be
+                read, so whether the token is revoked is unknown (#1478). A
+                distinct type because refusing for an unknown state is a
+                different statement — and a different remedy — from refusing a
+                credential known to be dead.
         """
         # First, verify the token
         claims = self.verify_token(token, token_type)
@@ -638,10 +724,15 @@ class AuthService:
         """Why these claims are revoked, or None if they are not.
 
         The same rule as the request path — one rule governs every token type
-        (``revocation_reason``) — but a store *error* propagates here instead of
-        reading as "not revoked". For callers where proceeding on an unknown
-        revocation state is worse than refusing, such as password reset, which
-        is account-takeover-grade.
+        (``revocation_reason``) — with a store *error* propagating raw. For
+        callers where proceeding on an unknown revocation state is worse than
+        refusing, such as password reset, which is account-takeover-grade.
+
+        Since #1478 the request path refuses too, so this no longer differs in
+        POSTURE, only in shape: here the driver's exception propagates as
+        itself and the caller decides what to say, where ``_is_revoked``
+        classifies it into ``RevocationStateUnknownError`` because its callers
+        are HTTP dependencies that must answer something specific.
 
         A missing store raises for the same reason, and matches
         ``revoke_token``/``revoke_user_tokens``: without one, no answer about
@@ -665,12 +756,42 @@ class AuthService:
     async def _is_revoked(self, claims: Dict[str, Any]) -> bool:
         """Check whether a token's claims are revoked.
 
-        Fail-open by design: if the store is unavailable, the request-path
-        check treats the token as not revoked rather than rejecting all
-        traffic. Access tokens are short-lived (<30 min), which bounds the
-        exposure; the error is logged for monitoring. Refresh-token
-        validation in the generators fails CLOSED (store error => invalid),
-        so a store outage cannot mint new credentials from a revoked token.
+        **Fails CLOSED on a store read failure** (#1478). A store that cannot
+        be read is refused with :class:`RevocationStateUnknownError`, not
+        answered "not revoked".
+
+        This used to catch every exception and return ``False``, which was
+        written when standalone's store was the in-process FakeRedis singleton
+        and could not fail. #828/#1469 moved standalone's request-path check
+        onto a SQLite table, so the path became reachable there for the first
+        time — a write lock held past ``busy_timeout`` (a revocation write
+        sweeps elapsed rows in the same transaction), disk-full, the
+        mid-migration window, or pool exhaustion on PostgreSQL — and a revoked
+        token was then ACCEPTED with a log line as the only signal.
+
+        The availability objection is real and was weighed: refusing turns a
+        storage blip into an outage for every authenticated request at once,
+        where accepting would have turned it into nothing visible. That is
+        exactly why refusing wins. The failure it creates is loud, bounded and
+        diagnosable — it is counted
+        (``faultmaven_auth_revocation_state_unknown_total``), it carries its own
+        error code, and it stops when the store comes back. The failure it
+        prevents is a security control that is off and indistinguishable from
+        working.
+
+        **The catch is narrow on purpose** — see ``STORE_READ_FAILURES``. A bug
+        in our own code (a ``TypeError``, an ``AttributeError`` from a store
+        that does not implement the interface) propagates unclassified: it
+        still refuses the request, via the callers' own handlers, but it is not
+        reported to anyone as a storage fault. One residual is worth naming: a
+        stored watermark that cannot be parsed raises ``ValueError``, which is
+        not in the tuple, so it refuses as an unclassified error rather than as
+        a counted one. Refusing is the direction #1478 asked for either way;
+        widening the tuple to a bare ``ValueError`` to label it would re-admit
+        every arithmetic bug in this package.
+
+        Refresh-token validation in the generators already failed CLOSED
+        (store error => invalid), so the two paths now agree.
 
         Args:
             claims: Verified token claims (``jti``, ``sub`` and ``iat`` are
@@ -678,16 +799,25 @@ class AuthService:
 
         Returns:
             True if the token is revoked
+
+        Raises:
+            RevocationStateUnknownError: The store could not be read, so
+                whether this token is revoked is unknown.
         """
         if self._revocation_store is None:
             return False
         try:
             reason = await revocation_reason(self._revocation_store, claims)
-            return reason is not None
-        except Exception as e:
-            logger.error(f"Failed to check token revocation: {e}")
-            # Fail open for availability, but log for monitoring
-            return False
+        except STORE_READ_FAILURES as e:
+            kind = type(e).__name__
+            revocation_state_unknown_total.labels(kind=kind).inc()
+            logger.error(
+                "Revocation state unknown, refusing the request: %s: %s",
+                kind,
+                e,
+            )
+            raise RevocationStateUnknownError(kind=kind) from e
+        return reason is not None
 
     def extract_user_from_token(self, token: str) -> AuthenticatedUser:
         """Extract AuthenticatedUser from a valid access token.
@@ -721,6 +851,7 @@ class AuthService:
         Raises:
             AuthenticationError: Invalid or expired token
             TokenRevocationError: Token has been revoked
+            RevocationStateUnknownError: The revocation store could not be read
         """
         claims = await self.verify_token_with_revocation_check(
             token,

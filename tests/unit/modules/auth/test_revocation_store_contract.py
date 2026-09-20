@@ -493,8 +493,11 @@ class TestTheSqlStoreOwnsItsUnitOfWork:
     ``session_factory`` it was handed. ``get_db_session`` happens to commit and
     both factories in this module were written to, so nothing failed — but
     handed the idiomatic ``async_sessionmaker()``, every revocation was
-    discarded on exit, and ``AuthService._is_revoked`` fails open, so the
-    control would have been silently OFF with a log line as the only signal.
+    discarded on exit — and ``AuthService._is_revoked`` failed open at the
+    time, so the control would have been silently OFF with a log line as the
+    only signal. The read posture changed in #1478; a dropped WRITE is
+    invisible either way, because there is nothing to read and nothing
+    raises.
 
     The factory below is deliberately the plain one: it opens and closes a
     session and commits nothing. A store that owns its writes is unaffected.

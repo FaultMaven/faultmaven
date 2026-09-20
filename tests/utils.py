@@ -591,10 +591,13 @@ class InMemoryRevocationStore(SequentialRevocationState, ITokenRevocationStore):
 
     Subclasses ``ITokenRevocationStore`` on purpose. The #767 bug was a store
     that silently did not implement the interface — the resulting
-    AttributeError was swallowed by the fail-open request-path check — so a
-    duck-typed double is exactly the shape to avoid here: adding an interface
+    AttributeError was swallowed by the then fail-open request-path check — so
+    a duck-typed double is exactly the shape to avoid here: adding an interface
     method must break these tests loudly at instantiation instead of quietly
-    reading as "not revoked".
+    reading as "not revoked". The check fails closed since #1478 and does NOT
+    classify an ``AttributeError`` as a store read failure, so the symptom
+    would now be an opaque refusal rather than a silent one — still worth
+    catching at construction.
     """
 
     def __init__(self) -> None:

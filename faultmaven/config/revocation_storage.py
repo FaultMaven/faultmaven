@@ -16,15 +16,21 @@ stamped ``a1e0c17bd001``, so ``alembic upgrade head`` is a NO-OP and the table
 never appears. Every previous in-place edit failed loudly there — a missing
 ``team_invitations`` breaks team invitations, visibly. This one does not:
 
-* ``AuthService._is_revoked`` catches every exception and returns ``False``, so
-  a revoked token is ACCEPTED and the only signal is a log line;
+* ``AuthService._is_revoked`` caught every exception and returned ``False``, so
+  a revoked token was ACCEPTED and the only signal was a log line;
 * the write paths (logout, OAuth ``/revoke``, admin revoke-tokens) raise, so
   they 500 — which reports a broken feature, not a disabled security control.
 
-A security control that fails open must not be discoverable only from
-``kubectl logs``, which is where a startup warning goes to die. So this refuses
-to boot, beside the deployment-coherence, credential and investigation-tooling
-gates, and for the same reason they exist.
+Since #1478 the read path fails CLOSED, so the first bullet is history: an
+absent table now refuses every authenticated request with 503
+``REVOCATION_STATE_UNKNOWN`` instead of quietly accepting revoked tokens. That
+strengthens this gate rather than retiring it. The condition is PERMANENT here
+— there is one migration and the database is already stamped with it, so
+``alembic upgrade head`` changes nothing — and a pod that booted would report
+itself healthy while serving nothing but 503s. Refusing at boot names the
+cause once, where an operator is looking, instead of once per request. So this
+still refuses to boot, beside the deployment-coherence, credential and
+investigation-tooling gates, and for the same reason they exist.
 
 The remediation is deliberately explicit, because the obvious move does not
 work: ``alembic upgrade head`` reports success and changes nothing.
@@ -143,11 +149,11 @@ async def validate_revocation_storage(store) -> None:
         return
 
     raise RevocationStorageUnavailableError(
-        "The token revocation store cannot read its storage, so revocation "
-        f"would be unenforceable: {fault.detail}\n"
-        "   Refusing to start: AuthService._is_revoked fails OPEN, so every "
-        "revoked token would be accepted and the only signal would be a log "
-        "line.\n"
+        "The token revocation store cannot read its storage, so no token's "
+        f"revocation state can be determined: {fault.detail}\n"
+        "   Refusing to start: AuthService._is_revoked fails CLOSED (#1478), "
+        "so every authenticated request would be answered 503 "
+        "REVOCATION_STATE_UNKNOWN while this pod reported itself healthy.\n"
         "   If this deployment was UPGRADED rather than re-provisioned, the "
         "token_revocations table (#828) is missing and `alembic upgrade head` "
         "will NOT create it — there is one migration and this database is "

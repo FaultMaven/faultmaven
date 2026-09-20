@@ -423,14 +423,15 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         alongside it — see ``_verified_principal`` for why the enterprise is
         carried rather than assumed.
 
-        One caveat on the revocation half, so it is not read as stronger than it
-        is: ``AuthService._is_revoked`` is **fail-open by design** — if the
-        revocation store is unavailable it reports "not revoked" rather than
-        rejecting all traffic. During a store outage a revoked token therefore
-        still scopes as a principal and can replay. That is this deployment's
-        documented posture rather than something this middleware chooses, and it
-        is bounded by the access-token lifetime; but revocation is a
-        best-effort term in the scope, not a guarantee.
+        The revocation half is not best-effort any more (#1478):
+        ``AuthService._is_revoked`` now REFUSES when the store cannot be read,
+        rather than reporting "not revoked". For this middleware that failure
+        arrives like any other — it is caught below, the principal cannot be
+        named, and the scope narrows to the raw credential hash — and the
+        request then reaches the route's own auth dependency, which answers
+        503. So a store outage no longer lets a revoked token scope as a
+        principal here; it simply stops naming principals at all, which is the
+        narrowest scope available and can only cost a replay.
 
         Verification failure is **not** an error path: an unverifiable
         ``Authorization`` header names no principal, so the identity falls back

@@ -106,6 +106,57 @@ def quota_exhausted_http_exception(
     )
 
 
+# The revocation-check refusal (#1478). One builder, because the condition is
+# raised from four request paths — the mandatory and optional auth dependencies
+# in ``api/middleware/auth.py``, the optional one in
+# ``api/v1/auth_dependencies.py``, and the tenant binder in
+# ``api/middleware/tenant_scope.py`` — and an operator reading ``x-error-code``
+# must get the same answer whichever one refused.
+REVOCATION_STATE_UNKNOWN = "REVOCATION_STATE_UNKNOWN"
+
+#: Deliberately says what is unknown, and says it is not a verdict on the
+#: credential. #1478's distinct code exists so that "your token was revoked" and
+#: "we could not find out" stop looking identical, and the body a person
+#: actually reads is half of that.
+REVOCATION_STATE_UNKNOWN_DETAIL = (
+    "Could not determine whether this credential is still valid: the token "
+    "revocation store is unreachable. This is not a rejection of your "
+    "credential. Please retry shortly."
+)
+
+
+def revocation_state_unknown_http_exception() -> HTTPException:
+    """The canonical refusal when the revocation store cannot be read (#1478).
+
+    **503, not 401 or 403.** A 401 says "this credential is not accepted" —
+    a statement about the caller, which sends a client into a
+    re-authentication loop that cannot help. A 403 says the credential is good
+    but the action is not. Neither is true here: the credential was never
+    judged, because the store that judges it is down. 503 says the server
+    cannot serve this right now, which is what happened, and it is the status
+    an operator's alerting already reads as a dependency failure.
+
+    ``Retry-After: 5``, because the conditions this covers — a SQLite write
+    lock held past ``busy_timeout``, a connection-pool spike, a Redis
+    reconnect — are seconds-scale. A client that honours it recovers without
+    discarding its credential.
+
+    No ``x-correlation-id``, unlike ``quota_exhausted_http_exception``: that
+    one is raised from route handlers that already hold a correlation id,
+    while these four raise from dependencies, and ``RequestIdMiddleware``
+    already stamps ``X-Request-ID`` on the response. A second id would be the
+    same value under a second name.
+    """
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=REVOCATION_STATE_UNKNOWN_DETAIL,
+        headers={
+            "x-error-code": REVOCATION_STATE_UNKNOWN,
+            "Retry-After": "5",
+        },
+    )
+
+
 def _first_engine_error_code(exc: BaseException) -> Optional[str]:
     """The semantic ``error_code`` the engine attached, if any.
 

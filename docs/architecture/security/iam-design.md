@@ -227,15 +227,34 @@ erroring.
 **Single revocation store (#767).** Every per-token revocation writer — OAuth
 `POST /auth/oauth/revoke`, refresh-token rotation in both modes, and logout —
 writes to the same deployment-wide store the check above reads:
-`RedisTokenRevocationStore`, keyed `{token_revocation_prefix}jti:{jti}`
-(`revoked:token:jti:{jti}` by default), created once in the DI container for
-both auth modes and shared by instance. There is no secondary revocation
-namespace or SQL table. Failure posture: the per-request check fails **open**
-on store errors (availability; access tokens are short-lived), refresh-token
-validation in the generators fails **closed** (a store outage cannot mint new
-credentials from a revoked token), and revocation *writes* propagate store
-errors so revoke endpoints never report success while the token remains
-usable.
+created once in the DI container for both auth modes and shared by instance.
+Which implementation is a durability question (#828), not a second namespace:
+cloud gets `RedisTokenRevocationStore`, keyed `{token_revocation_prefix}jti:{jti}`
+(`revoked:token:jti:{jti}` by default), and every other deployment gets
+`SqlTokenRevocationStore` over `token_revocations`, whose state survives an API
+restart. Exactly one of them exists per deployment. Failure posture (#1478): **every** path fails
+**closed** on a store error. The per-request check refuses with
+`RevocationStateUnknownError`, which the auth dependencies and the tenant
+binder answer as **503 `REVOCATION_STATE_UNKNOWN`** (`x-error-code`,
+`Retry-After: 5`) — a distinct code, because "your token was revoked" (401)
+and "we could not find out" are different statements with different remedies,
+and the refusal is counted as
+`faultmaven_auth_revocation_state_unknown_total{kind}`. Refresh-token
+validation in the generators fails closed as it always did (a store outage
+cannot mint new credentials from a revoked token), and revocation *writes*
+propagate store errors so revoke endpoints never report success while the
+token remains usable.
+
+The per-request check used to fail **open**, on an availability argument that
+held while standalone's store was the in-process FakeRedis singleton and could
+not fail. #828/#1469 moved that deployment onto a SQLite table and made the
+path reachable. Refusing converts a storage blip into an outage for every
+authenticated request at once; that is accepted, because the failure is loud,
+bounded and diagnosable, where a fail-open revocation check is
+indistinguishable from a working one. The catch is narrowed to store-read
+failure families (`SQLAlchemyError`, `RedisError`, `OSError`) so a programming
+error is not reported to anyone as a storage fault
+(`AuthService.STORE_READ_FAILURES`).
 
 **Per-user revocation (#769).** Bulk revocation — admin
 `POST /auth/users/{id}/revoke-tokens`, and the deactivate/delete, password
@@ -252,9 +271,11 @@ literal segments because `jti` reaches the store from a submitted token: RFC
 7009 revocation (`POST /auth/oauth/revoke`) is unauthenticated. Were the
 per-user keys a direct child of the shared prefix, a submitted jti of
 `user:<victim>` would overwrite that victim's watermark with a non-numeric
-body, and the subsequent watermark read would raise — disabling per-user
-revocation for the victim on the fail-open request path while locking them out
-of refresh on the fail-closed generator path.
+body, and the subsequent watermark read would raise — which before #1478
+disabled per-user revocation for the victim on the fail-open request path
+while locking them out of refresh on the fail-closed generator path. Both
+paths refuse now, so the same forgery would lock the victim out rather than
+un-revoke them; the namespace separation is what prevents either.
 
 **Only a token this deployment signed is ever recorded (#830).** Both
 generators verify the submitted token's signature *before* reading `jti`, so
@@ -464,10 +485,9 @@ within that same second gets one rejected token and succeeds on retry.
 
 Both revocation arms share one rule (`revocation_reason` in
 `jwt_token_generator.py`) so no validate path can diverge from another, and
-both inherit the failure posture above: the per-request check fails open,
-generator refresh validation fails closed, and the watermark *write*
-propagates store errors — an admin never gets a revocation confirmation while
-the user's tokens keep authenticating.
+both inherit the failure posture above: every read path fails closed (#1478),
+and the watermark *write* propagates store errors — an admin never gets a
+revocation confirmation while the user's tokens keep authenticating.
 
 **That one rule governs every token type this system issues, including
 password-reset tokens (#829).** Reset tokens carry `sub`, `iat` and `jti`, so
