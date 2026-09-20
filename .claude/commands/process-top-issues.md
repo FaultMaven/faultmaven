@@ -42,6 +42,17 @@ An issue's pile is a **label on that issue**, not a list in a shared blob:
 Create any that is missing before you use one; `gh issue edit` fails the
 **whole** edit on a label the repository does not have.
 
+Two rules when you apply `pile:blocked`, both from a pile that held at 12 for
+six rounds and then lost ten of twelve in one reading:
+
+- **Say what it is blocked ON**, in a comment, as you label it. "Needs an
+  owner ruling" and "needs #N to land" look identical in a label and only the
+  first is owner latency (#1513 was miscounted for six rounds).
+- **Split a mixed issue as you label it.** Any part needing a ruling blocks
+  the whole issue, so one design question freezes the mechanical work beside
+  it — #985 held seven items its own text called "no design needed" since
+  round 1. Cheap now, expensive later.
+
 **Read a pile as a query, never as a parse:**
 
 ```bash

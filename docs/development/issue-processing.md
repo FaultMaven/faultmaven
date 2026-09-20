@@ -179,6 +179,29 @@ Each pile is then a query over open issues, which is why nothing here has a
 rule about carrying a closed number forward: a closed issue is not in the
 answer.
 
+Two rules keep `pile:blocked` from silting up, both learned the expensive
+way — the pile held at 12 for six rounds, and when it was finally read in one
+pass, **ten of the twelve moved**: one closed, eight ruled, one split.
+
+- **`pile:blocked` records what it is blocked ON.** "Blocked on a ruling from
+  the owner" and "blocked on issue #N landing" are different states that look
+  identical in a label, and the second is not owner latency. #1513 spent six
+  rounds counted against the owner while waiting on #1294. Say which, in a
+  comment on the issue, at the moment the label goes on.
+- **Split a mixed issue when you label it, not later.** An issue is blocked
+  if *any* part of it needs a ruling, so one design question freezes
+  everything beside it. #985 carried thirteen items, of which its own text
+  marked **1-7 as "mechanical riders (no design needed)"** — seven items
+  needing no thought sat since round 1 behind six decisions they did not
+  depend on. Splitting is cheap while the analysis is still loaded and
+  expensive afterwards.
+
+The direction of that error is worth keeping in mind: the blocked pile was
+not a queue of hard decisions. It was mostly a queue of unexamined labels.
+Nothing re-asks *why* an item is blocked once the label is on, so blocked-ness
+becomes a fact rather than a claim — which is the same failure this campaign
+keeps finding in code.
+
 The third pile exists because running this procedure on 2026-09-16 found two
 beta gates that were neither ready nor blocked on a ruling. Calling them
 ready would have had them proposed every round and never built. They are
