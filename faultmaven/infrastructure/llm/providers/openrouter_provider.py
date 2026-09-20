@@ -35,7 +35,16 @@ class OpenRouterProvider(OpenAIProvider):
         """OpenRouter's unified API uses the legacy ``max_tokens`` for every
         routed vendor (it normalizes the parameter at its gateway), so we never
         substitute ``max_completion_tokens`` — unlike direct OpenAI, where the
-        GPT-5 / o-series models reject ``max_tokens``."""
+        GPT-5 / o-series models reject ``max_tokens``.
+
+        This is the OPENING GUESS for every route, not a guarantee about the
+        gateway (#510): the inherited ``generate()`` still reads a rejection
+        that names ``max_tokens`` and re-sends once under the other spelling,
+        so a route whose normalization does not hold is corrected and
+        remembered rather than failing. Returning ``False`` here says "start
+        with the legacy name", which is the right FIRST move for a gateway
+        that normalizes — it is no longer an assertion the request depends
+        on."""
         return False
 
     @classmethod
