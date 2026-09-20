@@ -83,7 +83,22 @@ jobs:
           # list GitHub shows under "Files changed". A base sha that has gone
           # stale only ADDS files, which can only move the answer towards
           # "run everything".
-          git diff --name-only "${merge_base}" HEAD > changed.txt
+          #
+          # ‼ --no-renames is load-bearing; do not drop it. Rename detection is
+          # on by default and `--name-only` prints only the DESTINATION, so a
+          # commit that MOVES a file into docs/ or .claude/ arrives here as one
+          # inert path and the source is invisible. That is this repository's
+          # normal archival move -- `git log main --diff-filter=R -M` counts 321
+          # renames landing under docs/ or .claude/, mostly
+          # docs/architecture/** -> docs/archive/**, and one batch that moved
+          # files out of tests/. Measured on this tree, archiving
+          # docs/getting-started/user-guide.md or
+          # docs/architecture/investigation-engine/investigation-lifecycle-logic.md
+          # classified docs_only=true while a test still read the old path, and
+          # so did moving a .py file into docs/. --no-renames lists both sides,
+          # and like the stale base sha above it can only ADD paths, so it moves
+          # the answer in one direction only.
+          git diff --name-only --no-renames "${merge_base}" HEAD > changed.txt
           echo "resolved=true" >> "$GITHUB_OUTPUT"
           sed 's/^/  /' changed.txt
 
@@ -133,6 +148,13 @@ jobs:
               nor the image: the Dockerfile COPYs requirements, pyproject,
               faultmaven/, alembic/ and resources/, and none of them appear
               below.
+
+              Inertness is therefore decided by LOCATION, not by extension --
+              `docs/foo.py` classifies inert, because nothing collects, imports
+              or packages it from there. That is deliberate rather than an
+              oversight, and it is the same surface the `--no-renames` note
+              above is about: what makes a path safe is where it sits, so a
+              path that MOVES has to be judged at both ends.
               """
               if path.startswith(".github/"):
                   return "a workflow or action definition"
