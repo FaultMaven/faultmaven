@@ -642,6 +642,113 @@ def test_membership_needs_both_conditions():
     assert monitor.readiness_fatal_components == set()
 
 
+# --------------------------------------------------------------------------
+# The set is derived by CONSTRUCTION, not by convention (#1548)
+#
+# #1543 computed the conjunction at one site in `register_component` and wrote
+# it into a plain mutable attribute. Correct, but only for as long as nobody
+# wrote a second site — and reviewing it demonstrated both ways that breaks:
+# setting `fails_per_replica` on a stored `ComponentHealth` armed nothing
+# (which is wrong in the UNSAFE direction: the guard reads as working when it
+# is not), and `.add("database")` put the one deliberately excluded component
+# behind the readiness gate in a single line. These four pin the structure, so
+# neither is expressible.
+# --------------------------------------------------------------------------
+
+
+def test_the_readiness_fatal_set_cannot_be_added_to():
+    """`.add("database")` is what the argument block exists to prevent.
+
+    It used to work: one line put the shared primary behind the readiness
+    gate, and a 60s primary restart would then drop every pod from Endpoints
+    at once. A derived `frozenset` has no `.add`.
+    """
+    monitor = ComponentHealthMonitor()
+    with pytest.raises(AttributeError):
+        monitor.readiness_fatal_components.add("database")  # type: ignore[attr-defined]
+    assert monitor.readiness_fatal_components == set()
+
+
+def test_the_readiness_fatal_set_cannot_be_assigned():
+    """Nor replaced wholesale — a property with no setter refuses."""
+    monitor = ComponentHealthMonitor()
+    with pytest.raises(AttributeError):
+        monitor.readiness_fatal_components = {"database"}  # type: ignore[misc]
+    assert monitor.readiness_fatal_components == set()
+
+
+def test_the_stored_declaration_is_the_only_source_of_membership():
+    """Setting the field on a stored component now arms the gate.
+
+    This is the divergence #1548 closes. The conjunction used to be computed
+    from `register_component`'s ARGUMENTS, so a test that set
+    `fails_per_replica` and concluded "the gate is armed" was silently wrong.
+    Direct field mutation is the established habit in this file — the
+    integration helpers set `health.status` the same way — so the field and
+    the set have to be the same fact.
+    """
+    monitor = ComponentHealthMonitor()
+    assert monitor.readiness_fatal_components == set()
+
+    monitor.component_health["database"].fails_per_replica = True
+    assert monitor.readiness_fatal_components == {"database"}
+
+    monitor.component_health["database"].fatal = False
+    assert monitor.readiness_fatal_components == set()
+
+
+def test_the_fatal_set_is_derived_the_same_way():
+    """Same treatment for `fatal_components`, the adjacent instance.
+
+    It is a record rather than a mechanism — `/health`'s severity is computed
+    from each component's own `.fatal` — which is precisely why it must be
+    derived from that same field instead of from a copy that can disagree
+    with the thing it claims to describe.
+    """
+    monitor = ComponentHealthMonitor()
+    assert monitor.fatal_components == {"database"}
+
+    with pytest.raises(AttributeError):
+        monitor.fatal_components.add("tracer")  # type: ignore[attr-defined]
+    with pytest.raises(AttributeError):
+        monitor.fatal_components = {"tracer"}  # type: ignore[misc]
+
+    monitor.component_health["tracer"].fatal = True
+    assert monitor.fatal_components == {"database", "tracer"}
+
+
+async def test_a_probe_sweep_cannot_disarm_the_gate(monkeypatch):
+    """Review the property's INPUT as hard as the property.
+
+    Deriving at read time hands `component_health` a second job: it is now
+    the gate's only source of truth, so anything that rewrites an entry can
+    silently empty the set. Today `register_component` is the sole writer and
+    `check_all_components` builds its replacement `ComponentHealth` objects
+    into a LOCAL dict — but that dict is built by hand, flag by flag, on both
+    the timeout and the exception arm, and a future change that wrote it back
+    while forgetting `fails_per_replica` would disarm readiness with no test
+    failing. This drives the sweep on both arms and reads the gate after.
+    """
+    monkeypatch.setattr(component_monitor_module, "_PROBE_TIMEOUT_SECONDS", 30)
+    monkeypatch.setattr(
+        component_monitor_module, "_ALL_COMPONENTS_TIMEOUT_SECONDS", 0.05
+    )
+    monitor = ComponentHealthMonitor()
+    monitor.register_component("local_scratch_disk", fatal=True, fails_per_replica=True)
+    assert monitor.readiness_fatal_components == {"local_scratch_disk"}
+
+    async def _hang_or_raise(name: str):
+        if name == "local_scratch_disk":
+            await asyncio.sleep(30)  # the sweep-budget arm
+        raise RuntimeError("down")  # the exception arm
+
+    monkeypatch.setattr(monitor, "_perform_health_check", _hang_or_raise)
+    await asyncio.wait_for(monitor.check_all_components(), timeout=5)
+
+    assert monitor.readiness_fatal_components == {"local_scratch_disk"}
+    assert monitor.fatal_components == {"database", "local_scratch_disk"}
+
+
 async def test_readiness_probes_nothing_while_the_set_is_empty(monkeypatch):
     """Not merely "answers ready" — it asks no dependency anything.
 
