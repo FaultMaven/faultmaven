@@ -133,11 +133,17 @@ development is who is editing the code; one value cannot answer both.
 | `per_session_read_hourly` | 6000 / 3600s | 1200 / 3600s |
 
 **Sharing a Redis instance across environments is still not recommended, but the
-protection keys no longer collide.** The Redis key prefix is fixed by
-environment rather than configurable: `faultmaven_dev` for development,
-`faultmaven_prod` for production, and `faultmaven_staging` for staging. Staging
-runs production's *preset* — strict limits, no bypass headers, fail-closed on a
-Redis error — but is given its own *namespace*, because sharing production's
+protection keys no longer collide.** The Redis key prefix is fixed rather than
+configurable: `faultmaven_dev` comes with the development *preset*,
+`faultmaven_prod` with the hardened one, and `faultmaven_staging` replaces the
+latter when `ENVIRONMENT=staging`. So a deployment that sets no
+`PROTECTION_PROFILE` writes under `faultmaven_prod` whatever its environment —
+a standalone box included, which since fm#985 item 15 no longer writes under
+`faultmaven_dev`. Nothing is orphaned by that move: `fm-wipe-deployment`
+enumerates all three prefixes (`ALL_REDIS_KEY_PREFIXES`) rather than the one
+the current configuration selects. Staging runs the hardened *preset* — strict
+limits, no bypass headers, fail-closed on a Redis error — but is given its own
+*namespace*, because sharing production's
 would mean a staging load test consuming production's quota and an identical
 request submitted in both being answered `409` in the second. Staging installed
 no protection middleware at all before fm#1023, so it has never written keys

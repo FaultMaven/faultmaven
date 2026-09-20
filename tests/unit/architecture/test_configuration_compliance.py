@@ -40,7 +40,17 @@ from tests.utils import reset_settings_singleton as reset_settings
 KNOWN_ENV_ACCESS = {
     "faultmaven/bootstrap/data_init.py": 2,
     "faultmaven/config/presets.py": 11,
-    "faultmaven/config/protection.py": 2,
+    # Three keys reach the protection presets, each with exactly ONE reader:
+    # PROTECTION_PROFILE (``resolve_protection_profile`` — which preset is
+    # installed, fm#985 item 15), PROTECTION_RATE_LIMIT_FAIL_OPEN
+    # (``_fail_open_default``) and PROTECTION_TRUSTED_PROXIES
+    # (``get_trusted_proxies``). They populate ``ProtectionSettings``, which is
+    # a plain BaseModel rather than a BaseSettings section, and mirroring any
+    # of them onto settings would give the policy a second source — which is
+    # the one thing these three must not have, since a disagreement about the
+    # profile is a disagreement about whether a header can switch the rate
+    # limiter off.
+    "faultmaven/config/protection.py": 3,
     "faultmaven/infrastructure/llm/pricing.py": 1,
     "faultmaven/infrastructure/llm/router.py": 3,
     "faultmaven/infrastructure/observability/tracing.py": 8,

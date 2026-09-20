@@ -118,11 +118,14 @@ which reads the middleware stack. See
 [client-protection.md](client-protection.md) for the same list from the
 operator's side.
 
-Two keys do still reach the presets, and only these two:
+Three keys do still reach the presets, and only these three:
 
-1. `PROTECTION_RATE_LIMIT_FAIL_OPEN` — the Redis degrade policy. Read by the
-   development preset; the production preset pins fail-*closed* and ignores it.
-2. `PROTECTION_TRUSTED_PROXIES` — which proxies' `X-Forwarded-For` may be
+1. `PROTECTION_PROFILE` — WHICH preset is installed. `hardened` (the default,
+   and what anything unrecognised resolves to) or `development`. One reader,
+   `config.protection.resolve_protection_profile`.
+2. `PROTECTION_RATE_LIMIT_FAIL_OPEN` — the Redis degrade policy. Read by the
+   development preset; the hardened preset pins fail-*closed* and ignores it.
+3. `PROTECTION_TRUSTED_PROXIES` — which proxies' `X-Forwarded-For` may be
    believed. Honoured by both presets; empty by default.
 
 Changing a limit, a TTL or a timeout means editing the preset.

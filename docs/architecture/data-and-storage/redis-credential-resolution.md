@@ -67,9 +67,10 @@ to least preferred:
    fail-closed gets a refusal rather than a per-replica approximation.
 3. **Fail open** — requests pass unlimited. Governed by
    `fail_open_on_redis_error`, sourced from `PROTECTION_RATE_LIMIT_FAIL_OPEN`
-   (default `true`) on the development preset. The production preset does not
+   (default `true`) on the development preset. The hardened preset does not
    read the key: it pins fail-**closed** (see "Production fails closed" below),
-   and it is what every deployment other than `ENVIRONMENT=development` runs.
+   and it is what every deployment runs unless `PROTECTION_PROFILE=development`
+   is set explicitly — the standalone quickstart included (fm#985 item 15).
 
 `fail_open_on_redis_error` governs *policy*, never *reporting*.
 `RedisRateLimiter.initialize` returning normally always means a usable client

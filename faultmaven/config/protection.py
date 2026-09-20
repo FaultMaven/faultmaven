@@ -94,6 +94,14 @@ class ProtectionProfile(str, Enum):
 
     ``HARDENED`` is the default, so a deployment nobody classified is protected
     rather than opt-out.
+
+    The two members map onto the two preset constructors below —
+    ``HARDENED`` → ``get_production_protection_settings``, ``DEVELOPMENT`` →
+    ``get_development_protection_settings``. The constructors keep their names
+    because that is what the numbers in them are: production's. The *profile*
+    is named ``hardened`` rather than ``production`` deliberately — it is a
+    posture, and calling it ``production`` would re-import the environment
+    vocabulary this axis exists to separate from.
     """
 
     HARDENED = "hardened"
