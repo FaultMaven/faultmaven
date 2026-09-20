@@ -97,6 +97,8 @@ jobs:
         # Python rather than shell because the second half of this is an AST
         # walk. Stdlib only; no setup-python step, no dependency to pin.
         run: |
+          echo "::error::THROWAWAY: forced detector failure to demonstrate the fail-safe"
+          exit 1
           python3 - <<'PY'
           import ast
           import os
