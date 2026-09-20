@@ -1062,29 +1062,68 @@ class ComponentHealthMonitor:
         ]
 
     def _record_abandoned_probe(
-        self, component_name: str, *, error: str, response_time_ms: float
+        self,
+        component_name: str,
+        *,
+        error: str,
+        response_time_ms: float,
+        sweep_started_at: datetime,
     ) -> ComponentHealth:
         """Persist the verdict for a probe that never returned one.
 
-        The sweep abandons a probe two ways — it blew the sweep budget and was
+        **What this arm actually covers, measured.** The sweep abandons a probe
+        two ways: it outlived ``_ALL_COMPONENTS_TIMEOUT_SECONDS`` and was
         cancelled, or its task raised past ``check_component_health``'s own
-        ``except`` (``CancelledError`` is not an ``Exception``). Both used to
-        answer ``/health``'s ``components`` map with a FRESH ``ComponentHealth``
-        that was never written back, which made one endpoint disagree with
-        itself: the map said ``unhealthy`` while ``summary`` — computed by
-        ``get_overall_health_status`` from the stored records — still reported
-        the previous sweep's status and left the component out of
-        ``fatal_unhealthy``. A hung primary is exactly the case, and exactly
-        the case the ``component_health_status`` gauge exists to alert on
-        (#1547), so the verdict is recorded on the component's own record and
-        that record is what the caller gets. One object per component, so
-        there is nothing to diverge.
+        ``except`` (``CancelledError`` is not an ``Exception``). **Neither is
+        reachable by a shipped probe today.** Every probe carries
+        ``_PROBE_TIMEOUT_SECONDS`` (3.0) *under* the sweep budget (4.0), so a
+        probe that observes cancellation always answers through
+        ``check_component_health``'s error arm — which already wrote back
+        before this method existed. A hung ``database`` was measured reaching
+        ``fatal_unhealthy: ['database']`` identically with and without this
+        change, and ``_check_database_health`` is fully async besides; the
+        three probes that do hand work to ``_PROBE_EXECUTOR`` are all
+        ``fatal=False``. Reaching the sweep-budget arm takes a probe that does
+        **not** observe cancellation promptly — which is the case
+        ``check_all_components``' own docstring says the budget is a backstop
+        for. So this is a backstop, not a live path, and it is written as one.
 
-        Mirrors ``check_component_health``'s error arm, including the history
-        entry — an abandoned probe is a failed probe, and leaving it out of the
-        window quietly overstated ``probe_availability_24h``.
+        What it fixes is the **divergence**, which was live: both arms used to
+        answer ``/health``'s ``components`` map with a FRESH ``ComponentHealth``
+        that was never written back, so one endpoint disagreed with itself —
+        the map said ``unhealthy`` while ``summary``, computed by
+        ``get_overall_health_status`` from the stored records, still described
+        the previous sweep. Recording on the component's own record and
+        returning that record leaves one object per component, so there is
+        nothing to diverge (and no hand-copied field list to fall behind
+        ``ComponentHealth``, which is how ``metadata`` and the 24h figures were
+        already being dropped).
+
+        ‼ **It must never overwrite a newer observation.** The verdict is timed
+        by when the *sweep* gave up, not by when the probe was taken, and
+        ``/health`` has four callers (three Kubernetes probes and
+        ``/health/dependencies``) whose sweeps overlap routinely. Without this
+        guard an older sweep's abandon lands after a newer sweep's success and
+        clobbers it — measured: stored ``database`` flipped to ``unhealthy``
+        with ``metadata`` (the RLS posture) wiped and the gauge firing
+        ``{fatal="true"} == 1`` while the primary was up. A false page on the
+        very signal #1547 adds. So a record whose ``last_check`` is newer than
+        this sweep's start is left alone and returned as it stands.
+
+        Otherwise mirrors ``check_component_health``'s error arm, including the
+        history entry — an abandoned probe is a failed probe, and leaving it
+        out of the window quietly overstated ``probe_availability_24h``.
         """
         component_health = self.component_health[component_name]
+        if component_health.last_check > sweep_started_at:
+            self.logger.warning(
+                f"Not recording an abandoned probe for {component_name}: a "
+                "later sweep already observed it "
+                f"(last_check={component_health.last_check.isoformat()} > "
+                f"sweep_started_at={sweep_started_at.isoformat()})"
+            )
+            return component_health
+
         component_health.status = HealthStatus.UNHEALTHY
         component_health.response_time_ms = response_time_ms
         component_health.last_error = error
@@ -1113,6 +1152,11 @@ class ComponentHealthMonitor:
         Returns:
             Dictionary mapping component names to their health status
         """
+        # Stamped before the first probe starts, and carried to
+        # ``_record_abandoned_probe`` so a slow sweep cannot overwrite a
+        # observation a later sweep already made. Sweeps overlap: /health has
+        # four callers and the Kubernetes probes co-fire.
+        sweep_started_at = datetime.now(timezone.utc)
         names = list(self.component_health.keys())
         tasks = {
             asyncio.ensure_future(self.check_component_health(name)): name
@@ -1140,6 +1184,7 @@ class ComponentHealthMonitor:
                     "sweep budget and was abandoned"
                 ),
                 response_time_ms=_ALL_COMPONENTS_TIMEOUT_SECONDS * 1000,
+                sweep_started_at=sweep_started_at,
             )
 
         for task in done:
@@ -1148,7 +1193,10 @@ class ComponentHealthMonitor:
             if error is not None:
                 self.logger.error(f"Health check failed for {component_name}: {error}")
                 health_results[component_name] = self._record_abandoned_probe(
-                    component_name, error=str(error), response_time_ms=0.0
+                    component_name,
+                    error=str(error),
+                    response_time_ms=0.0,
+                    sweep_started_at=sweep_started_at,
                 )
             else:
                 health_results[component_name] = task.result()
@@ -1262,35 +1310,42 @@ class ComponentHealthMonitor:
         No-ops when metrics are off — the shim hands back a ``NoOpMetric``
         whose ``labels()``/``set()`` do nothing.
 
-        Nothing this does may propagate. Its only caller is on the liveness
-        path, and a metrics fault that took ``/health`` down to its fallback
-        body would blind the endpoint the metric exists to amplify — the exact
-        inversion of #1547. ``_HEALTH_STATUS_GAUGE_VALUES`` being total over
-        ``HealthStatus`` is a test, not a hope, so the ``except`` here is for
-        what neither of us thought of.
+        Nothing this does may propagate — **the whole body** is inside the
+        guard, the import and the stale-child retirement included. Its only
+        caller is on the liveness path, and a metrics fault that took
+        ``/health`` down to its fallback body would blind the endpoint the
+        metric exists to amplify: the exact inversion of #1547.
+        ``_HEALTH_STATUS_GAUGE_VALUES`` being total over ``HealthStatus`` is a
+        test, not a hope, so the outer ``except`` is for what neither of us
+        thought of.
         """
-        from faultmaven.infrastructure.shims import component_health_status
-
-        labels = (
-            str(health.fatal).lower(),
-            str(health.fails_per_replica).lower(),
-        )
-        previous = self._published_gauge_labels.get(health.component_name)
-        if previous is not None and previous != labels:
-            # A component re-registered with different declarations would
-            # otherwise leave its old label pair behind as a series nothing
-            # ever writes again — an alert reading "fatal and unhealthy" off a
-            # value frozen at the instant of the flip, and no restart in sight
-            # to clear it. Retire it. (``NoOpMetric`` has no ``remove``;
-            # ``Gauge.remove`` raises ``KeyError`` for a child that was never
-            # created.)
-            try:
-                component_health_status.remove(health.component_name, *previous)
-            except (AttributeError, KeyError):
-                pass
-        self._published_gauge_labels[health.component_name] = labels
-
         try:
+            from faultmaven.infrastructure.shims import component_health_status
+
+            # ``bool()`` first: the labels are what the alert selects on, and
+            # ``str(1).lower()`` renders ``"1"``, which ``{fatal="true"}``
+            # misses silently. Every call site passes a real bool today; this
+            # costs nothing and the selector is the PR's central claim.
+            labels = (
+                str(bool(health.fatal)).lower(),
+                str(bool(health.fails_per_replica)).lower(),
+            )
+            previous = self._published_gauge_labels.get(health.component_name)
+            if previous is not None and previous != labels:
+                # A component re-registered with different declarations would
+                # otherwise leave its old label pair behind as a series nothing
+                # ever writes again — an alert reading "fatal and unhealthy"
+                # off a value frozen at the instant of the flip, and no restart
+                # in sight to clear it. Retire it. The narrow ``except`` is so
+                # the expected misses (``NoOpMetric`` has no ``remove``;
+                # ``Gauge.remove`` raises ``KeyError`` for a child that was
+                # never created) do not skip the ``set()`` below.
+                try:
+                    component_health_status.remove(health.component_name, *previous)
+                except (AttributeError, KeyError):
+                    pass
+            self._published_gauge_labels[health.component_name] = labels
+
             component_health_status.labels(
                 component=health.component_name,
                 fatal=labels[0],
@@ -1299,7 +1354,8 @@ class ComponentHealthMonitor:
         except Exception as e:
             # debug, not warning: the caller runs on every Kubernetes liveness
             # probe, so a persistent fault here would be several lines every
-            # ten seconds for the life of the outage.
+            # ten seconds for the life of the outage. The cost is that a
+            # vanished series says nothing in the log — filed, not fixed here.
             self.logger.debug(
                 f"Could not publish health gauge for {health.component_name}: {e}"
             )

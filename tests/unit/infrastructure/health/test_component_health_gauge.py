@@ -86,11 +86,30 @@ def _grades(samples: Dict[tuple, float]) -> Dict[str, float]:
     return {component: value for (component, _, _), value in samples.items()}
 
 
-def _firing(samples: Dict[tuple, float]) -> set:
-    """What `component_health_status{fatal="true"} == 1` selects.
+def _paging(samples: Dict[tuple, float]) -> set:
+    """The rule `docs/operations/monitoring/README.md` publishes, verbatim:
 
-    The alert rule that lives in faultmaven-enterprise-infra, written out as
-    the set it would return, so this repo can hold it to the body.
+        component_health_status{fatal="true", fails_per_replica="false"} == 1
+
+    Written out as the set it would select, so this repo holds the DOCUMENTED
+    expression to the body rather than a convenient approximation of it. The
+    `fails_per_replica="false"` half is not decoration: a fatal component that
+    CAN fail on one pod is readiness's job, and the page rule must skip it.
+    """
+    return {
+        component
+        for (component, fatal, per_replica), value in samples.items()
+        if fatal == "true" and per_replica == "false" and value == 1.0
+    }
+
+
+def _fatal_and_down(samples: Dict[tuple, float]) -> set:
+    """`{fatal="true"} == 1` — the gauge's spelling of `fatal_unhealthy`.
+
+    A DIFFERENT set from `_paging`: this one is what the body's
+    `summary.fatal_unhealthy` means, and it is a superset. The two coincide
+    only while `database` is the sole fatal component, which is exactly why
+    both exist here.
     """
     return {
         component
@@ -163,13 +182,33 @@ def test_the_alert_expression_selects_exactly_what_the_body_calls_fatal(publishe
     samples = published()
     assert status is HealthStatus.UNHEALTHY
     assert summary["fatal_unhealthy"] == ["database"]
-    assert _firing(samples) == set(summary["fatal_unhealthy"])
+    assert _fatal_and_down(samples) == set(summary["fatal_unhealthy"])
     # And the near-misses are legible rather than merely excluded, so a rule
     # can be written for them without a second source.
     grades = _grades(samples)
     assert grades["vector_store"] == 1.0
     assert grades["degrading_but_fatal"] == 2.0
     assert grades["undeterminable_but_fatal"] == 0.0
+
+
+def test_a_truthy_non_bool_flag_still_renders_as_a_selectable_label(published):
+    """`str(1).lower()` is `"1"`, and `{fatal="true"}` misses it silently.
+
+    Every call site passes a real bool today, so this guards the coercion
+    rather than a live bug — cheap insurance on the label the whole alerting
+    story selects by.
+    """
+    monitor = ComponentHealthMonitor()
+    _all(monitor, HealthStatus.HEALTHY)
+    monitor.component_health["database"].fatal = 1  # truthy, not a bool
+    monitor.component_health["database"].fails_per_replica = 0
+    monitor.component_health["database"].status = HealthStatus.UNHEALTHY
+
+    monitor.get_overall_health_status()
+
+    samples = published()
+    assert ("database", "true", "false") in samples
+    assert _paging(samples) == {"database"}
 
 
 def test_the_classification_travels_as_labels_so_no_rule_names_a_component(published):
@@ -192,56 +231,156 @@ def test_the_classification_travels_as_labels_so_no_rule_names_a_component(publi
 
 
 # --------------------------------------------------------------------------
-# The abandoned probe — the case that used to make /health disagree with
-# itself, and the case the gauge exists for (a hung primary)
+# The page rule is NOT the same set as `fatal_unhealthy`
 # --------------------------------------------------------------------------
 
 
-def _hang_one(monitor: ComponentHealthMonitor, monkeypatch, hung: str) -> None:
-    """Every probe answers HEALTHY except `hung`, which never returns."""
+def test_the_documented_page_rule_skips_what_readiness_can_shed(published):
+    """`fatal_unhealthy` is a superset of what should wake a human.
+
+    A component that is fatal AND can fail on one pod is readiness's job:
+    `/readiness` 503s, the pod leaves the Service, a sibling serves. Paging on
+    it would be paging for something already being handled. The body still
+    lists it under `fatal_unhealthy` — correctly, it IS fatal — so the two
+    sets genuinely differ, and a test that checked only `{fatal="true"}` would
+    pass while the documented rule paged nobody.
+    """
+    monitor = ComponentHealthMonitor()
+    monitor.register_component("scratch_disk", fatal=True, fails_per_replica=True)
+    _all(monitor, HealthStatus.HEALTHY)
+    monitor.component_health["scratch_disk"].status = HealthStatus.UNHEALTHY
+
+    _, summary = monitor.get_overall_health_status()
+
+    samples = published()
+    assert set(summary["fatal_unhealthy"]) == {"scratch_disk"}
+    assert _fatal_and_down(samples) == {"scratch_disk"}
+    # ... and the page rule stays silent, because readiness handles this one.
+    assert _paging(samples) == set()
+
+
+def test_the_page_rule_fires_for_a_shared_fatal_dependency(published):
+    """The other half: `database` is fatal and shared, so it does page."""
+    monitor = ComponentHealthMonitor()
+    _all(monitor, HealthStatus.HEALTHY)
+    monitor.component_health["database"].status = HealthStatus.UNHEALTHY
+
+    _, summary = monitor.get_overall_health_status()
+
+    samples = published()
+    assert _paging(samples) == {"database"} == set(summary["fatal_unhealthy"])
+
+
+# --------------------------------------------------------------------------
+# The abandoned-probe arm
+#
+# What this arm covers, stated as measured rather than as assumed: a probe
+# that OUTLIVES the sweep budget, and a task that raises past
+# `check_component_health`'s `except`. A hung `database` is NOT it — that is
+# caught by the per-probe deadline, whose error arm already wrote back before
+# this change (measured identical with and without it). Every shipped probe
+# carries `_PROBE_TIMEOUT_SECONDS` under `_ALL_COMPONENTS_TIMEOUT_SECONDS`, so
+# the arm is a BACKSTOP, and these tests drive it the only way the shipped
+# ordering allows: a probe that does not observe cancellation.
+# --------------------------------------------------------------------------
+
+
+def _shipped_ratio(monkeypatch, *, probe: float = 0.15, sweep: float = 0.30) -> None:
+    """Scale both deadlines while KEEPING the shipped ordering, probe < sweep.
+
+    Setting only the sweep budget — to 0.05, against a per-probe deadline left
+    at 3.0 — inverts what ships (4.0 > 3.0) and proves the arm in a
+    configuration that cannot occur. Magnitude is scaled so the test is fast;
+    the ordering is the thing under test and is preserved.
+    """
+    assert probe < sweep, "the shipped ordering is per-probe deadline < sweep budget"
+    monkeypatch.setattr(component_monitor_module, "_PROBE_TIMEOUT_SECONDS", probe)
+    monkeypatch.setattr(
+        component_monitor_module, "_ALL_COMPONENTS_TIMEOUT_SECONDS", sweep
+    )
+
+
+def _probe_that_ignores_cancellation(monitor, monkeypatch, name: str) -> None:
+    """`name`'s probe swallows its first cancellation; everything else is fine.
+
+    The only route to the sweep-budget arm at the shipped ratio, and the case
+    `check_all_components`' own docstring names the budget a backstop for: "a
+    probe that does not observe cancellation promptly". The per-probe deadline
+    fires first and is ignored, so the task is still pending when the sweep
+    budget expires.
+    """
 
     async def _probe(component_name: str) -> Dict[str, Any]:
-        if component_name == hung:
-            await asyncio.sleep(3600)
+        if component_name == name:
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                await asyncio.sleep(3600)  # the sweep's cancel ends this one
         return {"status": HealthStatus.HEALTHY, "metadata": {}}
 
     monkeypatch.setattr(monitor, "_perform_health_check", _probe)
 
 
-async def test_an_abandoned_probe_reaches_the_gauge_and_the_summary(
-    published, monkeypatch
-):
-    """A hung database is the whole point, and it used to be invisible.
+def test_the_shipped_constants_keep_this_arm_a_backstop():
+    """If these ever invert, the sweep arm becomes a live path — say so here.
 
-    The sweep cancels a probe that blows its budget. That verdict was reported
-    only in the returned map, never written back, so `get_overall_health_status`
-    — which reads the stored records — still described the previous sweep and
-    left the component out of `fatal_unhealthy`. Body versus body, one
-    endpoint, two answers; the gauge would have inherited the wrong one.
+    The claim "no shipped probe reaches the sweep-budget arm" rests entirely
+    on this ordering, so it is pinned rather than assumed. (The neighbouring
+    probe-behaviour suite pins the same relation; this is the copy that
+    carries the reason the abandoned-probe arm depends on it.)
     """
-    monkeypatch.setattr(
-        component_monitor_module, "_ALL_COMPONENTS_TIMEOUT_SECONDS", 0.05
+    assert (
+        component_monitor_module._PROBE_TIMEOUT_SECONDS
+        < component_monitor_module._ALL_COMPONENTS_TIMEOUT_SECONDS
     )
+
+
+async def test_a_probe_outliving_the_sweep_budget_is_written_back(monkeypatch):
+    """The arm, driven at the shipped ordering.
+
+    No gauge: this is the half about `/health` agreeing with itself, and it
+    must run on the standalone leg where `prometheus-client` is absent.
+    """
+    _shipped_ratio(monkeypatch)
     monitor = ComponentHealthMonitor()
-    _hang_one(monitor, monkeypatch, "database")
+    _probe_that_ignores_cancellation(monitor, monkeypatch, "database")
 
     results = await monitor.check_all_components()
     status, summary = monitor.get_overall_health_status()
 
     assert results["database"].status is HealthStatus.UNHEALTHY
+    assert "sweep budget" in (results["database"].last_error or "")
     assert status is HealthStatus.UNHEALTHY
     assert summary["fatal_unhealthy"] == ["database"]
-    assert _firing(published()) == {"database"}
-    # And it counts against availability: an abandoned probe is a failed
-    # probe, so leaving it out of the window overstated the 24h figure.
+    # One object per component, however the probe ended — no hand-copied
+    # fields to fall behind `ComponentHealth`.
+    for name, health in results.items():
+        assert health is monitor.component_health[name]
+    # An abandoned probe is a failed probe; omitting it overstated the window.
     assert monitor.component_health["database"].probe_failures_24h == 1
     assert monitor.component_health["database"].probe_availability_24h == 0.0
 
 
-async def test_a_probe_whose_task_raises_is_recorded_the_same_way(
+async def test_a_probe_outliving_the_sweep_budget_reaches_the_gauge(
     published, monkeypatch
 ):
-    """The other abandonment: the task escapes with a non-Exception."""
+    """...and the metric says what the body says."""
+    _shipped_ratio(monkeypatch)
+    monitor = ComponentHealthMonitor()
+    _probe_that_ignores_cancellation(monitor, monkeypatch, "database")
+
+    await monitor.check_all_components()
+    _, summary = monitor.get_overall_health_status()
+
+    assert _paging(published()) == {"database"} == set(summary["fatal_unhealthy"])
+
+
+async def test_a_probe_whose_task_raises_is_recorded_the_same_way(monkeypatch):
+    """The other arm: the task escapes with a non-Exception.
+
+    `CancelledError` is not an `Exception`, so `check_component_health`'s own
+    handler never sees it. No gauge, so this runs on both CI legs.
+    """
     monitor = ComponentHealthMonitor()
 
     async def _explode(component_name: str):
@@ -254,35 +393,128 @@ async def test_a_probe_whose_task_raises_is_recorded_the_same_way(
 
     assert results["database"].status is HealthStatus.UNHEALTHY
     assert summary["fatal_unhealthy"] == ["database"]
-    assert _firing(published()) == {"database"}
-
-
-async def test_the_returned_map_and_the_stored_record_are_one_object(monkeypatch):
-    """There is one `ComponentHealth` per component, however the probe ended.
-
-    The divergence above was possible because the abandoned paths built a
-    fresh record. Copying fields by hand is the drift shape whatever the
-    fields are — those two constructors already dropped `metadata` and the
-    24h probe figures — so the fix is that no copy is made at all.
-
-    No gauge here on purpose: this is the half of the fix that is about
-    `/health` agreeing with itself, and it has to be checked on the
-    standalone leg too, where `prometheus-client` is not installed.
-    """
-    monkeypatch.setattr(
-        component_monitor_module, "_ALL_COMPONENTS_TIMEOUT_SECONDS", 0.05
-    )
-    monitor = ComponentHealthMonitor()
-    _hang_one(monitor, monkeypatch, "database")
-
-    results = await monitor.check_all_components()
-    status, summary = monitor.get_overall_health_status()
-
     for name, health in results.items():
         assert health is monitor.component_health[name]
-    assert results["database"].status is HealthStatus.UNHEALTHY
-    assert status is HealthStatus.UNHEALTHY
-    assert summary["fatal_unhealthy"] == ["database"]
+
+
+async def test_the_task_raised_arm_reaches_the_gauge(published, monkeypatch):
+    """The gauge half of the above, for the leg that has a registry."""
+    monitor = ComponentHealthMonitor()
+
+    async def _explode(component_name: str):
+        raise BaseException("not an Exception")
+
+    monkeypatch.setattr(monitor, "check_component_health", _explode)
+
+    await monitor.check_all_components()
+    monitor.get_overall_health_status()
+
+    assert _paging(published()) == {"database"}
+
+
+# --------------------------------------------------------------------------
+# An older sweep must never overwrite a newer observation
+#
+# The verdict is timed by when the SWEEP gave up, not by when the probe was
+# taken, and /health has four callers whose sweeps overlap routinely. Without
+# an ordering guard the older sweep's abandon lands last and clobbers a
+# success — a false page on the signal this PR adds, which `main` does not
+# have.
+# --------------------------------------------------------------------------
+
+
+async def _overlapping_sweeps(monitor, monkeypatch):
+    """Sweep A's `database` probe stalls; sweep B completes; then A gives up."""
+    calls = {"database": 0}
+
+    async def _probe(component_name: str) -> Dict[str, Any]:
+        if component_name == "database":
+            calls["database"] += 1
+            if calls["database"] == 1:  # sweep A only
+                try:
+                    await asyncio.sleep(3600)
+                except asyncio.CancelledError:
+                    await asyncio.sleep(3600)
+            return {
+                "status": HealthStatus.HEALTHY,
+                "metadata": {"rls_posture": "enforced"},
+            }
+        return {"status": HealthStatus.HEALTHY, "metadata": {}}
+
+    monkeypatch.setattr(monitor, "_perform_health_check", _probe)
+    sweep_a = asyncio.ensure_future(monitor.check_all_components())
+    await asyncio.sleep(0.02)  # A is in flight
+    await monitor.check_all_components()  # B completes fully
+    await sweep_a  # A's abandon lands LAST
+
+
+async def test_a_stale_sweep_does_not_clobber_a_newer_success(monkeypatch):
+    """Measured before the guard: `unhealthy`, and the page fired, while up."""
+    _shipped_ratio(monkeypatch)
+    monitor = ComponentHealthMonitor()
+
+    await _overlapping_sweeps(monitor, monkeypatch)
+
+    database = monitor.component_health["database"]
+    _, summary = monitor.get_overall_health_status()
+    assert database.status is HealthStatus.HEALTHY
+    assert summary["fatal_unhealthy"] == []
+    # `metadata` carries the RLS posture, and the abandon arm blanks it.
+    assert database.metadata == {"rls_posture": "enforced"}
+
+
+async def test_a_stale_sweep_does_not_fire_the_page_rule(published, monkeypatch):
+    """The same run, read off the gauge: nothing pages while the primary is up."""
+    _shipped_ratio(monkeypatch)
+    monitor = ComponentHealthMonitor()
+
+    await _overlapping_sweeps(monitor, monkeypatch)
+    monitor.get_overall_health_status()
+
+    samples = published()
+    assert _paging(samples) == set()
+    assert _fatal_and_down(samples) == set()
+
+
+async def test_the_first_sweep_to_abandon_still_records(monkeypatch):
+    """The guard declines only a STALE write, never every write.
+
+    Without this the fix could be "never record anything" and every test above
+    that asserts the arm works would have to be wrong for it to show.
+    """
+    _shipped_ratio(monkeypatch)
+    monitor = ComponentHealthMonitor()
+    _probe_that_ignores_cancellation(monitor, monkeypatch, "database")
+
+    await monitor.check_all_components()
+
+    assert monitor.component_health["database"].status is HealthStatus.UNHEALTHY
+
+
+# --------------------------------------------------------------------------
+# `fails_per_replica` on the component detail surface (#1543's review)
+# --------------------------------------------------------------------------
+
+
+def test_component_metrics_carry_both_declarations():
+    """`fatal` alone never answered "will /readiness 503 for this?".
+
+    Readiness-fatal is the conjunction, so a surface carrying one half of it
+    leaves an operator unable to tell. No gauge, so this runs on both legs.
+    """
+    monitor = ComponentHealthMonitor()
+    monitor.register_component("scratch_disk", fatal=True, fails_per_replica=True)
+
+    shared = monitor.get_component_metrics("database")
+    per_pod = monitor.get_component_metrics("scratch_disk")
+
+    assert shared["fatal"] is True
+    assert shared["fails_per_replica"] is False
+    assert per_pod["fatal"] is True
+    assert per_pod["fails_per_replica"] is True
+    # And the pair agrees with the set /readiness actually reads.
+    assert per_pod["component_name"] in monitor.readiness_fatal_components
+    assert shared["component_name"] not in monitor.readiness_fatal_components
 
 
 # --------------------------------------------------------------------------
@@ -298,7 +530,7 @@ def test_the_scrape_hook_publishes_without_anyone_calling_health(published):
 
     monitor.publish_health_gauges()
 
-    assert _firing(published()) == {"database"}
+    assert _fatal_and_down(published()) == {"database"}
 
 
 def test_the_scrape_hook_has_no_derivation_of_its_own(published, monkeypatch):
@@ -352,7 +584,7 @@ def test_a_component_that_stops_being_fatal_does_not_leave_a_stale_series(publis
     samples = published()
     assert ("scratch_disk", "true", "false") not in samples
     assert samples[("scratch_disk", "false", "false")] == 1.0
-    assert _firing(samples) == set()
+    assert _fatal_and_down(samples) == set()
 
 
 # --------------------------------------------------------------------------

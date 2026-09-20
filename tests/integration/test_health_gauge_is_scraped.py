@@ -34,8 +34,25 @@ pytest.importorskip("prometheus_client")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _firing(series: dict) -> set:
-    """What `component_health_status{fatal="true"} == 1` would select."""
+def _paging(series: dict) -> set:
+    """The rule `docs/operations/monitoring/README.md` publishes, verbatim:
+
+    component_health_status{fatal="true", fails_per_replica="false"} == 1
+    """
+    return {
+        key.split("|")[0]
+        for key, value in series.items()
+        if key.split("|")[1] == "true" and key.split("|")[2] == "false" and value == 1.0
+    }
+
+
+def _fatal_and_down(series: dict) -> set:
+    """`{fatal="true"} == 1` — the gauge's spelling of `fatal_unhealthy`.
+
+    A superset of `_paging`; the two coincide here only because `database` is
+    the sole fatal component. Kept separate so the comparison against the body
+    is made against the set the body actually means.
+    """
     return {
         key.split("|")[0]
         for key, value in series.items()
@@ -90,6 +107,7 @@ client = TestClient(app)
 metrics_cold = client.get("/metrics")
 health = client.get("/health")
 metrics_warm = client.get("/metrics")
+detail = client.get("/health/components/database")
 
 print("@@RESULT@@" + json.dumps({
     "health_code": health.status_code,
@@ -98,6 +116,8 @@ print("@@RESULT@@" + json.dumps({
     "component_fails_per_replica": health.json()["components"]["database"][
         "fails_per_replica"
     ],
+    "detail_fails_per_replica": detail.json()["metrics"]["fails_per_replica"],
+    "detail_health_keys": sorted(detail.json()["health"].keys()),
     "metrics_code": metrics_cold.status_code,
     "series": _series(metrics_cold),
     "series_after_health": _series(metrics_warm),
@@ -161,11 +181,16 @@ def test_the_scrape_and_the_body_report_the_same_outage(scraped):
     assert scraped["health_status"] == "unhealthy"
     assert scraped["fatal_unhealthy"] == ["database"]
 
-    assert _firing(scraped["series"]) == set(scraped["fatal_unhealthy"])
+    assert _fatal_and_down(scraped["series"]) == set(scraped["fatal_unhealthy"])
     # And a scrape taken after the body was served says the same thing, so
     # the two surfaces do not merely agree once.
-    assert _firing(scraped["series_after_health"]) == set(scraped["fatal_unhealthy"])
+    assert _fatal_and_down(scraped["series_after_health"]) == set(
+        scraped["fatal_unhealthy"]
+    )
     assert scraped["series_after_health"] == scraped["series"]
+    # The DOCUMENTED page rule fires here too: `database` is fatal and shared,
+    # so no readiness probe can shed around it.
+    assert _paging(scraped["series"]) == {"database"}
 
 
 def test_healthy_components_are_on_the_wire_too(scraped):
@@ -180,3 +205,7 @@ def test_healthy_components_are_on_the_wire_too(scraped):
 def test_the_component_body_now_carries_fails_per_replica(scraped):
     """#1543's review: `fatal` alone never answered "will readiness 503?"."""
     assert scraped["component_fails_per_replica"] is False
+    assert scraped["detail_fails_per_replica"] is False
+    # Once per body: the detail route carries the pair under `metrics`, and
+    # does not repeat it in the ad-hoc `health` block beside it.
+    assert "fails_per_replica" not in scraped["detail_health_keys"]

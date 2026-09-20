@@ -1678,12 +1678,14 @@ try:
         # SLA gauges are recomputed at every scrape so /health/sla is alertable
         register_scrape_hook(sla_tracker.update_prometheus_gauges)
         # Component health likewise (#1547). /health is the liveness surface
-        # and answers 200 by design, so all three Kubernetes probes ignore a
-        # dependency outage — correctly, since restarting a pod does not fix a
-        # shared primary. `component_health_status` is what carries that
-        # verdict somewhere a human can be paged from; the alert rule lives in
-        # faultmaven-enterprise-infra and selects on the gauge's `fatal` label
-        # rather than naming components, so the fatal set stays data.
+        # and answers 200 by design, so the Kubernetes probes reading it cannot
+        # act on a dependency outage — correctly, since restarting a pod does
+        # not fix a shared primary. `component_health_status` is what puts that
+        # verdict somewhere a human can be paged from. No alert rule consumes
+        # it yet: one belongs in faultmaven-enterprise-infra, and the
+        # expression it should use is in docs/operations/monitoring/README.md.
+        # The classifications ride as labels so that rule can select the set
+        # instead of naming components, keeping the fatal set data.
         register_scrape_hook(component_monitor.publish_health_gauges)
         logger.info(
             "✅ Prometheus /metrics endpoint mounted (METRICS_EXPORTER=prometheus_http)"
@@ -2604,7 +2606,10 @@ async def health_check_component(component_name: str):
                 "response_time_ms": component_health.response_time_ms,
                 "last_error": component_health.last_error,
                 "fatal": component_health.fatal,
-                "fails_per_replica": component_health.fails_per_replica,
+                # `fails_per_replica` is NOT repeated here: `metrics` below is
+                # `get_component_metrics`, which carries the pair beside each
+                # other. Serialising one declaration twice in one body is how
+                # the two copies come to disagree.
                 "probe_availability_24h": component_health.probe_availability_24h,
                 "dependencies": component_health.dependencies,
                 "metadata": component_health.metadata,
