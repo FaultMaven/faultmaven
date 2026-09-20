@@ -140,8 +140,12 @@ class ComponentHealthMonitor:
         self.component_health: Dict[str, ComponentHealth] = {}
         self.dependency_map: Dict[str, DependencyMapping] = {}
         self.health_history: Dict[str, List[Tuple[datetime, HealthStatus, float]]] = {}
-        #: Components whose failure means the process cannot usefully serve.
-        #: Grades the ``/health`` body; does not by itself gate traffic.
+        #: A record of which components are fatal to serving — not a
+        #: mechanism. **No production code reads it** since ``/readiness``
+        #: moved to the conjunction below; the ``/health`` body's severity is
+        #: computed in ``get_overall_health_status`` from each component's own
+        #: ``.fatal`` field, not from this set. Kept because it is where a
+        #: reader looks for the answer, and asserted by two unit tests.
         self.fatal_components: Set[str] = set()
         #: The readiness-fatal set — the components ``/readiness`` answers 503
         #: for, which removes this pod from its Service. Derived, never
@@ -193,25 +197,31 @@ class ComponentHealthMonitor:
 
         ‼ **``database`` is fatal and is deliberately NOT readiness-fatal.**
         Before you "fix" that, the argument, because it has been litigated:
-        one shared PostgreSQL primary sits behind every replica
-        (``DATABASE_HOST`` names a single Service, the chart runs 1 primary +
-        1 *read* replica, the API runs 3 pods), so the database does not fail
-        for one pod — it fails for all of them at once. Gating readiness on
-        it converts a partial outage into a total one: a 60-second primary
-        restart drops every pod from Endpoints, ingress then refuses every
-        path — including ``/health``, ``/metrics`` and JWT validation, none
-        of which touch the database — and "503 with a body" becomes
-        "connection refused" at the moment the fleet most needs to be
+        one shared PostgreSQL primary sits behind every replica.
+        ``DATABASE_HOST`` names a single Service and the chart runs 1 primary
+        + 1 *read* replica, so whatever the pod count, every pod talks to the
+        same primary: the database does not fail for one pod, it fails for
+        all of them at once. Do not read a pod count into that — it is 3 in
+        the base deployment, 2 under the onprem overlay (HPA 2-6) and 1 in
+        staging, and none of those makes the database a per-pod dependency,
+        which is exactly why the argument does not rest on the number.
+
+        Gating readiness on it converts a partial outage into a total one: a
+        60-second primary restart drops every pod from Endpoints, ingress
+        then refuses every path — including ``/health``, ``/metrics`` and JWT
+        validation, none of which touch the database — and "503 with a body"
+        becomes "connection refused" at the moment the fleet most needs to be
         diagnosable. Readiness buys nothing there, because there is no
         healthy sibling to shift traffic to. A shared dependency being down
         is an **alert**, not a readiness signal.
 
-        A second, independent hazard if it were added: ``_check_database_health``
-        checks a connection out of the same process-global pool that serves
-        requests, so any checkout timeout (including this module's own 3s
-        probe cap) reports UNHEALTHY. Pod A saturates under load, fails
-        readiness, sheds its traffic onto B and C, their pools saturate, and
-        the fleet oscillates. Readiness touching nothing cannot join that loop.
+        A second, independent hazard if it were added:
+        ``_check_database_health`` checks a connection out of the same
+        process-global pool that serves requests, so any checkout timeout
+        (including this module's own 3s probe cap) reports UNHEALTHY. One pod
+        saturates under load, fails readiness, sheds its traffic onto its
+        siblings, their pools saturate in turn, and the fleet oscillates.
+        Readiness touching nothing cannot join that loop.
 
         The same shared-failure argument independently excludes ``redis``,
         ``session_store`` and ``llm_provider`` — every replica shares one

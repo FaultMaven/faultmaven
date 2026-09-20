@@ -2484,7 +2484,14 @@ async def readiness(response: Response):
         return {"status": "ready", "reason": "readiness_check_unavailable"}
 
     if ready:
-        return {"status": "ready", "components": detail["components"]}
+        # `checked` is on the ready body too, so an empty readiness-fatal set
+        # is self-describing: "nothing was probed, by design" is the correct
+        # behaviour today and is otherwise only inferable from an absence.
+        return {
+            "status": "ready",
+            "checked": detail["checked"],
+            "components": detail["components"],
+        }
 
     response.status_code = 503
     return {

@@ -603,10 +603,11 @@ def test_the_readiness_fatal_set_is_empty_today():
 def test_the_database_is_fatal_but_never_readiness_fatal():
     """The exclusion #1524 turns on: fatal, but shared by every replica.
 
-    One PostgreSQL primary sits behind all three API pods, so gating
-    readiness on it converts a partial outage into a total one — every pod
-    leaves Endpoints at once and "503 with a body" becomes "connection
-    refused". A shared dependency down is an alert, not a readiness signal.
+    One PostgreSQL primary sits behind every API pod, whatever the overlay's
+    replica count, so gating readiness on it converts a partial outage into
+    a total one — every pod leaves Endpoints at once and "503 with a body"
+    becomes "connection refused". A shared dependency down is an alert, not
+    a readiness signal.
     """
     monitor = ComponentHealthMonitor()
     assert monitor.component_health["database"].fatal is True

@@ -164,7 +164,9 @@ def test_readiness_agrees_with_health_while_the_fatal_set_is_empty(monkeypatch):
 
     readiness = client.get("/readiness")
     assert readiness.status_code == 200
-    assert readiness.json() == {"status": "ready", "components": {}}
+    # `checked: []` says "probed nothing, by design" on the wire, rather
+    # than leaving it to be inferred from an empty `components`.
+    assert readiness.json() == {"status": "ready", "checked": [], "components": {}}
 
 
 def test_a_per_replica_failable_component_makes_readiness_503(monkeypatch):
