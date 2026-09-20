@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 import aiohttp
 
-from faultmaven.exceptions import LLMException
+from faultmaven.exceptions import LLMErrorCategory, LLMException
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
@@ -28,6 +28,16 @@ from .base import (
 
 class OpenAIProvider(BaseLLMProvider):
     """OpenAI LLM provider implementation"""
+
+    def __init__(self, config: ProviderConfig):
+        super().__init__(config)
+        # Token-cap spellings this endpoint has DEMONSTRATED, keyed by
+        # effective model id (#510). Written only by a correction that then
+        # succeeded; read ahead of the static family expectation. Bounded by
+        # the number of distinct models one provider instance is asked for,
+        # and never persisted — a fact about a live endpoint, re-learned in
+        # one round trip by a fresh process.
+        self._token_param_learned: Dict[str, str] = {}
 
     @property
     def provider_name(self) -> str:
@@ -64,12 +74,21 @@ class OpenAIProvider(BaseLLMProvider):
     # ``response_format`` — would silently miss the call that needs it, starving
     # the schema JSON on that model (the #625 truncation).
 
-    # OpenAI model families that REQUIRE ``max_completion_tokens`` and reject the
-    # legacy ``max_tokens`` with a 400 ``unsupported_parameter`` error (the
-    # o-series reasoning models and the GPT-5 family). Older Chat Completions
-    # models (gpt-4o, gpt-4, gpt-3.5) still take ``max_tokens``. Kept separate
-    # from the STRICT indicators because the two axes don't coincide — gpt-4o is
-    # STRICT but still uses ``max_tokens``.
+    # OpenAI model families known to REQUIRE ``max_completion_tokens`` and to
+    # reject the legacy ``max_tokens`` with a 400 ``unsupported_parameter``
+    # error (the o-series reasoning models and the GPT-5 family). Older Chat
+    # Completions models (gpt-4o, gpt-4, gpt-3.5) still take ``max_tokens``.
+    # Kept separate from the STRICT indicators because the two axes don't
+    # coincide — gpt-4o is STRICT but still uses ``max_tokens``.
+    #
+    # ‼ This list is the OPENING GUESS, not a prediction the request depends on
+    # (#510). Which spelling a model takes is a fact the endpoint owns, and
+    # ``_correct_token_param_and_retry`` below learns it from the endpoint's own
+    # 400: an unlisted family (``gpt-6``, ``o5``) costs ONE extra round trip the
+    # first time it is called and is then remembered for the life of the
+    # provider instance — it does not fail. Adding a family here buys back that
+    # round trip and nothing else, so it is an optimisation, never an outage
+    # fix. Do not grow it speculatively.
     _COMPLETION_TOKENS_MODEL_FAMILIES = ("gpt-5", "o1", "o3", "o4")
     # Anchored at the start of the (optionally ``vendor/``-prefixed) id so a
     # family token embedded MID-name (e.g. ``my-gpt-4-o1-test``) does not
@@ -116,17 +135,91 @@ class OpenAIProvider(BaseLLMProvider):
     # decision); the mapping exists so the experiment is expressible.
     _INFERENCE_REASONING_EFFORT = "medium"
 
+    # The two spellings of the /chat/completions generation cap. Exactly one is
+    # ever sent; sending both 400s on the models that reject the legacy name.
+    _TOKEN_LIMIT_PARAM_LEGACY = "max_tokens"
+    _TOKEN_LIMIT_PARAM_MODERN = "max_completion_tokens"
+
     @classmethod
     def _uses_completion_tokens_param(cls, model_name: str) -> bool:
-        """Whether the model takes ``max_completion_tokens`` over ``max_tokens``.
+        """Whether the model is EXPECTED to take ``max_completion_tokens``.
 
         The o-series and GPT-5 families reject ``max_tokens`` with a 400
         ``unsupported_parameter`` error and require ``max_completion_tokens``
         instead. Older models keep ``max_tokens``. Overridable so a subclass
         that targets a different gateway (e.g. OpenRouter, whose unified API
         normalizes the legacy parameter itself) can opt out.
+
+        This is an EXPECTATION, not a requirement (#510): a wrong answer here
+        costs one round trip, because ``generate()`` reads the endpoint's own
+        rejection and re-sends under the other name. See
+        ``_COMPLETION_TOKENS_MODEL_FAMILIES``.
         """
         return bool(cls._COMPLETION_TOKENS_MODEL_RE.search(model_name.lower()))
+
+    @classmethod
+    def _other_token_param(cls, param: str) -> str:
+        """The spelling that is not *param*."""
+        return (
+            cls._TOKEN_LIMIT_PARAM_MODERN
+            if param == cls._TOKEN_LIMIT_PARAM_LEGACY
+            else cls._TOKEN_LIMIT_PARAM_LEGACY
+        )
+
+    def _token_limit_param(self, model: str) -> str:
+        """Which spelling to send for *model* — learned answer first.
+
+        The per-instance memo is written only by a correction that actually
+        SUCCEEDED against this endpoint, so it outranks the static expectation:
+        an observation of the live endpoint beats a guess about it. Per
+        instance rather than per class because the answer is a property of the
+        endpoint as well as the model — one process can hold an OpenAI provider
+        and an OpenRouter provider whose ``config.base_url`` differ, and a
+        class-level memo would let one teach the other something false.
+        """
+        learned = self._token_param_learned.get(model)
+        if learned is not None:
+            return learned
+        return (
+            self._TOKEN_LIMIT_PARAM_MODERN
+            if self._uses_completion_tokens_param(model)
+            else self._TOKEN_LIMIT_PARAM_LEGACY
+        )
+
+    @classmethod
+    def _is_token_param_rejection(cls, error: LLMException, sent_param: str) -> bool:
+        """Whether *error* is the endpoint refusing the token-cap SPELLING.
+
+        Two conditions, both required (#510):
+
+        1. The failure is a :attr:`LLMErrorCategory.REQUEST_REJECTED` — this
+           request shape is permanently wrong, so re-sending it unchanged is
+           futile and changing it is the only thing that can help. A transient,
+           an overflow or an unclassified failure must never land here: the
+           retry ladder owns those, and spending a parameter swap on them would
+           send a DIFFERENT request than the one the ladder is retrying.
+        2. The rejection NAMES the parameter we sent. ``REQUEST_REJECTED``
+           also covers ``unsupported_value``, ``invalid_value``, a schema the
+           model will not compile, an unsupported region — none of which a
+           rename can fix, and all of which would otherwise buy a wasted round
+           trip on every call. Requiring the parameter's own name is what keeps
+           the swap keyed to the one failure it answers.
+
+        The two spellings are not substrings of each other (``max_tokens`` does
+        not occur inside ``max_completion_tokens``), so a plain containment test
+        cannot confuse "the name I sent" with "the name it recommends" — a body
+        that names only the OTHER spelling is a rejection of something we did
+        not send, and is re-raised.
+
+        A value complaint that happens to name the same parameter
+        (``max_tokens must be greater than 0``) does slip the gate. It costs one
+        round trip and then surfaces, because the swapped request fails the same
+        way and the second failure is raised: bounded, never looping, never
+        silently masked.
+        """
+        if error.category is not LLMErrorCategory.REQUEST_REJECTED:
+            return False
+        return sent_param in str(error).lower()
 
     # o1 variants that DON'T accept ``reasoning_effort`` (o1-preview / o1-mini
     # shipped before the param existed and 400 on it), even though they DO
@@ -540,11 +633,10 @@ class OpenAIProvider(BaseLLMProvider):
         # comparison below and be silently ignored.
         reasoning_intent = ReasoningIntent.coerce(kwargs.pop("reasoning_intent", None))
         kwargs.pop("min_output_tokens", None)
-        token_limit_param = (
-            "max_completion_tokens"
-            if self._uses_completion_tokens_param(effective_model)
-            else "max_tokens"
-        )
+        # Which spelling of the generation cap this endpoint takes for this
+        # model: the learned answer if one call has already been corrected,
+        # otherwise the static expectation (#510).
+        token_limit_param = self._token_limit_param(effective_model)
         # One evaluation serves both the temperature and reasoning_effort
         # decisions below — split call sites with opposite polarity invite the
         # two axes drifting apart when the predicate's scope changes.
@@ -635,7 +727,103 @@ class OpenAIProvider(BaseLLMProvider):
         # drops the Anthropic-only caching hint, then merges the rest.
         self._merge_extra_kwargs(payload, kwargs, model=effective_model)
 
-        # Make request
+        # A rejection that names the spelling we sent is the endpoint telling
+        # us our expectation for this model is wrong. Take its word for it:
+        # one in-line re-send under the other name, then remember (#510).
+        try:
+            return await self._post_chat_completion(headers, payload, effective_model)
+        except LLMException as rejected:
+            if not self._is_token_param_rejection(rejected, token_limit_param):
+                raise
+            return await self._correct_token_param_and_retry(
+                headers,
+                payload,
+                effective_model,
+                sent_param=token_limit_param,
+                rejected=rejected,
+            )
+
+    async def _correct_token_param_and_retry(
+        self,
+        headers: Dict[str, str],
+        payload: Dict[str, Any],
+        effective_model: str,
+        *,
+        sent_param: str,
+        rejected: LLMException,
+    ) -> LLMResponse:
+        """Re-send *payload* once under the other token-cap spelling (#510).
+
+        The endpoint has just told us, in its own error body, that the spelling
+        we chose is not the one this model takes. That is a more authoritative
+        answer than any list we could keep, so we take it: swap the key, re-send
+        the otherwise IDENTICAL payload, and — if that works — remember the
+        answer for this model so the correction is paid once per model per
+        provider instance rather than on every call.
+
+        This is deliberately NOT a rung of the retry ladder
+        (``LLMErrorHandler.with_retry``) and must not become one:
+
+        * It is bounded at exactly ONE re-send, in-line, and the first attempt's
+          exception never escapes ``generate()`` when it fires — so it consumes
+          no part of the ladder's budget for transient failures, and the
+          router's circuit breaker records no failure for a call that succeeded.
+        * It fires only on a permanent rejection naming the parameter we sent
+          (see ``_is_token_param_rejection``), which is the one failure a
+          re-send can only help by being DIFFERENT. The ladder's job is the
+          opposite: re-sending the same request in the hope the provider
+          recovers.
+        * The extra round trip is a fast one by construction — a rejected
+          request shape is refused before any generation happens — so the turn
+          budget pays a refusal, not a second completion.
+
+        If the swapped request fails too, that failure is raised (chained from
+        the original, so both are in the traceback) and nothing is learned. The
+        second failure is the truthful one to surface: it describes the request
+        that was actually sent last, and its own category is what the ladder
+        above must act on — collapsing it into the first would report a
+        rate-limit as a permanent rejection.
+        """
+        alternative = self._other_token_param(sent_param)
+        self.logger.warning(
+            f"{self.provider_name} rejected '{sent_param}' on {effective_model} "
+            f"({rejected}) — re-sending once with '{alternative}'. The static "
+            f"expectation for this model is wrong; the endpoint's answer wins."
+        )
+        # Move the value rather than re-deriving it: the re-send must differ
+        # from the rejected request in the KEY and in nothing else. ``pop``
+        # without a default because a payload with no cap at all is a silent
+        # behavior change, not a fallback.
+        payload[alternative] = payload.pop(sent_param)
+        try:
+            response = await self._post_chat_completion(
+                headers, payload, effective_model
+            )
+        except LLMException as still_failing:
+            raise still_failing from rejected
+
+        self._token_param_learned[effective_model] = alternative
+        self.logger.warning(
+            f"{self.provider_name} model {effective_model} takes "
+            f"'{alternative}', not '{sent_param}' — learned for the life of "
+            f"this provider instance. Add its family to "
+            f"_COMPLETION_TOKENS_MODEL_FAMILIES to skip this round trip."
+        )
+        return response
+
+    async def _post_chat_completion(
+        self,
+        headers: Dict[str, str],
+        payload: Dict[str, Any],
+        effective_model: str,
+    ) -> LLMResponse:
+        """POST one prepared /chat/completions body and read the answer.
+
+        Split out of ``generate()`` so the request can be issued a second time
+        under the other token-cap spelling (#510) without duplicating the
+        response parsing, and so the retry is visibly ONE re-send of the SAME
+        prepared payload rather than a second trip through payload assembly.
+        """
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
