@@ -101,7 +101,8 @@ async def test_knowledge_service_search_uses_real_signature():
     assert call["query"] == "kubernetes pod crashloop"
     assert call["k"] == 5
     assert isinstance(call["where"], dict)
-    # Scope filter required by KnowledgeVectorStore._enforce_scope_invariant.
+    # A filter naming a scope key is required by
+    # KnowledgeVectorStore._require_kb_filter_present.
     from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
         SCOPE_FILTER_KEYS,
         _flatten_filter_keys,

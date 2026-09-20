@@ -89,7 +89,7 @@ ChromaDB Instance
 └── ...
 ```
 
-**Scope safety invariant:** `KnowledgeVectorStore.search()` enforces that queries against `faultmaven_kb` MUST include a scope filter — one of the `SCOPE_FILTER_KEYS` (`scope`, `owner_id`, `organization_id`, or `parent_document_id`) — in the `where` clause. Unscoped queries raise `ValueError` — converting a fail-open data leak risk into a fail-closed guarantee. This is enforced in `infrastructure/knowledge/knowledge_vector_store.py`.
+**Filter-presence check:** `KnowledgeVectorStore.search()` refuses a query against `faultmaven_kb` whose `where` clause names none of the `SCOPE_FILTER_KEYS` (`scope`, `owner_id`, `organization_id`, `parent_document_id`) — `_require_kb_filter_present()` in `infrastructure/knowledge/knowledge_vector_store.py` raises `ValueError`. It checks that a filter is **present**, never that it is **scoped**: `{"scope": {"$ne": "no-such-scope"}}` names a scope key and returns the whole corpus, and passes. What it buys is that a query which forgot to filter at all cannot run. The tenant control is `build_kb_scope_filter` below, plus the AST pin that every filtered KB read derives its clause from it; giving ChromaDB a tenant dimension of its own (stamping `enterprise_id` into chunk metadata and conjuncting it on read) is **#1168**.
 
 **A typical scoped query** for a user who belongs to the SRE team (built by `build_kb_scope_filter`):
 
@@ -241,7 +241,7 @@ For the canonical implementation status of the retrieval pipeline (hybrid search
 | ------- | ------ | ----- |
 | Federated search across tiers | Implemented | Single `answer_from_kb` tool searches all scopes (global + personal + team) via `$or` filter |
 | Single-collection storage | Implemented | One `faultmaven_kb` collection with metadata-based scope filtering |
-| Scope safety invariant | Implemented | `_enforce_scope_invariant()` raises `ValueError` on unscoped queries |
+| Filter-presence check | Implemented | `_require_kb_filter_present()` raises `ValueError` when a KB `where` clause names no scope key. Presence, not tenancy — the vector-layer tenant control is #1168 |
 
 #### Current Tool Architecture
 
@@ -314,7 +314,7 @@ KB-arch owns the scope-filter construction. The full tool path (adapter → filt
 
 The `shared_ids` arm is resolved from `resource_shares` (`resolve_shared_kb_ids`) — the personal/global arms come straight from the caller's own ids, so a filter built for one user can never surface another's non-shared content. Empty `shared_ids` collapses the filter to `personal ∪ global`.
 
-This filter is passed to the unified `faultmaven_kb` collection in the metadata-`where` argument. The scope safety invariant (`_enforce_scope_invariant()`) rejects any KB query that arrives without a scope clause — see [Storage Architecture](#single-collection-with-metadata-filtering-current).
+This filter is passed to the unified `faultmaven_kb` collection in the metadata-`where` argument. The filter-presence check (`_require_kb_filter_present()`) rejects any KB query that arrives naming no scope key at all — see [Storage Architecture](#single-collection-with-metadata-filtering-current).
 
 **Case evidence is not federated.** `answer_from_case_evidence` queries per-case `case_{case_id}` collections with a forensic synthesis prompt — fundamentally different role (diagnose vs. remediate). The evidence-vs-knowledge boundary is established in the Purpose section.
 
