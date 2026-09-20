@@ -503,11 +503,7 @@ async def test_a_failed_service_is_unhealthy_and_a_disabled_one_is_degraded(
 
 
 def test_only_the_database_is_fatal_to_serving():
-    """Widening this set changes when production pods leave their Service.
-
-    It is not a detail of this module: a component added here stops traffic
-    to a pod that might still have served the request. Change it knowingly.
-    """
+    """Which components `/health` reports as an inability to serve."""
     assert ComponentHealthMonitor().fatal_components == {"database"}
 
 
@@ -573,36 +569,122 @@ def test_an_undeterminable_component_is_never_fatal():
     assert summary["fatal_unhealthy"] == []
 
 
-async def test_readiness_only_probes_the_fatal_set(monkeypatch):
-    """Readiness must not pay for, or be gated by, a degrading dependency."""
-    monitor = ComponentHealthMonitor()
+# --------------------------------------------------------------------------
+# The readiness-fatal set (#1524) — the narrower question, and the one whose
+# status code empties a Service
+# --------------------------------------------------------------------------
+
+
+def _probe_recorder(monitor, monkeypatch, status: HealthStatus):
+    """Make every probe answer ``status`` and record who was asked."""
     probed: list[str] = []
 
     async def _record(name: str):
         probed.append(name)
         health = monitor.component_health[name]
-        health.status = HealthStatus.HEALTHY
+        health.status = status
         return health
 
     monkeypatch.setattr(monitor, "check_component_health", _record)
+    return probed
+
+
+def test_the_readiness_fatal_set_is_empty_today():
+    """Empty is the decision, not an oversight.
+
+    A component here removes a pod from its Service, which only helps when a
+    sibling replica can take the traffic. Nothing shipped can fail on one
+    replica alone, so nothing qualifies. Adding a member is a policy change:
+    read ``_initialize_default_components`` first.
+    """
+    assert ComponentHealthMonitor().readiness_fatal_components == set()
+
+
+def test_the_database_is_fatal_but_never_readiness_fatal():
+    """The exclusion #1524 turns on: fatal, but shared by every replica.
+
+    One PostgreSQL primary sits behind all three API pods, so gating
+    readiness on it converts a partial outage into a total one — every pod
+    leaves Endpoints at once and "503 with a body" becomes "connection
+    refused". A shared dependency down is an alert, not a readiness signal.
+    """
+    monitor = ComponentHealthMonitor()
+    assert monitor.component_health["database"].fatal is True
+    assert monitor.component_health["database"].fails_per_replica is False
+    assert "database" in monitor.fatal_components
+    assert "database" not in monitor.readiness_fatal_components
+
+
+def test_no_shipped_component_claims_to_fail_per_replica():
+    """The second condition is what is unsatisfied — state it directly."""
+    monitor = ComponentHealthMonitor()
+    assert [
+        name
+        for name, health in monitor.component_health.items()
+        if health.fails_per_replica
+    ] == []
+
+
+def test_membership_needs_both_conditions():
+    """Either half alone leaves the pod in its Service."""
+    monitor = ComponentHealthMonitor()
+
+    monitor.register_component("shared_and_fatal", fatal=True)
+    monitor.register_component("per_pod_but_degrading", fails_per_replica=True)
+    assert monitor.readiness_fatal_components == set()
+
+    monitor.register_component("per_pod_and_fatal", fatal=True, fails_per_replica=True)
+    assert monitor.readiness_fatal_components == {"per_pod_and_fatal"}
+
+    # Re-registering without the second half takes it back out again.
+    monitor.register_component("per_pod_and_fatal", fatal=True)
+    assert monitor.readiness_fatal_components == set()
+
+
+async def test_readiness_probes_nothing_while_the_set_is_empty(monkeypatch):
+    """Not merely "answers ready" — it asks no dependency anything.
+
+    Readiness must not pay for, or be gated by, a degrading dependency, and
+    with an empty set it pays for nothing at all.
+    """
+    monitor = ComponentHealthMonitor()
+    probed = _probe_recorder(monitor, monkeypatch, HealthStatus.UNHEALTHY)
+
     ready, detail = await monitor.check_serving_readiness()
+    assert probed == []
     assert ready is True
-    assert probed == ["database"]
+    assert detail == {"checked": [], "blocking": [], "components": {}}
+
+
+async def test_readiness_only_probes_the_readiness_fatal_set(monkeypatch):
+    """The gate is live: a qualifying component is the only thing probed."""
+    monitor = ComponentHealthMonitor()
+    monitor.register_component("local_scratch_disk", fatal=True, fails_per_replica=True)
+    probed = _probe_recorder(monitor, monkeypatch, HealthStatus.HEALTHY)
+
+    ready, detail = await monitor.check_serving_readiness()
+    assert probed == ["local_scratch_disk"]
+    assert ready is True
+    assert detail["checked"] == ["local_scratch_disk"]
     assert detail["blocking"] == []
 
 
-async def test_readiness_blocks_on_an_unhealthy_fatal_component(monkeypatch):
+async def test_readiness_blocks_on_an_unhealthy_readiness_fatal_component(monkeypatch):
+    """Adding a per-replica-failable component makes the verdict bite.
+
+    Without this, an empty set is indistinguishable from a feature that does
+    nothing.
+    """
     monitor = ComponentHealthMonitor()
+    monitor.register_component("local_scratch_disk", fatal=True, fails_per_replica=True)
+    _probe_recorder(monitor, monkeypatch, HealthStatus.UNHEALTHY)
+    monitor.component_health["database"].status = HealthStatus.UNHEALTHY
 
-    async def _unhealthy(name: str):
-        health = monitor.component_health[name]
-        health.status = HealthStatus.UNHEALTHY
-        return health
-
-    monkeypatch.setattr(monitor, "check_component_health", _unhealthy)
     ready, detail = await monitor.check_serving_readiness()
     assert ready is False
-    assert detail["blocking"] == ["database"]
+    assert detail["blocking"] == ["local_scratch_disk"]
+    # The shared database is down too, and is still not a reason to leave.
+    assert detail["checked"] == ["local_scratch_disk"]
 
 
 # --------------------------------------------------------------------------

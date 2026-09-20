@@ -33,11 +33,11 @@ def test_readiness_reports_ready_with_redis_and_chroma():
 # --------------------------------------------------------------------------
 # Which endpoint carries the verdict in its status code (#1515)
 #
-# Production points liveness, readiness AND startup probes at /health. Until
-# the probes are split, a 503 there restarts pods during a dependency outage
-# and can strand a booting pod past its startup budget. So the split is:
-# /health always 200 with an honest body, /readiness 503 on a fatal component.
-# These four tests are the contract the infra change depends on.
+# Production pointed liveness, readiness AND startup probes at /health. A 503
+# there restarts pods during a dependency outage and can strand a booting pod
+# past its startup budget. So the split is: /health always 200 with an honest
+# body, /readiness 503 on a readiness-fatal component. These four tests are
+# the contract the infra change depends on.
 # --------------------------------------------------------------------------
 
 
@@ -53,9 +53,9 @@ class _Monitor:
         if self._raises:
             raise RuntimeError("probe itself is broken")
         return self._ready, {
-            "checked": ["database"],
+            "checked": list(self._blocking) or ["some_component"],
             "blocking": self._blocking,
-            "components": {"database": {"status": "healthy"}},
+            "components": {name: {"status": "unhealthy"} for name in self._blocking},
         }
 
 
@@ -66,12 +66,17 @@ def _patch_monitor(monkeypatch, monitor) -> None:
     )
 
 
-def test_readiness_is_503_when_a_fatal_component_is_unhealthy(monkeypatch):
-    _patch_monitor(monkeypatch, _Monitor(ready=False, blocking=["database"]))
+def test_readiness_is_503_when_a_readiness_fatal_component_is_unhealthy(monkeypatch):
+    """The handler's half: an unready verdict becomes a 503 naming it.
+
+    The component is deliberately not `database` — that one is fatal but
+    shared, so it is excluded from the set this endpoint reads (#1524).
+    """
+    _patch_monitor(monkeypatch, _Monitor(ready=False, blocking=["local_scratch_disk"]))
     r = TestClient(app).get("/readiness")
     assert r.status_code == 503
     assert r.json()["status"] == "unready"
-    assert r.json()["blocking"] == ["database"]
+    assert r.json()["blocking"] == ["local_scratch_disk"]
 
 
 def test_readiness_fails_open_when_the_probe_itself_breaks(monkeypatch):
@@ -106,6 +111,77 @@ def test_health_stays_200_when_the_system_is_unhealthy(monkeypatch):
     assert body["status"] == "unhealthy"
     # The verdict is legible to whatever reads the body.
     assert body["summary"]["fatal_unhealthy"] == ["database"]
+
+
+# --------------------------------------------------------------------------
+# The readiness-fatal set is empty, so /readiness agrees with /health (#1524)
+#
+# The probe wiring is what #1524 lands: readinessProbe moves to /readiness in
+# faultmaven-enterprise-infra, liveness and startup stay on /health. The set
+# it reads is empty by construction — `database` is fatal but shared by every
+# replica, so gating on it empties the Service instead of shedding traffic.
+# These two tests are the pair: today the endpoints agree, and the day a
+# genuinely per-pod component is declared they stop agreeing. Without the
+# second, an empty set is indistinguishable from a feature that does nothing.
+# --------------------------------------------------------------------------
+
+
+def _monitor_with_everything_broken(monkeypatch, extra: str | None = None):
+    """A real monitor, no I/O, every component UNHEALTHY."""
+    from faultmaven.infrastructure.health.component_monitor import (
+        ComponentHealthMonitor,
+        HealthStatus,
+    )
+
+    monitor = ComponentHealthMonitor()
+    if extra:
+        monitor.register_component(extra, fatal=True, fails_per_replica=True)
+    for health in monitor.component_health.values():
+        health.status = HealthStatus.UNHEALTHY
+
+    async def _already_broken(name: str):
+        return monitor.component_health[name]
+
+    async def _all_components():
+        return monitor.component_health
+
+    monkeypatch.setattr(monitor, "check_component_health", _already_broken)
+    monkeypatch.setattr(monitor, "check_all_components", _all_components)
+    _patch_monitor(monkeypatch, monitor)
+    return monitor
+
+
+def test_readiness_agrees_with_health_while_the_fatal_set_is_empty(monkeypatch):
+    """Every dependency down, including the database: both answer 200."""
+    _monitor_with_everything_broken(monkeypatch)
+    client = TestClient(app)
+
+    health = client.get("/health")
+    assert health.status_code == 200
+    # The worst case really is represented — otherwise the agreement is vacuous.
+    assert health.json()["status"] == "unhealthy"
+    assert health.json()["summary"]["fatal_unhealthy"] == ["database"]
+
+    readiness = client.get("/readiness")
+    assert readiness.status_code == 200
+    assert readiness.json() == {"status": "ready", "components": {}}
+
+
+def test_a_per_replica_failable_component_makes_readiness_503(monkeypatch):
+    """Declare one component that can fail on one pod, and the gate bites."""
+    _monitor_with_everything_broken(monkeypatch, extra="local_scratch_disk")
+    client = TestClient(app)
+
+    readiness = client.get("/readiness")
+    assert readiness.status_code == 503
+    body = readiness.json()
+    assert body["status"] == "unready"
+    assert body["blocking"] == ["local_scratch_disk"]
+    # The shared database is down too and is still not a reason to leave.
+    assert list(body["components"]) == ["local_scratch_disk"]
+
+    # And liveness is unmoved by it — a 503 here must never restart the pod.
+    assert client.get("/health").status_code == 200
 
 
 def test_health_reports_no_component_figure_it_did_not_measure():

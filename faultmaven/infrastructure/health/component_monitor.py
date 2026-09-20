@@ -6,14 +6,24 @@ or reports ``UNKNOWN``. There are no simulated checks: a check that cannot
 fail is indistinguishable from no check at all, which is what #1515 was.
 
 **Fatal vs degraded.** Each component declares ``fatal`` — whether the process
-can still usefully answer requests without it. A component is fatal only when
-all three hold: it has no fallback, it can fail for *this pod alone*, and with
-it down essentially no request can be served. ``database`` is the only one that
-qualifies. Everything else is degraded: visible in the body, never a reason to
-pull a pod from its Service or restart it. The distinction is load-bearing
-because a non-200 on a probe path turns a dependency outage into a restart
-loop; see the ``/health`` and ``/readiness`` handlers in ``main.py`` for which
-endpoint carries the verdict in its status code and why.
+can still usefully answer requests without it: it has no fallback, and with it
+down essentially no request can be served. ``database`` is the only one that
+qualifies. Everything else is degraded: still visible in the body, never a
+reason to pull a pod or restart it. The distinction is load-bearing because a
+non-200 on a probe path turns a dependency outage into a restart loop; see the
+``/health`` and ``/readiness`` handlers in ``main.py`` for which endpoint
+carries the verdict in its status code and why.
+
+**Fatal is not the same question as readiness-fatal.** ``fatal`` grades the
+severity reported in ``/health``'s body. The *readiness-fatal* set
+(``ComponentHealthMonitor.readiness_fatal_components``) is the narrower thing
+whose status code pulls a pod out of its Service, and it takes a second
+condition on top of ``fatal``: the component must be able to fail on **one
+replica while the others keep serving**. That second condition is what
+readiness is FOR — a readiness failure shifts traffic to a healthy sibling —
+and where every replica fails together there is no sibling, so the gate only
+empties the Service. Conflating the two is #1524; the set and the argument
+for today's membership live at ``_initialize_default_components``.
 """
 
 import asyncio
@@ -102,7 +112,13 @@ class ComponentHealth:
     last_check: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     probe_failures_24h: int = 0
     probe_successes_24h: int = 0
+    #: The process cannot usefully answer requests without this component.
+    #: Grades ``/health``'s body; on its own it does NOT gate traffic.
     fatal: bool = False
+    #: This component can fail for THIS pod alone while sibling replicas keep
+    #: serving. Only a component that is both ``fatal`` and
+    #: ``fails_per_replica`` joins the readiness-fatal set.
+    fails_per_replica: bool = False
 
 
 @dataclass
@@ -125,7 +141,15 @@ class ComponentHealthMonitor:
         self.dependency_map: Dict[str, DependencyMapping] = {}
         self.health_history: Dict[str, List[Tuple[datetime, HealthStatus, float]]] = {}
         #: Components whose failure means the process cannot usefully serve.
+        #: Grades the ``/health`` body; does not by itself gate traffic.
         self.fatal_components: Set[str] = set()
+        #: The readiness-fatal set — the components ``/readiness`` answers 503
+        #: for, which removes this pod from its Service. Derived, never
+        #: assigned: a component joins it by declaring BOTH ``fatal`` and
+        #: ``fails_per_replica`` at registration. **Today it is empty**, and
+        #: that is a decision, not an oversight — read
+        #: ``_initialize_default_components`` before adding to it.
+        self.readiness_fatal_components: Set[str] = set()
         # RLS-bypass posture (role attributes + table ownership) is static for the
         # life of the process/DB role, so determine it once and reuse it — the
         # per-probe DB cost then stays just the SELECT 1 connectivity check.
@@ -135,17 +159,18 @@ class ComponentHealthMonitor:
     def _initialize_default_components(self) -> None:
         """Initialize monitoring for default FaultMaven components.
 
-        ``fatal`` is argued per component; see the module docstring for the
-        three-part test. Only ``database`` passes it:
+        Two independent declarations per component, because they answer two
+        different questions (#1524):
 
-        - ``database``    — no fallback, fails per-pod (pool, DNS, partition),
-                            and every route that does anything touches it.
+        ``fatal`` — can this process usefully answer requests without it?
+        Only ``database`` cannot:
+
+        - ``database``    — no fallback, and every route that does anything
+                            touches it.
         - ``redis`` /
-          ``session_store`` — every replica shares one Redis, so a Redis
-                            outage is never the per-pod fault readiness
-                            exists to catch, and marking every pod unready
-                            converts a partial outage into a total one. Note
-                            what is NOT an argument here: cloud keeps
+          ``session_store`` — sessions re-establish and the rest of the
+                            surface keeps answering. Note what is NOT an
+                            argument for that: cloud keeps
                             ``RedisTokenRevocationStore``
                             (``create_token_revocation_store`` keys on
                             DEPLOYMENT_MODE, not on what the cache turned out
@@ -155,25 +180,88 @@ class ComponentHealthMonitor:
         - ``vector_store``,
           ``knowledge_base`` — retrieval degrades; turns, uploads and every
                             read still work.
-        - ``llm_provider`` — the router has fallback chains, the non-LLM
-                            surface keeps working, and every replica shares
-                            the same providers, so gating readiness on it
-                            would convert a partial outage into a total one.
+        - ``llm_provider`` — the router has fallback chains and the non-LLM
+                            surface keeps working.
         - ``sanitizer``   — degrades to regex-only redaction by design.
         - ``tracer``      — observability only.
+
+        ``fails_per_replica`` — can it fail for THIS pod while its siblings
+        keep serving? **Nothing here declares it**, so the readiness-fatal
+        set (``fatal and fails_per_replica``) is empty and ``/readiness``
+        agrees with ``/health`` today. That is deliberate, and it is the
+        whole of #1524's ruling.
+
+        ‼ **``database`` is fatal and is deliberately NOT readiness-fatal.**
+        Before you "fix" that, the argument, because it has been litigated:
+        one shared PostgreSQL primary sits behind every replica
+        (``DATABASE_HOST`` names a single Service, the chart runs 1 primary +
+        1 *read* replica, the API runs 3 pods), so the database does not fail
+        for one pod — it fails for all of them at once. Gating readiness on
+        it converts a partial outage into a total one: a 60-second primary
+        restart drops every pod from Endpoints, ingress then refuses every
+        path — including ``/health``, ``/metrics`` and JWT validation, none
+        of which touch the database — and "503 with a body" becomes
+        "connection refused" at the moment the fleet most needs to be
+        diagnosable. Readiness buys nothing there, because there is no
+        healthy sibling to shift traffic to. A shared dependency being down
+        is an **alert**, not a readiness signal.
+
+        A second, independent hazard if it were added: ``_check_database_health``
+        checks a connection out of the same process-global pool that serves
+        requests, so any checkout timeout (including this module's own 3s
+        probe cap) reports UNHEALTHY. Pod A saturates under load, fails
+        readiness, sheds its traffic onto B and C, their pools saturate, and
+        the fleet oscillates. Readiness touching nothing cannot join that loop.
+
+        The same shared-failure argument independently excludes ``redis``,
+        ``session_store`` and ``llm_provider`` — every replica shares one
+        Redis and the same providers — but those are not ``fatal`` either, so
+        they fail the first condition as well.
+
+        Whoever adds the first genuinely per-pod component here is the one who
+        decides the policy this set was left empty for.
         """
         default_components = {
-            "database": {"dependencies": [], "fatal": True},
-            "llm_provider": {"dependencies": [], "fatal": False},
+            "database": {
+                "dependencies": [],
+                "fatal": True,
+                "fails_per_replica": False,  # one shared primary — see above
+            },
+            "llm_provider": {
+                "dependencies": [],
+                "fatal": False,
+                "fails_per_replica": False,
+            },
             "knowledge_base": {
                 "dependencies": ["database", "vector_store"],
                 "fatal": False,
+                "fails_per_replica": False,
             },
-            "session_store": {"dependencies": ["redis"], "fatal": False},
-            "vector_store": {"dependencies": [], "fatal": False},
-            "redis": {"dependencies": [], "fatal": False},
-            "sanitizer": {"dependencies": [], "fatal": False},
-            "tracer": {"dependencies": [], "fatal": False},
+            "session_store": {
+                "dependencies": ["redis"],
+                "fatal": False,
+                "fails_per_replica": False,
+            },
+            "vector_store": {
+                "dependencies": [],
+                "fatal": False,
+                "fails_per_replica": False,
+            },
+            "redis": {
+                "dependencies": [],
+                "fatal": False,
+                "fails_per_replica": False,
+            },
+            "sanitizer": {
+                "dependencies": [],
+                "fatal": False,
+                "fails_per_replica": False,
+            },
+            "tracer": {
+                "dependencies": [],
+                "fatal": False,
+                "fails_per_replica": False,
+            },
         }
 
         for component, config in default_components.items():
@@ -181,6 +269,7 @@ class ComponentHealthMonitor:
                 component,
                 dependencies=config["dependencies"],
                 fatal=config["fatal"],
+                fails_per_replica=config["fails_per_replica"],
             )
 
     def register_component(
@@ -188,6 +277,7 @@ class ComponentHealthMonitor:
         component_name: str,
         dependencies: Optional[List[str]] = None,
         fatal: bool = False,
+        fails_per_replica: bool = False,
     ) -> None:
         """Register a component for health monitoring.
 
@@ -195,6 +285,11 @@ class ComponentHealthMonitor:
             component_name: Name of the component to monitor
             dependencies: List of components this component depends on
             fatal: Whether the process cannot usefully serve without it
+            fails_per_replica: Whether it can fail for THIS pod alone while
+                sibling replicas keep serving. Together with ``fatal`` this
+                is the membership test for the readiness-fatal set — see
+                ``_initialize_default_components`` for why no shipped
+                component declares it.
         """
         # Initialize component health
         self.component_health[component_name] = ComponentHealth(
@@ -203,6 +298,7 @@ class ComponentHealthMonitor:
             response_time_ms=0.0,
             dependencies=dependencies or [],
             fatal=fatal,
+            fails_per_replica=fails_per_replica,
         )
 
         # Set up dependency mapping
@@ -214,6 +310,15 @@ class ComponentHealthMonitor:
             self.fatal_components.add(component_name)
         else:
             self.fatal_components.discard(component_name)
+
+        # The readiness-fatal set is the CONJUNCTION, computed here and
+        # nowhere else. "Fatal to serving" alone is not enough: pulling the
+        # pod has to be able to help, which needs a healthy sibling to shift
+        # traffic to.
+        if fatal and fails_per_replica:
+            self.readiness_fatal_components.add(component_name)
+        else:
+            self.readiness_fatal_components.discard(component_name)
 
         # Initialize health history
         self.health_history[component_name] = []
@@ -936,6 +1041,9 @@ class ComponentHealthMonitor:
                 ),
                 dependencies=self.component_health[component_name].dependencies,
                 fatal=self.component_health[component_name].fatal,
+                fails_per_replica=self.component_health[
+                    component_name
+                ].fails_per_replica,
             )
 
         for task in done:
@@ -950,6 +1058,9 @@ class ComponentHealthMonitor:
                     last_error=str(error),
                     dependencies=self.component_health[component_name].dependencies,
                     fatal=self.component_health[component_name].fatal,
+                    fails_per_replica=self.component_health[
+                        component_name
+                    ].fails_per_replica,
                 )
             else:
                 health_results[component_name] = task.result()
@@ -1044,13 +1155,20 @@ class ComponentHealthMonitor:
         return overall_status, summary
 
     async def check_serving_readiness(self) -> Tuple[bool, Dict[str, Any]]:
-        """Can this process usefully serve requests right now?
+        """Should this pod stay in its Service right now?
 
-        Checks only the components declared fatal, because readiness gates
-        traffic and every extra dependency in that gate is another way to pull
-        a pod that could still have served. Returns ``(ready, detail)``.
+        Checks only the **readiness-fatal** set — ``fatal`` *and*
+        ``fails_per_replica`` — because readiness gates traffic and every
+        extra dependency in that gate is another way to pull a pod that could
+        still have served. Returns ``(ready, detail)``.
+
+        That set is empty today, so this answers ready without probing
+        anything and ``/readiness`` agrees with ``/health``. Deliberate, not
+        vestigial: the wiring is live, and the first component that can
+        genuinely fail on one replica turns it into a real gate. See
+        ``_initialize_default_components``.
         """
-        names = sorted(self.fatal_components)
+        names = sorted(self.readiness_fatal_components)
         results = await asyncio.gather(
             *(self.check_component_health(name) for name in names),
             return_exceptions=True,

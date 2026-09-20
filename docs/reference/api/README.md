@@ -4785,15 +4785,23 @@ Get real-time performance metrics.
 
 **Readiness**
 
-Readiness probe: 503 when a component fatal to serving is unhealthy.
+Readiness probe: 503 when a *readiness-fatal* component is unhealthy.
 
 This is the endpoint whose status code carries a verdict, and the only
 one — a Kubernetes readiness failure removes the pod from its Service
-without restarting it, which is exactly the action a dependency outage
+without restarting it, which is exactly the action a per-pod fault
 warrants. `/health` deliberately stays 200; see its docstring.
 
-Only components declared fatal are probed (today: `database`). Every
-additional dependency in this gate is another way to stop serving
+Only the readiness-fatal set is probed: a component fatal to serving that
+can also fail on **one replica while the others keep serving**. That set
+is **empty today**, so this endpoint currently agrees with `/health` on
+every input — including a database outage, which is fatal but shared, so
+gating on it would empty the Service rather than shed traffic to a
+healthy sibling (#1524). The membership test and the argument for
+`database`'s exclusion live beside the set, in
+`infrastructure/health/component_monitor.py`.
+
+Every additional dependency in this gate is another way to stop serving
 requests that could have been served, so a component that merely degrades
 the answer — the vector store, the knowledge base, the LLM router — is
 reported at `/health` and does not appear here. Prior to #1515 this
