@@ -8,6 +8,12 @@ Benchmarks for case service operations with performance targets:
 - Get case with details: target <250ms p95
 - Get statistics (100 cases): target <1000ms p95
 
+The ``Target:`` figures above and in each test docstring are the **product
+targets**, and only the ``FM_BENCHMARK_ABSOLUTE`` nightly asserts them. A
+pull request is gated on the far smaller **regression anchor** beside each
+one in ``budgets.py`` — a round number 2-3x that operation's measured cost
+on CI (#1556). Read a budget there, not here.
+
 Note: Thresholds are set for CI environments where performance varies.
 """
 
@@ -32,6 +38,16 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
     SQLiteCaseRepository,
 )
 
+from .budgets import (
+    CASE_SERVICE_CLOSE,
+    CASE_SERVICE_CREATE,
+    CASE_SERVICE_GET,
+    CASE_SERVICE_GET_WITH_DETAILS,
+    CASE_SERVICE_LIST,
+    CASE_SERVICE_STATISTICS,
+    CASE_SERVICE_UPDATE,
+    LatencyBudget,
+)
 from .conftest import assert_latency_within
 
 # ============================================================
@@ -134,22 +150,29 @@ async def measure_operation(operation, iterations: int = 100) -> dict:
     }
 
 
-def report_p95(name: str, stats: dict, target_ms: float) -> None:
-    """Print the distribution, then assert the p95 against its target.
+def report_p95(name: str, stats: dict, budget: LatencyBudget) -> None:
+    """Print the distribution, then assert the p95 against its budget.
 
     The one comparison site in this module. It converts to seconds and hands
     off to ``assert_latency_within``, so the machine-throughput calibration
     (#908) applies here exactly as it does to the ``measure_min_latency``
     modules — this file used to spell the same rule out seven times as
     ``assert stats["p95_ms"] < N``, which is how it got missed.
+
+    Both of the budget's numbers are printed, because the artifact this
+    lands in is what the NEXT re-anchoring joins against (#1556), and a
+    reader of a red run needs to know which of the two was being asserted.
     """
     print(f"\n{name}:")
     print(f"  Mean: {stats['mean_ms']:.2f}ms")
     print(f"  P95: {stats['p95_ms']:.2f}ms")
-    print(f"  Target: <{target_ms:.0f}ms p95")
+    print(
+        f"  Budget: <{budget.regression * 1000:.0f}ms p95 regression "
+        f"(product target {budget.product_target * 1000:.0f}ms, nightly)"
+    )
     assert_latency_within(
         stats["p95_ms"] / 1000.0,
-        target_ms / 1000.0,
+        budget,
         f"{name} p95",
     )
 
@@ -183,7 +206,7 @@ class TestCreateCaseBenchmark:
 
         stats = await measure_operation(create_case, iterations=50)
 
-        report_p95("Create Case Benchmark", stats, 200)
+        report_p95("Create Case Benchmark", stats, CASE_SERVICE_CREATE)
 
 
 # ============================================================
@@ -215,7 +238,7 @@ class TestGetCaseBenchmark:
 
         stats = await measure_operation(get_case, iterations=100)
 
-        report_p95("Get Case Benchmark", stats, 100)
+        report_p95("Get Case Benchmark", stats, CASE_SERVICE_GET)
 
 
 # ============================================================
@@ -255,7 +278,7 @@ class TestUpdateCaseBenchmark:
 
         stats = await measure_operation(update_case, iterations=50)
 
-        report_p95("Update Case Benchmark", stats, 150)
+        report_p95("Update Case Benchmark", stats, CASE_SERVICE_UPDATE)
 
 
 # ============================================================
@@ -288,7 +311,7 @@ class TestListCasesBenchmark:
 
         stats = await measure_operation(list_cases, iterations=30)
 
-        report_p95("List Cases (100 cases) Benchmark", stats, 300)
+        report_p95("List Cases (100 cases) Benchmark", stats, CASE_SERVICE_LIST)
 
 
 # ============================================================
@@ -325,7 +348,9 @@ class TestGetCaseWithDetailsBenchmark:
 
         stats = await measure_operation(get_details, iterations=50)
 
-        report_p95("Get Case With Details Benchmark", stats, 250)
+        report_p95(
+            "Get Case With Details Benchmark", stats, CASE_SERVICE_GET_WITH_DETAILS
+        )
 
 
 # ============================================================
@@ -368,7 +393,9 @@ class TestGetStatisticsBenchmark:
 
         stats = await measure_operation(get_stats, iterations=20)
 
-        report_p95("Get Statistics (100 cases) Benchmark", stats, 1000)
+        report_p95(
+            "Get Statistics (100 cases) Benchmark", stats, CASE_SERVICE_STATISTICS
+        )
 
 
 # ============================================================
@@ -411,4 +438,4 @@ class TestCloseBenchmark:
             "p95_ms": times[int(len(times) * 0.95)],
         }
 
-        report_p95("Close Case Benchmark", stats, 200)
+        report_p95("Close Case Benchmark", stats, CASE_SERVICE_CLOSE)

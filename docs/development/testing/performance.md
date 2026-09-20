@@ -28,43 +28,30 @@ pytest tests/benchmarks/test_session_operations.py -m benchmark -v
 pytest tests/benchmarks/test_memory_usage.py -m benchmark -v
 ```
 
-## Performance Targets
+## Where the numbers live
 
-### Case Operations
+Every benchmark in `tests/benchmarks/` carries **two** thresholds, and they
+answer different questions (#1556):
 
-| Operation | Target | Measurement |
-|-----------|--------|-------------|
-| Case creation | < 200ms | p95 latency |
-| Case retrieval | < 100ms | p95 latency |
-| Case update | < 150ms | p95 latency |
-| List cases (50) | < 150ms | p95 latency |
-| Search cases | < 200ms | p95 latency |
-| Batch creation | > 50/sec | throughput |
+| | Asserted by | Value | Scaled by the calibration |
+|---|---|---|---|
+| **Regression anchor** | every pull request and push to `main` | 2-3x that operation's measured cost on CI | yes |
+| **Product target** | the nightly `FM_BENCHMARK_ABSOLUTE` job only | the wall-clock SLA | no |
 
-### Session Operations
+Both are in **`tests/benchmarks/budgets.py`**, one row per benchmark, each
+recording the p95 it was anchored from. That file is the source of truth —
+this guide deliberately does not restate 50 numbers, because the copy is
+what goes stale.
 
-| Operation | Target | Measurement |
-|-----------|--------|-------------|
-| Session creation | < 50ms | p95 latency |
-| Session retrieval | < 30ms | p95 latency |
-| Update last_accessed | < 30ms | p95 latency |
-| Session deletion | < 30ms | p95 latency |
-| Session cleanup | > 500/sec | throughput |
-
-### Knowledge Search (Future)
-
-| Operation | Target | Measurement |
-|-----------|--------|-------------|
-| Vector search | < 300ms | p95 latency |
-| Embedding generation | < 100ms | p95 latency |
-| RAG pipeline | < 500ms | end-to-end |
-
-### Memory Usage
+Memory thresholds are the exception: they are plain assertions in
+`test_memory_usage.py`, never calibrated and never re-anchored, because
+megabytes do not move with machine throughput.
 
 | Metric | Target | Measurement |
 |--------|--------|-------------|
-| Baseline | < 100MB | RSS at startup |
-| Under load | < 512MB | RSS with 10 cases |
+| Baseline RSS | < 1500MB | `test_memory_usage_baseline` |
+| RSS under load | < 2000MB | `test_memory_usage_under_load` |
+| Growth after GC | < 100MB | `test_memory_cleanup_after_gc` |
 
 ## Load Testing
 
@@ -142,16 +129,20 @@ runner does not measure the code. #908 quantified that from the runs' own
 process scaled with machine throughput, and the thinnest-margin test was
 whichever happened to be closest to its number that week.
 
-So the thresholds stayed (they encode product targets) and the instrument
-changed. `tests/benchmarks/calibration.py` measures a fixed, cheap,
-CPU-bound workload **in the same pytest process**, and every budget is
-`target * calibration_scale()`:
+So the thresholds stayed (#908's ruling: they encode product targets) and
+the instrument changed. `tests/benchmarks/calibration.py` measures a fixed,
+cheap, CPU-bound workload **in the same pytest process**, and every budget
+is scaled by it:
 
 ```
-budget      = target        x scale
-floor       = target        / scale        (throughput: it is 1/latency)
+budget      = threshold     x scale
+floor       = threshold     / scale        (throughput: it is 1/latency)
 scale       = max(1.0, measured / CALIBRATION_REFERENCE_SECONDS)
 ```
+
+`threshold` was the product target until #1556 re-anchored the per-PR side;
+it is now whichever of the budget's two numbers this run asserts (below).
+The scaling itself is unchanged.
 
 Three properties worth knowing before you read a result:
 
@@ -164,30 +155,87 @@ Three properties worth knowing before you read a result:
   the target now fails. Float timings make that unreachable in practice.)
 * **A uniform slowdown cancels; a single-path regression does not.** That
   is the whole point, and it is asserted both ways in
-  `tests/unit/ci/test_benchmark_calibration.py`.
+  `tests/unit/ci/test_benchmark_calibration.py`. How big a single-path
+  regression has to be is set by the anchoring, not by the calibration —
+  see #1556 below.
 * **Memory assertions are not scaled.** Megabytes do not move with machine
   throughput, and correcting them would be nonsense.
 
-### How much headroom the budgets have today
+### A budget is a regression detector, not a product target (#1556)
 
-Worth knowing before you read a red run, and worth re-measuring before
-anyone argues about a threshold. Joining every budget in the suite with the
-number the same test reported in two green `main` runs (35499510079 and
-35496672222), **no budget is within 50% of its target on either**: the
-highest utilisation is 27.7% and 20.0% (`test_batch_case_creation_throughput`
-in both), and the median is 2.6% and 2.2%.
+Once #1555 made the comparison machine-independent, the *other* side of
+#908 was fully exposed. Joining all **50** budgets with the median each
+test reported across 20 green `main` runs:
 
-That is the state #1033 left behind — minimum-of-five sampling plus the
-threshold raises in #911/#1033 — and the benchmark workflow has had no
-latency failure since. #908's canary, `test_tag_search_match_all_latency`,
-now sits at 5.8% of its 400 ms budget. So the calibration is insurance
-rather than a cure: it keeps the gate's meaning machine-independent as
-those margins tighten again, which is the direction they have always moved.
+| | before #1556 | after |
+|---|---|---|
+| median utilisation | **2.5%** | **34.6%** |
+| highest utilisation | 24.5% | 40.8% |
+| budgets within 50% of target | 0 | 0 |
 
-The same numbers say the opposite thing about the thresholds themselves —
-a budget used at 2.6% cannot detect a 10x regression — but re-anchoring
-them is a separate decision from how they are compared, and it is not
-#908's.
+(#1556 reported 2.6% and 2.2% median from two single runs; the table above
+is the same join over 20, which is also what the anchors came from.)
+
+A budget used at 2.5% cannot notice a **10x** regression in that path, and
+the suite passes, which is what makes it easy to miss. #908's canary,
+`test_tag_search_match_all_latency`, sat at 5.7% of its 400 ms budget and
+now sits at 37.9% of a 60 ms one.
+
+The owner's ruling on #1556 resolved it: **a per-PR benchmark budget is a
+regression detector, not a product target.** The per-PR thresholds were
+re-anchored to 2-3x measured cost, the raw product SLAs stayed and now live
+strictly inside the nightly, and both numbers sit side by side in
+`tests/benchmarks/budgets.py`.
+
+#### What this catches, and what it gives up
+
+**At 2-3x, a 30% regression will not fire.** #908's ruling asked the
+calibration to preserve exactly that detection and #1555's discrimination
+test asserted it; #1556 traded it away deliberately. The calibrated noise
+floor measured **1.07x typical and 1.33x worst** across fresh processes on
+a loaded box, so a threshold at 1.3-1.5x would flake and destroy the gate's
+credibility again — which is how #908 started. 2-3x is the first band that
+clears noise with margin.
+
+So the per-PR gate catches **gross** regressions: an N+1, a lost index, a
+sync call on an async path, a cache that stopped caching. It does not catch
+incremental drift. That is asserted rather than described —
+`TestDiscrimination` in `tests/unit/ci/test_benchmark_calibration.py` now
+has a column that checks a 30% regression **passes**.
+
+Where 30% sensitivity would have to live is the nightly, against a raw
+target on a quiet runner. Note honestly what that costs today: the product
+targets sit **3.6x to 172x** above measured cost, median **35x**
+(`product_target / reference` per row of the table), so the nightly as it
+stands answers "does the wall clock still meet the commitment", not "did
+anything get 30% slower". Making it answer the second means tightening a
+product target, which is an owner decision #908's ruling reserved and #1556
+did not reopen.
+
+#### Where the anchors came from
+
+**2026-09-20**, from the `benchmark-results` artifact of **20 green `main`
+runs** spanning 2026-09-19T18:35Z to 2026-09-20T12:10Z. The run ids are
+recorded in `budgets.py`'s module docstring, and each row's `reference` is
+the p95 across those runs of the statistic that row's test compares.
+
+Two things about that choice, both deliberate:
+
+* **The anchor is observed CI cost, not `CALIBRATION_REFERENCE_SECONDS`.**
+  That constant is derived (development box x an artifact ratio, rounded
+  up) and #1555's review found it errs roughly 8% toward relief on the
+  lane's own cross-machine numbers. Anchoring 2-3x on top of it would have
+  baked that error into 50 budgets at once.
+* **It is the p95 of the raw reported statistic**, with no calibration
+  applied — 19 of the 20 runs predate #1555 and carry no calibration line,
+  and the raw p95 already sits at the slow end of the runner distribution.
+  A slow runner then gets the calibration's relief on top, so the error is
+  one-sided in the safe direction. Measured: every anchor sits at least
+  **2.10x** above the *worst* of those 20 runs, not just above their p95.
+
+`budgets.py` refuses at import time to hold an anchor outside the 2-3x
+band, so a re-anchor that moves a threshold and forgets its `reference`
+fails loudly instead of quietly widening the gate.
 
 Every run prints the calibration it measured, in the terminal summary and
 therefore in `benchmark_output.txt` and the job summary:
@@ -216,18 +264,28 @@ same order as the 1.2-1.5x runner-to-runner variance it corrects, not an
 order of magnitude below it. What makes that safe is the floor, not the
 precision: noise can only ever hand out unearned relief, never a new red.
 
-The cross-machine check that says the correction lands: the development box
-measures 3.44x slower than the reference, and there the worst budget sits
-at **88.2%** of its raw target but **25.6%** of its calibrated budget —
-against **27.7%** for the same test on the reference runner. Two machines a
-factor of 3.4 apart, the same utilisation once corrected.
+The cross-machine check that says the correction lands, re-measured on the
+re-anchored budgets (2026-09-20): the development box measures **3.56x**
+slower than the reference, and running the whole suite there gives a
+calibrated utilisation of **median 31.3%, max 40.0%** — against the
+**34.6% / 40.8%** the same anchors project on the reference runner from
+the 20-run join. Two machines a factor of 3.6 apart, the same utilisation
+to within about three points, which is exactly what "the threshold stops
+measuring which machine you got" means. (#1555 made the same check against
+the pre-#1556 budgets: worst budget at 88.2% of its raw target but 25.6%
+of its calibrated one, against 27.7% on the runner.)
+
+The same suite in absolute mode on that box: median **9.4%** of the raw
+product targets, max 65.5%, nothing red. The nightly is not measuring the
+same thing, and this is what that difference looks like.
 
 ### Where the raw targets are still checked
 
-`FM_BENCHMARK_ABSOLUTE=1` pins the scale at 1.0, so the suite asserts the
-product targets with no correction. That is what the **nightly-absolute**
-job runs (see below), and it is how you reproduce a wall-clock number
-locally:
+`FM_BENCHMARK_ABSOLUTE=1` switches every comparison from the budget's
+regression anchor to its `product_target`, and pins the scale at 1.0, so
+the suite asserts the raw product targets with no correction. That is what
+the **nightly-absolute** job runs (see below), and it is how you reproduce
+a wall-clock number locally:
 
 ```bash
 FM_BENCHMARK_ABSOLUTE=1 pytest tests/benchmarks/ -m benchmark -v
@@ -252,15 +310,18 @@ the gate quietly weakens. Err high.
 
 | Job | Runs on | Asserts |
 |-----|---------|---------|
-| `Run Performance Benchmarks` | every PR to main, every push to main, manual dispatch | **calibrated** budgets |
-| `Absolute Wall-Clock Targets (nightly)` | the 02:00 UTC schedule, or a manual dispatch with `absolute_targets` | the **raw** product targets (`FM_BENCHMARK_ABSOLUTE=1`) |
+| `Run Performance Benchmarks` | every PR to main, every push to main, manual dispatch | **calibrated regression anchors** (2-3x measured cost) |
+| `Absolute Wall-Clock Targets (nightly)` | the 02:00 UTC schedule, or a manual dispatch with `absolute_targets` | the **raw product targets** (`FM_BENCHMARK_ABSOLUTE=1`) |
 | `Memory Usage Benchmarks` | all of the above | megabytes, never scaled |
 
-The split is deliberate. A pull request is gated on something its author can
-influence; "does this operation meet its wall-clock target on this runner"
-is still worth asking, but it is a question about the machine as much as the
-code, so it is asked nightly where a red is a signal to read rather than a
-merge to re-run.
+The split is deliberate, and #1556 sharpened it into two different
+questions rather than one question asked twice. A pull request is gated on
+"did this change make something grossly slower", which is about the code
+and nothing else — so it compares a machine-corrected anchor sitting just
+above measured cost. "Does this operation meet its wall-clock target" is a
+question about the machine as much as the code, so it is asked nightly,
+uncorrected, where a red is a signal to read rather than a merge to
+re-run.
 
 Results are:
 - Uploaded as artifacts (retained 90 days)
@@ -278,7 +339,11 @@ If a benchmark fails:
 2. **Check the diff**: What changed since last passing run?
 3. **Expected impact?**: Did you add a feature that increases latency?
 4. **Investigate**: Use profiling tools (cProfile, py-spy)
-5. **Fix or update baseline**: Either optimize or update targets with justification
+5. **Fix, or re-anchor deliberately**: optimise the path, or — if the new
+   cost is the intended one — re-measure and move that budget's
+   `regression` and `reference` together (recipe in `budgets.py`'s module
+   docstring). Moving a `product_target` is a separate, owner-level
+   decision.
 
 ### Example Investigation
 

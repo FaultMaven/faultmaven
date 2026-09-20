@@ -8,6 +8,12 @@ Performance Targets:
 - Case update: < 150ms
 - List cases (50): < 150ms
 
+The ``Target:`` figures above and in each test docstring are the **product
+targets**, and only the ``FM_BENCHMARK_ABSOLUTE`` nightly asserts them. A
+pull request is gated on the far smaller **regression anchor** beside each
+one in ``budgets.py`` — a round number 2-3x that operation's measured cost
+on CI (#1556). Read a budget there, not here.
+
 Every wall-clock assertion here goes through ``measure_min_latency`` (warm-up
 call, then N samples, compare the MINIMUM). See that helper's docstring for
 why the minimum rather than a single sample or a small-n p95.
@@ -29,6 +35,14 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
     SQLiteCaseRepository,
 )
 
+from .budgets import (
+    CASE_CREATE,
+    CASE_CREATE_THROUGHPUT,
+    CASE_LIST,
+    CASE_RETRIEVE,
+    CASE_SEARCH,
+    CASE_UPDATE,
+)
 from .conftest import (
     assert_latency_within,
     assert_throughput_at_least,
@@ -72,10 +86,8 @@ class TestCaseCreationPerformance:
         measured = await measure_min_latency(case_repository.save, setup=_fresh_case)
 
         assert measured.result is not None
-        # Kept, not re-anchored: measurement puts this operation two orders of
-        # magnitude under the wall. Generous is not the same as broken.
         assert_latency_within(
-            measured.best, 1.000, "Case creation latency", measured.report()
+            measured.best, CASE_CREATE, "Case creation latency", measured.report()
         )
         print(f"\n  Case creation latency: {measured.report()}")
 
@@ -122,7 +134,10 @@ class TestCaseCreationPerformance:
 
         throughput = num_cases / measured.best
         assert_throughput_at_least(
-            throughput, 50, "Case creation throughput", measured.report()
+            throughput,
+            CASE_CREATE_THROUGHPUT,
+            "Case creation throughput",
+            measured.report(),
         )
         print(
             f"\n  Batch creation throughput: {throughput:.1f} cases/sec "
@@ -162,7 +177,7 @@ class TestCaseRetrievalPerformance:
 
         assert measured.result is not None
         assert_latency_within(
-            measured.best, 0.100, "Case retrieval latency", measured.report()
+            measured.best, CASE_RETRIEVE, "Case retrieval latency", measured.report()
         )
         print(f"\n  Case retrieval latency: {measured.report()}")
 
@@ -201,7 +216,7 @@ class TestCaseRetrievalPerformance:
 
         assert len(result) > 0
         assert_latency_within(
-            measured.best, 0.150, "List cases latency", measured.report()
+            measured.best, CASE_LIST, "List cases latency", measured.report()
         )
         print(f"\n  List cases latency: {measured.report()} ({len(result)} cases)")
 
@@ -246,7 +261,7 @@ class TestCaseUpdatePerformance:
 
         assert measured.result is not None
         assert_latency_within(
-            measured.best, 0.150, "Case update latency", measured.report()
+            measured.best, CASE_UPDATE, "Case update latency", measured.report()
         )
         print(f"\n  Case update latency: {measured.report()}")
 
@@ -295,12 +310,18 @@ class TestCaseSearchPerformance:
         )
         result, _total = measured.result
 
-        # Use generous threshold to avoid flaky failures under load
-        # (when running alongside the full test suite)
-        assert_latency_within(measured.best, 1.0, "Search latency", measured.report())
-        # The 200ms product target is a warning here, not the gate, and it
-        # is scaled like every other budget so the warning means the same
-        # thing on a slow runner as on a fast one.
+        assert_latency_within(
+            measured.best, CASE_SEARCH, "Search latency", measured.report()
+        )
+        # ‼ Three numbers meet at this site and they are three different
+        # things: the 200ms below is the docstring's product ASPIRATION, the
+        # 1.0s in ``CASE_SEARCH.product_target`` is what this test has always
+        # asserted, and its 400ms regression anchor is what gates a pull
+        # request. The warning is the first of the three and is left as #1555
+        # wrote it — scaled like every other budget, so it means the same
+        # thing on a slow runner as on a fast one. Reconciling an aspiration
+        # with an asserted target is a product decision, and #1556 re-anchored
+        # only the per-PR side.
         if measured.best >= 0.200 * calibration_scale():
             import warnings
 
