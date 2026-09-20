@@ -60,19 +60,24 @@ EXCLUDED_PATH_MARKERS = ("/auth/",)
 # mint bound in the first place, and ``AuthSessionService.get_user_from_session``,
 # whose whole purpose was to answer this question.
 #
-# The OBSERVABILITY half is not closed, and it is the reason this entry stays.
-# ``api/middleware/logging.py`` reads a client-supplied ``X-Session-ID`` header
-# on every route (``_extract_session_id``) and ``_bound_attribution`` falls back
-# to that session's ``user_id`` whenever the request's principal names none —
-# so a session id alone still decides whose account an unauthenticated request
-# is recorded against. Nothing is authorized by it, but an incident response
-# reads those lines, and a replayed mint hands one caller's identity to another
-# caller's log record.
+# The OBSERVABILITY half is closed too, as of fm#1461:
+# ``api/middleware/logging.py`` still reads the client-supplied ``X-Session-ID``
+# header on every route, but records it as ``claimed_session_id`` and resolves
+# it to nobody — ``_get_user_id_from_session`` is gone and ``_bound_attribution``
+# has no fallback, so an unauthenticated line reads ``[user: anonymous]``
+# instead of naming whoever owned the id the caller sent.
 #
-# So the invariant to re-check before dropping this entry is "nothing derives
-# identity from a session id alone — not for authorization, and not for
-# attribution" — never the continued existence of any single call site. Call
-# sites move; the routing one already did.
+# The invariant both halves were measured against — "nothing derives identity
+# from a session id alone, not for authorization and not for attribution" — now
+# holds, and ``tests/unit/test_actor_is_never_caller_supplied.py`` scans the
+# whole package for it rather than watching any one call site.
+#
+# **This entry still stays**, because it never rested on that invariant alone.
+# ``POST /api/v1/sessions`` mints a session id already bound to a ``user_id``,
+# and replaying a mint response serves one caller that binding — which is a
+# leak whatever else does or does not read it, and is the reason written at the
+# top of this comment. What the invariant bounds is the BLAST RADIUS of a
+# replay, and the log record is no longer part of it.
 #
 # A ``/sessions`` substring marker is still not an option: it catches nine POST
 # routes in this app, among them ``/api/v1/cases/sessions/{session_id}/resume/

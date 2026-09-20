@@ -60,7 +60,7 @@ except Exception as e:
 - Decision records: target 5–10% sampling if volume high; otherwise 100% during hardening
 
 ## Structure
-- JSON logs with fields: timestamp, level, component, session_id, case_id, event, payload
+- JSON logs with fields: timestamp, level, component, claimed_session_id, case_id, event, payload
 - `request_id` (from the `X-Request-ID` header, or generated) is bound into
   structlog contextvars by `RequestIdMiddleware` for the duration of each
   request — every log line emitted while handling a request carries it.
@@ -83,8 +83,9 @@ the completion when the route raises.
 | `correlation_id` | all | Ties the pair together, and to every line logged while handling the request |
 | `client_ip` | started | The **resolved** client — the same address the rate limiters enforce on, not the socket peer |
 | `query_param_names` | started | Parameter **names** only. Values never reach a record: the SSO callback carries the IdP authorization code as a query parameter |
-| `session_id`, `case_id` | all | Extracted from the header / query / JSON body when present |
-| `user_id` | all | Who the request acts as — see below |
+| `claimed_session_id` | all | The session id the **caller** sent, off the header / query / JSON body. Recorded for correlation, never resolved to an account, and named so no reader takes it as established fact (fm#1461) |
+| `case_id` | all | Extracted from the header / query / JSON body when present. Caller-asserted too, and deliberately NOT renamed: it says what the request was about, not who made it |
+| `user_id` | all | Who the request acts as — the **verified** subject, or nothing. See below |
 | `enterprise_id` | completed, failed | The enterprise the request was bound to: the isolation boundary (ADR-017) |
 | `organization_id` | completed, failed | The billing organization, or `null` for an account in none. Attribution only, never a visibility predicate |
 
@@ -109,10 +110,23 @@ Two fallbacks are worth knowing when reading a line:
 - An **empty** `enterprise_id` is the non-tenant sentinel: an unauthenticated or
   invalid-token request under `TENANT_PROVIDER=multi`, which matches no
   enterprise's rows.
-- `user_id` falls back to a lookup from `session_id` where the binding names no
-  subject — the single-tenant arm, which deliberately never reads the token.
-  That lookup is all this log had before, and a bearer-authenticated request
-  carries no session id, which is why API calls used to log `user_id: null`.
+- `user_id` has exactly one source: the published principal. It is **never**
+  derived from a session id. It used to fall back to the owner of
+  `claimed_session_id` where the binding named no subject — so a request
+  carrying no credential and somebody else's session id was recorded against
+  that somebody, and the account it named was the one the caller chose
+  (fm#1461). There are three states to read:
+  - a **name** — a verified subject;
+  - `user_id: null` with `[user: anonymous]` in the message — a binder ran and
+    verified nobody. The unauthenticated arm, and the single-tenant arm, which
+    deliberately never reads the token, so standalone lines say `anonymous`;
+  - `user_id: null` with **no** `[user: …]` in the message — no binder ran, so
+    nobody has looked. Not the same fact as `anonymous`.
+
+  `user_id` also no longer appears on records emitted *during* the request by
+  other layers: it is knowable only after the binder runs, which is after the
+  request context is built. Join those to the completion line by
+  `correlation_id`, which every record carries.
 
 ## Redaction
 - Strip or hash PII/session identifiers; avoid storing raw user content in logs

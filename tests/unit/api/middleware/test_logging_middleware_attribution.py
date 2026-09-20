@@ -13,9 +13,18 @@ cannot hand it over in a contextvar — Starlette runs a ``BaseHTTPMiddleware``'
 downstream in a separate task — but ``request.state`` is backed by the ASGI
 scope, one dict shared by both tasks.
 
-What is pinned here is the whole contract, in both directions: the state wins
-when it names something, the session lookup survives where the state says
-nothing, and neither is allowed to erase the other.
+What is pinned here is the whole contract: the published principal is the ONLY
+source of an actor, and a request it names nobody for is recorded as naming
+nobody.
+
+There used to be a second source. When the principal named no user, the line
+fell back to the owner of a session id read off the ``X-Session-ID`` header —
+which a caller writes — so an unauthenticated request carrying somebody else's
+session id was recorded against that somebody, and an incident responder
+reading the line was handed a name to act on that the caller had chosen
+(fm#1461). The caller's value is still on the line, because correlating by it
+is genuinely useful; it is called ``claimed_session_id``, and nothing resolves
+it to an account.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -177,32 +186,29 @@ class TestTheCompletedLineNamesTheBoundPrincipal:
 
 
 @pytest.mark.unit
-class TestTheSessionFallbackSurvives:
-    def test_without_a_principal_the_session_lookup_still_attributes_the_line(
-        self, caplog
-    ):
+@pytest.mark.security
+class TestTheActorIsNeverTheCallersToChoose:
+    """The heart of fm#1461. A session id is an assertion, not a credential."""
+
+    def test_without_a_principal_the_line_names_nobody(self, caplog):
         """No binder ran — an unmatched route, or a middleware answering above
-        the router. The line keeps the only attribution it ever had, and reports
-        no enterprise rather than inventing one."""
+        the router. Nothing was verified, so nothing is claimed: not even
+        ``anonymous``, which would assert that somebody looked."""
         app = _app(principal=None, session_user_id=SESSION_USER)
 
         with caplog.at_level("DEBUG"):
             _get(app, headers={"X-Session-ID": SESSION_ID})
 
         record = _line(caplog, "Request completed")
-        assert _field(record, "user_id") == SESSION_USER
+        assert _field(record, "user_id") is None
         assert _field(record, "enterprise_id") is None
-        assert _field(record, "session_id") == SESSION_ID
+        assert "[user:" not in record.getMessage()
 
-    def test_a_principal_naming_no_user_does_not_erase_the_session_attribution(
-        self, caplog
-    ):
-        """The single-tenant arm binds an enterprise without reading the token.
-
-        Its principal names no subject. Letting that overwrite the session-derived
-        user would take attribution AWAY from standalone deployments while adding
-        it to cloud ones — so the two sources compose rather than compete.
-        """
+    def test_a_principal_naming_no_user_is_recorded_as_anonymous(self, caplog):
+        """The single-tenant arm binds an enterprise without reading the token,
+        and the unauthenticated arm verifies nobody. Both are ``anonymous``:
+        somebody looked, and there was no subject. The enterprise it DID bind
+        is a fact and is still reported."""
         app = _app(
             principal=RequestPrincipal(user_id=None, enterprise_id=ENTERPRISE),
             session_user_id=SESSION_USER,
@@ -212,13 +218,42 @@ class TestTheSessionFallbackSurvives:
             _get(app, headers={"X-Session-ID": SESSION_ID})
 
         record = _line(caplog, "Request completed")
-        assert _field(record, "user_id") == SESSION_USER
+        assert _field(record, "user_id") is None
         assert _field(record, "enterprise_id") == ENTERPRISE
+        assert "[user: anonymous]" in record.getMessage()
+        assert SESSION_USER not in record.getMessage()
 
-    def test_the_verified_principal_wins_over_a_stale_session(self, caplog):
-        """The other direction. The session id is caller-supplied and the
-        principal came from a verified token; when they disagree the verified
-        one is what the line must say."""
+    def test_the_failure_line_does_not_name_a_session_owner_either(self, caplog):
+        """A 500 is exactly the line an incident review reads."""
+        app = _app(
+            principal=RequestPrincipal(user_id=None, enterprise_id=ENTERPRISE),
+            session_user_id=SESSION_USER,
+            boom=True,
+        )
+
+        with caplog.at_level("DEBUG"):
+            _get(app, headers={"X-Session-ID": SESSION_ID})
+
+        record = _line(caplog, "Request failed")
+        assert _field(record, "user_id") is None
+        assert SESSION_USER not in record.getMessage()
+
+    def test_the_session_store_is_never_consulted_at_all(self, caplog):
+        """Not "the answer is discarded" — the question is never asked.
+
+        A lookup whose result is dropped is one edit away from being used
+        again, and it spends a store round-trip on every request to produce a
+        value nothing may read.
+        """
+        app = _app(principal=None, session_user_id=SESSION_USER)
+
+        with caplog.at_level("DEBUG"):
+            _get(app, headers={"X-Session-ID": SESSION_ID})
+
+        app.state.session_service.get_session.assert_not_called()
+
+    def test_the_verified_principal_is_what_the_line_says(self, caplog):
+        """The other direction: a verified subject IS named, on every line."""
         app = _app(
             principal=RequestPrincipal(user_id=USER, enterprise_id=ENTERPRISE),
             session_user_id=SESSION_USER,
@@ -229,3 +264,39 @@ class TestTheSessionFallbackSurvives:
 
         record = _line(caplog, "Request completed")
         assert _field(record, "user_id") == USER
+
+
+@pytest.mark.unit
+@pytest.mark.security
+class TestTheCallersValueIsKeptUnderACallersName:
+    """Recorded, because correlating by it is useful. Named, so nobody reads
+    it as established fact — the naming is the load-bearing part of fm#1461."""
+
+    @pytest.mark.parametrize("needle", ["Request started", "Request completed"])
+    def test_every_request_line_carries_it_as_claimed(self, caplog, needle):
+        app = _app(principal=RequestPrincipal(user_id=USER, enterprise_id=ENTERPRISE))
+
+        with caplog.at_level("DEBUG"):
+            _get(app, headers={"X-Session-ID": SESSION_ID})
+
+        record = _line(caplog, needle)
+        assert _field(record, "claimed_session_id") == SESSION_ID
+        assert _field(record, "session_id") is None, (
+            "a caller-asserted value must not appear under the plain name, "
+            "which trusted producers elsewhere in the app also write"
+        )
+        assert f"[claimed session: {SESSION_ID}]" in record.getMessage()
+
+    def test_the_start_line_asserts_no_actor_at_all(self, caplog):
+        """It is emitted before the binder runs, so it cannot know one."""
+        app = _app(
+            principal=RequestPrincipal(user_id=USER, enterprise_id=ENTERPRISE),
+            session_user_id=SESSION_USER,
+        )
+
+        with caplog.at_level("DEBUG"):
+            _get(app, headers={"X-Session-ID": SESSION_ID})
+
+        record = _line(caplog, "Request started")
+        assert _field(record, "user_id") is None
+        assert "[user:" not in record.getMessage()

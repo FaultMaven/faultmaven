@@ -411,10 +411,15 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
 
         error_response = ProtectionErrorResponse.from_duplicate_error(error)
 
-        session_id = self._extract_session_id(request)
+        # ``claimed_session`` because that is what it is: this middleware
+        # authenticates nothing, and the id comes straight off a header, a
+        # query parameter or a cookie. Labelling it ``session=`` invited a
+        # reader to treat a caller's word as a fact about who was refused
+        # (fm#1461).
+        claimed_session_id = self._extract_session_id(request)
         self.logger.info(
             f"Duplicate request blocked: {request.url.path}, "
-            f"session={session_id}, "
+            f"claimed_session={claimed_session_id}, "
             f"ttl_remaining={ttl_remaining}s"
         )
 

@@ -39,8 +39,17 @@ class RequestContext:
 
     Attributes:
         correlation_id: Unique identifier for request tracing
-        session_id: Optional session identifier
-        user_id: Optional user identifier
+        claimed_session_id: The session id the CALLER supplied, if any. Named
+            for where it came from, not for what it looks like: the HTTP
+            middleware reads it off a header, a query parameter or a body field
+            and never verifies it, so it is a correlation handle and never an
+            identity (fm#1461). A *verified* session id, if one ever needs
+            logging, gets a field of its own and a writer to fill it — sharing
+            one field between a checked and an unchecked value is what put
+            somebody else's account name on an anonymous request.
+        user_id: Optional user identifier. Only ever a VERIFIED subject. The
+            HTTP middleware leaves this unset, because nothing is verified until
+            the tenancy binder runs, which is after this context is created.
         case_id: Optional troubleshooting case identifier
         agent_phase: Current agent phase (e.g., "define_blast_radius")
         start_time: Request start timestamp
@@ -51,7 +60,7 @@ class RequestContext:
     """
 
     correlation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    session_id: Optional[str] = None
+    claimed_session_id: Optional[str] = None
     user_id: Optional[str] = None
     case_id: Optional[str] = None
     agent_phase: Optional[str] = None
@@ -761,7 +770,7 @@ class LoggingCoordinator:
         # Separate known RequestContext fields from arbitrary attributes
         known_fields = {
             "correlation_id",
-            "session_id",
+            "claimed_session_id",
             "user_id",
             "case_id",
             "agent_phase",
