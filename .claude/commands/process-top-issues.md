@@ -428,8 +428,17 @@ Then stop. The round ends when the owner merges.
 ## Rules
 
 - **Never merge.** Not on green CI, not on a clean review. Only an explicit
-  per-pull-request instruction from the owner delegates one, and it covers
-  that one.
+  instruction from the owner delegates it, and it covers exactly what it
+  names — one pull request, or a named set. Approving a *round* is not
+  approving its merges; if the delegation is needed, ask for it once, naming
+  the pull requests, rather than reading it into a round approval. A
+  delegated merge still needs all four: review clean on the final head,
+  every required context green on that head, the merge base green by commit,
+  and the head unchanged since the review.
+- **Never poll CI from a review lane.** The CI verdict belongs to whoever
+  merges. A reviewer reports findings and says which of its checks it did
+  not reach; it does not wait on `Test Standalone` / `Test Cloud`. Three
+  review lanes in one round stalled on exactly this.
 - **Never start a round over an unfinished one.**
 - **Never ask a question mid-build.** Pull the item instead.
 - **Never build an item with an unanswered question.**

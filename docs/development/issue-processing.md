@@ -264,7 +264,13 @@ to deliver; this is the general case.
 
 ### 4. Land
 
-Report each pull request with its CI state. The owner merges. A round is not
+Report each pull request with its CI state. **The owner merges**, unless the
+owner delegates it for this round in as many words — approving a *round* is
+not approving its merges, and an agent that widens one into the other is
+deciding something that was not given to it. Delegated or not, a merge needs
+all four: review clean on the final head, every required context green on
+that head, the merge base green by commit, and the head unchanged since the
+review. A round is not
 over until every one is merged or explicitly abandoned — abandoned meaning
 the owner closed it unmerged, which *Settle the last round* turns back into
 a blocked item. A pull request the agent closed itself is a pull, settled
@@ -368,6 +374,18 @@ Gates for a lane, each from a failure that cost real time:
   Lanes collide on global values such as the API contract version and the
   alembic head, so two lanes on the same seam are sequenced rather than run
   together.
+- **Review what feeds a detector as hard as the detector.** When a pull
+  request's centre of gravity is a clever algorithm, that is where reviewers
+  look and where the author has already been careful. A round-6 review swept
+  all 226 read-sites of an AST walk — f-strings, concatenation, path division,
+  globs — found nothing, then looked one line earlier at how the walk's input
+  was produced and found the defect: `git diff --name-only` prints only a
+  rename's *destination*, so moving a file into an inert directory arrived as
+  one harmless path with the source invisible. That repository's normal
+  archival move (321 of them in `main`'s history) defeated the whole design.
+  Budget explicit attention for a detector's inputs and outputs; the plumbing
+  is under-looked precisely because the algorithm is interesting.
+
 - **State N before fixing a duplicated rule.** Say how many implementations
   exist and show the scan that found the number, then ship that scan as a
   test. A guard must also declare where its rule *can* be violated and fail
@@ -408,6 +426,15 @@ Gates for a lane, each from a failure that cost real time:
   separately for three pull requests that shared one merge base. The base side
   of a comparison is a constant: it belongs to the merge base, not to the pull
   request and not to the review round.
+
+- **The CI verdict is the owning agent's, and nobody else's.** Three review
+  lanes in one round each stalled polling `Test Standalone` / `Test Cloud`.
+  The rule above says how to get the answer and never says whose answer it
+  is, and that gap is what they fell into. A reviewer's output is findings;
+  whether CI is green on the final head is a *merge* criterion, read once by
+  whoever merges. A review that catches itself waiting on a check run should
+  report what it has and label the rest unreached — a partial review with an
+  honest gap beats a complete one that arrives after the decision it was for.
 
 - **Blame a finding before acting on it.** `git blame` the line to the commit
   that introduced it. A finding in code the branch added only to answer an
