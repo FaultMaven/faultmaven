@@ -1,0 +1,184 @@
+{
+  "note": [
+    "The case table and every path string for",
+    ".github/scripts/classify_docs_only.py, kept as DATA rather than as",
+    "Python because the classifier's pin probe walks every tests/**/*.py and",
+    "collects its string literals. A table written inline would name",
+    "docs/getting-started/installation.md and its archive destination, the",
+    "probe would collect both, and the over-correction control below -- an",
+    "unpinned archival move that must stay inert -- would read as pinned by",
+    "the very test asserting it is not. That is not hypothetical: it is what",
+    "the first draft of this test did, and three cases failed until the",
+    "strings moved here. The probe parses no .json.",
+    "",
+    "Cases with no 'literals' key run against the REAL tests/ tree, which is",
+    "where the issue measured them; a 'literals' key makes the case hermetic."
+  ],
+  "cases": [
+    {
+      "id": "recurring-docs-change",
+      "changed": [
+        "docs/development/issue-processing.md",
+        ".claude/commands/process-top-issues.md"
+      ],
+      "expected": "true",
+      "why": "the case the whole gate exists for -- prose and a command, nothing reads either"
+    },
+    {
+      "id": "over-correction-control",
+      "changed": [
+        "docs/getting-started/installation.md",
+        "docs/archive/2026/09/installation.md"
+      ],
+      "expected": "true",
+      "why": "BOTH sides of an unpinned archival move. A fix that simply declared every rename non-inert passes every negative here and fails this one, so without it the set means nothing."
+    },
+    {
+      "id": "archival-move-of-a-pinned-document",
+      "changed": [
+        "docs/getting-started/user-guide.md",
+        "docs/archive/2026/09/user-guide.md"
+      ],
+      "expected": "false",
+      "why": "tests/unit/infrastructure/llm/test_groq_model_defaults.py reads the source path"
+    },
+    {
+      "id": "python-file-moved-into-an-inert-root",
+      "changed": [
+        "faultmaven/critical.py",
+        "docs/notes/critical.py"
+      ],
+      "expected": "false",
+      "why": "the destination is inert by location; the source is what makes the diff executable"
+    },
+    {
+      "id": "test-moved-out-of-tests",
+      "changed": [
+        "tests/unit/test_old.py",
+        "docs/archive/2026/09/test_old.py"
+      ],
+      "expected": "false",
+      "why": "a rename OUT of tests/ -- the suite shrinks, which is exactly when it must run"
+    },
+    {
+      "id": "test-moved-out-of-tests-destination-only",
+      "changed": [
+        "docs/archive/2026/09/test_old.py"
+      ],
+      "expected": "true",
+      "why": "the rename hole itself: this is the one path `git diff --name-only` printed before --no-renames. Paired with the row above it is the whole argument for listing both sides."
+    },
+    {
+      "id": "kb-pack-runbook-moved-into-docs",
+      "changed": [
+        "resources/knowledge/pack/runbooks/global/database/redis-oom.md",
+        "docs/archive/2026/09/redis-oom.md"
+      ],
+      "expected": "false",
+      "why": "the shipped KB pack; the Dockerfile COPYs resources/, so this diff changes the image"
+    },
+    {
+      "id": "claude-md",
+      "changed": [
+        "CLAUDE.md"
+      ],
+      "expected": "false",
+      "why": "a root-level *.md is inert by location, but several tests pin this one"
+    },
+    {
+      "id": "generated-api-artifact",
+      "changed": [
+        "docs/reference/api/openapi.json"
+      ],
+      "expected": "false",
+      "why": "under docs/, but generated from the code and diffed by the api-contract-drift job"
+    },
+    {
+      "id": "architecture-document",
+      "changed": [
+        "docs/architecture/investigation-engine/whatever.md"
+      ],
+      "expected": "false",
+      "why": "tests/unit/architecture/test_architecture_boundaries.py walks docs/architecture"
+    },
+    {
+      "id": "workflow-definition",
+      "changed": [
+        ".github/workflows/ci-cd.yml"
+      ],
+      "expected": "false",
+      "why": "a change to CI is never docs-only -- including a change to this classifier"
+    },
+    {
+      "id": "python-file-under-docs",
+      "changed": [
+        "docs/notes/scratch.py"
+      ],
+      "expected": "true",
+      "why": "inertness is decided by LOCATION, not extension: nothing collects, imports or packages this"
+    },
+    {
+      "id": "hermetic-tail-match",
+      "literals": [
+        "CLAUDE.md",
+        "docs/architecture",
+        "user-guide.md"
+      ],
+      "changed": [
+        "docs/getting-started/user-guide.md"
+      ],
+      "expected": "false",
+      "why": "a test that joins a bare filename onto a root still pins the document"
+    },
+    {
+      "id": "hermetic-directory-literal-with-a-slash",
+      "literals": [
+        "CLAUDE.md",
+        "docs/architecture"
+      ],
+      "changed": [
+        "docs/architecture/anything.md"
+      ],
+      "expected": "false",
+      "why": "a literal containing a slash pins everything beneath it"
+    },
+    {
+      "id": "hermetic-bare-directory-literal",
+      "literals": [
+        "CLAUDE.md",
+        "docs/architecture",
+        "docs"
+      ],
+      "changed": [
+        "docs/development/anything.md"
+      ],
+      "expected": "true",
+      "why": "DECIDED (#1539): a bare directory literal pins nothing beneath itself. `docs` is a literal on this tree today, so letting it pin would answer false for every docs-only diff and kill the gate silently. The directory-built-by-division case it was raised for is recovered in the WALK instead -- see test_a_directory_built_by_division_pins_beneath_itself."
+    },
+    {
+      "id": "hermetic-unrelated-literal",
+      "literals": [
+        "CLAUDE.md",
+        "docs/architecture",
+        "installation.md"
+      ],
+      "changed": [
+        "docs/archive/2026/09/installation.md"
+      ],
+      "expected": "false",
+      "why": "the endswith arm is why the table above lives in JSON: one bare filename arms every path that ends in it"
+    }
+  ],
+  "paths": {
+    "docs_only_diff": "docs/development/issue-processing.md",
+    "arbitrary_docs_file": "docs/x.md",
+    "bare_docs_literal": "docs",
+    "unpinned_docs_subtree_doc": "docs/development/anything.md",
+    "walked_directory": "docs/runbooks-design",
+    "walked_directory_doc": "docs/runbooks-design/x.md",
+    "reference_dir": "docs/reference",
+    "reference_api_dir": "docs/reference/api",
+    "generated_spec": "docs/reference/api/openapi.json",
+    "reference_prose": "docs/reference/llm-model-capabilities.md"
+  }
+}
