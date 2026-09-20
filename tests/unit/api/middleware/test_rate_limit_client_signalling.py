@@ -15,9 +15,9 @@ so nothing here costs an extra Redis round trip.
 import asyncio
 import itertools
 import json
-import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import fakeredis.aioredis as fakeredis_aio
 import pytest
@@ -31,6 +31,38 @@ from faultmaven.models.protection import LimitType, RateLimitConfig, RateLimitRe
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
 _IP_COUNTER = itertools.count(1)
+
+# An integral epoch, so every derived instant below is exact rather than
+# "exact to within whatever the float carried".
+_FROZEN = 2_000_000_000.0
+
+# What the check, the raise and the response construction cost. Real on a
+# loaded pod, microseconds here — so a test that wants to see the difference
+# between a carried measurement and a re-read clock has to supply it.
+_RENDER_LAG = 7
+
+
+class _HandCrankedClock:
+    """A wall clock the test moves itself.
+
+    ``Retry-After`` and ``X-RateLimit-Reset`` are one measurement rendered
+    twice. The defect they guard against — re-deriving the instant as
+    ``time.time() + retry_after`` — only shows up when time passes between the
+    check and the render, and against the real clock that gap is microseconds.
+    So the two numbers could only be compared through a tolerance, and a
+    tolerance wide enough to survive the gap is wide enough to hide the drift
+    it was there to measure. Owning the clock makes the gap explicit and both
+    assertions exact.
+    """
+
+    def __init__(self, start: float) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
 
 
 @pytest.fixture(autouse=True)
@@ -220,22 +252,45 @@ async def test_a_429_omits_the_reset_header_when_nothing_measured_one():
 
 
 async def test_a_429_reset_and_retry_after_name_one_instant_end_to_end():
-    """Through the real limiter, the two must still reconcile."""
+    """Through the real limiter, the two must still name one instant.
+
+    Exactly, not to within a second. The assertion here used to be
+    ``abs(reset - (int(time.time()) + retry_after)) <= 1`` against a clock read
+    at assertion time, which is the same arithmetic the defect performed: it
+    could not distinguish a header rendered from the limiter's measurement from
+    one re-derived by reading the clock again, and it stayed green either way.
+
+    Both numbers are pinned instead, over a window this test placed itself.
+    ``_RENDER_LAG`` passes between the check and the render, so a re-derivation
+    lands ``_RENDER_LAG`` seconds late and fails.
+    """
     mw = _middleware(_settings(global_requests=1))
     app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
     ip = _unique_client()
+    clock = _HandCrankedClock(_FROZEN)
 
-    assert (await mw.dispatch(_request(app, ip), _call_next)).status_code == 200
-    refused = await mw.dispatch(_request(app, ip), _call_next)
+    checked = mw.rate_limiter.check_rate_limits
+
+    async def _check_then_time_passes(specs):
+        try:
+            return await checked(specs)
+        finally:
+            clock.advance(_RENDER_LAG)
+
+    mw.rate_limiter.check_rate_limits = _check_then_time_passes
+
+    with patch("time.time", clock):
+        assert (await mw.dispatch(_request(app, ip), _call_next)).status_code == 200
+        refused = await mw.dispatch(_request(app, ip), _call_next)
 
     assert refused.status_code == 429
-    retry_after = int(refused.headers["Retry-After"])
-    reset = int(refused.headers["X-RateLimit-Reset"])
-
-    assert refused.headers["X-RateLimit-Remaining"] == "0"
     assert refused.headers["X-RateLimit-Limit"] == "1"
-    # Same instant, allowing for the second that may tick during the check.
-    assert abs(reset - (int(time.time()) + retry_after)) <= 1, (reset, retry_after)
+    assert refused.headers["X-RateLimit-Remaining"] == "0"
+    # The admitted request was scored at ``_FROZEN`` and is the only entry in
+    # the window, so quota frees one window later. The refusal was measured
+    # ``_RENDER_LAG`` after that, and the wait is the distance between the two.
+    assert refused.headers["X-RateLimit-Reset"] == str(int(_FROZEN) + 60)
+    assert refused.headers["Retry-After"] == str(60 - _RENDER_LAG)
 
 
 async def test_an_unmeasured_wait_is_absent_not_defaulted():
