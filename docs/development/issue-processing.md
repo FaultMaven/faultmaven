@@ -579,3 +579,5 @@ siblings.
 pushed, so "the final head" means the code after the last fix rather than the
 code when the pull request was opened. Unrelated to the *alembic head*, which
 is the newest database migration.
+
+<!-- #1506 demonstration: docs-only diff. Throwaway branch. -->
