@@ -37,6 +37,24 @@ stopped working, so three things are asserted here and not just one: that the
 real tree is clean, that the analysis still *recognises* actor sinks in the real
 tree (:func:`scan_actor_sinks`), and that it still catches each shape of the
 defect when one is put in front of it.
+
+**The first version of this guard missed the idiom this codebase actually
+uses.** It read keyword arguments, so it saw ``log_once(..., user_id=uid)`` and
+was blind to ``log_once(..., **attribution)`` and ``logger.info(..., extra=d)``
+— 20 and 7 live call sites respectively, two of the seven inside
+``api/middleware/logging.py`` itself. A two-line re-introduction of fm#1461
+through the splat — read ``X-User-ID``, put it in the mapping — wrote
+``"user_id": "victim-account-i-chose"`` onto the completion record, with
+``[user: anonymous]`` in the prose of that same line, and **all 134 tests in
+this pull request passed**. The analysis now treats a mapping it cannot read
+the keys of — ``**anything``, and ``extra=`` given anything but a dict literal
+— as one sink for the whole expression.
+
+Over-approximating was free here, and the number is recorded because a future
+reader will want to know whether it stayed free: across those 27 live sites the
+new rule produced **zero** false positives, because the facade in
+``infrastructure/logging/unified.py`` builds its mappings out of its own
+parameters and never reads the request.
 """
 
 import pathlib
@@ -45,6 +63,7 @@ import pytest
 
 from tests.caller_supplied_actor_ast import (
     ACTOR_FIELDS,
+    CLAIM_PREFIXES,
     Finding,
     scan_actor_sinks,
     scan_package,
@@ -58,6 +77,19 @@ PACKAGE_ROOT = pathlib.Path(__file__).resolve().parents[2] / "faultmaven"
 #: allowlist that rots stops being read. Every entry is asserted to still match
 #: something, so a fixed or deleted site fails here rather than lingering.
 VERIFIED_BY_CONSTRUCTION = {
+    (
+        "faultmaven/api/routes/admin_grants.py",
+        "held_by",
+        "grant.operator_user_id",
+    ): (
+        "`grant` is fetched by `revoke_grant(grant_id=<path parameter>)`, so the "
+        "one-hop rule taints it. The caller chooses WHICH grant row and cannot "
+        "author what is in it: `operator_user_id` was written by the server when "
+        "the grant was minted, and `held_by` truthfully names who held the grant "
+        "this call just ended. The actor of that record, `revoked_by`, is "
+        "`current_user.user_id` on the line above and is correctly NOT reported "
+        "— the discriminator working, rather than an exemption."
+    ),
     (
         "faultmaven/modules/auth/api/oauth.py",
         "user (message label)",
@@ -236,6 +268,61 @@ def handler(request, coordinator):
 """
         assert scan_source(source, "x.py")
 
+    def test_a_splatted_mapping_whose_keys_are_not_in_the_source(self):
+        """The idiom the first version of this guard was blind to.
+
+        Exactly the two-line shape that re-introduced fm#1461 on the completion
+        line while every other test in this pull request stayed green.
+        """
+        source = """
+def handler(request, bound_user_id):
+    _attribution = {"user_id": request.headers.get("x-user-id") or bound_user_id}
+    LoggingCoordinator.log_once(
+        operation_key="k", logger=logger, level="info", message="m",
+        claimed_session_id=None,
+        **_attribution,
+    )
+"""
+        findings = scan_source(source, "x.py")
+        assert [f.field for f in findings] == ["** (opaque mapping)"], findings
+
+    def test_an_extra_that_is_not_a_dict_literal(self):
+        """``extra=<name>`` is 7 live call sites, two of them in the access log."""
+        source = """
+def handler(request):
+    summary = {"user_id": request.headers.get("x-user-id")}
+    logger.info("done", extra=summary)
+"""
+        findings = scan_source(source, "x.py")
+        assert [f.field for f in findings] == ["extra= (opaque mapping)"], findings
+
+    def test_a_prose_label_written_by_a_helper_not_at_the_call_site(self):
+        """The production shape in ``api/middleware/logging.py``.
+
+        That call site's f-string contains no ``[user: …]`` at all — it
+        interpolates ``_attribution_suffix(...)``, which writes the label. The
+        label arm saw a ``FormattedValue`` following another ``FormattedValue``,
+        found no label, and reported the real line clean while catching the
+        same defect written inline.
+        """
+        source = """
+def _attribution_suffix(user_id, enterprise_id):
+    user_info = f" [user: {user_id}]" if user_id else ""
+    return f"{user_info}"
+
+def handler(request):
+    uid = request.headers.get("x-user-id")
+    session_info = ""
+    LoggingCoordinator.log_once(
+        operation_key="k", logger=logger, level="info",
+        message=f"Request completed: {request.url.path}{session_info}"
+        f"{_attribution_suffix(uid, None)} "
+        f"-> 200",
+    )
+"""
+        findings = scan_source(source, "x.py")
+        assert [f.field for f in findings] == ["actor label via helper"], findings
+
 
 @pytest.mark.unit
 @pytest.mark.security
@@ -262,6 +349,34 @@ async def revoke(user_id: str, operator = Depends(require_admin)):
 """
         assert scan_source(source, "x.py") == []
 
+    def test_the_logging_facades_own_splat_idiom_is_not_a_finding(self):
+        """``infrastructure/logging/unified.py`` splats on 20 call sites and
+        builds every mapping out of its own parameters. Over-approximating the
+        splat has to stay free, or the rule gets narrowed until it is quiet."""
+        source = """
+class UnifiedLogger:
+    def operation(self, name, **context):
+        operation_context = {"operation": name, "layer": self.layer}
+        operation_context.update(context)
+        self.logger.info(f"Starting {name}", **operation_context)
+"""
+        assert scan_source(source, "x.py") == []
+
+    def test_a_helper_written_label_fed_a_verified_value_is_not_a_finding(self):
+        """The real call site: same helper, different value."""
+        source = """
+def _attribution_suffix(user_id, enterprise_id):
+    return f" [user: {user_id}]" if user_id else ""
+
+def handler(request):
+    principal = read_request_principal(request)
+    LoggingCoordinator.log_once(
+        operation_key="k", logger=logger, level="info",
+        message=f"done{_attribution_suffix(principal.user_id, None)}",
+    )
+"""
+        assert scan_source(source, "x.py") == []
+
     def test_a_non_logging_sink_is_out_of_scope(self):
         """The rule is about the RECORD. Passing a claimed id to a lookup is
         the ordinary way to look something up."""
@@ -283,6 +398,24 @@ class TestTheVocabularyIsWhatItSaysItIs:
         assert "session_id" not in ACTOR_FIELDS
         assert "case_id" not in ACTOR_FIELDS
         assert "correlation_id" not in ACTOR_FIELDS
+
+    @pytest.mark.parametrize(
+        "field", ["admin_user_id", "revoked_by", "held_by", "operator_user_id"]
+    )
+    def test_it_covers_the_operator_attribution_names_too(self, field):
+        """``admin_user_id`` is the actor on the cross-tenant case list — the
+        most audit-critical actor field in the app, and one prefix away from a
+        name already covered. ``revoked_by``/``held_by`` are a break-glass
+        grant's provenance. A vocabulary that stops at ``user_id`` guards the
+        least-privileged surface and leaves the operator one unguarded."""
+        assert field in ACTOR_FIELDS
+
+    @pytest.mark.parametrize("prefix", CLAIM_PREFIXES)
+    def test_a_claim_prefixed_name_is_never_an_actor(self, prefix):
+        """``target_user_id`` is the remedy fm#1461 applied to
+        ``/users/{user_id}/revoke-tokens``; ``claimed_session_id`` is the one
+        it applied to the access log. Flagging either would punish the fix."""
+        assert f"{prefix}user_id" not in ACTOR_FIELDS
 
     def test_a_finding_prints_where_to_look(self):
         rendered = str(Finding("a/b.py", 12, "user_id", "who"))

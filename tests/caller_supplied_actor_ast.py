@@ -83,13 +83,21 @@ ACTOR_FIELDS = frozenset(
         "actor_id",
         "actor_user_id",
         "actor_username",
+        # ``admin_user_id`` is the operator attribution on the CROSS-TENANT case
+        # list (``api/routes/admin_cases.py``) — the most audit-critical actor
+        # field in the app, and one prefix away from a name already covered.
+        "admin_user_id",
         "enterprise_id",
+        # The two halves of a break-glass grant's provenance
+        # (``api/routes/admin_grants.py``): who ended it, and who held it.
+        "held_by",
         "operator_user_id",
         "operator_username",
         "organization_id",
         "owner",
         "owner_id",
         "principal",
+        "revoked_by",
         "sub",
         "subject",
         "user",
@@ -98,6 +106,12 @@ ACTOR_FIELDS = frozenset(
         "username",
     }
 )
+
+#: Deliberately NOT actor fields. A ``target_``/``requested_`` prefix is this
+#: codebase's way of saying "the caller named this, and it is the OBJECT of the
+#: action rather than its author" — which is the remedy fm#1461 applied to
+#: ``POST /users/{user_id}/revoke-tokens``. Flagging them would punish the fix.
+CLAIM_PREFIXES = ("target_", "requested_", "claimed_")
 
 #: The same vocabulary as it appears as a LABEL in a human-readable message:
 #: ``[user: {x}]``, ``user={x}``, ``actor: {x}``. A prose label is a claim about
@@ -268,10 +282,37 @@ def _label_before(values: List[ast.AST], index: int) -> str | None:
     return None
 
 
+def _actor_labelling_functions(tree: ast.AST) -> Set[str]:
+    """Module-local functions that WRITE an actor label into a string.
+
+    ``api/middleware/logging.py`` does not spell ``[user: …]`` at the call
+    site; it calls ``_attribution_suffix``, which spells it. So the label arm
+    looking only at the message's own f-string sees a ``FormattedValue`` whose
+    previous sibling is another ``FormattedValue``, finds no label, and reports
+    the production line clean — while catching the same defect written inline.
+    A guard that cannot see the line it was written for is the failure mode
+    this whole module exists to avoid, so the label is followed one hop into
+    the helper that produces it.
+    """
+    labelling: Set[str] = set()
+    for fn in _functions(tree):
+        for sub in ast.walk(fn):
+            if not isinstance(sub, ast.JoinedStr):
+                continue
+            for index, part in enumerate(sub.values):
+                if (
+                    isinstance(part, ast.FormattedValue)
+                    and _label_before(sub.values, index) in ACTOR_FIELDS
+                ):
+                    labelling.add(fn.name)  # type: ignore[attr-defined]
+    return labelling
+
+
 def scan_source(source: str, path: str) -> List[Finding]:
     """Every actor field in ``source`` that can hold a caller-supplied value."""
     tree = ast.parse(source)
     tainting = _tainting_functions(tree)
+    labelling = _actor_labelling_functions(tree)
     findings: List[Finding] = []
 
     for fn in _functions(tree):
@@ -320,6 +361,25 @@ def scan_source(source: str, path: str) -> List[Finding]:
                 continue
 
             for keyword in node.keywords:
+                # ``**mapping`` — the keys are not in the source, so no key
+                # check is possible and the WHOLE mapping is the sink. This is
+                # the house idiom for the logging facade (20 live call sites in
+                # ``infrastructure/logging/unified.py`` alone), and a two-line
+                # re-introduction of fm#1461 through it passed every test this
+                # module ships. Over-approximating here is the direction this
+                # module's docstring argues for: a false positive is read by a
+                # human, a false negative is a wrong name in an audit trail.
+                if keyword.arg is None:
+                    if is_tainted(keyword.value):
+                        findings.append(
+                            Finding(
+                                path,
+                                keyword.value.lineno,
+                                "** (opaque mapping)",
+                                ast.unparse(keyword.value),
+                            )
+                        )
+                    continue
                 if keyword.arg in ACTOR_FIELDS and is_tainted(keyword.value):
                     findings.append(
                         Finding(
@@ -329,18 +389,34 @@ def scan_source(source: str, path: str) -> List[Finding]:
                             ast.unparse(keyword.value),
                         )
                     )
-                if keyword.arg == "extra" and isinstance(keyword.value, ast.Dict):
-                    for key, value in zip(keyword.value.keys, keyword.value.values):
-                        if (
-                            isinstance(key, ast.Constant)
-                            and key.value in ACTOR_FIELDS
-                            and is_tainted(value)
-                        ):
-                            findings.append(
-                                Finding(
-                                    path, value.lineno, key.value, ast.unparse(value)
+                if keyword.arg == "extra":
+                    # A dict literal can be read key by key. Anything else —
+                    # a name, a call, a conditional — cannot, so it is treated
+                    # exactly like a splat.
+                    if isinstance(keyword.value, ast.Dict):
+                        for key, value in zip(keyword.value.keys, keyword.value.values):
+                            if (
+                                isinstance(key, ast.Constant)
+                                and key.value in ACTOR_FIELDS
+                                and is_tainted(value)
+                            ):
+                                findings.append(
+                                    Finding(
+                                        path,
+                                        value.lineno,
+                                        key.value,
+                                        ast.unparse(value),
+                                    )
                                 )
+                    elif is_tainted(keyword.value):
+                        findings.append(
+                            Finding(
+                                path,
+                                keyword.value.lineno,
+                                "extra= (opaque mapping)",
+                                ast.unparse(keyword.value),
                             )
+                        )
 
             # The human-readable half of the same record.
             messages = [arg for arg in node.args[:1]] + [
@@ -354,12 +430,23 @@ def scan_source(source: str, path: str) -> List[Finding]:
                         if not isinstance(part, ast.FormattedValue):
                             continue
                         label = _label_before(joined.values, index)
-                        if label in ACTOR_FIELDS and is_tainted(part.value):
+                        if not is_tainted(part.value):
+                            continue
+                        if label in ACTOR_FIELDS:
                             findings.append(
                                 Finding(
                                     path,
                                     part.lineno,
                                     f"{label} (message label)",
+                                    ast.unparse(part.value),
+                                )
+                            )
+                        elif _called_names(part.value) & labelling:
+                            findings.append(
+                                Finding(
+                                    path,
+                                    part.lineno,
+                                    "actor label via helper",
                                     ast.unparse(part.value),
                                 )
                             )

@@ -762,7 +762,14 @@ class LoggingCoordinator:
         the logging context that will be used throughout the request lifecycle.
 
         Args:
-            **initial_context: Initial context attributes (session_id, user_id, etc.)
+            **initial_context: Initial context attributes. The declared fields
+                are ``known_fields`` below (``claimed_session_id``, ``user_id``,
+                ``case_id``, …); anything else lands in ``attributes``, which
+                the structlog processor does NOT stamp on records — so a
+                misspelt field name is silently inert rather than an error.
+                ``user_id`` takes a VERIFIED subject only: the HTTP middleware
+                leaves it unset, because nothing is verified until the tenancy
+                binder runs, which is after this context exists (fm#1461).
 
         Returns:
             RequestContext: The initialized request context

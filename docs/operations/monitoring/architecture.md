@@ -152,7 +152,7 @@ class RequestContext:
     Request-scoped context with deduplication and performance tracking.
 
     Architecture:
-    - Immutable identification (correlation_id, session_id, etc.)
+    - Immutable identification (correlation_id, claimed_session_id, etc.)
     - Mutable tracking (logged_operations, performance_tracker)
     - Error context for cascade prevention
     - Performance tracking with layer-specific thresholds
@@ -546,7 +546,7 @@ sequenceDiagram
     Note over Client,EXT: Request Initialization Phase
     Client->>MW: HTTP Request
     MW->>MW: start_request() → create RequestContext
-    MW->>MW: set correlation_id, session_id
+    MW->>MW: set correlation_id, claimed_session_id
 
     Note over Client,EXT: API Layer Processing
     MW->>API: route request
