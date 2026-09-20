@@ -184,7 +184,10 @@ async def bind_request_enterprise_context(
         set_current_billing_organization_id(None)
         # No verified subject to publish: this arm deliberately never reads the
         # token, which is what makes the re-leak guard unconditional. The access
-        # log keeps its session-derived user id here and gains the enterprise.
+        # log therefore records this request as ``[user: anonymous]`` and names
+        # the enterprise. It used to fall back to the owner of the caller's
+        # session id, which meant the caller chose the name (fm#1461); a name
+        # that may be the wrong name is worse than no name.
         publish_request_principal(
             request,
             RequestPrincipal(user_id=None, enterprise_id=STANDALONE_ENTERPRISE_ID),

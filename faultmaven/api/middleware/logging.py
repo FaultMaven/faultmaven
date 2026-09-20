@@ -5,16 +5,38 @@ This middleware integrates with the new logging infrastructure (Phase 1 & 2)
 using LoggingCoordinator for request-scoped coordination and the enhanced
 logging configuration for structured output.
 
-Enhanced with session context management to provide continuous user/session
-context across requests within the same session.
+It also carries the caller's session id across the lines of one request, for
+correlation — and only for correlation.
 
-The completion and failure lines are attributed from the ``RequestPrincipal``
-the tenancy binder publishes on ``request.state``
-(``api/middleware/tenant_scope.py``), which is the only place per request that
-verifies the token. The session lookup below predates it and guesses the user
-from a **session id** that a bearer-authenticated request does not carry — so on
-its own it logged ``user_id: null`` for every API call and named no enterprise at
-all. It survives as the fallback, never as an override.
+Every line's ``user_id`` comes from the ``RequestPrincipal`` the tenancy binder
+publishes on ``request.state`` (``api/middleware/tenant_scope.py``), which is the
+only place per request that verifies the token. Nothing else may name an account
+here.
+
+**Who the request was is never derived from what the request said it was**
+(fm#1461). A session id is read off the ``X-Session-ID`` header, the
+``session_id`` query parameter or a ``session_id`` body field — three channels
+the caller fills in — and this middleware used to resolve it through the session
+store and stamp the owner into ``user_id`` whenever the principal named nobody.
+An unauthenticated request carrying somebody else's session id was therefore
+recorded against that somebody, in the durable record an incident review reads.
+Nothing was ever *authorized* by it; what was corrupted was the record.
+
+So the two values are now two fields, and the names say which is which:
+
+* ``user_id`` — the verified subject, or ``None``. Never a guess. The prose
+  tail says ``[user: anonymous]`` when a binder ran and verified nobody, and
+  says nothing at all when no binder ran, because those are different facts.
+* ``claimed_session_id`` — the caller's own session id, recorded verbatim
+  because it is genuinely useful for correlation, under a name no reader can
+  mistake for identity. The rule is "fields that name WHO are verified;
+  fields that name WHAT need not be", so ``case_id`` keeps its name: it says
+  what the request was about, not who made it.
+
+The cost is accepted and was ruled on: the single-tenant arm deliberately never
+reads the token, so its principal names no user and its lines now say
+``anonymous`` where they used to say whoever the session id pointed at. A name
+that may be the wrong name is worse than no name.
 """
 
 import json
@@ -84,15 +106,49 @@ def _is_service_surface(endpoint: str) -> bool:
     )
 
 
-def _attribution_suffix(user_id: Optional[str], enterprise_id: Optional[str]) -> str:
+#: What a request line calls an actor that no verified credential named.
+#: A word rather than an omission: the structured ``user_id`` is ``None``, and a
+#: reader of the prose should see that the absence was DECIDED rather than that
+#: the line is missing a field.
+ANONYMOUS_ACTOR = "anonymous"
+
+
+def _attribution_suffix(
+    user_id: Optional[str],
+    enterprise_id: Optional[str],
+    *,
+    principal_bound: bool = False,
+) -> str:
     """The human-readable ``[user: …][enterprise: …]`` tail of a request line.
 
     Each part is omitted when there is nothing to say — including the empty
     non-tenant sentinel, which reads as nothing in prose. The structured fields
     carry the distinction between "no enterprise bound" and "no binder ran";
     the message does not have to.
+
+    The user part has three states, not two, and they are different facts:
+
+    * a verified subject — named;
+    * ``principal_bound`` with no subject — ``anonymous``. A binder ran and the
+      request carried nothing it could verify (the unauthenticated arm, and the
+      single-tenant arm, which never reads the token).
+    * no principal at all — silent. No binder ran, so nobody has looked; saying
+      ``anonymous`` there would assert something this line cannot know.
+
+    Args:
+        user_id: The verified subject, or ``None``.
+        enterprise_id: The bound enterprise, or ``None`` when no binder ran.
+        principal_bound: Whether a ``RequestPrincipal`` was published at all.
+
+    Returns:
+        The tail to append to the request line's message.
     """
-    user_info = f" [user: {user_id}]" if user_id else ""
+    if user_id:
+        user_info = f" [user: {user_id}]"
+    elif principal_bound:
+        user_info = f" [user: {ANONYMOUS_ACTOR}]"
+    else:
+        user_info = ""
     enterprise_info = f" [enterprise: {enterprise_id}]" if enterprise_id else ""
     return f"{user_info}{enterprise_info}"
 
@@ -106,7 +162,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
     - Uses the enhanced logging configuration for structured output
     - Prevents duplicate logging through operation tracking
     - Provides correlation IDs for request tracing
-    - Extracts and populates session/user context (ENHANCED)
+    - Records the caller's claimed session id; derives no identity from it
     - Handles errors gracefully with proper context
     """
 
@@ -140,14 +196,13 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         # Start coordinated request tracking
         start_time = time.time()
 
-        # Extract session and business context from request
-        session_id = await self._extract_session_id(request)
-        user_id = None
+        # Extract session and business context from request. Both of these are
+        # caller-supplied; neither is resolved to an account (fm#1461). The
+        # session id used to be looked up in the session store and its owner
+        # stamped into ``user_id``, which let any caller choose whose name the
+        # access log carried.
+        claimed_session_id = await self._extract_session_id(request)
         case_id = await self._extract_case_id(request)
-
-        # Look up user_id from session if session_id is available
-        if session_id:
-            user_id = await self._get_user_id_from_session(request, session_id)
 
         # Initialize request context through coordinator with business context
         # HTTP-specific context goes in attributes dict
@@ -172,9 +227,14 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         }
 
         # Create context with both business and HTTP context
+        # ``user_id`` is deliberately not passed: it is only knowable after the
+        # binder has run, which is after every record this context decorates.
+        # ``ClientConfig.add_request_context`` therefore stamps no ``user_id`` on
+        # intra-request records, and the completed/failed line below is where the
+        # verified subject appears. The two are joined by ``correlation_id``,
+        # which every record carries.
         context = self.coordinator.start_request(
-            session_id=session_id,
-            user_id=user_id,
+            claimed_session_id=claimed_session_id,
             case_id=case_id,
             attributes=http_context,
         )
@@ -184,10 +244,12 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         # Log request start (coordinator ensures this happens only once)
         # Include session context in log message for better traceability.
         # The start line is emitted BEFORE the route runs, so the binder has not
-        # published yet and this pair is all it can say. The completion and
-        # failure lines below re-derive their attribution from the binding.
-        session_info = f" [session: {session_id}]" if session_id else ""
-        user_info = _attribution_suffix(user_id, None)
+        # published yet and the caller's own claim is all it can say. The
+        # completion and failure lines below carry the attribution, read from
+        # the binding.
+        session_info = (
+            f" [claimed session: {claimed_session_id}]" if claimed_session_id else ""
+        )
 
         # Reduce verbosity for heartbeat requests to prevent log spam
         is_heartbeat = request.url.path.endswith("/heartbeat")
@@ -197,7 +259,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             operation_key=f"request_start:{context.correlation_id}",
             logger=logger,
             level=start_log_level,
-            message=f"Request started: {request.method} {request.url.path}{session_info}{user_info}",
+            message=f"Request started: {request.method} {request.url.path}{session_info}",
             method=request.method,
             path=request.url.path,
             # Read from the dict we just built, not from context.attributes.
@@ -212,8 +274,11 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             client_ip=http_context["client_ip"],
             user_agent=http_context["user_agent"],
             correlation_id=context.correlation_id,
-            session_id=session_id,
-            user_id=user_id,
+            claimed_session_id=claimed_session_id,
+            # Nothing is verified yet at the start line — the binder is a route
+            # dependency and has not run. The field is present and null rather
+            # than missing so the three request lines share one shape.
+            user_id=None,
             case_id=case_id,
             x_forwarded_for=request.headers.get("x-forwarded-for", "none"),
             x_real_ip=request.headers.get("x-real-ip", "none"),
@@ -280,9 +345,12 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             # Who the request was actually bound to. Available only now: the
             # binder is a route dependency, so it has run by the time call_next
             # returns.
-            bound_user_id, enterprise_id, organization_id = self._bound_attribution(
-                request, user_id
-            )
+            (
+                bound_user_id,
+                enterprise_id,
+                organization_id,
+                principal_bound,
+            ) = self._bound_attribution(request)
 
             # Log completion (coordinator ensures this happens only once)
             LoggingCoordinator.log_once(
@@ -290,7 +358,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 logger=logger,
                 level=log_level,
                 message=f"Request completed: {request.method} {request.url.path}{session_info}"
-                f"{_attribution_suffix(bound_user_id, enterprise_id)} "
+                f"{_attribution_suffix(bound_user_id, enterprise_id, principal_bound=principal_bound)} "
                 f"-> {response.status_code} in {duration:.3f}s",
                 method=request.method,
                 path=request.url.path,
@@ -298,7 +366,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 duration_seconds=duration,
                 response_size=response.headers.get("content-length", "unknown"),
                 correlation_id=context.correlation_id,
-                session_id=session_id,
+                claimed_session_id=claimed_session_id,
                 user_id=bound_user_id,
                 enterprise_id=enterprise_id,
                 organization_id=organization_id,
@@ -366,13 +434,14 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                         bound_user_id,
                         enterprise_id,
                         organization_id,
-                    ) = self._bound_attribution(request, user_id)
+                        principal_bound,
+                    ) = self._bound_attribution(request)
                     LoggingCoordinator.log_once(
                         operation_key=f"request_error:{context.correlation_id}",
                         logger=logger,
                         level="error",
                         message=f"Request failed: {request.method} {request.url.path}{session_info}"
-                        f"{_attribution_suffix(bound_user_id, enterprise_id)} "
+                        f"{_attribution_suffix(bound_user_id, enterprise_id, principal_bound=principal_bound)} "
                         f"after {duration:.3f}s: {str(e)}",
                         method=request.method,
                         path=request.url.path,
@@ -380,7 +449,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                         error=str(e),
                         error_type=type(e).__name__,
                         correlation_id=context.correlation_id,
-                        session_id=session_id,
+                        claimed_session_id=claimed_session_id,
                         user_id=bound_user_id,
                         enterprise_id=enterprise_id,
                         organization_id=organization_id,
@@ -403,56 +472,67 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             raise
 
     def _bound_attribution(
-        self, request: Request, session_user_id: Optional[str]
-    ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-        """``(user_id, enterprise_id, organization_id)`` for a finished request.
+        self, request: Request
+    ) -> Tuple[Optional[str], Optional[str], Optional[str], bool]:
+        """``(user_id, enterprise_id, organization_id, principal_bound)``.
 
         Read from the ``RequestPrincipal`` the tenancy binder published, which is
-        the one place per request that verified the token. Two absences are kept
-        apart deliberately:
+        the **only** source of an actor here. There is no fallback: a request
+        whose principal names nobody is recorded as naming nobody (fm#1461).
+        What used to fill that gap was the owner of a caller-supplied session id,
+        which meant the caller chose the name.
+
+        Two absences are still kept apart, because they are different facts:
 
         * **No principal at all** — no binder ran, because the request matched no
-          route or a middleware answered above the router. The enterprise is
-          ``None`` (unknown), and the session lookup is all there is.
+          route or a middleware answered above the router. Nothing is known:
+          ``principal_bound`` is ``False`` and the enterprise is ``None``.
         * **A principal naming no user** — the single-tenant arm, which never
-          reads the token, and the unauthenticated arm. The enterprise it bound
-          is a fact and is reported; the user id falls back to the session
-          lookup rather than being overwritten with ``None``, so this never
-          takes attribution away from a line that had it.
+          reads the token, and the unauthenticated arm. Somebody looked and found
+          nobody: ``principal_bound`` is ``True``, so the line reads
+          ``[user: anonymous]``, and the enterprise it bound is a fact and is
+          reported.
 
         Args:
             request: The request whose route dependency has now run.
-            session_user_id: What the session lookup found before the route ran.
 
         Returns:
-            The three identifiers to stamp on the completion / failure line.
+            The three identifiers to stamp on the completion / failure line, and
+            whether a binder ran at all.
         """
         principal = read_request_principal(request)
         if principal is None:
-            return session_user_id, None, None
+            return None, None, None, False
         return (
-            principal.user_id or session_user_id,
+            principal.user_id,
             principal.enterprise_id,
             principal.organization_id,
+            True,
         )
 
     async def _extract_session_id(self, request: Request) -> Optional[str]:
-        """
-        Extract session_id from request using multiple sources with priority order.
+        """The session id the caller claims, from whichever channel carries it.
+
+        Every one of the three channels is filled in by the caller, so the
+        returned value is an assertion and nothing more. It is logged as
+        ``claimed_session_id`` and is **never** resolved to an account: doing
+        that is what let a caller pick whose name the access log carried
+        (fm#1461). ``api/middleware/idempotency.py`` reasons about the same
+        property for the same header.
 
         Priority:
-        1. Header: X-Session-ID (preferred for API clients)
-        2. Query parameter: session_id
-        3. Request body: session_id field (using non-consuming method)
+        1. Header: ``X-Session-ID``
+        2. Query parameter: ``session_id``
+        3. Request body: ``session_id`` field (using non-consuming method)
 
         Args:
             request: FastAPI request object
 
         Returns:
-            session_id if found, None otherwise
+            The claimed session id if the caller supplied one, else ``None``.
         """
         try:
-            # 1. Check header (preferred method)
+            # 1. Check header
             if session_id := request.headers.get("x-session-id"):
                 return session_id
 
@@ -535,35 +615,10 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
         return None
 
-    async def _get_user_id_from_session(
-        self, request: Request, session_id: str
-    ) -> Optional[str]:
-        """
-        Look up user_id from session_id using SessionService.
-
-        Uses graceful degradation - if session lookup fails, continues
-        without user context rather than failing the request.
-
-        Args:
-            request: FastAPI request object
-            session_id: Session identifier
-
-        Returns:
-            user_id if found, None otherwise
-        """
-        try:
-            # Get SessionService from app state (initialized in main.py)
-            session_service = getattr(request.app.state, "session_service", None)
-            if not session_service:
-                logger.warning("SessionService not available in app state")
-                return None
-
-            # Look up session
-            session = await session_service.get_session(session_id)
-
-            return session.user_id if session else None
-
-        except Exception as e:
-            # Graceful degradation - log warning but continue without user context
-            logger.warning(f"Failed to lookup user_id for session {session_id}: {e}")
-            return None
+    # ``_get_user_id_from_session`` used to sit here. It resolved the claimed
+    # session id through ``app.state.session_service`` and returned
+    # ``session.user_id``, which ``_bound_attribution`` stamped into the access
+    # log whenever the principal named nobody — so an unauthenticated request
+    # carrying somebody else's session id was recorded against that somebody
+    # (fm#1461). It had no other caller. Deleted rather than left unused: an
+    # unused resolver is an invitation to wire it back in.

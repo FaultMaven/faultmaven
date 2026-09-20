@@ -777,13 +777,18 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # Create standardized error response
         error_response = ProtectionErrorResponse.from_rate_limit_error(error)
 
-        # Log the rate limit violation
+        # Log the rate limit violation. ``ip=`` is the RESOLVED client — the
+        # same address the limiter keyed on — while ``claimed_session=`` is
+        # whatever the caller put in the header, and the two labels have to
+        # say which is which. This is the line an operator reads to attribute
+        # abuse, so an unqualified ``session=`` there named a party the abuser
+        # chose (fm#1461).
         self.logger.warning(
             f"Rate limit exceeded: {error.limit_type}, "
             f"count={error.current_count}/{error.limit}, "
             f"retry_after={error.retry_after}s, "
             f"ip={self._get_client_ip(request)}, "
-            f"session={self._extract_session_id(request)}"
+            f"claimed_session={self._extract_session_id(request)}"
         )
 
         # Create response with appropriate headers

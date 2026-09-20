@@ -353,7 +353,7 @@ class TestFaultMavenLogger:
         # Create mock request context
         mock_ctx = Mock()
         mock_ctx.correlation_id = "test-correlation-id"
-        mock_ctx.session_id = "test-session-id"
+        mock_ctx.claimed_session_id = "test-session-id"
         mock_ctx.user_id = "test-user-id"
         mock_ctx.case_id = "test-case-id"
         mock_ctx.agent_phase = "define_blast_radius"
@@ -368,7 +368,7 @@ class TestFaultMavenLogger:
 
             # Should have added context fields
             assert result["correlation_id"] == "test-correlation-id"
-            assert result["session_id"] == "test-session-id"
+            assert result["claimed_session_id"] == "test-session-id"
             assert result["user_id"] == "test-user-id"
             assert result["case_id"] == "test-case-id"
             assert result["agent_phase"] == "define_blast_radius"
@@ -378,7 +378,7 @@ class TestFaultMavenLogger:
         """Test add_request_context doesn't overwrite existing fields."""
         mock_ctx = Mock()
         mock_ctx.correlation_id = "new-correlation-id"
-        mock_ctx.session_id = "new-session-id"
+        mock_ctx.claimed_session_id = "new-session-id"
         mock_ctx.user_id = None  # None values should not be added
         mock_ctx.investigation_id = None
         mock_ctx.agent_phase = None
@@ -397,8 +397,10 @@ class TestFaultMavenLogger:
 
             # Should not overwrite existing correlation_id
             assert result["correlation_id"] == "existing-correlation-id"
-            # Should add session_id
-            assert result["session_id"] == "new-session-id"
+            # Should add the caller-supplied session id, under the name
+            # that says it is a claim (fm#1461)
+            assert result["claimed_session_id"] == "new-session-id"
+            assert "session_id" not in result
             # Should not add None values
             assert "user_id" not in result
             assert "investigation_id" not in result
@@ -561,7 +563,7 @@ class TestProcessorIntegration:
         # Mock request context
         mock_ctx = Mock()
         mock_ctx.correlation_id = "test-correlation"
-        mock_ctx.session_id = None
+        mock_ctx.claimed_session_id = None
         mock_ctx.user_id = None
         mock_ctx.investigation_id = None
         mock_ctx.agent_phase = None
@@ -612,7 +614,7 @@ class TestProcessorIntegration:
         # Mock request context with different values
         mock_ctx = Mock()
         mock_ctx.correlation_id = "context-correlation"
-        mock_ctx.session_id = "context-session"
+        mock_ctx.claimed_session_id = "context-session"
         mock_ctx.user_id = None
         mock_ctx.investigation_id = None
         mock_ctx.agent_phase = None
@@ -643,7 +645,7 @@ class TestProcessorIntegration:
                 assert event["correlation_id"] == "existing-correlation"
                 assert event["trace_id"] == "existing-trace"
                 # New fields should be added
-                assert event["session_id"] == "context-session"
+                assert event["claimed_session_id"] == "context-session"
                 assert event["message"] == "test"
 
 

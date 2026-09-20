@@ -294,8 +294,12 @@ class FaultMavenLogger:
             # Only add if not already present to prevent duplication
             if "correlation_id" not in event_dict:
                 event_dict["correlation_id"] = ctx.correlation_id
-            if "session_id" not in event_dict and ctx.session_id:
-                event_dict["session_id"] = ctx.session_id
+            # ``claimed_session_id``, not ``session_id``: the value is whatever
+            # the caller put in the header and has never been checked against
+            # anything (fm#1461). The name is what stops a reader treating it as
+            # established fact.
+            if "claimed_session_id" not in event_dict and ctx.claimed_session_id:
+                event_dict["claimed_session_id"] = ctx.claimed_session_id
             if "user_id" not in event_dict and ctx.user_id:
                 event_dict["user_id"] = ctx.user_id
             if "case_id" not in event_dict and ctx.case_id:

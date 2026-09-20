@@ -31,7 +31,7 @@ class TestRequestContext:
         assert ctx.correlation_id is not None
         assert isinstance(ctx.correlation_id, str)
         assert len(ctx.correlation_id) > 0
-        assert ctx.session_id is None
+        assert ctx.claimed_session_id is None
         assert ctx.user_id is None
         assert ctx.case_id is None
         assert ctx.agent_phase is None
@@ -51,7 +51,7 @@ class TestRequestContext:
 
         ctx = RequestContext(
             correlation_id=custom_id,
-            session_id="session-123",
+            claimed_session_id="session-123",
             user_id="user-456",
             case_id="case-789",
             agent_phase="define_blast_radius",
@@ -60,7 +60,7 @@ class TestRequestContext:
         )
 
         assert ctx.correlation_id == custom_id
-        assert ctx.session_id == "session-123"
+        assert ctx.claimed_session_id == "session-123"
         assert ctx.user_id == "user-456"
         assert ctx.case_id == "case-789"
         assert ctx.agent_phase == "define_blast_radius"
@@ -288,11 +288,13 @@ class TestLoggingCoordinator:
         """Test start_request creates and sets context."""
         coordinator = LoggingCoordinator()
 
-        ctx = coordinator.start_request(session_id="test-session", user_id="test-user")
+        ctx = coordinator.start_request(
+            claimed_session_id="test-session", user_id="test-user"
+        )
 
         assert ctx is not None
         assert isinstance(ctx, RequestContext)
-        assert ctx.session_id == "test-session"
+        assert ctx.claimed_session_id == "test-session"
         assert ctx.user_id == "test-user"
         assert ctx.error_context is not None
         assert ctx.performance_tracker is not None

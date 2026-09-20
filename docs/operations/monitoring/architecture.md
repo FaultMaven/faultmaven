@@ -65,8 +65,8 @@ sequenceDiagram
     participant Infrastructure as BaseExternalClient
 
     Client->>Middleware: HTTP Request
-    Middleware->>Middleware: extract session_id/user_id
-    Middleware->>Coordinator: start_request(session_id, user_id)
+    Middleware->>Middleware: extract claimed_session_id (caller-supplied)
+    Middleware->>Coordinator: start_request(claimed_session_id)
     Coordinator->>Context: create RequestContext with business context
     Context->>Context: initialize tracking with session data
 
@@ -152,15 +152,15 @@ class RequestContext:
     Request-scoped context with deduplication and performance tracking.
 
     Architecture:
-    - Immutable identification (correlation_id, session_id, etc.)
+    - Immutable identification (correlation_id, claimed_session_id, etc.)
     - Mutable tracking (logged_operations, performance_tracker)
     - Error context for cascade prevention
     - Performance tracking with layer-specific thresholds
     """
     # Immutable request identification
     correlation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    session_id: Optional[str] = None
-    user_id: Optional[str] = None
+    claimed_session_id: Optional[str] = None  # caller-supplied, never verified
+    user_id: Optional[str] = None  # a VERIFIED subject only (fm#1461)
     investigation_id: Optional[str] = None
     agent_phase: Optional[str] = None
     start_time: datetime = field(default_factory=datetime.utcnow)
@@ -546,7 +546,7 @@ sequenceDiagram
     Note over Client,EXT: Request Initialization Phase
     Client->>MW: HTTP Request
     MW->>MW: start_request() → create RequestContext
-    MW->>MW: set correlation_id, session_id
+    MW->>MW: set correlation_id, claimed_session_id
 
     Note over Client,EXT: API Layer Processing
     MW->>API: route request
@@ -751,15 +751,17 @@ FaultMaven's context management has been enhanced to include **session and user 
 
 1. **RequestContext**: Core context container with session/user data
    - `correlation_id`: Unique request identifier
-   - `session_id`: Business session identifier (NEW)
-   - `user_id`: User identifier from session lookup (NEW)
+   - `claimed_session_id`: the session id the caller sent, unverified
+   - `user_id`: a **verified** subject only — never resolved from a session id
+     (fm#1461), and unset by the HTTP middleware, which runs before the binder
    - `investigation_id`: Troubleshooting session identifier (NEW)
    - `agent_phase`: Current troubleshooting phase
    - `attributes`: Additional request metadata
 
 2. **Session Context Integration**:
-   - LoggingMiddleware extracts `session_id` from requests
-   - SessionService lookup provides `user_id`
+   - LoggingMiddleware extracts `claimed_session_id` from requests
+   - Nothing resolves it to a user: the actor comes from the verified
+     `RequestPrincipal`, on the completion/failure line only (fm#1461)
    - Context populated for entire request lifecycle
    - Enables session-aware tracing and logging
 
@@ -767,10 +769,8 @@ FaultMaven's context management has been enhanced to include **session and user 
 
 ```mermaid
 graph LR
-    A[HTTP Request] --> B[Extract session_id]
-    B --> C[Lookup Session]
-    C --> D[Get user_id]
-    D --> E[Populate RequestContext]
+    A[HTTP Request] --> B[Extract claimed_session_id]
+    B --> E[Populate RequestContext]
     E --> F[Set ContextVar]
     F --> G[Request Processing]
     G --> H[Clear Context]
@@ -828,7 +828,7 @@ class ContextManager:
 # Context automatically propagates through await calls
 async def parent_function():
     # Context set here
-    coordinator.start_request(session_id="123")
+    coordinator.start_request(claimed_session_id="123")
 
     # Context available in child function
     await child_function()
@@ -872,7 +872,7 @@ async def isolated_context():
 
     # Create test context
     coordinator = LoggingCoordinator()
-    context = coordinator.start_request(session_id="test_session")
+    context = coordinator.start_request(claimed_session_id="test_session")
 
     yield context
 
@@ -1181,7 +1181,9 @@ class TracingIntegration:
             operation_name,
             attributes={
                 'correlation_id': log_ctx.correlation_id if log_ctx else None,
-                'session_id': log_ctx.session_id if log_ctx else None,
+                'claimed_session_id': (
+                    log_ctx.claimed_session_id if log_ctx else None
+                ),
                 'layer': 'service'
             }
         )

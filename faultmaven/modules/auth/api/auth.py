@@ -1661,10 +1661,21 @@ async def revoke_user_tokens(
             # Reporting this as a failure — which the generic 500 below would —
             # would send them to revoke again during an incident, chasing a
             # store outage that never touched the revocation.
+            # ``target_user_id``, not ``user_id``: the id is the path
+            # parameter this admin typed, and ``user_id`` is the key the log
+            # chain reserves for the VERIFIED actor
+            # (``ClientConfig.add_request_context`` fills it only when the
+            # record does not already carry one, so an explicit caller-supplied
+            # value displaces the operator). The actor is named beside it,
+            # from the token (fm#1461).
             logger.error(
                 "Revoke-tokens: the watermark was written, but the user lookup "
                 "FAILED so the id could not be confirmed",
-                extra={"user_id": user_id, "lookup": exc.lookup},
+                extra={
+                    "operator_user_id": operator.user_id,
+                    "target_user_id": user_id,
+                    "lookup": exc.lookup,
+                },
                 exc_info=True,
             )
             return RevokeUserTokensResponse(
@@ -1681,7 +1692,10 @@ async def revoke_user_tokens(
             logger.warning(
                 "Revoke-tokens called for an unresolvable user_id; watermark "
                 "written anyway (the lookup completed and matched nothing)",
-                extra={"user_id": user_id},
+                extra={
+                    "operator_user_id": operator.user_id,
+                    "target_user_id": user_id,
+                },
             )
             # Say that the revocation landed. A bare "user not found" would be
             # actively misleading: the admin would assume nothing happened and
@@ -1697,7 +1711,11 @@ async def revoke_user_tokens(
 
         logger.info(
             "Revoked all tokens for user",
-            extra={"user_id": user_id, "revoked_before": revoked_before.isoformat()},
+            extra={
+                "operator_user_id": operator.user_id,
+                "target_user_id": user_id,
+                "revoked_before": revoked_before.isoformat(),
+            },
         )
         return RevokeUserTokensResponse(
             message="All tokens revoked for user",
