@@ -112,6 +112,16 @@ def _joined_paths(tree: ast.AST) -> set:
     ``docs/reference`` from ``ROOT / "docs" / "reference" / "api" /
     "openapi.json"`` and pin all of ``docs/reference/**`` on the strength of a
     test that reads one generated artifact.
+
+    ‼ This recovers ONE spelling, and is partial by construction: an
+    all-constant tail of length >= 2 inside a single expression. A chain
+    ending in a variable (``DOCS_DIR / name`` -- the commonest real shape),
+    one split across statements, ``os.path.join``, ``"/".join`` and an
+    f-string all recover nothing, and a directory spelled any of those ways
+    still pins nothing beneath itself. Nothing on this tree is spelled that
+    way today, which is the only reason the gap stays closed; a test that
+    walks such a directory re-opens it silently. The honest summary is that
+    this narrows the hole rather than filling it.
     """
     nested = set()
     for node in ast.walk(tree):

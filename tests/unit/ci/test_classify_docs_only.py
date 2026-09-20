@@ -237,6 +237,24 @@ def test_the_same_diff_is_docs_only_once_resolved_is_true(tmp_path):
     assert written == "docs_only=true\n"
 
 
+def test_a_code_diff_is_not_docs_only_through_the_script(tmp_path):
+    """The `false` that `decide()` produces, asserted through the process.
+
+    Every other process-level `docs_only=false` here comes from an EARLY
+    RETURN -- an unresolved file list or an empty diff -- and reaches neither
+    `decide()` nor the `emit()` call that carries its answer. Without this
+    case the one line that writes the CI verdict is exercised in the `true`
+    direction only, and replacing it with a hardcoded `emit("true", ...)` --
+    the exact failure this whole file exists to prevent, because it skips
+    every suite on a diff that changes the image -- passes all 36 of the
+    others. Measured, not supposed.
+    """
+    _tests_tree(tmp_path, {"t0.py": CONTROL_SOURCE})
+    proc, written = _run(tmp_path, PATHS["executable_diff"] + "\n", "true")
+    assert proc.returncode == 0, proc.stderr
+    assert written == "docs_only=false\n"
+
+
 def test_an_empty_diff_is_not_docs_only(tmp_path):
     _tests_tree(tmp_path, {"t0.py": CONTROL_SOURCE})
     proc, written = _run(tmp_path, "\n   \n", "true")

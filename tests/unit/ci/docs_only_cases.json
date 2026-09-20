@@ -78,6 +78,18 @@
       "why": "the shipped KB pack; the Dockerfile COPYs resources/, so this diff changes the image"
     },
     {
+      "id": "kb-pack-runbook-through-the-rooted-allowlist",
+      "literals": [
+        "CLAUDE.md",
+        "docs/architecture"
+      ],
+      "changed": [
+        "resources/knowledge/pack/runbooks/global/database/redis-oom.md"
+      ],
+      "expected": "false",
+      "why": "The same path with NOTHING pinning it, which is the only way to reach classify()'s resources/ arm -- the rooted allowlist the whole design rests on. On the real tree that path is pinned anyway (`resources/knowledge/pack/runbooks` is a literal in four test files), and the chain join took the remaining 88 unpinned resources/ paths to 0, so making resources/ inert kills no real-tree case. Hermetic literals are what keep the arm testable."
+    },
+    {
       "id": "claude-md",
       "changed": [
         "CLAUDE.md"
@@ -179,6 +191,7 @@
     "reference_dir": "docs/reference",
     "reference_api_dir": "docs/reference/api",
     "generated_spec": "docs/reference/api/openapi.json",
-    "reference_prose": "docs/reference/llm-model-capabilities.md"
+    "reference_prose": "docs/reference/llm-model-capabilities.md",
+    "executable_diff": "faultmaven/main.py"
   }
 }
