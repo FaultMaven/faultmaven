@@ -2972,3 +2972,5 @@ if __name__ == "__main__":
             # loggers propagate to root and are rendered like everything else.
             log_config=None,
         )
+
+# #1506 demonstration: executable-file diff. Throwaway branch.
