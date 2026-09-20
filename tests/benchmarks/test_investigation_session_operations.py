@@ -36,7 +36,12 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
     SQLiteCaseRepository,
 )
 
-from .conftest import generate_case_id, measure_min_latency
+from .conftest import (
+    assert_latency_within,
+    assert_throughput_at_least,
+    generate_case_id,
+    measure_min_latency,
+)
 
 
 def generate_session_id() -> str:
@@ -116,9 +121,9 @@ class TestSessionCreationPerformance:
         )
 
         assert measured.result is not None
-        assert (
-            measured.best < 0.200
-        ), f"Session creation latency {measured.report()} exceeds 200ms target"
+        assert_latency_within(
+            measured.best, 0.200, "Session creation latency", measured.report()
+        )
         print(f"\n  Session creation latency: {measured.report()}")
 
     @pytest.mark.asyncio
@@ -149,9 +154,12 @@ class TestSessionCreationPerformance:
 
         assert measured.result is not None
         assert measured.result.metadata is not None
-        assert (
-            measured.best < 0.200
-        ), f"Session with metadata creation latency {measured.report()} exceeds 200ms target"
+        assert_latency_within(
+            measured.best,
+            0.200,
+            "Session with metadata creation latency",
+            measured.report(),
+        )
         print(f"\n  Session with metadata creation latency: {measured.report()}")
 
     @pytest.mark.asyncio
@@ -200,9 +208,9 @@ class TestSessionCreationPerformance:
         )
 
         throughput = batch_size / measured.best
-        assert (
-            throughput > 20
-        ), f"Session creation throughput {throughput:.1f}/sec below 20/sec target"
+        assert_throughput_at_least(
+            throughput, 20, "Session creation throughput", measured.report()
+        )
         print(
             f"\n  Batch creation throughput: {throughput:.1f} sessions/sec "
             f"({batch_size} items, batch {measured.report()})"
@@ -234,9 +242,9 @@ class TestSessionRetrievalPerformance:
         )
 
         assert measured.result is not None
-        assert (
-            measured.best < 0.100
-        ), f"Session retrieval latency {measured.report()} exceeds 100ms target"
+        assert_latency_within(
+            measured.best, 0.100, "Session retrieval latency", measured.report()
+        )
         print(f"\n  Session retrieval latency: {measured.report()}")
 
     @pytest.mark.asyncio
@@ -261,9 +269,9 @@ class TestSessionRetrievalPerformance:
 
         assert measured.result is not None
         assert measured.result.state == SessionState.ACTIVE
-        assert (
-            measured.best < 0.100
-        ), f"Get active session latency {measured.report()} exceeds 100ms target"
+        assert_latency_within(
+            measured.best, 0.100, "Get active session latency", measured.report()
+        )
         print(f"\n  Get active session latency: {measured.report()}")
 
     @pytest.mark.asyncio
@@ -289,9 +297,9 @@ class TestSessionRetrievalPerformance:
         )
 
         assert len(measured.result) == 100
-        assert (
-            measured.best < 0.200
-        ), f"List sessions latency {measured.report()} exceeds 200ms target"
+        assert_latency_within(
+            measured.best, 0.200, "List sessions latency", measured.report()
+        )
         print(
             f"\n  List sessions latency: {measured.report()} "
             f"({len(measured.result)} items)"
@@ -332,9 +340,9 @@ class TestSessionRetrievalPerformance:
         )
 
         assert len(measured.result) == 50
-        assert (
-            measured.best < 0.150
-        ), f"Filtered list latency {measured.report()} exceeds 150ms target"
+        assert_latency_within(
+            measured.best, 0.150, "Filtered list latency", measured.report()
+        )
         print(
             f"\n  Filtered list latency: {measured.report()} "
             f"({len(measured.result)} items)"
@@ -374,9 +382,9 @@ class TestSessionRetrievalPerformance:
         )
 
         assert len(measured.result) == 50
-        assert (
-            measured.best < 0.200
-        ), f"List by user latency {measured.report()} exceeds 200ms target"
+        assert_latency_within(
+            measured.best, 0.200, "List by user latency", measured.report()
+        )
         print(
             f"\n  List by user latency: {measured.report()} "
             f"({len(measured.result)} items)"
@@ -414,9 +422,9 @@ class TestSessionUpdatePerformance:
 
         assert measured.result is not None
         assert measured.result.state == SessionState.PAUSED
-        assert (
-            measured.best < 0.150
-        ), f"Status update latency {measured.report()} exceeds 150ms target"
+        assert_latency_within(
+            measured.best, 0.150, "Status update latency", measured.report()
+        )
         print(f"\n  Session state update latency: {measured.report()}")
 
     @pytest.mark.asyncio
@@ -445,9 +453,9 @@ class TestSessionUpdatePerformance:
 
         assert measured.result is not None
         assert measured.result.state == SessionState.COMPLETED
-        assert (
-            measured.best < 0.150
-        ), f"Completion update latency {measured.report()} exceeds 150ms target"
+        assert_latency_within(
+            measured.best, 0.150, "Completion update latency", measured.report()
+        )
         print(f"\n  Session completion update latency: {measured.report()}")
 
     @pytest.mark.asyncio
@@ -481,9 +489,9 @@ class TestSessionUpdatePerformance:
         assert measured.result is not None
         assert measured.result.total_token_usage == 2250
         assert measured.result.total_agent_executions == 3
-        assert (
-            measured.best < 0.150
-        ), f"Token usage update latency {measured.report()} exceeds 150ms target"
+        assert_latency_within(
+            measured.best, 0.150, "Token usage update latency", measured.report()
+        )
         print(f"\n  Token usage update latency: {measured.report()}")
 
 
@@ -518,9 +526,9 @@ class TestSessionDeletePerformance:
         )
 
         assert measured.result is True
-        assert (
-            measured.best < 0.150
-        ), f"Session delete latency {measured.report()} exceeds 150ms target"
+        assert_latency_within(
+            measured.best, 0.150, "Session delete latency", measured.report()
+        )
         print(f"\n  Session delete latency: {measured.report()}")
 
 
@@ -550,9 +558,7 @@ class TestSessionCountPerformance:
         )
 
         assert measured.result == 50
-        assert (
-            measured.best < 0.050
-        ), f"Count latency {measured.report()} exceeds 50ms target"
+        assert_latency_within(measured.best, 0.050, "Count latency", measured.report())
         print(
             f"\n  Count sessions latency: {measured.report()} "
             f"({measured.result} items)"
@@ -603,9 +609,9 @@ class TestSessionMixedWorkloadPerformance:
         measured = await measure_min_latency(_lifecycle, setup=_fresh_session)
 
         assert measured.result.state == SessionState.COMPLETED
-        assert (
-            measured.best < 0.600
-        ), f"Lifecycle workload latency {measured.report()} exceeds 600ms target"
+        assert_latency_within(
+            measured.best, 0.600, "Lifecycle workload latency", measured.report()
+        )
         print(f"\n  Session lifecycle workload latency: {measured.report()}")
 
     @pytest.mark.asyncio
@@ -656,7 +662,7 @@ class TestSessionMixedWorkloadPerformance:
         measured = await measure_min_latency(_pause_resume, setup=_fresh_session)
 
         assert measured.result.state == SessionState.COMPLETED
-        assert (
-            measured.best < 0.900
-        ), f"Pause/resume workload latency {measured.report()} exceeds 900ms target"
+        assert_latency_within(
+            measured.best, 0.900, "Pause/resume workload latency", measured.report()
+        )
         print(f"\n  Pause/resume workload latency: {measured.report()}")

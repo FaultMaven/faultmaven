@@ -131,27 +131,154 @@ Key metrics from Locust:
 - **p50/p95/p99**: Latency percentiles (lower is better)
 - **Failure rate**: Percentage of failed requests (0% is ideal)
 
+## Budgets are calibrated, not absolute (#908)
+
+A latency threshold written in milliseconds and asserted on a GitHub-hosted
+runner does not measure the code. #908 quantified that from the runs' own
+`benchmark_results.json` artifacts: comparing a **failing** run to a
+**passing** run of the *same commit*, the median per-test ratio across all
+30 tests was **1.28, uniform across every one of them**; against a run of
+*different* code it was 0.98. No code path was slower — the whole pytest
+process scaled with machine throughput, and the thinnest-margin test was
+whichever happened to be closest to its number that week.
+
+So the thresholds stayed (they encode product targets) and the instrument
+changed. `tests/benchmarks/calibration.py` measures a fixed, cheap,
+CPU-bound workload **in the same pytest process**, and every budget is
+`target * calibration_scale()`:
+
+```
+budget      = target        x scale
+floor       = target        / scale        (throughput: it is 1/latency)
+scale       = max(1.0, measured / CALIBRATION_REFERENCE_SECONDS)
+```
+
+Three properties worth knowing before you read a result:
+
+* **The scale never drops below 1.0.** A machine at or above the reference
+  speed is held to exactly the number written in the test, so the scale can
+  never tighten a budget — on CI or on your laptop. (One unrelated part of
+  #908 is a hair stricter: the nine budgets in
+  `test_investigation_session_service_operations` moved from `p95 <= target`
+  to the shared helper's `observed < budget`, so a p95 landing exactly on
+  the target now fails. Float timings make that unreachable in practice.)
+* **A uniform slowdown cancels; a single-path regression does not.** That
+  is the whole point, and it is asserted both ways in
+  `tests/unit/ci/test_benchmark_calibration.py`.
+* **Memory assertions are not scaled.** Megabytes do not move with machine
+  throughput, and correcting them would be nonsense.
+
+### How much headroom the budgets have today
+
+Worth knowing before you read a red run, and worth re-measuring before
+anyone argues about a threshold. Joining every budget in the suite with the
+number the same test reported in two green `main` runs (35499510079 and
+35496672222), **no budget is within 50% of its target on either**: the
+highest utilisation is 27.7% and 20.0% (`test_batch_case_creation_throughput`
+in both), and the median is 2.6% and 2.2%.
+
+That is the state #1033 left behind — minimum-of-five sampling plus the
+threshold raises in #911/#1033 — and the benchmark workflow has had no
+latency failure since. #908's canary, `test_tag_search_match_all_latency`,
+now sits at 5.8% of its 400 ms budget. So the calibration is insurance
+rather than a cure: it keeps the gate's meaning machine-independent as
+those margins tighten again, which is the direction they have always moved.
+
+The same numbers say the opposite thing about the thresholds themselves —
+a budget used at 2.6% cannot detect a 10x regression — but re-anchoring
+them is a separate decision from how they are compared, and it is not
+#908's.
+
+Every run prints the calibration it measured, in the terminal summary and
+therefore in `benchmark_output.txt` and the job summary:
+
+```
+--------------------------- benchmark calibration ----------------------------
+benchmark calibration: 634.2us/rep (reference 520.0us/rep, raw ratio 1.22x) -> budget scale 1.22x
+```
+
+The nightly absolute job prints the same measurement and says it is not
+being applied, because that is the one run whose reds genuinely need
+disambiguating:
+
+```
+benchmark calibration: ABSOLUTE mode (FM_BENCHMARK_ABSOLUTE set) - budgets are the raw targets; machine measured 634.2us/rep vs reference 520.0us/rep (raw ratio 1.22x, NOT applied)
+```
+
+Read a red run with that line in hand. On the **nightly absolute** job a
+raw ratio well above 1.0 means the runner rather than the code. On the
+**calibrated** pull-request job that correction has already been applied,
+so a failure there is the code whatever the ratio says.
+
+How much to trust the number: measured across twelve fresh processes on a
+contended development box, the calibration itself spans **1.33x** — the
+same order as the 1.2-1.5x runner-to-runner variance it corrects, not an
+order of magnitude below it. What makes that safe is the floor, not the
+precision: noise can only ever hand out unearned relief, never a new red.
+
+The cross-machine check that says the correction lands: the development box
+measures 3.44x slower than the reference, and there the worst budget sits
+at **88.2%** of its raw target but **25.6%** of its calibrated budget —
+against **27.7%** for the same test on the reference runner. Two machines a
+factor of 3.4 apart, the same utilisation once corrected.
+
+### Where the raw targets are still checked
+
+`FM_BENCHMARK_ABSOLUTE=1` pins the scale at 1.0, so the suite asserts the
+product targets with no correction. That is what the **nightly-absolute**
+job runs (see below), and it is how you reproduce a wall-clock number
+locally:
+
+```bash
+FM_BENCHMARK_ABSOLUTE=1 pytest tests/benchmarks/ -m benchmark -v
+```
+
+### Re-anchoring `CALIBRATION_REFERENCE_SECONDS`
+
+The constant is one calibration repetition's cost on a healthy
+GitHub-hosted `ubuntu-latest` runner — the machine class these thresholds
+were tuned against. Every run prints its own value, so re-anchoring needs
+no special run: take the `benchmark calibration:` line from a few green
+runs and set the constant to their middle.
+
+The error is one-sided, which is why an approximate value is safe. Too
+**high** and the scale floors at 1.0 more often, degrading to the old
+absolute behaviour. Too **low** and every runner gets permanent relief and
+the gate quietly weakens. Err high.
+
 ## CI Integration
 
-Benchmarks run automatically on:
-- Every PR to main
-- Every push to main
-- Weekly (Sundays at 2 AM UTC)
-- Manual trigger via workflow_dispatch
+`.github/workflows/benchmarks.yml` has three jobs:
+
+| Job | Runs on | Asserts |
+|-----|---------|---------|
+| `Run Performance Benchmarks` | every PR to main, every push to main, manual dispatch | **calibrated** budgets |
+| `Absolute Wall-Clock Targets (nightly)` | the 02:00 UTC schedule, or a manual dispatch with `absolute_targets` | the **raw** product targets (`FM_BENCHMARK_ABSOLUTE=1`) |
+| `Memory Usage Benchmarks` | all of the above | megabytes, never scaled |
+
+The split is deliberate. A pull request is gated on something its author can
+influence; "does this operation meet its wall-clock target on this runner"
+is still worth asking, but it is a question about the machine as much as the
+code, so it is asked nightly where a red is a signal to read rather than a
+merge to re-run.
 
 Results are:
 - Uploaded as artifacts (retained 90 days)
 - Commented on PRs with summary
-- Reported in GitHub Actions summary
+- Reported in GitHub Actions summary, with the calibration line
 
 ## Regression Detection
 
 If a benchmark fails:
 
-1. **Check the diff**: What changed since last passing run?
-2. **Expected impact?**: Did you add a feature that increases latency?
-3. **Investigate**: Use profiling tools (cProfile, py-spy)
-4. **Fix or update baseline**: Either optimize or update targets with justification
+1. **Read the calibration line first**: on the nightly-absolute job a raw
+   ratio well above 1.0 means the runner, not the code. On the calibrated
+   job that correction has already been applied, so a failure there is the
+   code.
+2. **Check the diff**: What changed since last passing run?
+3. **Expected impact?**: Did you add a feature that increases latency?
+4. **Investigate**: Use profiling tools (cProfile, py-spy)
+5. **Fix or update baseline**: Either optimize or update targets with justification
 
 ### Example Investigation
 

@@ -32,6 +32,8 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
     SQLiteCaseRepository,
 )
 
+from .conftest import assert_latency_within
+
 # ============================================================
 # Fixtures
 # ============================================================
@@ -132,6 +134,26 @@ async def measure_operation(operation, iterations: int = 100) -> dict:
     }
 
 
+def report_p95(name: str, stats: dict, target_ms: float) -> None:
+    """Print the distribution, then assert the p95 against its target.
+
+    The one comparison site in this module. It converts to seconds and hands
+    off to ``assert_latency_within``, so the machine-throughput calibration
+    (#908) applies here exactly as it does to the ``measure_min_latency``
+    modules — this file used to spell the same rule out seven times as
+    ``assert stats["p95_ms"] < N``, which is how it got missed.
+    """
+    print(f"\n{name}:")
+    print(f"  Mean: {stats['mean_ms']:.2f}ms")
+    print(f"  P95: {stats['p95_ms']:.2f}ms")
+    print(f"  Target: <{target_ms:.0f}ms p95")
+    assert_latency_within(
+        stats["p95_ms"] / 1000.0,
+        target_ms / 1000.0,
+        f"{name} p95",
+    )
+
+
 # ============================================================
 # Create Case Benchmark
 # ============================================================
@@ -161,15 +183,7 @@ class TestCreateCaseBenchmark:
 
         stats = await measure_operation(create_case, iterations=50)
 
-        print(f"\nCreate Case Benchmark:")
-        print(f"  Mean: {stats['mean_ms']:.2f}ms")
-        print(f"  P95: {stats['p95_ms']:.2f}ms")
-        print(f"  Target: <200ms p95")
-
-        # Assert target is met
-        assert (
-            stats["p95_ms"] < 200
-        ), f"Create case P95 ({stats['p95_ms']:.2f}ms) exceeds target (200ms)"
+        report_p95("Create Case Benchmark", stats, 200)
 
 
 # ============================================================
@@ -201,14 +215,7 @@ class TestGetCaseBenchmark:
 
         stats = await measure_operation(get_case, iterations=100)
 
-        print(f"\nGet Case Benchmark:")
-        print(f"  Mean: {stats['mean_ms']:.2f}ms")
-        print(f"  P95: {stats['p95_ms']:.2f}ms")
-        print(f"  Target: <100ms p95")
-
-        assert (
-            stats["p95_ms"] < 100
-        ), f"Get case P95 ({stats['p95_ms']:.2f}ms) exceeds target (100ms)"
+        report_p95("Get Case Benchmark", stats, 100)
 
 
 # ============================================================
@@ -248,14 +255,7 @@ class TestUpdateCaseBenchmark:
 
         stats = await measure_operation(update_case, iterations=50)
 
-        print(f"\nUpdate Case Benchmark:")
-        print(f"  Mean: {stats['mean_ms']:.2f}ms")
-        print(f"  P95: {stats['p95_ms']:.2f}ms")
-        print(f"  Target: <150ms p95")
-
-        assert (
-            stats["p95_ms"] < 150
-        ), f"Update case P95 ({stats['p95_ms']:.2f}ms) exceeds target (150ms)"
+        report_p95("Update Case Benchmark", stats, 150)
 
 
 # ============================================================
@@ -288,14 +288,7 @@ class TestListCasesBenchmark:
 
         stats = await measure_operation(list_cases, iterations=30)
 
-        print(f"\nList Cases (100 cases) Benchmark:")
-        print(f"  Mean: {stats['mean_ms']:.2f}ms")
-        print(f"  P95: {stats['p95_ms']:.2f}ms")
-        print(f"  Target: <300ms p95")
-
-        assert (
-            stats["p95_ms"] < 300
-        ), f"List cases P95 ({stats['p95_ms']:.2f}ms) exceeds target (300ms)"
+        report_p95("List Cases (100 cases) Benchmark", stats, 300)
 
 
 # ============================================================
@@ -332,14 +325,7 @@ class TestGetCaseWithDetailsBenchmark:
 
         stats = await measure_operation(get_details, iterations=50)
 
-        print(f"\nGet Case With Details Benchmark:")
-        print(f"  Mean: {stats['mean_ms']:.2f}ms")
-        print(f"  P95: {stats['p95_ms']:.2f}ms")
-        print(f"  Target: <250ms p95")
-
-        assert (
-            stats["p95_ms"] < 250
-        ), f"Get case details P95 ({stats['p95_ms']:.2f}ms) exceeds target (250ms)"
+        report_p95("Get Case With Details Benchmark", stats, 250)
 
 
 # ============================================================
@@ -382,14 +368,7 @@ class TestGetStatisticsBenchmark:
 
         stats = await measure_operation(get_stats, iterations=20)
 
-        print(f"\nGet Statistics (100 cases) Benchmark:")
-        print(f"  Mean: {stats['mean_ms']:.2f}ms")
-        print(f"  P95: {stats['p95_ms']:.2f}ms")
-        print(f"  Target: <1000ms p95")
-
-        assert (
-            stats["p95_ms"] < 1000
-        ), f"Get statistics P95 ({stats['p95_ms']:.2f}ms) exceeds target (1000ms)"
+        report_p95("Get Statistics (100 cases) Benchmark", stats, 1000)
 
 
 # ============================================================
@@ -427,11 +406,9 @@ class TestCloseBenchmark:
             times.append(elapsed)
 
         times.sort()
-        p95 = times[int(len(times) * 0.95)]
+        stats = {
+            "mean_ms": statistics.mean(times),
+            "p95_ms": times[int(len(times) * 0.95)],
+        }
 
-        print(f"\nClose Case Benchmark:")
-        print(f"  Mean: {statistics.mean(times):.2f}ms")
-        print(f"  P95: {p95:.2f}ms")
-        print(f"  Target: <200ms p95")
-
-        assert p95 < 200, f"Close case P95 ({p95:.2f}ms) exceeds target (200ms)"
+        report_p95("Close Case Benchmark", stats, 200)
