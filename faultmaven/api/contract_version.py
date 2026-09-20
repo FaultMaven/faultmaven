@@ -30,6 +30,34 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
+# 7.2.0 — MINOR. `GET /api/v1/admin/llm/config` publishes `role_routing`, a
+# new list on `LLMConfigResponse` carrying a new `LLMRoleRouting` schema
+# (#1206). Purely additive: no existing property changed, nothing was removed,
+# and a client that ignores the field behaves exactly as before.
+#
+# What it adds is the answer the response could not previously give. It
+# published `primary_provider` and nothing about the other seven capability
+# roles, and those do not all follow the anchor:
+# `CLASSIFIER_PROVIDER`/`SYNTHESIS_PROVIDER`/`MULTIMODAL_PROVIDER` ship pinned
+# to gemini and stay put when the anchor is flipped (#1193 — that is what
+# makes an A/B comparison of the anchor controlled), while
+# `da`/`knowledge`/`structured_output` ship unset and move with it. An admin
+# who switched the anchor to openai was shown "openai" by a page on which
+# three roles still called Gemini and still needed its credential.
+#
+# Each row carries the resolved provider and model, the environment key that
+# decided each, whether the provider was set for that role or inherited from
+# `CHAT_PROVIDER`, whether the value came from `.env` or a dashboard override,
+# and whether the named provider is actually initialized — the last because a
+# pin with no credential is ignored by `route_request` and falls back to the
+# chain, so reporting it as live would be a new version of the same lie.
+#
+# READ ONLY. The write half — whether an admin may change a role pin at
+# runtime — is deliberately deferred and `_ALLOWED_OVERRIDES` is untouched;
+# making pins runtime-editable interacts with the A/B property above and is
+# its own decision. Standalone is unchanged: `PUT /admin/llm/config` still
+# 403s there and `.env` remains the single source of truth.
+
 # 7.1.0 — MINOR. `GET /readiness` publishes a **503**, which it could not
 # answer before (#1515). It is the Kubernetes readiness probe, and it now
 # returns 503 when a component fatal to serving — today only `database` — is
@@ -1534,4 +1562,4 @@ asked to accept, and it belongs to a person.
 # and absent must read as "no": a client treating a missing value as
 # unknown-therefore-fine renders the dead control again, which is the whole
 # failure being closed.
-API_CONTRACT_VERSION = "7.1.0"
+API_CONTRACT_VERSION = "7.2.0"

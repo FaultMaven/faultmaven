@@ -3607,6 +3607,14 @@
             "title": "Providers",
             "type": "object"
           },
+          "role_routing": {
+            "description": "Resolved (provider, model) per capability role, with provenance. Read-only: role routing is set in the environment and is not in the dashboard's override allowlist.",
+            "items": {
+              "$ref": "#/components/schemas/LLMRoleRouting"
+            },
+            "title": "Role Routing",
+            "type": "array"
+          },
           "strict_mode": {
             "title": "Strict Mode",
             "type": "boolean"
@@ -3897,6 +3905,63 @@
           "has_api_key"
         ],
         "title": "LLMProviderDetail",
+        "type": "object"
+      },
+      "LLMRoleRouting": {
+        "description": "Resolved routing for one capability role.\n\n``primary_provider`` alone does not describe what is running: three roles\nship pinned to a provider of their own and stay put when the anchor moves,\nand the rest ship unset and follow it. A page showing only the anchor\nreports a configuration that omits load-bearing routing (#1206).",
+        "properties": {
+          "model": {
+            "description": "Model this role runs on; empty string when that provider has no model configured",
+            "title": "Model",
+            "type": "string"
+          },
+          "model_key": {
+            "description": "Environment key carrying the model decision, e.g. GEMINI_CLASSIFIER_MODEL or GEMINI_MODEL; empty when unset. A per-task key does not move when the provider's model is changed",
+            "title": "Model Key",
+            "type": "string"
+          },
+          "model_source": {
+            "description": "Where the model came from: 'env-default', 'admin-override', or 'unset' (no model configured for this provider)",
+            "title": "Model Source",
+            "type": "string"
+          },
+          "provider": {
+            "description": "Provider this role's calls are routed to",
+            "title": "Provider",
+            "type": "string"
+          },
+          "provider_initialized": {
+            "description": "The named provider was built by the registry. False means its credential is missing, the routing is inert, and this role's calls fall back to fallback_chain",
+            "title": "Provider Initialized",
+            "type": "boolean"
+          },
+          "provider_key": {
+            "description": "Environment key carrying the provider decision, e.g. CLASSIFIER_PROVIDER",
+            "title": "Provider Key",
+            "type": "string"
+          },
+          "provider_source": {
+            "description": "Where the provider came from: 'env-default' (this role's own key is set), 'admin-override' (dashboard-written), or 'inherited' (no role key \u2014 follows CHAT_PROVIDER and moves with it)",
+            "title": "Provider Source",
+            "type": "string"
+          },
+          "role": {
+            "description": "Capability role: chat, multimodal, synthesis, classifier, code, da, knowledge, structured_output",
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "provider",
+          "model",
+          "provider_source",
+          "model_source",
+          "provider_key",
+          "model_key",
+          "provider_initialized"
+        ],
+        "title": "LLMRoleRouting",
         "type": "object"
       },
       "LinkCaseRequest": {
@@ -6763,7 +6828,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "7.1.0"
+    "version": "7.2.0"
   },
   "openapi": "3.1.0",
   "paths": {

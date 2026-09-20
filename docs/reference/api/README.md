@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 7.1.0
+**Version:** 7.2.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -5881,6 +5881,7 @@ LLM configuration and provider status response.
 - `fallback_chain` (array, required)
 - `primary_provider` (string, required)
 - `providers` (object, required)
+- `role_routing` (array, optional) — Resolved (provider, model) per capability role, with provenance. Read-only: role routing is set in the environment and is not in the dashboard's override allowlist.
 - `strict_mode` (boolean, required)
 - `timestamp` (string, required)
 
@@ -5956,6 +5957,28 @@ Individual LLM provider status for dashboard display.
 - `selected_model` (object, optional) — Currently active model for this provider
 - `selected_model_priced` (object, optional) — Whether selected_model has a rate in the cost table. False means this provider's calls report $0 spend. None when no model is resolved yet (provider not initialized).
 - `state` (string, optional) — Provider lifecycle state: not_configured, configured, or active
+
+---
+
+### LLMRoleRouting
+
+Resolved routing for one capability role.
+
+``primary_provider`` alone does not describe what is running: three roles
+ship pinned to a provider of their own and stay put when the anchor moves,
+and the rest ship unset and follow it. A page showing only the anchor
+reports a configuration that omits load-bearing routing (#1206).
+
+**Properties:**
+
+- `model` (string, required) — Model this role runs on; empty string when that provider has no model configured
+- `model_key` (string, required) — Environment key carrying the model decision, e.g. GEMINI_CLASSIFIER_MODEL or GEMINI_MODEL; empty when unset. A per-task key does not move when the provider's model is changed
+- `model_source` (string, required) — Where the model came from: 'env-default', 'admin-override', or 'unset' (no model configured for this provider)
+- `provider` (string, required) — Provider this role's calls are routed to
+- `provider_initialized` (boolean, required) — The named provider was built by the registry. False means its credential is missing, the routing is inert, and this role's calls fall back to fallback_chain
+- `provider_key` (string, required) — Environment key carrying the provider decision, e.g. CLASSIFIER_PROVIDER
+- `provider_source` (string, required) — Where the provider came from: 'env-default' (this role's own key is set), 'admin-override' (dashboard-written), or 'inherited' (no role key — follows CHAT_PROVIDER and moves with it)
+- `role` (string, required) — Capability role: chat, multimodal, synthesis, classifier, code, da, knowledge, structured_output
 
 ---
 

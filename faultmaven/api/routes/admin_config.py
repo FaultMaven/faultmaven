@@ -28,6 +28,7 @@ from faultmaven.api.models import (
     LLMConnectionTestRequest,
     LLMConnectionTestResponse,
     LLMProviderDetail,
+    LLMRoleRouting,
     PersonalTenantLimitsStatus,
 )
 from faultmaven.api.v1.dependencies import get_llm_provider
@@ -157,6 +158,36 @@ async def get_llm_config(
 
         config_sources = await get_config_source_map(is_cloud)
 
+        # Per-role routing (#1206). `primary_provider` above is the anchor and
+        # describes only the roles that follow it: classifier/synthesis/
+        # multimodal ship pinned elsewhere and stay put when the anchor moves,
+        # so a page carrying the anchor alone omits load-bearing routing.
+        # `provider_status` (not the fallback chain) is the reachability
+        # question, because that is the set `route_request` checks a
+        # provider_override against — a pinned role is legitimately off-chain.
+        from faultmaven.config.role_routing import resolve_role_routing
+
+        # Mapped field by field rather than by **vars(): pydantic ignores
+        # unknown keyword arguments, so a field added to ResolvedRole and not
+        # to the response model would be dropped without a word.
+        role_routing = [
+            LLMRoleRouting(
+                role=resolved.role,
+                provider=resolved.provider,
+                model=resolved.model,
+                provider_source=resolved.provider_source,
+                model_source=resolved.model_source,
+                provider_key=resolved.provider_key,
+                model_key=resolved.model_key,
+                provider_initialized=resolved.provider_initialized,
+            )
+            for resolved in resolve_role_routing(
+                settings.llm,
+                config_sources=config_sources,
+                initialized_providers=provider_status.keys(),
+            )
+        ]
+
         return LLMConfigResponse(
             deployment=deployment,
             config_readonly=config_readonly,
@@ -164,6 +195,7 @@ async def get_llm_config(
             strict_mode=strict_mode,
             fallback_chain=fallback_chain,
             providers=providers,
+            role_routing=role_routing,
             config_sources=config_sources,
             timestamp=datetime.now(timezone.utc),
         )

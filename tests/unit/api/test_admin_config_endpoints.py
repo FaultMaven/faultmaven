@@ -19,10 +19,14 @@ from faultmaven.api.routes.admin_config import (
     get_llm_config,
     update_llm_config,
 )
-from faultmaven.config.settings import Environment
+from faultmaven.config.settings import LLM_MODEL_TASKS, Environment, LLMProvider
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 
 SETTINGS_PATCH = "faultmaven.config.settings.get_settings"
+
+# Every provider the role resolver can be asked about. Taken from the enum so
+# a provider added to the product cannot leave a hole in the fixture.
+PROVIDER_NAMES = tuple(p.value for p in LLMProvider)
 
 
 # ============================================================
@@ -186,6 +190,30 @@ def mock_settings():
     settings.database.session_storage_type = "inmemory"
     settings.database.vector_storage_type = "chromadb"
     settings.protection.protection_enabled = False
+
+    # Per-role routing (#1206), explicit for the same reason as every field
+    # above: the resolver reads `{provider}_{role}_model` by name, and an
+    # auto-created MagicMock attribute is a truthy object, so an unset fixture
+    # would not merely leave a gap — it would MANUFACTURE a per-task model
+    # override on every provider and every role, and then fail the response
+    # model's `str` on it. The shape modelled is the SHIPPED one: an anchor
+    # plus three roles pinned to gemini, which is the configuration the
+    # endpoint was reporting as one provider.
+    settings.llm.explicit_role_provider.side_effect = lambda role: {
+        "chat": "anthropic",
+        "multimodal": "gemini",
+        "synthesis": "gemini",
+        "classifier": "gemini",
+    }.get(role)
+    for provider_name in PROVIDER_NAMES:
+        for task in LLM_MODEL_TASKS:
+            setattr(settings.llm, f"{provider_name}_{task}_model", None)
+        setattr(settings.llm, f"{provider_name}_model", None)
+    settings.llm.anthropic_model = "claude-3-5-sonnet-20241022"
+    settings.llm.gemini_model = "gemini-3.7-flash"
+    settings.llm.gemini_classifier_model = "gemini-3.5-flash-lite"
+    settings.llm.gemini_synthesis_model = "gemini-3.5-flash-lite"
+    settings.llm.local_model = None
     return settings
 
 
@@ -366,6 +394,125 @@ class TestGetLLMConfig:
         if groq:
             assert groq.enabled is False
             assert groq.health == "not_initialized"
+
+    @pytest.mark.asyncio
+    async def test_role_routing_published_for_every_role(
+        self, mock_admin_user, mock_llm_provider, mock_settings
+    ):
+        """The response names every role, not just the anchor (#1206).
+
+        `primary_provider` described four of eight roles on the shipped
+        configuration, and nothing on the page said so.
+        """
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_llm_config(
+                current_user=mock_admin_user, llm_provider=mock_llm_provider
+            )
+
+        assert [row.role for row in result.role_routing] == list(LLM_MODEL_TASKS)
+
+    @pytest.mark.asyncio
+    async def test_role_routing_separates_pins_from_the_anchor(
+        self, mock_admin_user, mock_llm_provider, mock_settings
+    ):
+        """The reported bug, at the endpoint: `primary_provider` says one
+        thing and three roles answer somewhere else."""
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_llm_config(
+                current_user=mock_admin_user, llm_provider=mock_llm_provider
+            )
+
+        rows = {row.role: row for row in result.role_routing}
+        assert result.primary_provider == "anthropic"
+        assert [
+            (row.role, row.provider, row.provider_key)
+            for row in result.role_routing
+            if row.provider != result.primary_provider
+        ] == [
+            ("multimodal", "gemini", "MULTIMODAL_PROVIDER"),
+            ("synthesis", "gemini", "SYNTHESIS_PROVIDER"),
+            ("classifier", "gemini", "CLASSIFIER_PROVIDER"),
+        ]
+        assert rows["classifier"].model == "gemini-3.5-flash-lite"
+        # The roles that DO follow the anchor say so rather than being absent.
+        assert [
+            row.role
+            for row in result.role_routing
+            if row.provider_source == "inherited"
+        ] == [
+            "code",
+            "da",
+            "knowledge",
+            "structured_output",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_role_routing_reports_an_uninitialized_pin_as_inert(
+        self, mock_admin_user, mock_llm_provider, mock_settings
+    ):
+        """gemini is pinned but was never built by the registry, so those
+        calls fall back to the chain. Publishing the pin without saying that
+        would restate the issue's own failure in a new field."""
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_llm_config(
+                current_user=mock_admin_user, llm_provider=mock_llm_provider
+            )
+
+        rows = {row.role: row for row in result.role_routing}
+        assert "gemini" not in mock_llm_provider.registry.get_provider_status()
+        assert rows["chat"].provider_initialized is True
+        for role in ("multimodal", "synthesis", "classifier"):
+            assert rows[role].provider_initialized is False, role
+
+    @pytest.mark.asyncio
+    async def test_role_routing_carries_admin_override_provenance_in_cloud(
+        self, mock_admin_user, mock_llm_provider, mock_settings
+    ):
+        """A model written from the dashboard is reported as such on every
+        role that resolves through it — the anchor's row and the four that
+        inherit it."""
+        mock_settings.is_cloud = True
+        overrides = {"anthropic_model": "claude-3-5-sonnet-20241022"}
+
+        with (
+            patch(SETTINGS_PATCH, return_value=mock_settings),
+            patch(
+                "faultmaven.infrastructure.persistence.llm_config_repository.get_all_overrides",
+                new=AsyncMock(return_value=overrides),
+            ),
+        ):
+            result = await get_llm_config(
+                current_user=mock_admin_user, llm_provider=mock_llm_provider
+            )
+
+        rows = {row.role: row for row in result.role_routing}
+        assert rows["chat"].model_source == "admin-override"
+        assert rows["da"].model_source == "admin-override"
+        # The gemini pins resolve through a key nobody overrode.
+        assert rows["classifier"].model_source == "env-default"
+
+    @pytest.mark.asyncio
+    async def test_role_routing_is_read_only_in_standalone_and_cloud_alike(
+        self, mock_admin_user, mock_llm_provider, mock_settings
+    ):
+        """#1206's write half is deliberately deferred: role keys are not in
+        the override allowlist, so nothing on this surface can change them.
+        The read is offered in both deployments — standalone edits `.env` and
+        its PUT route 403s, which this does not touch."""
+        from faultmaven.config.llm_config_overrides import _ALLOWED_OVERRIDES
+
+        assert mock_settings.is_cloud is False
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_llm_config(
+                current_user=mock_admin_user, llm_provider=mock_llm_provider
+            )
+
+        assert result.config_readonly is True
+        assert result.role_routing
+        role_keys = {f"{task}_provider" for task in LLM_MODEL_TASKS} | {
+            f"{p}_{task}_model" for p in PROVIDER_NAMES for task in LLM_MODEL_TASKS
+        }
+        assert role_keys.isdisjoint(_ALLOWED_OVERRIDES)
 
     @pytest.mark.asyncio
     async def test_503_when_llm_not_available(self, mock_admin_user):

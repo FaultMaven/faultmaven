@@ -407,6 +407,62 @@ class LLMProviderDetail(BaseModel):
     avg_latency_ms: float = 0.0
 
 
+class LLMRoleRouting(BaseModel):
+    """Resolved routing for one capability role.
+
+    ``primary_provider`` alone does not describe what is running: three roles
+    ship pinned to a provider of their own and stay put when the anchor moves,
+    and the rest ship unset and follow it. A page showing only the anchor
+    reports a configuration that omits load-bearing routing (#1206).
+    """
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    role: str = Field(
+        description=(
+            "Capability role: chat, multimodal, synthesis, classifier, code, "
+            "da, knowledge, structured_output"
+        )
+    )
+    provider: str = Field(description="Provider this role's calls are routed to")
+    model: str = Field(
+        description=(
+            "Model this role runs on; empty string when that provider has no "
+            "model configured"
+        )
+    )
+    provider_source: str = Field(
+        description=(
+            "Where the provider came from: 'env-default' (this role's own key "
+            "is set), 'admin-override' (dashboard-written), or 'inherited' "
+            "(no role key — follows CHAT_PROVIDER and moves with it)"
+        )
+    )
+    model_source: str = Field(
+        description=(
+            "Where the model came from: 'env-default', 'admin-override', or "
+            "'unset' (no model configured for this provider)"
+        )
+    )
+    provider_key: str = Field(
+        description="Environment key carrying the provider decision, e.g. CLASSIFIER_PROVIDER"
+    )
+    model_key: str = Field(
+        description=(
+            "Environment key carrying the model decision, e.g. "
+            "GEMINI_CLASSIFIER_MODEL or GEMINI_MODEL; empty when unset. A "
+            "per-task key does not move when the provider's model is changed"
+        )
+    )
+    provider_initialized: bool = Field(
+        description=(
+            "The named provider was built by the registry. False means its "
+            "credential is missing, the routing is inert, and this role's "
+            "calls fall back to fallback_chain"
+        )
+    )
+
+
 class LLMConfigResponse(BaseModel):
     """LLM configuration and provider status response."""
 
@@ -418,6 +474,14 @@ class LLMConfigResponse(BaseModel):
     strict_mode: bool
     fallback_chain: List[str]
     providers: Dict[str, LLMProviderDetail]
+    role_routing: List[LLMRoleRouting] = Field(
+        default_factory=list,
+        description=(
+            "Resolved (provider, model) per capability role, with provenance. "
+            "Read-only: role routing is set in the environment and is not in "
+            "the dashboard's override allowlist."
+        ),
+    )
     config_sources: Dict[str, str] = Field(
         default_factory=dict,
         description=(
