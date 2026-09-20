@@ -104,8 +104,10 @@ its own state:
   remaining part is delivered or re-filed, citing the pull request and the
   re-filings; when a part still stands and was not re-filed, the agent edits
   the parent down to that part — title and body — and returns it to the
-  ready pile as an arrival, ranked against the current candidates, because
-  the old rank was earned by the larger claim. There is no third outcome:
+  ready pile as an arrival: it leaves the ranked head, which only the
+  *Propose* that follows writes, so that pass compares it against the
+  current candidates like any other arrival instead of leaving it at a rank
+  the larger claim earned. There is no third outcome:
   the parent either closes or gets smaller. Round 1 merged two of these,
   #1467 and #1468, and both parents — #1447 and #918 — had to be noticed
   and closed by hand.
@@ -269,6 +271,18 @@ of them are not ready: see *What escalates*.
 One lane per approved item, in its own worktree, autonomous. The gates under
 *Building* are not optional.
 
+**Once per round, though — this step is re-entered.** Step 0 routes an
+answered proposal back here whatever has already run, and an item its lane has
+built is still open and still ready, so the piles cannot tell "approved and not
+yet built" from "approved and built". The pull request can, and it costs no new
+state: *Settle the last round* will not start a round while an earlier one's is
+still open, so an open pull request on an approved item's lane branch is this
+round's work. It is a condition on the same dispatch predicate — which is what
+re-entry reads, rather than a rule of its own — and the item it skips is not
+dropped: it goes on to verification and review with the pull request it already
+has, which is also what makes the skip self-checking, since a branch someone
+else named alike is read there rather than quietly standing in for a lane.
+
 **No question is asked while building.** If a lane cannot deliver its item,
 the item is **pulled**: the lane stops, what stopped it is recorded on the
 issue — the question if there is one, otherwise the fact — the item returns
@@ -373,8 +387,8 @@ there because *Propose* is that body's only writer and because the head
 decides nothing on its own: membership is the label, so a name the dispatch
 predicate no longer admits — blocked, mid-move, pulled or closed — is skipped
 rather than obeyed. *Build* states it; note that the mid-move case is the one
-the ready query alone does not catch, which is why that predicate has two
-conditions and not one. The rule-4 tier is not written down, and needs not be:
+the ready query alone does not catch, which is why that predicate is more than
+the ready query. The rule-4 tier is not written down, and needs not be:
 "oldest first" is recoverable from the issues themselves at any moment, so the
 tier is the part of the pile that costs no bookkeeping. Three things move an
 item up out of its turn — a new priority label, another issue on the same
