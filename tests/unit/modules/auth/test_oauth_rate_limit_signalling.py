@@ -15,7 +15,7 @@ whichever limiter produced the result.
 import time
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import fakeredis.aioredis as fakeredis_aio
 import pytest
@@ -36,6 +36,9 @@ pytestmark = [pytest.mark.unit, pytest.mark.security]
 
 TOKEN_LIMIT = 5  # /token, requests per minute
 WINDOW = 60
+
+# An integral epoch, frozen for the one test that needs its arithmetic exact.
+_FROZEN = 2_000_000_000.0
 
 
 class _Peer:
@@ -80,16 +83,40 @@ class TestTheRefusalNamesTheLimitItEnforced:
         assert int(exc.headers["X-RateLimit-Reset"]) > 0
 
     async def test_reset_and_retry_after_name_one_instant(self):
-        """Two renderings of a single ``frees_at``, so they must reconcile."""
-        import time
+        """Two renderings of a single ``frees_at``, pinned exactly.
 
+        This assertion used to be ``abs(reset - (int(time.time()) +
+        retry_after)) <= 1`` against a clock read after the refusal. One second
+        of slack is not a rounding allowance here — it is the whole distance
+        between the two renderings, because ``Retry-After`` rounds the wait up
+        and the reset instant truncates. Any regression that moves the
+        timestamp by a second — a ``ceil`` where the code truncates, an
+        off-by-one — lands inside the tolerance and the test stays green.
+
+        So the window is planted rather than observed: the oldest entry is
+        ``WINDOW - 5.5`` seconds old against a frozen clock, which makes quota
+        free at a *fractional* instant. The two renderings of it then differ,
+        and each is pinned to its own exact value.
+        """
         limiter = OAuthRateLimiter(trusted_proxies=[])
+        for _ in range(TOKEN_LIMIT):
+            await limiter.check_rate_limit(_StubRequest(), "/token")
 
-        exc = await _refusal(limiter, _StubRequest())
+        from fastapi import HTTPException
 
-        retry_after = int(exc.headers["Retry-After"])
-        reset = int(exc.headers["X-RateLimit-Reset"])
-        assert abs(reset - (int(time.time()) + retry_after)) <= 1, (reset, retry_after)
+        with patch("time.time", lambda: _FROZEN):
+            for key, stamps in limiter._requests.items():
+                limiter._requests[key] = [_FROZEN - (WINDOW - 5.5)] * len(stamps)
+
+            with pytest.raises(HTTPException) as excinfo:
+                await limiter.check_rate_limit(_StubRequest(), "/token")
+
+        exc = excinfo.value
+        assert exc.status_code == 429
+        # Quota frees 5.5s from the frozen instant: the wait rounds that up,
+        # the timestamp truncates it, and both come from the one measurement.
+        assert exc.headers["Retry-After"] == "6"
+        assert exc.headers["X-RateLimit-Reset"] == str(int(_FROZEN) + 5)
 
     async def test_the_advertised_wait_is_bounded_by_the_window(self):
         """No sliding window of 60s can honestly ask for more than 60s."""
