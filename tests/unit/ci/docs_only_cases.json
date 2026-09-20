@@ -192,6 +192,322 @@
     "reference_api_dir": "docs/reference/api",
     "generated_spec": "docs/reference/api/openapi.json",
     "reference_prose": "docs/reference/llm-model-capabilities.md",
-    "executable_diff": "faultmaven/main.py"
-  }
+    "executable_diff": "faultmaven/main.py",
+    "pinned_documentation_directory": "docs/architecture",
+    "architecture_walker": "tests/unit/architecture/test_architecture_boundaries.py",
+    "unreadable_planted_source": "\nimport pathlib\n\nWALKED = pathlib.Path(__file__).resolve().parents[3] / \"docs\"\n\ndef test_every_document_is_titled():\n    for document in WALKED.rglob(\"*.md\"):\n        assert document.read_text().startswith(\"#\")\n"
+  },
+  "unreadable_note": [
+    "Planted modules for the refusal (#1549): a `tests/` module that builds a",
+    "documentation path the pin probe cannot read must force the suites, and",
+    "one that builds an unreadable path naming NO document must not. Sources",
+    "live here for the same reason the case table does -- the probe walks",
+    "every tests/**/*.py and collects its string literals, so a planted",
+    "`docs/...` path written inline in the test module would arm that",
+    "document for the whole repository. The probe parses no .json.",
+    "",
+    "Each case is run through `probe()` over a synthetic tests/ tree holding",
+    "the source plus the positive-control stand-in, so `fires` is measured",
+    "the way CI measures it rather than by calling the detector's internals."
+  ],
+  "unreadable_cases": [
+    {
+      "id": "var-at-the-end",
+      "source": "\nimport pathlib\nDOCS_DIR = pathlib.Path(__file__).resolve().parents[3] / \"docs\"\n\ndef test_every_document_is_titled(name):\n    assert (DOCS_DIR / name).exists()\n",
+      "fires": true,
+      "why": "`DOCS_DIR / name`, the commonest real shape and one ordinary refactor away"
+    },
+    {
+      "id": "var-at-the-end-from-a-fixture",
+      "source": "\ndef test_every_document_is_titled(docs_dir, name):\n    assert (docs_dir / name).exists()\n",
+      "fires": true,
+      "why": "the same shape with the root supplied by a fixture, so nothing resolves at all"
+    },
+    {
+      "id": "constant-root-then-a-var",
+      "source": "\nimport pathlib\n\ndef test_section(name):\n    root = pathlib.Path(__file__).resolve().parents[3]\n    assert (root / \"docs\" / name).exists()\n",
+      "fires": true,
+      "why": "the documentation root is spelled, the rest is not, and a one-component literal pins nothing beneath itself"
+    },
+    {
+      "id": "var-in-the-middle",
+      "source": "\nimport pathlib\n\ndef test_section(section):\n    root = pathlib.Path(__file__).resolve().parents[3]\n    assert (root / \"docs\" / section / \"index.md\").exists()\n",
+      "fires": true,
+      "why": "the tail is constant but the directory is not, so the walk recovers neither"
+    },
+    {
+      "id": "chain-split-across-statements",
+      "source": "\nimport pathlib\n\nROOT = pathlib.Path(__file__).resolve().parents[3]\nSECTION = ROOT / \"docs\"\nWALKED = SECTION / \"runbooks-design\"\n\ndef test_every_design_document_has_a_title():\n    assert list(WALKED.rglob(\"*.md\"))\n",
+      "fires": true,
+      "why": "the walk reads one expression, so a chain assembled over two statements recovers nothing"
+    },
+    {
+      "id": "os-path-join",
+      "source": "\nimport os\n\ndef test_section(root, name):\n    assert os.path.exists(os.path.join(root, \"docs\", name))\n",
+      "fires": true,
+      "why": "a different joining idiom, recovering nothing"
+    },
+    {
+      "id": "str-join",
+      "source": "\ndef test_section(root, name):\n    assert \"/\".join([root, \"docs\", name])\n",
+      "fires": true,
+      "why": "a different joining idiom, recovering nothing"
+    },
+    {
+      "id": "f-string",
+      "source": "\ndef test_section(root, name):\n    assert f\"{root}/docs/{name}.md\"\n",
+      "fires": true,
+      "why": "a different joining idiom, recovering nothing"
+    },
+    {
+      "id": "concatenation",
+      "source": "\ndef test_section(name):\n    assert \"docs\" + \"/\" + name\n",
+      "fires": true,
+      "why": "a different joining idiom, recovering nothing"
+    },
+    {
+      "id": "percent-formatting",
+      "source": "\ndef test_section(name):\n    assert \"docs/%s\" % name\n",
+      "fires": true,
+      "why": "a different joining idiom, recovering nothing"
+    },
+    {
+      "id": "str-format",
+      "source": "\ndef test_section(name):\n    assert \"docs/{}\".format(name)\n",
+      "fires": true,
+      "why": "a different joining idiom, recovering nothing"
+    },
+    {
+      "id": "multi-arg-path",
+      "source": "\nimport pathlib\n\ndef test_every_design_document_has_a_title():\n    assert list(pathlib.Path(\"docs\", \"runbooks-design\").rglob(\"*.md\"))\n",
+      "fires": true,
+      "why": "multi-argument Path is not division, so the walk sees two unrelated literals"
+    },
+    {
+      "id": "augmented-division",
+      "source": "\nimport pathlib\n\ndef test_section(name):\n    walked = pathlib.Path(__file__).resolve().parents[3]\n    walked /= \"docs\"\n    assert (walked / name).exists()\n",
+      "fires": true,
+      "why": "`/=` is an AugAssign, not a BinOp, so the chain walk never sees it"
+    },
+    {
+      "id": "glob-tail-loses-the-directory",
+      "source": "\nimport pathlib\n\ndef test_every_document_is_titled():\n    root = pathlib.Path(__file__).resolve().parents[3]\n    assert list(root.glob(str(root / \"docs\" / \"*.md\")))\n",
+      "fires": true,
+      "why": "the recovered text carries a glob, `_keep` drops it, and the directory goes with it"
+    },
+    {
+      "id": "a-bare-documentation-directory-handle",
+      "source": "\nimport pathlib\n\nWALKED = pathlib.Path(__file__).resolve().parents[3] / \"docs\"\n\ndef test_every_document_is_titled():\n    assert list(WALKED.rglob(\"*.md\"))\n",
+      "fires": true,
+      "why": "a handle on the documentation root itself: the probe cannot tell what is read through it"
+    },
+    {
+      "id": "the-claude-root",
+      "source": "\nimport pathlib\n\ndef test_agent_definitions(name):\n    root = pathlib.Path(__file__).resolve().parents[3]\n    assert (root / \".claude\" / name).exists()\n",
+      "fires": true,
+      "why": "the other root `classify` calls inert"
+    },
+    {
+      "id": "a-root-reached-through-an-alias",
+      "source": "\nSECTION = \"docs\"\n\ndef test_section(root, name):\n    assert (root / SECTION / name).exists()\n",
+      "fires": true,
+      "why": "the documentation root arrives through a name, which is evidence but not a recovery"
+    },
+    {
+      "id": "a-name-rebound-twice-resolves-to-nothing",
+      "source": "\nimport pathlib\n\nWALKED = pathlib.Path(\"docs/architecture\")\nWALKED = pathlib.Path(\"docs\")\n\ndef test_every_document_is_titled(name):\n    assert (WALKED / name).exists()\n",
+      "fires": true,
+      "why": "assign-once is the whole resolution rule: a rebound name must not discharge anything"
+    },
+    {
+      "id": "a-docish-name-rebound-twice",
+      "source": "\nimport pathlib\n\nDOCS_DIR = pathlib.Path(\"docs/architecture\")\nDOCS_DIR = pathlib.Path(\"docs\")\n\ndef test_every_document_is_titled(name):\n    assert (DOCS_DIR / name).exists()\n",
+      "fires": true,
+      "why": "the same, with the name spelled like documentation: neither spelling may discharge"
+    },
+    {
+      "id": "a-pinned-directory-with-an-unknown-tail",
+      "source": "\nimport pathlib\n\ndef test_key_documents_exist():\n    walked = pathlib.Path(\"docs/architecture\")\n    for name in [\"overview.md\", \"principles.md\"]:\n        assert (walked / name).exists()\n",
+      "fires": false,
+      "why": "THE shape on this tree today: the directory is spelled whole, so everything beneath it pins whatever the tail turns out to be"
+    },
+    {
+      "id": "a-fully-recovered-chain",
+      "source": "\nimport pathlib\n\ndef test_key_documents_exist():\n    root = pathlib.Path(__file__).resolve().parents[3]\n    assert (root / \"docs\" / \"architecture\").exists()\n",
+      "fires": false,
+      "why": "the shape the walk was built for"
+    },
+    {
+      "id": "a-glob-tail-under-a-pinned-directory",
+      "source": "\nimport pathlib\n\ndef test_every_document_is_titled():\n    root = pathlib.Path(__file__).resolve().parents[3]\n    assert list((root / \"docs\" / \"architecture\").glob(\"*.md\"))\n",
+      "fires": false,
+      "why": "the glob loses nothing when an ancestor already pins the subtree"
+    },
+    {
+      "id": "a-single-constant-naming-a-whole-document",
+      "source": "\nimport pathlib\n\ndef test_the_guide_lists_the_models():\n    root = pathlib.Path(__file__).resolve().parents[3]\n    assert (root / \"docs/getting-started/user-guide.md\").exists()\n",
+      "fires": false,
+      "why": "one component spelling the whole path is already collected verbatim by the literal walk"
+    },
+    {
+      "id": "an-unreadable-join-naming-no-document",
+      "source": "\nimport os\n\ndef test_evidence_path(root, name):\n    return os.path.join(root, \"evidence\", name)\n",
+      "fires": false,
+      "why": "THE control the scope rests on: unreadable, and none of this gate's business"
+    },
+    {
+      "id": "an-unreadable-f-string-naming-no-document",
+      "source": "\ndef test_turn_url(case_id, turn):\n    return f\"/api/v1/cases/{case_id}/turns/{turn}\"\n",
+      "fires": false,
+      "why": "the test tree is full of these; refusing on them would force the full suite on every docs-only diff"
+    },
+    {
+      "id": "an-unreadable-str-join-naming-no-document",
+      "source": "\ndef test_joined(parts):\n    return \"/\".join(parts)\n",
+      "fires": false,
+      "why": "the test tree is full of these too"
+    },
+    {
+      "id": "a-docish-name-that-is-not-a-path",
+      "source": "\ndef test_document_body(document_lines):\n    return \"\\n\".join(document_lines)\n",
+      "fires": false,
+      "why": "an identifier is evidence only for a PATH build, never for a text join"
+    },
+    {
+      "id": "arithmetic-on-a-docish-constant",
+      "source": "\nMAX_BULK_DOCUMENT_IDS = 5\n\ndef test_over_the_limit():\n    return MAX_BULK_DOCUMENT_IDS + 1\n",
+      "fires": false,
+      "why": "a live shape on this tree: `+` on a name containing 'document' is not a path"
+    },
+    {
+      "id": "the-api-documentation-url",
+      "source": "\ndef test_swagger_is_served(port):\n    return f\"http://127.0.0.1:{port}/docs\"\n",
+      "fires": false,
+      "why": "a live shape on this tree: FastAPI's own /docs endpoint is a URL, not a directory"
+    },
+    {
+      "id": "a-scratch-directory-under-tmp-path",
+      "source": "\ndef test_ingests_a_tree(tmp_path):\n    return tmp_path / \"docs\"\n",
+      "fires": false,
+      "why": "a temporary directory spelled like the documentation root names no tracked file"
+    },
+    {
+      "id": "a-scratch-tree-under-tmp-path-factory",
+      "source": "\ndef test_ingests_a_tree(tmp_path_factory, name):\n    base = tmp_path_factory.mktemp(\"kb\")\n    return base / \"docs\" / name\n",
+      "fires": false,
+      "why": "temporariness propagates through an assign-once name, or the shape above is only half covered"
+    },
+    {
+      "id": "a-template-directory-is-not-a-temporary",
+      "source": "\nimport pathlib\n\ndef test_templates():\n    template_dir = pathlib.Path(\"docs/architecture\")\n    return template_dir / \"x.md\"\n",
+      "fires": false,
+      "why": "the temporary rule matches underscore-separated parts, not substrings: 'template' must not read as 'temp'"
+    },
+    {
+      "id": "joinpath",
+      "source": "\nimport pathlib\n\ndef test_section(name):\n    root = pathlib.Path(__file__).resolve().parents[3]\n    assert root.joinpath(\"docs\", name).exists()\n",
+      "fires": true,
+      "why": "pathlib's other joiner, which is not division either"
+    },
+    {
+      "id": "single-arg-path-on-the-root",
+      "source": "\nimport pathlib\n\ndef test_every_document_is_titled():\n    for document in pathlib.Path(\"docs\").rglob(\"*.md\"):\n        assert document.read_text().startswith(\"#\")\n",
+      "fires": true,
+      "why": "a handle on the documentation root taken in one constructor call, with no composition downstream for the walk to see"
+    },
+    {
+      "id": "augmented-concatenation",
+      "source": "\ndef test_section(name):\n    where = \"docs\"\n    where += \"/\" + name\n    return where\n",
+      "fires": true,
+      "why": "`+=` is an AugAssign like `/=`, and text building loses the same directory"
+    },
+    {
+      "id": "single-arg-path-on-a-pinned-directory",
+      "source": "\nimport pathlib\n\ndef test_key_documents_exist():\n    assert pathlib.Path(\"docs/architecture\").exists()\n",
+      "fires": false,
+      "why": "a live shape on this tree: the whole path is spelled, so it pins and nothing is lost"
+    },
+    {
+      "id": "joinpath-with-no-document",
+      "source": "\ndef test_module_file(repo_root, module):\n    return repo_root.joinpath(*module.split(\".\"))\n",
+      "fires": false,
+      "why": "a live shape on this tree: joinpath over a dotted module name is not a documentation path"
+    },
+    {
+      "id": "a-root-spelled-across-two-segments",
+      "source": "\ndef test_section(root, name):\n    return root / (\"do\" + \"cs\") / name\n",
+      "fires": true,
+      "why": "the RUN carries the documentation root, not any one segment of it -- this shape raised StopIteration before the marker was computed from the run"
+    },
+    {
+      "id": "an-attribute-named-like-documentation",
+      "source": "\nclass TestDocuments:\n    def setup_method(self):\n        self.docs_dir = None\n\n    def test_section(self, name):\n        return self.docs_dir / name\n",
+      "fires": true,
+      "why": "an attribute reads like a name: this is `DOCS_DIR / name` wearing a self."
+    },
+    {
+      "id": "an-attribute-bound-to-documentation-elsewhere",
+      "source": "\nimport pathlib\n\nclass TestDocuments:\n    def setup_method(self):\n        self.walked = pathlib.Path(\"docs\")\n\n    def test_section(self, name):\n        return self.walked / name\n",
+      "fires": true,
+      "why": "the attribute is spelled like nothing in particular; the constructor call in the same module is what supplies the evidence"
+    }
+  ],
+  "join_note": [
+    "Components for the pathlib-join tests (#1549). Here, not inline, for the",
+    "same reason as everything else in this file: `docs/guides` written as a",
+    "Python literal in the test module arms every document under it for the",
+    "whole repository, and the self-pinning guard catches it -- which is how",
+    "this table got here."
+  ],
+  "join_cases": [
+    {
+      "spelled": [
+        "docs",
+        "guides"
+      ],
+      "joined": "docs/guides",
+      "why": "the ordinary case"
+    },
+    {
+      "spelled": [
+        "docs/",
+        "guides"
+      ],
+      "joined": "docs/guides",
+      "why": "a trailing slash is not a component boundary; `/`.join made docs//guides"
+    },
+    {
+      "spelled": [
+        "docs",
+        "/guides"
+      ],
+      "joined": "/guides",
+      "why": "an absolute component restarts the path, and _keep then drops it"
+    },
+    {
+      "spelled": [
+        "docs",
+        " guides"
+      ],
+      "joined": "docs/ guides",
+      "why": "whitespace is part of the name; components used to be stripped"
+    },
+    {
+      "spelled": [
+        "docs",
+        ".",
+        "guides"
+      ],
+      "joined": "docs/guides",
+      "why": "pathlib drops a bare dot"
+    },
+    {
+      "spelled": [
+        "docs",
+        "a//b"
+      ],
+      "joined": "docs/a/b",
+      "why": "a doubled separator inside one component collapses"
+    }
+  ]
 }
