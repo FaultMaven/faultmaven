@@ -19,6 +19,211 @@ permissions:
 
 jobs:
   # ============================================================================
+  # DOCS-ONLY DETECTION
+  # Answers one question for the heavy jobs below: does this pull request's
+  # diff contain a file that could change what they measure?
+  #
+  # A documentation-only pull request used to run three pytest suites and a
+  # Docker image build -- ~45 minutes, and on #1497 a `build` that hit its own
+  # 15-minute timeout and BLOCKED the merge on a two-file markdown diff (#1506).
+  #
+  # Shape matters here. `paths-ignore` on those jobs would be fewer lines, but
+  # a required check that never reports is treated as pending forever and the
+  # pull request can never merge -- strictly worse than the waste. A job
+  # skipped by an `if:` still publishes a check run, with conclusion `skipped`,
+  # which satisfies a required status check. So the filter is a job every heavy
+  # job declares a condition against, not a trigger filter.
+  #
+  # Pull requests only. A push to main still runs everything, because
+  # publish-docker.yml gates `:latest` on "CI/CD Pipeline" succeeding there and
+  # its comment says that gate covers the Dockerfile build; narrowing what main
+  # runs would quietly narrow that gate too.
+  # ============================================================================
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    name: Docs-Only Detection
+    outputs:
+      docs_only: ${{ steps.detect.outputs.docs_only }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          # Full history: the classification diffs against the pull request's
+          # merge base, which a shallow clone does not contain.
+          fetch-depth: 0
+
+      - name: Resolve the pull request's file list
+        id: diff
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          : > changed.txt
+
+          if [ "${EVENT_NAME}" != "pull_request" ]; then
+            echo "event '${EVENT_NAME}' is not a pull request"
+            echo "resolved=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            echo "::warning::base commit ${BASE_SHA} is not in this checkout"
+            echo "resolved=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! merge_base=$(git merge-base "${BASE_SHA}" HEAD); then
+            echo "::warning::no merge base between ${BASE_SHA} and HEAD"
+            echo "resolved=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # actions/checkout leaves HEAD at the merge ref, so this is the file
+          # list GitHub shows under "Files changed". A base sha that has gone
+          # stale only ADDS files, which can only move the answer towards
+          # "run everything".
+          git diff --name-only "${merge_base}" HEAD > changed.txt
+          echo "resolved=true" >> "$GITHUB_OUTPUT"
+          sed 's/^/  /' changed.txt
+
+      - name: Classify the diff
+        id: detect
+        env:
+          RESOLVED: ${{ steps.diff.outputs.resolved }}
+        # Python rather than shell because the second half of this is an AST
+        # walk. Stdlib only; no setup-python step, no dependency to pin.
+        run: |
+          python3 - <<'PY'
+          import ast
+          import os
+          import pathlib
+
+          output = os.environ.get("GITHUB_OUTPUT", "/dev/null")
+
+
+          def emit(value, why):
+              print(f"{why} -> docs_only={value}")
+              with open(output, "a", encoding="utf-8") as fh:
+                  fh.write(f"docs_only={value}\n")
+
+
+          if os.environ.get("RESOLVED") != "true":
+              emit("false", "the pull request's file list could not be resolved")
+              raise SystemExit(0)
+
+          changed = [
+              line.strip()
+              for line in pathlib.Path("changed.txt")
+              .read_text(encoding="utf-8")
+              .splitlines()
+              if line.strip()
+          ]
+          if not changed:
+              emit("false", "the diff is empty")
+              raise SystemExit(0)
+
+
+          def classify(path):
+              """A ROOTED allowlist, not a suffix match.
+
+              `*.md` anywhere would sweep in resources/knowledge/pack/**.md --
+              the shipped KB pack, which the Dockerfile COPYs and the ingestion
+              tests read. Only these roots hold files that reach neither pytest
+              nor the image: the Dockerfile COPYs requirements, pyproject,
+              faultmaven/, alembic/ and resources/, and none of them appear
+              below.
+              """
+              if path.startswith(".github/"):
+                  return "a workflow or action definition"
+              if path.startswith("docs/reference/api/"):
+                  return "a generated API artifact, not prose"
+              if path.startswith("docs/") or path.startswith(".claude/"):
+                  return None
+              if "/" not in path and path.endswith(".md"):
+                  return None
+              return "not documentation"
+
+
+          tests = pathlib.Path("tests")
+          if not tests.is_dir():
+              print("::error::tests/ is missing -- the pin probe cannot run")
+              raise SystemExit(1)
+
+          # Documentation a test READS is not inert: tests pin CLAUDE.md's
+          # migration head and its reasoning-intent call-site table, the user
+          # guide's Groq models, and the key files under docs/architecture/.
+          # Ask the test tree which paths those are instead of keeping a second
+          # list here that drifts silently -- a new pinning test re-arms the
+          # suites for its document simply by existing.
+          #
+          # String literals only. A plain grep over tests/ also matches the
+          # dozens of docstrings that merely CITE a document, which would call
+          # nearly every docs change executable and give back none of the time.
+          literals = set()
+          for source in sorted(tests.rglob("*.py")):
+              try:
+                  tree = ast.parse(source.read_text(encoding="utf-8", errors="replace"))
+              except SyntaxError:
+                  print(f"::error::cannot parse {source} -- refusing to classify")
+                  raise SystemExit(1)
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                      text = node.value.strip()
+                      if (
+                          4 <= len(text) <= 200
+                          and "*" not in text
+                          and not text.startswith(("/", "http"))
+                      ):
+                          literals.add(text)
+
+          # Positive control. This probe reports by finding nothing, and a probe
+          # pointed at the wrong tree reports the same way -- every document
+          # inert, every suite skipped. Two literals that exist today must still
+          # be found, or the probe is what changed and it refuses to answer.
+          for control in ("CLAUDE.md", "docs/architecture"):
+              if control not in literals:
+                  print(
+                      f"::error::the pin probe found no literal {control!r} under "
+                      "tests/ -- the probe is broken, refusing to classify"
+                  )
+                  raise SystemExit(1)
+
+
+          def pinned_by(path):
+              """Loose on purpose: a false match costs one full pipeline run, a
+              missed one merges a red main. Tests name a document by full path
+              (`docs/getting-started/user-guide.md`), by a tail they join onto a
+              root (`core-architecture/architectural-design-principles.md`), and
+              by the directory alone (`docs/architecture`)."""
+              for literal in literals:
+                  if literal == path:
+                      return literal
+                  if path.endswith("/" + literal):
+                      return literal
+                  if "/" in literal and path.startswith(literal + "/"):
+                      return literal
+              return None
+
+
+          verdict = "true"
+          for path in changed:
+              reason = classify(path)
+              if reason is not None:
+                  print(f"  {path}: {reason}")
+                  verdict = "false"
+                  continue
+              literal = pinned_by(path)
+              if literal is not None:
+                  print(f"  {path}: a test reads it (tests/ names {literal!r})")
+                  verdict = "false"
+                  continue
+              print(f"  {path}: inert")
+
+          emit(verdict, f"{len(changed)} changed file(s)")
+          PY
+
+  # ============================================================================
   # ENVIRONMENT SMOKE CHECK
   # Fast validation that the CI environment matches expectations.
   # Catches version drift, missing lockfiles, and setup issues before
@@ -148,7 +353,19 @@ jobs:
   # standalone config. Proves the core runs without the optional integrations.
   # ============================================================================
   test-standalone:
-    needs: [code-quality]
+    needs: [changes, code-quality]
+    # Skipped on a documentation-only diff (#1506). The condition is written
+    # out rather than left to the implicit needs-success gate because it has to
+    # fail SAFE: when `changes` fails, `docs_only` is the empty string, `'' !=
+    # 'true'` holds, and this job runs. Leaving the default gate in place would
+    # have skipped it instead -- and a skipped required check reads as passing,
+    # so a crashed detector would have merged a pull request with no tests run
+    # at all. `!cancelled()` is what lifts that default; `code-quality` is then
+    # re-stated explicitly so its gate is not lifted with it.
+    if: >-
+      ${{ !cancelled()
+      && needs.code-quality.result == 'success'
+      && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     # Anchored to the measured healthy cost, like Test Cloud below, and RAISED
     # when the suite grew into the previous anchor. History (#1450):
@@ -259,7 +476,19 @@ jobs:
   # boot the app, so it needs no Redis of its own.
   # ============================================================================
   test-cloud:
-    needs: [code-quality]
+    needs: [changes, code-quality]
+    # Skipped on a documentation-only diff (#1506). The condition is written
+    # out rather than left to the implicit needs-success gate because it has to
+    # fail SAFE: when `changes` fails, `docs_only` is the empty string, `'' !=
+    # 'true'` holds, and this job runs. Leaving the default gate in place would
+    # have skipped it instead -- and a skipped required check reads as passing,
+    # so a crashed detector would have merged a pull request with no tests run
+    # at all. `!cancelled()` is what lifts that default; `code-quality` is then
+    # re-stated explicitly so its gate is not lifted with it.
+    if: >-
+      ${{ !cancelled()
+      && needs.code-quality.result == 'success'
+      && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     # Anchored to the measured healthy cost, not aspiration: the last green
     # main runs took 19m20s and 18m39s, so 20 was within ~3% of the healthy
@@ -387,7 +616,19 @@ jobs:
   # skip themselves unless DATABASE_URL is a Postgres URL.
   # ============================================================================
   test-postgres:
-    needs: [code-quality]
+    needs: [changes, code-quality]
+    # Skipped on a documentation-only diff (#1506). The condition is written
+    # out rather than left to the implicit needs-success gate because it has to
+    # fail SAFE: when `changes` fails, `docs_only` is the empty string, `'' !=
+    # 'true'` holds, and this job runs. Leaving the default gate in place would
+    # have skipped it instead -- and a skipped required check reads as passing,
+    # so a crashed detector would have merged a pull request with no tests run
+    # at all. `!cancelled()` is what lifts that default; `code-quality` is then
+    # re-stated explicitly so its gate is not lifted with it.
+    if: >-
+      ${{ !cancelled()
+      && needs.code-quality.result == 'success'
+      && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     name: Test PostgreSQL Integration
@@ -649,6 +890,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [test-standalone, test-cloud, test-postgres, architecture-lint, api-contract-drift, test-packaging]
+    # No docs-only condition here on purpose. GitHub skips a job whose
+    # dependency was skipped, so the three suites above carry this one down
+    # with them -- and, just as important, carry it UP again when the
+    # detector fails and they run after all. An `if:` of its own keyed on
+    # `changes` would have to repeat all six results to stay fail-safe, and
+    # getting that list wrong is how a required check starts passing
+    # without having built anything (#1506).
 
     steps:
       - name: Checkout Repository
