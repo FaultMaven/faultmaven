@@ -183,7 +183,7 @@ and merged is settled as merged even where the round reported that item
 | the row | what you do |
 |---|---|
 | the issue is closed | nothing |
-| the issue is open, its pull request merged | close #<n> if every part it named is now delivered or re-filed, citing this pull request and the re-filings; otherwise edit #<n> down to the part that still stands — title and body — then `--add-label pile:ready` and `--remove-label pile:blocked`, because a round that reported this item `pulled` already moved it and "leave it ready" would leave it blocked. There is no third outcome |
+| the issue is open, its pull request merged | close #<n> if every part it named is now delivered or re-filed, citing this pull request and the re-filings; otherwise edit #<n> down to the part that still stands — title and body — then `--add-label pile:ready` and `--remove-label pile:blocked`, because a round that reported this item `pulled` already moved it and "leave it ready" would leave it blocked. An item edited down also **leaves the ranked head**: step 2 writes that body and does not carry the name into it, so the proposal compares it against the current candidates like any other arrival. There is no third outcome |
 | the round reported it `pulled` | `--add-label pile:blocked`, then `--remove-label pile:ready`. The pull did this when it happened; doing it again is a no-op, and doing it *now* is what repairs a label the pull failed to write. Say nothing more — the pull already recorded what stopped it. The row may name no pull request at all, because a lane pulled mid-build opened none |
 | the issue is open, its pull request closed unmerged | the owner abandoned it — comment that the work was built and the pull request closed unmerged, link it, then the same two label edits; the next proposal asks whether to build it another way or close it. Do not guess why |
 
@@ -324,19 +324,36 @@ owner pinned and the rule-4 slot, neither of which is in the head. The head is
 their order, not their membership.
 
 Dispatch them in the order the ranked head gives,
-**skipping any the ready query does not return, and any it returns that
-carries a second `pile:` label** — the ready query being
-`gh issue list --state open --label pile:ready`. Two conditions, because the
-query cannot express the second: an item mid-move carries both labels and
-`--label pile:ready` still returns it.
+**skipping any the ready query does not return, any it returns that carries a
+second `pile:` label, and any this step has already built** — the ready query
+being `gh issue list --state open --label pile:ready`, and "already built"
+being an open pull request on this item's lane branch:
 
-That is one predicate and it is the only one. It is a query rather than a test
-on a name, which is what lets it cover both ways an approved item stops being
+```bash
+# the <prefix>/<n>-<slug> branch convention this step mandates, below
+gh pr list --state open --json number,url,headRefName \
+  --jq '.[] | select(.headRefName | test("/<n>-"))'
+```
+
+Three conditions, because the query expresses only the first: an item mid-move
+carries both labels and `--label pile:ready` still returns it, and an item
+whose lane has delivered stays open and singly-labelled until the owner merges.
+
+That is one predicate and it is the only one — a re-entry into this step reads
+it rather than a rule of its own. It is a query rather than a test on a name,
+which is what lets it cover the three ways an approved item stops being
 dispatchable: a pull earlier in this step or in a previous invocation of it
 (the item gained `pile:blocked`, and between the two label commands it carries
-**both** — still `pile:ready`, and still not dispatchable), and an item
-delivered and closed by a previous round (labels survive closing, so only
-`--state open` excludes it).
+**both** — still `pile:ready`, and still not dispatchable), an item delivered
+and closed by a previous round (labels survive closing, so only `--state open`
+excludes it), and an item a lane has already built this round — which the open
+pull request identifies because step 1 does not let a round start while a
+previous round's is still open. **Skipped for that third reason is not
+dropped**: the item joins the verify-and-review pass below carrying the pull
+request it has, exactly as a returned lane would. (A feature lane opens none,
+so this does not reach one — its spec is a comment, which a re-run can no more
+recognise as its own than the abandonment comment, and one duplicate is the
+price.)
 
 One subagent per approved item, each with a self-contained prompt carrying:
 the issue and its full text, the ruling if it had one, what "done" means, and
