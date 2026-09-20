@@ -88,12 +88,20 @@ from faultmaven.modules.knowledge.api.platform_tier import (
     require_global_authoring_allowed,
 )
 
+# Every route below declares the gate TWICE: once on the decorator's
+# ``dependencies=[...]``, where FastAPI solves it ahead of every handler
+# parameter, and once as ``current_user`` where the body reads the principal.
+# The decorator copy is what makes an anonymous caller's answer a 401 rather
+# than ``_get_conversion_service``'s 503 (#1494); the parameter copy costs
+# nothing, because FastAPI caches a dependency per request. Removing either is
+# a behaviour change.
+
 # =============================================================================
 # POST /knowledge/convert
 # =============================================================================
 
 
-@router.post("/convert", status_code=201)
+@router.post("/convert", status_code=201, dependencies=[Depends(_require_auth)])
 async def convert_document(
     file: UploadFile = File(...),
     scope: str = Form(...),
@@ -246,7 +254,7 @@ async def convert_document(
 # =============================================================================
 
 
-@router.get("/conversions")
+@router.get("/conversions", dependencies=[Depends(_require_auth)])
 async def list_conversions(
     limit: int = Query(default=20, le=100),
     offset: int = Query(default=0, ge=0),
@@ -266,7 +274,7 @@ async def list_conversions(
 # =============================================================================
 
 
-@router.get("/drafts")
+@router.get("/drafts", dependencies=[Depends(_require_auth)])
 async def list_all_drafts(
     service: ConversionService = Depends(_get_conversion_service),
     current_user: DevUser = Depends(_require_auth),
@@ -280,7 +288,7 @@ async def list_all_drafts(
 # =============================================================================
 
 
-@router.post("/scan")
+@router.post("/scan", dependencies=[Depends(_require_auth)])
 async def scan_for_runbooks(
     service: ConversionService = Depends(_get_conversion_service),
     current_user: DevUser = Depends(_require_auth),
@@ -309,7 +317,7 @@ async def scan_for_runbooks(
 # =============================================================================
 
 
-@router.get("/conversions/{conversion_id}")
+@router.get("/conversions/{conversion_id}", dependencies=[Depends(_require_auth)])
 async def get_conversion(
     conversion_id: str,
     service: ConversionService = Depends(_get_conversion_service),
@@ -330,7 +338,10 @@ async def get_conversion(
 # =============================================================================
 
 
-@router.put("/conversions/{conversion_id}/drafts/{draft_id}")
+@router.put(
+    "/conversions/{conversion_id}/drafts/{draft_id}",
+    dependencies=[Depends(_require_auth)],
+)
 async def update_draft(
     conversion_id: str,
     draft_id: str,
@@ -370,7 +381,7 @@ class BatchVerifyRequest(BaseModel):
     draft_ids: list[BatchDraftRef] = Field(min_length=1, max_length=100)
 
 
-@router.post("/drafts/verify-batch")
+@router.post("/drafts/verify-batch", dependencies=[Depends(_require_auth)])
 async def verify_batch(
     body: BatchVerifyRequest,
     service: ConversionService = Depends(_get_conversion_service),
@@ -391,7 +402,10 @@ async def verify_batch(
 # =============================================================================
 
 
-@router.post("/conversions/{conversion_id}/drafts/{draft_id}/verify")
+@router.post(
+    "/conversions/{conversion_id}/drafts/{draft_id}/verify",
+    dependencies=[Depends(_require_auth)],
+)
 async def verify_draft(
     conversion_id: str,
     draft_id: str,
@@ -431,7 +445,11 @@ async def verify_draft(
 # =============================================================================
 
 
-@router.delete("/conversions/{conversion_id}/drafts/{draft_id}", status_code=204)
+@router.delete(
+    "/conversions/{conversion_id}/drafts/{draft_id}",
+    status_code=204,
+    dependencies=[Depends(_require_auth)],
+)
 async def delete_draft(
     conversion_id: str,
     draft_id: str,
@@ -485,7 +503,7 @@ class RunbookCreateRequest(BaseModel):
     team_id: Optional[str] = None
 
 
-@router.post("/runbooks/create", status_code=201)
+@router.post("/runbooks/create", status_code=201, dependencies=[Depends(_require_auth)])
 async def create_runbook_manually(
     body: RunbookCreateRequest,
     service: ConversionService = Depends(_get_conversion_service),
@@ -543,7 +561,7 @@ async def create_runbook_manually(
 # =============================================================================
 
 
-@router.get("/conversions/by-case/{case_id}")
+@router.get("/conversions/by-case/{case_id}", dependencies=[Depends(_require_auth)])
 async def get_conversion_by_case(
     case_id: str,
     service: ConversionService = Depends(_get_conversion_service),
