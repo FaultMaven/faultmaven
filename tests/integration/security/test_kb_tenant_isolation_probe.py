@@ -10,11 +10,12 @@ KB has, the application layer is the whole of it.
 
 What actually isolates a tenant here
 ------------------------------------
-Not ``_enforce_scope_invariant``. That guard checks whether the ``where`` clause
-mentions **any** key in ``SCOPE_FILTER_KEYS`` — it never asks whose tenant the
-clause names, and Attack 3 below shows filters that satisfy it while returning
-the entire corpus. The guard buys exactly one thing: a query that forgot to
-filter at all cannot run.
+Not ``_require_kb_filter_present``. That check asks whether the ``where``
+clause mentions **any** key in ``SCOPE_FILTER_KEYS`` — it never asks whose
+tenant the clause names, and Attack 3 below shows filters that satisfy it while
+returning the entire corpus. It buys exactly one thing: a query that forgot to
+filter at all cannot run. Its name and docstring say only that as of #1167;
+the vector-layer tenant control it used to be mistaken for is #1168.
 
 The real control is :func:`build_kb_scope_filter`, whose output is keyed on the
 caller's own identifiers and nothing else::
@@ -70,7 +71,7 @@ the tool params when present
 predicate
 ``resolve_shared_kb_ids`` skips ``usable_tenant_id``            ``test_the_share_arm_fails_closed_...`` (both
                                                                 params) + ``test_the_standalone_sentinel_...``
-``_enforce_scope_invariant`` returns immediately                ``test_the_guard_does_refuse_...`` (all four
+``_require_kb_filter_present`` returns immediately               ``test_the_guard_does_refuse_...`` (all four
                                                                 params)
 ``_meta_scope`` stamps ``personal`` rather than deriving        ``test_what_each_stated_tier_means_...``
 a write-side tier default returns (any of the six sites)        ``test_kb_write_scope_is_explicit.py`` (unit)
@@ -110,11 +111,12 @@ executable description of what breaks if it stops holding. F3 was latent when
 this probe was written and has since been fixed (#1166); its tests now pin the
 fix rather than the defect:
 
-* **F1 — the guard cannot see tenancy.** ``{"scope": {"$ne": "x"}}`` and
-  ``{"owner_id": {"$nin": ["x"]}}`` satisfy ``_enforce_scope_invariant`` and
-  return every tenant's chunks (Attack 3). Nothing but call-site convention
+* **F1 — the presence check cannot see tenancy.** ``{"scope": {"$ne": "x"}}``
+  and ``{"owner_id": {"$nin": ["x"]}}`` satisfy ``_require_kb_filter_present``
+  and return every tenant's chunks (Attack 3). Nothing but call-site convention
   keeps such a clause out of the store; the AST pin is what makes that
-  convention checkable.
+  convention checkable. #1167 corrected the check's name and docstring to claim
+  only what it checks; the tenant control itself is #1168.
 * **F2 — the shared-id arm is unauthenticated at the vector layer.** Any item id
   that reaches ``shared_kb_ids`` is read verbatim, foreign tenant or not
   (Attack 2). The single tenant predicate protecting it is one SQL ``WHERE``.
@@ -725,7 +727,7 @@ async def test_the_system_sentinel_is_a_real_owner_arm_not_an_inert_one(store):
 # =============================================================================
 # Attack 3 — the guard the premise names
 #
-# `_enforce_scope_invariant` is a KEY-PRESENCE check. These cases establish
+# `_require_kb_filter_present` is a KEY-PRESENCE check. These cases establish
 # exactly what it does and does not buy, so nobody mistakes it for the control.
 # =============================================================================
 
@@ -776,15 +778,19 @@ async def test_the_system_sentinel_is_a_real_owner_arm_not_an_inert_one(store):
 async def test_the_scope_guard_admits_filters_that_name_someone_else(
     store, label, where, expected
 ):
-    """F1: the guard asks *whether* a scope key is present, never *whose*.
+    """F1: the check asks *whether* a scope key is present, never *whose*.
 
-    Each clause here passes ``_enforce_scope_invariant`` and returns content
+    Each clause here passes ``_require_kb_filter_present`` and returns content
     the notional caller has no claim to — the last two return the entire
     corpus, chunks with no scope metadata included. No live caller can build
     one (``test_every_kb_read_filter_originates_from_build_kb_scope_filter``
     is what keeps that true), so this is the shape of the hole, not a hole.
+
+    This is the corrected claim the check now makes of itself (#1167): a
+    filter is *present*, never that it is *scoped*. The vector-layer tenant
+    control is #1168.
     """
-    store._enforce_scope_invariant(KB_COLLECTION, where)  # does not raise
+    store._require_kb_filter_present(KB_COLLECTION, where)  # does not raise
     assert await _ids(store, where) == expected, label
 
 
@@ -1119,12 +1125,12 @@ def test_the_unfiltered_kb_readers_stay_id_only():
 
     ``list_parent_document_ids`` issues ``collection.get(include=[])`` over the
     whole collection, with no ``where`` and no call to
-    ``_enforce_scope_invariant``. That is legitimate: the bootstrap reconcile
+    ``_require_kb_filter_present``. That is legitimate: the bootstrap reconcile
     pass (``bootstrap/kb_init.py``) compares the vector index against the
     ``knowledge_items`` rows, at boot, with no principal in hand — there is no
-    tenant to scope to. It is safe for one reason only, and it is not the scope
-    guard: ``include=[]`` returns **ids and nothing else**, so no chunk text and
-    no metadata crosses the boundary.
+    tenant to scope to. It is safe for one reason only, and it is not the
+    presence check: ``include=[]`` returns **ids and nothing else**, so no chunk
+    text and no metadata crosses the boundary.
 
     That reason is a two-character argument, which is why it is pinned. Widening
     any of these to ``include=["documents", "metadatas"]`` would turn an id

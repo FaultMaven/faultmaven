@@ -6,9 +6,11 @@ All scopes (global, team, personal) share one collection with metadata-based
 scope filtering. This is distinct from CaseVectorStore, which prefixes "case_"
 and is designed for ephemeral per-case evidence collections.
 
-Scope safety invariant: queries against faultmaven_kb MUST include a scope
-filter in the `where` clause. Unscoped queries are rejected with ValueError
-to prevent cross-tenant data leaks.
+Filter-presence check: a query against faultmaven_kb MUST name at least one
+scope key in its `where` clause or it is rejected with ValueError. That is a
+presence check and not a tenant check — see `_require_kb_filter_present`. The
+tenant control is `build_kb_scope_filter`; giving ChromaDB a tenant dimension
+of its own is #1168.
 
 Hybrid search: Two-stage retrieval + reranking pipeline:
   Stage 1 — Recall: Casts a wide net with two sequential retrieval arms that
@@ -120,10 +122,19 @@ KB_COLLECTION = "faultmaven_kb"
 # — so that corpus statistics are never derived from another tenant's runbooks.
 _GLOBAL_TIER = {"scope": "global"}
 
-# Keys that indicate a scope filter is present in a where clause. Team
-# visibility is no longer a metadata key — it is resolved to an id allowlist
-# (parent_document_id ∈ {...}) from the share table (ADR-013 §D4). The KB read
-# filter always carries `scope` (the global arm), so the guard still bites.
+# The keys `_require_kb_filter_present` looks for: a KB `where` clause naming
+# none of them is refused. Membership means a key CAN carry scope, never that a
+# clause using one is scoped — the check is presence only.
+# `build_kb_scope_filter` draws its arms from three of these
+# (`scope`/`owner_id`/`parent_document_id`), and
+# `test_the_guards_key_set_is_the_read_filters_key_set` pins this set as a
+# superset of the read filter's. Team visibility is no longer a metadata key —
+# it is resolved to an id allowlist (parent_document_id ∈ {...}) from the share
+# table (ADR-013 §D4). `organization_id` is the odd one out: nothing stamps it
+# into vector metadata and no read filter names it (ADR-017 makes it billing
+# attribution, not a visibility predicate). Left in deliberately — dropping a
+# key narrows what the check accepts, which is a behaviour change, and #1167
+# was a naming fix.
 SCOPE_FILTER_KEYS = {"scope", "owner_id", "organization_id", "parent_document_id"}
 
 # Common English stop words for term overlap scoring
@@ -261,14 +272,15 @@ class KnowledgeVectorStore(BaseExternalClient):
     """Vector store for the unified KB collection (faultmaven_kb).
 
     All KB scopes (global, team, personal) share one ChromaDB collection.
-    Scope isolation is enforced via metadata filtering at query time.
+    Which rows a caller may read is decided by the metadata filter it passes.
 
-    **Scope safety invariant:** Queries against faultmaven_kb MUST include
-    a scope filter (one of ``SCOPE_FILTER_KEYS``) in the `where` clause.
-    Unscoped queries raise ValueError to prevent cross-tenant data leaks.
-    This converts a fail-open risk into a fail-closed guarantee.
+    **Filter-presence check:** a query against faultmaven_kb MUST name one of
+    ``SCOPE_FILTER_KEYS`` in its `where` clause — see
+    :meth:`_require_kb_filter_present`, which checks that a filter is *present*
+    and not that it is *scoped*. It is not the tenant control; the tenant
+    control is ``build_kb_scope_filter`` (#1168 is the vector-layer one).
 
-    Case evidence collections (case_{case_id}) are exempt from this check
+    Case evidence collections (case_{case_id}) are exempt from the check
     since they are already scoped by case ownership.
     """
 
@@ -404,21 +416,35 @@ class KnowledgeVectorStore(BaseExternalClient):
             )
             raise
 
-    def _enforce_scope_invariant(
+    def _require_kb_filter_present(
         self, collection_name: str, where: Optional[Dict[str, Any]]
     ) -> None:
-        """Reject unscoped queries against the KB collection.
+        """Refuse a KB query whose `where` clause names no scope key.
 
-        The unified KB collection contains documents from all scopes
-        (global, team, personal). Querying it without a scope filter
-        would leak data across tenants. This invariant makes that
-        impossible — unscoped queries crash loudly instead of silently
-        returning cross-tenant data.
+        A **presence** check, and only that: it asks whether the clause
+        mentions one of ``SCOPE_FILTER_KEYS``, never what the clause does with
+        it. ``{"scope": {"$ne": "no-such-scope"}}`` names a scope key and
+        returns the entire corpus, and it passes here. It has to: the store
+        sees a dict and has no principal to compare it against.
+
+        So this is **not** the tenant control, and it guarantees nothing about
+        cross-tenant reads. What it buys is narrow and real — *a query that
+        forgot to filter at all cannot run.* Isolation itself comes from
+        ``build_kb_scope_filter``, whose output is keyed on the caller's own
+        identifiers, plus the AST pin that every filtered KB read derives its
+        clause from it. Giving ChromaDB a tenant dimension of its own —
+        stamping ``enterprise_id`` into chunk metadata and conjuncting it on
+        read — is **#1168**, and that is the control this check is sometimes
+        mistaken for.
+
+        Exactly where the line falls is exercised against a live ChromaDB in
+        ``tests/integration/security/test_kb_tenant_isolation_probe.py``
+        (Attack 3).
 
         Case evidence collections (case_*) are exempt.
         """
         if collection_name != KB_COLLECTION:
-            return  # Not the KB collection — no scope check needed
+            return  # Not the KB collection — no filter check needed
 
         if not where:
             raise ValueError(
@@ -476,11 +502,13 @@ class KnowledgeVectorStore(BaseExternalClient):
             List of matching documents with content, metadata, and scores.
 
         Raises:
-            ValueError: If querying faultmaven_kb without a scope filter.
+            ValueError: If a faultmaven_kb query's `where` clause names no
+                key from ``SCOPE_FILTER_KEYS`` — a presence check, not a
+                tenant check (see :meth:`_require_kb_filter_present`).
             KnowledgeBaseError: If the embedding model is unavailable. NOT an
                 empty result — see :meth:`_embed_query_or_raise`.
         """
-        self._enforce_scope_invariant(collection_name, where)
+        self._require_kb_filter_present(collection_name, where)
 
         # Embed BEFORE entering call_external: the embedding is a local model
         # call, not the ChromaDB round-trip that the retry/circuit-breaker
@@ -603,7 +631,7 @@ class KnowledgeVectorStore(BaseExternalClient):
         Returns:
             Top-k results sorted by reranked score.
         """
-        self._enforce_scope_invariant(collection_name, where)
+        self._require_kb_filter_present(collection_name, where)
 
         # Hard filter mode: inject context_metadata into the where clause
         if filter_mode == "hard" and context_metadata:

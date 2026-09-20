@@ -20,7 +20,7 @@ Each cross-cutting topic has one canonical document. Other documents reference i
 
 | Topic | Canonical |
 | ----- | --------- |
-| 3-tier scope model (Global / Team / Personal) + scope safety invariant | [knowledge-base-architecture.md](./knowledge-base-architecture.md) |
+| 3-tier scope model (Global / Team / Personal) + the KB filter-presence check | [knowledge-base-architecture.md](./knowledge-base-architecture.md) |
 | Single-collection design (`faultmaven_kb`) + tier scoping | [knowledge-base-architecture.md](./knowledge-base-architecture.md) |
 | Ingestion paths (bootstrap vs verify), atomicity, idempotency | [kb-ingestion-architecture.md](./kb-ingestion-architecture.md) |
 | KB pack format, `KB_PACK_DIR`, build (toolkit), offline delivery (local/cloud) | [kb-pack-architecture.md](./kb-pack-architecture.md) |
@@ -37,7 +37,7 @@ Each cross-cutting topic has one canonical document. Other documents reference i
 
 ## Documents in this directory
 
-- **[Knowledge Base Architecture](./knowledge-base-architecture.md)** — KB storage design: single-collection (`faultmaven_kb`), 3-tier scope model, scope safety invariant, access control, ingestion workflow.
+- **[Knowledge Base Architecture](./knowledge-base-architecture.md)** — KB storage design: single-collection (`faultmaven_kb`), 3-tier scope model, the filter-presence check, access control, ingestion workflow.
 - **[KB Ingestion Architecture](./kb-ingestion-architecture.md)** — The two ingestion paths (startup bootstrap for pre-deployed runbooks; conversion-drafts verify flow for case-generated/uploaded content), atomicity contract, idempotency, and the bug history that drove the current design.
 - **[Vector Retrieval Architecture](./vector-retrieval-architecture.md)** — Shared vector infrastructure: BGE-M3 embeddings, two-stage hybrid search, four-signal reranker, KB vs. evidence chunking strategies, implementation status.
 - **[Runbook Content Architecture](./runbook-content-architecture.md)** — What goes INTO the KB: v4 template (per-Cause subsections), taxonomy, quality gates, lifecycle governance, RAG-optimized authoring rules.
