@@ -29,7 +29,13 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
     SQLiteCaseRepository,
 )
 
-from .conftest import generate_case_id, measure_min_latency
+from .conftest import (
+    assert_latency_within,
+    assert_throughput_at_least,
+    calibration_scale,
+    generate_case_id,
+    measure_min_latency,
+)
 
 
 @pytest.mark.benchmark
@@ -68,9 +74,9 @@ class TestCaseCreationPerformance:
         assert measured.result is not None
         # Kept, not re-anchored: measurement puts this operation two orders of
         # magnitude under the wall. Generous is not the same as broken.
-        assert (
-            measured.best < 1.000
-        ), f"Case creation latency {measured.report()} exceeds 1000ms target"
+        assert_latency_within(
+            measured.best, 1.000, "Case creation latency", measured.report()
+        )
         print(f"\n  Case creation latency: {measured.report()}")
 
     @pytest.mark.asyncio
@@ -115,9 +121,9 @@ class TestCaseCreationPerformance:
         measured = await measure_min_latency(_save_batch, samples=3, setup=_fresh_batch)
 
         throughput = num_cases / measured.best
-        assert (
-            throughput > 50
-        ), f"Case creation throughput {throughput:.1f} cases/sec below 50/sec target"
+        assert_throughput_at_least(
+            throughput, 50, "Case creation throughput", measured.report()
+        )
         print(
             f"\n  Batch creation throughput: {throughput:.1f} cases/sec "
             f"({num_cases} cases, batch {measured.report()})"
@@ -155,9 +161,9 @@ class TestCaseRetrievalPerformance:
         measured = await measure_min_latency(lambda: case_repository.get(case_id))
 
         assert measured.result is not None
-        assert (
-            measured.best < 0.100
-        ), f"Case retrieval latency {measured.report()} exceeds 100ms target"
+        assert_latency_within(
+            measured.best, 0.100, "Case retrieval latency", measured.report()
+        )
         print(f"\n  Case retrieval latency: {measured.report()}")
 
     @pytest.mark.asyncio
@@ -194,9 +200,9 @@ class TestCaseRetrievalPerformance:
         result, _total = measured.result
 
         assert len(result) > 0
-        assert (
-            measured.best < 0.150
-        ), f"List cases latency {measured.report()} exceeds 150ms target"
+        assert_latency_within(
+            measured.best, 0.150, "List cases latency", measured.report()
+        )
         print(f"\n  List cases latency: {measured.report()} ({len(result)} cases)")
 
 
@@ -239,9 +245,9 @@ class TestCaseUpdatePerformance:
         measured = await measure_min_latency(lambda: case_repository.save(case))
 
         assert measured.result is not None
-        assert (
-            measured.best < 0.150
-        ), f"Case update latency {measured.report()} exceeds 150ms target"
+        assert_latency_within(
+            measured.best, 0.150, "Case update latency", measured.report()
+        )
         print(f"\n  Case update latency: {measured.report()}")
 
 
@@ -291,10 +297,11 @@ class TestCaseSearchPerformance:
 
         # Use generous threshold to avoid flaky failures under load
         # (when running alongside the full test suite)
-        assert (
-            measured.best < 1.0
-        ), f"Search latency {measured.report()} exceeds 1000ms threshold"
-        if measured.best >= 0.200:
+        assert_latency_within(measured.best, 1.0, "Search latency", measured.report())
+        # The 200ms product target is a warning here, not the gate, and it
+        # is scaled like every other budget so the warning means the same
+        # thing on a slow runner as on a fast one.
+        if measured.best >= 0.200 * calibration_scale():
             import warnings
 
             warnings.warn(

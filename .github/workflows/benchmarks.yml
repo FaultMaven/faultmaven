@@ -6,8 +6,11 @@ on:
   push:
     branches: [main]
   schedule:
-    # Run weekly on Sundays at 2 AM UTC
-    - cron: '0 2 * * 0'
+    # Nightly at 2 AM UTC. This is the ABSOLUTE-target run (see the
+    # nightly-absolute job) — the pull-request run asserts calibrated
+    # budgets, so wall-clock against the product target needs a schedule of
+    # its own to be asked anywhere.
+    - cron: '0 2 * * *'
   workflow_dispatch:
     inputs:
       run_full_suite:
@@ -15,15 +18,23 @@ on:
         required: false
         default: 'false'
         type: boolean
+      absolute_targets:
+        description: 'Run the nightly ABSOLUTE-target job instead of the calibrated one'
+        required: false
+        default: false
+        type: boolean
 
 # Default-deny for the GITHUB_TOKEN. The benchmarks job overrides this with
-# the writes it needs to post its PR comment; memory-benchmarks only reads.
+# the writes it needs to post its PR comment; the other two only read.
 permissions:
   contents: read
 
 jobs:
   benchmarks:
     name: Run Performance Benchmarks
+    # Calibrated budgets (#908). Skipped on the schedule, where
+    # nightly-absolute answers the wall-clock question instead.
+    if: github.event_name != 'schedule' && !inputs.absolute_targets
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -75,6 +86,13 @@ jobs:
         if: always()
         run: |
           echo "## Performance Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          # The calibration the budgets were scaled by (#908). Without it a
+          # red run cannot be read as "slow runner" or "real regression"
+          # without downloading an artifact, which is the habit that let a
+          # 50%-flaky gate train everyone to treat red as noise.
+          grep -h 'benchmark calibration:' benchmark_output.txt \
+            >> $GITHUB_STEP_SUMMARY || true
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Test | Status | Details |" >> $GITHUB_STEP_SUMMARY
           echo "|------|--------|---------|" >> $GITHUB_STEP_SUMMARY
@@ -154,6 +172,63 @@ jobs:
               repo: context.repo.repo,
               body: summary
             });
+
+  nightly-absolute:
+    name: Absolute Wall-Clock Targets (nightly)
+    # The other half of #908. The pull-request job asserts budgets scaled by
+    # an in-process calibration, which is what stops a below-median runner
+    # reading as a regression. That correction is deliberately one-way, so
+    # nothing on a pull request ever measures the raw product target any
+    # more — this job does, once a night, where a red is a signal to read
+    # rather than a merge to re-run. It gates no pull request by
+    # construction: it only runs on the schedule (or on an explicit
+    # dispatch).
+    if: github.event_name == 'schedule' || inputs.absolute_targets
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[test]
+
+      - name: Run benchmarks against raw targets
+        run: |
+          # See the note on the benchmarks job: without pipefail the `| tee`
+          # masks pytest's exit code and this gate never fails.
+          set -o pipefail
+          pytest tests/benchmarks/ \
+            -m benchmark \
+            --tb=short \
+            -v \
+            --json-report \
+            --json-report-file=benchmark_results_absolute.json \
+            --no-cov \
+            2>&1 | tee benchmark_output_absolute.txt
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          SKIP_SERVICE_CHECKS: 'true'
+          # The one thing that makes this job different from the other one.
+          FM_BENCHMARK_ABSOLUTE: '1'
+
+      - name: Upload absolute-target results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: benchmark-results-absolute
+          path: |
+            benchmark_results_absolute.json
+            benchmark_output_absolute.txt
+          retention-days: 90
 
   memory-benchmarks:
     name: Memory Usage Benchmarks

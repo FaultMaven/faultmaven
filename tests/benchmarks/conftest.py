@@ -3,9 +3,15 @@
 Provides database fixtures optimized for performance benchmarking with
 minimal overhead from logging and other instrumentation.
 
-Also provides ``measure_min_latency`` — the sampling helper every wall-clock
-assertion in this suite goes through. See its docstring for why the statistic
-is the minimum.
+Also provides the two halves every wall-clock assertion in this suite goes
+through:
+
+* ``measure_min_latency`` — the sampling helper. See its docstring for why
+  the statistic is the minimum.
+* ``assert_latency_within`` / ``assert_throughput_at_least`` — the single
+  comparison against a product target, scaled by the machine-throughput
+  calibration in ``calibration.py``. That module's docstring carries the
+  measurement and the reasoning (#908).
 """
 
 import asyncio
@@ -52,6 +58,8 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
 # stopped importing it — ruff cannot flag it here (conftest.py has F401 in
 # per-file-ignores, and CI's rule selection excludes F401 anyway).
 from tests.utils import generate_case_id, generate_enterprise_id
+
+from .calibration import calibration_scale, describe_calibration, scale_was_used
 
 #: Timed samples taken per measured operation, after one untimed warm-up call.
 #:
@@ -196,6 +204,81 @@ async def measure_min_latency(
             timings.append(elapsed)
 
     return Measurement(tuple(timings), result)
+
+
+def assert_latency_within(
+    observed_seconds: float,
+    target_seconds: float,
+    label: str,
+    detail: str = "",
+) -> None:
+    """Compare one latency against its product target, calibration-scaled.
+
+    ‼ This is the ONLY place in the suite where a measured latency is
+    compared against a threshold. Before #908 the comparison was written out
+    three times — ``measured.best < 0.200`` inline here,
+    ``stats["p95_ms"] < 200`` inline in ``test_case_service_operations``, and
+    a bool returned by ``report_benchmark`` in
+    ``test_investigation_session_service_operations`` — which is why
+    calibrating "the benchmark assertion" meant finding all three. Route new
+    sites here; ``tests/unit/ci/test_benchmark_calibration.py`` scans the
+    suite and fails if a fourth spelling appears.
+
+    Args:
+        observed_seconds: The measured statistic, in seconds.
+        target_seconds: The product target, in seconds. Written as the
+            number in the test's docstring, NOT pre-scaled.
+        label: What was measured, for the failure message.
+        detail: Optional extra context (a distribution, a row count).
+    """
+    scale = calibration_scale()
+    budget = target_seconds * scale
+    suffix = f" {detail}" if detail else ""
+    assert observed_seconds < budget, (
+        f"{label}: {observed_seconds * 1000:.1f}ms exceeds "
+        f"{budget * 1000:.1f}ms budget "
+        f"({target_seconds * 1000:.0f}ms target x {scale:.2f} calibration)"
+        f"{suffix}"
+    )
+
+
+def assert_throughput_at_least(
+    observed_per_second: float,
+    target_per_second: float,
+    label: str,
+    detail: str = "",
+) -> None:
+    """Throughput counterpart of ``assert_latency_within``.
+
+    Throughput is 1/latency, so a machine running ``scale`` times slower
+    clears a floor that is ``scale`` times LOWER. Dividing rather than
+    multiplying is the whole difference, and getting it backwards would
+    tighten the floor on exactly the runners this exists to relieve.
+    """
+    scale = calibration_scale()
+    floor = target_per_second / scale
+    suffix = f" {detail}" if detail else ""
+    assert observed_per_second > floor, (
+        f"{label}: {observed_per_second:.1f}/s below "
+        f"{floor:.1f}/s floor "
+        f"({target_per_second:.0f}/s target / {scale:.2f} calibration)"
+        f"{suffix}"
+    )
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
+    """Put the calibration in the job log, not only in a passing test's stdout.
+
+    ``benchmark_output.txt`` is what the workflow tees, summarises and
+    comments on a pull request, and pytest does not show a passing test's
+    stdout there. Without this line a red benchmark run gives a reader no way
+    to tell a slow runner from a real regression without downloading a
+    90-day artifact — which is the habit #908 is about breaking.
+    """
+    if not scale_was_used():
+        return
+    terminalreporter.write_sep("-", "benchmark calibration")
+    terminalreporter.write_line(describe_calibration())
 
 
 @pytest.fixture(scope="session")

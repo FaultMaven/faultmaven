@@ -39,6 +39,8 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
     SQLiteCaseRepository,
 )
 
+from .conftest import assert_latency_within
+
 # ============================================================
 # Fixtures
 # ============================================================
@@ -162,19 +164,25 @@ def calculate_p95(timings: List[float]) -> float:
     return sorted_timings[min(index, len(sorted_timings) - 1)]
 
 
-def report_benchmark(name: str, timings: List[float], target_p95_ms: float):
-    """Report benchmark results."""
+def report_benchmark(name: str, timings: List[float], target_p95_ms: float) -> None:
+    """Print the distribution, then assert the p95 against its target.
+
+    The one comparison site in this module. It used to RETURN a bool that
+    each of the nine call sites then re-asserted with its own message, so
+    the rule lived in ten places; #908 needed the machine-throughput
+    calibration applied to all of them, and asserting here is what makes
+    that one edit. ``assert_latency_within`` owns the comparison.
+    """
     p50 = statistics.median(timings)
     p95 = calculate_p95(timings)
     mean = statistics.mean(timings)
 
-    status = "PASS" if p95 <= target_p95_ms else "FAIL"
     print(f"\n{name}:")
     print(f"  Mean: {mean:.2f}ms")
     print(f"  P50: {p50:.2f}ms")
-    print(f"  P95: {p95:.2f}ms (target: {target_p95_ms}ms) [{status}]")
+    print(f"  P95: {p95:.2f}ms (target: {target_p95_ms}ms)")
 
-    return p95 <= target_p95_ms
+    assert_latency_within(p95 / 1000.0, target_p95_ms / 1000.0, f"{name} p95")
 
 
 # ============================================================
@@ -215,8 +223,7 @@ class TestCreateSessionBenchmarks:
             )
             timings.append(duration)
 
-        passed = report_benchmark("Create Session", timings, 200)
-        assert passed, f"P95 exceeded 200ms target"
+        report_benchmark("Create Session", timings, 200)
 
 
 # ============================================================
@@ -249,8 +256,7 @@ class TestGetSessionBenchmarks:
             )
             timings.append(duration)
 
-        passed = report_benchmark("Get Session", timings, 100)
-        assert passed, f"P95 exceeded 100ms target"
+        report_benchmark("Get Session", timings, 100)
 
 
 # ============================================================
@@ -284,8 +290,7 @@ class TestUpdateSessionBenchmarks:
             )
             timings.append(duration)
 
-        passed = report_benchmark("Update Session", timings, 150)
-        assert passed, f"P95 exceeded 150ms target"
+        report_benchmark("Update Session", timings, 150)
 
 
 # ============================================================
@@ -331,8 +336,7 @@ class TestPauseResumeSessionBenchmarks:
             )
             timings.append(duration)
 
-        passed = report_benchmark("Pause Session", timings, 150)
-        assert passed, f"P95 exceeded 150ms target"
+        report_benchmark("Pause Session", timings, 150)
 
     @pytest.mark.asyncio
     async def test_benchmark_resume_session(
@@ -374,8 +378,7 @@ class TestPauseResumeSessionBenchmarks:
             )
             timings.append(duration)
 
-        passed = report_benchmark("Resume Session", timings, 150)
-        assert passed, f"P95 exceeded 150ms target"
+        report_benchmark("Resume Session", timings, 150)
 
 
 # ============================================================
@@ -422,8 +425,7 @@ class TestCompleteSessionBenchmarks:
             )
             timings.append(duration)
 
-        passed = report_benchmark("Complete Session", timings, 150)
-        assert passed, f"P95 exceeded 150ms target"
+        report_benchmark("Complete Session", timings, 150)
 
 
 # ============================================================
@@ -464,8 +466,7 @@ class TestListSessionsBenchmarks:
             )
             timings.append(duration)
 
-        passed = report_benchmark("List Sessions (50)", timings, 300)
-        assert passed, f"P95 exceeded 300ms target"
+        report_benchmark("List Sessions (50)", timings, 300)
 
 
 # ============================================================
@@ -499,8 +500,7 @@ class TestCheckBudgetBenchmarks:
             )
             timings.append(duration)
 
-        passed = report_benchmark("Check Budget Exceeded", timings, 100)
-        assert passed, f"P95 exceeded 100ms target"
+        report_benchmark("Check Budget Exceeded", timings, 100)
 
 
 # ============================================================
@@ -542,5 +542,4 @@ class TestGetStatisticsBenchmarks:
             )
             timings.append(duration)
 
-        passed = report_benchmark("Get Statistics (100 sessions)", timings, 500)
-        assert passed, f"P95 exceeded 500ms target"
+        report_benchmark("Get Statistics (100 sessions)", timings, 500)

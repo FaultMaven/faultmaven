@@ -33,7 +33,11 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
 )
 from tests.utils import make_org_knowledge_item
 
-from .conftest import generate_enterprise_id, measure_min_latency
+from .conftest import (
+    assert_latency_within,
+    generate_enterprise_id,
+    measure_min_latency,
+)
 
 
 def create_valid_embedding(value: float = 0.1) -> list:
@@ -91,9 +95,9 @@ class TestItemCreationPerformance:
         )
 
         assert measured.result is not None
-        assert (
-            measured.best < 0.200
-        ), f"Item creation latency {measured.report()} exceeds 200ms target"
+        assert_latency_within(
+            measured.best, 0.200, "Item creation latency", measured.report()
+        )
         print(f"\n  Item creation latency: {measured.report()}")
 
     @pytest.mark.asyncio
@@ -117,9 +121,12 @@ class TestItemCreationPerformance:
 
         assert measured.result is not None
         assert measured.result.has_embedding()
-        assert (
-            measured.best < 0.200
-        ), f"Item with embedding creation latency {measured.report()} exceeds 200ms target"
+        assert_latency_within(
+            measured.best,
+            0.200,
+            "Item with embedding creation latency",
+            measured.report(),
+        )
         print(f"\n  Item with embedding creation latency: {measured.report()}")
 
     @pytest.mark.asyncio
@@ -151,9 +158,12 @@ class TestItemCreationPerformance:
 
         assert measured.result is not None
         assert measured.result.metadata is not None
-        assert (
-            measured.best < 0.200
-        ), f"Item with metadata creation latency {measured.report()} exceeds 200ms target"
+        assert_latency_within(
+            measured.best,
+            0.200,
+            "Item with metadata creation latency",
+            measured.report(),
+        )
         print(f"\n  Item with metadata creation latency: {measured.report()}")
 
     @pytest.mark.asyncio
@@ -191,9 +201,12 @@ class TestItemCreationPerformance:
 
         throughput = batch_size / measured.best
         # Increased threshold to account for CI/hardware variability of 100 sequential commits
-        assert (
-            measured.best < 2.0
-        ), f"Bulk creation of {batch_size} items took {measured.report()}, exceeds 2000ms target"
+        assert_latency_within(
+            measured.best,
+            2.0,
+            f"Bulk creation of {batch_size} items",
+            measured.report(),
+        )
         print(
             f"\n  Bulk creation throughput: {throughput:.1f} items/sec "
             f"({batch_size} items, batch {measured.report()})"
@@ -223,9 +236,9 @@ class TestItemRetrievalPerformance:
         )
 
         assert measured.result is not None
-        assert (
-            measured.best < 0.100
-        ), f"Item retrieval latency {measured.report()} exceeds 100ms target"
+        assert_latency_within(
+            measured.best, 0.100, "Item retrieval latency", measured.report()
+        )
         print(f"\n  Item retrieval latency: {measured.report()}")
 
 
@@ -275,9 +288,9 @@ class TestItemSearchPerformance:
         )
 
         assert len(measured.result) > 0
-        assert (
-            measured.best < 0.400
-        ), f"Tag search latency {measured.report()} exceeds 400ms target"
+        assert_latency_within(
+            measured.best, 0.400, "Tag search latency", measured.report()
+        )
         print(
             f"\n  Tag search (match_any) latency: {measured.report()} "
             f"({len(measured.result)} results)"
@@ -322,9 +335,9 @@ class TestItemSearchPerformance:
 
         assert len(measured.result) == 500
         # Increased threshold to account for CI/hardware variability
-        assert (
-            measured.best < 0.400
-        ), f"Tag search (match_all) latency {measured.report()} exceeds 400ms target"
+        assert_latency_within(
+            measured.best, 0.400, "Tag search (match_all) latency", measured.report()
+        )
         print(
             f"\n  Tag search (match_all) latency: {measured.report()} "
             f"({len(measured.result)} results)"
@@ -361,9 +374,9 @@ class TestItemUpdatePerformance:
 
         assert measured.result is not None
         assert measured.result.title == "Updated Title"
-        assert (
-            measured.best < 0.150
-        ), f"Item update latency {measured.report()} exceeds 150ms target"
+        assert_latency_within(
+            measured.best, 0.150, "Item update latency", measured.report()
+        )
         print(f"\n  Item update latency: {measured.report()}")
 
     @pytest.mark.asyncio
@@ -394,9 +407,9 @@ class TestItemUpdatePerformance:
 
         assert measured.result is not None
         assert measured.result.has_embedding()
-        assert (
-            measured.best < 0.150
-        ), f"Embedding update latency {measured.report()} exceeds 150ms target"
+        assert_latency_within(
+            measured.best, 0.150, "Embedding update latency", measured.report()
+        )
         print(f"\n  Embedding update latency: {measured.report()}")
 
 
@@ -433,9 +446,12 @@ class TestItemEmbeddingOperationsPerformance:
         )
 
         assert len(measured.result) == 50
-        assert (
-            measured.best < 0.150
-        ), f"Get items without embeddings latency {measured.report()} exceeds 150ms target"
+        assert_latency_within(
+            measured.best,
+            0.150,
+            "Get items without embeddings latency",
+            measured.report(),
+        )
         print(
             f"\n  Get items without embeddings latency: {measured.report()} "
             f"({len(measured.result)} items)"
@@ -473,9 +489,9 @@ class TestItemHelpfulnessPerformance:
         )
 
         assert len(measured.result) > 0
-        assert (
-            measured.best < 0.200
-        ), f"Get most helpful latency {measured.report()} exceeds 200ms target"
+        assert_latency_within(
+            measured.best, 0.200, "Get most helpful latency", measured.report()
+        )
         print(
             f"\n  Get most helpful latency: {measured.report()} "
             f"({len(measured.result)} items)"
@@ -531,9 +547,9 @@ class TestItemMixedWorkloadPerformance:
 
         measured = await measure_min_latency(_lifecycle, setup=_fresh_item)
 
-        assert (
-            measured.best < 0.500
-        ), f"Lifecycle workload latency {measured.report()} exceeds 500ms target"
+        assert_latency_within(
+            measured.best, 0.500, "Lifecycle workload latency", measured.report()
+        )
         print(f"\n  Item lifecycle workload latency: {measured.report()}")
 
     @pytest.mark.asyncio
@@ -590,7 +606,7 @@ class TestItemMixedWorkloadPerformance:
 
         measured = await measure_min_latency(_browse)
 
-        assert (
-            measured.best < 0.800
-        ), f"Browsing workload latency {measured.report()} exceeds 800ms target"
+        assert_latency_within(
+            measured.best, 0.800, "Browsing workload latency", measured.report()
+        )
         print(f"\n  Knowledge base browsing workload latency: {measured.report()}")
