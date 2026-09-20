@@ -67,6 +67,7 @@ from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.infrastructure.persistence.db_compat import dialect_insert
 from faultmaven.infrastructure.persistence.models import TokenRevocationModel
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+    CorruptRevocationEntry,
     ITokenRevocationStore,
     SequentialRevocationState,
 )
@@ -75,6 +76,41 @@ from faultmaven.modules.auth.domain.services.jwt_token_generator import (
 #: a column CHECK constraint names the same two strings.
 _JTI_SCOPE = "jti"
 _USER_SCOPE = "user"
+
+
+def _watermark_seconds(raw, *, field: str = "watermark") -> int:
+    """A stored watermark as whole seconds, or refuse (#1478).
+
+    **One helper for all three parse sites** — the Redis arm's
+    ``is_user_revoked`` and the SQL arm's ``is_user_revoked`` and
+    ``revocation_state`` — because the rule is one rule and a second copy is
+    the half that gets missed. All three previously spelled
+    ``int(float(raw))`` inline, and a corrupt value therefore raised a bare
+    ``ValueError``/``TypeError`` that the request path could not tell from a
+    bug in our own arithmetic.
+
+    ``float`` then ``int``, so a watermark written by a pre-fraction build
+    (``"1700000000"``) reads identically to one written by this one, and the
+    revocation rule stays ``iat <= watermark`` at whole-second granularity.
+
+    The ``try`` is deliberately this small. Everything inside it is the
+    interpretation of a value that came out of storage, so a failure here can
+    only mean the stored value is corrupt — which is what lets
+    :class:`CorruptRevocationEntry` be classified as a store read failure
+    without the classifier having to trust a broad exception type.
+
+    Raises:
+        CorruptRevocationEntry: The stored value is not readable as a number.
+            ``TypeError`` as well as ``ValueError``: a ``NULL`` column gives
+            ``int(float(None))``, which is the same corruption by another
+            route.
+    """
+    try:
+        if isinstance(raw, bytes):
+            raw = raw.decode()
+        return int(float(raw))
+    except (TypeError, ValueError) as exc:
+        raise CorruptRevocationEntry(raw, field=field) from exc
 
 
 class RedisTokenRevocationStore(SequentialRevocationState, ITokenRevocationStore):
@@ -135,18 +171,13 @@ class RedisTokenRevocationStore(SequentialRevocationState, ITokenRevocationStore
         raw = await self.redis.get(key)
         if raw is None:
             return False
-        if isinstance(raw, bytes):
-            raw = raw.decode()
-        # A malformed watermark raises, and the caller's error posture
-        # decides. Both paths refuse now (#1478 for the request path, always
-        # for generator validation); a ``ValueError`` is deliberately not in
-        # ``AuthService.STORE_READ_FAILURES``, so the request path refuses it
-        # as an unclassified error rather than labelling a corrupt value a
-        # storage fault. Either is preferable to silently guessing here.
-        #
-        # `float` then `int`, so a watermark written by a pre-fraction build
-        # ("1700000000") reads identically to one written by this one.
-        return issued_at <= int(float(raw))
+        # A malformed watermark refuses, as ``CorruptRevocationEntry`` — the
+        # request path reports it as REVOCATION_STATE_UNKNOWN and the
+        # generators fail closed on it like any other error (#1478). Either
+        # is preferable to silently guessing at a corrupt value here. The
+        # decode lives inside the helper for the same reason the parse does:
+        # a body that is not valid UTF-8 is corruption too.
+        return issued_at <= _watermark_seconds(raw, field="watermark")
 
     #: Delete the watermark only if it is strictly older than ARGV[1].
     #:
@@ -326,11 +357,11 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
             row = result.first()
             if row is None:
                 return False
-            # Floored to whole seconds, exactly as the Redis arm does: the
-            # revocation rule is ``iat <= watermark`` at second granularity,
-            # and the fraction exists only so
-            # ``clear_user_revocation_if_before`` can order two instants.
-            return issued_at <= int(float(row[0]))
+            # Floored to whole seconds, exactly as the Redis arm does — the
+            # same helper, so the two arms cannot drift on either the rule or
+            # what a corrupt value does. A NULL ``revoked_at`` lands here as
+            # ``None`` and refuses rather than raising a bare TypeError.
+            return issued_at <= _watermark_seconds(row[0], field="watermark")
 
     async def revocation_state(self, jti, user_id, issued_at):
         """Both arms in ONE session and ONE query (see the base class).
@@ -382,8 +413,13 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
                     token_revoked = True
                 elif issued_at is not None:
                     # Floored to whole seconds, the same rule ``is_user_revoked``
-                    # applies — one comparison, spelled once per arm.
-                    user_revoked = issued_at <= int(float(revoked_at))
+                    # applies — one comparison, spelled once per arm. THIS is
+                    # the site the authenticated request path reaches, so it is
+                    # the one where a corrupt row used to produce a bare
+                    # ValueError/TypeError and a generic 401 (#1478).
+                    user_revoked = issued_at <= _watermark_seconds(
+                        revoked_at, field="watermark"
+                    )
             if token_revoked:
                 return True, False
             return False, user_revoked

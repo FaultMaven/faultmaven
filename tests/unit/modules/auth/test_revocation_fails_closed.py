@@ -19,6 +19,12 @@ What this module pins, in the order the failure travels:
    server, so the exception each produces is the one production would see.
    Standalone is SQLite and cloud is Redis, and a fix verified on one says
    nothing about the other.
+1b. **A stored value that will not parse refuses the same way**, on both arms
+   and by both routes into it (non-numeric text -> ``ValueError``, a ``NULL``
+   column -> ``TypeError``). A row that exists and cannot be interpreted is
+   the purest "we could not find out", and it used to answer a generic 401 —
+   literally the sentence "your token was revoked" about a value nobody could
+   read.
 2. **The distinction is real**: the refusal is its own exception type carrying
    its own error code, so "your token was revoked" and "we could not find out"
    are not the same answer.
@@ -37,6 +43,7 @@ from __future__ import annotations
 
 import errno
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -44,6 +51,7 @@ import pytest
 import redis.exceptions as redis_exceptions
 import sqlalchemy.exc as sa_exc
 from fastapi import HTTPException
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from faultmaven.api.exception_handlers import REVOCATION_STATE_UNKNOWN
@@ -52,6 +60,7 @@ from faultmaven.api.middleware.tenant_scope import bind_request_enterprise_conte
 from faultmaven.api.v1.auth_dependencies import (
     get_current_user_optional as get_current_dev_user_optional,
 )
+from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.auth.domain.services import auth_service as auth_service_module
 from faultmaven.modules.auth.domain.services.auth_service import (
     STORE_READ_FAILURES,
@@ -61,6 +70,7 @@ from faultmaven.modules.auth.domain.services.auth_service import (
     TokenRevocationError,
 )
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+    CorruptRevocationEntry,
     ITokenRevocationStore,
     SequentialRevocationState,
 )
@@ -262,6 +272,241 @@ class TestBothDeploymentsRefuse:
             await service.verify_token_with_revocation_check(token)
 
 
+@asynccontextmanager
+async def _sqlite_store(tmp_path):
+    """``SqlTokenRevocationStore`` over a real, migrated SQLite file."""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'live.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+
+    @asynccontextmanager
+    async def factory():
+        session = sessions()
+        try:
+            yield session
+            await session.commit()
+        finally:
+            await session.close()
+
+    try:
+        yield SqlTokenRevocationStore(session_factory=factory), factory
+    finally:
+        await engine.dispose()
+
+
+async def _write_corrupt_watermark(factory, subject: str, value) -> None:
+    """Put an uninterpretable ``revoked_at`` on a LIVE watermark row.
+
+    Raw SQL on purpose. SQLite's typing is dynamic, so a text body in a float
+    column is a state the file can genuinely reach — a partial write, a
+    hand-edited row, a restore from a differently-typed dump — and the ORM
+    would coerce it away before it ever hit the column.
+    """
+    async with factory() as session:
+        await session.execute(
+            text(
+                "INSERT INTO token_revocations (scope, subject, revoked_at, "
+                "expires_at) VALUES ('user', :s, :v, :e)"
+            ),
+            {
+                "s": subject,
+                "v": value,
+                "e": datetime.now(timezone.utc) + timedelta(hours=1),
+            },
+        )
+
+
+class TestACorruptStoredValueIsAlsoUnknown:
+    """A row that exists and cannot be read is "we could not find out" (#1478).
+
+    This is the case the first cut of #1478 left unclassified. The catch in
+    ``_is_revoked`` is narrowed to storage families, and a bare
+    ``ValueError``/``TypeError`` is deliberately not one of them — so a corrupt
+    watermark fell through and the mandatory auth dependency answered a generic
+    401, which is the sentence "your token was revoked" about a value nobody
+    could read. Exactly the confusion the ruling's distinct code exists to
+    remove.
+
+    Fixed at the PARSE, not in the tuple: the store raises
+    ``CorruptRevocationEntry`` from a three-line ``try`` around
+    ``int(float(...))``, where the context proves the cause. Both routes into
+    the corruption are covered, because catching only ``ValueError`` would
+    leave a ``NULL`` column arriving as ``TypeError`` still unclassified.
+    """
+
+    async def test_the_standalone_sqlite_store_refuses_a_text_watermark(self, tmp_path):
+        """The ``ValueError`` route, through the batched query the request
+        path actually calls (``revocation_state``)."""
+        async with _sqlite_store(tmp_path) as (store, factory):
+            await _write_corrupt_watermark(factory, USER_ID, "not-a-number")
+            service = _auth_service(store)
+            token = _token(service)
+
+            with pytest.raises(RevocationStateUnknownError) as exc_info:
+                await service.verify_token_with_revocation_check(token)
+
+        assert exc_info.value.kind == "CorruptRevocationEntry"
+        assert isinstance(exc_info.value.__cause__, CorruptRevocationEntry)
+
+    async def test_the_standalone_sqlite_store_refuses_a_null_watermark(self, tmp_path):
+        """The ``TypeError`` route — ``int(float(None))``.
+
+        The half a ``ValueError``-only catch would have missed, which is why
+        it is a test and not a line in a docstring.
+
+        The table is built BY HAND with ``revoked_at`` nullable, because the
+        model declares it ``nullable=False`` and a schema this code created
+        therefore cannot hold a NULL — the first cut of this test tried and
+        SQLite refused the insert. A schema this code did NOT create can hold
+        one, and that is not hypothetical: #828's whole premise is the
+        standalone deployment that upgraded its image instead of wiping,
+        whose ``token_revocations`` does not match the model. So the guard is
+        pinned where it is actually reachable — against a database we did not
+        write, which is the only kind that can present this value.
+        """
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'old.db'}")
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "CREATE TABLE token_revocations ("
+                        "  scope TEXT NOT NULL,"
+                        "  subject TEXT NOT NULL,"
+                        "  revoked_at REAL,"
+                        "  expires_at TIMESTAMP NOT NULL,"
+                        "  created_at TIMESTAMP,"
+                        "  PRIMARY KEY (scope, subject))"
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO token_revocations (scope, subject, "
+                        "revoked_at, expires_at) VALUES ('user', :s, NULL, :e)"
+                    ),
+                    {
+                        "s": USER_ID,
+                        "e": datetime.now(timezone.utc) + timedelta(hours=1),
+                    },
+                )
+
+            sessions = async_sessionmaker(engine, expire_on_commit=False)
+
+            @asynccontextmanager
+            async def factory():
+                session = sessions()
+                try:
+                    yield session
+                finally:
+                    await session.close()
+
+            service = _auth_service(SqlTokenRevocationStore(session_factory=factory))
+            token = _token(service)
+
+            with pytest.raises(RevocationStateUnknownError) as exc_info:
+                await service.verify_token_with_revocation_check(token)
+        finally:
+            await engine.dispose()
+
+        assert exc_info.value.kind == "CorruptRevocationEntry"
+        assert isinstance(exc_info.value.__cause__.__cause__, TypeError), (
+            "the TypeError half of the parse catch did not fire — a "
+            "ValueError-only catch would leave this unclassified"
+        )
+
+    async def test_the_cloud_redis_store_refuses_a_text_watermark(self):
+        """The cloud arm, with the body the #769 crafted-jti analysis names.
+
+        A watermark key holding the literal ``"revoked"`` is the value that
+        analysis says a namespace collision would write; the namespaces are
+        separated so it cannot be written that way any more, but the read has
+        to answer sensibly whatever put it there.
+        """
+        import fakeredis.aioredis as fakeredis_aio
+
+        redis = fakeredis_aio.FakeRedis(decode_responses=True)
+        store = RedisTokenRevocationStore(redis, key_prefix="revoked:token:")
+        await redis.set(f"revoked:token:user:{USER_ID}", "revoked")
+
+        service = _auth_service(store)
+        token = _token(service)
+
+        with pytest.raises(RevocationStateUnknownError) as exc_info:
+            await service.verify_token_with_revocation_check(token)
+
+        assert exc_info.value.kind == "CorruptRevocationEntry"
+
+    async def test_it_is_counted_with_its_own_kind(self, tmp_path):
+        """Distinguishable in the metric too, not only in the status code."""
+        async with _sqlite_store(tmp_path) as (store, factory):
+            await _write_corrupt_watermark(factory, USER_ID, "not-a-number")
+            service = _auth_service(store)
+            token = _token(service)
+
+            with patch.object(
+                auth_service_module, "revocation_state_unknown_total"
+            ) as counter:
+                with pytest.raises(RevocationStateUnknownError):
+                    await service.verify_token_with_revocation_check(token)
+
+        counter.labels.assert_called_once_with(kind="CorruptRevocationEntry")
+        counter.labels.return_value.inc.assert_called_once_with()
+
+    async def test_a_readable_watermark_on_the_same_row_still_revokes(self, tmp_path):
+        """The positive control for this class.
+
+        A test that refuses every watermark — including a perfectly good one —
+        would pass every assertion above while having broken revocation
+        outright.
+        """
+        async with _sqlite_store(tmp_path) as (store, _factory):
+            service = _auth_service(store)
+            token = _token(service)
+            claims = await service.verify_token_with_revocation_check(token)
+            assert claims["sub"] == USER_ID
+
+            await store.revoke_user_tokens_before(USER_ID, claims["iat"] + 1, ttl=3600)
+            with pytest.raises(TokenRevocationError):
+                await service.verify_token_with_revocation_check(token)
+
+    async def test_the_request_path_answers_the_distinct_503(self, tmp_path):
+        """End to end, because the whole point is what an operator SEES.
+
+        The domain exception is only half the delivery: the ruling's criterion
+        is that "your token was revoked" and "we could not find out" stop
+        looking identical at the boundary. So this drives the real corrupt
+        store through the real mandatory auth dependency and checks the status
+        and the error code, not the exception type.
+        """
+        async with _sqlite_store(tmp_path) as (store, factory):
+            await _write_corrupt_watermark(factory, USER_ID, "not-a-number")
+            service = _auth_service(store)
+            token = _token(service)
+
+            with pytest.raises(HTTPException) as exc_info:
+                await get_current_user(
+                    request_with_authorization(f"Bearer {token}"),
+                    credentials=None,
+                    auth_service=service,
+                )
+
+        _assert_is_the_distinct_refusal(exc_info.value)
+
+    async def test_the_direct_per_user_read_refuses_too(self, tmp_path):
+        """``is_user_revoked`` is the third parse site.
+
+        The request path goes through ``revocation_state``, so this one is
+        only reachable from the contract suite and the sequential mixin — but
+        it parses the same column, and a helper applied to two sites out of
+        three is exactly the shape that drifts.
+        """
+        async with _sqlite_store(tmp_path) as (store, factory):
+            await _write_corrupt_watermark(factory, USER_ID, "not-a-number")
+
+            with pytest.raises(CorruptRevocationEntry):
+                await store.is_user_revoked(USER_ID, 1_700_000_000)
+
+
 class TestTheStoreReadFailureFamilies:
     """Every family named in ``STORE_READ_FAILURES``, and why each is there."""
 
@@ -317,7 +562,10 @@ class TestTheStoreReadFailureFamilies:
 
         Widening it back to ``Exception`` is the regression this whole module
         exists to prevent, and it would otherwise pass every behavioural test
-        above.
+        above. The corrupt-stored-value case is IN the tuple as its own type
+        and the bare builtins are still OUT — that pair is the whole design,
+        so both halves are asserted here rather than only the half that is
+        easy to remember.
         """
         assert Exception not in STORE_READ_FAILURES
         assert BaseException not in STORE_READ_FAILURES
@@ -329,6 +577,10 @@ class TestTheStoreReadFailureFamilies:
         assert issubclass(sa_exc.SQLAlchemyError, STORE_READ_FAILURES)
         assert issubclass(redis_exceptions.RedisError, STORE_READ_FAILURES)
         assert issubclass(OSError, STORE_READ_FAILURES)
+        assert issubclass(CorruptRevocationEntry, STORE_READ_FAILURES)
+        # And it is its own type, not a ValueError subclass smuggling the
+        # builtin in through the back door.
+        assert not issubclass(CorruptRevocationEntry, (ValueError, TypeError))
 
 
 # ============================================================

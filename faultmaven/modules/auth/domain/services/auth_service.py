@@ -39,6 +39,7 @@ if TYPE_CHECKING:
 from faultmaven.exceptions import ServiceError
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+    CorruptRevocationEntry,
     max_revocation_entry_ttl,
     revocation_reason,
 )
@@ -75,6 +76,15 @@ logger = logging.getLogger(__name__)
 #:   subclass; ``asyncio.TimeoutError`` is the builtin ``TimeoutError`` on the
 #:   supported Python versions, and is listed for the reader rather than for
 #:   the type system.
+#: * **both** — ``CorruptRevocationEntry``, raised by a store at the ONE point
+#:   where it turns a persisted watermark into a number. A row that exists and
+#:   cannot be interpreted is the purest case of "we could not find out", and
+#:   answering it as a generic 401 said "your token was revoked" about a value
+#:   nobody could read. It is a dedicated type rather than bare
+#:   ``ValueError``/``TypeError`` in this tuple precisely so the tuple stays
+#:   narrow: the precision comes from WHERE the store catches (around the
+#:   parse of a stored value, where the context proves the cause), not from a
+#:   type this classifier would have to trust.
 #:
 #: ``redis`` is importable in every deployment, cloud extra or not: the core
 #: ``fakeredis[lua]`` dependency requires it, and the Redis arm's code is
@@ -84,6 +94,7 @@ STORE_READ_FAILURES: tuple[type[BaseException], ...] = (
     asyncio.TimeoutError,
     SQLAlchemyError,
     RedisError,
+    CorruptRevocationEntry,
 )
 
 
@@ -783,12 +794,19 @@ class AuthService:
         in our own code (a ``TypeError``, an ``AttributeError`` from a store
         that does not implement the interface) propagates unclassified: it
         still refuses the request, via the callers' own handlers, but it is not
-        reported to anyone as a storage fault. One residual is worth naming: a
-        stored watermark that cannot be parsed raises ``ValueError``, which is
-        not in the tuple, so it refuses as an unclassified error rather than as
-        a counted one. Refusing is the direction #1478 asked for either way;
-        widening the tuple to a bare ``ValueError`` to label it would re-admit
-        every arithmetic bug in this package.
+        reported to anyone as a storage fault.
+
+        A stored watermark that cannot be parsed IS classified, and is the one
+        case worth spelling out because it looks like the exception to that
+        rule. It is not: the store raises ``CorruptRevocationEntry`` from a
+        three-line ``try`` around the parse itself, where the context proves
+        the failure is a corrupt stored value. A row that exists and cannot be
+        interpreted is the purest "we could not find out" there is, and before
+        it had its own type it answered a generic 401 — the sentence "your
+        token was revoked", about a value nobody could read. Widening this
+        tuple to a bare ``ValueError``/``TypeError`` would have labelled it at
+        the cost of labelling every arithmetic bug in the package the same
+        way; catching at the parse buys the label without the cost.
 
         Refresh-token validation in the generators already failed CLOSED
         (store error => invalid), so the two paths now agree.

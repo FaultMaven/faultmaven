@@ -252,9 +252,11 @@ path reachable. Refusing converts a storage blip into an outage for every
 authenticated request at once; that is accepted, because the failure is loud,
 bounded and diagnosable, where a fail-open revocation check is
 indistinguishable from a working one. The catch is narrowed to store-read
-failure families (`SQLAlchemyError`, `RedisError`, `OSError`) so a programming
-error is not reported to anyone as a storage fault
-(`AuthService.STORE_READ_FAILURES`).
+failure families (`SQLAlchemyError`, `RedisError`, `OSError`, and
+`CorruptRevocationEntry` — which a store raises at the one point where it
+parses a persisted watermark, so a corrupt row is classified without the bare
+builtins entering the tuple) so a programming error is not reported to anyone
+as a storage fault (`AuthService.STORE_READ_FAILURES`).
 
 **Per-user revocation (#769).** Bulk revocation — admin
 `POST /auth/users/{id}/revoke-tokens`, and the deactivate/delete, password
