@@ -149,9 +149,18 @@ class ProtectionSettings(BaseModel):
 
 **Bypass headers exist only in the development preset.** It sets
 `["X-Dev-Bypass", "X-Test-Bypass"]`, and the mere *presence* of either header on
-a request skips rate limiting entirely — which is why an unset `ENVIRONMENT` on
-an internet-facing box is a hole rather than a default. The production preset
-pins the list **empty**, and no environment variable can add to it.
+a request skips rate limiting entirely. The hardened preset pins the list
+**empty**, and no environment variable can add to it.
+
+Which preset is installed is decided by `PROTECTION_PROFILE` alone, and it
+defaults to `hardened` — so a deployment that configures nothing, the
+standalone quickstart included, honours no bypass header (fm#985 item 15). It
+used to be decided by `ENVIRONMENT`, which the quickstart leaves unset and
+which falls to `development`, so the hole was the default rather than an
+oversight. `setup_protection_middleware` additionally **strips** bypass headers
+from whatever settings it installs unless the profile is `development`, so a
+caller supplying its own `ProtectionSettings` cannot arm them either — the
+guarantee is "unreachable", not "absent from the preset".
 
 ## Error Handling Strategy
 

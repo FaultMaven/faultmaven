@@ -16,6 +16,7 @@ Endpoints:
 import logging
 import time
 from datetime import datetime, timezone
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
@@ -493,6 +494,57 @@ def _rate_limiting_installed(app) -> bool:
     )
 
 
+def _installed_bypass_headers(app) -> Optional[List[str]]:
+    """Header names that skip rate limiting on this app, read off the stack.
+
+    ``None`` means no ``RateLimitMiddleware`` is installed at all — a different
+    state from "installed and honouring nothing", and the caller reports it as
+    the worse of the two rather than folding them together.
+
+    Read from the ``ProtectionSettings`` the middleware was actually installed
+    with, for the reason ``_rate_limiting_installed`` gives about
+    ``app.extra["protection_info"]``: that dict records what setup *intended*
+    and is absent on the paths that skip or fail setup. ``user_middleware``
+    holds the kwargs Starlette will build the stack from, so it cannot disagree
+    with what runs — and it is readable without starting the app, which
+    ``app.middleware_stack`` is not.
+
+    Not derived from ``PROTECTION_PROFILE``: the question an operator is asking
+    here is "can someone switch my rate limiter off with a header", and the
+    only honest answer is the header list the limiter is holding.
+    """
+    from faultmaven.api.middleware import RateLimitMiddleware
+
+    headers: Optional[List[str]] = None
+    for middleware in getattr(app, "user_middleware", []):
+        if middleware.cls is not RateLimitMiddleware:
+            continue
+        installed = getattr(middleware, "kwargs", {}).get("settings", None)
+        names = list(getattr(installed, "protection_bypass_headers", []) or [])
+        headers = names if headers is None else headers + names
+    return headers
+
+
+def _bypass_posture_description(headers: Optional[List[str]]) -> str:
+    """One sentence naming the state, including the headers when there are any.
+
+    The names are safe to print and worth printing: they are the thing an
+    operator has to go and remove, and they are not secrets — the whole defect
+    is that anyone can send them.
+    """
+    if headers is None:
+        return (
+            "No rate limiter is installed on this process, so there is no "
+            "request protection to harden."
+        )
+    if headers:
+        return (
+            "The installed rate limiter is SKIPPED outright for any request "
+            "carrying " + ", ".join(headers) + " — presence alone, no value required."
+        )
+    return "No header skips the installed rate limiter: every request is metered."
+
+
 def _kb_prefetch_is_effective(app, settings) -> bool:
     """Does the KB PUSH actually happen on this process? (fm#1360)
 
@@ -785,6 +837,10 @@ async def get_env_config_status(
         # Build feature status
         from faultmaven.api.models import FeatureStatus
 
+        # Read once: two fields below describe the same installed limiter and
+        # must not be able to disagree about it.
+        bypass_headers = _installed_bypass_headers(request.app)
+
         # Only surface features that require user-provided configuration.
         # Core capabilities (interpreted search, semantic search) that work
         # automatically with the existing LLM are not shown.
@@ -848,6 +904,38 @@ async def get_env_config_status(
                     "development default the router mounts with the flag "
                     "unset, so clearing the flag removes the surface only "
                     "where ENVIRONMENT is staging or production"
+                ),
+            ),
+            # The request-protection posture, reported because it is a
+            # SECURITY posture on the default path and the failure is silent:
+            # a deployment whose limiter honours X-Dev-Bypass looks exactly
+            # like one that does not until somebody sends the header. Before
+            # fm#985 item 15 that was every standalone quickstart, because
+            # ENVIRONMENT is unset there and fell to the settings default
+            # `development`.
+            #
+            # `enabled` is worded so that True is the safe state, like
+            # `suggestion_store_worker_safe` above and unlike a field called
+            # "bypass headers": an operator scanning the report should not have
+            # to work out which way the boolean points.
+            #
+            # False with no limiter installed at all is deliberate, and it is
+            # the same call `token_revocation_durable` makes for an absent
+            # store: with nothing installed there is no protection to be
+            # hardened, and a green field on an unprotected app is the worse
+            # error. `rate_limit_enabled` above is where that state is named.
+            "request_protection_hardened": FeatureStatus(
+                enabled=(bypass_headers == []),
+                description=_bypass_posture_description(bypass_headers),
+                config_hint=(
+                    "True when the installed rate limiter honours no bypass "
+                    "header. The permissive preset — roomy limits plus "
+                    "X-Dev-Bypass / X-Test-Bypass, whose mere presence skips "
+                    "all rate limiting — is installed only by an explicit "
+                    "PROTECTION_PROFILE=development on a box that also runs "
+                    "ENVIRONMENT=development (or leaves it unset). No other "
+                    "value of ENVIRONMENT, and no deployment that sets "
+                    "nothing, can arm them"
                 ),
             ),
             "llm_tracing": FeatureStatus(

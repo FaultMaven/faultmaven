@@ -236,8 +236,9 @@ def rate_limited_app() -> FastAPI:
     fixture with it means the test cannot pass by agreeing with itself: if that
     function ever installs something ``_rate_limiting_installed`` does not
     recognise, this goes red rather than quietly measuring a fixture nobody
-    runs. ``production`` is the default preset — every environment but
-    ``development`` lands on it (fm#1023).
+    runs. The hardened preset is what every deployment installs unless
+    ``PROTECTION_PROFILE=development`` is set explicitly (fm#1023, fm#985
+    item 15).
     """
     from faultmaven.api.protection import setup_protection_middleware
 
@@ -880,6 +881,71 @@ class TestGetEnvConfigStatus:
         assert result.session_storage == "redis"
         assert result.vector_storage == "chromadb"
         assert result.pii_redaction_enabled is True
+
+    @pytest.mark.asyncio
+    async def test_request_protection_is_reported_hardened_by_default(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        """The posture an operator cannot otherwise read (fm#985 item 15).
+
+        "Is my rate limiter opt-out?" has no other observable: a deployment
+        honouring ``X-Dev-Bypass`` serves exactly like one that does not, right
+        up until somebody sends the header. Before this the answer was "yes" on
+        every standalone quickstart, and nothing said so.
+        """
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        posture = result.features["request_protection_hardened"]
+        assert posture.enabled is True
+        assert "no header skips" in posture.description.lower()
+
+    @pytest.mark.asyncio
+    async def test_request_protection_reports_the_headers_that_are_armed(
+        self, mock_admin_user, mock_settings, monkeypatch
+    ):
+        """False, and it names what to go and remove.
+
+        The header names are not secrets — the whole defect is that anyone can
+        send them — and they are the actionable part of the report.
+        """
+        from faultmaven.api.protection import setup_protection_middleware
+
+        monkeypatch.setenv("PROTECTION_PROFILE", "development")
+        app = FastAPI()
+        setup_protection_middleware(app, environment=Environment.DEVELOPMENT)
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(app), current_user=mock_admin_user
+            )
+
+        posture = result.features["request_protection_hardened"]
+        assert posture.enabled is False
+        assert "X-Dev-Bypass" in posture.description
+
+    @pytest.mark.asyncio
+    async def test_request_protection_is_not_reported_hardened_with_no_limiter(
+        self, mock_admin_user, mock_settings, unprotected_app
+    ):
+        """No limiter is the worse state, not the safest one.
+
+        Folding "installed and honouring nothing" together with "nothing
+        installed" would paint an unprotected app green on the one field an
+        auditor reads for this. Same call ``token_revocation_durable`` makes
+        for an absent store.
+        """
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(unprotected_app), current_user=mock_admin_user
+            )
+
+        posture = result.features["request_protection_hardened"]
+        assert posture.enabled is False
+        assert "no rate limiter" in posture.description.lower()
+        assert result.rate_limit_enabled is False
 
     @pytest.mark.asyncio
     async def test_consent_skip_reports_inactive_when_no_redirect_is_pinned(
@@ -1553,6 +1619,15 @@ def _pure_settings_answer(feature: str, settings) -> bool:
         # settings object reports False: the deployment mode is always SET to
         # something, so a negated test would be a constant True here.
         return str(getattr(settings, "deployment_mode", "")) == "standalone"
+    if feature == "request_protection_hardened":
+        # The obvious version, and the one this endpoint's neighbours were
+        # written against until fm#985 item 15: "ENVIRONMENT is not
+        # development, so the strict preset is installed". It reports True on a
+        # process carrying no limiter at all, and it reported True while the
+        # standalone quickstart — ENVIRONMENT unset, hence `development` — was
+        # the one deployment where it was false.
+        environment = getattr(settings.server, "environment", None)
+        return str(getattr(environment, "value", environment)) != "development"
     if feature == "debug_endpoints":
         # The obvious version: echo the flag. It reports True for every
         # deployment with ENABLE_DEBUG_ENDPOINTS set — which is what the
@@ -2191,6 +2266,31 @@ def _scenario_debug_endpoints(settings, app, monkeypatch, reality):
             return {}
 
 
+def _scenario_request_protection_hardened(settings, app, monkeypatch, reality):
+    """The runtime fact withheld here is the limiter this process installed.
+
+    ``ENVIRONMENT=production`` is set in BOTH arms — that is the point, and it
+    is the whole of fm#985 item 15. The environment name is what this posture
+    used to be *decided* by, and it was never the posture: what can switch rate
+    limiting off is the ``ProtectionSettings`` the middleware was installed
+    with (header presence alone), and whether a limiter was installed at all.
+    The composition root's development carve-out boots with none.
+
+    A settings-only implementation — "ENVIRONMENT is not development, so we are
+    hardened" — reports True on a process serving no limiter whatsoever, which
+    is not hardened but unprotected.
+    """
+    from faultmaven.api.middleware import RateLimitMiddleware
+
+    settings.server.environment = MagicMock(value="production")
+    if not reality:
+        app.user_middleware = [
+            entry
+            for entry in app.user_middleware
+            if entry.cls is not RateLimitMiddleware
+        ]
+
+
 FEATURE_SCENARIOS = {
     "debug_endpoints": _scenario_debug_endpoints,
     "kb_prefetch": _scenario_kb_prefetch,
@@ -2199,6 +2299,7 @@ FEATURE_SCENARIOS = {
     "first_party_consent_skip": _scenario_first_party_consent_skip,
     "suggestion_store_worker_safe": _scenario_suggestion_store_worker_safe,
     "token_revocation_durable": _scenario_token_revocation_durable,
+    "request_protection_hardened": _scenario_request_protection_hardened,
 }
 
 

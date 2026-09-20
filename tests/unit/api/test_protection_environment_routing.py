@@ -13,10 +13,16 @@ Three properties are pinned:
 1. **Coverage.** Every ``Environment`` member — iterated, not enumerated, so a
    fourth member is covered the day it is added — plus a string that is not an
    ``Environment`` at all, installs both middlewares.
-2. **Semantics.** Only ``development`` gets the permissive preset. Staging and
-   unknown names get production's, which is fail-*closed* on a Redis error —
-   the discriminator that separates this fix from one that merely routed
-   staging somewhere that happened to install middleware.
+2. **Semantics.** *No* environment gets the permissive preset any more —
+   fm#985 item 15 moved that decision onto ``PROTECTION_PROFILE``, because
+   ``ENVIRONMENT`` is unset on the standalone quickstart and fell to
+   ``development``. Every environment, including ``development``, gets
+   production's preset: fail-*closed* on a Redis error and no bypass header.
+   That is still the discriminator that separates fm#1023's fix from one that
+   merely routed staging somewhere that happened to install middleware, and it
+   is now also the discriminator for item 15 — see
+   ``tests/unit/api/test_protection_bypass_is_unreachable.py`` for the axis
+   that *can* loosen it.
 3. **Fail closed on setup failure.** A preset that raises — or settings that do
    not validate — propagates rather than leaving a bare app behind, which is the
    same unprotected state arrived at from a different direction, and it says so
@@ -96,23 +102,24 @@ def test_every_environment_installs_both_middlewares(environment):
     [Environment.DEVELOPMENT, "development"],
     ids=["enum_member", "plain_string"],
 )
-def test_development_still_gets_the_development_preset(environment):
-    """The one value that may loosen protection, asserted explicitly.
+def test_development_no_longer_selects_the_permissive_preset(environment):
+    """``ENVIRONMENT`` cannot loosen protection at all (fm#985 item 15).
 
-    Otherwise a fix that routed *everything* to production would pass the sweep
-    above while quietly removing the development bypass headers and the roomier
-    limits that make local iteration workable.
+    This test used to assert the opposite — that ``development`` selects the
+    permissive preset — and that assertion was the defect written down. The
+    standalone quickstart leaves ``ENVIRONMENT`` unset, the settings default is
+    ``development``, and so every self-hosted operator ran a limiter that any
+    request could switch off by carrying ``X-Dev-Bypass``.
 
-    Both spellings, because the discriminator is the ``Environment`` member:
-    ``Environment`` subclasses ``str``, so a caller holding a plain string must
-    still land here rather than be quietly hardened into production's preset.
+    Both spellings, because a caller may hold a plain string: ``Environment``
+    subclasses ``str``, and neither form may reach the permissive branch.
     """
     app, setup_info = _install(environment)
 
-    assert setup_info["settings_source"] == "development_defaults"
+    assert setup_info["settings_source"] == "production_defaults"
     settings = _resolved_settings(app)
-    assert settings.protection_bypass_headers == ["X-Dev-Bypass", "X-Test-Bypass"]
-    assert settings.rate_limits["global"].requests == 5000
+    assert settings.protection_bypass_headers == []
+    assert settings.rate_limits["global"].requests == 500
     assert _installed(app) == {RateLimitMiddleware, DeduplicationMiddleware}
 
 
@@ -177,7 +184,7 @@ def test_a_failing_preset_refuses_to_boot_rather_than_serve_unprotected(monkeypa
     """
     monkeypatch.setattr(
         "faultmaven.api.protection.get_production_protection_settings",
-        lambda: (_ for _ in ()).throw(RuntimeError("preset exploded")),
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("preset exploded")),
     )
 
     app = FastAPI()

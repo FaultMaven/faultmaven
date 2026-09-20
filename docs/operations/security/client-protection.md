@@ -32,8 +32,9 @@ limit of L admits exactly L requests however they distribute across seconds. See
 [rate-limiting-sliding-window.md](../../architecture/security/rate-limiting-sliding-window.md)
 for the algorithm and its invariants.
 
-**Configuration** (the production preset, which is what every deployment other
-than `ENVIRONMENT=development` runs — see the table below):
+**Configuration** (the hardened preset, which is what every deployment runs
+unless `PROTECTION_PROFILE=development` is set explicitly — see the table
+below):
 
 ```python
 RATE_LIMITS = {
@@ -108,11 +109,22 @@ What that means in practice:
 
 **Shipped values**:
 
-Two presets ship, and `ENVIRONMENT` picks between them: `development` selects
-the first column, **everything else** — `staging`, `production`, and any value
-that is not an `Environment` member — selects the second.
+Two presets ship, and **`PROTECTION_PROFILE` picks between them**:
+`development` selects the first column, and everything else — including an
+unset value, which is what every deployment that configures nothing has —
+selects the second.
 
-| Bucket | development | production (the default) |
+`ENVIRONMENT` does *not* pick between them, and that is fm#985 item 15. It used
+to: `development` selected the permissive column, and the standalone quickstart
+leaves `ENVIRONMENT` unset, which falls to the settings default `development`.
+Every self-hosted operator therefore ran a limiter that any request could
+switch off by carrying `X-Dev-Bypass`. Standalone is a deployment *shape*;
+development is who is editing the code; one value cannot answer both.
+`ENVIRONMENT` can still *refuse* a development profile — `staging` and
+`production` veto it — so the two keys together are never looser than
+`PROTECTION_PROFILE` alone.
+
+| Bucket | development | hardened (the default) |
 |--------|-------------|--------------------------|
 | `global` | 5000 / 60s | 500 / 60s |
 | `per_session` | 50 / 60s | 10 / 60s |
@@ -338,24 +350,27 @@ class AgentTimeoutManager:
 These are read on every deployment:
 
 ```bash
-# Which preset the protection middleware is installed from.
+# Which preset the protection middleware is installed from. THE axis, and the
+# only one — see ``config/protection.resolve_protection_profile``.
 #
-# UNSET IS NOT STRICT. An absent ENVIRONMENT falls to the settings default,
-# which is `development` — the permissive preset, with `X-Dev-Bypass` and
-# `X-Test-Bypass` LIVE: the mere presence of either header skips all rate
-# limiting. Never leave this unset on an internet-facing box.
+# Absent, or anything unrecognised -> `hardened`: tight limits, no bypass
+#                                     headers, fail-closed on a Redis outage.
+# `development`                    -> the permissive preset, with `X-Dev-Bypass`
+#                                     and `X-Test-Bypass` LIVE: the mere
+#                                     presence of either header skips all rate
+#                                     limiting. A contributor's checkout only.
 #
-# Absent, or `development`  -> lenient preset, bypass headers live
-# `staging` / `production`  -> production's preset
-# Anything else             -> refuses to start: settings validation rejects
-#                              unknown values before preset selection ever
-#                              runs. (Direct callers of the setup function,
-#                              which bypass that validation, fall to the
-#                              production preset — defense in depth, not the
-#                              operator-visible path.)
+# `development` is additionally REFUSED, with an ERROR line, unless ENVIRONMENT
+# is `development` or unset. So no deployed box can arm the bypass headers, and
+# no deployment that sets nothing can either.
 #
 # No value installs an empty protection stack; the choice is which preset, not
 # whether.
+PROTECTION_PROFILE=hardened
+
+# Deployment environment. Selects staging's Redis key namespace, vetoes a
+# development protection profile, and gates the debug router — it does NOT
+# choose the preset.
 ENVIRONMENT=production
 
 # Degrade policy for rate limiting and deduplication when Redis is
@@ -407,13 +422,25 @@ it as the **Rate Limiting** row. It answers one question — is
 `RateLimitMiddleware` installed on this app — read from the running middleware
 stack rather than from configuration.
 
+Beside it, `features.request_protection_hardened` answers the second question:
+whether any header can switch that limiter off. `true` means no bypass header
+is honoured; `false` names the ones that are, or says no limiter is installed
+at all. Read from the `ProtectionSettings` the middleware was installed with —
+not from `PROTECTION_PROFILE` — because the posture and the knob can differ: a
+caller-supplied settings object, the environment veto, and a process that
+composed no limiter are all states the key cannot describe. It is reported at
+all because the failure is silent: a deployment honouring `X-Dev-Bypass` serves
+exactly like one that does not, right up until someone sends the header.
+
 That distinction is the whole point of the field. While it was sourced from
 `settings.security.rate_limit_enabled` it was wrong in both directions and right
 only by accident:
 
 - `CONFIG_PRESET=local` used to set `RATE_LIMIT_ENABLED=false`, so it reported
   **disabled** on a deployment the `development` protection preset — which that
-  same preset selects, via `ENVIRONMENT=development` — was rate limiting.
+  same preset selected, via the `ENVIRONMENT=development` it writes into the
+  environment — was rate limiting. (`ENVIRONMENT` no longer selects a
+  protection preset at all; `PROTECTION_PROFILE` does.)
 - `SKIP_SERVICE_CHECKS=true` skipped protection setup entirely until fm#990
   removed that gate, and the development carve-out in `main.py` still boots
   unprotected when setup raises. Both reported **enabled**, over a deployment

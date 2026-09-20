@@ -25,7 +25,7 @@ Whether that is fatal depends on a package that is not in every lockfile. When
 ``can_read_destructive()`` — called whenever a pooled connection is handed out —
 really reads the stream. The read touches the foreign-loop queue and raises
 ``RuntimeError: ... is bound to a different event loop``. The limiter catches it,
-the development preset these tests run under fails open, and every request is
+the preset these tests ran under at the time failed open, and every request was
 served unlimited: the tests below saw five ``401``\\ s and never a 429. The
 pure-Python parser never touches that queue, so nothing happens without hiredis —
 and ``hiredis`` is pinned in ``requirements/cloud.txt`` and in neither
@@ -52,8 +52,12 @@ test pins both edges: the requests under the limit are served, the ones over it
 are refused. It then reads the middleware's own counters, because a 429 that
 arrived alongside a swallowed exception is not the refusal under test.
 ``metrics["errors"]`` covers the swallow path fm#990 was filed about — it is also
-incremented on the fail-*closed* 503 branch, which the development preset these
-tests run under never reaches — and ``is_degraded`` reports the stand-in.
+incremented on the fail-*closed* 503 branch, which these tests never reach
+because each installs a working stand-in — and ``is_degraded`` reports the
+stand-in. Since fm#985 item 15 the app under test runs the *hardened* preset,
+which is fail-closed: that branch is now reachable in principle, and a run that
+tripped it would show up as a rise in ``metrics["errors"]`` rather than as a
+silent pass.
 """
 
 import contextlib
@@ -313,3 +317,53 @@ def test_the_limiter_answers_from_redis_rather_than_degrading(real_app):
             "the limiter allowed a request past its configured limit — it is "
             "installed but not counting"
         )
+
+
+def test_a_bypass_header_does_not_switch_the_real_app_off(real_app):
+    """The shipped posture, at the wire: ``X-Dev-Bypass`` buys nothing (fm#985 item 15).
+
+    ``RateLimitMiddleware._should_bypass`` checks header PRESENCE, so an armed
+    bypass name is an unauthenticated opt-out of the entire limiter. It used to
+    be armed on every standalone deployment: the preset was chosen by
+    ``ENVIRONMENT``, which the quickstart leaves unset and which falls to the
+    settings default ``development``.
+
+    This asserts it on ``faultmaven.main.app`` — the app a deployment serves,
+    built from the ambient configuration — rather than on a scratch app, so it
+    also covers the composition root choosing what to pass. The unit-level pair
+    in ``tests/unit/api/test_protection_bypass_is_unreachable.py`` carries the
+    other column: under an explicit ``PROTECTION_PROFILE=development`` the same
+    header does bypass, which is what makes "it did not help" a statement about
+    the posture rather than about an inert header name.
+
+    The header names are read from the permissive preset rather than spelled
+    here, so a rename cannot leave this probing a name nothing has ever
+    honoured.
+    """
+    from faultmaven.config.protection import get_development_protection_settings
+
+    headers = get_development_protection_settings().protection_bypass_headers
+    assert headers, "the permissive preset arms no bypass header; this test is inert"
+
+    limit = 3
+
+    for header in headers:
+        with _serving_with_global_limit(real_app, limit) as (client, middleware):
+            errors_before = middleware.metrics["errors"]
+
+            responses = [
+                client.get(PROBE_PATH, headers={header: "1"}) for _ in range(limit + 2)
+            ]
+            codes = [r.status_code for r in responses]
+
+            assert all(
+                r.status_code != 429 for r in responses[:limit]
+            ), f"a request inside the limit was refused with {header}: {codes}"
+            assert all(r.status_code == 429 for r in responses[limit:]), (
+                f"{header} skipped rate limiting on the app this deployment "
+                f"serves: {codes}"
+            )
+            assert (
+                middleware.metrics["errors"] == errors_before
+            ), "the limiter swallowed an exception, so the refusal is unattributable"
+            assert middleware.rate_limiter.is_degraded is False
