@@ -92,6 +92,20 @@ class HealthStatus(Enum):
     UNKNOWN = "unknown"
 
 
+#: ``HealthStatus`` on the wire, for the ``component_health_status`` gauge.
+#: Higher is better and ``0`` means "could not tell", matching the ``sla_status``
+#: convention already exported next to it. UNKNOWN deliberately does NOT share
+#: a value with UNHEALTHY: "we could not probe it" and "we probed it and it is
+#: down" are the distinction #1524 turned on, and an alert has to be able to
+#: make it too.
+_HEALTH_STATUS_GAUGE_VALUES: Dict[HealthStatus, int] = {
+    HealthStatus.HEALTHY: 3,
+    HealthStatus.DEGRADED: 2,
+    HealthStatus.UNHEALTHY: 1,
+    HealthStatus.UNKNOWN: 0,
+}
+
+
 @dataclass
 class ComponentHealth:
     """Represents the health status of a single component.
@@ -148,6 +162,11 @@ class ComponentHealthMonitor:
         # life of the process/DB role, so determine it once and reuse it — the
         # per-probe DB cost then stays just the SELECT 1 connectivity check.
         self._rls_posture: Optional[Dict[str, Any]] = None
+        # Which (fatal, fails_per_replica) label pair each component was last
+        # published under. Bookkeeping for retiring a stale gauge child, NOT a
+        # record of component state — the state is read from
+        # ``component_health`` at publish time, every time.
+        self._published_gauge_labels: Dict[str, Tuple[str, str]] = {}
         self._initialize_default_components()
 
     @property
@@ -1042,6 +1061,41 @@ class ComponentHealthMonitor:
             if record[0] >= cutoff_time
         ]
 
+    def _record_abandoned_probe(
+        self, component_name: str, *, error: str, response_time_ms: float
+    ) -> ComponentHealth:
+        """Persist the verdict for a probe that never returned one.
+
+        The sweep abandons a probe two ways — it blew the sweep budget and was
+        cancelled, or its task raised past ``check_component_health``'s own
+        ``except`` (``CancelledError`` is not an ``Exception``). Both used to
+        answer ``/health``'s ``components`` map with a FRESH ``ComponentHealth``
+        that was never written back, which made one endpoint disagree with
+        itself: the map said ``unhealthy`` while ``summary`` — computed by
+        ``get_overall_health_status`` from the stored records — still reported
+        the previous sweep's status and left the component out of
+        ``fatal_unhealthy``. A hung primary is exactly the case, and exactly
+        the case the ``component_health_status`` gauge exists to alert on
+        (#1547), so the verdict is recorded on the component's own record and
+        that record is what the caller gets. One object per component, so
+        there is nothing to diverge.
+
+        Mirrors ``check_component_health``'s error arm, including the history
+        entry — an abandoned probe is a failed probe, and leaving it out of the
+        window quietly overstated ``probe_availability_24h``.
+        """
+        component_health = self.component_health[component_name]
+        component_health.status = HealthStatus.UNHEALTHY
+        component_health.response_time_ms = response_time_ms
+        component_health.last_error = error
+        component_health.metadata = {}
+        component_health.last_check = datetime.now(timezone.utc)
+        self._record_health_history(
+            component_name, HealthStatus.UNHEALTHY, response_time_ms
+        )
+        self._refresh_probe_stats(component_health)
+        return component_health
+
     async def check_all_components(self) -> Dict[str, ComponentHealth]:
         """Check every registered component concurrently, under a sweep budget.
 
@@ -1079,19 +1133,13 @@ class ComponentHealthMonitor:
             self.logger.error(
                 f"Health check exceeded the sweep budget for {component_name}"
             )
-            health_results[component_name] = ComponentHealth(
-                component_name=component_name,
-                status=HealthStatus.UNHEALTHY,
-                response_time_ms=_ALL_COMPONENTS_TIMEOUT_SECONDS * 1000,
-                last_error=(
+            health_results[component_name] = self._record_abandoned_probe(
+                component_name,
+                error=(
                     f"probe exceeded the {_ALL_COMPONENTS_TIMEOUT_SECONDS:g}s "
                     "sweep budget and was abandoned"
                 ),
-                dependencies=self.component_health[component_name].dependencies,
-                fatal=self.component_health[component_name].fatal,
-                fails_per_replica=self.component_health[
-                    component_name
-                ].fails_per_replica,
+                response_time_ms=_ALL_COMPONENTS_TIMEOUT_SECONDS * 1000,
             )
 
         for task in done:
@@ -1099,16 +1147,8 @@ class ComponentHealthMonitor:
             error = task.exception()
             if error is not None:
                 self.logger.error(f"Health check failed for {component_name}: {error}")
-                health_results[component_name] = ComponentHealth(
-                    component_name=component_name,
-                    status=HealthStatus.UNHEALTHY,
-                    response_time_ms=0.0,
-                    last_error=str(error),
-                    dependencies=self.component_health[component_name].dependencies,
-                    fatal=self.component_health[component_name].fatal,
-                    fails_per_replica=self.component_health[
-                        component_name
-                    ].fails_per_replica,
+                health_results[component_name] = self._record_abandoned_probe(
+                    component_name, error=str(error), response_time_ms=0.0
                 )
             else:
                 health_results[component_name] = task.result()
@@ -1162,6 +1202,15 @@ class ComponentHealthMonitor:
             if health.fatal and status == HealthStatus.UNHEALTHY:
                 fatal_unhealthy.append(component_name)
 
+            # The Prometheus gauge is published HERE, from the very read of
+            # ``health.status`` and ``health.fatal`` that just graded the
+            # body — so ``/metrics`` and ``/health`` cannot report different
+            # things about a component. There is no second derivation to keep
+            # in step, which is the whole design constraint of #1547: the
+            # metric is a rendering of this loop, not another opinion about
+            # the same components.
+            self._publish_component_health_gauge(health)
+
         if fatal_unhealthy:
             overall_status = HealthStatus.UNHEALTHY
             reason = (
@@ -1201,6 +1250,79 @@ class ComponentHealthMonitor:
         }
 
         return overall_status, summary
+
+    def _publish_component_health_gauge(self, health: ComponentHealth) -> None:
+        """Render one already-graded component onto the Prometheus gauge.
+
+        Called only from ``get_overall_health_status``, with the very
+        ``ComponentHealth`` that loop just read. It re-reads nothing: two
+        independent derivations of one fact is the drift this exists to avoid,
+        so this method takes the fact rather than going to look for it.
+
+        No-ops when metrics are off — the shim hands back a ``NoOpMetric``
+        whose ``labels()``/``set()`` do nothing.
+
+        Nothing this does may propagate. Its only caller is on the liveness
+        path, and a metrics fault that took ``/health`` down to its fallback
+        body would blind the endpoint the metric exists to amplify — the exact
+        inversion of #1547. ``_HEALTH_STATUS_GAUGE_VALUES`` being total over
+        ``HealthStatus`` is a test, not a hope, so the ``except`` here is for
+        what neither of us thought of.
+        """
+        from faultmaven.infrastructure.shims import component_health_status
+
+        labels = (
+            str(health.fatal).lower(),
+            str(health.fails_per_replica).lower(),
+        )
+        previous = self._published_gauge_labels.get(health.component_name)
+        if previous is not None and previous != labels:
+            # A component re-registered with different declarations would
+            # otherwise leave its old label pair behind as a series nothing
+            # ever writes again — an alert reading "fatal and unhealthy" off a
+            # value frozen at the instant of the flip, and no restart in sight
+            # to clear it. Retire it. (``NoOpMetric`` has no ``remove``;
+            # ``Gauge.remove`` raises ``KeyError`` for a child that was never
+            # created.)
+            try:
+                component_health_status.remove(health.component_name, *previous)
+            except (AttributeError, KeyError):
+                pass
+        self._published_gauge_labels[health.component_name] = labels
+
+        try:
+            component_health_status.labels(
+                component=health.component_name,
+                fatal=labels[0],
+                fails_per_replica=labels[1],
+            ).set(_HEALTH_STATUS_GAUGE_VALUES[health.status])
+        except Exception as e:
+            # debug, not warning: the caller runs on every Kubernetes liveness
+            # probe, so a persistent fault here would be several lines every
+            # ten seconds for the life of the outage.
+            self.logger.debug(
+                f"Could not publish health gauge for {health.component_name}: {e}"
+            )
+
+    def publish_health_gauges(self) -> None:
+        """Refresh ``component_health_status`` for a ``/metrics`` scrape.
+
+        Registered as a scrape hook at the composition root (``main.py``), and
+        it does nothing but re-run ``get_overall_health_status``. That is the
+        point rather than an economy: the gauge has exactly one derivation,
+        and it is the one the ``/health`` body uses.
+
+        It publishes the last probe results rather than probing — this hook is
+        synchronous, the probes are not, and re-probing every dependency on
+        every scrape would duplicate the load the Kubernetes probes already
+        carry. In the deployment this exists for that is not a staleness
+        hazard: the liveness probe reads ``/health``, which runs
+        ``check_all_components``, every few seconds — far more often than the
+        scrape interval. A process that is scraped but never has ``/health``
+        called reports every component at ``UNKNOWN`` (0) — honest, and the
+        reason 0 is a value rather than an absent series.
+        """
+        self.get_overall_health_status()
 
     async def check_serving_readiness(self) -> Tuple[bool, Dict[str, Any]]:
         """Should this pod stay in its Service right now?
@@ -1274,6 +1396,11 @@ class ComponentHealthMonitor:
             "current_status": health.status.value,
             "current_response_time_ms": health.response_time_ms,
             "fatal": health.fatal,
+            # Both declarations, because ``fatal`` alone does not answer what
+            # an operator comes here to ask. Readiness-fatal is the
+            # conjunction, so a surface carrying only ``fatal`` left no way to
+            # see which components ``/readiness`` will 503 for (#1543 review).
+            "fails_per_replica": health.fails_per_replica,
             "probe_availability_24h": health.probe_availability_24h,
             "last_error": health.last_error,
             "last_check": health.last_check.isoformat(),

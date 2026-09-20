@@ -611,3 +611,32 @@ sla_active_breaches = Gauge(
     "Number of currently active SLA breaches per component",
     labelnames=["component"],
 )
+
+# Component health — the only export of what `/health` grades, and the reason
+# it exists (#1547). `/health` answers 200 by design (it is the liveness
+# surface; see the route's docstring), so all three Kubernetes probes ignore a
+# dependency outage and nothing reaches a human. This gauge is what an alert
+# rule reads instead.
+#
+# Both classification flags are LABELS so the alerting rule can select the set
+# rather than name components by hand — the fatal set is data, and a rule that
+# hardcodes `database` goes stale the moment the set changes:
+#
+#     component_health_status{fatal="true"} == 1
+#         a component the process cannot usefully serve without is down
+#     component_health_status{fatal="true", fails_per_replica="false"} == 1
+#         ... and no Kubernetes probe can fix it by pulling a pod, because it
+#         is down for every replica at once. This is the page-a-human set.
+#
+# Published from `ComponentHealthMonitor.get_overall_health_status`, in the
+# same loop that grades the `/health` body, so the two cannot disagree.
+# Emitted for HEALTHY components too: absent series and healthy series must
+# not look alike, or "not scraped" reads as "fine".
+component_health_status = Gauge(
+    "component_health_status",
+    "Component health as /health grades it "
+    "(3=healthy, 2=degraded, 1=unhealthy, 0=unknown). `fatal` is whether the "
+    "process can usefully serve without the component; `fails_per_replica` is "
+    "whether it can fail for one pod while its siblings keep serving.",
+    labelnames=["component", "fatal", "fails_per_replica"],
+)

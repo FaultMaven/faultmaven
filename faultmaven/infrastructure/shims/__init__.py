@@ -78,6 +78,7 @@ if TYPE_CHECKING:  # static analysis only — never executed at runtime
         Summary,
         active_sessions,
         case_operations,
+        component_health_status,
         get_metrics_status,
         is_metrics_active,
         knowledge_queries,
@@ -122,6 +123,7 @@ _EXPORTS_BY_SUBMODULE = {
         "Summary",
         "active_sessions",
         "case_operations",
+        "component_health_status",
         "get_metrics_status",
         "is_metrics_active",
         "knowledge_queries",
@@ -236,4 +238,5 @@ __all__ = [
     "sla_response_time_p95_seconds",
     "sla_error_rate_ratio",
     "sla_active_breaches",
+    "component_health_status",
 ]
