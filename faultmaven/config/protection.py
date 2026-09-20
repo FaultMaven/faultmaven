@@ -308,7 +308,7 @@ def get_development_protection_settings() -> ProtectionSettings:
 
 
 def get_production_protection_settings(
-    *, warn_if_unproxied: bool = True
+    *, for_deployed_environment: bool = True
 ) -> ProtectionSettings:
     """
     Get protection settings optimized for production
@@ -326,8 +326,11 @@ def get_production_protection_settings(
     nobody classified is protected rather than unprotected (fm#1023, fm#985
     item 15). Read the numbers below as the floor every deployment runs on.
 
-    Production is the one preset that pins the degrade policy rather than
-    honouring the key, and it pins it *closed*.
+    On a **deployed** environment this is the one preset that pins the degrade
+    policy rather than honouring the key, and it pins it *closed*. On a
+    development environment it honours the key exactly as the development
+    preset does — see ``for_deployed_environment`` below, and read everything
+    that follows as being about the deployed audience.
 
     Defaulting it open rests on the claim that the fail-open rung is nearly
     unreachable, because the ladder is shared Redis → per-replica FakeRedis →
@@ -360,25 +363,43 @@ def get_production_protection_settings(
     how the pinned path reports itself, and an argument for fixing the report —
     not for unpinning.
 
-    The development preset does honour ``PROTECTION_RATE_LIMIT_FAIL_OPEN``;
-    production opts out explicitly rather than by omission.
+    The development preset does honour ``PROTECTION_RATE_LIMIT_FAIL_OPEN``,
+    and so does this one on a development environment; a deployed environment
+    opts out explicitly rather than by omission.
     ``PROTECTION_TRUSTED_PROXIES`` is *not* pinned here — unlike the
     degrade policy, no value for it is right for every deployment, and the
     empty default is already the safe one. It is, however, the one preset that
     warns when it is left empty: see below.
 
-    ``warn_if_unproxied`` exists because this preset acquired a second
-    audience. Since fm#985 item 15 it is also what a *standalone* deployment
-    installs — a single-user box with nothing in front of it, where an empty
-    trusted-proxy list is not merely safe but correct, and where a warning
-    saying "empty in production" is a false statement that would send an
-    operator to configure a proxy they do not run. The caller passes False for
-    exactly the deployments that never reached this preset before, so the set
-    of boxes that see the warning is unchanged by that item.
+    ``for_deployed_environment`` exists because this preset acquired a second
+    audience. Since fm#985 item 15 it is also what a box running
+    ``ENVIRONMENT=development`` installs — the standalone quickstart, a
+    contributor's checkout, the test suite — none of which reached it before.
+    Two of the things in here are right for a deployed environment and wrong
+    for that one, so the caller says which audience it is building for and the
+    set of boxes each behaviour applies to is **unchanged** by item 15:
+
+    1. **The degrade policy.** A deployed environment keeps the pin argued at
+       length above: fail-*closed*, ignoring ``PROTECTION_RATE_LIMIT_FAIL_OPEN``.
+       A development environment keeps ``_fail_open_default()``, which is what
+       the development preset gave it before. This is not cosmetic — the flag
+       reaches ``RedisRateLimiter.fallback_enabled``, so fail-closed also
+       **disables the per-replica stand-in rung**: a limiter whose client stops
+       answering does not recover onto FakeRedis, it refuses. That is a
+       deliberate production posture and deciding it for the self-hosted single
+       user was never item 15's to decide.
+    2. **The empty-trusted-proxies warning.** A single-user box has nothing in
+       front of it, so an empty list there is not merely safe but correct, and
+       "empty in production" would be a false statement sending an operator to
+       configure a proxy they do not run.
+
+    One parameter rather than two, because it is one question — *is this the
+    audience this preset was written for?* — and two booleans computed from the
+    same predicate is how the third such behaviour gets missed.
     """
     trusted_proxies = get_trusted_proxies()
 
-    if warn_if_unproxied and not trusted_proxies:
+    if for_deployed_environment and not trusted_proxies:
         # Production is by definition a deployment behind something. Empty here
         # is safe but coarse: every external client resolves to the proxy's own
         # address and shares a single `global` bucket, so one caller crossing
@@ -402,7 +423,12 @@ def get_production_protection_settings(
     return ProtectionSettings(
         # General
         enabled=True,
-        fail_open_on_redis_error=False,
+        # Pinned closed for a deployed environment; a development environment
+        # keeps the policy the development preset gave it before fm#985 item 15
+        # (see ``for_deployed_environment`` in the docstring).
+        fail_open_on_redis_error=(
+            False if for_deployed_environment else _fail_open_default()
+        ),
         protection_bypass_headers=[],  # No bypasses in production
         trusted_proxies=trusted_proxies,
         # Redis: resolve centrally via RedisClientFactory.

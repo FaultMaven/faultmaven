@@ -141,6 +141,66 @@ def test_staging_gets_production_semantics(environment):
     assert settings.rate_limits["global"].requests == 500
 
 
+@pytest.mark.parametrize(
+    "environment,key,expected_fail_open",
+    [
+        # A development environment keeps the policy the DEVELOPMENT preset
+        # gave it before fm#985 item 15, including honouring the key both ways.
+        (Environment.DEVELOPMENT, None, True),
+        (Environment.DEVELOPMENT, "true", True),
+        (Environment.DEVELOPMENT, "false", False),
+        ("development", None, True),
+        # Every deployed environment keeps production's pin and ignores the key.
+        (Environment.STAGING, None, False),
+        (Environment.STAGING, "true", False),
+        (Environment.PRODUCTION, None, False),
+        (Environment.PRODUCTION, "true", False),
+        (UNKNOWN_ENVIRONMENT, "true", False),
+    ],
+)
+@pytest.mark.parametrize("profile", [None, "hardened", "development"])
+def test_the_degrade_policy_is_keyed_on_the_environment_not_the_profile(
+    monkeypatch, environment, key, expected_fail_open, profile
+):
+    """fm#985 item 15 moved the limits and the bypass headers. Not this.
+
+    Written because it *did* move this, and CI caught it: 81 integration
+    failures on ``Test Cloud`` and ``Test PostgreSQL Integration``, all
+    ``503 service_unavailable`` behind ``RuntimeError: Event loop is closed``.
+    Standalone arriving on the hardened preset took production's fail-CLOSED
+    pin with it, and that flag is not only about refusing — it feeds
+    ``RedisRateLimiter.fallback_enabled``, so it also **disables the
+    per-replica stand-in rung**. A limiter whose client stops answering then
+    refuses instead of recovering. Measured: flipping this one flag back, with
+    the hardened limits and the disarmed headers untouched, took
+    ``tests/integration/api/test_sessions_api.py`` from 20 failed / 20 passed
+    to 40 passed under the cloud shape (real Redis + the hiredis parser).
+
+    So the policy is pinned per ENVIRONMENT, across every profile, exactly as
+    it was before the item: a development environment honours
+    ``PROTECTION_RATE_LIMIT_FAIL_OPEN`` in both directions, and a deployed one
+    ignores it. Parametrised over the profile as well to say the quiet part
+    out loud — ``PROTECTION_PROFILE`` chooses limits and bypass headers and has
+    no vote here, so a future change that routes the degrade policy through
+    the new axis fails rather than shipping.
+    """
+    monkeypatch.delenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", raising=False)
+    monkeypatch.delenv("PROTECTION_PROFILE", raising=False)
+    if key is not None:
+        monkeypatch.setenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", key)
+    if profile is not None:
+        monkeypatch.setenv("PROTECTION_PROFILE", profile)
+
+    app, _ = _install(environment)
+
+    assert _resolved_settings(app).fail_open_on_redis_error is expected_fail_open, (
+        f"the Redis degrade policy for ENVIRONMENT={environment!r} moved. It is "
+        f"not item 15's to move: fail-closed also disables the per-replica "
+        f"stand-in, so a limiter that loses its client refuses instead of "
+        f"recovering."
+    )
+
+
 def test_an_unknown_environment_gets_production_not_a_permissive_branch():
     """The near-miss: a name nobody anticipated must fail *safe*.
 

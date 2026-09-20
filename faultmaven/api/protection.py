@@ -103,13 +103,17 @@ def setup_protection_middleware(
                 settings = get_development_protection_settings()
                 setup_info["settings_source"] = "development_defaults"
             else:
-                # ``warn_if_unproxied`` keeps the empty-trusted-proxies
-                # warning pointed at the same deployments it always was. This
-                # preset is now also what a standalone box installs, and there
-                # an empty list is correct rather than coarse — see the
-                # preset's docstring.
+                # This preset is now also what a development-environment box
+                # installs — the standalone quickstart included. Two of the
+                # things in it are written for a DEPLOYED environment (the
+                # fail-closed degrade pin, the empty-trusted-proxies warning)
+                # and are wrong for a single-user box, so the preset is told
+                # which audience it is being built for. Item 15 moves which
+                # LIMITS and which BYPASS HEADERS a standalone box gets; it
+                # deliberately moves neither of those two, which keeps the
+                # blast radius the ruling asked for.
                 settings = get_production_protection_settings(
-                    warn_if_unproxied=(environment != Environment.DEVELOPMENT)
+                    for_deployed_environment=(environment != Environment.DEVELOPMENT)
                 )
                 setup_info["settings_source"] = "production_defaults"
                 if environment == Environment.STAGING:

@@ -67,10 +67,18 @@ to least preferred:
    fail-closed gets a refusal rather than a per-replica approximation.
 3. **Fail open** — requests pass unlimited. Governed by
    `fail_open_on_redis_error`, sourced from `PROTECTION_RATE_LIMIT_FAIL_OPEN`
-   (default `true`) on the development preset. The hardened preset does not
-   read the key: it pins fail-**closed** (see "Production fails closed" below),
-   and it is what every deployment runs unless `PROTECTION_PROFILE=development`
-   is set explicitly — the standalone quickstart included (fm#985 item 15).
+   (default `true`) on a **development environment** — `ENVIRONMENT=development`
+   or unset, whichever protection preset that box installs. A **deployed**
+   environment (staging, production, anything unrecognised) does not read the
+   key: it pins fail-**closed** (see "Production fails closed" below).
+
+   The audience is keyed on `ENVIRONMENT`, not on `PROTECTION_PROFILE`. fm#985
+   item 15 moved which *limits* and which *bypass headers* a standalone box
+   gets and deliberately left its degrade policy alone, because the pin also
+   disables the per-replica stand-in rung (`fallback_enabled`) — a limiter
+   whose client stops answering then refuses rather than recovering, which is
+   a deliberate production posture and not one to hand a single-user
+   self-hosted box as a side effect.
 
 `fail_open_on_redis_error` governs *policy*, never *reporting*.
 `RedisRateLimiter.initialize` returning normally always means a usable client

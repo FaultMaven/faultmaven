@@ -34,7 +34,7 @@ for the algorithm and its invariants.
 
 **Configuration** (the hardened preset, which is what every deployment runs
 unless `PROTECTION_PROFILE=development` is set explicitly — see the table
-below):
+below; the *degrade policy* is keyed separately, on `ENVIRONMENT`):
 
 ```python
 RATE_LIMITS = {
