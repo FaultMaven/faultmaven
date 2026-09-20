@@ -89,6 +89,43 @@ The handlers surface these fields in the response (`resource_type`,
 `duplicate_username` from `duplicate_email` without regex on a
 free-text message.
 
+## Unknown revocation state (every authenticated request)
+
+The one auth-path refusal that is neither 401 nor 403, because it is not a
+verdict on the credential (#1478).
+
+| Signal | HTTP | `x-error-code` | Retry-After |
+|--------|------|----------------|-------------|
+| `RevocationStateUnknownError` — the token revocation store could not be read | 503 | `REVOCATION_STATE_UNKNOWN` | 5 |
+
+`AuthService._is_revoked` raises it instead of answering "not revoked", so a
+storage failure refuses the request rather than accepting a token nobody
+checked. The distinct code is the point: 401 says *this credential is not
+accepted* and sends a client into a re-authentication loop that cannot help,
+and to an operator it is indistinguishable from an actual revocation. The
+canonical response is built once by
+`api/exception_handlers.revocation_state_unknown_http_exception`, because four
+request paths raise it — the mandatory and optional auth dependencies in
+`api/middleware/auth.py`, the optional one in `api/v1/auth_dependencies.py`,
+and the tenant binder in `api/middleware/tenant_scope.py`.
+
+The catch is narrowed to store-read failure families
+(`AuthService.STORE_READ_FAILURES`: `SQLAlchemyError`, `RedisError`, `OSError`,
+`CorruptRevocationEntry`). A programming error propagates unclassified — it
+still refuses, via the callers' own handlers, but it is neither named nor
+counted as a storage fault. Refusals are counted as
+`faultmaven_auth_revocation_state_unknown_total{kind}`.
+
+`CorruptRevocationEntry` is the corrupt-stored-value case, and it is a
+dedicated type precisely so the tuple stays narrow. A store raises it from a
+three-line `try` around the one point where it turns a persisted watermark
+into a number, catching `ValueError` **and** `TypeError` (non-numeric text,
+and a `NULL` column arriving as `int(float(None))`). A row that exists and
+cannot be interpreted is the purest "we could not find out"; putting the bare
+builtins in the tuple instead would have labelled it at the price of labelling
+every arithmetic bug in the package the same way, so the precision comes from
+where the catch is rather than from a type the classifier has to trust.
+
 ## LLM Provider Failures (turn endpoints)
 
 An LLM turn can fail deep in a provider call, and reaches the route as a

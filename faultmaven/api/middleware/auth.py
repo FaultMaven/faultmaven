@@ -33,10 +33,12 @@ from typing import Callable, Optional
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from faultmaven.api.exception_handlers import revocation_state_unknown_http_exception
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.auth.domain.services.auth_service import (
     AuthenticationError,
     AuthService,
+    RevocationStateUnknownError,
     TokenRevocationError,
 )
 
@@ -189,6 +191,20 @@ async def get_current_user(
             headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
         )
 
+    except RevocationStateUnknownError as e:
+        # 503 with its own error code, NOT the 401 above and NOT the catch-all
+        # below (#1478). The store could not be read, so this token was never
+        # judged — telling the caller "invalid token" would send the copilot
+        # into the tear-down-and-re-authenticate path over a database blip that
+        # a retry clears, and would make a revoked token and an unreadable
+        # store indistinguishable to whoever is paged.
+        #
+        # Placed above `except Exception` deliberately: that handler answers
+        # 401, so without this clause the distinct code would exist and never
+        # reach anybody.
+        logger.warning("Revocation state unknown (%s): refusing the request", e.kind)
+        raise revocation_state_unknown_http_exception()
+
     except Exception as e:
         logger.error(f"Unexpected authentication error: {e}")
         raise HTTPException(
@@ -214,6 +230,14 @@ async def get_current_user_optional(
 
     Returns:
         AuthenticatedUser if authenticated, None otherwise
+
+    Raises:
+        HTTPException 503: The revocation store could not be read (#1478).
+            The one failure here that is NOT answered with ``None``: "we could
+            not find out whether this credential is live" is not the same
+            statement as "no credential was presented", and degrading it to
+            anonymous would hide a storage fault behind whatever the route
+            does for an unauthenticated caller.
     """
     token = _extract_token(request.headers.get("authorization"), credentials)
 
@@ -224,6 +248,9 @@ async def get_current_user_optional(
         return await auth_service.extract_user_from_token_with_revocation_check(token)
     except (AuthenticationError, TokenRevocationError):
         return None
+    except RevocationStateUnknownError as e:
+        logger.warning("Revocation state unknown (%s): refusing the request", e.kind)
+        raise revocation_state_unknown_http_exception()
     except Exception as e:
         logger.warning(f"Optional authentication error: {e}")
         return None

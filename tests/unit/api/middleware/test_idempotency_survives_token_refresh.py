@@ -458,6 +458,51 @@ async def test_a_broken_verifier_degrades_instead_of_500ing(auth_service):
     assert _replayed(retry), "it must still replay under the raw fallback scope"
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_unreadable_revocation_store_degrades_instead_of_500ing(auth_service):
+    """#1478's refusal reaches this middleware too, and must not escape it.
+
+    ``_is_revoked`` now raises ``RevocationStateUnknownError`` where it used to
+    answer "not revoked", and this middleware calls the verifier that raises
+    it — *before* ``dispatch``'s try block. Left unguarded that is a 500 on
+    every idempotent POST during a storage blip, replacing the honest 503 the
+    route's own auth dependency would have answered.
+
+    What the middleware should do is what it does for every other
+    unverifiable credential: name no principal and fall back to the raw scope,
+    which is the narrowest available. The route then answers whatever its auth
+    dependency decides — 503 in production, 200 on this synthetic route, which
+    has none.
+    """
+    from faultmaven.modules.auth.domain.services.auth_service import (
+        RevocationStateUnknownError,
+    )
+
+    class _UnreadableStoreVerifier:
+        async def verify_token_with_revocation_check(self, *args, **kwargs):
+            raise RevocationStateUnknownError(kind="OperationalError")
+
+    app, _ = _build_app(auth_service)
+    app.state.auth_service = _UnreadableStoreVerifier()
+    token = _access_token(auth_service)
+
+    async with _client(app) as client:
+        first = await client.post(
+            "/api/v1/json-turn",
+            headers={"Authorization": f"Bearer {token}", "Idempotency-Key": KEY},
+            json={"query": "same body"},
+        )
+        retry = await client.post(
+            "/api/v1/json-turn",
+            headers={"Authorization": f"Bearer {token}", "Idempotency-Key": KEY},
+            json={"query": "same body"},
+        )
+
+    assert first.status_code == 200, "the refusal must not 500 the middleware"
+    assert _replayed(retry), "it must still replay under the raw fallback scope"
+
+
 # ---------------------------------------------------------------------------
 # Tenancy: the raw-credential scope distinguished tenants as a side effect (the
 # claim rides inside the signed token). Keying on ``sub`` alone would drop that

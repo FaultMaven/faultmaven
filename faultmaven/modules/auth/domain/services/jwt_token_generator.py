@@ -1471,10 +1471,14 @@ async def revocation_reason(revocation_store, payload: Dict) -> Optional[str]:
         # Coerced INSIDE a try, and only for the watermark arm. A malformed
         # ``iat`` is a property of the watermark's inputs, not of the jti, and
         # letting it raise here turned a revoked-jti answer into an exception
-        # that ``AuthService._is_revoked`` swallows into "not revoked" — a
+        # that ``AuthService._is_revoked`` swallowed into "not revoked" — a
         # revoked token accepted because a DIFFERENT claim was malformed (#828
-        # delta review). Nothing to match a watermark against is the same
-        # outcome as a claim that cannot be read: only the jti arm applies.
+        # delta review). That check fails closed now (#1478), so the same
+        # malformation would refuse the request instead; the coercion stays
+        # inside the try either way, because refusing a request over a bad
+        # ``iat`` on a token whose jti answers cleanly is still the wrong
+        # answer. Nothing to match a watermark against is the same outcome as
+        # a claim that cannot be read: only the jti arm applies.
         try:
             issued_at = int(raw_iat)
         except (TypeError, ValueError):
@@ -2199,6 +2203,50 @@ def build_jwt_token_generator(
     )
 
 
+class CorruptRevocationEntry(Exception):
+    """A stored revocation value could not be read as a value (#1478).
+
+    Raised by a store at the ONE point where it turns a persisted watermark
+    into a number, and nowhere else. It is the store saying "this row exists
+    and I cannot interpret it", which is a **storage** finding — the purest
+    case of "we could not find out whether this token is revoked" — and it is
+    therefore classified alongside the driver errors in
+    ``AuthService.STORE_READ_FAILURES``.
+
+    **Why a type and not a wider catch.** The alternative was to put bare
+    ``ValueError``/``TypeError`` in that tuple, which would have re-admitted
+    every arithmetic or wrong-type bug in this package as "revocation state
+    unknown" — the imprecision the narrow tuple exists to avoid. Here the
+    precision comes from WHERE the catch is: at the parse of a value read from
+    the store, the context proves the failure is a corrupt stored value rather
+    than a bug in arithmetic somewhere else. The tuple cannot express that; a
+    three-line `try` around the parse can.
+
+    What it covers, and why both halves are needed:
+
+    * ``ValueError`` — a non-numeric body, e.g. the literal ``"revoked"``
+      written into a watermark key, or a text value in a float column on
+      SQLite's dynamic typing;
+    * ``TypeError`` — the same corruption arriving by a different route: a
+      ``NULL`` column or a missing key gives ``int(float(None))``. Catching
+      only ``ValueError`` would leave that half falling through unclassified,
+      which is the bug this class was introduced to close.
+
+    Carries the offending value's type and a truncated repr, for the log line.
+    The API body never shows either: the request path answers a fixed sentence
+    (``REVOCATION_STATE_UNKNOWN``), and on the Redis arm the raw body can be
+    attacker-influenced, which is why it is truncated rather than passed on.
+    """
+
+    def __init__(self, raw, *, field: str):
+        self.field = field
+        self.raw_type = type(raw).__name__
+        super().__init__(
+            f"Stored revocation {field} is not readable as a number "
+            f"({self.raw_type}: {repr(raw)[:40]})"
+        )
+
+
 class ITokenRevocationStore(ABC):
     """Interface for token revocation tracking.
 
@@ -2317,9 +2365,13 @@ class ITokenRevocationStore(ABC):
 
         **Abstract, like every other method here.** It is the one the request
         path actually calls, so a store that does not implement it fails on
-        every authenticated request — and ``AuthService._is_revoked`` turns that
-        into "not revoked", so the symptom is revocation silently OFF rather
-        than an error anybody sees. A concrete default on this class would let a
+        every authenticated request — and before #1478 ``AuthService._is_revoked``
+        turned that into "not revoked", so the symptom was revocation silently
+        OFF rather than an error anybody saw. The check fails closed now, and
+        the resulting ``AttributeError`` is a programming error rather than a
+        store read failure, so it is deliberately NOT laundered into
+        "revocation state unknown" — but an abstract method is still what stops
+        the question arising. A concrete default on this class would let a
         subclass inherit an answer it never considered; instead the two shapes
         are offered explicitly and an implementer picks one:
 

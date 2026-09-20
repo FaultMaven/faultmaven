@@ -77,6 +77,7 @@ from typing import Optional
 
 from fastapi import Depends, HTTPException, Request, status
 
+from faultmaven.api.exception_handlers import revocation_state_unknown_http_exception
 from faultmaven.api.middleware.auth import _extract_token, get_auth_service
 from faultmaven.api.middleware.principal import (
     RequestPrincipal,
@@ -94,6 +95,7 @@ from faultmaven.models.interfaces_user import IOrganizationRepository
 from faultmaven.modules.auth.domain.services.auth_service import (
     AuthenticationError,
     AuthService,
+    RevocationStateUnknownError,
     TokenRevocationError,
 )
 
@@ -170,6 +172,8 @@ async def bind_request_enterprise_context(
         HTTPException 403: Multi-tenant mode with a verified user whose token
             carries no usable ``enterprise_id`` claim — refused rather than
             defaulted to the Standalone enterprise or derived from the user row.
+        HTTPException 503: The revocation store could not be read, so whether
+            the presented token is revoked is unknown (#1478).
     """
     if tenancy_factory.requested_tenant_provider() != BUILTIN_MULTI:
         # Single-tenant: force the Standalone enterprise, ignoring any injected
@@ -219,6 +223,21 @@ async def bind_request_enterprise_context(
             RequestPrincipal(user_id=None, enterprise_id=_UNSCOPED_ENTERPRISE),
         )
         return
+    except RevocationStateUnknownError as e:
+        # NOT the unscoped binding above (#1478). That arm is for a token this
+        # deployment has JUDGED and rejected, where letting the route's own
+        # dependency answer 401 is right. Here nothing was judged, and this
+        # binder runs as a GLOBAL dependency on every request — so falling
+        # through would hand the route an unscoped context and let it answer
+        # whatever it answers to an anonymous caller, which for a public route
+        # is a served response. Refuse here, with the same 503 and error code
+        # the auth dependencies use.
+        #
+        # Explicit rather than left to propagate: an uncaught exception out of
+        # a global dependency is a 500, which says "FaultMaven is broken"
+        # about a storage condition that clears itself.
+        logger.warning("Revocation state unknown (%s): refusing the request", e.kind)
+        raise revocation_state_unknown_http_exception()
 
     # Fail closed: a verified user without a usable tenant must never fall
     # through to the contextvar's Standalone default under multi-tenant, and must

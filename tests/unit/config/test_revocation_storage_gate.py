@@ -7,12 +7,20 @@ requires. A standalone deployment that **upgrades its image instead of wiping**
 is already stamped ``a1e0c17bd001``, so ``alembic upgrade head`` is a no-op and
 the table never appears — and then:
 
-* ``AuthService._is_revoked`` catches everything and returns ``False``, so every
-  revoked token is ACCEPTED;
-* the only signal is a log line, which rolls out of ``kubectl logs``.
+* ``AuthService._is_revoked`` caught everything and returned ``False``, so
+  every revoked token was ACCEPTED;
+* the only signal was a log line, which rolls out of ``kubectl logs``.
 
-Every earlier in-place edit to that baseline failed LOUDLY there. This one fails
-open, on a security control, which is why it gets a gate rather than a warning.
+Every earlier in-place edit to that baseline failed LOUDLY there. That one
+failed open, on a security control, which is why it got a gate rather than a
+warning.
+
+Since #1478 the read fails CLOSED, so the same missing table now refuses every
+authenticated request with 503 ``REVOCATION_STATE_UNKNOWN``. That strengthens
+the gate rather than retiring it: the condition is permanent (one migration,
+already stamped), so a pod that booted would report itself healthy while
+serving nothing but 503s. The refusal message says which of the two it is,
+and this module asserts the sentence — an operator's next move depends on it.
 """
 
 from __future__ import annotations
@@ -59,7 +67,7 @@ def _store(tmp_path, *, with_table: bool):
     return SqlTokenRevocationStore(session_factory=factory), engine
 
 
-class TestTheGateRefusesWhatFailsOpen:
+class TestTheGateRefusesAnUnreadableStore:
     async def test_a_missing_table_refuses_the_boot(self, tmp_path):
         store, engine = _store(tmp_path, with_table=False)
         try:
@@ -71,7 +79,12 @@ class TestTheGateRefusesWhatFailsOpen:
         message = str(exc.value)
         # The remediation has to name the trap, because the obvious move is a
         # no-op: this database is already stamped with the only migration.
-        assert "fails OPEN" in message
+        # The refusal must say what would happen if it booted. Since #1478
+        # that is "every authenticated request is refused", not "revoked
+        # tokens are accepted" — and the operator's next move differs
+        # accordingly, so the sentence is asserted rather than left to drift.
+        assert "fails CLOSED" in message
+        assert "REVOCATION_STATE_UNKNOWN" in message
         assert "alembic upgrade head" in message
         # And it must name something that WORKS. This said
         # `fm-wipe-deployment --wipe`, whose own docstring is headed "What it

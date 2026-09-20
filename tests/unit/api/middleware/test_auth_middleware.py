@@ -31,6 +31,7 @@ from faultmaven.api.middleware.auth import (
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.auth.domain.services.auth_service import (
     AuthenticationError,
+    RevocationStateUnknownError,
     TokenRevocationError,
 )
 from tests.utils import request_with_authorization
@@ -249,13 +250,19 @@ class TestGetCurrentUser:
 
     @pytest.mark.asyncio
     async def test_every_authentication_failure_is_401(self, mock_auth_service):
-        """No auth failure on this dependency may answer 403.
+        """Every failure that is a VERDICT ON THE CREDENTIAL answers 401.
 
         The property, not the three instances: 403 on an authentication path
         tells a client its dead credential is live, and the client's only
         sensible response to that is to keep using it. Pins the whole failure
         domain so a future exception type cannot reintroduce the split that
         made a revoked token 401 on case routes and 403 here.
+
+        One deliberate exception, and it is not a widening of this rule:
+        ``RevocationStateUnknownError`` answers **503** (#1478), because there
+        the credential was never judged — the store that judges it could not be
+        read. Pinned in ``test_an_unreadable_revocation_store_is_503_not_401``
+        below, which also checks it is not the 403 this test forbids.
         """
         failures = [
             TokenRevocationError(),
@@ -280,6 +287,32 @@ class TestGetCurrentUser:
                 f"{type(failure).__name__} answered "
                 f"{exc_info.value.status_code}, not 401"
             )
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_revocation_store_is_503_not_401(
+        self, mock_auth_service
+    ):
+        """ "We could not find out" is not "your credential is bad" (#1478).
+
+        A 401 here would send a client that tears down on 401 — the copilot
+        does — into discarding a perfectly live credential over a storage blip
+        a retry clears, and would make a revoked token and an unreadable store
+        indistinguishable to whoever is paged. Still not a 403, for the reason
+        the test above gives.
+        """
+        mock_auth_service.extract_user_from_token_with_revocation_check.side_effect = (
+            RevocationStateUnknownError(kind="OperationalError")
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await get_current_user(
+                request_with_authorization("Bearer some-token"),
+                credentials=None,
+                auth_service=mock_auth_service,
+            )
+
+        assert exc_info.value.status_code == 503
+        assert exc_info.value.headers["x-error-code"] == "REVOCATION_STATE_UNKNOWN"
 
     @pytest.mark.asyncio
     async def test_raises_401_on_malformed_token(self, mock_auth_service):

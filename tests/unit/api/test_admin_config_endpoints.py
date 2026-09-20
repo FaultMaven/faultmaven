@@ -1260,8 +1260,9 @@ class TestTokenRevocationDurableAnswersWhetherRevocationIsInForce:
     ):
         """The upgraded-not-wiped deployment (#828 delta review).
 
-        Type alone said durable here. Revocation is in fact OFF — every read
-        raises and ``AuthService._is_revoked`` returns False — so the one
+        Type alone said durable here. Revocation is in fact unanswerable —
+        every read raises, which before #1478 ``AuthService._is_revoked``
+        turned into False and now turns into a 503 refusal — so the one
         observable added to answer "are my revocations in force?" was giving
         the wrong answer in the only state where it matters.
         """

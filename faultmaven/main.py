@@ -281,9 +281,11 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
     user_store = container.get_user_store()
     # Every revoke path depends on this store (#767/#769), so a missing
     # registration is fatal rather than something to discover on the first
-    # logout. Presence only — this does NOT probe Redis connectivity, so a
-    # dead backing store still boots and surfaces per-request instead
-    # (request path fails open, generator validation fails closed).
+    # logout. Presence only — this does NOT probe connectivity. The database
+    # arm is probed a few lines below by `validate_revocation_storage`; the
+    # Redis arm is not, so a dead Redis still boots and surfaces per-request,
+    # where every path now fails CLOSED (#1478): the request path refuses with
+    # 503 REVOCATION_STATE_UNKNOWN, generator validation refuses too.
     token_revocation_store = container.get_service("token_revocation_store")
 
     logger.info(
@@ -384,10 +386,13 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
     )
 
     # Can the resolved revocation store reach its storage? Presence was checked
-    # at composition; this asks whether the table is there (#828). Revocation
-    # fails OPEN — `AuthService._is_revoked` swallows a read error into "not
-    # revoked" — so a missing `token_revocations` is a security control silently
-    # off, which is why it refuses the boot rather than warning.
+    # at composition; this asks whether the table is there (#828). Since #1478
+    # the request-path check fails CLOSED, so a missing `token_revocations` is
+    # no longer a silently-disabled control — it is every authenticated request
+    # answering 503. Refusing the boot is still the right answer, and for a
+    # better reason: the condition is permanent (one migration, already
+    # stamped; `alembic upgrade head` is a no-op), so a pod that came up would
+    # serve nothing but 503s while reporting itself healthy.
     #
     # AFTER bootstrap, for the same reason the RLS guard above is: bootstrap is
     # what runs the migrations (and creates `data/` in the first place), so a

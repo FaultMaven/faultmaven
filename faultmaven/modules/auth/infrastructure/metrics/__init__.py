@@ -1,6 +1,7 @@
-"""OAuth metrics module.
+"""Auth module metrics.
 
-Provides Prometheus metrics for OAuth 2.0 + PKCE authentication.
+Prometheus metrics for OAuth 2.0 + PKCE authentication, and for the
+request-path token revocation check (#1478).
 """
 
 from faultmaven.modules.auth.infrastructure.metrics.oauth_metrics import (
@@ -20,6 +21,9 @@ from faultmaven.modules.auth.infrastructure.metrics.oauth_metrics import (
     oauth_tokens_issued,
     oauth_tokens_refreshed,
     oauth_tokens_revoked,
+)
+from faultmaven.modules.auth.infrastructure.metrics.revocation_metrics import (
+    revocation_state_unknown_total,
 )
 
 __all__ = [
@@ -44,4 +48,6 @@ __all__ = [
     "oauth_invalid_client_attempts",
     "oauth_redirect_uri_mismatches",
     "oauth_codes_expired",
+    # Revocation-check telemetry (#1478)
+    "revocation_state_unknown_total",
 ]
