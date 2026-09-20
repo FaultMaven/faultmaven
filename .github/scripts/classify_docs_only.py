@@ -51,12 +51,36 @@ DOC_ROOTS = ("docs", ".claude")
 # shape the refusal exists for.
 DOCISH_NAME_TOKENS = ("doc", "claude", "readme")
 
-# pytest's temporary directories. A path rooted at one cannot name a tracked
-# file, so ``tmp_path / "docs"`` is a scratch directory that happens to be
-# spelled like the documentation root, not a reference to it. Matched on
-# underscore-separated parts rather than as substrings, so ``template_dir``
-# is not read as a temporary.
-TEMP_NAME_PARTS = ("tmp", "temp", "tmpdir", "tempdir")
+# Temporary directories. A path rooted at one cannot name a tracked file, so
+# ``tmp_path / "docs"`` is a scratch directory that happens to be spelled like
+# the documentation root, not a reference to it.
+#
+# ‼ This discharge is decided by VALUE, not by spelling, with exactly one
+# exception. pytest's temporary fixtures arrive as function parameters, so
+# there is no value to inspect and they are matched by their EXACT names --
+# these four and nothing else. Everything else has to BE a temporary: a
+# ``tempfile`` factory call, or a name bound once to one. Matching a name
+# part used to be the rule, and it made the discharge forgeable: renaming the
+# repository root ``tmp_root`` silenced a real refusal, and a helper called
+# ``build_temp_view()`` marked its result temporary because the HELPER's name
+# carried the word (#1549 review).
+PYTEST_TEMP_FIXTURES = ("tmp_path", "tmp_path_factory", "tmpdir", "tmpdir_factory")
+TEMPFILE_FACTORIES = (
+    "mkdtemp",
+    "mkstemp",
+    "gettempdir",
+    "gettempdirb",
+    "mktemp",
+    "TemporaryDirectory",
+    "NamedTemporaryFile",
+    "TemporaryFile",
+    "SpooledTemporaryFile",
+)
+
+# Modules whose `join` and `dirname` build paths. Tracked because
+# ``from os.path import join`` reaches them through a bare name, with no
+# attribute for the call site to recognise.
+PATH_MODULES = ("os.path", "posixpath", "ntpath", "os")
 
 
 class ProbeBroken(Exception):
@@ -273,32 +297,11 @@ def _pins_beneath(prefix: str, literals: set) -> bool:
     return False
 
 
-def _names_in(node: ast.AST):
-    """Every identifier ``node`` mentions, as a name or an attribute."""
-    for inner in ast.walk(node):
-        if isinstance(inner, ast.Name):
-            yield inner.id
-        elif isinstance(inner, ast.Attribute):
-            yield inner.attr
-
-
-def _spelled_temporary(identifier: str) -> bool:
-    return any(part in TEMP_NAME_PARTS for part in identifier.lower().split("_"))
-
-
-def _is_temporary(bases: Iterable[ast.AST], temporaries: frozenset) -> bool:
-    """True when what a path is built ON is a pytest temporary directory.
-
-    Only what comes BEFORE the documentation component is consulted, because
-    that is what decides which tree the path lands in: ``tmp_path / "docs"``
-    is a scratch directory, while ``ROOT / "docs" / tmp_name`` reads the
-    repository's own and must still refuse.
-    """
-    for base in bases:
-        for identifier in _names_in(base):
-            if _spelled_temporary(identifier) or identifier in temporaries:
-                return True
-    return False
+def _parent_of(text: str, levels: int = 1) -> str:
+    """The ancestor directory of a resolved path, as pathlib would give it."""
+    parts = _path_parts(text)
+    kept = parts[: len(parts) - levels] if levels <= len(parts) else []
+    return "/".join(kept)
 
 
 def _is_docish_name(node: ast.AST) -> bool:
@@ -333,6 +336,7 @@ class _ConstantPaths:
         bindings: dict = {}
         counts: dict = {}
         every: dict = {}
+        imported: dict = {}
 
         def bind(target: ast.AST) -> None:
             for inner in ast.walk(target):
@@ -354,6 +358,13 @@ class _ConstantPaths:
                 bind(node.target)
             elif isinstance(node, ast.withitem) and node.optional_vars is not None:
                 bind(node.optional_vars)
+            elif isinstance(node, ast.ImportFrom):
+                if node.module in PATH_MODULES or node.module == "tempfile":
+                    for alias in node.names:
+                        imported[alias.asname or alias.name] = (
+                            node.module,
+                            alias.name,
+                        )
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 args = node.args
                 for arg in (
@@ -370,6 +381,7 @@ class _ConstantPaths:
             if counts.get(name) == 1:
                 bindings[name] = values[0]
         self._bindings = bindings
+        self.imported = imported
 
         # Names that are bound to a documentation path SOMEWHERE, even when
         # they are rebound and so resolve to nothing. Evidence only -- it can
@@ -384,30 +396,98 @@ class _ConstantPaths:
             )
         )
 
-        # A name bound once to something rooted at a temporary directory is
-        # itself a temporary directory, however it is spelled -- `base =
-        # tmp_path_factory.mktemp("kb")` is the shape that needs this.
-        # Iterated to a fixed point so a chain of them propagates, over
-        # identifier sets gathered ONCE: re-walking each bound expression per
-        # iteration made this quadratic in the module's binding count.
-        mentions = {
-            name: frozenset(_names_in(value)) for name, value in bindings.items()
-        }
-        temporary = {
-            name
-            for name, identifiers in mentions.items()
-            if any(_spelled_temporary(identifier) for identifier in identifiers)
-        }
-        while True:
+        # A name bound once to a temporary directory is itself one -- `base =
+        # tmp_path_factory.mktemp("kb")`, `scratch = tempfile.mkdtemp()`.
+        # Propagated over the bound VALUE, not over the identifiers the value
+        # mentions: mention-propagation let a helper's name decide, so
+        # `ROOT = build_temp_view()` disarmed every documentation path built
+        # on ROOT. Iterated to a fixed point for a chain of them; the
+        # remaining set shrinks each round, and real chains are one or two
+        # links long.
+        self.temporary: frozenset = frozenset()
+        pending = dict(bindings)
+        while pending:
             grown = {
-                name
-                for name, identifiers in mentions.items()
-                if name not in temporary and identifiers & temporary
+                name for name, value in pending.items() if self.is_temporary(value)
             }
             if not grown:
                 break
-            temporary |= grown
-        self.temporary = frozenset(temporary)
+            self.temporary = frozenset(self.temporary | grown)
+            pending = {n: v for n, v in pending.items() if n not in grown}
+
+    def is_temporary(self, node: Optional[ast.AST], depth: int = 0) -> bool:
+        """True when ``node`` evaluates to a temporary directory.
+
+        A VALUE question with one name-based exception, pytest's own temp
+        fixtures, which arrive as parameters and so have no value to look at.
+        Everything else must be a ``tempfile`` factory call, a method on one,
+        or a name bound once to one. A path built on a temporary is temporary:
+        the leftmost operand of a division chain is what decides which tree it
+        lands in.
+        """
+        if node is None or depth > 6:
+            return False
+        if isinstance(node, ast.Name):
+            return node.id in PYTEST_TEMP_FIXTURES or node.id in self.temporary
+        if isinstance(node, ast.arg):
+            return node.arg in PYTEST_TEMP_FIXTURES
+        if isinstance(node, ast.Attribute):
+            if node.attr in PYTEST_TEMP_FIXTURES:
+                return True
+            return self.is_temporary(node.value, depth + 1)
+        if isinstance(node, ast.Subscript):
+            return self.is_temporary(node.value, depth + 1)
+        if isinstance(node, ast.FormattedValue):
+            return self.is_temporary(node.value, depth + 1)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Div, ast.Add)):
+            return self.is_temporary(node.left, depth + 1)
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute):
+                if func.attr in TEMPFILE_FACTORIES:
+                    return True
+                if func.attr in self.PATH_CTORS:
+                    return any(self.is_temporary(arg, depth + 1) for arg in node.args)
+                return self.is_temporary(func.value, depth + 1)
+            name = getattr(func, "id", "")
+            if name in self.PATH_CTORS:
+                return any(self.is_temporary(arg, depth + 1) for arg in node.args)
+            module_attr = self.imported.get(name)
+            if module_attr is not None:
+                module, attr = module_attr
+                return module == "tempfile" and attr in TEMPFILE_FACTORIES
+        return False
+
+    def elements(self, node: Optional[ast.AST], depth: int = 0) -> Optional[list]:
+        """The items of a sequence literal, through an assign-once name.
+
+        ``"/".join(PARTS)`` is otherwise one unresolvable argument, and the
+        components it joins are never looked at (#1549 review).
+        """
+        if node is None or depth > 5:
+            return None
+        if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+            return list(node.elts)
+        if isinstance(node, ast.Name):
+            return self.elements(self._bindings.get(node.id), depth + 1)
+        return None
+
+    def is_dirname(self, func: ast.AST) -> bool:
+        """True for ``os.path.dirname`` however it was imported."""
+        if isinstance(func, ast.Attribute):
+            return func.attr == "dirname"
+        module_attr = self.imported.get(getattr(func, "id", ""))
+        return module_attr is not None and module_attr[1] == "dirname"
+
+    def is_path_join(self, func: ast.AST) -> bool:
+        """True for ``os.path.join`` however it was imported."""
+        if isinstance(func, ast.Attribute) and func.attr == "join":
+            owner = func.value
+            return getattr(owner, "attr", None) == "path" or getattr(
+                owner, "id", ""
+            ) in ("path", "posixpath", "ntpath", "os")
+        module_attr = self.imported.get(getattr(func, "id", ""))
+        return module_attr is not None and module_attr[1] == "join"
 
     def resolve(self, node: Optional[ast.AST], depth: int = 0) -> Optional[str]:
         """The constant path ``node`` spells, or ``None``."""
@@ -417,8 +497,28 @@ class _ConstantPaths:
             return node.value if isinstance(node.value, str) else None
         if isinstance(node, ast.Name):
             return self.resolve(self._bindings.get(node.id), depth + 1)
+        if isinstance(node, ast.Attribute) and node.attr == "parent":
+            owner = self.resolve(node.value, depth + 1)
+            return None if owner is None else _parent_of(owner)
+        if isinstance(node, ast.Subscript):
+            # `X.parents[n]` -- the n-th ancestor, which `pathlib` numbers
+            # from the immediate parent at 0.
+            owner = node.value
+            index = node.slice
+            if (
+                isinstance(owner, ast.Attribute)
+                and owner.attr == "parents"
+                and isinstance(index, ast.Constant)
+                and isinstance(index.value, int)
+            ):
+                base = self.resolve(owner.value, depth + 1)
+                return None if base is None else _parent_of(base, index.value + 1)
+            return None
         if isinstance(node, ast.Call):
             func = node.func
+            if self.is_dirname(func) and len(node.args) == 1:
+                owner = self.resolve(node.args[0], depth + 1)
+                return None if owner is None else _parent_of(owner)
             name = func.attr if isinstance(func, ast.Attribute) else None
             name = name or getattr(func, "id", None)
             if name in self.PATH_CTORS and node.args and not node.keywords:
@@ -464,7 +564,7 @@ def _segment_runs(segments: Sequence[Optional[str]], separator: str) -> list:
     return runs
 
 
-def _documentation_prefixes(runs: Iterable[str]) -> list:
+def _documentation_prefixes(runs: Iterable[str], in_text: bool = False) -> list:
     """The part of each run from its first documentation root onwards.
 
     Stops at the first component carrying a placeholder or a glob, because
@@ -472,6 +572,15 @@ def _documentation_prefixes(runs: Iterable[str]) -> list:
     discharged by the literal ``docs/%s`` -- which the literal walk collects
     from the template itself, and which pins a directory that does not
     exist. A guard discharged by its own input is no guard.
+
+    ``in_text`` says the run is free text rather than spelled path
+    components -- an f-string, a concatenation, a ``.format()`` template. A
+    path mentioned in prose ENDS AT WHITESPACE, so the path stops there
+    too. Without that, an assertion message reading ``f"{SPEC} is missing.
+    It is generated by scripts/..."`` parses as a directory nobody could
+    ever pin, and every docs-only diff is refused over a sentence. The rule
+    is off for the path builders, where whitespace inside a component is
+    part of the name (``Path("docs") / " guides"``).
     """
     prefixes = []
     for run in runs:
@@ -479,9 +588,14 @@ def _documentation_prefixes(runs: Iterable[str]) -> list:
         for index, part in enumerate(parts):
             if part not in DOC_ROOTS:
                 continue
-            known = []
+            known: list = []
             for component in parts[index:]:
                 if any(marker in component for marker in "%{}*"):
+                    break
+                if in_text and component.split() != [component]:
+                    head = component.split()[0] if component.split() else ""
+                    if head:
+                        known.append(head)
                     break
                 known.append(component)
             if known:
@@ -513,6 +627,49 @@ class _Composition(NamedTuple):
     separator: str
 
 
+def _template_chunks(template: str, args: Sequence[ast.AST]) -> list:
+    """Split a ``str.format`` template into literal text and its arguments.
+
+    ``"{}/{}/{}".format("docs", section, name)`` used to be looked at as the
+    template alone, so the word ``docs`` never reached the walk at all
+    (#1549 review). Returns the chunks in order, each either literal text or
+    the argument node that fills that placeholder (``None`` when the field
+    names an argument that is not there).
+    """
+    chunks: list = []
+    literal: list = []
+    automatic = 0
+    index = 0
+    while index < len(template):
+        character = template[index]
+        if character in "{}" and template[index : index + 2] == character * 2:
+            literal.append(character)
+            index += 2
+            continue
+        if character != "{":
+            literal.append(character)
+            index += 1
+            continue
+        close = template.find("}", index)
+        if close == -1:
+            break
+        field = template[index + 1 : close].split("!")[0].split(":")[0]
+        chunks.append("".join(literal))
+        literal = []
+        position = None
+        if field == "":
+            position = automatic
+            automatic += 1
+        elif field.isdigit():
+            position = int(field)
+        chunks.append(
+            args[position] if position is not None and position < len(args) else None
+        )
+        index = close + 1
+    chunks.append("".join(literal))
+    return chunks
+
+
 def _compositions(nodes: Sequence[ast.AST], paths: _ConstantPaths):
     """Every expression under ``tree`` that builds a string out of pieces.
 
@@ -520,8 +677,16 @@ def _compositions(nodes: Sequence[ast.AST], paths: _ConstantPaths):
     expression, never whether it fires -- which is why an idiom missing from
     this list is a gap in COVERAGE (one more unreadable shape that stays
     silent) and never a false refusal. Division, ``/=``, concatenation,
-    ``%``, f-strings, ``.format()``, ``str.join``, ``os.path.join`` and a
-    multi-argument ``Path(...)`` are the ones #1549 enumerated.
+    ``+=``, ``%``, f-strings, ``.format()``, ``str.join``, ``os.path.join``
+    (however imported), ``joinpath``, ``Path(...)`` and taking a path's
+    DIRECTORY (``.parent``, ``.parents[n]``, ``os.path.dirname``) are the
+    ones #1549 and its review enumerated.
+
+    ‼ The pieces of an f-string are its `FormattedValue`s, and what a piece
+    IS matters -- so the placeholder's own expression is carried here, not
+    the `FormattedValue` wrapping it. Carrying the wrapper made the
+    name-based evidence arms structurally dead on every f-string: a
+    `FormattedValue` is never an `ast.Name`, so nothing could ever match it.
     """
     nested = set()
     for node in nodes:
@@ -538,6 +703,22 @@ def _compositions(nodes: Sequence[ast.AST], paths: _ConstantPaths):
             separator=separator,
         )
 
+    def directory_of(owner):
+        """`X.parent` and friends: the DIRECTORY holding a resolved path.
+
+        Pinning a document and then reading its directory is the most
+        natural way to write a docs test, and it pins nothing beneath that
+        directory -- so the parent is resolved and checked like any other
+        path. The owner leads the operands so the temporary discharge and
+        the name-based evidence both still see it.
+        """
+        return _Composition(
+            node=node,
+            segments=[None, paths.resolve(node)],
+            operands=[owner, node],
+            separator="/",
+        )
+
     for node in nodes:
         if isinstance(node, ast.AugAssign):
             if isinstance(node.op, ast.Div):
@@ -552,7 +733,19 @@ def _compositions(nodes: Sequence[ast.AST], paths: _ConstantPaths):
             elif isinstance(node.op, ast.Mod):
                 yield built([node.left], "")
         elif isinstance(node, ast.JoinedStr):
-            yield built(node.values, "")
+            yield built(
+                [
+                    piece.value if isinstance(piece, ast.FormattedValue) else piece
+                    for piece in node.values
+                ],
+                "",
+            )
+        elif isinstance(node, ast.Attribute) and node.attr == "parent":
+            yield directory_of(node.value)
+        elif isinstance(node, ast.Subscript):
+            owner = node.value
+            if isinstance(owner, ast.Attribute) and owner.attr == "parents":
+                yield directory_of(owner.value)
         elif isinstance(node, ast.Call):
             func = node.func
             name = (
@@ -560,7 +753,11 @@ def _compositions(nodes: Sequence[ast.AST], paths: _ConstantPaths):
                 if isinstance(func, ast.Attribute)
                 else getattr(func, "id", "")
             )
-            if name in _ConstantPaths.PATH_CTORS and node.args:
+            if paths.is_dirname(func) and len(node.args) == 1:
+                yield directory_of(node.args[0])
+            elif paths.is_path_join(func):
+                yield built(node.args, "/")
+            elif name in _ConstantPaths.PATH_CTORS and node.args:
                 # One argument too: `Path("docs")` is a handle on the
                 # documentation root, and nothing built from it downstream
                 # need be a composition this walk can see. That is not the
@@ -571,26 +768,34 @@ def _compositions(nodes: Sequence[ast.AST], paths: _ConstantPaths):
             elif name == "joinpath" and isinstance(func, ast.Attribute):
                 yield built([func.value, *node.args], "/")
             elif name == "format" and isinstance(func, ast.Attribute):
-                yield built([func.value], "")
-            elif name == "join" and isinstance(func, ast.Attribute):
-                owner = func.value
-                if getattr(owner, "attr", "") == "path" or getattr(owner, "id", "") in (
-                    "path",
-                    "posixpath",
-                    "ntpath",
-                    "os",
-                ):
-                    yield built(node.args, "/")
+                template = paths.resolve(func.value)
+                if template is None:
+                    yield built([func.value], "")
                 else:
-                    separator = paths.resolve(owner)
-                    if separator is not None:
-                        items: list = []
-                        for arg in node.args:
-                            if isinstance(arg, (ast.List, ast.Tuple, ast.Set)):
-                                items.extend(arg.elts)
-                            else:
-                                items.append(arg)
-                        yield built(items, separator)
+                    chunks = _template_chunks(template, node.args)
+                    yield _Composition(
+                        node=node,
+                        segments=[
+                            chunk if isinstance(chunk, str) else paths.resolve(chunk)
+                            for chunk in chunks
+                        ],
+                        operands=[
+                            func.value if isinstance(chunk, str) else chunk
+                            for chunk in chunks
+                        ],
+                        separator="",
+                    )
+            elif name == "join" and isinstance(func, ast.Attribute):
+                separator = paths.resolve(func.value)
+                if separator is not None:
+                    items: list = []
+                    for arg in node.args:
+                        elements = paths.elements(arg)
+                        if elements is None:
+                            items.append(arg)
+                        else:
+                            items.extend(elements)
+                    yield built(items, separator)
 
 
 def unreadable_references(tree: ast.AST, literals: set, source: str = "<tree>"):
@@ -614,13 +819,19 @@ def unreadable_references(tree: ast.AST, literals: set, source: str = "<tree>"):
 
     * a path build only counts when it MENTIONS documentation -- a component
       under ``DOC_ROOTS``, or, where a path build's operand resolves to no
-      constant at all, an identifier named like one;
+      constant at all, an identifier BOUND to a documentation path in this
+      module, or merely NAMED like one where the expression is assembling a
+      path;
     * it is DISCHARGED when the probe can show the path is pinned anyway,
       which covers the real shape on this tree today: a directory spelled
       whole and an unknown filename joined onto it;
-    * a path rooted at a pytest temporary directory is not a repository path.
+    * a path built on a TEMPORARY directory is not a repository path --
+      decided by what the base evaluates to, never by how it is spelled
+      (``PYTEST_TEMP_FIXTURES``);
+    * a path named in PROSE ends at whitespace, so an assertion message
+      quoting a document is not a directory nobody can pin.
 
-    Measured on the tree this shipped against: zero refusals over 10
+    Measured on the tree this shipped against: zero refusals over 11
     documentation references examined, so a correctly scoped refusal costs
     nothing until someone writes one of these shapes.
 
@@ -634,7 +845,11 @@ def unreadable_references(tree: ast.AST, literals: set, source: str = "<tree>"):
       which is also why the literal walk has never seen one;
     * a document reached through a helper in the application package, and
       ``Path(*parts)``, ``os.path.abspath("docs")``, ``str.replace`` and
-      slicing, none of which are idioms ``_compositions`` looks at;
+      slicing, none of which are idioms ``_compositions`` looks at. Taking a
+      pinned document's DIRECTORY was on this list and is not any more --
+      ``.parent``, ``.parents[n]`` and ``os.path.dirname`` are resolved and
+      checked, because it is the most natural way to write a docs test and
+      the review reached ``docs_only=true`` with it (#1549);
     * a ROOT-LEVEL ``*.md`` built dynamically (``ROOT / f"{name}.md"``, or
       ``ROOT.rglob("*.md")``). It names no documentation root, so it is
       indistinguishable from any other dynamic filename -- and refusing on
@@ -656,10 +871,11 @@ def unreadable_references(tree: ast.AST, literals: set, source: str = "<tree>"):
         if "://" in skeleton or skeleton.startswith(("http", "mailto:")):
             continue  # a URL, not a path into this repository
 
+        in_text = built.separator != "/"
         found = [
             (start, prefix)
             for start, text in _segment_runs(segments, built.separator)
-            for prefix in _documentation_prefixes([text])
+            for prefix in _documentation_prefixes([text], in_text=in_text)
         ]
         prefixes = [prefix for _, prefix in found]
         if found:
@@ -675,24 +891,26 @@ def unreadable_references(tree: ast.AST, literals: set, source: str = "<tree>"):
             #   is a fact about the code, so it counts whatever the idiom.
             # * merely NAMED like one -- `DOCS_DIR / name`, the commonest
             #   real shape, and a `docs_dir` fixture with it. A guess, so it
-            #   counts only for a path BUILDER: an identifier says nothing
-            #   about what an f-string or a `.format()` is assembling, and
-            #   the test tree is full of `document_lines` and
-            #   `MAX_BULK_DOCUMENT_IDS`.
+            #   counts only where the expression is BUILDING A PATH: either a
+            #   path builder, or a text idiom whose own constants carry a
+            #   separator (`f"{DOCS_DIR}/{name}"`). The test tree is full of
+            #   `document_lines` and `MAX_BULK_DOCUMENT_IDS`, and neither is
+            #   assembling a path.
+            spells_a_path = built.separator == "/" or "/" in skeleton
             named = [
                 index
                 for index, (segment, operand) in enumerate(zip(segments, operands))
                 if segment is None
                 and (
                     (isinstance(operand, ast.Name) and operand.id in paths.documentary)
-                    or (built.separator == "/" and _is_docish_name(operand))
+                    or (spells_a_path and _is_docish_name(operand))
                 )
             ]
             if not named:
                 continue
             marker = named[0]
 
-        if _is_temporary(operands[:marker], paths.temporary):
+        if any(paths.is_temporary(base) for base in operands[:marker]):
             continue
         if prefixes and all(_pins_beneath(prefix, literals) for prefix in prefixes):
             examined += 1
@@ -856,9 +1074,12 @@ def main() -> int:
     if result.unreadable:
         print(
             f"{len(result.unreadable)} documentation reference(s) under tests/ "
-            "cannot be read by the pin probe. Spell the path whole "
-            '(ROOT / "docs" / "section" / "file.md") or name the directory in '
-            "one literal, so the probe can tell which documents it reads."
+            "cannot be read by the pin probe. Spell each path whole "
+            '(ROOT / "docs" / "section" / "file.md"), name the directory in '
+            "one literal, and INLINE any intermediate handle -- a lone "
+            'DOCS = ROOT / "docs" is itself unreadable even when every use '
+            "of it is not, so folding it into its uses is usually the whole "
+            "fix. Then the probe can tell which documents are read."
         )
     emit(
         decide(changed, result.literals, unreadable=result.unreadable),
