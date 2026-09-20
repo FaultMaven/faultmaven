@@ -9,6 +9,9 @@ on:
     branches:
       - main
       - develop
+      # THROWAWAY: base branch for the #1506 demonstration pull requests.
+      # Removed with this branch; it exists only so the demo PRs trigger.
+      - demo/1506-base
 
 # Default-deny for the GITHUB_TOKEN. No job below reads a secret, posts a
 # comment, uploads SARIF or pushes an image -- they check out and run. A job
