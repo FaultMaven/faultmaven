@@ -33,7 +33,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
 
 #: Deadline for a single component probe.
 #:
@@ -140,25 +140,70 @@ class ComponentHealthMonitor:
         self.component_health: Dict[str, ComponentHealth] = {}
         self.dependency_map: Dict[str, DependencyMapping] = {}
         self.health_history: Dict[str, List[Tuple[datetime, HealthStatus, float]]] = {}
-        #: A record of which components are fatal to serving — not a
-        #: mechanism. **No production code reads it** since ``/readiness``
-        #: moved to the conjunction below; the ``/health`` body's severity is
-        #: computed in ``get_overall_health_status`` from each component's own
-        #: ``.fatal`` field, not from this set. Kept because it is where a
-        #: reader looks for the answer, and asserted by two unit tests.
-        self.fatal_components: Set[str] = set()
-        #: The readiness-fatal set — the components ``/readiness`` answers 503
-        #: for, which removes this pod from its Service. Derived, never
-        #: assigned: a component joins it by declaring BOTH ``fatal`` and
-        #: ``fails_per_replica`` at registration. **Today it is empty**, and
-        #: that is a decision, not an oversight — read
-        #: ``_initialize_default_components`` before adding to it.
-        self.readiness_fatal_components: Set[str] = set()
+        # ``fatal_components`` and ``readiness_fatal_components`` are NOT
+        # stored here. They are read-only properties derived from
+        # ``component_health`` below — see #1548 for why a stored set was not
+        # good enough.
         # RLS-bypass posture (role attributes + table ownership) is static for the
         # life of the process/DB role, so determine it once and reuse it — the
         # per-probe DB cost then stays just the SELECT 1 connectivity check.
         self._rls_posture: Optional[Dict[str, Any]] = None
         self._initialize_default_components()
+
+    @property
+    def fatal_components(self) -> FrozenSet[str]:
+        """The components whose failure the ``/health`` body grades as fatal.
+
+        A record, not a mechanism. **No production code reads it** since
+        ``/readiness`` moved to the conjunction below; the ``/health`` body's
+        severity is computed in ``get_overall_health_status`` from each
+        component's own ``.fatal`` field. Kept because it is where a reader
+        looks for the answer, and asserted by two unit tests — which is
+        exactly why it is derived from the same field that mechanism reads,
+        rather than from a copy taken at registration that could disagree
+        with it.
+        """
+        return frozenset(
+            name for name, health in self.component_health.items() if health.fatal
+        )
+
+    @property
+    def readiness_fatal_components(self) -> FrozenSet[str]:
+        """The components ``/readiness`` answers 503 for, removing this pod
+        from its Service.
+
+        The CONJUNCTION — a component qualifies by declaring BOTH ``fatal``
+        and ``fails_per_replica``. "Fatal to serving" alone is not enough:
+        pulling the pod has to be able to help, which needs a healthy sibling
+        to shift traffic to. **Today it is empty**, and that is a decision,
+        not an oversight — read ``_initialize_default_components`` before
+        adding to it.
+
+        Derived at read time from ``component_health``, which is what makes
+        "derived, never assigned" a property of the code rather than of how
+        the code happens to be written today (#1548). Two things follow, and
+        both are the point:
+
+        - the stored fields are the single source of truth, so the set cannot
+          drift from them — a component's ``fails_per_replica`` flipped
+          anywhere takes effect here, and a test that sets it and concludes
+          "the gate is armed" is now right instead of silently wrong in the
+          unsafe direction;
+        - the result is a ``frozenset``, so ``.add()`` raises
+          ``AttributeError`` and assigning to the attribute does too. Putting
+          ``database`` behind the readiness gate is the outcome the argument
+          at ``_initialize_default_components`` exists to prevent, and it was
+          previously one ``.add()`` away.
+
+        Recomputed per read, which is free at this scale: eight components,
+        and the only production caller is ``check_serving_readiness``, itself
+        reached only by ``GET /readiness`` on a ``periodSeconds: 10`` probe.
+        """
+        return frozenset(
+            name
+            for name, health in self.component_health.items()
+            if health.fatal and health.fails_per_replica
+        )
 
     def _initialize_default_components(self) -> None:
         """Initialize monitoring for default FaultMaven components.
@@ -316,19 +361,12 @@ class ComponentHealthMonitor:
             component=component_name, critical_dependencies=dependencies or []
         )
 
-        if fatal:
-            self.fatal_components.add(component_name)
-        else:
-            self.fatal_components.discard(component_name)
-
-        # The readiness-fatal set is the CONJUNCTION, computed here and
-        # nowhere else. "Fatal to serving" alone is not enough: pulling the
-        # pod has to be able to help, which needs a healthy sibling to shift
-        # traffic to.
-        if fatal and fails_per_replica:
-            self.readiness_fatal_components.add(component_name)
-        else:
-            self.readiness_fatal_components.discard(component_name)
+        # Nothing to add to ``fatal_components`` or
+        # ``readiness_fatal_components`` here: both are properties derived
+        # from the ``ComponentHealth`` just stored, so registering — or
+        # RE-registering with different declarations — updates them by
+        # construction. There is no second place for membership to be
+        # recorded, hence no way for it to disagree (#1548).
 
         # Initialize health history
         self.health_history[component_name] = []
