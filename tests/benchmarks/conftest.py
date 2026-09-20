@@ -59,7 +59,13 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
 # per-file-ignores, and CI's rule selection excludes F401 anyway).
 from tests.utils import generate_case_id, generate_enterprise_id
 
-from .calibration import calibration_scale, describe_calibration, scale_was_used
+from .calibration import (
+    absolute_mode,
+    calibration_scale,
+    describe_calibration,
+    measured_calibration,
+    scale_was_used,
+)
 
 #: Timed samples taken per measured operation, after one untimed warm-up call.
 #:
@@ -274,9 +280,18 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
     stdout there. Without this line a red benchmark run gives a reader no way
     to tell a slow runner from a real regression without downloading a
     90-day artifact — which is the habit #908 is about breaking.
+
+    ``scale_was_used()`` gates the whole thing, so the ordinary CI
+    invocation — which collects this package and deselects every test in it
+    — pays nothing. Where a budget WAS asserted, absolute mode takes the
+    measurement here even though it will not apply it: the nightly job is
+    the one run that asserts raw wall-clock, so it is the one that most
+    needs a number to read a red against. ~0.8 s on a nightly.
     """
     if not scale_was_used():
         return
+    if absolute_mode():
+        measured_calibration()  # report only; the scale stays pinned at 1.0
     terminalreporter.write_sep("-", "benchmark calibration")
     terminalreporter.write_line(describe_calibration())
 

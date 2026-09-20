@@ -8,9 +8,10 @@ find rather than being discovered by a benchmark job a week later.
 
 What it holds down, and why each one:
 
-* **The floor.** `calibration_scale()` never drops below 1.0, so this whole
-  mechanism cannot turn a passing benchmark red. That is the property that
-  makes the reference constant safe to be approximately right.
+* **The floor.** `calibration_scale()` never drops below 1.0, so the scale
+  cannot tighten a budget. That is the property that makes the reference
+  constant safe to be approximately right, and the one that makes the
+  instrument's own noise affordable.
 * **The correction.** A machine measurably slower than the reference gets a
   proportionally larger budget, which is the one thing #908 asked for.
 * **The direction on throughput.** Throughput is 1/latency, so its floor
@@ -42,6 +43,7 @@ import pytest
 import yaml
 
 from tests.benchmarks import calibration
+from tests.benchmarks import conftest as bench_conftest
 from tests.benchmarks.conftest import (
     assert_latency_within,
     assert_throughput_at_least,
@@ -148,6 +150,27 @@ class TestCalibrationScale:
     def test_the_description_says_so_in_absolute_mode(self, monkeypatch):
         monkeypatch.setenv(calibration.ABSOLUTE_MODE_ENV, "1")
         assert "ABSOLUTE" in calibration.describe_calibration()
+
+    def test_absolute_mode_reports_the_number_when_it_has_one(self, monkeypatch):
+        # The nightly job is the only run asserting raw wall-clock, so it is
+        # the one whose reds need "slow runner or real regression"
+        # disambiguating — and the docs tell the reader to read the scale
+        # there. Reporting only "ABSOLUTE mode" would leave them nothing.
+        monkeypatch.setenv(calibration.ABSOLUTE_MODE_ENV, "1")
+        monkeypatch.setattr(
+            calibration, "_measured", calibration.CALIBRATION_REFERENCE_SECONDS * 1.22
+        )
+        line = calibration.describe_calibration()
+        assert "ABSOLUTE" in line
+        assert "1.22x" in line
+        assert "NOT applied" in line
+
+    def test_a_nan_measurement_still_floors_at_one(self, monkeypatch):
+        # `max(1.0, nan)` is 1.0 but `max(nan, 1.0)` is nan, and a nan scale
+        # would make every budget nan and every assertion a hard failure.
+        # Unreachable today; this pins the argument order against a tidy-up.
+        _pin_calibration(monkeypatch, float("nan"))
+        assert calibration.calibration_scale() == 1.0
 
 
 # ---------------------------------------------------- the real measurement
@@ -276,6 +299,67 @@ class TestDiscrimination:
             assert_latency_within(healthy * 1.3, target, "thin_margin")
 
 
+# ------------------------------------------------- the terminal-summary hook
+
+
+class _FakeReporter:
+    def __init__(self):
+        self.lines = []
+
+    def write_sep(self, _char, title):
+        self.lines.append(title)
+
+    def write_line(self, line):
+        self.lines.append(line)
+
+
+class TestTerminalSummary:
+    """Exercised through the hook, not by calling ``describe_calibration``.
+
+    A hook that is registered on every `pytest tests/` run is worth driving
+    the way pytest drives it — the laziness property and the nightly's
+    number both live in the hook body, not in the function it calls.
+    """
+
+    def test_it_says_nothing_when_no_budget_was_asserted(self, monkeypatch):
+        def _explode(*_a, **_k):
+            raise AssertionError("measured for a summary nobody asked for")
+
+        monkeypatch.setattr(calibration, "measure_calibration", _explode)
+        reporter = _FakeReporter()
+        bench_conftest.pytest_terminal_summary(reporter, 0, None)
+        assert reporter.lines == []
+
+    def test_it_reports_the_scale_once_a_budget_was_asserted(self, monkeypatch):
+        _pin_calibration(monkeypatch, calibration.CALIBRATION_REFERENCE_SECONDS * 2)
+        assert_latency_within(0.001, 1.0, "probe")
+        reporter = _FakeReporter()
+        bench_conftest.pytest_terminal_summary(reporter, 0, None)
+        assert any("2.00x" in line for line in reporter.lines), reporter.lines
+
+    def test_absolute_mode_measures_for_the_report(self, monkeypatch):
+        # The nightly path. `calibration_scale()` short-circuits before
+        # measuring in absolute mode, so if the hook did not take the
+        # measurement itself the one job that needs the number would ship
+        # without it.
+        monkeypatch.setenv(calibration.ABSOLUTE_MODE_ENV, "1")
+        calls = []
+
+        def _count(*_a, **_k):
+            calls.append(1)
+            return calibration.CALIBRATION_REFERENCE_SECONDS * 1.5
+
+        monkeypatch.setattr(calibration, "measure_calibration", _count)
+        assert_latency_within(0.001, 1.0, "probe")
+        assert calls == [], "the scale must not measure in absolute mode"
+
+        reporter = _FakeReporter()
+        bench_conftest.pytest_terminal_summary(reporter, 0, None)
+        assert calls == [1], "the summary must measure in absolute mode"
+        body = " ".join(reporter.lines)
+        assert "ABSOLUTE" in body and "1.50x" in body, body
+
+
 # -------------------------------------------- one comparison site, scanned
 
 #: Identifiers that mean "this number is a duration or a rate". A comparison
@@ -299,18 +383,47 @@ TIMING_TOKENS = (
     "_per_second",
 )
 
-#: Where the comparison is allowed to be written out.
-ALLOWED = {
-    ("conftest.py", "assert_latency_within"),
-    ("conftest.py", "assert_throughput_at_least"),
+#: One planted violation per token, each written so that EXACTLY ONE token
+#: matches it. That is what makes every entry in ``TIMING_TOKENS``
+#: load-bearing, checked below by deleting each token in turn — without it
+#: a token can rot unnoticed because a sibling happens to cover the same
+#: planted line (``stats['p95_ms']`` matches both ``p95`` and ``_ms``, which
+#: is how ``p95`` was dead weight in the first version of this control).
+PLANTED_PER_TOKEN = {
+    "measured.best": "assert measured.best < 0.2",
+    "measured.median": "assert measured.median < 0.2",
+    "measured.worst": "assert measured.worst < 0.2",
+    "p50": "assert p50 < 200",
+    "p95": "assert p95 < 200",
+    "p99": "assert p99 < 200",
+    "throughput": "assert throughput > 50",
+    "latency": "assert latency < 0.2",
+    "elapsed": "assert elapsed < 0.2",
+    "duration": "assert duration < 0.2",
+    "_ms": "assert stats['total_ms'] < 200",
+    "_seconds": "assert budget_seconds < 0.2",
+    "_per_second": "assert items_per_second > 50",
 }
 
+#: Assertions the scan must NOT flag. Memory is not scaled by the
+#: calibration, so a megabyte threshold is a legitimate literal comparison.
+PLANTED_NEGATIVES = (
+    "assert rss_mb < 1500",
+    "assert memory_delta < 100",
+    "assert final_memory < 2000",
+)
 
-def _threshold_comparisons(source: str, filename: str) -> List[Tuple[str, str, int]]:
+
+def _threshold_comparisons(
+    source: str, filename: str, tokens=None
+) -> List[Tuple[str, str, int]]:
     """Every ``assert <timing> <op> <number>`` in ``source``.
 
-    Returns (filename, enclosing function, line) triples.
+    Returns (filename, enclosing function, line) triples. ``tokens``
+    overrides the vocabulary, which is how the load-bearing check below
+    drops one entry at a time without mutating module state.
     """
+    vocabulary = TIMING_TOKENS if tokens is None else tokens
     tree = ast.parse(source, filename=filename)
     enclosing: List[str] = []
     found: List[Tuple[str, str, int]] = []
@@ -331,7 +444,7 @@ def _threshold_comparisons(source: str, filename: str) -> List[Tuple[str, str, i
                     right.value, (int, float)
                 ):
                     left = ast.unparse(test.left)
-                    if any(tok in left for tok in TIMING_TOKENS):
+                    if any(tok in left for tok in vocabulary):
                         found.append(
                             (filename, enclosing[-1] if enclosing else "", node.lineno)
                         )
@@ -341,18 +454,47 @@ def _threshold_comparisons(source: str, filename: str) -> List[Tuple[str, str, i
     return found
 
 
+def _planted_source(tokens=None) -> str:
+    """A synthetic module carrying one violation per token, plus negatives."""
+    chosen = PLANTED_PER_TOKEN if tokens is None else tokens
+    body = list(chosen.values()) + list(PLANTED_NEGATIVES)
+    return "def test_x():\n" + "".join(f"    {line}\n" for line in body)
+
+
 class TestOneComparisonSite:
-    def test_the_scan_finds_a_planted_violation(self):
-        """Positive control: a drifted vocabulary reads exactly like a clean tree."""
-        planted = (
-            "def test_x():\n"
-            "    assert measured.best < 0.200\n"
-            "    assert stats['p95_ms'] < 200\n"
-            "    assert throughput > 50\n"
-            "    assert rss_mb < 1500\n"  # memory: must NOT be flagged
+    def test_the_scan_finds_every_planted_violation(self):
+        """Positive control: a drifted vocabulary reads like a clean tree."""
+        hits = _threshold_comparisons(_planted_source(), "planted.py")
+        # One hit per token, and none for the three memory negatives that
+        # follow them.
+        assert len(hits) == len(PLANTED_PER_TOKEN)
+        assert [h[2] for h in hits] == list(range(2, 2 + len(PLANTED_PER_TOKEN)))
+
+    @pytest.mark.parametrize("token", PLANTED_PER_TOKEN)
+    def test_every_token_in_the_vocabulary_is_load_bearing(self, token):
+        """Removing any one token must lose exactly one planted violation.
+
+        The check that a vocabulary entry is doing work. `p95` was not: its
+        only planted line was `stats['p95_ms']`, which `_ms` already
+        matched, so dropping `p95` from the vocabulary entirely left the
+        suite green.
+        """
+        source = _planted_source()
+        full = len(_threshold_comparisons(source, "planted.py"))
+        reduced = tuple(t for t in TIMING_TOKENS if t != token)
+        assert len(reduced) == len(TIMING_TOKENS) - 1, f"{token!r} is not in the list"
+        remaining = len(_threshold_comparisons(source, "planted.py", tokens=reduced))
+        assert remaining == full - 1, (
+            f"{token!r} is dead weight: removing it from TIMING_TOKENS took "
+            f"the hit count from {full} to {remaining}, so another token "
+            "already covers its planted line"
         )
-        hits = _threshold_comparisons(planted, "planted.py")
-        assert [h[2] for h in hits] == [2, 3, 4]
+
+    def test_memory_thresholds_are_never_flagged(self):
+        source = "def test_x():\n" + "".join(
+            f"    {line}\n" for line in PLANTED_NEGATIVES
+        )
+        assert _threshold_comparisons(source, "planted.py") == []
 
     def test_the_scan_looks_at_every_benchmark_module(self):
         """A guard that watched the wrong directory would be green forever."""
@@ -361,13 +503,16 @@ class TestOneComparisonSite:
         assert len([m for m in modules if m.startswith("test_")]) >= 7
 
     def test_no_benchmark_compares_a_threshold_outside_the_helpers(self):
+        # No allowlist. The two helpers compare against a computed `budget`
+        # / `floor` rather than a literal, so the scan's own rule — a timing
+        # name against a NUMERIC LITERAL — already excludes them. An
+        # allowlist here would suppress nothing and would read as "the scan
+        # confirms these two exist", which it does not.
         violations = []
         for path in sorted(BENCHMARK_DIR.glob("*.py")):
             for filename, func, lineno in _threshold_comparisons(
                 path.read_text(), path.name
             ):
-                if (filename, func) in ALLOWED:
-                    continue
                 violations.append(f"{filename}:{lineno} in {func or '<module>'}")
         assert not violations, (
             "latency/throughput thresholds must go through "
@@ -377,19 +522,252 @@ class TestOneComparisonSite:
 
 
 # ------------------------------------------------------------ the workflow
+#
+# ‼ These conditions must be EVALUATED, never matched as substrings. The
+# first version of this guard asserted `"schedule" in condition`, and
+# `"schedule"` is a substring of `!= 'schedule'` exactly as much as of
+# `== 'schedule'` — so inverting the nightly job's condition, which would
+# run the absolute targets on every pull request and reinstate the flake
+# #908 exists to remove, left the suite green. The sibling job's condition
+# at the top of the same file is literally `github.event_name !=
+# 'schedule' && ...`, which is how easy it is to have the string and the
+# wrong side of the comparison at once.
+
+
+class _ExpressionError(AssertionError):
+    """The workflow uses a construct this evaluator was not taught."""
+
+
+def _tokenize(expression: str) -> List[str]:
+    tokens: List[str] = []
+    i = 0
+    while i < len(expression):
+        ch = expression[i]
+        if ch.isspace():
+            i += 1
+        elif expression.startswith(("==", "!=", "&&", "||"), i):
+            tokens.append(expression[i : i + 2])
+            i += 2
+        elif ch in "!()":
+            tokens.append(ch)
+            i += 1
+        elif ch == "'":
+            end = expression.find("'", i + 1)
+            if end < 0:
+                raise _ExpressionError(f"unterminated string in {expression!r}")
+            tokens.append(expression[i : end + 1])
+            i = end + 1
+        elif ch.isalnum() or ch in "_.":
+            j = i
+            while j < len(expression) and (
+                expression[j].isalnum() or expression[j] in "_."
+            ):
+                j += 1
+            tokens.append(expression[i:j])
+            i = j
+        else:
+            raise _ExpressionError(f"unexpected {ch!r} in {expression!r}")
+    return tokens
+
+
+def _truthy(value) -> bool:
+    """GitHub's coercion: null, false, 0 and the empty string are false."""
+    return bool(value)
+
+
+def evaluate_condition(expression, *, event_name: str, inputs: dict) -> bool:
+    """Evaluate the subset of GitHub's expression syntax these jobs use.
+
+    Deliberately narrow: anything it was not taught — a function call such
+    as ``always()``, an unknown context — raises rather than guessing, so a
+    condition that outgrows this evaluator fails loudly instead of being
+    quietly waved through. A missing ``if:`` means the job always runs.
+    """
+    if expression is None:
+        return True
+    tokens = _tokenize(str(expression))
+    pos = 0
+
+    def peek():
+        return tokens[pos] if pos < len(tokens) else None
+
+    def take():
+        nonlocal pos
+        token = tokens[pos]
+        pos += 1
+        return token
+
+    def primary():
+        token = take()
+        if token == "(":
+            value = or_expr()
+            if peek() != ")":
+                raise _ExpressionError(f"missing ')' in {expression!r}")
+            take()
+            return value
+        if token.startswith("'"):
+            return token[1:-1]
+        if token == "github.event_name":
+            return event_name
+        if token.startswith("inputs."):
+            return inputs.get(token[len("inputs.") :])
+        if token in ("true", "false"):
+            return token == "true"
+        raise _ExpressionError(f"unsupported term {token!r} in {expression!r}")
+
+    def unary():
+        if peek() == "!":
+            take()
+            return not _truthy(unary())
+        return primary()
+
+    def comparison():
+        left = unary()
+        if peek() in ("==", "!="):
+            operator = take()
+            right = unary()
+            return (left == right) if operator == "==" else (left != right)
+        return left
+
+    def and_expr():
+        value = comparison()
+        while peek() == "&&":
+            take()
+            right = comparison()
+            value = right if _truthy(value) else value
+        return value
+
+    def or_expr():
+        value = and_expr()
+        while peek() == "||":
+            take()
+            right = and_expr()
+            value = value if _truthy(value) else right
+        return value
+
+    result = or_expr()
+    if pos != len(tokens):
+        raise _ExpressionError(f"trailing tokens in {expression!r}")
+    return _truthy(result)
+
+
+#: Every event shape this workflow can be reached by, and which of the two
+#: jobs must run on it. Naming the job rather than counting is deliberate:
+#: "exactly one runs" is also satisfied by swapping them.
+EVENT_SHAPES = [
+    ("pull_request", {}, "benchmarks"),
+    ("push", {}, "benchmarks"),
+    ("schedule", {}, "nightly-absolute"),
+    (
+        "workflow_dispatch",
+        {"absolute_targets": False, "run_full_suite": False},
+        "benchmarks",
+    ),
+    (
+        "workflow_dispatch",
+        {"absolute_targets": True, "run_full_suite": False},
+        "nightly-absolute",
+    ),
+]
+
+PAIR = ("benchmarks", "nightly-absolute")
+
+
+class TestTheConditionEvaluator:
+    """The detector's own correctness, before it is trusted with the pair.
+
+    A guard built on an evaluator is only as good as the evaluator, and
+    this one exists precisely because the obvious cheap check was wrong.
+    """
+
+    @pytest.mark.parametrize(
+        "expression,event,inputs,expected",
+        [
+            # The pair the substring check could not tell apart.
+            ("github.event_name == 'schedule'", "schedule", {}, True),
+            ("github.event_name != 'schedule'", "schedule", {}, False),
+            ("github.event_name == 'schedule'", "pull_request", {}, False),
+            ("github.event_name != 'schedule'", "pull_request", {}, True),
+            # Absent inputs are falsy, which is what a push looks like.
+            ("inputs.absolute_targets", "push", {}, False),
+            ("!inputs.absolute_targets", "push", {}, True),
+            (
+                "inputs.absolute_targets",
+                "workflow_dispatch",
+                {"absolute_targets": True},
+                True,
+            ),
+            (
+                "!inputs.absolute_targets",
+                "workflow_dispatch",
+                {"absolute_targets": True},
+                False,
+            ),
+            # Precedence and short-circuiting.
+            (
+                "github.event_name != 'schedule' && !inputs.absolute_targets",
+                "schedule",
+                {},
+                False,
+            ),
+            (
+                "github.event_name != 'schedule' && !inputs.absolute_targets",
+                "pull_request",
+                {},
+                True,
+            ),
+            (
+                "github.event_name == 'schedule' || inputs.absolute_targets",
+                "pull_request",
+                {},
+                False,
+            ),
+            (
+                "github.event_name == 'schedule' || inputs.absolute_targets",
+                "schedule",
+                {},
+                True,
+            ),
+            # No condition at all means the job runs.
+            (None, "pull_request", {}, True),
+        ],
+    )
+    def test_known_expressions(self, expression, event, inputs, expected):
+        assert (
+            evaluate_condition(expression, event_name=event, inputs=inputs) is expected
+        )
+
+    @pytest.mark.parametrize(
+        "expression",
+        ["always()", "success() && true", "github.ref == 'refs/heads/main'", "1 +"],
+    )
+    def test_it_refuses_what_it_was_not_taught(self, expression):
+        # Fail loudly, never fail open: replacing a condition with
+        # `always()` must break this guard rather than slip past it.
+        with pytest.raises(AssertionError):
+            evaluate_condition(expression, event_name="push", inputs={})
 
 
 class TestWorkflowWiring:
-    """The calibrated and absolute runs must both actually exist.
+    """The calibrated and absolute runs must both exist, on opposite events.
 
     The scheme has two halves and each is useless alone: a calibrated run
     that never checks wall-clock stops measuring the product target, and an
-    absolute run on a pull request is the flake #908 is about.
+    absolute run on a pull request is the flake #908 is about. So the
+    property is two-sided — on every event shape exactly one of the pair
+    runs, and it is the right one. Pinning only the nightly job's condition
+    is not a property at all: replacing the other one with `always()` would
+    satisfy it.
     """
 
     @staticmethod
     def _workflow() -> dict:
         return yaml.safe_load(WORKFLOW.read_text())
+
+    def _condition(self, job: str):
+        jobs = self._workflow()["jobs"]
+        assert job in jobs, f"{job} is gone from the workflow"
+        return jobs[job].get("if")
 
     def test_the_pull_request_job_does_not_set_absolute_mode(self):
         job = self._workflow()["jobs"]["benchmarks"]
@@ -404,9 +782,30 @@ class TestWorkflowWiring:
             for env in envs
         ), ("the nightly job must set " + calibration.ABSOLUTE_MODE_ENV)
 
-    def test_the_nightly_job_never_gates_a_pull_request(self):
-        condition = self._workflow()["jobs"]["nightly-absolute"]["if"]
-        assert "schedule" in condition
+    @pytest.mark.parametrize(
+        "event,inputs,expected", EVENT_SHAPES, ids=lambda v: str(v)[:40]
+    )
+    def test_exactly_one_of_the_pair_runs_and_it_is_the_right_one(
+        self, event, inputs, expected
+    ):
+        running = [
+            job
+            for job in PAIR
+            if evaluate_condition(self._condition(job), event_name=event, inputs=inputs)
+        ]
+        assert running == [expected], (
+            f"on {event} with inputs {inputs}, expected only {expected!r} "
+            f"to run, got {running}"
+        )
+
+    def test_the_absolute_targets_never_gate_a_pull_request(self):
+        # The single most important consequence, asserted on its own so a
+        # failure names it: an absolute run on a pull request is #908.
+        assert not evaluate_condition(
+            self._condition("nightly-absolute"),
+            event_name="pull_request",
+            inputs={},
+        )
 
     def test_the_schedule_is_nightly(self):
         # `on` parses as the boolean True under YAML 1.1.

@@ -156,8 +156,12 @@ scale       = max(1.0, measured / CALIBRATION_REFERENCE_SECONDS)
 Three properties worth knowing before you read a result:
 
 * **The scale never drops below 1.0.** A machine at or above the reference
-  speed is held to exactly the number written in the test, so this can
-  never turn a passing benchmark red — on CI or on your laptop.
+  speed is held to exactly the number written in the test, so the scale can
+  never tighten a budget — on CI or on your laptop. (One unrelated part of
+  #908 is a hair stricter: the nine budgets in
+  `test_investigation_session_service_operations` moved from `p95 <= target`
+  to the shared helper's `observed < budget`, so a p95 landing exactly on
+  the target now fails. Float timings make that unreachable in practice.)
 * **A uniform slowdown cancels; a single-path regression does not.** That
   is the whole point, and it is asserted both ways in
   `tests/unit/ci/test_benchmark_calibration.py`.
@@ -193,8 +197,24 @@ therefore in `benchmark_output.txt` and the job summary:
 benchmark calibration: 634.2us/rep (reference 520.0us/rep, raw ratio 1.22x) -> budget scale 1.22x
 ```
 
-Read a red run with that line in hand: a scale near 1.0 means the runner was
-healthy and the failure is the code.
+The nightly absolute job prints the same measurement and says it is not
+being applied, because that is the one run whose reds genuinely need
+disambiguating:
+
+```
+benchmark calibration: ABSOLUTE mode (FM_BENCHMARK_ABSOLUTE set) - budgets are the raw targets; machine measured 634.2us/rep vs reference 520.0us/rep (raw ratio 1.22x, NOT applied)
+```
+
+Read a red run with that line in hand. On the **nightly absolute** job a
+raw ratio well above 1.0 means the runner rather than the code. On the
+**calibrated** pull-request job that correction has already been applied,
+so a failure there is the code whatever the ratio says.
+
+How much to trust the number: measured across twelve fresh processes on a
+contended development box, the calibration itself spans **1.33x** — the
+same order as the 1.2-1.5x runner-to-runner variance it corrects, not an
+order of magnitude below it. What makes that safe is the floor, not the
+precision: noise can only ever hand out unearned relief, never a new red.
 
 The cross-machine check that says the correction lands: the development box
 measures 3.44x slower than the reference, and there the worst budget sits
@@ -251,8 +271,8 @@ Results are:
 
 If a benchmark fails:
 
-1. **Read the calibration line first**: a scale well above 1.0 on the
-   nightly-absolute job means the runner, not the code. On the calibrated
+1. **Read the calibration line first**: on the nightly-absolute job a raw
+   ratio well above 1.0 means the runner, not the code. On the calibrated
    job that correction has already been applied, so a failure there is the
    code.
 2. **Check the diff**: What changed since last passing run?

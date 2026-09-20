@@ -68,8 +68,8 @@ The statistic, and why it is sized the way it is
 ------------------------------------------------
 
 The estimate is the **median of nine block minima**, each block the fastest
-of 120 repetitions of a ~0.45 ms unit of work (on a runner; ~1.5 ms on the
-development box). Measured rather than assumed, on a deliberately contended
+of 120 repetitions of a ~0.5 ms unit of work (on a runner; 1.8-2.4 ms on
+the development box). Measured rather than assumed, on a deliberately contended
 48-core box (load average ~20, concurrent VMs and test suites):
 
 *Minimum within a block*, same argument as ``measure_min_latency``: every
@@ -80,9 +80,12 @@ lets it run.
 *Median across blocks*, because a single minimum is an extreme-order
 statistic whose stability depends on how often a perfectly clean window
 occurs — which is a property of the ambient load, not of the machine's
-speed. Across six processes a plain minimum over 600 repetitions varied by
-1.12-1.15x; the median of nine block minima over comparable total work
-varied by **1.07x**.
+speed. Measured head to head in one window, across six processes: a plain
+minimum over 600 repetitions varied by 1.12-1.15x, the median of nine block
+minima over comparable total work by **1.07x**. Both figures are a
+comparison BETWEEN the two estimators in the same conditions, not an
+absolute stability claim for either — see "How noisy is it, honestly"
+below.
 
 *Enough total work*, because neither statistic converges on a short sample:
 a minimum over 200 repetitions varied by a factor of **1.98** within a
@@ -90,9 +93,24 @@ single process, which is noisier than the thing it corrects. Roughly a
 second is what it takes. It is paid once per pytest process against a suite
 that runs for minutes.
 
-That noise floor is what makes the scheme worth having: about 1.07x between
-processes against a runner-to-runner spread of 1.2x median and up to 1.5x
-per test.
+How noisy is it, honestly. Two figures, and the gap between them is the
+point:
+
+* three full pytest runs taken back to back — 1778.7, 1787.1 and
+  1788.7 us/rep, a **0.6%** spread;
+* twelve fresh processes over a longer window on the same box —
+  1837.1 to 2434.9 us/rep, a **1.33x** spread.
+
+The first is the statistic on a quiet machine; the second is the statistic
+plus that machine's ambient load genuinely moving, and it is the honest
+number to plan against. So the instrument is NOT an order of magnitude
+quieter than the 1.2-1.5x runner-to-runner variance it corrects — on a
+contended shared box it is comparable to it. What keeps that acceptable is
+not precision but direction: the scale is floored at 1.0 (below), so noise
+can only ever produce unearned relief, never a new red, and the amount of
+relief is bounded by the noise. A dedicated runner executing nothing but
+pytest should be quieter than this box; the printed calibration line makes
+that measurable from the first few green runs rather than assumed.
 
 A short repetition is also the FAIL-SAFE choice
 -----------------------------------------------
@@ -102,7 +120,8 @@ happen, and the two candidate repetition lengths behave oppositely under
 it. Both were measured, pinning the suite to four cores and adding twelve
 competing processes:
 
-* a **short** (1.5 ms) repetition reports ~**1.0x** — it keeps finding
+* a **short** (~1.5-2 ms there) repetition reports ~**1.0x** — it keeps
+  finding
   clean slices and sees nothing;
 * a **long** (20 ms) repetition reports **2.2-2.6x** while the suite's own
   asserted statistic barely moved (median 1.00x and 1.06x over two
@@ -170,9 +189,13 @@ reference speed gets exactly the thresholds that are written in the tests;
 only a machine measurably slower than the reference gets proportional
 relief. Two consequences worth being explicit about:
 
-* This change can therefore **never** turn a passing benchmark red, on CI or
-  on a developer's laptop. Whatever the calibration does, the worst case is
-  that it does nothing.
+* **The scale can never tighten a budget**, on CI or on a developer's
+  laptop. Whatever the calibration does, the worst case is that it does
+  nothing. (Stated about the scale rather than about the pull request as a
+  whole, because one unrelated part of #908 is a hair stricter: the nine
+  budgets in ``test_investigation_session_service_operations`` moved from
+  ``p95 <= target`` to the shared helper's ``observed < budget``. See its
+  ``report_benchmark`` docstring.)
 * It makes the reference constant fail safe in one direction, so being
   approximately right is enough. That asymmetry is spelled out where the
   constant is defined.
@@ -217,9 +240,12 @@ CALIBRATION_REPETITIONS_PER_BLOCK = 120
 #: stability depends on how often a perfectly clean window occurs, which is
 #: a property of the ambient load rather than of the machine's speed.
 #: Measured across six processes on the contended development box
-#: (2026-09-20): a plain minimum over 600 repetitions varied by 1.12-1.15x
-#: between processes, the median of nine block minima by 1.07x. Total cost
-#: is about 0.8 s on a runner, against a job that runs for four minutes.
+#: (2026-09-20), head to head in one window: a plain minimum over 600
+#: repetitions varied by 1.12-1.15x between processes, the median of nine
+#: block minima by 1.07x. That is the two estimators compared under the
+#: same conditions; over a longer window the same statistic spans 1.33x on
+#: that box, which is the figure to plan against. Total cost is about 0.8 s
+#: on a runner, against a job that runs for four minutes.
 CALIBRATION_BLOCKS = 9
 
 #: Seconds one repetition of ``_calibration_work`` costs on the reference
@@ -367,6 +393,13 @@ def calibration_scale() -> float:
     _scale_used = True
     if absolute_mode():
         return 1.0
+    # ‼ Argument order is load-bearing, not style. `max(1.0, nan)` is 1.0
+    # because every comparison against nan is False and the first argument
+    # survives; `max(nan, 1.0)` is nan, which would make every budget nan
+    # and every assertion a hard failure across the whole suite. No path
+    # produces nan today — the timer cannot and the reference is a positive
+    # constant — so this is a guard against a future tidy-up, and
+    # `test_a_nan_measurement_still_floors_at_one` is what enforces it.
     return max(1.0, measured_calibration() / CALIBRATION_REFERENCE_SECONDS)
 
 
@@ -385,9 +418,23 @@ def describe_calibration() -> str:
     run in the repository for a line nobody asked for.
     """
     if absolute_mode():
-        return (
+        head = (
             "benchmark calibration: ABSOLUTE mode "
             f"({ABSOLUTE_MODE_ENV} set) - budgets are the raw targets"
+        )
+        if _measured is None:
+            return head
+        # ‼ The nightly job is the ONE run whose reds genuinely need "slow
+        # runner or real regression" disambiguating, because it is the only
+        # one asserting wall-clock. Reporting only "ABSOLUTE mode" there
+        # would leave the reader with no number to disambiguate WITH, while
+        # the documentation told them to read one. So absolute mode still
+        # measures — for the report; the scale stays pinned at 1.0.
+        return (
+            f"{head}; machine measured {_measured * 1e6:.1f}us/rep "
+            f"vs reference {CALIBRATION_REFERENCE_SECONDS * 1e6:.1f}us/rep "
+            f"(raw ratio {_measured / CALIBRATION_REFERENCE_SECONDS:.2f}x, "
+            "NOT applied)"
         )
     if _measured is None:
         return "benchmark calibration: not measured (no budget was asserted)"

@@ -172,6 +172,17 @@ def report_benchmark(name: str, timings: List[float], target_p95_ms: float) -> N
     the rule lived in ten places; #908 needed the machine-throughput
     calibration applied to all of them, and asserting here is what makes
     that one edit. ``assert_latency_within`` owns the comparison.
+
+    ‼ One deliberate strictness change came with that move: this module
+    compared ``p95 <= target`` and the shared helper compares
+    ``observed < budget``. At ``scale == 1.0`` — every reference-or-faster
+    machine, and always in absolute mode — a p95 landing EXACTLY on the
+    target now fails where it used to pass. Nine budgets are affected. It
+    is left alone rather than churned because float timings make exact
+    equality unreachable in practice, and because ``<`` is what the other
+    forty-one budgets in this suite have always used; but it is the one
+    respect in which #908 is not purely a loosening, so it is written down
+    rather than implied.
     """
     p50 = statistics.median(timings)
     p95 = calculate_p95(timings)
