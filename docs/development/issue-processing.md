@@ -293,8 +293,9 @@ which nothing else was watching.
   with no question in it. A statement that names an issue **and** something
   it cannot resolve is reported as both, so the part it could not read is
   never silently dropped. **An item already in the pile without a readable
-  one gets it the next time you sort** — that pass has to phrase its question for *Needs your call*
-  anyway, so the statement is the phrasing written down.
+  one gets it the next time you sort** — that pass has to phrase its
+  question for *Needs your call* anyway, so the statement is the phrasing
+  written down.
 - **A blocked item whose named issue has closed moves to ready as you
   sort.** Its condition is met and nothing else will notice — the label is
   the pile, and closing #N writes no label on anything waiting for it. The

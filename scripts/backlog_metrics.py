@@ -681,11 +681,18 @@ def without_code_blocks(body: str) -> str:
             out.append("")
             indented, blank_before = True, False
             continue
-        # A content line at the outer level. Whether it opens a list decides
-        # what an indented run after the next blank line means.
+        # A content line. Whether a list is open decides what an indented
+        # run after the next blank line means, and a list stays open across
+        # its own wrapped lines and further paragraphs: only a fresh block
+        # at column 0 that is not itself a list item closes it. Resetting
+        # per line instead read a bullet's SECOND line as the end of the
+        # list, so a wrapped bullet's indented statement was blanked.
         out.append(line)
+        if _LIST_MARKER.match(line):
+            in_list = True
+        elif blank_before and not line[:1].isspace():
+            in_list = False
         indented, blank_before = False, False
-        in_list = bool(_LIST_MARKER.match(line))
     return "\n".join(out)
 
 
@@ -703,6 +710,14 @@ def pile_of(issue: Issue) -> str | None:
     the label's name. ``multi_labelled`` in the report keys on the same
     count, so the two cannot name the same item as the slot's buy and as
     undispatchable (#1581).
+
+    Which pile it lands in is the rule's own second clause, read in that
+    order — blocked when blocked is among them, **yours otherwise**.
+    Defaulting to blocked instead put an item carrying no blocked label
+    into the blocked pile, where a body with no ``**Blocked on:**`` line
+    reported it as *stating nothing* as well as as a half-finished move:
+    two repairs for one item, one of them for a statement it was never
+    asked to write.
     """
     piles = {label for label in issue.labels if label.startswith(_PILE_PREFIX)}
     if not piles:
@@ -714,9 +729,7 @@ def pile_of(issue: Issue) -> str | None:
     # in the tier, where the reserved slot names it and step 4's dispatch
     # predicate — "any it returns that carries a second `pile:` label" —
     # then refuses it, so the slot drains nothing (#1581).
-    if YOURS_LABEL in piles and BLOCKED_LABEL not in piles:
-        return YOURS_LABEL
-    return BLOCKED_LABEL
+    return BLOCKED_LABEL if BLOCKED_LABEL in piles else YOURS_LABEL
 
 
 @dataclass(frozen=True)
@@ -792,9 +805,17 @@ def blocked_on(body: str, repo: str) -> tuple[bool, list[int], str]:
     return _blocked_on_text(without_code_blocks(body), repo)
 
 
-def _unstated(head: str) -> bool:
-    """Whether a statement's payload says nothing at all."""
-    return head.strip(" \t*_`~").lower() in _UNSTATED_PAYLOADS
+def _unstated(payload: str) -> bool:
+    """Whether a statement's payload says nothing at all.
+
+    The WHOLE payload, never the part before the first sentence boundary:
+    ``:`` and ``;`` are boundaries, so ``TBD: the owner's call on #1294``
+    clipped to ``TBD`` and a written question — reference and all — was
+    filed as *stating nothing*, whose repair is to write the question that
+    is already there. Sentence punctuation is stripped from the ENDS so
+    ``TBD.`` still answers yes.
+    """
+    return payload.strip(" \t*_`~.;:!?").lower() in _UNSTATED_PAYLOADS
 
 
 def _blocked_on_text(text: str, repo: str) -> tuple[bool, list[int], str]:
@@ -806,10 +827,10 @@ def _blocked_on_text(text: str, repo: str) -> tuple[bool, list[int], str]:
     # still belongs to it, then to the first sentence boundary.
     payload = text[matches[-1].end() :].split("\n\n")[0]
     payload = _MD_LINK.sub(r"\1", payload).strip()
+    if _unstated(payload):
+        return False, [], ""
     cut = _SENTENCE_END.search(payload)
     head = payload[: cut.start()] if cut else payload
-    if _unstated(head):
-        return False, [], ""
     leading = _LEADING_REFERENCES.match(head)
     if leading is None:
         # No reference at the front. A reference further in is a modifier of
@@ -912,8 +933,16 @@ def blocking_graph(
         if not body.stated:
             unstated.append(issue.number)
             continue
-        here, leftover = [], []
+        here, leftover, seen = [], [], set()
         for number in body.named:
+            # ``#100 and #100`` is one dependency stated twice. Counted
+            # twice it gives a SINGLE blocked item enough in-edges to trip
+            # rule 1, which excludes its blocker from the tier — "the leak
+            # the slot was written to close" — and prints the
+            # condition-met line twice.
+            if number in seen:
+                continue
+            seen.add(number)
             if number == issue.number:
                 # :func:`parent_of` refuses a self-citation for the same
                 # reason; without it here a self-edge inflates the printed
@@ -1462,11 +1491,17 @@ def _inline_code(text: str) -> str:
     the `Queue`, which the round pastes this section into verbatim (#1581).
     The fence is one backtick longer than the longest run inside, and a span
     whose content starts or ends with a backtick is padded, both per
-    CommonMark.
+    CommonMark. Whitespace is collapsed first, because a code span cannot
+    span a line.
     """
+    # One line, always: a statement is bounded by a blank line, so it can
+    # carry newlines, and a span broken across lines leaves each of them
+    # with an odd number of backtick runs — the very breakage this exists
+    # to prevent, on the common shape of a wrapped `**Blocked on:**` line.
+    text = " ".join(text.split())
     longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
     fence = "`" * (longest + 1)
-    pad = " " if text.startswith("`") or text.endswith("`") else ""
+    pad = " " if not text or text.startswith("`") or text.endswith("`") else ""
     return f"{fence}{pad}{text}{pad}{fence}"
 
 

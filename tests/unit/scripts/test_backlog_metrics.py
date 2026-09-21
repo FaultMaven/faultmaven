@@ -1105,11 +1105,25 @@ def test_an_indented_run_under_a_list_is_content_not_a_code_block(metrics):
     `**Blocked on:**` statement, which is worse than leaving an
     illustration in: the item would be reported as stating nothing.
     """
-    listed = "- a bullet\n\n    **Blocked on:** #99 landing\n"
-    assert metrics.blocked_on(listed, REPO) == (True, [99], "")
+    # A list stays open across its own wrapped lines and its further
+    # paragraphs. Reset per line, only the first of these survived.
+    for listed in (
+        "- a bullet\n\n    **Blocked on:** #99 landing\n",
+        "- a bullet\n  wrapped continuation\n\n    **Blocked on:** #99 landing\n",
+        "- a bullet\n\n    first paragraph\n\n    **Blocked on:** #99 landing\n",
+        "1. a step\n   wrapped\n\n    **Blocked on:** #99 landing\n",
+    ):
+        assert metrics.blocked_on(listed, REPO) == (True, [99], ""), listed
     assert metrics.cited_paths("1. step\n\n    docs/sample-note.md\n") == {
         "docs/sample-note.md"
     }
+    # …and a block after the list has closed is still a block.
+    assert (
+        metrics.cited_paths(
+            "- a bullet\n\na fresh paragraph\n\n    docs/sample-note.md\n"
+        )
+        == set()
+    )
 
 
 def test_crlf_does_not_erase_a_blocked_on_edge(metrics):
@@ -1219,6 +1233,27 @@ def test_a_label_with_no_question_after_it_states_nothing(metrics, payload):
     graph = metrics.blocking_graph(issues, REPO)
 
     assert (graph.unstated, graph.on_ruling, graph.unresolved) == ([1], [], [])
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        # `:` and `;` are sentence boundaries, so reading the CLIPPED head
+        # made a written question — reference and all — disappear into the
+        # bucket whose repair is "write the question".
+        " todo: ask the owner whether the ladder splits",
+        " TBD: the owner's call on the shape of #1294",
+        " tbd pending the ruling on #1294",
+        " an owner ruling",
+    ],
+)
+def test_a_payload_that_says_something_is_stated(metrics, payload):
+    stated, _, _ = metrics.blocked_on(f"**Blocked on:**{payload}", REPO)
+
+    assert stated is True
+    issues = metrics.load_issues([_blocked(1, 1, body=f"**Blocked on:**{payload}")])
+
+    assert metrics.blocking_graph(issues, REPO).unstated == []
 
 
 def test_a_statement_naming_both_an_edge_and_an_unreadable_reference(metrics):
@@ -1332,6 +1367,63 @@ def test_every_multi_labelled_item_is_out_of_the_tier(metrics):
     assert tier["ready"] == 0
 
 
+def test_a_half_finished_move_gets_ONE_repair(metrics):
+    """Which pile a multi-labelled item lands in is the rule's second
+    clause — blocked when blocked is among them, yours otherwise.
+
+    Defaulting to blocked put an item carrying no blocked label into the
+    blocked pile, where a body with no `**Blocked on:**` line reported it
+    as *stating nothing* as well as as a half-finished move: two repairs
+    for one item, one of them for a statement it was never asked to write.
+    """
+    issues = metrics.load_issues(
+        [_issue(900, 1, labels=("pile:ready", "pile:needs-triage"))]
+    )
+    tier = metrics.rule4_tier(issues, LATER, REPO)
+    text = metrics._rule4_text(tier)
+
+    assert metrics.pile_of(issues[0]) == metrics.YOURS_LABEL
+    assert tier["multi_labelled"] == [900]
+    assert tier["blocking"]["unstated"] == []
+    assert "0 stating nothing" in text
+    assert "Carrying more than one" in text
+
+
+def test_one_dependency_stated_twice_is_one_edge(metrics):
+    """Counted twice, a SINGLE blocked item trips rule 1 and excludes its
+    blocker from the tier — the leak the reserved slot was written to
+    close — and the condition-met line prints twice."""
+    issues = metrics.load_issues(
+        [_ready(100, 1), _blocked(101, 2, body="**Blocked on:** #100 and #100")]
+    )
+    graph = metrics.blocking_graph(issues, REPO)
+    tier = metrics.rule4_tier(issues, LATER, REPO)
+
+    assert graph.waiting_on == {100: [101]}
+    assert tier["tier"] == [100] and tier["excluded"] == []
+
+    closed = metrics.load_issues(
+        [_issue(100, 1, 4), _blocked(101, 2, body="**Blocked on:** #100 and #100")]
+    )
+    assert metrics.blocking_graph(closed, REPO).condition_met == [(101, 100)]
+
+
+def _assert_spans_close(metrics, text, tier):
+    """Every quoted statement in the report is a code span that closes.
+
+    Stated from the RAW statement rather than from `_inline_code`'s own
+    output, or a fence bug would define itself as correct.
+    """
+    for number, raw in tier["blocking"]["unresolved"]:
+        entry = text.split(f"#{number} (", 1)[1]
+        fence = re.match(r"`+", entry).group(0)
+        inside = max(
+            (len(run) for run in re.findall(r"`+", " ".join(raw.split()))), default=0
+        )
+        assert len(fence) > inside, (fence, raw)
+        assert f"{fence})" in entry.split("\n")[0], entry.split("\n")[0]
+
+
 def test_an_unreadable_statement_never_emits_broken_markdown(metrics):
     """The round pastes this section into the `Queue` verbatim, so a
     backtick in the quoted statement would break the board's markdown."""
@@ -1342,17 +1434,46 @@ def test_an_unreadable_statement_never_emits_broken_markdown(metrics):
 
     assert span.startswith("``") and span.endswith("``")
     assert "`kb_qa`" in span
-    # Every inline span in the section closes.
-    for line in text.split("\n"):
-        assert len(re.findall(r"`+", line)) % 2 == 0, line
+    _assert_spans_close(metrics, text, metrics.rule4_tier(issues, LATER, REPO))
+
+    # A statement is bounded by a blank line, so the common shape — one
+    # `**Blocked on:**` line wrapped at 72-80 columns — carries a newline,
+    # and a span cannot cross one.
+    wrapped = metrics.load_issues(
+        [
+            _blocked(
+                778,
+                1,
+                body="**Blocked on:** the owner's call on whether the ladder\n"
+                "splits, which also decides #1294's shape\n",
+            )
+        ]
+    )
+    tier = metrics.rule4_tier(wrapped, LATER, REPO)
+    text = metrics._rule4_text(tier)
+
+    assert "#778 (`" in text
+    _assert_spans_close(metrics, text, tier)
 
 
-def test_inline_code_fences_any_content(metrics):
-    for text in ["plain", "a `span`", "``double``", "`leading", "trailing`"]:
-        rendered = metrics._inline_code(text)
-        fence = re.match(r"`+", rendered).group(0)
-        assert rendered.endswith(fence)
-        assert len(re.findall(r"`+", text) or [""]) and fence not in text
+@pytest.mark.parametrize(
+    "text",
+    ["plain", "a `span`", "``double``", "`leading", "trailing`", "two\nlines", ""],
+)
+def test_inline_code_fences_any_content(metrics, text):
+    rendered = metrics._inline_code(text)
+    fence = re.match(r"`+", rendered).group(0)
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+
+    # The fence is what makes the span close, so it must be strictly longer
+    # than every run inside it — the property, not merely "it differs".
+    # Counting backtick RUNS is not that property: `` `leading `` is a valid
+    # span whose runs are odd, so a parity check would fail on correct
+    # markdown and tempt the next reader to loosen the real rule.
+    assert len(fence) == longest + 1
+    assert rendered.startswith(fence) and rendered.endswith(fence)
+    assert fence not in rendered[len(fence) : -len(fence)]
+    assert "\n" not in rendered
 
 
 def test_the_cited_path_pattern_covers_every_tracked_top_level_directory(metrics):
