@@ -25,9 +25,11 @@ from .calibration import (
     CALIBRATION_REFERENCE_SECONDS,
     absolute_mode,
     calibration_scale,
+    calibration_state,
     describe_calibration,
     measured_calibration,
     reset_calibration_cache,
+    restore_calibration_state,
     scale_was_used,
 )
 
@@ -44,9 +46,11 @@ __all__ = [
     "assert_throughput_at_least",
     "asserted_target",
     "calibration_scale",
+    "calibration_state",
     "collect_budgets",
     "describe_calibration",
     "measured_calibration",
     "reset_calibration_cache",
+    "restore_calibration_state",
     "scale_was_used",
 ]

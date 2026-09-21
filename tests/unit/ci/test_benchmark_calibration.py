@@ -115,12 +115,41 @@ def _suite_sources(directory: Path) -> str:
 
 
 @pytest.fixture(autouse=True)
-def _clean_calibration(monkeypatch):
-    """Every test here starts from an unmeasured, non-absolute process."""
-    monkeypatch.delenv(calibration.ABSOLUTE_MODE_ENV, raising=False)
+def _clean_calibration():
+    """Every test here starts from an unmeasured, non-absolute process,
+    and the process it found is put back afterwards.
+
+    ‼ ``reset_calibration_cache()`` clears ``_scale_used``, which is
+    SESSION state: the terminal-summary hook keys on it to decide whether
+    to print the scale a red was measured against. pytest collects
+    ``tests/performance/`` before ``tests/unit/``, so in BOTH required
+    gates the calibrated budgets are asserted before this module runs —
+    and a bare reset here erased the fact for the whole session, so a red
+    performance test shipped with no scale line at all. Measured on the
+    first version of this branch: ``pytest tests/performance
+    tests/unit/ci/test_benchmark_calibration.py`` printed the line 0
+    times, the same two paths in the other order 2.
+
+    ‼ It also does NOT take ``monkeypatch``. Fixtures finalize in reverse
+    order of setup, so one that requests ``monkeypatch`` is torn down
+    BEFORE it — and ``_pin_calibration`` sets ``_measured`` through
+    ``monkeypatch.setattr``, whose undo would then run after this restore
+    and put ``None`` back. Measured: with the dependency the line printed
+    "not measured (no budget was asserted)" instead of the scale. The
+    environment variable is saved and restored by hand for that reason.
+    """
+    state = calibration.calibration_state()
+    previous_env = os.environ.pop(calibration.ABSOLUTE_MODE_ENV, None)
     calibration.reset_calibration_cache()
-    yield
-    calibration.reset_calibration_cache()
+    try:
+        yield
+    finally:
+        calibration.reset_calibration_cache()
+        calibration.restore_calibration_state(state)
+        if previous_env is None:
+            os.environ.pop(calibration.ABSOLUTE_MODE_ENV, None)
+        else:
+            os.environ[calibration.ABSOLUTE_MODE_ENV] = previous_env
 
 
 def _pin_calibration(monkeypatch, seconds: float) -> None:
@@ -380,13 +409,15 @@ class TestTheBudgetTable:
         assert len(budget_table.ALL_BUDGETS) == 50
 
     def test_every_budget_in_the_performance_suite_is_in_its_table(self):
-        # 23 latency budgets, the number #1557 anchored. 27 hand-rolled
-        # comparisons went in; four came out as deletions rather than
-        # budgets (they measured `asyncio.sleep` granularity) and one
-        # percentage was folded into the duration beside it. The memory and
-        # object-count assertions are not among them, for the same reason
-        # as above.
-        assert len(performance_table.ALL_BUDGETS) == 23
+        # 21 latency budgets. 27 hand-rolled comparisons went in; four
+        # came out as deletions rather than budgets (they measured
+        # `asyncio.sleep` granularity), one percentage was folded into the
+        # duration beside it, and two more were dropped in review as
+        # arithmetically redundant — a per-operation figure that is the
+        # per-task one divided by a constant, so its anchor could never
+        # fire first. The memory and object-count assertions are not among
+        # them, for the same reason as above.
+        assert len(performance_table.ALL_BUDGETS) == 21
 
     @pytest.mark.parametrize("name", sorted(ALL_ANCHORS))
     def test_the_anchor_is_2_to_3x_its_measured_reference(self, name):
@@ -455,6 +486,34 @@ class TestTheBudgetTable:
         assert name in _suite_sources(
             directory
         ), f"{name} is in the {directory.name} table but no test there uses it"
+
+    def test_no_test_carries_two_budgets_without_saying_why(self):
+        """‼ Two budgets on one test are usually one budget twice.
+
+        Review found two: `avg_operation_time` is exactly
+        `avg_task_time / operations_per_task`, so a budget on each is the
+        same constraint in different units, and the looser of the pair can
+        never fire before the tighter one. Both shipped that way —
+        `1.8e-5 x 20 = 3.6e-4` against `3.5e-4`, and `3.5e-4 x 20 = 0.007`
+        against `0.007` — and no table check could see it, because nothing
+        in the table says what statistic a row judges.
+
+        This one cannot see it either. What it does is refuse the
+        SITUATION silently: a test with two budgets has to name, here, the
+        two independent timed windows they come from. A rescaling of one
+        measurement has no honest entry to write.
+        """
+        by_test: dict = {}
+        for name, budget in sorted(ALL_ANCHORS.items()):
+            by_test.setdefault(budget.test, []).append(name)
+        doubled = {test: names for test, names in by_test.items() if len(names) > 1}
+        undeclared = sorted(set(doubled) - set(INDEPENDENT_MEASUREMENTS))
+        assert not undeclared, (
+            "these tests carry more than one budget and do not say which "
+            "independent measurements they come from: " + ", ".join(undeclared)
+        )
+        stale = sorted(set(INDEPENDENT_MEASUREMENTS) - set(doubled))
+        assert not stale, f"no longer carries two budgets: {stale}"
 
     @pytest.mark.parametrize("directory", GUARDED_DIRS, ids=lambda d: d.name)
     def test_every_timed_test_in_the_suite_owns_a_budget(self, directory):
@@ -628,6 +687,55 @@ class TestTerminalSummary:
         root_conftest.pytest_terminal_summary(reporter, 0, None)
         assert any("2.00x" in line for line in reporter.lines), reporter.lines
 
+    def test_this_modules_fixture_does_not_erase_an_earlier_scale(self):
+        """‼ ``tests/performance/`` runs BEFORE this file in both gates.
+
+        Its budgets are what set the flag the summary keys on, and
+        this module's own fixture used to clear it on the way past — so
+        the one line a reader needs to tell a slow runner from a
+        regression never reached the job log of either required gate.
+        Exercised through the fixture body, because the bug was in the
+        fixture and not in anything it calls.
+        """
+        calibration.reset_calibration_cache()
+        calibration.restore_calibration_state(
+            (calibration.CALIBRATION_REFERENCE_SECONDS * 2, False)
+        )
+        assert_latency_within(0.001, _latency(1.0), "probe")
+        before = calibration.calibration_state()
+        assert before[1] is True, "precondition: a budget was asserted"
+
+        body = getattr(_clean_calibration, "__wrapped__", _clean_calibration)
+        generator = body()
+        next(generator)
+        assert (
+            calibration.scale_was_used() is False
+        ), "a test in this file must still start from a clean slate"
+        with pytest.raises(StopIteration):
+            next(generator)
+
+        assert (
+            calibration.calibration_state() == before
+        ), "the fixture must put back the measurement AND the flag it found"
+
+    def test_the_summary_still_reports_after_this_module_has_run(self):
+        """The property above, read out where it is consumed."""
+        calibration.reset_calibration_cache()
+        calibration.restore_calibration_state(
+            (calibration.CALIBRATION_REFERENCE_SECONDS * 2, False)
+        )
+        assert_latency_within(0.001, _latency(1.0), "probe")
+
+        body = getattr(_clean_calibration, "__wrapped__", _clean_calibration)
+        generator = body()
+        next(generator)
+        with pytest.raises(StopIteration):
+            next(generator)
+
+        reporter = _FakeReporter()
+        root_conftest.pytest_terminal_summary(reporter, 0, None)
+        assert any("2.00x" in line for line in reporter.lines), reporter.lines
+
     def test_absolute_mode_measures_for_the_report(self, monkeypatch):
         # The nightly path. `calibration_scale()` short-circuits before
         # measuring in absolute mode, so if the hook did not take the
@@ -665,8 +773,9 @@ class TestTerminalSummary:
 #
 # So the rule below keys on the SHAPE of the comparison and nothing else,
 # and it is an over-approximation on purpose. Measured cost over the
-# widened scope: **8 findings, every one a memory, object-count or GC
-# assertion**, listed with their reasons in `THRESHOLD_ALLOWLIST`. #1555's
+# widened scope: **9 findings** — eight memory, object-count or GC
+# assertions, plus one argument validation — listed with their reasons in
+# `THRESHOLD_ALLOWLIST`, and the count asserted below. #1555's
 # version expressed the same carve-out by simply never naming those
 # variables, which is a silent allowlist; this one is a written list that
 # fails when an entry stops matching anything.
@@ -703,10 +812,11 @@ OPERATOR_COMPARISONS = ("lt", "le", "gt", "ge")
 #: the entry survives the line moving, and checked below for being live —
 #: an allowlist entry that matches nothing is a suppression nobody reads.
 #:
-#: ‼ Every entry here is memory, an object count or a GC outcome. None is
-#: a duration, and none may become one: megabytes and object counts do not
-#: scale with machine throughput, so the calibration must NOT be applied to
-#: them. If a duration ever needs an entry, the right answer is a budget.
+#: ‼ No entry here is a DURATION, and none may become one. Eight are
+#: memory, an object count or a GC outcome — megabytes and object counts
+#: do not scale with machine throughput, so the calibration must NOT be
+#: applied to them — and the ninth is argument validation on a helper.
+#: If a duration ever needs an entry, the right answer is a budget.
 #: ‼ Keyed on the REPO-RELATIVE path, not the basename. Both guarded
 #: directories contain a ``budgets.py``, and ``tests/performance/`` could
 #: grow a ``conftest.py`` tomorrow — a basename key would then exempt the
@@ -774,6 +884,23 @@ UNJUDGED_TIMED_TESTS = {
         "test_high_frequency_operations",
     ): "92% of the reported overhead is asyncio.sleep granularity "
     "(97.3ms of 106ms, measured)",
+}
+
+#: Tests that carry more than one budget, and the independent timed
+#: windows each pair comes from. ‼ "Independent" means separately timed,
+#: not merely differently named: a per-operation figure computed by
+#: dividing a per-task one is the SAME measurement, and a budget on each
+#: is the same constraint twice with the looser half unreachable. Two of
+#: those shipped on this branch and were caught in review.
+INDEPENDENT_MEASUREMENTS = {
+    "test_context_variable_access_speed": "two timed loops, get and set",
+    "test_context_copying_performance": (
+        "two timed loops, copy_context() and Context.run()"
+    ),
+    "test_context_isolation_performance": (
+        "the wall clock over the gather, and the spread between the "
+        "per-task means each task measured for itself"
+    ),
 }
 
 #: One planted violation per SHAPE a threshold can be written in, each
@@ -939,8 +1066,16 @@ def _planted_source(statements=None) -> str:
 
 
 def _key(path: Path) -> str:
-    """This file's identity in the allowlists: its repo-relative path."""
-    return path.relative_to(REPO_ROOT).as_posix()
+    """This file's identity in the allowlists: its repo-relative path.
+
+    A path outside the repository — the scratch tree the recursion probe
+    below builds — keys on itself. It can never match an allowlist entry,
+    which is what that probe wants.
+    """
+    try:
+        return path.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
 
 
 def _modules_in(directory: Path) -> List[Path]:
@@ -1060,26 +1195,31 @@ class TestOneComparisonSite:
         """
         assert len(THRESHOLD_ALLOWLIST) == 9
 
-    @pytest.mark.parametrize("directory", GUARDED_DIRS, ids=lambda d: d.name)
-    def test_the_scan_reads_subdirectories_too(self, directory):
+    def test_the_scan_reads_subdirectories_too(self, tmp_path):
         """A nested module is where the next one of these will land.
 
         The first draft of ``_modules_in`` used a non-recursive ``glob``,
         and a threshold in ``tests/performance/sub/test_x.py`` walked past
         both checks with nothing to show for it.
+
+        ‼ Built in ``tmp_path``, NOT in the directory under test. The
+        first version of this test planted the violating module inside
+        ``tests/performance/`` while the suite was running: under
+        ``-n auto`` — which ``scripts/tests.py``'s ``ci`` and ``ci-full``
+        modes pass, and whose default ``--dist load`` splits within a file
+        — another worker scanning the same directory would see it and fail
+        for real. A kill between the write and the cleanup left it behind
+        permanently. Reproduced in review. The scan takes a directory, so
+        there is no reason to aim it at a live one.
         """
-        # Named per process so two xdist workers cannot collide on it, and
-        # removed in a `finally` so a failure does not leave a module in
-        # the tree that every later run then reports as a violation.
-        nested = directory / f"_scan_recursion_probe_{os.getpid()}"
-        nested.mkdir()
-        try:
-            (nested / "test_probe.py").write_text("def test_x():\n    assert e < 0.2\n")
-            hits = _scan_directory(directory)
-        finally:
-            (nested / "test_probe.py").unlink()
-            nested.rmdir()
-        assert any(text == "e < 0.2" for _f, _fn, text in hits)
+        nested = tmp_path / "sub" / "deeper"
+        nested.mkdir(parents=True)
+        (nested / "test_probe.py").write_text("def test_x():\n    assert e < 0.2\n")
+        (tmp_path / "test_top.py").write_text("def test_y():\n    assert f < 0.3\n")
+
+        found = {text for _f, _fn, text in _scan_directory(tmp_path)}
+        assert "f < 0.3" in found, "the scan lost the top-level module"
+        assert "e < 0.2" in found, "the scan did not recurse"
 
 
 # ------------------------------------------- one comparison site, reachable
@@ -1490,6 +1630,46 @@ class TestWorkflowWiring:
             env.get(calibration.ABSOLUTE_MODE_ENV) in ("1", 1, "true", True)
             for env in envs
         ), ("the nightly job must set " + calibration.ABSOLUTE_MODE_ENV)
+
+    @pytest.mark.parametrize("directory", GUARDED_DIRS, ids=lambda d: d.name)
+    def test_every_product_target_is_asserted_somewhere(self, directory):
+        """‼ A product target nothing runs is a number, not a check.
+
+        `asserted_target` picks `product_target` only under
+        `FM_BENCHMARK_ABSOLUTE`, and the only job that sets it ran
+        `pytest tests/benchmarks/ -m benchmark`. `tests/performance/` is
+        not marked `benchmark`, so none of its rows was ever asserted —
+        every `product_target` there was inert, and
+        `test_typical_api_request_overhead`'s real `logging_overhead <
+        0.05` had been deleted rather than relocated (#1557 review).
+
+        So the property is per DIRECTORY, not per job: some step of the
+        absolute job has to select each guarded tree.
+        """
+        job = self._workflow()["jobs"]["nightly-absolute"]
+        selecting = [
+            step
+            for step in job["steps"]
+            if calibration.ABSOLUTE_MODE_ENV in (step.get("env") or {})
+            and directory.name in (step.get("run") or "")
+        ]
+        assert selecting, (
+            f"no step of nightly-absolute runs tests/{directory.name}/ under "
+            f"{calibration.ABSOLUTE_MODE_ENV}, so every product_target in "
+            f"tests/{directory.name}/budgets.py is asserted by nothing"
+        )
+
+    def test_the_absolute_step_for_performance_does_not_filter_it_away(self):
+        """`-m benchmark` would select nothing in `tests/performance/`."""
+        job = self._workflow()["jobs"]["nightly-absolute"]
+        for step in job["steps"]:
+            run = step.get("run") or ""
+            if "tests/performance/" in run:
+                assert "-m benchmark" not in run, (
+                    "tests/performance/ carries no benchmark marker; "
+                    "`-m benchmark` would deselect all of it and the step "
+                    "would pass having run nothing"
+                )
 
     @pytest.mark.parametrize(
         "event,inputs,expected", EVENT_SHAPES, ids=lambda v: str(v)[:40]

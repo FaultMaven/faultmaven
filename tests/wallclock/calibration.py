@@ -214,7 +214,7 @@ from __future__ import annotations
 import os
 import statistics
 import time
-from typing import Optional
+from typing import Optional, Tuple
 
 #: Iterations inside one repetition of the calibration workload. Sized so a
 #: repetition costs roughly 0.5 ms on a GitHub-hosted runner (~1.8 ms on
@@ -365,10 +365,38 @@ def measured_calibration() -> float:
 
 
 def reset_calibration_cache() -> None:
-    """Drop the cached measurement. For this module's own tests only."""
+    """Drop the cached measurement. For this module's own tests only.
+
+    ‼ This clears ``_scale_used`` as well, which is SESSION state, not
+    per-test state: the terminal-summary hook keys on it to decide whether
+    to print the scale a red was measured against. A test that resets the
+    cache and does not put the flag back therefore silences that line for
+    everything that ran BEFORE it. That is not hypothetical — pytest
+    collects ``tests/performance/`` before ``tests/unit/``, so in both
+    required CI gates the calibrated budgets there run first and this
+    module's own tests then erased the evidence (#1557 review). Use
+    ``calibration_state`` / ``restore_calibration_state`` around a reset
+    that is part of a test fixture.
+    """
     global _measured, _scale_used
     _measured = None
     _scale_used = False
+
+
+def calibration_state() -> Tuple[Optional[float], bool]:
+    """A snapshot of the module's cached state, for a fixture to restore."""
+    return _measured, _scale_used
+
+
+def restore_calibration_state(state: Tuple[Optional[float], bool]) -> None:
+    """Put back what ``calibration_state`` returned.
+
+    Restoring rather than clearing is what keeps a test of this module
+    from deciding, for the whole session, that no budget was ever
+    asserted.
+    """
+    global _measured, _scale_used
+    _measured, _scale_used = state
 
 
 def scale_was_used() -> bool:

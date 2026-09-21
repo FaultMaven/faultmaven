@@ -14,8 +14,9 @@ reported in green ``main`` runs, **median utilisation was 2.6% and the
 highest 27.7%** — no budget was within 50% of its target. A budget used at
 2.6% cannot notice a **10x** regression in that path, and the suite passes,
 which is what makes it easy to miss. #1557 measured the same thing for
-``tests/performance/`` and found **median utilisation 1.0%**, with four
-comparisons that could not fail at all.
+``tests/performance/`` and found **median utilisation 0.29%**, with four
+comparisons that could not fail at all — and review found two more that
+could not, so the count there was six.
 
 The owner's ruling on #1556, inherited by #1557: **a per-PR wall-clock
 budget is a regression detector, not a product target.** Three parts:

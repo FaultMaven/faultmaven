@@ -14,7 +14,6 @@ granularity rather than this codebase.
 """
 
 import asyncio
-import os
 import statistics
 import time
 from contextlib import asynccontextmanager, contextmanager

@@ -36,10 +36,8 @@ from .budgets import (
     CONTEXT_GET,
     CONTEXT_SET,
     CONTEXT_SWITCH,
-    HIGH_CONCURRENCY_OP,
     HIGH_CONCURRENCY_TASK,
     ISOLATED_TASK,
-    ISOLATED_TASK_OP,
     ISOLATION_TIME_SPREAD,
     LARGE_DATA_CHECK,
 )
@@ -358,10 +356,13 @@ class TestContextVariablePerformance:
             f"\nIsolation: {avg_task_time * 1000:.1f}ms per task, "
             f"{avg_operation_time * 1000:.4f}ms per op"
         )
+        # ‼ One budget, not two. `avg_operation_time` is exactly
+        # `avg_task_time / operations_per_task`, so a second budget on it
+        # is the same constraint rescaled — and the shipped pair worked
+        # out identical (3.5e-4 x 20 == 0.007), so the second could never
+        # add a failure the first did not already produce (#1557 review).
+        # The number is still printed, because a reader wants it.
         assert_latency_within(avg_task_time, ISOLATED_TASK, "Isolated task")
-        assert_latency_within(
-            avg_operation_time, ISOLATED_TASK_OP, "Isolated task operation"
-        )
 
         # Individual operation times should be consistent
         individual_avg_times = [r["avg_operation_time"] for r in results]
@@ -650,11 +651,12 @@ class TestContextVariableEdgeCases:
             f"\nHigh concurrency: {avg_task_time * 1000:.3f}ms per task, "
             f"{avg_operation_time * 1e6:.3f}μs per operation"
         )
+        # One budget, for the reason in `test_context_isolation_performance`:
+        # `avg_operation_time` is `avg_task_time / operations_per_task`, and
+        # the per-operation anchor worked out STRICTLY LOOSER
+        # (1.8e-5 x 20 = 3.6e-4 against 3.5e-4), so it could not fire.
         assert_latency_within(
             avg_task_time, HIGH_CONCURRENCY_TASK, "High-concurrency task"
-        )
-        assert_latency_within(
-            avg_operation_time, HIGH_CONCURRENCY_OP, "High-concurrency operation"
         )
 
     def test_context_with_large_data(self):

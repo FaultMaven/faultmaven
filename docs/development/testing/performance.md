@@ -66,8 +66,9 @@ the thing to know about it is **where it runs**:
 
 So a wall-clock threshold there reds a **required** check on a diff that
 changed nothing — #908's failure with the merge blocked (#1557). It
-carries its own `tests/performance/budgets.py` on the same two-number
-shape, anchored 2-3x above 29 measured runs, and the shared machinery both
+carries its own `tests/performance/budgets.py` — 21 rows on the same
+two-number shape, anchored 2-3x above 29 measured runs (median
+utilisation 0.29% before, 30.7% after) — and the shared machinery both
 suites use lives in **`tests/wallclock/`**:
 
 | module | what it holds |
@@ -82,9 +83,20 @@ Four of the 27 comparisons that used to be in `tests/performance/` were
 sleeps with no instrumentation accounts for 74-100% of the result.
 `tests/performance/budgets.py` carries that measurement.
 
+Two more of the 27 were dropped as arithmetically redundant: a
+per-operation figure computed by dividing a per-task one is the same
+constraint in different units, so its anchor can never fire first. Six of
+the original 27, then, could not fail.
+
 There is no `RUN_PERFORMANCE_TESTS` flag any more. It skipped nine of
 these tests to avoid CI flakiness; the calibration is what it was standing
 in for, and a skipped test is a budget nobody applies.
+
+The nightly `FM_BENCHMARK_ABSOLUTE` job runs **both** directories — a
+second step for `tests/performance/`, which carries no `benchmark`
+marker and would be deselected by the first. Without it every
+`product_target` in `tests/performance/budgets.py` would be recorded and
+asserted by nothing; `TestWorkflowWiring` now checks that per directory.
 
 ## Keeping the comparison in one place
 

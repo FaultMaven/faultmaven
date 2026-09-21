@@ -21,11 +21,13 @@ on the development box:
 
 * **median utilisation 0.29%**, highest 16.7%. A budget used at 0.3%
   cannot notice a 100x regression, and the suite passes.
-* **four comparisons could not fail at all** — see "What was deleted".
+* **six comparisons could not fail at all** — four for the reason in
+  "What was deleted", and two more that review caught in #1557's own
+  first draft: see "Two budgets are one budget" below.
 
-After re-anchoring, median utilisation is **33.9%** and the highest
-**41.9%**, which is the same shape #1556 produced for the benchmark suite
-(2.5% to 34.6%).
+The 21 rows below are what remains. After re-anchoring, median
+utilisation is **30.7%** and the highest **41.9%**, which is the same
+shape #1556 produced for the benchmark suite (2.5% to 34.6%).
 
 Provenance
 ----------
@@ -110,6 +112,26 @@ number.
 
 All four tests keep their correctness assertions and still print their
 timings.
+
+Two budgets are one budget (2 more of the 27)
+---------------------------------------------
+
+``test_context_isolation_performance`` and
+``test_context_under_high_concurrency`` each reported a per-task time AND
+a per-operation time, and #1557's first draft gave each of the four a
+budget. But ``avg_operation_time`` is exactly ``avg_task_time /
+operations_per_task`` — one measurement in two units — so the pair is one
+constraint written twice, and the looser half can never fire first. As
+shipped in that draft: ``1.8e-5 x 20 = 3.6e-4`` against a ``3.5e-4``
+per-task anchor, and ``3.5e-4 x 20 = 0.007`` against ``0.007``. Both
+per-operation rows are gone; both numbers are still printed.
+
+Nothing in this table records what statistic a row judges, so no check
+can see that mechanically. What
+``tests/unit/ci/test_benchmark_calibration.py`` does instead is refuse
+the situation quietly: a test carrying two budgets has to name the two
+independent timed windows they come from, in
+``INDEPENDENT_MEASUREMENTS``. A rescaling has no honest entry to write.
 """
 
 from __future__ import annotations
@@ -159,12 +181,6 @@ ISOLATED_TASK = LatencyBudget(
     product_target=10.0,
     reference=0.0030252,
 )
-ISOLATED_TASK_OP = LatencyBudget(
-    "test_context_isolation_performance",
-    regression=3.5e-4,
-    product_target=0.050,
-    reference=1.5126e-04,
-)
 #: Not a latency: the spread between the fastest and slowest task's mean
 #: operation time. It is still a duration, it still scales with the
 #: machine, and the ruling's question — regression detector or product
@@ -186,12 +202,6 @@ HIGH_CONCURRENCY_TASK = LatencyBudget(
     regression=3.5e-4,
     product_target=0.100,
     reference=1.7181e-04,
-)
-HIGH_CONCURRENCY_OP = LatencyBudget(
-    "test_context_under_high_concurrency",
-    regression=1.8e-5,
-    product_target=5.0e-4,
-    reference=8.5904e-06,
 )
 LARGE_DATA_CHECK = LatencyBudget(
     "test_context_with_large_data",

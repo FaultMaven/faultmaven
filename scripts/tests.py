@@ -77,7 +77,6 @@ CI_MODES = {
         "paths": ["tests/"],
         "markers": "not cloud",
         "parallel": False,  # Benchmarks may need sequential execution
-        "env": {"RUN_PERFORMANCE_TESTS": "true"},
     },
     "ci-cloud": {
         "description": "Cloud tests requiring Redis, PostgreSQL",
@@ -217,10 +216,12 @@ def build_pytest_command(args, unknown_args: List[str]) -> List[str]:
         if args.benchmarks:
             test_paths.append(TEST_CATEGORIES["benchmarks"])
             pytest_cmd.extend(["-m", "benchmark"])
-            os.environ["RUN_PERFORMANCE_TESTS"] = "true"
         if args.performance:
+            # No env var: tests/performance/ gates on nothing since #1557.
+            # It ran nine of its tests behind RUN_PERFORMANCE_TESTS "to
+            # avoid CI flakiness", which the calibration now handles, and
+            # a skipped test is a budget nobody applies.
             test_paths.append(TEST_CATEGORIES["performance"])
-            os.environ["RUN_PERFORMANCE_TESTS"] = "true"
         if args.health:
             test_paths.append(TEST_CATEGORIES["health"])
 
