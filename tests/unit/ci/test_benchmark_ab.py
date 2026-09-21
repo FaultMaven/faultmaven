@@ -573,6 +573,26 @@ class TestWorkflowWiring:
         ]
         assert checkout["with"]["fetch-depth"] == 0
 
+    def test_the_report_tells_a_skip_apart_from_a_broken_job(self):
+        """‼ Three states, not two.
+
+        "The base cannot take part" and "the base step never finished"
+        produce the same empty `comparable` output, and printing the
+        first for the second would explain away a broken job as a clean
+        skip — the exact shape of "correct and unread" this campaign
+        keeps finding. So the Report step branches on `true`, on `false`,
+        and on neither.
+        """
+        report = next(
+            step for step in self._job()["steps"] if step.get("name") == "Report"
+        )
+        run = report["run"]
+        assert "= 'true'" in run and "= 'false'" in run, run
+        assert "else" in run
+        assert "did not complete" in run
+        # And it runs whatever happened above it, or the skip is silent.
+        assert report["if"] == "always()"
+
     def test_a_base_without_the_recorder_is_detected_not_assumed(self):
         """A base that predates the recorder produces an empty file, which
         is indistinguishable from "nothing regressed". The workflow decides
