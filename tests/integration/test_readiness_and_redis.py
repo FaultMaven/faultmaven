@@ -231,3 +231,37 @@ def test_health_reports_no_component_figure_it_did_not_measure():
         leaked = banned & set(component.get("metadata") or {})
         assert not leaked, f"{name} reports fabricated metadata: {sorted(leaked)}"
         assert "uptime_seconds" not in component
+
+
+# --------------------------------------------------------------------------
+# Which components /readiness will 503 for, readable somewhere (#1547)
+#
+# `fatal` alone never answered that question — readiness-fatal is the
+# CONJUNCTION of `fatal` and `fails_per_replica` — so a surface carrying only
+# `fatal` left an operator with no way to see the set. Raised in #1543's
+# review. These run on both CI legs: no Prometheus involved.
+# --------------------------------------------------------------------------
+
+
+def test_health_reports_both_declarations_per_component():
+    body = TestClient(app).get("/health").json()
+
+    components = body["components"]
+    assert components, "positive control: /health must report components"
+    for name, component in components.items():
+        assert "fatal" in component, name
+        assert "fails_per_replica" in component, name
+    assert components["database"]["fatal"] is True
+    # Shared primary: fatal, and deliberately NOT readiness-fatal (#1524).
+    assert components["database"]["fails_per_replica"] is False
+
+
+def test_the_component_detail_route_reports_the_pair_exactly_once():
+    body = TestClient(app).get("/health/components/database").json()
+
+    # The pair lives with the other per-component metrics...
+    assert body["metrics"]["fatal"] is True
+    assert body["metrics"]["fails_per_replica"] is False
+    # ...and is not serialised a second time in the same body. Two copies of
+    # one declaration in one response is how the copies come to disagree.
+    assert "fails_per_replica" not in body["health"]

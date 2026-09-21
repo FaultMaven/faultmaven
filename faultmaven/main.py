@@ -1667,6 +1667,7 @@ try:
 
     _metrics_settings = get_settings()
     if _metrics_settings.providers.metrics_exporter == MetricsExporter.PROMETHEUS_HTTP:
+        from .infrastructure.health.component_monitor import component_monitor
         from .infrastructure.health.sla_tracker import sla_tracker
         from .infrastructure.observability.metrics_exporters import (
             create_prometheus_metrics_endpoint,
@@ -1676,6 +1677,16 @@ try:
         app.include_router(create_prometheus_metrics_endpoint(), tags=["metrics"])
         # SLA gauges are recomputed at every scrape so /health/sla is alertable
         register_scrape_hook(sla_tracker.update_prometheus_gauges)
+        # Component health likewise (#1547). /health is the liveness surface
+        # and answers 200 by design, so the Kubernetes probes reading it cannot
+        # act on a dependency outage — correctly, since restarting a pod does
+        # not fix a shared primary. `component_health_status` is what puts that
+        # verdict somewhere a human can be paged from. No alert rule consumes
+        # it yet: one belongs in faultmaven-enterprise-infra, and the
+        # expression it should use is in docs/operations/monitoring/README.md.
+        # The classifications ride as labels so that rule can select the set
+        # instead of naming components, keeping the fatal set data.
+        register_scrape_hook(component_monitor.publish_health_gauges)
         logger.info(
             "✅ Prometheus /metrics endpoint mounted (METRICS_EXPORTER=prometheus_http)"
         )
@@ -2250,6 +2261,7 @@ async def health_check():
             health_status["components"][component_name] = {
                 "status": component_health.status.value,
                 "fatal": component_health.fatal,
+                "fails_per_replica": component_health.fails_per_replica,
                 "response_time_ms": component_health.response_time_ms,
                 "last_error": component_health.last_error,
                 "probe_availability_24h": component_health.probe_availability_24h,
@@ -2594,6 +2606,10 @@ async def health_check_component(component_name: str):
                 "response_time_ms": component_health.response_time_ms,
                 "last_error": component_health.last_error,
                 "fatal": component_health.fatal,
+                # `fails_per_replica` is NOT repeated here: `metrics` below is
+                # `get_component_metrics`, which carries the pair beside each
+                # other. Serialising one declaration twice in one body is how
+                # the two copies come to disagree.
                 "probe_availability_24h": component_health.probe_availability_24h,
                 "dependencies": component_health.dependencies,
                 "metadata": component_health.metadata,
