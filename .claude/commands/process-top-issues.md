@@ -411,6 +411,13 @@ Then per returned lane, in order:
    defect goes back to the lane for one fix commit; a design call becomes a
    question for the next proposal, not a mid-round interruption; an off-seam
    defect becomes a new issue carrying `Found while working on #<n>`.
+
+   **If the pull request ships a guard, the brief is to defeat the guard** —
+   what can be re-introduced without it noticing, in the shapes this codebase
+   actually uses, with the live site count for each miss. Verifying the
+   guard's answer on the current tree is a different activity and does not
+   substitute: four rounds running the defect was in the guard the pull
+   request installed, and every time it had already passed that check.
 3. **Delta.** Re-review the new head. A finding surviving two rounds is
    escalated, not iterated — unless it **blocks the merge**, in which case it
    goes back for as many rounds as the lane can clear it in, because

@@ -411,6 +411,39 @@ Gates for a lane, each from a failure that cost real time:
   Lanes collide on global values such as the API contract version and the
   alembic head, so two lanes on the same seam are sequenced rather than run
   together.
+- **A pull request that ships a guard gets a pass briefed to DEFEAT the
+  guard.** Not to review the code — to answer one question: *what can be
+  re-introduced without this noticing?* Four rounds running the defect has
+  been in the guard the pull request installed (#1516, #1544, #1553, #1555),
+  and in round 8 it was in **both** pull requests that shipped one. Each time
+  the owning agent had already verified the pull request and passed it.
+
+  The reason that verification keeps failing is worth stating, because it
+  looks like diligence. It checks the guard's **answer on the current tree** —
+  the census counted 13 then 2, the scale floored at 1.0 across NaN, inf, zero
+  and denormal. Both true, and neither says anything about reach, which is the
+  whole of what a guard is for. Two measured examples:
+
+  ```
+  census:    log_once(..., user_id=uid)          CAUGHT
+             log_once(..., **{"user_id": uid})   MISSED    <- 20 live sites,
+                                                              2 in the guarded file
+  workflow:  assert "schedule" in condition      passes on `!= 'schedule'`
+  ```
+
+  So the brief is: re-introduce the defect in every shape the codebase
+  actually uses, and report which the guard misses. Count the live sites of
+  each shape — a miss on the house idiom is a different finding from a miss on
+  a shape nobody writes.
+
+- **Measure an over-approximation's cost; never tune a guard until it is
+  quiet.** Widening a guard invites narrowing it again when it lights up, and
+  narrowing-until-silent is how the original blind spot got there. State the
+  false-positive count and read each one before deciding. On #1553 the
+  widening cost **zero** across 27 previously-invisible sites, and the single
+  new finding was correct and allowlisted with a reason — which is only
+  knowable because it was counted rather than assumed.
+
 - **Review what feeds a detector as hard as the detector.** When a pull
   request's centre of gravity is a clever algorithm, that is where reviewers
   look and where the author has already been careful. A round-6 review swept
