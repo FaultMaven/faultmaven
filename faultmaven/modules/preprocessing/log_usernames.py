@@ -1,0 +1,186 @@
+"""The one implementation of "which token in a log line is a username".
+
+Two consumers extract usernames from log content and they used to carry a
+regex each:
+
+* ``extractors/logs_extractor.py`` — the always-on entity profile rendered
+  into ``file_extract`` / ``search_map``.
+* ``entities/logs.py`` — the ``FAULTMAVEN_ENTITY_REGISTRY`` extractor whose
+  ``EntityType.USER`` rows reach the investigation prompt through the
+  Phase 4c entity-highlights block.
+
+The second copy was written from the first and then never received any of
+the guards the first grew, so on verbatim OpenSSH input it emitted
+``ns.marryaldkfaczcz.com`` (a reverse-mapping PTR record), ``unknown`` and
+``user`` (PAM structural words) and ``PnP`` / ``high-res`` (kernel
+``for <thing>`` phrases) as login accounts (fm#522). A shared rule is the
+only shape in which a guard added once holds in both places.
+
+What stays with each consumer is *formatting* — how the counts are rendered
+— which is what the duplication was originally there to keep independent.
+The rule itself is here.
+
+A username candidate survives when all of the following hold:
+
+1. It came from ``user=<name>`` / ``user <name>`` (always applied), or from
+   ``for [invalid user] <name>`` on a line carrying an explicit auth keyword.
+   Kernel and service messages ("installed for high-res timesource",
+   "activate device for PnP cards") have no such keyword, so the ``for``
+   branch never sees them.
+2. It is not a PAM/SSH structural word ("unknown", "publickey", "user", …).
+3. It is not a reverse-DNS hostname — syslog's ``rhost`` carries the PTR
+   record of the connecting address, and sshd echoes whatever login name a
+   client offered, so a scanner offering a host-shaped name reaches the
+   username branch.
+4. It does not start with a digit and does not end in punctuation.
+"""
+
+from __future__ import annotations
+
+import re
+
+# ``user=<name>`` and ``user <name>``. Applied to every line.
+#
+# Two additions to the pattern fm#522 found, and the delimiter it already
+# had. Both additions are needed: the lookbehind alone still read ``rhost``
+# as an account, which is the exact symptom the issue reported.
+#
+# ``(?<![\w=])`` separates a ``user`` that is a *key* from a ``user`` that is
+# a *value*. In ``ruser=user rhost=203.0.113.9`` the second ``user`` is the
+# value of ``ruser``; a plain ``\b`` matched it as the key and captured the
+# next field's NAME. ``\w`` also covers the ``ruser``/``euser`` prefixes.
+#
+# ``(?![\w.\-]*=)`` is what refuses a field NAME: a captured token
+# immediately followed by ``=`` is the next key, not a value. One lookahead
+# covers three shapes at once — the empty ``user=`` field, the bare ``user``
+# token, and the ``for <key>=`` form on the other pattern.
+#
+# ``[= ]+`` is left exactly as it was. Narrowing it was the first attempt at
+# the empty-``user=`` case: it cost ``user= alice`` and ``user = alice``,
+# both real, and did not close the bare-``user`` case at all. With the
+# lookahead in place it has nothing left to fix, and the mutation matrix says
+# so — reverting the narrowing killed no test, which is what sent it back.
+#
+# What the lookahead cannot see, stated rather than discovered later: a bare
+# ``user`` followed by a token that is not a ``key=`` — ``user rhost
+# mail.example.com`` yields ``rhost``. Syslog key/value is ``=``-delimited,
+# so no producer measured here emits that shape; the lookbehind covers the
+# value-position half of it.
+USER_FIELD_RE = re.compile(
+    r"(?<![\w=])user[= ]+([a-zA-Z_][a-zA-Z0-9._\-]{0,31})\b(?![\w.\-]*=)",
+    re.IGNORECASE,
+)
+
+# ``for [invalid user] <name>`` — gated on AUTH_CONTEXT_RE. Carries the same
+# "not a field name" lookahead as the field pattern: the rule is a property of
+# what a username is, not of which branch happened to capture it.
+USER_FOR_RE = re.compile(
+    r"\bfor (?:invalid user )?([a-zA-Z_][a-zA-Z0-9._\-]{0,31})\b(?![\w.\-]*=)",
+    re.IGNORECASE,
+)
+
+# Lines carrying these phrases are SSH/PAM auth events — the only context
+# where "for <name>" is a reliable username signal.
+#
+# The set is wider than the entity profile's original because fm#522 applied
+# this gate to the entity-registry path, which had none, and the narrower set
+# silently dropped usernames that path used to record: sshd's non-password
+# authentication methods (``Failed publickey``, ``Failed none``, ``Failed
+# keyboard-interactive/pam``), its ``Postponed <method>`` and ``maximum
+# authentication attempts exceeded`` lines, and PAM's ``session closed for``.
+# Measured cost of the widening: zero — none of eleven adversarial non-auth
+# lines (kernel, systemd, nginx, dockerd, chronyd, postfix SASL, MySQL, the
+# two POSSIBLE BREAK-IN shapes) is newly admitted.
+AUTH_CONTEXT_RE = re.compile(
+    r"(?:Failed|Accepted|Postponed) "
+    r"(?:password|publickey|none|keyboard-interactive)"
+    r"|maximum authentication attempts"
+    r"|Invalid user"
+    r"|authentication failure"
+    r"|session (?:opened|closed) for",
+    re.IGNORECASE,
+)
+
+# Reverse-DNS hostname pattern — syslog's rhost field stores the PTR record
+# of the connecting IP (e.g. customer-187-141-143-180-sta.) which the entity
+# extractor would otherwise count as a login username. Three or more numeric
+# segments separated by hyphens or dots identify this pattern reliably.
+REVERSE_DNS_RE = re.compile(r"\d{1,3}(?:[.-]\d{1,3}){2,}")
+
+# SSH/TLS protocol terms the "for <word>" and "user <word>" branches would
+# otherwise capture as usernames. These are structural keywords in auth log
+# messages, never actual account names.
+PROTOCOL_TERMS: frozenset[str] = frozenset(
+    {
+        "authentication",
+        "publickey",
+        "preauth",
+        "key",
+        "address",
+        "the",
+        "a",
+        "an",
+        # PAM/sshd structural words captured by the "user <word>" pattern
+        # that are log-message tokens, never actual account names.
+        "unknown",  # "check pass; user unknown" — PAM status, not username
+        "invalid",  # "invalid user admin" — adjective, not username
+        "user",  # "user=root" field name
+        "none",
+        "null",
+        "request",  # "input_userauth_request" function name fragment
+        "sshd",  # process name captured via "for sshd" in some PAM messages
+    }
+)
+
+
+# Trailing characters that mean the token was cut rather than ended. The
+# 32-character cap on the capture groups can land mid-hostname, leaving a
+# dangling ``.`` or ``-``; neither ends a real account name. ``_`` is NOT in
+# this set — it is legal in a POSIX account name, and rejecting it dropped
+# ``user=svc_`` (fm#522 review).
+_TRUNCATION_TAIL = (".", "-")
+
+
+def is_username(candidate: str) -> bool:
+    """Whether a captured token may be counted as a login account name.
+
+    Public, and tested directly: two of these clauses cannot be reached
+    through ``USER_FIELD_RE`` / ``USER_FOR_RE``, whose capture groups both
+    start ``[a-zA-Z_]`` and so never yield an empty string or a leading digit.
+    They hold the contract for any other caller.
+    """
+    return bool(
+        candidate
+        and candidate.lower() not in PROTOCOL_TERMS
+        and not REVERSE_DNS_RE.search(candidate)
+        and not candidate[0].isdigit()
+        and not candidate.endswith(_TRUNCATION_TAIL)
+    )
+
+
+def extract_usernames(line: str) -> list[str]:
+    """Return the username mentions in one log line, in match order.
+
+    Duplicates are kept: ``Failed password for invalid user test`` matches on
+    both branches and counts as two mentions, which is what the entity
+    profile has always reported. Callers that count *lines* rather than
+    matches want :func:`distinct_usernames`.
+    """
+    candidates = USER_FIELD_RE.findall(line)
+    if AUTH_CONTEXT_RE.search(line):
+        candidates += USER_FOR_RE.findall(line)
+    return [c for c in candidates if is_username(c)]
+
+
+def distinct_usernames(line: str) -> list[str]:
+    """The usernames in one log line, each once, in first-match order.
+
+    The entity registry counts a line, not a match. Keeping the two
+    multiplicities apart is deliberate: an ``invalid user`` line matches on
+    both branches, and folding that doubling into the registry would change
+    what ``list_top_entities`` orders by (``SUM(mention_count) DESC``) and
+    what the Phase 4c highlights block prints into the prompt — ranking a
+    scanner-sprayed account above a real one. The entity profile's own
+    semantics are a separate, open question (fm#1574).
+    """
+    return list(dict.fromkeys(extract_usernames(line)))

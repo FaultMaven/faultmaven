@@ -10,6 +10,12 @@ index them.
 No LLM call. Purely regex-driven; same severity discrimination that
 the logs extractor uses to separate "IP showed up in an error line"
 from "IP showed up in ambient traffic".
+
+Usernames come from ``preprocessing/log_usernames.py`` rather than a
+local pattern. The local copy carried none of the guards the logs
+extractor grew, so on verbatim OpenSSH input it emitted reverse-mapping
+PTR records, PAM structural words and kernel ``for <thing>`` phrases as
+login accounts (fm#522).
 """
 
 from __future__ import annotations
@@ -19,11 +25,13 @@ from collections import Counter
 
 from faultmaven.modules.case.contracts import EntityType
 from faultmaven.modules.preprocessing.entities.protocol import EntityObservation
+from faultmaven.modules.preprocessing.log_usernames import distinct_usernames
 
 # Regexes mirror ``logs_extractor.py``. Kept local so this module can
 # evolve independently if the logs extractor's formatting changes
 # (e.g. if it dropped the entity profile). The cost is a second compile
-# — negligible.
+# — negligible. Usernames are the exception: a second copy of that rule
+# cost fm#522, so it is imported rather than mirrored.
 _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 # Private-network detection is noisy in practice; we index every IP we
 # see and let the agent/context-builder decide relevance.
@@ -36,11 +44,6 @@ _IPV6_RE = re.compile(
     r"|::(?:[0-9A-Fa-f]{1,4}:){0,6}[0-9A-Fa-f]{1,4}"
     r")"
     r"(?![0-9A-Fa-f:.])"
-)
-_USER_RE = re.compile(
-    r"(?:\buser[= ]+|\bfor (?:invalid user )?\b|\buser=)"
-    r"([a-zA-Z_][a-zA-Z0-9._\-]{0,31})\b",
-    re.IGNORECASE,
 )
 _PORT_KEYWORD_RE = re.compile(r"\bport[= :]+(\d{1,5})\b", re.IGNORECASE)
 _HOST_PORT_RE = re.compile(r"(?<![\w.-])[\w-]*[A-Za-z.][\w.-]*:(\d{1,5})\b")
@@ -91,9 +94,9 @@ class LogsEntityExtractor:
                 if is_err:
                     ip_error[ip] += 1
 
-            for user in _USER_RE.findall(line):
-                if not user:
-                    continue
+            # Distinct per line: this path counts lines, the entity profile
+            # counts matches. See ``distinct_usernames``.
+            for user in distinct_usernames(line):
                 user_total[user] += 1
                 if is_err:
                     user_error[user] += 1

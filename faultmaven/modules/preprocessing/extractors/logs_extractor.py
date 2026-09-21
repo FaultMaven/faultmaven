@@ -17,6 +17,7 @@ from faultmaven.modules.preprocessing.extractors.utils import (
     has_content,
     has_yearless_timestamps,
 )
+from faultmaven.modules.preprocessing.log_usernames import extract_usernames
 
 # ---------------------------------------------------------------------------
 # Log-template normalisation — strips per-line variable parts so that
@@ -598,28 +599,10 @@ class LogsAndErrorsExtractor:
         r")"
         r"(?![0-9A-Fa-f:.])"
     )
-    # Username extraction — split into two patterns so the "for <user>" branch
-    # is only applied to lines with explicit auth keywords, preventing kernel
-    # and service messages like "for high-res timesource" or "for PnP cards"
-    # from landing in the username list.
-    #
-    # _USER_FIELD_RE: matches "user= <name>" and "user <name>" — always applied.
-    # _USER_FOR_RE: matches "for [invalid user] <name>" — gated on _AUTH_CONTEXT_RE.
-    _USER_FIELD_RE = re.compile(
-        r"\buser[= ]+([a-zA-Z_][a-zA-Z0-9._\-]{0,31})\b",
-        re.IGNORECASE,
-    )
-    _USER_FOR_RE = re.compile(
-        r"\bfor (?:invalid user )?([a-zA-Z_][a-zA-Z0-9._\-]{0,31})\b",
-        re.IGNORECASE,
-    )
-    # Lines that carry these phrases are SSH/PAM auth events — the only context
-    # where "for <username>" is a reliable username signal.
-    _AUTH_CONTEXT_RE = re.compile(
-        r"Failed password|Accepted (?:password|publickey)|Invalid user"
-        r"|authentication failure|session opened for",
-        re.IGNORECASE,
-    )
+    # Username extraction lives in ``preprocessing/log_usernames.py`` so the
+    # entity-registry extractor applies the same rule rather than a second
+    # copy of it (fm#522). Only the rendering below is this class's business.
+
     # Port matchers. A port number is a numeric token that needs *structural*
     # context on the left: either an explicit `port` keyword, or a
     # host-or-address token before the colon. A bare `:\d+` would match every
@@ -721,12 +704,6 @@ class LogsAndErrorsExtractor:
         r"^[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+"
         r"(\S+)\s+[\w.-]+(?:\([^)]*\))?\[\d+\]"
     )
-
-    # Reverse-DNS hostname pattern — syslog's rhost field stores the PTR record
-    # of the connecting IP (e.g. customer-187-141-143-180-sta.) which the entity
-    # extractor would otherwise count as a login username. Three or more numeric
-    # segments separated by hyphens or dots identify this pattern reliably.
-    _REVERSE_DNS_RE = re.compile(r"\d{1,3}(?:[.-]\d{1,3}){2,}")
 
     # Windows Update KB package extractor (ISS-020). CBS logs reference
     # packages as ``Package_for_KB<NUMBER>~...``. Each line carries one
@@ -830,31 +807,6 @@ class LogsAndErrorsExtractor:
     # otherwise be invisible when 50 was the bar.
     MIN_PROMINENT_NON_ERROR_COUNT = 20
 
-    # SSH/TLS protocol terms that _USER_RE's broad "for <word>" branch would
-    # otherwise capture as usernames. These are structural keywords in auth
-    # log messages, never actual account names.
-    _USER_PROTOCOL_TERMS: frozenset = frozenset(
-        {
-            "authentication",
-            "publickey",
-            "preauth",
-            "key",
-            "address",
-            "the",
-            "a",
-            "an",
-            # PAM/sshd structural words captured by the "user <word>" pattern
-            # that are log-message tokens, never actual account names.
-            "unknown",  # "check pass; user unknown" — PAM status, not username
-            "invalid",  # "invalid user admin" — adjective, not username
-            "user",  # "user=root" field name
-            "none",
-            "null",
-            "request",  # "input_userauth_request" function name fragment
-            "sshd",  # process name captured via "for sshd" in some PAM messages
-        }
-    )
-
     # Exact search strings for each semantic event type — surfaced in the
     # entity profile so the agent knows what to pass to search_file.
     _EVENT_SEARCH_STRINGS: dict = {
@@ -874,11 +826,14 @@ class LogsAndErrorsExtractor:
     def _build_entity_profile(
         self,
         content: str,
-        error_lines: set[int] = None,
+        error_lines: set[int] | None = None,
         top_n: int = 20,
         warn_only: bool = False,
-    ) -> str:
+    ) -> tuple[str, str]:
         """Scan the full file for key entities and produce a frequency summary.
+
+        Returns ``(file_summary, profile_body)`` — the one-line summary that
+        heads ``file_extract`` and the body that goes into ``search_map``.
 
         All IP and username counts reflect the complete file — not just
         severity-keyword lines. Entities are ranked by total mentions so the
@@ -958,29 +913,10 @@ class LogsAndErrorsExtractor:
                     ip_error_counts[ip] += 1
             if not has_numeric_state_codes and self._STATE_CODE_RE.search(line):
                 has_numeric_state_codes = True
-            # "user= <name>" / "user <name>" apply to every line.
-            # "for <name>" applies only when the line has auth-context keywords —
-            # prevents kernel/service messages ("for high-res timesource",
-            # "for PnP cards") from polluting the username list.
-            user_candidates = list(self._USER_FIELD_RE.findall(line))
-            if self._AUTH_CONTEXT_RE.search(line):
-                user_candidates += self._USER_FOR_RE.findall(line)
-            for user in user_candidates:
-                # Skip SSH/TLS protocol keywords and reverse-DNS hostnames.
-                # Syslog stores the PTR record of the connecting IP in the
-                # rhost field (e.g. customer-187-141-143-180-sta.), which the
-                # "for <name>" branch would otherwise count as a login username.
-                # _REVERSE_DNS_RE detects embedded IP octets.
-                if (
-                    user
-                    and user.lower() not in self._USER_PROTOCOL_TERMS
-                    and not self._REVERSE_DNS_RE.search(user)
-                    and not user[0].isdigit()
-                    and user[-1].isalnum()
-                ):
-                    user_all_counts[user] += 1
-                    if is_error:
-                        user_error_counts[user] += 1
+            for user in extract_usernames(line):
+                user_all_counts[user] += 1
+                if is_error:
+                    user_error_counts[user] += 1
             for port_str in self._PORT_KEYWORD_RE.findall(
                 line
             ) + self._HOST_PORT_RE.findall(line):
