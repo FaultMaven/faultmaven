@@ -67,7 +67,8 @@ max by (component) (
 ) == 1
 ```
 
-Notes for whoever writes the rule (it lives in `faultmaven-enterprise-infra`):
+The rule that evaluates this lives in `faultmaven-enterprise-infra`, not here.
+Notes for whoever reads or changes it:
 
 - **`max by (component)`, not `min`.** Higher is healthier, so the maximum
   across replicas is the best any pod can reach: `== 1` means no replica can
@@ -79,8 +80,33 @@ Notes for whoever writes the rule (it lives in `faultmaven-enterprise-infra`):
   reports it for an RLS-bypassing role).
 - **Every component is exported, healthy ones included**, so absence of a
   series means "not scraped", never "fine".
+- **Where the rule is.** `kubernetes/platform/monitoring/rules/faultmaven-workload-rules.yaml`,
+  group `faultmaven.workload.dependencies`, alert `FaultMavenSharedDependencyDown`,
+  with promtool unit tests in `rules/tests/` — added by
+  `faultmaven-enterprise-infra#326`. Until that lands and is applied, the
+  expression above is a specification and nothing evaluates it. Note also that
+  `kubernetes/platform/**` is on no CD path in that repo: merging the rule does
+  not apply it.
 - Values are refreshed at scrape from the last probe sweep; the liveness probe
   runs that sweep far more often than the scrape interval.
+- ‼ **A failed publish leaves the series FROZEN, not missing — and that is
+  the dangerous one.** If the metrics export refuses a write, the gauge child
+  keeps whatever value it last held; only the narrow label-flip case (a
+  component re-registering with different declarations) removes it. Measured
+  against a real `prometheus_client` registry: publish `database` HEALTHY,
+  then flip it to UNHEALTHY while the registry refuses every write, and a
+  scrape still reports `component_health_status{component="database"} == 3`.
+  So the page rule above **does not fire** during a fatal outage, and there is
+  no gap in the series to notice. Do not go looking for one.
+
+  What to look for instead: the API logs
+  `component_health_status is not being published for <component>` at WARNING —
+  immediately the first time, then at most once per component per five
+  minutes, carrying `(N further failures suppressed)` so the throttle cannot
+  hide the scale. When it clears, `component_health_status publishing
+  recovered for <component> after N failed publish(es)` closes it, also at
+  WARNING, so a deployment that emits one emits the other. Between those two
+  lines, treat every value of this metric as unverified (#1568).
 
 ## Overview
 

@@ -27,6 +27,10 @@ from faultmaven.infrastructure.health.component_monitor import (
     ComponentHealthMonitor,
     HealthStatus,
 )
+from tests.unit.infrastructure.health.probe_deadlines import (
+    probe_that_ignores_cancellation,
+    shipped_ratio,
+)
 
 # asyncio_mode = auto, so async tests need no per-test marker.
 pytestmark = pytest.mark.unit
@@ -728,22 +732,34 @@ async def test_a_probe_sweep_cannot_disarm_the_gate(monkeypatch):
     the timeout and the exception arm, and a future change that wrote it back
     while forgetting `fails_per_replica` would disarm readiness with no test
     failing. This drives the sweep on both arms and reads the gate after.
+
+    Both arms, at the ordering that SHIPS (#1565). This used to reach the
+    sweep-budget arm by setting the budget to 0.05 against a per-probe
+    deadline of 30 — the inverse of `_PROBE_TIMEOUT_SECONDS = 3.0` under
+    `_ALL_COMPONENTS_TIMEOUT_SECONDS = 4.0` — which is a configuration the
+    product cannot be in. `shipped_ratio` keeps probe < sweep and
+    `probe_that_ignores_cancellation` is the one route to the arm that
+    ordering leaves open.
     """
-    monkeypatch.setattr(component_monitor_module, "_PROBE_TIMEOUT_SECONDS", 30)
-    monkeypatch.setattr(
-        component_monitor_module, "_ALL_COMPONENTS_TIMEOUT_SECONDS", 0.05
-    )
+    shipped_ratio(monkeypatch)
     monitor = ComponentHealthMonitor()
     monitor.register_component("local_scratch_disk", fatal=True, fails_per_replica=True)
     assert monitor.readiness_fatal_components == {"local_scratch_disk"}
 
-    async def _hang_or_raise(name: str):
-        if name == "local_scratch_disk":
-            await asyncio.sleep(30)  # the sweep-budget arm
-        raise RuntimeError("down")  # the exception arm
+    async def _raises(_name: str):
+        # `check_component_health` catches this and writes back from its own
+        # error arm, which is the second of the two write-backs under test.
+        raise RuntimeError("down")
 
-    monkeypatch.setattr(monitor, "_perform_health_check", _hang_or_raise)
+    probe_that_ignores_cancellation(
+        monitor, monkeypatch, "local_scratch_disk", others=_raises
+    )
     await asyncio.wait_for(monitor.check_all_components(), timeout=5)
+
+    # Both write-backs really ran — otherwise this reads the gate after a
+    # sweep that exercised neither, and passes for the wrong reason.
+    assert "sweep budget" in monitor.component_health["local_scratch_disk"].last_error
+    assert monitor.component_health["database"].last_error == "down"
 
     assert monitor.readiness_fatal_components == {"local_scratch_disk"}
     assert monitor.fatal_components == {"database", "local_scratch_disk"}
@@ -883,7 +899,7 @@ async def test_a_hanging_probe_is_abandoned_at_its_deadline(monkeypatch):
     ~4 min — and the restart cannot help, because the vector store's
     constructor talks to the same hung endpoint inside the lifespan.
     """
-    monkeypatch.setattr(component_monitor_module, "_PROBE_TIMEOUT_SECONDS", 0.05)
+    shipped_ratio(monkeypatch)
     monitor = ComponentHealthMonitor()
 
     async def _hang(_name: str):
@@ -904,19 +920,17 @@ async def test_a_hanging_probe_does_not_take_the_others_with_it(monkeypatch):
 
     `wait_for(gather(...))` would discard every result on cancellation, which
     is why the sweep uses `asyncio.wait`.
+
+    At the shipped ordering (#1565). A probe that merely hangs does not reach
+    the sweep budget — its own 3.0s deadline fires first, under the 4.0s
+    budget — so the hung component here is one that ignores cancellation,
+    which is what `check_all_components`' docstring says the budget is a
+    backstop for. Inverting the two constants to reach it instead would prove
+    the arm in a configuration that cannot occur.
     """
-    monkeypatch.setattr(component_monitor_module, "_PROBE_TIMEOUT_SECONDS", 30)
-    monkeypatch.setattr(
-        component_monitor_module, "_ALL_COMPONENTS_TIMEOUT_SECONDS", 0.05
-    )
+    shipped_ratio(monkeypatch)
     monitor = ComponentHealthMonitor()
-
-    async def _one_hangs(name: str):
-        if name == "vector_store":
-            await asyncio.sleep(30)
-        return {"status": HealthStatus.HEALTHY, "metadata": {}}
-
-    monkeypatch.setattr(monitor, "_perform_health_check", _one_hangs)
+    probe_that_ignores_cancellation(monitor, monkeypatch, "vector_store")
 
     results = await asyncio.wait_for(monitor.check_all_components(), timeout=5)
 
@@ -924,6 +938,194 @@ async def test_a_hanging_probe_does_not_take_the_others_with_it(monkeypatch):
     assert results["vector_store"].status is HealthStatus.UNHEALTHY
     assert "sweep budget" in results["vector_store"].last_error
     assert results["database"].status is HealthStatus.HEALTHY
+
+
+async def test_a_cancellable_hang_is_abandoned_by_the_PROBE_arm_inside_a_sweep(
+    monkeypatch,
+):
+    """The ordering must DO what the reasoning says, not merely hold (#1565).
+
+    The two tests above reach the sweep-budget arm with a probe that ignores
+    cancellation, on the grounds that the shipped ordering leaves no other
+    route. This is the other half of that claim: the ordinary hang — one that
+    DOES observe cancellation, which is every shipped probe — must resolve
+    through `check_component_health`'s per-probe deadline, inside a full
+    sweep, and never touch the backstop.
+
+    Without it, "the sweep budget is a backstop" rests on two constants being
+    ordered. Delete the per-probe `wait_for` and both constants stay ordered,
+    `test_the_sweep_budget_fits_inside_the_startup_probe_timeout` still
+    passes, and every hung dependency silently starts arriving at the
+    backstop instead. This is what fails then.
+    """
+    shipped_ratio(monkeypatch)
+    monitor = ComponentHealthMonitor()
+
+    async def _one_hangs(name: str):
+        if name == "vector_store":
+            await asyncio.sleep(30)  # cancellable, unlike the tests above
+        return {"status": HealthStatus.HEALTHY, "metadata": {}}
+
+    monkeypatch.setattr(monitor, "_perform_health_check", _one_hangs)
+
+    results = await asyncio.wait_for(monitor.check_all_components(), timeout=5)
+
+    assert results["vector_store"].status is HealthStatus.UNHEALTHY
+    assert "did not answer" in results["vector_store"].last_error
+    assert "sweep budget" not in results["vector_store"].last_error
+    assert results["database"].status is HealthStatus.HEALTHY
+
+
+#: The two module constants whose ORDERING the sweep-budget reasoning rests on.
+_DEADLINE_NAMES = ("_PROBE_TIMEOUT_SECONDS", "_ALL_COMPONENTS_TIMEOUT_SECONDS")
+
+#: Every shape this repository's tests actually use to rebind a module
+#: attribute, each one able to re-introduce #1565 on its own. Counted over
+#: `tests/` when this was written: `monkeypatch.setattr(` 1000+,
+#: `patch.object(` 235, `patch("` 209. These are house idioms, not exotica —
+#: the first version of this guard matched the literal spelling `setattr(`
+#: and so caught the first of the five and none of the rest.
+_REINTRODUCTION_SHAPES = (
+    'monkeypatch.setattr(component_monitor_module, "_ALL_COMPONENTS_TIMEOUT_SECONDS", 0.05)',
+    'patch.object(component_monitor_module, "_PROBE_TIMEOUT_SECONDS", 0.05)',
+    'mocker.patch("faultmaven.infrastructure.health.component_monitor'
+    '._ALL_COMPONENTS_TIMEOUT_SECONDS", 0.05)',
+    "component_monitor_module._ALL_COMPONENTS_TIMEOUT_SECONDS = 0.05",
+    'with patch("faultmaven.infrastructure.health.component_monitor'
+    '._PROBE_TIMEOUT_SECONDS", 9):\n    pass',
+)
+
+
+def _deadline_rebind_sites(source: str) -> list:
+    """Every place `source` rebinds a deadline constant, by AST not by text.
+
+    Two rules, neither keyed on a patching API's spelling — the point of the
+    rewrite is that `setattr`, `patch.object`, `mocker.patch` and a bare
+    attribute assignment are one hazard, and a guard that knows only the
+    first is a guard for the shape nobody will use next:
+
+    1. an assignment whose target is `<anything>.<CONSTANT>`;
+    2. ANY call carrying a string argument whose last dotted segment is one
+       of the constants — which is how every mock/patch API in use names its
+       target, including ones not invented yet.
+
+    An AST walk also fixes the other half of the text scan: a docstring or a
+    comment quoting the forbidden call is a string constant or nothing at
+    all, never a Call or an Assign, so it cannot false-positive. (The old
+    `re.DOTALL` was inert besides — the pattern contained no `.`.)
+
+    Out of reach, stated rather than implied: a name assembled at runtime
+    (`setattr(mod, NAME_VAR, x)` or `"_PROBE" + "_TIMEOUT_SECONDS"`). Nothing
+    in this repository does that, and an AST cannot see it.
+    """
+    import ast
+    import warnings
+
+    with warnings.catch_warnings():
+        # Parsing every file under `tests/` re-runs the compiler over source
+        # this guard does not own. At least one module carries a non-raw
+        # `\s`, and its SyntaxWarning would otherwise be attributed to this
+        # scan on every run — a guard that adds noise to the suite is a guard
+        # someone silences.
+        warnings.simplefilter("ignore", DeprecationWarning)
+        warnings.simplefilter("ignore", SyntaxWarning)
+        tree = ast.parse(source)
+
+    sites = []
+    for node in ast.walk(tree):
+        targets = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+            targets = [node.target]
+        for target in targets:
+            if isinstance(target, ast.Attribute) and target.attr in _DEADLINE_NAMES:
+                sites.append(f"line {node.lineno}: assignment to .{target.attr}")
+
+        if isinstance(node, ast.Call):
+            named = list(node.args) + [keyword.value for keyword in node.keywords]
+            for argument in named:
+                if not isinstance(argument, ast.Constant):
+                    continue
+                if not isinstance(argument.value, str):
+                    continue
+                if argument.value.rsplit(".", 1)[-1] in _DEADLINE_NAMES:
+                    sites.append(f"line {node.lineno}: call naming {argument.value!r}")
+    return sites
+
+
+def test_the_deadline_scan_catches_every_shape_this_repo_writes():
+    """State the guard's REACH, measured, rather than its answer today.
+
+    The brief for a pull request that ships a guard is "what can be
+    re-introduced without this noticing?", and the answer for the first
+    version of the scan below was: four of the five shapes in
+    `_REINTRODUCTION_SHAPES`. It matched the literal text `setattr(`, so
+    `patch.object`, `mocker.patch`, a `with patch(...)` block and a plain
+    attribute assignment all sailed through — and a new test using any of
+    them would put the two converted tests straight back to proving the
+    sweep-budget arm at a configuration the product cannot be in.
+
+    So the reach is asserted here, shape by shape, and the negative controls
+    are asserted too: reading the constant (which the two ordering pins do)
+    and quoting the forbidden call in a docstring must NOT be findings.
+    """
+    for shape in _REINTRODUCTION_SHAPES:
+        assert _deadline_rebind_sites(shape), f"MISSED: {shape}"
+
+    reads_only = (
+        "assert component_monitor_module._PROBE_TIMEOUT_SECONDS < 5.0\n"
+        "budget = component_monitor_module._ALL_COMPONENTS_TIMEOUT_SECONDS\n"
+        "shipped_ratio(monkeypatch, probe=0.15, sweep=0.30)\n"
+    )
+    assert _deadline_rebind_sites(reads_only) == []
+
+    quoted_in_prose = (
+        "def f():\n"
+        '    """Never write monkeypatch.setattr(mod, "_PROBE_TIMEOUT_SECONDS", 9)."""\n'
+        '    # nor patch.object(mod, "_ALL_COMPONENTS_TIMEOUT_SECONDS", 9)\n'
+        "    return None\n"
+    )
+    assert _deadline_rebind_sites(quoted_in_prose) == []
+
+
+def test_nothing_reaches_these_deadlines_except_through_shipped_ratio():
+    """Ship the scan, not just the fix (#1565).
+
+    The defect was two test sites setting the sweep budget BELOW the
+    per-probe deadline — an ordering the product cannot be in — and it
+    survived because nothing said a test may not do that. `shipped_ratio` is
+    the one place that asserts `probe < sweep`; any other rebinding of either
+    constant re-opens the hole with no failure anywhere.
+
+    Scanned over the WHOLE test tree rather than this directory, because the
+    constants are importable from anywhere and the next copy will not be
+    filed next to the first. Over-approximation cost, counted rather than
+    assumed: at the time of writing the widened scan reports ZERO sites
+    outside the helper — no false positives to read, and no allowlist to rot.
+    The two sites it was written for were `:734` and `:910` of this file.
+    """
+    import pathlib
+
+    tests_root = pathlib.Path(__file__).resolve().parents[3]
+    assert tests_root.name == "tests", tests_root
+    helper = tests_root / "unit" / "infrastructure" / "health" / "probe_deadlines.py"
+    assert helper.is_file(), "the one place allowed to set these"
+    assert _deadline_rebind_sites(
+        helper.read_text(encoding="utf-8")
+    ), "the exemption must be earning itself — the helper does rebind them"
+
+    offenders = {}
+    for path in sorted(tests_root.rglob("*.py")):
+        if path == helper:
+            continue
+        sites = _deadline_rebind_sites(path.read_text(encoding="utf-8"))
+        if sites:
+            offenders[str(path.relative_to(tests_root))] = sites
+    assert offenders == {}, (
+        "these rebind a probe deadline instead of going through "
+        f"probe_deadlines.shipped_ratio, which asserts probe < sweep: {offenders}"
+    )
 
 
 async def test_the_sweep_budget_fits_inside_the_startup_probe_timeout():
@@ -935,9 +1137,14 @@ async def test_the_sweep_budget_fits_inside_the_startup_probe_timeout():
     """
     assert component_monitor_module._PROBE_TIMEOUT_SECONDS < 5.0
     assert component_monitor_module._ALL_COMPONENTS_TIMEOUT_SECONDS < 5.0
+    # STRICTLY below, not `<=` (#1565). Two tests in this file now reason
+    # from "every probe resolves before the sweep budget, so that budget is a
+    # backstop"; equal constants make the two deadlines a race and that
+    # reasoning false, while passing a `<=` assertion. The neighbouring gauge
+    # suite pins the same relation for the abandoned-probe arm's sake.
     assert (
         component_monitor_module._PROBE_TIMEOUT_SECONDS
-        <= component_monitor_module._ALL_COMPONENTS_TIMEOUT_SECONDS
+        < component_monitor_module._ALL_COMPONENTS_TIMEOUT_SECONDS
     )
 
 

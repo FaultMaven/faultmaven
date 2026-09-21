@@ -2273,6 +2273,44 @@ async def health_check():
 
     except Exception as e:
         logger.error(f"Enhanced health check failed: {e}")
+        # This arm is the one place `/health` and `component_health_status`
+        # can disagree, and nothing in the `try` above can reach it today.
+        # Measured rather than argued (#1568 item 2). The `try` holds FIVE
+        # statements, not the three the issue named — counted, because an
+        # enumeration that claims to be exhaustive and is not is worse than
+        # none:
+        #
+        #  1. `check_all_components()` — a probe raising `Exception` is
+        #     handled by `check_component_health`; a probe raising a bare
+        #     `BaseException` is handled by the sweep's own
+        #     `task.exception()` arm; both were driven and neither escapes.
+        #     `_record_abandoned_probe` can raise `KeyError`, but only for a
+        #     component deleted mid-sweep, and nothing deletes from
+        #     `component_health`. `asyncio.wait` raises `ValueError` on an
+        #     empty task set, but the registry is filled in
+        #     `ComponentHealthMonitor.__init__` and never cleared.
+        #  2. `get_overall_health_status()` — the gauge publish is wholly
+        #     inside its own `try`; driven with an exploding metrics
+        #     registry, it still returns.
+        #  3. `sla_tracker.get_sla_summary()` — a different subsystem, and
+        #     the first statement here whose totality is not a property of
+        #     this module.
+        #  4. the `health_status = {...}` literal — which dereferences FIVE
+        #     `sla_summary[...]` keys. A `get_sla_summary()` that returns
+        #     successfully having renamed one raises `KeyError` here, so
+        #     statement 3 returning is not enough; its SHAPE is load-bearing
+        #     too.
+        #  5. the `for … in component_health_results.items()` loop, reading
+        #     `.status.value` and the two declarations off each record.
+        #
+        # If the arm does become reachable, WHICH half is wrong depends on
+        # where it raised. At 1 or 2, the gauge still carries the PREVIOUS
+        # sweep's verdict and looks fresh — the alert is misled and `/health`
+        # is blind. At 3, 4 or 5 the publish has already run, so the gauge is
+        # current and correct and only `/health` is blind. Pinned by
+        # `tests/unit/infrastructure/health/test_component_health_gauge.py::
+        # test_no_component_failure_shape_reaches_the_health_fallback_body`.
+        #
         # Fallback to basic health status
         health_status = {
             "status": "degraded",
