@@ -220,6 +220,30 @@ jobs:
           # The one thing that makes this job different from the other one.
           FM_BENCHMARK_ABSOLUTE: '1'
 
+      # ‼ tests/performance/ carries product targets too (#1557) and is
+      # NOT marked `benchmark`, so the step above does not collect it. It
+      # ran nowhere under absolute mode until this step existed, which
+      # meant every `product_target` in tests/performance/budgets.py was
+      # recorded and asserted by nothing — and the one real wall-clock
+      # target among them (`logging_overhead < 0.05`) had been deleted
+      # rather than relocated. Separate step because the two selections
+      # cannot share one pytest invocation.
+      - name: Run performance overhead against raw targets
+        if: always()
+        run: |
+          set -o pipefail
+          pytest tests/performance/ \
+            --tb=short \
+            -v \
+            --json-report \
+            --json-report-file=performance_results_absolute.json \
+            --no-cov \
+            2>&1 | tee performance_output_absolute.txt
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          SKIP_SERVICE_CHECKS: 'true'
+          FM_BENCHMARK_ABSOLUTE: '1'
+
       - name: Upload absolute-target results
         uses: actions/upload-artifact@v7
         if: always()
@@ -228,6 +252,8 @@ jobs:
           path: |
             benchmark_results_absolute.json
             benchmark_output_absolute.txt
+            performance_results_absolute.json
+            performance_output_absolute.txt
           retention-days: 90
 
   memory-benchmarks:

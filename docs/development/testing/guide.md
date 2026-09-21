@@ -104,8 +104,8 @@ pytest tests/integration/ -v                         # Cross-layer workflow vali
 pytest tests/infrastructure/test_llm_registry_comprehensive.py -v    # LLM registry
 pytest tests/unit/test_container_integration_comprehensive.py -v     # Container integration
 
-# Performance testing with container overhead validation
-RUN_PERFORMANCE_TESTS=true pytest tests/performance/ -v
+# Performance overhead (calibrated budgets; no opt-in flag since #1557)
+pytest tests/performance/ -v
 ```
 
 ### Running Enhanced Tests by Category
@@ -239,19 +239,24 @@ def test_container_performance():
         container.reset()
         container.get_agent_service()
 
-    elapsed = time.time() - start_time
-    assert elapsed < 1.0  # Less than 1 second for 100 operations
+    elapsed = time.perf_counter() - start_time
+    assert_latency_within(elapsed, CONTAINER_RESET, "Container reset x100")
 ```
 
-**Conditional Performance Tests**: Use environment variables for performance testing:
-```python
-@pytest.mark.performance
-def test_service_performance():
-    if not os.getenv('RUN_PERFORMANCE_TESTS', '').lower() == 'true':
-        pytest.skip("Performance tests disabled")
+‼ **Never compare a duration against a literal** in `tests/benchmarks/`
+or `tests/performance/`. Both route every threshold through
+`assert_latency_within` / `assert_throughput_at_least` from
+`tests/wallclock`, against a row of that suite's `budgets.py`, so the
+machine calibration applies and the per-PR / nightly split holds. Two
+checks in `tests/unit/ci/test_benchmark_calibration.py` fail the build
+otherwise — an AST scan on the comparison's shape, and a reachability
+check that every test taking a clock reading ends up at a helper. See
+[performance.md](performance.md).
 
-    # Performance test code here
-```
+**Do NOT gate a performance test behind an environment variable.**
+`RUN_PERFORMANCE_TESTS` was removed in #1557: it skipped nine tests "to
+avoid CI flakiness", which is what the calibration is for, and a skipped
+test is a budget nobody applies.
 
 ## Testing Documentation Reference
 

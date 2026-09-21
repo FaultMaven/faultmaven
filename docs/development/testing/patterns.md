@@ -299,20 +299,35 @@ def test_performance_pattern():
     print(f"Memory used: {memory_used / 1024 / 1024:.2f}MB")
 
 @pytest.mark.performance
-def test_conditional_performance():
-    """Performance tests that run only when enabled."""
-    if not os.getenv('RUN_PERFORMANCE_TESTS', '').lower() == 'true':
-        pytest.skip("Performance tests disabled (set RUN_PERFORMANCE_TESTS=true)")
+def test_calibrated_performance():
+    """A wall-clock threshold goes through the shared helper, never a literal."""
+    from tests.wallclock import assert_latency_within
 
-    # Performance test code here
-    test_performance_pattern()
+    from .budgets import SOME_OPERATION
+
+    start = time.perf_counter()
+    do_the_work()
+    elapsed = time.perf_counter() - start
+
+    assert_latency_within(elapsed, SOME_OPERATION, "Some operation")
 ```
 
 **Key Principles**:
 - Measure actual performance metrics
-- Set reasonable performance thresholds
-- Use conditional execution for performance tests
-- Monitor memory usage and cleanup
+- Never compare a duration against a literal. `tests/benchmarks/` and
+  `tests/performance/` both route every threshold through
+  `assert_latency_within` / `assert_throughput_at_least`, so the machine
+  calibration applies and the per-PR / nightly split holds. An AST scan in
+  `tests/unit/ci/test_benchmark_calibration.py` fails the build on a
+  hand-rolled spelling, and a second check fails on a test that takes a
+  clock reading and never reaches a helper.
+- Anchor a threshold 2-3x above measured cost and record the runs it came
+  from, in that directory's `budgets.py` (#1556/#1557)
+- Do NOT gate a performance test behind an opt-in environment variable: a
+  skipped test is a budget nobody applies. `RUN_PERFORMANCE_TESTS` was
+  removed in #1557 for that reason
+- Monitor memory usage and cleanup. Megabytes and object counts are NOT
+  calibrated — machine throughput does not move them
 
 ## Advanced Testing Patterns
 

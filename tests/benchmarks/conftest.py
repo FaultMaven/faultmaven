@@ -3,21 +3,18 @@
 Provides database fixtures optimized for performance benchmarking with
 minimal overhead from logging and other instrumentation.
 
-Also provides the two halves every wall-clock assertion in this suite goes
-through:
+Also provides ``measure_min_latency``, the sampling helper every timed
+site here uses. See its docstring for why the statistic is the minimum.
 
-* ``measure_min_latency`` — the sampling helper. See its docstring for why
-  the statistic is the minimum.
-* ``assert_latency_within`` / ``assert_throughput_at_least`` — the single
-  comparison, scaled by the machine-throughput calibration in
-  ``calibration.py``. That module's docstring carries the measurement and
-  the reasoning (#908).
-
-The number each comparison uses comes from ``budgets.py``, where every
-benchmark carries two: a per-PR **regression anchor** at 2-3x its measured
-cost, and the raw **product target** the ``FM_BENCHMARK_ABSOLUTE`` nightly
-asserts. That module's docstring carries the ruling, the 20 runs the
-anchors were measured from, and what the gate gives up at 2-3x (#1556).
+The comparison itself is NOT here. ``assert_latency_within`` /
+``assert_throughput_at_least`` live in ``tests/wallclock/assertions.py``,
+shared with ``tests/performance/`` (#1557), and are re-exported below so
+this suite's existing ``from .conftest import ...`` sites keep working.
+The machine-throughput calibration they apply is
+``tests/wallclock/calibration.py`` (#908/#1555), and the number each
+comparison uses comes from ``budgets.py`` next door, where every benchmark
+carries two: a per-PR **regression anchor** at 2-3x its measured cost, and
+the raw **product target** the ``FM_BENCHMARK_ABSOLUTE`` nightly asserts.
 """
 
 import asyncio
@@ -64,15 +61,19 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
 # stopped importing it — ruff cannot flag it here (conftest.py has F401 in
 # per-file-ignores, and CI's rule selection excludes F401 anyway).
 from tests.utils import generate_case_id, generate_enterprise_id
-
-from .budgets import Budget, LatencyBudget, ThroughputBudget, asserted_target
-from .calibration import (
-    absolute_mode,
+from tests.wallclock import (
+    assert_latency_within,
+    assert_throughput_at_least,
     calibration_scale,
-    describe_calibration,
-    measured_calibration,
-    scale_was_used,
 )
+
+__all__ = [
+    "assert_latency_within",
+    "assert_throughput_at_least",
+    "calibration_scale",
+    "measure_min_latency",
+    "Measurement",
+]
 
 #: Timed samples taken per measured operation, after one untimed warm-up call.
 #:
@@ -217,123 +218,6 @@ async def measure_min_latency(
             timings.append(elapsed)
 
     return Measurement(tuple(timings), result)
-
-
-def _threshold(budget: Budget, expected: type) -> Tuple[float, str, float]:
-    """The number to compare against, what to call it, and the scale used.
-
-    One place decides both halves of the split: ``asserted_target`` picks
-    the per-PR anchor or the nightly's raw product target, and
-    ``calibration_scale`` supplies the machine correction (pinned at 1.0 in
-    absolute mode, so the product target reaches the comparison raw).
-
-    ``expected`` is checked because a latency budget and a throughput
-    budget are both a pair of floats, and passing one to the other helper
-    would invert the direction silently — the exact failure
-    ``assert_throughput_at_least``'s docstring warns about.
-    """
-    if not isinstance(budget, expected):
-        raise TypeError(
-            f"expected a {expected.__name__}, got "
-            f"{type(budget).__name__} ({getattr(budget, 'test', budget)!r})"
-        )
-    scale = calibration_scale()
-    target, kind = asserted_target(budget)
-    return target, kind, scale
-
-
-def assert_latency_within(
-    observed_seconds: float,
-    budget: LatencyBudget,
-    label: str,
-    detail: str = "",
-) -> None:
-    """Compare one latency against its budget, calibration-scaled.
-
-    ‼ This is the ONLY place in the suite where a measured latency is
-    compared against a threshold. Before #908 the comparison was written out
-    three times — ``measured.best < 0.200`` inline here,
-    ``stats["p95_ms"] < 200`` inline in ``test_case_service_operations``, and
-    a bool returned by ``report_benchmark`` in
-    ``test_investigation_session_service_operations`` — which is why
-    calibrating "the benchmark assertion" meant finding all three. Route new
-    sites here; ``tests/unit/ci/test_benchmark_calibration.py`` scans the
-    suite and fails if a fourth spelling appears.
-
-    WHICH number it compares against is the #1556 split: the budget's
-    ``regression`` anchor on a pull request, its ``product_target`` under
-    ``FM_BENCHMARK_ABSOLUTE``. Both live in ``budgets.py`` with the
-    measurement they came from.
-
-    Args:
-        observed_seconds: The measured statistic, in seconds.
-        budget: This test's row in ``budgets.py``. Both of its numbers are
-            written as product/anchor seconds, NOT pre-scaled — the scaling
-            happens here and nowhere else.
-        label: What was measured, for the failure message.
-        detail: Optional extra context (a distribution, a row count).
-    """
-    target_seconds, kind, scale = _threshold(budget, LatencyBudget)
-    limit = target_seconds * scale
-    suffix = f" {detail}" if detail else ""
-    assert observed_seconds < limit, (
-        f"{label}: {observed_seconds * 1000:.1f}ms exceeds "
-        f"{limit * 1000:.1f}ms budget "
-        f"({target_seconds * 1000:.0f}ms {kind} x {scale:.2f} calibration)"
-        f"{suffix}"
-    )
-
-
-def assert_throughput_at_least(
-    observed_per_second: float,
-    budget: ThroughputBudget,
-    label: str,
-    detail: str = "",
-) -> None:
-    """Throughput counterpart of ``assert_latency_within``.
-
-    Throughput is 1/latency, so a machine running ``scale`` times slower
-    clears a floor that is ``scale`` times LOWER. Dividing rather than
-    multiplying is the whole difference, and getting it backwards would
-    tighten the floor on exactly the runners this exists to relieve.
-
-    The #1556 split applies here too, inverted: the ``regression`` floor is
-    the HIGHER of the budget's two numbers, because a tighter throughput
-    floor is a larger one.
-    """
-    target_per_second, kind, scale = _threshold(budget, ThroughputBudget)
-    floor = target_per_second / scale
-    suffix = f" {detail}" if detail else ""
-    assert observed_per_second > floor, (
-        f"{label}: {observed_per_second:.1f}/s below "
-        f"{floor:.1f}/s floor "
-        f"({target_per_second:.0f}/s {kind} / {scale:.2f} calibration)"
-        f"{suffix}"
-    )
-
-
-def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
-    """Put the calibration in the job log, not only in a passing test's stdout.
-
-    ``benchmark_output.txt`` is what the workflow tees, summarises and
-    comments on a pull request, and pytest does not show a passing test's
-    stdout there. Without this line a red benchmark run gives a reader no way
-    to tell a slow runner from a real regression without downloading a
-    90-day artifact — which is the habit #908 is about breaking.
-
-    ``scale_was_used()`` gates the whole thing, so the ordinary CI
-    invocation — which collects this package and deselects every test in it
-    — pays nothing. Where a budget WAS asserted, absolute mode takes the
-    measurement here even though it will not apply it: the nightly job is
-    the one run that asserts raw wall-clock, so it is the one that most
-    needs a number to read a red against. ~0.8 s on a nightly.
-    """
-    if not scale_was_used():
-        return
-    if absolute_mode():
-        measured_calibration()  # report only; the scale stays pinned at 1.0
-    terminalreporter.write_sep("-", "benchmark calibration")
-    terminalreporter.write_line(describe_calibration())
 
 
 @pytest.fixture(scope="session")

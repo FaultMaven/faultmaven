@@ -54,27 +54,102 @@ from typing import List, Tuple
 import pytest
 import yaml
 
+import tests.conftest as root_conftest
 from tests.benchmarks import budgets as budget_table
-from tests.benchmarks import calibration
-from tests.benchmarks import conftest as bench_conftest
-from tests.benchmarks.budgets import LatencyBudget, ThroughputBudget
-from tests.benchmarks.conftest import (
+from tests.performance import budgets as performance_table
+from tests.wallclock import calibration
+from tests.wallclock.assertions import (
     assert_latency_within,
     assert_throughput_at_least,
+)
+from tests.wallclock.budgets import (
+    MAX_REGRESSION_MULTIPLE,
+    MIN_REGRESSION_MULTIPLE,
+    LatencyBudget,
+    ThroughputBudget,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 BENCHMARK_DIR = REPO_ROOT / "tests" / "benchmarks"
+
+#: ‼ The second directory is the whole of #1557. ``tests/benchmarks/`` is
+#: excluded from both required CI gates by ``-m "not benchmark"``;
+#: ``tests/performance/`` is not, so a hand-rolled threshold there reds a
+#: REQUIRED check on a diff that changed nothing. #1555 scanned only the
+#: first, and when #1557 pointed the FIRST version of the scan at the
+#: second it reported **zero** violations against **27** live ones —
+#: because the vocabulary it matched on (``latency``, ``elapsed``, ``p95``,
+#: ``_ms``…) was built from the benchmark suite's variable names and none
+#: of ``tests/performance/``'s (``per_record_time``, ``time_per_call``,
+#: ``overhead_percentage``…) contain one. The rule below matches on the
+#: SHAPE of the comparison instead, so it cannot be escaped by naming.
+PERFORMANCE_DIR = REPO_ROOT / "tests" / "performance"
+GUARDED_DIRS = (BENCHMARK_DIR, PERFORMANCE_DIR)
+
+#: Where the shared machinery lives. Scanned for the call graph only (it
+#: holds the helpers themselves), never for violations.
+WALLCLOCK_DIR = REPO_ROOT / "tests" / "wallclock"
+
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "benchmarks.yml"
 
 
+#: Both suites' tables in one mapping, for the properties that hold of
+#: every anchor regardless of which suite it belongs to. Names are unique
+#: across the two tables, and this asserts it rather than assuming it.
+ALL_ANCHORS = {**budget_table.ALL_BUDGETS, **performance_table.ALL_BUDGETS}
+assert len(ALL_ANCHORS) == len(budget_table.ALL_BUDGETS) + len(
+    performance_table.ALL_BUDGETS
+), "a budget name is used by both tables; the guard would check only one"
+
+
+def _table_for(directory: Path):
+    return (
+        budget_table.ALL_BUDGETS
+        if directory == BENCHMARK_DIR
+        else performance_table.ALL_BUDGETS
+    )
+
+
+def _suite_sources(directory: Path) -> str:
+    return "\n".join(path.read_text() for path in sorted(directory.glob("test_*.py")))
+
+
 @pytest.fixture(autouse=True)
-def _clean_calibration(monkeypatch):
-    """Every test here starts from an unmeasured, non-absolute process."""
-    monkeypatch.delenv(calibration.ABSOLUTE_MODE_ENV, raising=False)
+def _clean_calibration():
+    """Every test here starts from an unmeasured, non-absolute process,
+    and the process it found is put back afterwards.
+
+    ‼ ``reset_calibration_cache()`` clears ``_scale_used``, which is
+    SESSION state: the terminal-summary hook keys on it to decide whether
+    to print the scale a red was measured against. pytest collects
+    ``tests/performance/`` before ``tests/unit/``, so in BOTH required
+    gates the calibrated budgets are asserted before this module runs —
+    and a bare reset here erased the fact for the whole session, so a red
+    performance test shipped with no scale line at all. Measured on the
+    first version of this branch: ``pytest tests/performance
+    tests/unit/ci/test_benchmark_calibration.py`` printed the line 0
+    times, the same two paths in the other order 2.
+
+    ‼ It also does NOT take ``monkeypatch``. Fixtures finalize in reverse
+    order of setup, so one that requests ``monkeypatch`` is torn down
+    BEFORE it — and ``_pin_calibration`` sets ``_measured`` through
+    ``monkeypatch.setattr``, whose undo would then run after this restore
+    and put ``None`` back. Measured: with the dependency the line printed
+    "not measured (no budget was asserted)" instead of the scale. The
+    environment variable is saved and restored by hand for that reason.
+    """
+    state = calibration.calibration_state()
+    previous_env = os.environ.pop(calibration.ABSOLUTE_MODE_ENV, None)
     calibration.reset_calibration_cache()
-    yield
-    calibration.reset_calibration_cache()
+    try:
+        yield
+    finally:
+        calibration.reset_calibration_cache()
+        calibration.restore_calibration_state(state)
+        if previous_env is None:
+            os.environ.pop(calibration.ABSOLUTE_MODE_ENV, None)
+        else:
+            os.environ[calibration.ABSOLUTE_MODE_ENV] = previous_env
 
 
 def _pin_calibration(monkeypatch, seconds: float) -> None:
@@ -333,27 +408,36 @@ class TestTheBudgetTable:
         # there.
         assert len(budget_table.ALL_BUDGETS) == 50
 
-    @pytest.mark.parametrize("name", sorted(budget_table.ALL_BUDGETS))
+    def test_every_budget_in_the_performance_suite_is_in_its_table(self):
+        # 21 latency budgets. 27 hand-rolled comparisons went in; four
+        # came out as deletions rather than budgets (they measured
+        # `asyncio.sleep` granularity), one percentage was folded into the
+        # duration beside it, and two more were dropped in review as
+        # arithmetically redundant — a per-operation figure that is the
+        # per-task one divided by a constant, so its anchor could never
+        # fire first. The memory and object-count assertions are not among
+        # them, for the same reason as above.
+        assert len(performance_table.ALL_BUDGETS) == 21
+
+    @pytest.mark.parametrize("name", sorted(ALL_ANCHORS))
     def test_the_anchor_is_2_to_3x_its_measured_reference(self, name):
-        budget = budget_table.ALL_BUDGETS[name]
+        budget = ALL_ANCHORS[name]
         if isinstance(budget, ThroughputBudget):
             multiple = budget.reference / budget.regression
         else:
             multiple = budget.regression / budget.reference
         assert (
-            budget_table.MIN_REGRESSION_MULTIPLE
-            <= multiple
-            <= budget_table.MAX_REGRESSION_MULTIPLE
+            MIN_REGRESSION_MULTIPLE <= multiple <= MAX_REGRESSION_MULTIPLE
         ), f"{name} is {multiple:.2f}x its reference"
 
-    @pytest.mark.parametrize("name", sorted(budget_table.ALL_BUDGETS))
+    @pytest.mark.parametrize("name", sorted(ALL_ANCHORS))
     def test_the_per_pull_request_anchor_is_the_stricter_of_the_two(self, name):
         # The structural fact behind "the nightly is where a product target
         # is asserted": on every budget the per-PR anchor is TIGHTER than
         # the product target, so a green pull request implies the product
         # target held too, and the nightly's job is the wall clock rather
         # than the regression.
-        budget = budget_table.ALL_BUDGETS[name]
+        budget = ALL_ANCHORS[name]
         if isinstance(budget, ThroughputBudget):
             assert budget.regression >= budget.product_target
         else:
@@ -382,25 +466,73 @@ class TestTheBudgetTable:
         with pytest.raises(ValueError):
             ThroughputBudget("probe", regression=200, product_target=50, reference=80)
 
-    def test_the_table_names_tests_that_exist(self):
+    @pytest.mark.parametrize("directory", GUARDED_DIRS, ids=lambda d: d.name)
+    def test_the_table_names_tests_that_exist(self, directory):
         """A budget pointing at a renamed test is a budget nobody applies."""
-        sources = "\n".join(
-            path.read_text() for path in sorted(BENCHMARK_DIR.glob("test_*.py"))
-        )
+        sources = _suite_sources(directory)
         missing = [
             budget.test
-            for budget in budget_table.ALL_BUDGETS.values()
-            if f"async def {budget.test}(" not in sources
+            for budget in _table_for(directory).values()
+            if f"def {budget.test}(" not in sources
         ]
         assert not missing, missing
 
-    @pytest.mark.parametrize("name", sorted(budget_table.ALL_BUDGETS))
+    @pytest.mark.parametrize("name", sorted(ALL_ANCHORS))
     def test_every_entry_is_actually_used_by_the_suite(self, name):
         """An unused entry is a number that looks enforced and is not."""
-        sources = "\n".join(
-            path.read_text() for path in sorted(BENCHMARK_DIR.glob("test_*.py"))
+        directory = (
+            BENCHMARK_DIR if name in budget_table.ALL_BUDGETS else PERFORMANCE_DIR
         )
-        assert name in sources, f"{name} is in the table but no benchmark uses it"
+        assert name in _suite_sources(
+            directory
+        ), f"{name} is in the {directory.name} table but no test there uses it"
+
+    def test_no_test_carries_two_budgets_without_saying_why(self):
+        """‼ Two budgets on one test are usually one budget twice.
+
+        Review found two: `avg_operation_time` is exactly
+        `avg_task_time / operations_per_task`, so a budget on each is the
+        same constraint in different units, and the looser of the pair can
+        never fire before the tighter one. Both shipped that way —
+        `1.8e-5 x 20 = 3.6e-4` against `3.5e-4`, and `3.5e-4 x 20 = 0.007`
+        against `0.007` — and no table check could see it, because nothing
+        in the table says what statistic a row judges.
+
+        This one cannot see it either. What it does is refuse the
+        SITUATION silently: a test with two budgets has to name, here, the
+        two independent timed windows they come from. A rescaling of one
+        measurement has no honest entry to write.
+        """
+        by_test: dict = {}
+        for name, budget in sorted(ALL_ANCHORS.items()):
+            by_test.setdefault(budget.test, []).append(name)
+        doubled = {test: names for test, names in by_test.items() if len(names) > 1}
+        undeclared = sorted(set(doubled) - set(INDEPENDENT_MEASUREMENTS))
+        assert not undeclared, (
+            "these tests carry more than one budget and do not say which "
+            "independent measurements they come from: " + ", ".join(undeclared)
+        )
+        stale = sorted(set(INDEPENDENT_MEASUREMENTS) - set(doubled))
+        assert not stale, f"no longer carries two budgets: {stale}"
+
+    @pytest.mark.parametrize("directory", GUARDED_DIRS, ids=lambda d: d.name)
+    def test_every_timed_test_in_the_suite_owns_a_budget(self, directory):
+        """‼ The direction the two tests above do NOT cover.
+
+        They check the table against the suite. This checks the suite
+        against the table: a test that takes a clock reading and is not
+        named by any budget is a measurement nobody judges. It is the same
+        question ``test_every_measured_test_reaches_a_helper`` asks of the
+        call graph, asked of the data instead, and it is here because a
+        budget can be deleted without deleting the test that used it.
+        """
+        named = {budget.test for budget in _table_for(directory).values()}
+        unjudged = sorted(
+            name
+            for _path, name, module in _timed_tests(directory)
+            if name not in named and (module, name) not in UNJUDGED_TIMED_TESTS
+        )
+        assert not unjudged, unjudged
 
 
 class TestWhichNumberIsAsserted:
@@ -545,14 +677,63 @@ class TestTerminalSummary:
 
         monkeypatch.setattr(calibration, "measure_calibration", _explode)
         reporter = _FakeReporter()
-        bench_conftest.pytest_terminal_summary(reporter, 0, None)
+        root_conftest.pytest_terminal_summary(reporter, 0, None)
         assert reporter.lines == []
 
     def test_it_reports_the_scale_once_a_budget_was_asserted(self, monkeypatch):
         _pin_calibration(monkeypatch, calibration.CALIBRATION_REFERENCE_SECONDS * 2)
         assert_latency_within(0.001, _latency(1.0), "probe")
         reporter = _FakeReporter()
-        bench_conftest.pytest_terminal_summary(reporter, 0, None)
+        root_conftest.pytest_terminal_summary(reporter, 0, None)
+        assert any("2.00x" in line for line in reporter.lines), reporter.lines
+
+    def test_this_modules_fixture_does_not_erase_an_earlier_scale(self):
+        """‼ ``tests/performance/`` runs BEFORE this file in both gates.
+
+        Its budgets are what set the flag the summary keys on, and
+        this module's own fixture used to clear it on the way past — so
+        the one line a reader needs to tell a slow runner from a
+        regression never reached the job log of either required gate.
+        Exercised through the fixture body, because the bug was in the
+        fixture and not in anything it calls.
+        """
+        calibration.reset_calibration_cache()
+        calibration.restore_calibration_state(
+            (calibration.CALIBRATION_REFERENCE_SECONDS * 2, False)
+        )
+        assert_latency_within(0.001, _latency(1.0), "probe")
+        before = calibration.calibration_state()
+        assert before[1] is True, "precondition: a budget was asserted"
+
+        body = getattr(_clean_calibration, "__wrapped__", _clean_calibration)
+        generator = body()
+        next(generator)
+        assert (
+            calibration.scale_was_used() is False
+        ), "a test in this file must still start from a clean slate"
+        with pytest.raises(StopIteration):
+            next(generator)
+
+        assert (
+            calibration.calibration_state() == before
+        ), "the fixture must put back the measurement AND the flag it found"
+
+    def test_the_summary_still_reports_after_this_module_has_run(self):
+        """The property above, read out where it is consumed."""
+        calibration.reset_calibration_cache()
+        calibration.restore_calibration_state(
+            (calibration.CALIBRATION_REFERENCE_SECONDS * 2, False)
+        )
+        assert_latency_within(0.001, _latency(1.0), "probe")
+
+        body = getattr(_clean_calibration, "__wrapped__", _clean_calibration)
+        generator = body()
+        next(generator)
+        with pytest.raises(StopIteration):
+            next(generator)
+
+        reporter = _FakeReporter()
+        root_conftest.pytest_terminal_summary(reporter, 0, None)
         assert any("2.00x" in line for line in reporter.lines), reporter.lines
 
     def test_absolute_mode_measures_for_the_report(self, monkeypatch):
@@ -572,79 +753,254 @@ class TestTerminalSummary:
         assert calls == [], "the scale must not measure in absolute mode"
 
         reporter = _FakeReporter()
-        bench_conftest.pytest_terminal_summary(reporter, 0, None)
+        root_conftest.pytest_terminal_summary(reporter, 0, None)
         assert calls == [1], "the summary must measure in absolute mode"
         body = " ".join(reporter.lines)
         assert "ABSOLUTE" in body and "1.50x" in body, body
 
 
 # -------------------------------------------- one comparison site, scanned
+#
+# #1555 scanned for `assert <timing-word> <op> <numeric literal>` in
+# `tests/benchmarks/`. #1557 pointed that scan at `tests/performance/` and
+# it returned **zero** against **27** live hand-rolled comparisons, because
+# its vocabulary (`latency`, `elapsed`, `p95`, `_ms`, …) was read off the
+# benchmark suite's variable names and `tests/performance/` used none of
+# them — `per_record_time`, `time_per_call`, `overhead_percentage`. A guard
+# keyed on what a variable is CALLED is defeated by calling it something
+# else, which is not a hypothetical: it had already happened, in the one
+# directory that runs in both required gates.
+#
+# So the rule below keys on the SHAPE of the comparison and nothing else,
+# and it is an over-approximation on purpose. Measured cost over the
+# widened scope: **9 findings** — eight memory, object-count or GC
+# assertions, plus one argument validation — listed with their reasons in
+# `THRESHOLD_ALLOWLIST`, and the count asserted below. #1555's
+# version expressed the same carve-out by simply never naming those
+# variables, which is a silent allowlist; this one is a written list that
+# fails when an entry stops matching anything.
+#
+# The shape rule is still a syntax rule, so `test_every_measured_test_
+# reaches_a_helper` below asks the other question — does every test that
+# takes a clock reading end up at a helper, by any route — which no
+# spelling escapes.
 
-#: Identifiers that mean "this number is a duration or a rate". A comparison
-#: between one of these and a numeric literal is a latency/throughput
-#: threshold and must go through the helpers. Memory assertions
-#: (``rss_mb``, ``memory_delta``, ``final_memory``) are deliberately absent:
-#: megabytes do not scale with machine throughput and must NOT be corrected.
-TIMING_TOKENS = (
-    "measured.best",
-    "measured.median",
-    "measured.worst",
-    "p50",
-    "p95",
-    "p99",
-    "throughput",
-    "latency",
-    "elapsed",
-    "duration",
-    "_ms",
-    "_seconds",
-    "_per_second",
+
+#: Ordering operators. Equality is excluded on principle rather than to
+#: quieten the scan: a budget is never "exactly", so `== 0.3` is always a
+#: correctness assertion. (There are 7 in the guarded directories.)
+ORDERING_OPS = (ast.Lt, ast.LtE, ast.Gt, ast.GtE)
+
+#: Spellings of the same comparison that are not an operator. None are
+#: live anywhere in this repository (measured: 0 ``assertLess`` family, 0
+#: ``operator.lt`` family across ``tests/`` and ``faultmaven/``), which is
+#: exactly why they are covered — a shape with no live sites costs nothing
+#: to guard and is the easy one to reach for once the obvious ones are
+#: closed.
+COMPARISON_CALLS = (
+    "assertLess",
+    "assertLessEqual",
+    "assertGreater",
+    "assertGreaterEqual",
 )
+#: ``operator.lt(elapsed, 0.2)``. Matched on the ``operator.`` prefix so a
+#: local ``lt`` helper is not mistaken for one.
+OPERATOR_COMPARISONS = ("lt", "le", "gt", "ge")
 
-#: One planted violation per token, each written so that EXACTLY ONE token
-#: matches it. That is what makes every entry in ``TIMING_TOKENS``
-#: load-bearing, checked below by deleting each token in turn — without it
-#: a token can rot unnoticed because a sibling happens to cover the same
-#: planted line (``stats['p95_ms']`` matches both ``p95`` and ``_ms``, which
-#: is how ``p95`` was dead weight in the first version of this control).
-PLANTED_PER_TOKEN = {
-    "measured.best": "assert measured.best < 0.2",
-    "measured.median": "assert measured.median < 0.2",
-    "measured.worst": "assert measured.worst < 0.2",
-    "p50": "assert p50 < 200",
-    "p95": "assert p95 < 200",
-    "p99": "assert p99 < 200",
-    "throughput": "assert throughput > 50",
-    "latency": "assert latency < 0.2",
-    "elapsed": "assert elapsed < 0.2",
-    "duration": "assert duration < 0.2",
-    "_ms": "assert stats['total_ms'] < 200",
-    "_seconds": "assert budget_seconds < 0.2",
-    "_per_second": "assert items_per_second > 50",
+#: Comparisons the scan must NOT flag, each with the reason it is not a
+#: duration. Keyed by (file, the comparison as `ast.unparse` writes it) so
+#: the entry survives the line moving, and checked below for being live —
+#: an allowlist entry that matches nothing is a suppression nobody reads.
+#:
+#: ‼ No entry here is a DURATION, and none may become one. Eight are
+#: memory, an object count or a GC outcome — megabytes and object counts
+#: do not scale with machine throughput, so the calibration must NOT be
+#: applied to them — and the ninth is argument validation on a helper.
+#: If a duration ever needs an entry, the right answer is a budget.
+#: ‼ Keyed on the REPO-RELATIVE path, not the basename. Both guarded
+#: directories contain a ``budgets.py``, and ``tests/performance/`` could
+#: grow a ``conftest.py`` tomorrow — a basename key would then exempt the
+#: same comparison in a file nobody reviewed.
+_BENCH = "tests/benchmarks"
+_PERF = "tests/performance"
+THRESHOLD_ALLOWLIST = {
+    (
+        f"{_BENCH}/test_memory_usage.py",
+        "rss_mb < 1500",
+    ): "resident memory, megabytes",
+    (
+        f"{_BENCH}/test_memory_usage.py",
+        "final_memory < 2000",
+    ): "resident memory, megabytes",
+    (
+        f"{_BENCH}/test_memory_usage.py",
+        "memory_delta < 100",
+    ): "resident memory, megabytes",
+    (
+        f"{_BENCH}/conftest.py",
+        "samples < 1",
+    ): "argument validation on measure_min_latency, not a measurement",
+    (
+        f"{_PERF}/test_context_overhead.py",
+        "cleanup_percentage > 80",
+    ): "share of contexts the GC reclaimed; a lifetime property",
+    (
+        f"{_PERF}/test_context_overhead.py",
+        "memory_per_worker < 100",
+    ): "objects allocated per async worker; an object count",
+    (
+        f"{_PERF}/test_context_overhead.py",
+        "memory_ratio <= count_ratio * 2",
+    ): "memory growth against data growth; a ratio of object counts",
+    (
+        f"{_PERF}/test_logging_overhead.py",
+        "object_growth < 1000",
+    ): "objects surviving a create/destroy cycle; an object count",
+    (
+        f"{_PERF}/test_logging_overhead.py",
+        "timing_count <= expected_combinations",
+    ): "distinct (layer, operation) keys recorded; a count against 4 x 50",
 }
 
-#: Assertions the scan must NOT flag. Memory is not scaled by the
-#: calibration, so a megabyte threshold is a legitimate literal comparison.
+#: Tests that take a clock reading and deliberately judge nothing, with the
+#: reason. #1557 deleted these three comparisons rather than re-anchoring
+#: them: each subtracted a NOMINAL sleep total from a measured one and
+#: called the difference overhead, and a bare loop of the same sleeps with
+#: no instrumentation at all accounts for most of the result. See
+#: `tests/performance/budgets.py` for the measurement.
+UNJUDGED_TIMED_TESTS = {
+    (
+        f"{_PERF}/test_context_overhead.py",
+        "test_async_context_propagation_overhead",
+    ): "expected work computed serially for concurrent tasks; the figure "
+    "came out at -1250% and the comparison could not fail",
+    (
+        f"{_PERF}/test_logging_overhead.py",
+        "test_operation_context_manager_overhead",
+    ): "74% of the reported overhead is asyncio.sleep granularity "
+    "(19.4ms of 26.3ms, measured)",
+    (
+        f"{_PERF}/test_logging_overhead.py",
+        "test_high_frequency_operations",
+    ): "92% of the reported overhead is asyncio.sleep granularity "
+    "(97.3ms of 106ms, measured)",
+}
+
+#: Tests that carry more than one budget, and the independent timed
+#: windows each pair comes from. ‼ "Independent" means separately timed,
+#: not merely differently named: a per-operation figure computed by
+#: dividing a per-task one is the SAME measurement, and a budget on each
+#: is the same constraint twice with the looser half unreachable. Two of
+#: those shipped on this branch and were caught in review.
+INDEPENDENT_MEASUREMENTS = {
+    "test_context_variable_access_speed": "two timed loops, get and set",
+    "test_context_copying_performance": (
+        "two timed loops, copy_context() and Context.run()"
+    ),
+    "test_context_isolation_performance": (
+        "the wall clock over the gather, and the spread between the "
+        "per-task means each task measured for itself"
+    ),
+}
+
+#: One planted violation per SHAPE a threshold can be written in, each
+#: written so exactly one shape matches it. Two of these are live idioms in
+#: this repository rather than hypotheses — measured across `tests/`:
+#: `named_bound` has **333** live sites and `chained` **63**, which is why
+#: #1556's ruling called them out by name. The other four have 0-1 and are
+#: covered because they are free.
+PLANTED_PER_SHAPE = {
+    "right_literal": "assert elapsed < 0.2",
+    "left_literal": "assert 0.2 > elapsed",
+    "named_bound": "assert elapsed < BUDGET_SECONDS",
+    "chained": "assert 0.0 < elapsed < 0.2",
+    "negated": "assert not elapsed > 0.2",
+    "unittest": "self.assertLess(elapsed, 0.2)",
+    "operator_call": "assert operator.lt(elapsed, 0.2)",
+    "if_fail": "if elapsed > 0.2:\n        pytest.fail('slow')",
+    "if_raise": "if elapsed > 0.2:\n        raise AssertionError('slow')",
+}
+
+#: The same corpus #1555 planted, kept as a regression control: whatever
+#: the rule becomes, it must still catch every comparison the vocabulary
+#: version caught. (`p95` earned its place there by being dead weight; the
+#: shape rule does not care about names, so these are now checked as a set
+#: rather than one per token.)
+PLANTED_VOCABULARY = (
+    "assert measured.best < 0.2",
+    "assert measured.median < 0.2",
+    "assert measured.worst < 0.2",
+    "assert p50 < 200",
+    "assert p95 < 200",
+    "assert p99 < 200",
+    "assert throughput > 50",
+    "assert latency < 0.2",
+    "assert elapsed < 0.2",
+    "assert duration < 0.2",
+    "assert stats['total_ms'] < 200",
+    "assert budget_seconds < 0.2",
+    "assert items_per_second > 50",
+)
+
+#: Assertions the scan must NOT flag, chosen to pin the two carve-outs the
+#: rule makes: equality is never a threshold, and a comparison whose only
+#: numeric literal is 0 is an existence check.
 PLANTED_NEGATIVES = (
-    "assert rss_mb < 1500",
-    "assert memory_delta < 100",
-    "assert final_memory < 2000",
+    "assert len(results) == 100",
+    "assert threshold == 0.3",
+    "assert operations_logged > 0",
+    "assert len(metric_calls) > 0",
+    "assert elapsed >= 0",
 )
 
 
-def _threshold_comparisons(
-    source: str, filename: str, tokens=None
-) -> List[Tuple[str, str, int]]:
-    """Every ``assert <timing> <op> <number>`` in ``source``.
+def _numeric_literals(node: ast.AST) -> List[float]:
+    return [
+        child.value
+        for child in ast.walk(node)
+        if isinstance(child, ast.Constant)
+        and isinstance(child.value, (int, float))
+        and not isinstance(child.value, bool)
+    ]
 
-    Returns (filename, enclosing function, line) triples. ``tokens``
-    overrides the vocabulary, which is how the load-bearing check below
-    drops one entry at a time without mutating module state.
+
+def _is_threshold_comparison(node: ast.Compare) -> bool:
+    """Is this comparison judging a measurement against a bound?
+
+    Two things are NOT, and both are excluded by a property rather than by
+    a name:
+
+    * an equality — a budget is never "exactly";
+    * a comparison whose only numeric literal is ``0`` — an existence
+      check. Note the wording: ``elapsed - 0.2 > 0`` carries a 0.2 as well
+      and is caught, which is the form that would otherwise smuggle a
+      budget past the exclusion.
+
+    A comparison with NO literal at all IS caught, because that is the
+    named-bound idiom (``assert elapsed < BUDGET_SECONDS``) — 333 live
+    sites across ``tests/`` and the most obvious way to move a threshold
+    out of the scan's reach.
     """
-    vocabulary = TIMING_TOKENS if tokens is None else tokens
+    if not any(isinstance(op, ORDERING_OPS) for op in node.ops):
+        return False
+    literals = _numeric_literals(node)
+    return not (literals and all(value == 0 for value in literals))
+
+
+def _threshold_comparisons(source: str, filename: str) -> List[Tuple[str, str, int]]:
+    """Every hand-rolled threshold comparison in ``source``.
+
+    Returns (filename, enclosing function, source text) triples. The third
+    element is the comparison as ``ast.unparse`` writes it rather than a
+    line number, because that is what ``THRESHOLD_ALLOWLIST`` is keyed on
+    and a line number moves when anything above it does.
+    """
     tree = ast.parse(source, filename=filename)
     enclosing: List[str] = []
     found: List[Tuple[str, str, int]] = []
+
+    def _record(node: ast.AST, text: str) -> None:
+        found.append((filename, enclosing[-1] if enclosing else "", text))
 
     class _Walk(ast.NodeVisitor):
         def visit_FunctionDef(self, node):  # noqa: N802 - ast API
@@ -656,91 +1012,362 @@ def _threshold_comparisons(
 
         def visit_Assert(self, node):  # noqa: N802 - ast API
             test = node.test
-            if isinstance(test, ast.Compare) and len(test.comparators) == 1:
-                right = test.comparators[0]
-                if isinstance(right, ast.Constant) and isinstance(
-                    right.value, (int, float)
+            if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+                test = test.operand
+            if isinstance(test, ast.Compare) and _is_threshold_comparison(test):
+                _record(node, ast.unparse(test))
+            self.generic_visit(node)
+
+        def visit_Call(self, node):  # noqa: N802 - ast API
+            func = node.func
+            if isinstance(func, ast.Attribute):
+                if func.attr in COMPARISON_CALLS:
+                    _record(node, ast.unparse(node))
+                elif (
+                    func.attr in OPERATOR_COMPARISONS
+                    and ast.unparse(func).startswith("operator.")
+                    and _numeric_literals(node)
                 ):
-                    left = ast.unparse(test.left)
-                    if any(tok in left for tok in vocabulary):
-                        found.append(
-                            (filename, enclosing[-1] if enclosing else "", node.lineno)
-                        )
+                    _record(node, ast.unparse(node))
+            self.generic_visit(node)
+
+        def visit_If(self, node):  # noqa: N802 - ast API
+            # `if elapsed > 0.2: pytest.fail(...)` and `... : raise
+            # AssertionError(...)` are assertions with the word `assert`
+            # taken out of them. The second is a live idiom — 10 sites
+            # across `tests/`, one of them in `tests/benchmarks/conftest.py`
+            # — so covering it costs exactly one allowlist entry, which is
+            # cheaper than leaving the shape open.
+            if isinstance(node.test, ast.Compare) and _is_threshold_comparison(
+                node.test
+            ):
+                for child in ast.walk(node):
+                    if isinstance(child, ast.Raise):
+                        _record(node, ast.unparse(node.test))
+                        break
+                    if isinstance(child, ast.Call) and "fail" in ast.unparse(
+                        child.func
+                    ):
+                        _record(node, ast.unparse(node.test))
+                        break
             self.generic_visit(node)
 
     _Walk().visit(tree)
     return found
 
 
-def _planted_source(tokens=None) -> str:
-    """A synthetic module carrying one violation per token, plus negatives."""
-    chosen = PLANTED_PER_TOKEN if tokens is None else tokens
-    body = list(chosen.values()) + list(PLANTED_NEGATIVES)
-    return "def test_x():\n" + "".join(f"    {line}\n" for line in body)
+def _planted_source(statements=None) -> str:
+    """A synthetic module carrying one violation per shape, plus negatives."""
+    chosen = (
+        list(PLANTED_PER_SHAPE.values()) if statements is None else list(statements)
+    )
+    body = chosen + list(PLANTED_NEGATIVES)
+    return "def test_x(self):\n" + "".join(f"    {line}\n" for line in body)
+
+
+def _key(path: Path) -> str:
+    """This file's identity in the allowlists: its repo-relative path.
+
+    A path outside the repository — the scratch tree the recursion probe
+    below builds — keys on itself. It can never match an allowlist entry,
+    which is what that probe wants.
+    """
+    try:
+        return path.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def _modules_in(directory: Path) -> List[Path]:
+    """‼ RECURSIVE on purpose.
+
+    A non-recursive ``glob`` was the first draft here, and a new
+    ``tests/performance/sub/test_x.py`` walked past both rules with nothing
+    to show for it. The detector's input is where these go wrong.
+    """
+    return sorted(directory.rglob("*.py"))
+
+
+def _scan_directory(directory: Path) -> List[Tuple[str, str, str]]:
+    """Every threshold comparison in ``directory``, allowlist NOT applied."""
+    hits: List[Tuple[str, str, str]] = []
+    for path in _modules_in(directory):
+        hits.extend(_threshold_comparisons(path.read_text(), _key(path)))
+    return hits
 
 
 class TestOneComparisonSite:
-    def test_the_scan_finds_every_planted_violation(self):
-        """Positive control: a drifted vocabulary reads like a clean tree."""
+    def test_the_scan_finds_every_planted_shape(self):
+        """Positive control: a drifted rule reads like a clean tree."""
         hits = _threshold_comparisons(_planted_source(), "planted.py")
-        # One hit per token, and none for the three memory negatives that
-        # follow them.
-        assert len(hits) == len(PLANTED_PER_TOKEN)
-        assert [h[2] for h in hits] == list(range(2, 2 + len(PLANTED_PER_TOKEN)))
+        assert len(hits) == len(PLANTED_PER_SHAPE)
+        assert [h[2] for h in hits] != []
 
-    @pytest.mark.parametrize("token", PLANTED_PER_TOKEN)
-    def test_every_token_in_the_vocabulary_is_load_bearing(self, token):
-        """Removing any one token must lose exactly one planted violation.
+    @pytest.mark.parametrize("shape", sorted(PLANTED_PER_SHAPE))
+    def test_every_shape_is_caught_on_its_own(self, shape):
+        """Each shape, alone, with the negatives around it.
 
-        The check that a vocabulary entry is doing work. `p95` was not: its
-        only planted line was `stats['p95_ms']`, which `_ms` already
-        matched, so dropping `p95` from the vocabulary entirely left the
-        suite green.
+        Parametrized rather than counted in one pass because a shape that
+        stopped being caught would otherwise be masked by the next one —
+        which is how `p95` sat dead in the vocabulary version.
         """
-        source = _planted_source()
-        full = len(_threshold_comparisons(source, "planted.py"))
-        reduced = tuple(t for t in TIMING_TOKENS if t != token)
-        assert len(reduced) == len(TIMING_TOKENS) - 1, f"{token!r} is not in the list"
-        remaining = len(_threshold_comparisons(source, "planted.py", tokens=reduced))
-        assert remaining == full - 1, (
-            f"{token!r} is dead weight: removing it from TIMING_TOKENS took "
-            f"the hit count from {full} to {remaining}, so another token "
-            "already covers its planted line"
-        )
+        source = _planted_source([PLANTED_PER_SHAPE[shape]])
+        hits = _threshold_comparisons(source, "planted.py")
+        assert len(hits) == 1, f"{shape!r} is not caught: {PLANTED_PER_SHAPE[shape]!r}"
 
-    def test_memory_thresholds_are_never_flagged(self):
+    def test_it_still_catches_everything_the_vocabulary_version_did(self):
+        """#1555's corpus, as a regression control on the rule change."""
+        source = _planted_source(PLANTED_VOCABULARY)
+        hits = _threshold_comparisons(source, "planted.py")
+        assert len(hits) == len(PLANTED_VOCABULARY)
+
+    def test_correctness_assertions_are_never_flagged(self):
         source = "def test_x():\n" + "".join(
             f"    {line}\n" for line in PLANTED_NEGATIVES
         )
         assert _threshold_comparisons(source, "planted.py") == []
 
-    def test_the_scan_looks_at_every_benchmark_module(self):
-        """A guard that watched the wrong directory would be green forever."""
-        modules = sorted(p.name for p in BENCHMARK_DIR.glob("*.py"))
-        assert "conftest.py" in modules
-        # budgets.py carries 50 numeric thresholds (#1556). It is in scope
-        # for the same reason conftest.py is: a hand-rolled comparison
-        # would be just as invisible there.
-        assert "budgets.py" in modules
-        assert len([m for m in modules if m.startswith("test_")]) >= 7
+    def test_a_zero_bound_hiding_a_budget_is_still_caught(self):
+        """The `> 0` carve-out must not be a door.
 
-    def test_no_benchmark_compares_a_threshold_outside_the_helpers(self):
-        # No allowlist. The two helpers compare against a computed `budget`
-        # / `floor` rather than a literal, so the scan's own rule — a timing
-        # name against a NUMERIC LITERAL — already excludes them. An
-        # allowlist here would suppress nothing and would read as "the scan
-        # confirms these two exist", which it does not.
-        violations = []
-        for path in sorted(BENCHMARK_DIR.glob("*.py")):
-            for filename, func, lineno in _threshold_comparisons(
-                path.read_text(), path.name
-            ):
-                violations.append(f"{filename}:{lineno} in {func or '<module>'}")
+        `elapsed - 0.2 > 0` is `elapsed < 0.2` with the bound moved to the
+        left, and the exclusion is written as "every literal is 0" rather
+        than "the right-hand literal is 0" precisely so it does not let
+        this through.
+        """
+        source = "def test_x():\n    assert elapsed - 0.2 > 0\n"
+        assert len(_threshold_comparisons(source, "planted.py")) == 1
+
+    @pytest.mark.parametrize("directory", GUARDED_DIRS, ids=lambda d: d.name)
+    def test_the_scan_looks_at_every_module_in_scope(self, directory):
+        """A guard that watched the wrong directory would be green forever."""
+        modules = sorted(path.name for path in directory.glob("*.py"))
+        assert "budgets.py" in modules, directory
+        assert len([m for m in modules if m.startswith("test_")]) >= 2, directory
+
+    def test_the_performance_suite_is_in_scope_at_all(self):
+        """‼ The #1557 defect itself, as a test.
+
+        `tests/performance/` is collected by both required CI gates and
+        `tests/benchmarks/` is not, so this is the directory where a
+        hand-rolled threshold does damage. It was outside the scan for the
+        whole of #1555.
+        """
+        assert PERFORMANCE_DIR in GUARDED_DIRS
+        assert PERFORMANCE_DIR.is_dir()
+
+    @pytest.mark.parametrize("directory", GUARDED_DIRS, ids=lambda d: d.name)
+    def test_no_threshold_is_compared_outside_the_helpers(self, directory):
+        violations = [
+            f"{filename}: {text}  (in {func or '<module>'})"
+            for filename, func, text in _scan_directory(directory)
+            if (filename, text) not in THRESHOLD_ALLOWLIST
+        ]
         assert not violations, (
             "latency/throughput thresholds must go through "
             "assert_latency_within / assert_throughput_at_least so the #908 "
-            "calibration applies; found: " + ", ".join(violations)
+            "calibration applies and the #1556 split holds; found: "
+            + ", ".join(violations)
         )
+
+    def test_every_allowlist_entry_is_live(self):
+        """An entry that matches nothing is a suppression nobody reads.
+
+        It is also how an allowlist outlives the code it was written for:
+        the comparison is deleted, the entry stays, and the next reader
+        takes it for a statement about the tree.
+        """
+        seen = {
+            (filename, text)
+            for directory in GUARDED_DIRS
+            for filename, _func, text in _scan_directory(directory)
+        }
+        dead = sorted(key for key in THRESHOLD_ALLOWLIST if key not in seen)
+        assert not dead, dead
+
+    def test_the_allowlist_cost_is_what_was_measured(self):
+        """#1557 counted the over-approximation rather than tuning it away.
+
+        Nine findings over the widened scope: eight memory, object-count
+        or GC assertions, plus one argument validation. The number is
+        asserted so that widening the allowlist is a visible act rather
+        than a quiet one.
+        """
+        assert len(THRESHOLD_ALLOWLIST) == 9
+
+    def test_the_scan_reads_subdirectories_too(self, tmp_path):
+        """A nested module is where the next one of these will land.
+
+        The first draft of ``_modules_in`` used a non-recursive ``glob``,
+        and a threshold in ``tests/performance/sub/test_x.py`` walked past
+        both checks with nothing to show for it.
+
+        ‼ Built in ``tmp_path``, NOT in the directory under test. The
+        first version of this test planted the violating module inside
+        ``tests/performance/`` while the suite was running: under
+        ``-n auto`` — which ``scripts/tests.py``'s ``ci`` and ``ci-full``
+        modes pass, and whose default ``--dist load`` splits within a file
+        — another worker scanning the same directory would see it and fail
+        for real. A kill between the write and the cleanup left it behind
+        permanently. Reproduced in review. The scan takes a directory, so
+        there is no reason to aim it at a live one.
+        """
+        nested = tmp_path / "sub" / "deeper"
+        nested.mkdir(parents=True)
+        (nested / "test_probe.py").write_text("def test_x():\n    assert e < 0.2\n")
+        (tmp_path / "test_top.py").write_text("def test_y():\n    assert f < 0.3\n")
+
+        found = {text for _f, _fn, text in _scan_directory(tmp_path)}
+        assert "f < 0.3" in found, "the scan lost the top-level module"
+        assert "e < 0.2" in found, "the scan did not recurse"
+
+
+# ------------------------------------------- one comparison site, reachable
+#
+# The scan above is a syntax rule, and a syntax rule is a list of spellings
+# somebody has thought of. This one is not: it asks whether a test that
+# takes a clock reading ends up at a helper, following calls, so a new
+# spelling, a private wrapper or a comparison written with no `assert` at
+# all still has to answer for itself.
+#
+# It is also the check that would have caught #1555's own blind spot from
+# the other side: `tests/performance/`'s 27 comparisons were invisible to
+# the vocabulary, but all 26 of its timed tests would have shown up here on
+# day one.
+
+CLOCK_FUNCTIONS = frozenset(
+    {"perf_counter", "perf_counter_ns", "monotonic", "monotonic_ns", "process_time"}
+)
+HELPER_FUNCTIONS = frozenset({"assert_latency_within", "assert_throughput_at_least"})
+
+
+def _call_graph(directories) -> Tuple[dict, list]:
+    """Functions in ``directories``, what each calls, and the test ones.
+
+    Returns ``({(module, name): {called names}}, [(path, name, module)])``.
+    ``time.time()`` is counted as a clock alongside `perf_counter`, because
+    a threshold written against it is no less a threshold for being badly
+    measured.
+    """
+    definitions: dict = {}
+    tests: list = []
+    for directory in directories:
+        for path in _modules_in(directory):
+            tree = ast.parse(path.read_text(), filename=_key(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                calls = set()
+                for child in ast.walk(node):
+                    if not isinstance(child, ast.Call):
+                        continue
+                    func = child.func
+                    if isinstance(func, ast.Attribute):
+                        calls.add(func.attr)
+                        if (
+                            isinstance(func.value, ast.Name)
+                            and func.value.id == "time"
+                            and func.attr == "time"
+                        ):
+                            calls.add("perf_counter")
+                    elif isinstance(func, ast.Name):
+                        calls.add(func.id)
+                definitions[(_key(path), node.name)] = calls
+                if node.name.startswith("test_"):
+                    tests.append((path, node.name, _key(path)))
+    return definitions, tests
+
+
+def _reaches(definitions, start, targets, on_ambiguous: bool) -> bool:
+    """Does ``start`` reach any of ``targets`` through the call graph?
+
+    ``on_ambiguous`` is the answer when a called name is defined in more
+    than one scanned module and cannot be resolved. Both callers pass the
+    value that produces MORE findings, so an unresolvable name never
+    silences the guard.
+    """
+    by_name: dict = {}
+    for module, name in definitions:
+        by_name.setdefault(name, []).append(module)
+    seen = set()
+    stack = [start]
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        for called in definitions.get(current, ()):
+            if called in targets:
+                return True
+            if (current[0], called) in definitions:
+                stack.append((current[0], called))
+            elif len(by_name.get(called, [])) == 1:
+                stack.append((by_name[called][0], called))
+            elif called in by_name:
+                return on_ambiguous
+    return False
+
+
+def _timed_tests(directory: Path):
+    """(path, test name, module) for every test there that reads a clock."""
+    definitions, tests = _call_graph((directory, WALLCLOCK_DIR))
+    return [
+        (path, name, module)
+        for path, name, module in tests
+        if _reaches(definitions, (module, name), CLOCK_FUNCTIONS, True)
+    ]
+
+
+class TestEveryMeasurementIsJudged:
+    @pytest.mark.parametrize("directory", GUARDED_DIRS, ids=lambda d: d.name)
+    def test_every_measured_test_reaches_a_helper(self, directory):
+        definitions, _tests = _call_graph((directory, WALLCLOCK_DIR))
+        unjudged = [
+            f"{module}::{name}"
+            for _path, name, module in _timed_tests(directory)
+            if not _reaches(definitions, (module, name), HELPER_FUNCTIONS, False)
+            and (module, name) not in UNJUDGED_TIMED_TESTS
+        ]
+        assert not unjudged, (
+            "these tests take a clock reading and judge it by some route "
+            "other than the helpers, or by no route at all: " + ", ".join(unjudged)
+        )
+
+    def test_the_search_follows_a_wrapper(self):
+        """‼ The property the first draft of this check got wrong.
+
+        `tests/benchmarks/test_case_service_operations.py` calls
+        `report_p95`, which calls `assert_latency_within`. A one-level
+        search reported it as unjudged — a false positive that, had it been
+        allowlisted instead of read, would have left a real benchmark
+        exempt from the guard forever.
+        """
+        definitions = {
+            ("m.py", "test_x"): {"report_p95"},
+            ("m.py", "report_p95"): {"assert_latency_within"},
+        }
+        assert _reaches(definitions, ("m.py", "test_x"), HELPER_FUNCTIONS, False)
+
+    def test_the_search_does_not_invent_a_route(self):
+        definitions = {
+            ("m.py", "test_x"): {"report_p95"},
+            ("m.py", "report_p95"): {"print"},
+        }
+        assert not _reaches(definitions, ("m.py", "test_x"), HELPER_FUNCTIONS, False)
+
+    def test_it_finds_the_timed_tests_at_all(self):
+        """A reachability check that resolved nothing would pass silently."""
+        for directory in GUARDED_DIRS:
+            assert len(_timed_tests(directory)) >= 10, directory
+
+    def test_every_unjudged_entry_is_live(self):
+        live = {
+            (module, name)
+            for directory in GUARDED_DIRS
+            for _path, name, module in _timed_tests(directory)
+        }
+        dead = sorted(key for key in UNJUDGED_TIMED_TESTS if key not in live)
+        assert not dead, dead
 
 
 # ------------------------------------------------------------ the workflow
@@ -1003,6 +1630,46 @@ class TestWorkflowWiring:
             env.get(calibration.ABSOLUTE_MODE_ENV) in ("1", 1, "true", True)
             for env in envs
         ), ("the nightly job must set " + calibration.ABSOLUTE_MODE_ENV)
+
+    @pytest.mark.parametrize("directory", GUARDED_DIRS, ids=lambda d: d.name)
+    def test_every_product_target_is_asserted_somewhere(self, directory):
+        """‼ A product target nothing runs is a number, not a check.
+
+        `asserted_target` picks `product_target` only under
+        `FM_BENCHMARK_ABSOLUTE`, and the only job that sets it ran
+        `pytest tests/benchmarks/ -m benchmark`. `tests/performance/` is
+        not marked `benchmark`, so none of its rows was ever asserted —
+        every `product_target` there was inert, and
+        `test_typical_api_request_overhead`'s real `logging_overhead <
+        0.05` had been deleted rather than relocated (#1557 review).
+
+        So the property is per DIRECTORY, not per job: some step of the
+        absolute job has to select each guarded tree.
+        """
+        job = self._workflow()["jobs"]["nightly-absolute"]
+        selecting = [
+            step
+            for step in job["steps"]
+            if calibration.ABSOLUTE_MODE_ENV in (step.get("env") or {})
+            and directory.name in (step.get("run") or "")
+        ]
+        assert selecting, (
+            f"no step of nightly-absolute runs tests/{directory.name}/ under "
+            f"{calibration.ABSOLUTE_MODE_ENV}, so every product_target in "
+            f"tests/{directory.name}/budgets.py is asserted by nothing"
+        )
+
+    def test_the_absolute_step_for_performance_does_not_filter_it_away(self):
+        """`-m benchmark` would select nothing in `tests/performance/`."""
+        job = self._workflow()["jobs"]["nightly-absolute"]
+        for step in job["steps"]:
+            run = step.get("run") or ""
+            if "tests/performance/" in run:
+                assert "-m benchmark" not in run, (
+                    "tests/performance/ carries no benchmark marker; "
+                    "`-m benchmark` would deselect all of it and the step "
+                    "would pass having run nothing"
+                )
 
     @pytest.mark.parametrize(
         "event,inputs,expected", EVENT_SHAPES, ids=lambda v: str(v)[:40]
