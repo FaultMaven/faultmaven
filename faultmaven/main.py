@@ -1224,6 +1224,23 @@ def setup_middleware():
 
     settings = get_settings()
 
+    # Is this a DEPLOYED box? Asked ONCE, here, and used by both decisions in
+    # this function that turn on it — the protection carve-out below (does a
+    # setup failure refuse the boot, or boot unprotected?) and the CORS branch
+    # near the end. They are ~200 lines apart, they had drifted apart, and the
+    # drift was fm#985 item 17.
+    #
+    # ``is_deployed_environment`` rather than ``settings.is_development()``
+    # alone: ``DEPLOYMENT_MODE=cloud`` with ``ENVIRONMENT=development`` is a
+    # reachable configuration — nothing relates the two — and it is the worst
+    # shape to hand a development policy to. One import, so the composition
+    # root, ``api.protection`` and their tests cannot answer it differently.
+    from faultmaven.config.protection import is_deployed_environment
+
+    deployed = is_deployed_environment(
+        settings.server.environment, is_cloud_deployment=settings.is_cloud
+    )
+
     # Skip verbose logging during test collection
     if settings.server.pytest_current_test or "pytest" in sys.modules:
         logging_enabled = False
@@ -1350,14 +1367,20 @@ def setup_middleware():
         # be a zero-output event. Under the carve-out below this line is the only
         # trace that the app is running unprotected.
         logger.warning(f"Failed to setup protection middleware: {e}")
-        # The carve-out, named explicitly: **development only** — which is also
-        # what an unset ``ENVIRONMENT`` reads as — deliberately boots
-        # unprotected-with-a-warning when protection setup fails, so a broken
-        # local config does not block iteration. Every other environment
-        # (``staging``, ``production``, any unrecognised value) refuses to boot,
-        # re-muting the fail-closed raise ``api/protection.py`` makes for exactly
-        # one environment rather than for all of them.
-        if not settings.is_development():
+        # The carve-out, named explicitly: **a development checkout only** —
+        # which is also what an unset ``ENVIRONMENT`` reads as — deliberately
+        # boots unprotected-with-a-warning when protection setup fails, so a
+        # broken local config does not block iteration. Every deployed box
+        # (``staging``, ``production``, any unrecognised value, and any cloud
+        # deployment however it names its environment) refuses to boot,
+        # re-muting the raise ``api/protection.py`` makes for exactly one
+        # audience rather than for all of them.
+        #
+        # ``deployed`` rather than ``not settings.is_development()``: a cloud
+        # fleet naming ``ENVIRONMENT=development`` would otherwise have been
+        # carved out of the refusal as well, which is the one deployment where
+        # serving unprotected is least acceptable.
+        if deployed:
             raise
 
     if logging_enabled:
@@ -1516,21 +1539,17 @@ def setup_middleware():
     cors_origins = list(settings.security.cors_allow_origins)
 
     # Which CORS policy a box runs is decided by ONE question — is this a
-    # deployed environment? — and `settings.is_development()` is the whole of
-    # it. The three branches below used to ask `== Environment.PRODUCTION`
-    # instead, the "only production is special" pattern fm#1023 removed from
-    # protection routing. `ENVIRONMENT=staging` therefore ran production's
-    # strict fail-closed rate limits AND development's CORS at the same time:
-    # a wildcard origin accepted, localhost appended, and the RFC1918
-    # `allow_origin_regex` installed with `allow_credentials` on — so any host
-    # on any private network could make credentialed calls to a deployed box
-    # (fm#985 item 17). Staging is classified as deployed, the same as
-    # production.
-    #
-    # Phrased as "not development" rather than "in (staging, production)" for
-    # the same fail-safe reason fm#1023 chose: a fourth `Environment` member
-    # added later is deployed until someone says otherwise.
-    deployed = not settings.is_development()
+    # deployed box? — and `deployed`, resolved once at the top of this
+    # function, is the whole of it. The three branches below used to ask
+    # `== Environment.PRODUCTION` instead, the "only production is special"
+    # pattern fm#1023 removed from protection routing. `ENVIRONMENT=staging`
+    # therefore ran production's strict rate limits AND development's CORS at
+    # the same time: a wildcard origin accepted, localhost appended, and the
+    # RFC1918 `allow_origin_regex` installed with `allow_credentials` on — so
+    # any host on any private network could make credentialed calls to a
+    # deployed box (fm#985 item 17). Staging is classified as deployed, the
+    # same as production, and so is a cloud deployment whatever it names its
+    # environment.
 
     # SECURITY: Fail-fast validation - no wildcards allowed on a deployed box
     if deployed:

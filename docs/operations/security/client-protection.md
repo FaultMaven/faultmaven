@@ -363,7 +363,8 @@ These are read on every deployment:
 #
 # Absent, or anything unrecognised -> `hardened`: tight limits, no bypass
 #                                     headers, fail-OPEN on a Redis outage.
-#                                     The self-hosted posture.
+#                                     The self-hosted posture. (`cloud`, if
+#                                     DEPLOYMENT_MODE=cloud — see below.)
 # `development`                    -> the permissive preset, with `X-Dev-Bypass`
 #                                     and `X-Test-Bypass` LIVE: the mere
 #                                     presence of either header skips all rate
@@ -378,15 +379,19 @@ These are read on every deployment:
 #
 # The three are ordered development < hardened < cloud and the strictest input
 # wins, so no combination of keys is looser than this one alone says.
+# DEPLOYMENT_MODE=cloud can therefore raise what you write here — including an
+# explicit `hardened` — and never lower it. It warns when it does.
 #
 # No value installs an empty protection stack; the choice is which preset, not
 # whether.
 PROTECTION_PROFILE=hardened
 
 # Deployment environment. Selects staging's Redis key namespace, vetoes a
-# development protection profile, gates the debug router and decides the CORS
-# policy (`staging` counts as deployed) — it does NOT choose the preset and,
-# since fm#1566, does NOT choose the degrade policy.
+# development protection profile, gates the debug router, decides whether a
+# protection SETUP failure refuses the boot, and decides the CORS policy —
+# `staging` counts as deployed, and so does any DEPLOYMENT_MODE=cloud box
+# whatever it names its environment. It does NOT choose the preset and, since
+# fm#1566, does NOT choose the Redis degrade policy.
 ENVIRONMENT=production
 
 # Degrade policy for rate limiting and deduplication when Redis is

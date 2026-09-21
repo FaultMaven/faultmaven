@@ -9,7 +9,8 @@ environment variable sets a limit, a TTL or a timeout; the loader that once read
 per-field variables was unreachable on every healthy deployment and was removed
 rather than left looking configurable (fm#1023).
 
-Exactly three environment keys reach these presets:
+Three environment keys reach these presets directly, and one reaches them
+through the composition root:
 
 * ``PROTECTION_PROFILE`` — WHICH preset is installed *and* which degrade policy
   it runs, read by ``resolve_protection_profile``. Defaults to ``hardened``;
@@ -23,6 +24,14 @@ Exactly three environment keys reach these presets:
 * ``PROTECTION_TRUSTED_PROXIES`` — which proxies' forwarding headers may be
   believed, read by ``get_trusted_proxies``. Honoured by both presets, empty by
   default.
+
+``DEPLOYMENT_MODE`` is the fourth, and it is **not read here**: ``main.py``
+resolves it once through ``settings.is_cloud`` (ADR-004) and passes it down as
+``is_cloud_deployment``. It can override all three keys above — it raises the
+resolved profile to ``cloud``, which installs the hardened preset whatever
+``PROTECTION_PROFILE`` says and pins the degrade policy whatever
+``PROTECTION_RATE_LIMIT_FAIL_OPEN`` says. Only in the hardening direction: see
+``resolve_protection_profile``.
 
 Changing anything else means changing the preset.
 """
@@ -142,6 +151,59 @@ _PROFILE_STRICTNESS = {
 }
 
 
+def _named_environment(environment: Any) -> str:
+    """``environment`` as its lowercase name, however it was spelled.
+
+    ``Environment`` subclasses ``str`` but ``str(member)`` renders
+    "Environment.DEVELOPMENT", so ``.value`` is unwrapped first — the shape
+    that once reached an append-only audit column (#827). ``None`` renders as
+    the empty string, which is not ``"development"``, which is the fail-safe
+    answer for a caller that named nothing.
+    """
+    return str(getattr(environment, "value", environment) or "").strip().lower()
+
+
+def is_deployed_environment(
+    environment: Any = None, *, is_cloud_deployment: bool = False
+) -> bool:
+    """Is this a DEPLOYED box, as opposed to somebody's development checkout?
+
+    One question, one spelling, three consumers — and it lives here rather than
+    being written out at each of them because two of the three had drifted
+    apart, which is what fm#985 item 17 was:
+
+    1. ``api.protection.setup_protection_middleware`` — whether a **setup
+       failure refuses the boot** rather than booting unprotected, and whether
+       the empty-trusted-proxies warning fires.
+    2. ``main.setup_middleware`` — the same refusal at the composition root's
+       carve-out, and **which CORS policy is installed**: strict origins, or
+       development's appended localhost plus the RFC1918
+       ``allow_origin_regex`` with ``allow_credentials`` on.
+    3. Its own tests, which sweep both callers and assert they agree.
+
+    **Not development, OR cloud.** The second disjunct is not redundant:
+    ``DEPLOYMENT_MODE=cloud`` with ``ENVIRONMENT=development`` is a reachable
+    configuration — ``config.deployment_coherence`` relates the deployment mode
+    to auth, storage and tenancy, and never to the environment name — and it
+    is the single worst shape to hand a development policy to, being a
+    multi-tenant fleet. Before this disjunct such a fleet accepted the shipped
+    wildcard CORS origins and installed the private-network regex with
+    credentials on, so any host on any private network could call it
+    cross-origin.
+
+    Phrased as "not development" rather than "in (staging, production)" for the
+    fail-safe reason fm#1023 chose one layer up: a fourth ``Environment``
+    member added later is deployed until someone says otherwise, and so is a
+    value that is not an ``Environment`` at all.
+
+    It lives in this module because this module already owns the
+    deployment-shape vocabulary (``ProtectionProfile``,
+    ``resolve_protection_profile``) and is already imported by both callers —
+    ``main.py`` imports ``get_trusted_proxies`` from here for the same reason.
+    """
+    return _named_environment(environment) != "development" or is_cloud_deployment
+
+
 def resolve_protection_profile(
     environment: Any = None, *, is_cloud_deployment: bool = False
 ) -> ProtectionProfile:
@@ -219,12 +281,27 @@ def resolve_protection_profile(
         return _hardest(ProtectionProfile.HARDENED, floor)
 
     if profile is not ProtectionProfile.DEVELOPMENT:
-        return _hardest(profile, floor)
+        hardened_by_shape = _hardest(profile, floor)
+        if hardened_by_shape is not profile:
+            # Read and overridden is not the same as read and honoured. This
+            # module's rule is that a key is never silently ignored (the
+            # ``cloud`` degrade pin warns for the same reason), and an operator
+            # who wrote ``hardened`` on a cloud deployment has asked for the
+            # self-hosted degrade posture and is not getting it.
+            logger.warning(
+                "%s=%s was requested on a cloud deployment "
+                "(DEPLOYMENT_MODE=cloud); installing the '%s' profile instead. "
+                "A multi-replica fleet's degraded rung is per-replica, so it "
+                "is a floor rather than a substitute and the limiter pins "
+                "fail-CLOSED. The deployment shape can only harden the "
+                "profile, never loosen it.",
+                PROTECTION_PROFILE_ENV_VAR,
+                profile.value,
+                hardened_by_shape.value,
+            )
+        return hardened_by_shape
 
-    # ``Environment`` subclasses ``str`` but ``str(member)`` renders
-    # "Environment.DEVELOPMENT", so unwrap ``.value`` first — the shape that
-    # once reached an append-only audit column (#827).
-    named = str(getattr(environment, "value", environment) or "").strip().lower()
+    named = _named_environment(environment)
     if named != "development":
         logger.error(
             "%s=development was requested on ENVIRONMENT=%r. Refusing: the "
@@ -547,13 +624,18 @@ def get_production_protection_settings(
        here is ``False`` (fail-closed) so that a caller who names nothing gets
        the strict posture; every caller in the application names it.
     2. ``for_deployed_environment`` — **the empty-trusted-proxies warning**
-       only, and still decided by the *environment*, because that is the
-       question it asks: is there something in front of this box whose
-       forwarding headers we are declining to believe? A single-user box has
-       nothing in front of it, so an empty list there is not merely safe but
-       correct, and "empty in production" would be a false statement sending an
-       operator to configure a proxy they do not run. The set of boxes this
-       warning fires on is **unchanged** by fm#1566.
+       only, and decided by the *deployment* rather than the profile, because
+       that is the question it asks: is there something in front of this box
+       whose forwarding headers we are declining to believe? A single-user box
+       has nothing in front of it, so an empty list there is not merely safe
+       but correct, and "empty in production" would be a false statement
+       sending an operator to configure a proxy they do not run.
+
+       The caller answers it with ``is_deployed_environment``, so the set of
+       boxes this fires on gains exactly one shape: a cloud deployment naming
+       ``ENVIRONMENT=development``, which is the one shape *guaranteed* to sit
+       behind an ingress and was the one shape losing the warning. Everything
+       else warns exactly as before.
     """
     trusted_proxies = get_trusted_proxies()
 

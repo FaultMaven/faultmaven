@@ -20,6 +20,7 @@ from ..config.protection import (
     ProtectionProfile,
     get_development_protection_settings,
     get_production_protection_settings,
+    is_deployed_environment,
     resolve_protection_profile,
     resolve_rate_limit_fail_open,
     validate_protection_settings,
@@ -98,17 +99,38 @@ def setup_protection_middleware(
     (``tests/unit/api/test_protection_bypass_is_unreachable.py`` ships the scan
     that says so).
 
-    **Fail-closed here is not fail-closed everywhere.** This function refuses —
-    it raises on settings that do not validate, and it re-raises anything the
-    degrade policy does not cover. The composition root re-mutes that raise for
-    exactly one environment: ``main.setup_middleware`` catches it and, when
-    ``settings.is_development()`` (which an unset ``ENVIRONMENT`` also satisfies),
-    logs an ungated warning and continues with an unprotected app rather than
-    refusing to boot. Staging, production and any unrecognised value propagate.
-    Read the guarantee as "every deployed environment refuses", not "nothing ever
-    boots unprotected".
+    **A setup failure on a deployed box refuses the boot, and that is a
+    separate policy from the Redis degrade posture.** They used to be one flag:
+    the generic handler below re-raised unless ``fail_open_on_redis_error`` was
+    set, which worked only because every deployed environment happened to pin
+    it closed. fm#1566 unpinned it for ``hardened`` — the self-hosted default —
+    and had the coupling stood, the same deployed box would have **swallowed**
+    an ``add_middleware`` failure or a malformed ``PROTECTION_TRUSTED_PROXIES``
+    and booted with no rate limiting and no deduplication behind a green probe,
+    with one ERROR line. The two questions want opposite answers: *what to do
+    when Redis is unreachable at runtime* is a recovery posture, and *what to
+    do when protection setup itself failed at boot* is a refusal posture. They
+    are now asked separately, and the second is
+    ``is_deployed_environment(environment, is_cloud_deployment=...)`` — the
+    same predicate the composition root's carve-out and the CORS branch use,
+    so the three cannot drift.
+
+    The composition root re-mutes the raise for exactly the same set of boxes:
+    ``main.setup_middleware`` catches it and, on a development environment that
+    is not a cloud deployment, logs an ungated warning and continues with an
+    unprotected app rather than refusing to boot. Staging, production, any
+    unrecognised value and any cloud deployment propagate. Read the guarantee
+    as "every deployed environment refuses", not "nothing ever boots
+    unprotected".
     """
     profile = resolve_protection_profile(
+        environment, is_cloud_deployment=is_cloud_deployment
+    )
+    # Asked once, used twice below — for the empty-trusted-proxies warning's
+    # audience and for whether a setup failure refuses the boot. Deliberately
+    # NOT ``profile``: a deployed box can run any profile, and a development
+    # checkout that names ``PROTECTION_PROFILE=cloud`` is still a checkout.
+    deployed = is_deployed_environment(
         environment, is_cloud_deployment=is_cloud_deployment
     )
 
@@ -137,18 +159,22 @@ def setup_protection_middleware(
                 #   * the degrade policy, from the PROFILE (fm#1566) — a
                 #     self-hosted box fails open and keeps its per-replica
                 #     FakeRedis stand-in; only a cloud fleet pins fail-closed.
-                #   * the empty-trusted-proxies warning, from the ENVIRONMENT,
+                #   * the empty-trusted-proxies warning, from the DEPLOYMENT,
                 #     because "is something proxying this box" is what it asks.
-                #     Unchanged by fm#1566: the same set of boxes warns.
+                #     ``is_deployed_environment`` rather than the environment
+                #     name alone: a cloud fleet naming ENVIRONMENT=development
+                #     is the one shape guaranteed to sit behind an ingress, and
+                #     it used to be the one shape that lost the warning.
                 settings = get_production_protection_settings(
-                    for_deployed_environment=(environment != Environment.DEVELOPMENT),
+                    for_deployed_environment=deployed,
                     fail_open_on_redis_error=resolve_rate_limit_fail_open(profile),
                 )
                 setup_info["settings_source"] = "production_defaults"
                 if environment == Environment.STAGING:
-                    # Staging runs production's *semantics* — strict limits, no
-                    # bypass headers, fail-closed on Redis — but it must not run
-                    # in production's *key namespace*. Pointed at one Redis they
+                    # Staging runs production's *semantics* — strict limits and
+                    # no bypass headers; since fm#1566 its degrade policy
+                    # follows the profile like everyone else's — but it must not
+                    # run in production's *key namespace*. Pointed at one Redis they
                     # would share every rate-limit counter and every dedup key: a
                     # staging load test would consume production's quota, and an
                     # identical request issued in both would be answered 409 in
@@ -283,12 +309,20 @@ def setup_protection_middleware(
     except Exception as e:
         logger.error(f"Failed to setup protection middleware: {e}")
         setup_info["error"] = str(e)
-        # ``settings is None`` means the *preset call itself* raised, so nothing
-        # ever declared a degrade policy. Swallowing that booted the app with no
-        # rate limiting and no deduplication and one ERROR line to say so — the
-        # same silent-unprotected state fm#1023 fixed, reached by a different
-        # door. An unknown policy is not permission to fail open.
-        if settings is None or not settings.fail_open_on_redis_error:
+        # A DEPLOYED box refuses. Not ``fail_open_on_redis_error``, which this
+        # used to read: that flag is the runtime recovery posture, it was only
+        # ever a proxy for "deployed" because every deployed environment
+        # happened to pin it closed, and fm#1566 unpinned it for the
+        # self-hosted default — at which point a staging or production box
+        # would have swallowed an ``add_middleware`` failure and served with an
+        # empty protection stack behind a green probe. Two policies, two
+        # questions, one flag: separated here.
+        #
+        # ``settings is None`` stays as its own disjunct even though it is
+        # currently implied: it means the *preset call itself* raised, so
+        # nothing was ever decided at all, and an unknown state is not
+        # permission to continue on any box.
+        if settings is None or deployed:
             raise
 
     return setup_info

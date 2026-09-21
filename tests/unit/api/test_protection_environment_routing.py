@@ -50,7 +50,10 @@ from fastapi.testclient import TestClient
 
 from faultmaven.api.middleware import DeduplicationMiddleware, RateLimitMiddleware
 from faultmaven.api.protection import setup_protection_middleware
-from faultmaven.config.protection import get_production_protection_settings
+from faultmaven.config.protection import (
+    ProtectionProfile,
+    get_production_protection_settings,
+)
 from faultmaven.config.settings import Environment
 from faultmaven.models.protection import ProtectionSettings, RateLimitConfig
 
@@ -162,7 +165,7 @@ def test_staging_gets_production_semantics(environment):
 @pytest.mark.parametrize(
     "key,expected_fail_open", [(None, True), ("true", True), ("false", False)]
 )
-@pytest.mark.parametrize("profile", [None, "hardened"])
+@pytest.mark.parametrize("profile", [None, "hardened", "development"])
 def test_the_degrade_policy_is_keyed_on_the_profile_not_the_environment(
     monkeypatch, environment, key, expected_fail_open, profile
 ):
@@ -188,6 +191,13 @@ def test_the_degrade_policy_is_keyed_on_the_profile_not_the_environment(
     Swept over every ``Environment`` member plus a string that is not one, so
     the claim is "no environment decides this" rather than "the three we
     thought of do not".
+
+    ``development`` is in the profile sweep and is load-bearing there: it is
+    the one profile that routes through a DIFFERENT preset constructor
+    (``get_development_protection_settings``), so without it a regression that
+    hardcoded the policy inside that preset would pass this test. The expected
+    answer does not change with it — vetoed on a deployed environment or
+    honoured on a development one, both landing profiles read the key.
     """
     monkeypatch.delenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", raising=False)
     monkeypatch.delenv("PROTECTION_PROFILE", raising=False)
@@ -241,6 +251,71 @@ def test_a_cloud_deployment_pins_fail_closed_whatever_the_environment_and_key_sa
     by_profile_key, info = _install(environment, is_cloud_deployment=False)
     assert info["protection_profile"] == "cloud"
     assert _resolved_settings(by_profile_key).fail_open_on_redis_error is False
+
+
+def test_every_profile_has_a_strictness_rank():
+    """The dict's own comment implies this test; here it is.
+
+    ``resolve_protection_profile`` resolves by ``max(..., key=_PROFILE_STRICTNESS
+    .__getitem__)``, an unguarded lookup inside a function whose whole contract
+    is to fail safe on anything it does not recognise. A fourth
+    ``ProtectionProfile`` member added without a rank raises ``KeyError`` from
+    *outside* the ``try`` in ``setup_protection_middleware``, so it reaches
+    ``main``'s broad handler and is reported as "failed to setup protection
+    middleware" — a configuration crash wearing a Redis outage's clothes.
+
+    A ``.get(member, MAX)`` fallback was the alternative and is worse: a new
+    member would be silently treated as the strictest posture, which is a
+    decision nobody made.
+
+    Both directions, so a rank left behind by a REMOVED member fails too —
+    that is the shape that makes a resolution order quietly wrong rather than
+    loud.
+    """
+    from faultmaven.config.protection import _PROFILE_STRICTNESS
+
+    assert set(_PROFILE_STRICTNESS) == set(ProtectionProfile), (
+        "every ProtectionProfile member needs a strictness rank, and no rank "
+        "may outlive its member: "
+        f"unranked={sorted(m.value for m in set(ProtectionProfile) - set(_PROFILE_STRICTNESS))}, "
+        f"stale={sorted(m.value for m in set(_PROFILE_STRICTNESS) - set(ProtectionProfile))}"
+    )
+    # A total order, not merely a total map: two members sharing a rank makes
+    # ``max`` pick by iteration order, which is the silent mis-resolution the
+    # dict exists to prevent.
+    assert len(set(_PROFILE_STRICTNESS.values())) == len(_PROFILE_STRICTNESS)
+
+
+def test_an_explicit_hardened_profile_is_not_silently_upgraded_on_a_cloud_box(caplog):
+    """Read and overridden is not read and honoured.
+
+    An operator who writes ``PROTECTION_PROFILE=hardened`` on a cloud
+    deployment has asked for the self-hosted degrade posture and is not going
+    to get it. The ``development`` case already logged; this one did not, and
+    a key that is read and quietly overridden is the "left looking
+    configurable" class fm#985 items 12 and 16 closed.
+    """
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="faultmaven.config.protection"):
+        import os
+
+        os.environ["PROTECTION_PROFILE"] = "hardened"
+        try:
+            app, info = _install(Environment.PRODUCTION, is_cloud_deployment=True)
+        finally:
+            os.environ.pop("PROTECTION_PROFILE", None)
+
+    assert info["protection_profile"] == "cloud"
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+        and record.name == "faultmaven.config.protection"
+    ]
+    assert any(
+        "hardened" in message and "cloud" in message for message in warnings
+    ), f"the override was silent; warnings were {warnings}"
 
 
 def test_a_cloud_deployment_cannot_arm_the_bypass_headers_by_naming_development(
@@ -381,20 +456,25 @@ def test_protection_enabled_is_not_reported_until_the_installs_land():
     The flag used to be set before the two ``add_middleware`` calls, so any
     failure in them left ``protection_enabled: True`` on an app carrying no
     protection middleware. That matters precisely because a caller can swallow
-    the failure: ``fail_open_on_redis_error`` is ``True`` by default, and the
-    composition root's development carve-out swallows too — both then read back a
-    dict claiming protection is on.
+    the failure — the composition root's development carve-out does — and then
+    reads back a dict claiming protection is on.
 
     The failure is provoked at the real surface rather than by patching:
     Starlette refuses ``add_middleware`` once an application has started, and
     entering a ``TestClient`` context starts it.
+
+    ``environment`` is named explicitly now, and must be: since fm#1566 a
+    DEPLOYED environment raises this failure rather than reporting it (the
+    test below), so leaving the parameter at its fail-safe ``production``
+    default would test the raise rather than the report.
     """
     app = FastAPI()
-    fail_open = get_production_protection_settings()
-    fail_open.fail_open_on_redis_error = True
+    settings = get_production_protection_settings()
 
     with TestClient(app):
-        setup_info = setup_protection_middleware(app, settings=fail_open)
+        setup_info = setup_protection_middleware(
+            app, settings=settings, environment=Environment.DEVELOPMENT
+        )
 
     assert setup_info["protection_enabled"] is False, (
         "an app that installed nothing reported protection as enabled; "
@@ -402,6 +482,83 @@ def test_protection_enabled_is_not_reported_until_the_installs_land():
     )
     assert setup_info["error"], "the swallowed failure left no trace in setup_info"
     assert _installed(app) == set()
+
+
+@pytest.mark.parametrize(
+    "environment,is_cloud",
+    [
+        (Environment.STAGING, False),
+        (Environment.PRODUCTION, False),
+        (UNKNOWN_ENVIRONMENT, False),
+        (None, False),
+        # The shape that names a development environment and is still a fleet.
+        (Environment.DEVELOPMENT, True),
+    ],
+    ids=["staging", "production", "unknown", "unnamed", "cloud-naming-development"],
+)
+def test_a_deployed_box_refuses_a_setup_failure_rather_than_serving_unprotected(
+    monkeypatch, environment, is_cloud
+):
+    """The refusal is keyed on the DEPLOYMENT, not on the degrade policy (fm#1566).
+
+    This handler used to read ``settings.fail_open_on_redis_error`` and
+    re-raise only when it was False. That was correct exactly while every
+    deployed environment pinned it closed — and fm#1566 unpins it for
+    ``hardened``, the profile every self-hosted install and the standalone
+    quickstart resolve to. Left coupled, a staging or production box would
+    have **swallowed** an ``add_middleware`` failure (or a preset that raised
+    on a malformed ``PROTECTION_TRUSTED_PROXIES``), returned normally with
+    ``protection_enabled: False``, and served with no rate limiting and no
+    deduplication behind a green probe — with one ERROR line, which is
+    fm#1023's failure mode reached through a third door.
+
+    Two policies were riding one flag: what to do when Redis is unreachable at
+    RUNTIME, and what to do when protection setup failed at BOOT. They are
+    separated, and this pins the second for every deployed shape — including
+    the cloud fleet that names ``ENVIRONMENT=development``, which the
+    environment name alone would have carved out of the refusal.
+
+    The failure is provoked at the real surface (Starlette refuses
+    ``add_middleware`` on a started app), not by patching the function under
+    test.
+    """
+    monkeypatch.delenv("PROTECTION_PROFILE", raising=False)
+    # Fail-OPEN settings, deliberately: under the old coupling this exact
+    # object is what made the handler swallow, so the test discriminates.
+    settings = get_production_protection_settings(fail_open_on_redis_error=True)
+    assert settings.fail_open_on_redis_error is True
+
+    app = FastAPI()
+    kwargs = {"settings": settings, "is_cloud_deployment": is_cloud}
+    if environment is not None:
+        kwargs["environment"] = environment
+
+    with TestClient(app):
+        with pytest.raises(RuntimeError):
+            setup_protection_middleware(app, **kwargs)
+
+    assert _installed(app) == set(), "an unprotected app survived a setup failure"
+
+
+def test_a_development_checkout_still_boots_unprotected_on_a_setup_failure():
+    """The carve-out the test above must not take away.
+
+    A contributor with a broken local protection config keeps iterating: the
+    failure is swallowed here, reported as ``protection_enabled: False``, and
+    the composition root logs an ungated warning. Asserted so that "deployed
+    refuses" cannot be satisfied by refusing everywhere, which would turn a
+    broken ``.env`` into a machine that will not start.
+    """
+    app = FastAPI()
+    settings = get_production_protection_settings(fail_open_on_redis_error=True)
+
+    with TestClient(app):
+        setup_info = setup_protection_middleware(
+            app, settings=settings, environment=Environment.DEVELOPMENT
+        )
+
+    assert setup_info["protection_enabled"] is False
+    assert setup_info["error"]
 
 
 class TestStagingOwnsItsRedisNamespace:

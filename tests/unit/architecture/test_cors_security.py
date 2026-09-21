@@ -39,6 +39,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 import faultmaven.main as main
 from faultmaven.config.settings import Environment, get_settings
+from faultmaven.config.settings import FaultMavenSettings as SettingsClass
 
 pytestmark = [pytest.mark.unit, pytest.mark.security, pytest.mark.architecture]
 
@@ -46,18 +47,24 @@ DEPLOYED = [e for e in Environment if e is not Environment.DEVELOPMENT]
 ALL_ENVIRONMENTS = list(Environment)
 
 
-def _settings_with(environment, origins):
+def _settings_with(environment, origins, *, is_cloud=False):
     """A real settings object, so nothing here can disagree with the app's shape."""
     settings = get_settings().model_copy(deep=True)
     settings.server.environment = environment
     settings.security.cors_allow_origins = list(origins)
+    # ``is_cloud`` is a read-only property on the real class, so the deployment
+    # mode is set through the field it is derived from rather than stubbed —
+    # otherwise the test would be asserting against its own stub instead of
+    # against ADR-004's predicate.
+    settings.deployment_mode = "cloud" if is_cloud else "standalone"
+    assert settings.is_cloud is is_cloud
     return settings
 
 
-def _install(environment, origins):
+def _install(environment, origins, *, is_cloud=False):
     """Run the real ``setup_middleware`` against a throwaway app."""
     app = FastAPI()
-    settings = _settings_with(environment, origins)
+    settings = _settings_with(environment, origins, is_cloud=is_cloud)
     with (
         patch.object(main, "app", app),
         patch("faultmaven.config.settings.get_settings", return_value=settings),
@@ -112,7 +119,22 @@ def test_the_shipped_default_origins_refuse_a_deployed_boot(environment):
     concrete origins. The staging overlay in ``faultmaven-enterprise-infra``
     already does (``https://app.staging.faultmaven.ai``).
     """
-    shipped_default = get_settings().__class__().security.cors_allow_origins
+    # ``_env_file=None`` — the idiom ``test_deployment_coherence`` uses — so
+    # this reads the SHIPPED default and not a developer's configuration.
+    #
+    # Measured, because it was raised as a live defect and is not one today:
+    # with a ``.env`` pinning concrete origins, and again with
+    # ``CORS_ALLOW_ORIGINS`` exported in the shell, all 12 tests here pass with
+    # or without this argument. Two things have to both hold for that, and
+    # neither belongs to this file: ``SecuritySettings.model_config`` carries
+    # no ``env_file`` (so the nested model never reads the file, only
+    # ``os.environ``), and ``tests/conftest.py``'s autouse isolation fixture
+    # pops ``CORS_ALLOW_ORIGINS`` out of ``os.environ`` before every test —
+    # which is also what neutralises ``main.py``'s import-time
+    # ``load_dotenv()``. Written this way anyway: an assertion about the
+    # shipped default should not be a hostage to a conftest three directories
+    # up continuing to list this one key.
+    shipped_default = SettingsClass(_env_file=None).security.cors_allow_origins
     assert any("://*" in origin for origin in shipped_default), (
         "this test is only meaningful while the shipped default carries a "
         f"wildcard; it now reads {shipped_default}"
@@ -161,6 +183,119 @@ def test_development_keeps_the_local_network_affordance():
     assert "http://localhost:5173" in kwargs["allow_origins"]
     # And the wildcard that refuses a deployed boot is accepted here.
     assert "chrome-extension://*" in kwargs["allow_origins"]
+
+
+@pytest.mark.parametrize(
+    "environment", ALL_ENVIRONMENTS, ids=[e.value for e in ALL_ENVIRONMENTS]
+)
+def test_a_cloud_deployment_is_deployed_for_CORS_whatever_it_names_its_environment(
+    environment,
+):
+    """The shape the environment name alone leaves on the development branch.
+
+    ``DEPLOYMENT_MODE=cloud`` with ``ENVIRONMENT=development`` is reachable —
+    ``config.deployment_coherence`` relates the deployment mode to auth,
+    storage and tenancy and never to the environment name, and
+    ``test_protection_environment_routing`` has a sibling test that exists
+    precisely because a fleet can name any environment it likes. On that
+    fleet the first version of this fix skipped the wildcard fail-fast,
+    accepted the shipped ``chrome-extension://*`` defaults, appended localhost
+    and installed the RFC1918 ``allow_origin_regex`` with
+    ``allow_credentials`` on: any host on any private network could then make
+    credentialed cross-origin calls to a MULTI-TENANT fleet.
+
+    So the predicate is *not development, **or** cloud*, and it is swept over
+    every environment here rather than asserted for the one interesting value.
+    """
+    app = _install(environment, ["https://app.example.test"], is_cloud=True)
+    kwargs = _cors(app)
+
+    assert kwargs.get("allow_origin_regex") is None, (
+        f"a cloud deployment naming ENVIRONMENT={environment.value} installed "
+        f"the private-network CORS regex with credentials on"
+    )
+    assert not any("localhost" in origin for origin in kwargs["allow_origins"])
+
+
+def test_a_cloud_deployment_naming_development_refuses_a_wildcard_origin():
+    """The other half: the fail-fast must reach that fleet too.
+
+    Without it the shipped default ``CORS_ALLOW_ORIGINS`` — which carries two
+    wildcards — is accepted on a multi-tenant deployment.
+    """
+    with pytest.raises(RuntimeError, match="SECURITY ERROR"):
+        _install(
+            Environment.DEVELOPMENT,
+            SettingsClass(_env_file=None).security.cors_allow_origins,
+            is_cloud=True,
+        )
+
+
+def test_the_two_callers_of_the_deployed_predicate_cannot_disagree():
+    """One question, one spelling — measured across both consumers.
+
+    ``main.setup_middleware`` (CORS, and the protection carve-out) and
+    ``api.protection.setup_protection_middleware`` (the setup-failure refusal,
+    and the empty-trusted-proxies warning) both turn on "is this a deployed
+    box". They ask it of the same function; this pins that they get the same
+    answer for every shape, so a future edit that inlines the expression at
+    one of them re-creates fm#985 item 17 loudly rather than quietly.
+
+    The observable at each caller is the thing that caller decides, not the
+    predicate re-read: the CORS regex on one side, the setup-failure refusal
+    on the other.
+    """
+    from faultmaven.config.protection import is_deployed_environment
+
+    shapes = [(env, cloud) for env in ALL_ENVIRONMENTS for cloud in (False, True)]
+
+    for environment, is_cloud in shapes:
+        expected = is_deployed_environment(environment, is_cloud_deployment=is_cloud)
+
+        cors_says_deployed = (
+            _cors(
+                _install(environment, ["https://app.example.test"], is_cloud=is_cloud)
+            ).get("allow_origin_regex")
+            is None
+        )
+        assert cors_says_deployed is expected, (
+            f"CORS disagrees for ENVIRONMENT={environment.value}, "
+            f"is_cloud={is_cloud}"
+        )
+
+        protection_says_deployed = _protection_refuses_a_setup_failure(
+            environment, is_cloud
+        )
+        assert protection_says_deployed is expected, (
+            f"the protection setup-failure refusal disagrees for "
+            f"ENVIRONMENT={environment.value}, is_cloud={is_cloud}"
+        )
+
+
+def _protection_refuses_a_setup_failure(environment, is_cloud) -> bool:
+    """Does ``setup_protection_middleware`` raise, or boot unprotected?
+
+    Provoked at the real surface: Starlette refuses ``add_middleware`` once an
+    application has started.
+    """
+    from fastapi.testclient import TestClient
+
+    from faultmaven.api.protection import setup_protection_middleware
+    from faultmaven.config.protection import get_production_protection_settings
+
+    app = FastAPI()
+    settings = get_production_protection_settings(fail_open_on_redis_error=True)
+    with TestClient(app):
+        try:
+            setup_protection_middleware(
+                app,
+                settings=settings,
+                environment=environment,
+                is_cloud_deployment=is_cloud,
+            )
+        except RuntimeError:
+            return True
+    return False
 
 
 @pytest.mark.parametrize(

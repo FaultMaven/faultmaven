@@ -528,8 +528,16 @@ def _installed_bypass_headers(app) -> Optional[List[str]]:
 def _installed_fail_open_on_redis_error(app) -> Optional[bool]:
     """Does the installed limiter fail OPEN when Redis is unreachable?
 
-    ``None`` means no ``RateLimitMiddleware`` is installed at all, the same
-    distinction ``_installed_bypass_headers`` draws.
+    ``None`` means the policy could not be read — **not** that no limiter is
+    installed. Whether one is installed is a separate question with its own
+    reader, and the caller asks it there: the first draft of this function
+    folded the two together and returned ``None`` for both, so a limiter whose
+    settings object did not carry the attribute was reported to the operator as
+    *"no rate limiter is installed on this process"* while the sibling field
+    ``request_protection_hardened``, reading the same stack, reported it
+    present. Two adjacent fields on one response disagreeing about whether a
+    limiter exists is worse than either answer alone, and this is the only
+    surface where the degrade posture is readable at all.
 
     Read off the ``ProtectionSettings`` the middleware was installed with, not
     from ``PROTECTION_PROFILE`` or ``PROTECTION_RATE_LIMIT_FAIL_OPEN``, for the
@@ -563,12 +571,27 @@ def _installed_fail_open_on_redis_error(app) -> Optional[bool]:
     return policy
 
 
-def _degrade_posture_description(fail_open: Optional[bool]) -> str:
-    """One sentence naming the degrade posture and what it costs."""
-    if fail_open is None:
+def _degrade_posture_description(
+    fail_open: Optional[bool], limiter_installed: bool
+) -> str:
+    """One sentence naming the degrade posture and what it costs.
+
+    ``limiter_installed`` comes from ``_installed_bypass_headers``' own answer
+    rather than from ``fail_open`` being ``None``, so this field and
+    ``request_protection_hardened`` cannot disagree about whether a limiter
+    exists — they are the same observation, read once.
+    """
+    if not limiter_installed:
         return (
             "No rate limiter is installed on this process, so there is no "
             "degrade policy to report."
+        )
+    if fail_open is None:
+        return (
+            "A rate limiter is installed, but the degrade policy could not be "
+            "read off it — treat this as unknown rather than as fail-closed. "
+            "No preset produces this; it means a caller supplied a settings "
+            "object without a fail_open_on_redis_error."
         )
     if fail_open:
         return (
@@ -992,9 +1015,12 @@ async def get_env_config_status(
                     "X-Dev-Bypass / X-Test-Bypass, whose mere presence skips "
                     "all rate limiting — is installed only by an explicit "
                     "PROTECTION_PROFILE=development on a box that also runs "
-                    "ENVIRONMENT=development (or leaves it unset). No other "
-                    "value of ENVIRONMENT, and no deployment that sets "
-                    "nothing, can arm them"
+                    "ENVIRONMENT=development (or leaves it unset) and is not a "
+                    "cloud deployment. No other value of ENVIRONMENT, no "
+                    "deployment that sets nothing, and no deployment running "
+                    "DEPLOYMENT_MODE=cloud can arm them — a cloud deployment "
+                    "resolves to the 'cloud' profile however PROTECTION_PROFILE "
+                    "is spelled"
                 ),
             ),
             # The Redis degrade posture, reported for the reason fm#985 item
@@ -1013,7 +1039,13 @@ async def get_env_config_status(
             # one this deployment is running, in words.
             "request_protection_fails_open": FeatureStatus(
                 enabled=bool(fail_open_on_redis_error),
-                description=_degrade_posture_description(fail_open_on_redis_error),
+                description=_degrade_posture_description(
+                    fail_open_on_redis_error,
+                    # The SAME observation the field above reports, not a
+                    # second walk of the stack: ``_installed_bypass_headers``
+                    # returns None iff no limiter is installed.
+                    limiter_installed=bypass_headers is not None,
+                ),
                 config_hint=(
                     "Decided by the protection profile (fm#1566), not by "
                     "ENVIRONMENT: the 'cloud' profile — PROTECTION_PROFILE="

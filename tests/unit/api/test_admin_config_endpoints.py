@@ -1003,6 +1003,53 @@ class TestGetEnvConfigStatus:
         assert "503" in closed_posture.description
 
     @pytest.mark.asyncio
+    async def test_the_two_limiter_fields_never_disagree_about_whether_one_exists(
+        self, mock_admin_user, mock_settings
+    ):
+        """One stack, one answer to "is a limiter installed".
+
+        The first draft of ``_installed_fail_open_on_redis_error`` returned
+        ``None`` both for "no limiter" and for "a limiter whose settings object
+        does not carry the attribute", and the description rendered the first
+        wording for both — so a process with a limiter installed was told
+        *"No rate limiter is installed on this process"* while
+        ``request_protection_hardened``, walking the same stack, reported it
+        present. Two adjacent fields on one response contradicting each other,
+        on the only surface where this posture is readable at all.
+
+        Existence now comes from one reader for both fields. The middleware
+        here is installed with a settings object that answers every other
+        question and simply has no degrade policy on it — the exact shape that
+        produced the contradiction.
+        """
+        from faultmaven.api.middleware import RateLimitMiddleware
+
+        class _SettingsWithoutADegradePolicy:
+            protection_bypass_headers: list = []
+
+        app = FastAPI()
+        app.add_middleware(
+            RateLimitMiddleware, settings=_SettingsWithoutADegradePolicy()
+        )
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(app), current_user=mock_admin_user
+            )
+
+        degrade = result.features["request_protection_fails_open"]
+        hardened = result.features["request_protection_hardened"]
+
+        assert "no rate limiter" not in degrade.description.lower(), (
+            "the degrade field denied a limiter that is installed; "
+            f"description={degrade.description!r}"
+        )
+        assert "could not be read" in degrade.description
+        assert degrade.enabled is False, "unknown must not be reported as fail-open"
+        # ... and the sibling agrees a limiter exists, which is the whole point.
+        assert "no rate limiter" not in hardened.description.lower()
+
+    @pytest.mark.asyncio
     async def test_the_degrade_posture_is_not_reported_open_with_no_limiter(
         self, mock_admin_user, mock_settings, unprotected_app
     ):
