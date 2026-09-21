@@ -38,6 +38,7 @@ from __future__ import annotations
 import importlib
 import os
 import re
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -51,6 +52,16 @@ EXTENSIONS_DIR = REPO_ROOT / ".github" / "codeql" / "extensions"
 PACK_DIR = EXTENSIONS_DIR / "faultmaven-path-sanitizers"
 MANIFEST = PACK_DIR / "codeql-pack.yml"
 CONFIG_FILE = REPO_ROOT / ".github" / "codeql" / "codeql-config.yml"
+
+#: Both names the CodeQL CLI accepts for a pack manifest. A second pack added
+#: under the other spelling is still auto-detected, so both are looked for.
+MANIFEST_NAMES = ("codeql-pack.yml", "qlpack.yml")
+
+#: Every pack this file knows about. `test_no_unreviewed_pack_appears` fails on
+#: anything else under `EXTENSIONS_DIR`, because code scanning detects packs by
+#: POSITION: a second directory dropped in there ships barrier rows that
+#: silence alerts, with nothing in this repository reading them.
+KNOWN_PACKS: frozenset[str] = frozenset({"faultmaven-path-sanitizers"})
 
 #: Every function this repository asserts to be a `path-injection` barrier,
 #: as `(module, attribute)`. Declared here as well as in the model so that
@@ -72,16 +83,50 @@ _MEMBER_RETURN_RE = re.compile(
     r"^Member\[(?P<name>[A-Za-z_][A-Za-z0-9_]*)\]\.ReturnValue$"
 )
 
+#: A models-as-data `type` naming a module: a dotted Python path with exactly
+#: one trailing `!`. Anchored and whole-matched on purpose — see
+#: `test_module_types_carry_exactly_one_bang_suffix`.
+_MODULE_TYPE_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*!")
 
-def _load_model_rows() -> list[tuple[Path, dict, list]]:
-    """Every `(file, addsTo, row)` triple declared by the pack."""
+
+def _pack_dirs() -> list[Path]:
+    """Every directory under `EXTENSIONS_DIR` that code scanning reads as a pack."""
+    if not EXTENSIONS_DIR.is_dir():
+        return []
+    return sorted(
+        {
+            manifest.parent
+            for name in MANIFEST_NAMES
+            for manifest in EXTENSIONS_DIR.rglob(name)
+        }
+    )
+
+
+def _manifest_of(pack_dir: Path) -> Path:
+    for name in MANIFEST_NAMES:
+        if (pack_dir / name).is_file():
+            return pack_dir / name
+    raise AssertionError(f"no pack manifest in {pack_dir}")
+
+
+@lru_cache(maxsize=1)
+def _load_model_rows() -> tuple[tuple[Path, dict, list], ...]:
+    """Every `(file, addsTo, row)` triple ANYWHERE under `EXTENSIONS_DIR`.
+
+    Walked from the extensions directory rather than from `PACK_DIR`, because
+    that is how code scanning finds them: a row's reach comes from where the
+    file sits, not from which pack this file happens to know about.
+    """
     triples: list[tuple[Path, dict, list]] = []
-    for model_file in sorted(PACK_DIR.rglob("*.model.yml")):
+    for model_file in sorted(EXTENSIONS_DIR.rglob("*.model.yml")):
         document = yaml.safe_load(model_file.read_text(encoding="utf-8"))
+        assert isinstance(document, dict) and isinstance(
+            document.get("extensions"), list
+        ), f"{model_file.relative_to(REPO_ROOT)} is not a data-extension document"
         for extension in document["extensions"]:
             for row in extension["data"]:
                 triples.append((model_file, extension["addsTo"], row))
-    return triples
+    return tuple(triples)
 
 
 # ---------------------------------------------------------------------------
@@ -90,30 +135,80 @@ def _load_model_rows() -> list[tuple[Path, dict, list]]:
 
 
 @pytest.mark.unit
-def test_pack_sits_where_code_scanning_detects_it() -> None:
-    assert MANIFEST.is_file(), (
-        f"{MANIFEST.relative_to(REPO_ROOT)} is missing. Code scanning detects a "
-        "model pack by its position under .github/codeql/extensions/; a pack "
-        "moved elsewhere is never read and the analysis reports no error."
+def test_no_unreviewed_pack_appears_under_extensions() -> None:
+    """A second pack here ships barrier rows nobody in this repository reads.
+
+    Detection is by POSITION, so anything dropped under `.github/codeql/
+    extensions/` is loaded whether or not this file knows about it. Enumerated
+    rather than assumed: `_load_model_rows` walks the whole directory, and this
+    is what makes a new pack arrive as a failure instead of as silence.
+    """
+    found = {d.name for d in _pack_dirs()}
+    assert found == set(KNOWN_PACKS), (
+        "unreviewed CodeQL pack(s) under .github/codeql/extensions/: "
+        f"{sorted(found - set(KNOWN_PACKS))}; missing: "
+        f"{sorted(set(KNOWN_PACKS) - found)}. Every pack here must be paid for "
+        "by a behavioural check in this file."
     )
-    manifest = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
-    assert manifest["library"] is True
-    assert "codeql/python-all" in manifest["extensionTargets"]
 
 
 @pytest.mark.unit
-def test_every_model_file_is_covered_by_the_manifest_glob() -> None:
-    """A model file the manifest does not glob is inert, and looks fine."""
-    manifest = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
-    patterns = manifest["dataExtensions"]
-    assert patterns, "dataExtensions is empty: the pack declares no models"
+@pytest.mark.parametrize("pack_dir", _pack_dirs(), ids=lambda d: d.name)
+def test_pack_sits_where_code_scanning_detects_it(pack_dir: Path) -> None:
+    manifest_path = _manifest_of(pack_dir)
+    assert manifest_path.is_file(), (
+        f"{manifest_path.relative_to(REPO_ROOT)} is missing. Code scanning "
+        "detects a model pack by its position under .github/codeql/extensions/; "
+        "a pack moved elsewhere is never read and the analysis reports no error."
+    )
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    where = manifest_path.relative_to(REPO_ROOT)
 
-    globbed = {p.resolve() for pattern in patterns for p in PACK_DIR.glob(pattern)}
-    on_disk = {p.resolve() for p in PACK_DIR.rglob("*.model.yml")}
-    assert on_disk, "the pack contains no *.model.yml files"
+    # `name` and `version` are what the pack is RESOLVED by. Without either the
+    # CLI cannot resolve it and simply carries on with the model absent — the
+    # inert-and-looks-fine failure this whole file exists for. Both were
+    # unasserted until the #1394 review deleted them and all twenty tests
+    # passed.
+    assert isinstance(manifest.get("name"), str) and "/" in manifest["name"], (
+        f"{where}: `name` must be a `scope/pack` string; without it the pack "
+        "cannot be resolved and the model is silently absent."
+    )
+    assert (
+        isinstance(manifest.get("version"), str) and manifest["version"]
+    ), f"{where}: `version` is missing; the pack cannot be resolved without it."
+    assert manifest["library"] is True, where
+
+    # A MAPPING, checked as one. `"codeql/python-all" in manifest[...]` passes
+    # vacuously when the value is a string, because `in` degrades to a
+    # substring test — so `extensionTargets: "codeql/python-all-ish"` would
+    # have satisfied the old assertion while being a malformed manifest.
+    targets = manifest.get("extensionTargets")
+    assert isinstance(targets, dict), (
+        f"{where}: `extensionTargets` must be a mapping of pack -> version "
+        f"range, got {type(targets).__name__}."
+    )
+    assert "codeql/python-all" in targets.keys(), where
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("pack_dir", _pack_dirs(), ids=lambda d: d.name)
+def test_every_model_file_is_covered_by_the_manifest_glob(pack_dir: Path) -> None:
+    """A model file the manifest does not glob is inert, and looks fine.
+
+    This asserts pathlib's reading of the patterns, not CodeQL's; the two agree
+    on the shapes used here, and the measurement that the rows actually reach
+    the evaluator is in the pack's own header.
+    """
+    manifest = yaml.safe_load(_manifest_of(pack_dir).read_text(encoding="utf-8"))
+    patterns = manifest["dataExtensions"]
+    assert patterns, f"{pack_dir.name}: dataExtensions is empty"
+
+    globbed = {p.resolve() for pattern in patterns for p in pack_dir.glob(pattern)}
+    on_disk = {p.resolve() for p in pack_dir.rglob("*.model.yml")}
+    assert on_disk, f"{pack_dir.name} contains no *.model.yml files"
     assert on_disk <= globbed, (
         "model files not matched by any dataExtensions pattern (they will be "
-        f"ignored): {sorted(str(p.relative_to(PACK_DIR)) for p in on_disk - globbed)}"
+        f"ignored): {sorted(str(p.relative_to(pack_dir)) for p in on_disk - globbed)}"
     )
 
 
@@ -132,17 +227,24 @@ def test_rows_target_the_python_barrier_predicate_with_the_right_arity() -> None
 
 
 @pytest.mark.unit
-def test_module_types_carry_the_bang_suffix() -> None:
+def test_module_types_carry_exactly_one_bang_suffix() -> None:
     """The one character between a live barrier and an inert file.
 
     Without `!`, `getExtraNodeFromType` takes `.getAnInstance()` of the module
     node and matches nothing. The pack still loads and the rows still count.
+
+    Matched whole, not by `endswith`. `"faultmaven.utils.runbook_id!!"` ends
+    with `!` and — with the `rstrip("!")` this file used to strip it — yielded
+    the right module name, so the name-set check below passed too, while the
+    type resolved to nothing and the alerts came back. That is the same bug
+    this suffix exists to prevent, reintroduced by the guard for it.
     """
     for model_file, _adds_to, row in _load_model_rows():
         type_name = row[0]
-        assert type_name.endswith("!"), (
-            f"{model_file.name}: type {type_name!r} names a module and must end "
-            "with '!' or the row resolves to nothing. See this file's docstring."
+        assert _MODULE_TYPE_RE.fullmatch(type_name), (
+            f"{model_file.name}: type {type_name!r} must be a dotted module "
+            "path with EXACTLY one trailing '!', or the row resolves to "
+            "nothing. See this file's docstring."
         )
 
 
@@ -157,7 +259,9 @@ def test_rows_name_exactly_the_functions_this_file_pays_for() -> None:
             "`Member[<name>].ReturnValue`; this file only knows how to verify "
             "that shape, so extend it rather than widening the model silently."
         )
-        declared.add((type_name.rstrip("!"), match.group("name")))
+        # `removesuffix`, never `rstrip`: `rstrip("!")` eats a whole run of
+        # them and would launder `module!!` into a name that matches.
+        declared.add((type_name.removesuffix("!"), match.group("name")))
 
     assert declared == set(MODELLED), (
         "the model and this file disagree about what is claimed to sanitise. "
@@ -226,35 +330,66 @@ def test_resolve_within_root_refuses_every_escape(tmp_path: Path) -> None:
 @pytest.mark.unit
 @pytest.mark.security
 @pytest.mark.parametrize(
-    "hostile",
+    ("value", "kwargs"),
     [
-        "../../../../escaped",
-        "..",
-        ".",
-        "a/b",
-        "a\\b",
-        "a\x00b",
-        "C:\\Windows",
-        "  ",
-        "",
-        None,
-        "\u2044slash-lookalike",
+        # Separators, traversal, NUL, drive letters, look-alikes, emptiness.
+        ("../../../../escaped", {}),
+        ("..", {}),
+        (".", {}),
+        ("a/b", {}),
+        ("a\\b", {}),
+        ("a\x00b", {}),
+        ("C:\\Windows", {}),
+        ("  ", {}),
+        ("", {}),
+        (None, {}),
+        ("\u2044slash-lookalike", {}),
+        # The SECOND argument is an input too (#1394 review). Before the fix
+        # these three were returned verbatim, and the barrier row silenced the
+        # flow that carried them to the filesystem.
+        ("???", {"fallback": "../../../../escaped"}),
+        (None, {"fallback": "/etc/passwd"}),
+        ("???", {"fallback": "???"}),
+        # Past the 60-character bound, where `[:60]` can land on a hyphen and
+        # put back the character `_slug` had just stripped. Every case in the
+        # first block is under 12 characters, so none of them reached this.
+        ("a" * 59 + " " + "b" * 10, {}),
+        ("-".join(["ab"] * 30), {}),
+        ("x" * 200, {}),
+        ("word " * 40, {}),
+        ("???", {"fallback": "-".join(["cd"] * 30)}),
     ],
 )
-def test_safe_path_component_yields_one_harmless_segment(hostile: str | None) -> None:
+def test_safe_path_component_yields_one_harmless_segment(
+    value: str | None, kwargs: dict[str, str]
+) -> None:
     """The claim: the return value is a single segment that cannot traverse."""
     from faultmaven.utils.runbook_id import safe_path_component
 
-    component = safe_path_component(hostile)
+    component = safe_path_component(value, **kwargs)
 
     assert component, "an empty component would silently drop the discriminator"
+    # One `fullmatch` covers non-emptiness, the absence of every separator and
+    # of `.`/`..`, and the hyphen boundary; the two assertions below are the
+    # property at the CALL SITE, which the regex does not state.
     assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", component), component
-    assert component not in {".", ".."}
-    assert os.sep not in component and "/" not in component and "\\" not in component
-    assert "\x00" not in component
-    # The property that matters at the call site: interpolating it into a
-    # directory name cannot move the write anywhere.
     assert Path(f"scope_{component}").name == f"scope_{component}"
+    assert (Path("/tree") / f"scope_{component}").resolve().is_relative_to("/tree")
+
+
+@pytest.mark.unit
+@pytest.mark.security
+def test_safe_path_component_bound_is_still_enforced() -> None:
+    """Stripping after the slice must not be an excuse to stop bounding it.
+
+    The bound is what keeps the component inside NAME_MAX and inside
+    `uploaded_files.filename`; a fix for the trailing hyphen that dropped the
+    slice would pass every case above.
+    """
+    from faultmaven.utils.runbook_id import _MAX_SLUG_CHARS, safe_path_component
+
+    assert len(safe_path_component("x" * 500)) == _MAX_SLUG_CHARS
+    assert len(safe_path_component("???", fallback="y" * 500)) == _MAX_SLUG_CHARS
 
 
 # ---------------------------------------------------------------------------

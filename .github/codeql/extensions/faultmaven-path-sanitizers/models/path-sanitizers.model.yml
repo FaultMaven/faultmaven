@@ -36,13 +36,21 @@
 # verdicts. Counts are alerts, not flows:
 #
 #                                          no model   with model
-#   runbook_id.py:525   guarded write          1           0   <- #61, #66
-#   runbook_id.py:539   guarded write          1           0   <- #65
+#   runbook_id.py:561   guarded write          1           0   <- #61, #66
+#   runbook_id.py:575   guarded write          1           0   <- #65
 #   probe: write the caller's path             1           1   <- must stay
 #   probe: check, then write the ORIGINAL      1           1   <- must stay
 #   probe: write the resolved path             1           0
 #   path_containment.py:144                    1           1   <- see below
 #   every other rule in the suite             16          16
+#
+# (561/575 are `mkdir` and `write_text` in `write_runbook_file`. They were 525
+# and 539 when the alerts were raised; the review fix to `safe_path_component`
+# grew a docstring above them, which moves the line and re-fingerprints the
+# alert — the very churn this model exists to end, happening once more on the
+# way out. Re-measured after that change with the pack copied somewhere
+# nothing could edit it, because the first re-measurement was taken while the
+# mutation matrix was rewriting the live pack and read as a regression.)
 #
 # The two probes that stay are the point: the barrier is a NODE, so a flow that
 # reaches the filesystem without passing through it is untouched — including the
@@ -78,10 +86,23 @@ extensions:
   # uncontained value, which is what makes the return value, rather than a
   # guard, the right thing to model.
   #
-  # This is the one implementation of the rule: the runbook tree, the evidence
-  # blob tree and the shipped KB pack all reach the filesystem through it
-  # (#1235). Modelling it therefore covers the wrappers without asserting
-  # anything about them.
+  # This is the one implementation of the rule (#1235), and modelling it covers
+  # a wrapper without asserting anything about the wrapper — but only where the
+  # wrapper USES what it returns. Two of the three trees do:
+  #
+  #   runbook tree   `resolve_runbook_path` -> `write_runbook_file` acts on the
+  #                  resolved path.                                    COVERED
+  #   KB pack        `KbPack.load` reads `content_path`, the return.   COVERED
+  #   evidence blobs `FilesystemStorageBackend._get_full_path` calls this for
+  #                  its raising side effect, DISCARDS the result, and returns
+  #                  the unresolved `candidate` — deliberately, its docstring
+  #                  says so.                                      NOT COVERED
+  #
+  # That third one is the exact shape the probe table above measures as
+  # `check, then write the ORIGINAL — 1 -> 1 (must stay)`. It is not an
+  # oversight in the model and not a hole in the storage backend, whose refusal
+  # still fires; it is what "the barrier is a node" means, and it is written
+  # here because the earlier wording claimed all three and was wrong.
   - addsTo:
       pack: codeql/python-all
       extensible: barrierModel
@@ -89,12 +110,28 @@ extensions:
       - ['faultmaven.utils.path_containment!', 'Member[resolve_within_root].ReturnValue', 'path-injection']
 
   # `safe_path_component(value, *, fallback)` -> ONE path segment matching
-  # `[a-z0-9]+(-[a-z0-9]+)*`, never empty. It is `re.sub(r"[^a-z0-9]+", "-",
-  # value.lower()).strip("-")[:60] or fallback`: an allowlist, so a separator, a
-  # `..`, a NUL, a drive letter and a leading dot are all gone by construction
-  # rather than by enumeration of what to strip. The `or fallback` is load-bearing
-  # — without it an input that filters to nothing would return `""` and the
-  # interpolation `f"team_{...}"` would silently lose its discriminator.
+  # `[a-z0-9]+(-[a-z0-9]+)*`, never empty. Both inputs go through the same
+  # allowlist (`[^a-z0-9]+` -> `-`), so a separator, a `..`, a NUL, a drive
+  # letter and a leading dot are gone by construction rather than by
+  # enumerating what to strip.
+  #
+  # ‼ THIS ROW WAS WRONG WHEN FIRST WRITTEN, in the direction that silences a
+  # real vulnerability, and the fix is in `runbook_id.py` rather than here —
+  # because a barrier row cannot say "only when the second argument is
+  # defaulted". Two holes, both found by review measuring the function instead
+  # of reading it:
+  #
+  #   safe_path_component(value="???", fallback="../../../../escaped")
+  #       was -> '../../../../escaped'   (only `value` was slugged)
+  #   safe_path_component("a"*59 + " " + "b"*10)
+  #       was -> 'aaa…a-'                (`[:60]` can land on a hyphen)
+  #
+  # The first is the one that mattered: an unfiltered `fallback` is returned
+  # verbatim AND has its flow to the filesystem silenced by this row. No caller
+  # passes a `fallback` today, which is precisely why it could rot unnoticed.
+  # `fallback` is now slugged and the truncation strips again; the parametrised
+  # cases in `tests/unit/ci/test_codeql_config.py` include a hostile fallback
+  # and inputs past the 60-character bound, so neither can come back quietly.
   #
   # Modelled separately from containment because it guards a different thing: the
   # DIRECTORY the write lands in. #1213 showed containment is worthless when the
