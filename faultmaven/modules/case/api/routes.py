@@ -57,7 +57,6 @@ from faultmaven.api.v1.dependencies import (
     get_data_service,
     get_investigation_service,  # V2.0 milestone-based
     get_preprocessing_service,
-    get_session_id,
     get_session_service,
     get_suggestion_service,
 )
@@ -771,13 +770,6 @@ async def _di_get_case_service_dependency(request: Request) -> Optional[ICaseSer
 
 
 # Legacy dependency functions removed - using new auth_dependencies directly
-
-
-async def _di_get_session_id_dependency(request: Request) -> Optional[str]:
-    """Runtime wrapper so patched dependency is honored in tests."""
-    from faultmaven.api.v1.dependencies import get_session_id as _get_session_id
-
-    return await _get_session_id(request)
 
 
 async def _di_get_session_service_dependency(request: Request) -> ISessionService:

@@ -22,9 +22,7 @@ Pattern:
 
 from typing import TYPE_CHECKING, Any, Optional
 
-from fastapi import Depends, HTTPException, Request
-
-from ...models import SessionContext
+from fastapi import HTTPException, Request
 
 # TD-001: IReportStore removed - reports now stored via CaseRepository
 from ...models.interfaces import IJobService
@@ -215,24 +213,19 @@ async def get_case_vector_store(request: Request):
         return None
 
 
-# Authentication Dependencies
-
-
-async def get_session_id(request: Request) -> Optional[str]:
-    """
-    Extract session ID from request headers
-
-    Returns the session ID if present in headers or query params.
-    Used for session-based operations and permission checks.
-    """
-    # Check for session ID in headers (primary method)
-    session_id = request.headers.get("X-Session-Id")
-
-    # Fallback: Check for session_id in query params (for testing)
-    if not session_id:
-        session_id = request.query_params.get("session_id")
-
-    return session_id
+# ``get_session_id`` used to sit here, reading the ``X-Session-Id`` header and
+# falling back to a ``session_id`` query parameter. Deleted with
+# ``get_current_session``, ``get_optional_session`` and ``get_request_metadata``
+# (#1554): no route depended on any of them, and its one caller — a
+# ``_di_get_session_id_dependency`` wrapper in ``modules/case/api/routes.py`` —
+# was itself referenced by nothing. They are not merely dead, they are dead
+# machinery for turning a caller-chosen identifier into a session, in the module
+# the next person adding a route reads first; #1461 is the defect that ships when
+# such a thing is one import away. A route that needs the authenticated caller
+# takes ``api/v1/auth_dependencies.require_authentication``; one that needs the
+# request's verified principal calls
+# ``api/middleware/principal.read_request_principal``, which is the published
+# ``RequestPrincipal`` #1461 established as the only source of an actor.
 
 
 async def get_orchestration_service(request: Request):
@@ -264,73 +257,6 @@ async def get_tracer(request: Request):
 # Both writers of that slot were on the ``ProtectionSystem`` path, which never ran
 # and is gone (#974); the live path writes ``protection_info`` instead. With no
 # writer left the accessor could only ever raise 503, and no route depended on it.
-
-
-# Session Dependencies
-
-
-async def get_current_session(
-    session_id: str,
-    session_service=Depends(get_session_service),
-) -> SessionContext:
-    """
-    Get and validate current session
-
-    Args:
-        session_id: Session ID from request
-        session_service: Injected session service
-
-    Returns:
-        Valid SessionContext
-
-    Raises:
-        HTTPException: If session not found or invalid
-    """
-    session = await session_service.get_session(session_id, validate=True)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found or expired")
-    return session
-
-
-async def get_optional_session(
-    session_id: Optional[str] = None,
-    session_service=Depends(get_session_service),
-) -> Optional[SessionContext]:
-    """
-    Get optional session if ID provided
-
-    Args:
-        session_id: Optional session ID
-        session_service: Injected session service
-
-    Returns:
-        SessionContext or None
-    """
-    if not session_id:
-        return None
-
-    return await session_service.get_session(session_id, validate=True)
-
-
-# Request Context Dependencies
-
-
-async def get_request_metadata(request: Request) -> dict:
-    """
-    Extract metadata from request
-
-    Args:
-        request: FastAPI request object
-
-    Returns:
-        Dictionary of request metadata
-    """
-    return {
-        "client_host": request.client.host if request.client else None,
-        "user_agent": request.headers.get("user-agent"),
-        "request_id": request.headers.get("x-request-id"),
-        "content_type": request.headers.get("content-type"),
-    }
 
 
 # Validation Dependencies

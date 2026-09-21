@@ -25,10 +25,6 @@ from typing import AsyncGenerator
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.api.v1.dependencies import (
-    get_session_id,
-    get_session_service,
-)
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.modules.case.domain.services.api_case_service import APICaseService
 from faultmaven.modules.case.domain.services.investigation_session_service import (
@@ -39,14 +35,14 @@ from faultmaven.modules.evidence.domain.services.file_storage_service import (
 )
 from faultmaven.services.service_factory import ServiceFactory
 
-# ============================================================
-# Re-exports from v1.dependencies
-# ============================================================
-# These functions are defined in api.v1.dependencies but re-exported here to
-# provide a canonical import path for all API dependencies.
-#
-# NOTE: We avoid re-exporting functions that cause circular imports
-# (e.g., get_knowledge_service) - import those directly from v1.dependencies.
+# This module used to re-export ``get_session_id`` (and import
+# ``get_session_service`` without using it) from ``api.v1.dependencies``, to give
+# "a canonical import path for all API dependencies". ``get_session_id`` was
+# deleted in #1554 — nothing depended on it, and what it did was turn a
+# caller-supplied ``X-Session-Id`` into a session id, which is the shape #1461
+# ruled out. Nothing re-exported remains, so the section is gone rather than
+# emptied: a second import path for a dependency is how two accessors for one
+# slot start, and the modules that define these own them.
 
 
 __all__ = [
@@ -56,8 +52,6 @@ __all__ = [
     "get_api_case_service",
     "get_investigation_session_service",
     "get_file_storage_service",
-    # Re-exported from v1.dependencies (legacy)
-    "get_session_id",
 ]
 
 
