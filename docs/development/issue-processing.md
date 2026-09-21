@@ -256,10 +256,13 @@ which nothing else was watching.
   same "read the narration" that labels replaced everywhere else here. It is
   also what makes the rule computable: `scripts/backlog_metrics.py` reads
   that line and nothing else, and reports how many blocked items state
-  nothing, so the gap is counted rather than assumed away. **An item already
-  in the pile without one gets it the next time you sort** — that pass has
-  to phrase its question for *Needs your call* anyway, so the statement is
-  the phrasing written down.
+  nothing, so the gap is counted rather than assumed away — and reports a
+  statement it can see but cannot read as **neither**, rather than filing it
+  as owner latency: a measurement that misses can be fixed, one that answers
+  the wrong bucket recreates the miscount this line exists to end. **An item
+  already in the pile without a readable one gets it the next time you
+  sort** — that pass has to phrase its question for *Needs your call*
+  anyway, so the statement is the phrasing written down.
 - **A blocked item whose named issue has closed moves to ready as you
   sort.** Its condition is met and nothing else will notice — the label is
   the pile, and closing #N writes no label on anything waiting for it. The
@@ -434,9 +437,13 @@ item would itself have sat in the tier, the pair sits in the tier at the
 older of the two dates, which is the half #1513 was missing — a blocker is
 usually the *newer* of the pair, so its own filing date is the worst
 possible key for an item whose job is to release an old one. A blocker of
-two or more still holds rule 1 on its own, unchanged. The relation is a
-query over the blocked pile's bodies, so it costs no bookkeeping and
-disappears by itself the round the blocked item moves.
+two or more still holds rule 1 on its own, unchanged — which is also why
+the lend is **not** gated on how many wait: gating it would write rule 1's
+threshold a second time, and the two would disagree the first time the
+threshold moved. Lending always, from every dependent, costs nothing where
+rule 1 already holds. The relation is a query over the blocked pile's
+bodies, so it needs no bookkeeping and disappears by itself the round the
+blocked item moves.
 
 **The lend is one hop, and that is enough.** Where A waits on B and B waits
 on C, only B's own claim reaches C, because the lend is applied to the ready
@@ -477,19 +484,39 @@ already exists — the owner pins.
 own defence had never been tested.** The proxy to hand was "ready items
 carrying no priority label", which #1511 measured at 59 of 62 and called
 plainly wrong, because rule 2 is a property of the defect and not of a
-label. What is computed now is rules 1 and 3 — rule 1 from the blocked
-pile's `**Blocked on:**` lines, rule 3 from the repository paths issues
-cite — and **the figure is published as an upper bound**, because
-everything holding rule 2 is still counted inside it. Upward is the only
-direction it may err in: an item wrongly left in the tier is one the slot
-may reach early, while an item wrongly taken out is one nothing reaches at
-all, which is the leak the slot exists to close. Both approximations fail
-that way by construction — a seam named by its symbols rather than its
-files contributes no path, and a dependency stated anywhere but the
-`**Blocked on:**` line contributes no edge; each such miss leaves its items
-*in*. The same section names the tier's oldest members, which is the slot's
-candidate list — a list to read rather than a verdict, since the oldest may
-be exactly the rule-2 item the computation cannot see.
+label. What is computed now is **rule 1 only**, from the blocked pile's
+`**Blocked on:**` lines, and **the figure is published as an upper bound**,
+because everything holding rule 2 or rule 3 is still counted inside it.
+Upward is the only direction it may err in: an item wrongly left in the tier
+is one the slot may reach early, while an item wrongly taken out is one
+nothing reaches at all, which is the leak the slot exists to close. The
+approximation fails that way by construction — a dependency stated anywhere
+but the `**Blocked on:**` line contributes no edge, and each such miss
+leaves its item *in*. The same section names the tier's oldest members,
+which is the slot's candidate list — a list to read rather than a verdict,
+since the oldest may be exactly the rule-2 item the computation cannot see.
+
+**Rule 3 is reported and not applied, and the first cut of this got that
+wrong.** It excluded an item whenever the item cited a path three or more
+recent issues also cited, which conflates a citation with a production. Of
+the ten items it unranked, three were wrong and all three by one mechanism:
+#1462 (chromadb credentials) and #1463 (filter-shaped routes) were taken out
+of the tier on `docs/development/issue-processing.md`, which they cite only
+because this campaign's issues quote its gates — and which leads the hot
+list at 7 for exactly that reason. **The campaign's own procedure file had
+become a seam that silently unranked unrelated work**, which is the failure
+the upper bound exists to forbid. The second objection is fatal on its own:
+what that file scores is a function of how many issues happened to quote a
+gate this month, so the tier would move by three for reasons with nothing to
+do with the backlog — and being comparable round over round is one of the
+three things this figure is for. So the hot seams are listed for whoever
+ranks to apply rule 3 **by reading**, which is what "it sits on a seam"
+always required, being a judgement about an issue's subject rather than
+about its text. The cost is stated rather than hidden: no false positives by
+construction, and a false negative for every genuine rule-3 item — on the
+corpus that is the seven of those ten that were right, plus the whole
+health-signal seam (#1515, #1516, #1547, #1565, #1568 — five issues in a
+month, not one of which names a file).
 
 **Size is bounded by review capacity, not by lane capacity.** Lanes are
 cheap and parallel; review is neither, because a fix written to answer a
@@ -772,7 +799,8 @@ Three signals that this document is wrong rather than the work:
   is drawing from it slower than review is filling it. The tier is what
   `scripts/backlog_metrics.py` prints under *Rule-4 tier*, an upper bound by
   construction; compare it against that same figure from an earlier round
-  and never against a proxy, because the two move for different reasons.
+  and never against a proxy, because the two move for different reasons. The
+  first round to compute it has nothing to compare against and says so.
 
 **A round raising the open count is not one of them.** Round 1 closed five
 issues and filed thirteen, so the open set rose over the round, and nine of

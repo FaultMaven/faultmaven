@@ -21,9 +21,10 @@ It also reports the **rule-4 tier** — the ready items holding none of that
 document's picking rules 1-3, which the reserved slot in every round draws
 from. That figure is the third of the document's three "this is wrong rather
 than the work" signals and, until #1511, nothing computed it: nine rounds
-reported a label proxy the issue itself calls plainly wrong. Rules 1 and 3
-are computed here; rule 2 is a property of the defect rather than of a
-label, so the tier is reported as an UPPER BOUND and says so every time.
+reported a label proxy the issue itself calls plainly wrong. Rule 1 is
+computed here; rules 2 and 3 are not (see :func:`rule4_tier` for why rule 3
+is reported rather than applied), so the tier is an UPPER BOUND and says so
+every time.
 
 Usage::
 
@@ -37,7 +38,8 @@ flow, survival and open-set numbers come from GitHub metadata and never from
 reading issue text. Two sections do read bodies, each through one stated
 grammar: the follow-up count reads the lane marker ("found while working on
 #N"), and the rule-4 tier reads the blocked pile's ``**Blocked on:**``
-statement and the repository paths an issue cites. An open
+statement and the repository files an issue cites outside a code block. An
+open
 issue younger than the residue threshold is reported as *pending*, not as
 residue, so the newest week's row is comparable to the same row on a later
 run. A saved dump is replayed with ``--as-of <the time it was taken>``; ages
@@ -353,6 +355,26 @@ def residue_snapshot(issues: Sequence[Issue], now: dt.datetime) -> dict:
     }
 
 
+#: Shorthands this repository is written about in its own issues, beside its
+#: real names. ``fm#918`` is the campaign's own spelling and appears in live
+#: parent markers; without it those resolve as "another repository" and the
+#: follow-up they record is dropped.
+_OWN_REPO_ALIASES = frozenset({"fm"})
+
+
+def is_own_repo(qualifier: str | None, repo: str) -> bool:
+    """Whether a reference qualifier (``fm#N``, ``owner/name#N``) names here.
+
+    An EMPTY qualifier is here by definition — that is what a bare ``#N``
+    means on GitHub. One place, because two grammars read references in this
+    file and a disagreement between them is invisible.
+    """
+    token = (qualifier or "").strip("/.").lower()
+    if not token:
+        return True
+    return token in {repo.lower(), repo.split("/")[-1].lower()} | _OWN_REPO_ALIASES
+
+
 def parent_of(issue: Issue, repo: str) -> int | None:
     """The number a lane marker in ``issue`` names, or ``None``.
 
@@ -369,10 +391,8 @@ def parent_of(issue: Issue, repo: str) -> int | None:
 
     This is the ONE place the marker grammar lives; every reader calls here.
     """
-    own = {repo.lower(), repo.split("/")[-1].lower()}
     for match in _PARENT_MARKER.finditer(issue.body):
-        qualifier = match.group("qual").strip("/.").lower()
-        if qualifier and qualifier not in own:
+        if not is_own_repo(match.group("qual"), repo):
             continue  # another repository
         number = int(match.group("n"))
         if number != issue.number:
@@ -445,44 +465,113 @@ def follow_ups(
 
 #: The pile labels ``docs/development/issue-processing.md`` sorts by. A pile
 #: is a label on the issue, so each is a query and never a list.
+_PILE_PREFIX = "pile:"
 READY_LABEL = "pile:ready"
 BLOCKED_LABEL = "pile:blocked"
+YOURS_LABEL = "pile:yours"
 
 #: Picking rule 1: "it unblocks two or more other items".
 RULE_1_DEPENDENTS = 2
 
 #: Picking rule 3: "a seam that produced three or more issues in the last
-#: month". The window ends at ``now``, so the answer moves with the run.
+#: month". REPORTED, never applied — see :func:`rule4_tier`.
 SEAM_WINDOW_DAYS = 30
 SEAM_ISSUES = 3
 
+#: A fenced code block. Stripped before any body is read, because a path or
+#: a reference inside a code sample is an illustration of something rather
+#: than a statement about this issue: #1351 was excluded from the tier on
+#: ``alembic/versions``, which appears only in a pasted `op.drop_table` line,
+#: and a body quoting the two `**Blocked on:**` examples out of
+#: `.claude/commands/process-top-issues.md` would otherwise parse as the
+#: quote.
+_CODE_FENCE = re.compile(r"^[ \t]*(```|~~~).*?^[ \t]*\1[ \t]*$", re.M | re.S)
+
 #: The ``**Blocked on:**`` statement every ``pile:blocked`` item carries in
-#: its BODY. Three outcomes, and the grammar has to separate all three:
-#:
-#: * ``**Blocked on:** #1294 — the arithmetic moves with it`` — an edge. The
-#:   reference must be the FIRST thing after the colon, which is what keeps
-#:   "an owner ruling on #1294's shape" from reading as one.
-#: * ``**Blocked on:** an owner ruling on which axis owns it`` — owner
-#:   latency, no edge.
-#: * no match at all — nobody said, which is reported rather than guessed.
-#:
-#: Anchored at a line start (past a bullet and the emphasis) and requiring
-#: the colon, so the "Not blocked on another issue." both live statements end
-#: with cannot match however the body happens to wrap.
-_BLOCKED_ON = re.compile(
-    r"^[ \t]*(?:[-*+][ \t]+)?\*{0,2}blocked on\*{0,2}[ \t]*:[ \t]*\*{0,2}[ \t]*"
-    r"(?:#(?P<n>\d+))?",
+#: its body. This matches only the LABEL; what follows it is resolved by
+#: :func:`blocked_on`, because the three answers it has to separate —
+#: an issue, a ruling, and a spelling this cannot read — are not separable
+#: by one pattern. Anchored at a line start past any blockquote marker,
+#: bullet and emphasis, and requiring the colon, so the "Not blocked on
+#: another issue." both live statements end with cannot match however the
+#: body wraps.
+_BLOCKED_ON_LABEL = re.compile(
+    r"^[ \t]*(?:>[ \t]*)*(?:[-*+][ \t]+)?\*{0,2}blocked on\*{0,2}[ \t]*:[ \t]*\*{0,2}",
     re.IGNORECASE | re.MULTILINE,
 )
 
+#: ``[#1294](https://…/issues/1294)`` → ``#1294``. Applied before the payload
+#: is cut at a sentence boundary, or the URL's own ``:`` and ``.`` would cut
+#: the reference off the statement that carries it.
+_MD_LINK = re.compile(r"\[([^\]\n]+)\]\([^)\n]*\)")
+
+#: An issue reference, in every spelling this repository writes: ``#1294``,
+#: ``issue #1294`` (the word is separated, so the qualifier is empty),
+#: ``fm#1294``, ``FaultMaven/faultmaven#1294``.
+_REFERENCE = r"(?<![\w/-])(?P<qual%s>[\w][\w.-]*(?:/[\w.-]+)?)?#(?P<n%s>\d+)\b"
+_ANY_REFERENCE = re.compile(_REFERENCE % ("", ""))
+
+#: A noun a reference is introduced by, which carries no meaning here: what
+#: #1543 IS decides whether it resolves, not what the sentence calls it.
+_REFERENCE_NOUN = r"(?:(?:issues?|prs?|pull requests?)[ \t]+)?"
+
+#: The reference, or list of them, that OPENS the statement. Leading is what
+#: separates "blocked on #1294" from "blocked on an owner ruling on #1294's
+#: shape": in the second the issue is a modifier, and reading it as a
+#: dependency would attribute owner latency to an issue instead. A reference
+#: anywhere else in the statement makes it UNREADABLE rather than either —
+#: a guard that misses can be fixed, a guard that answers the wrong bucket
+#: lies, and this pile's whole point is telling those two apart.
+_LEADING_REFERENCES = re.compile(
+    r"^"
+    + _REFERENCE_NOUN
+    + (_REFERENCE % ("0", "0"))
+    + r"(?:[ \t]*(?:,|and|,[ \t]*and)[ \t]*"
+    + _REFERENCE_NOUN
+    + (_REFERENCE % ("", ""))
+    + r")*",
+    re.IGNORECASE,
+)
+
+#: How far past the label a reference still belongs to the statement. The
+#: first sentence boundary, as in :data:`_PARENT_MARKER`: "an owner ruling;
+#: see #1294 for background" is owner latency and the #1294 is context.
+_SENTENCE_END = re.compile(r"[.;:!?]")
+
 #: A repository path cited in an issue body, used as a stand-in for a seam.
 #: The top-level names are this repository's own, which is what makes the
-#: match a path rather than any token with a slash in it. A trailing ``\w``
-#: drops the sentence punctuation a citation usually sits in front of.
+#: match a path rather than any token with a slash in it, and the required
+#: extension is what makes it a FILE: ``alembic/versions`` is a region, and
+#: a region is not a seam.
 _CITED_PATH = re.compile(
     r"(?<![\w/.-])"
-    r"((?:faultmaven|tests|scripts|docs|alembic|\.github|\.claude)/[\w./-]*[\w])"
+    r"((?:faultmaven|tests|scripts|docs|alembic|\.github|\.claude)"
+    r"/[\w./-]*\.[A-Za-z]\w*)"
 )
+
+
+def without_code_blocks(body: str) -> str:
+    """``body`` with fenced code blocks blanked, line count preserved."""
+    return _CODE_FENCE.sub(lambda m: "\n" * m.group(0).count("\n"), body)
+
+
+def pile_of(issue: Issue) -> str | None:
+    """The one pile an issue is in, by the procedure's own reading rule.
+
+    "More than one ``pile:`` label means **blocked**, or **yours** if blocked
+    is not among them." A half-finished move carries both labels, and reading
+    it as ready would put it in the tier — where it would be named as the
+    reserved slot's next buy and then refused by the dispatch predicate, so
+    the slot drains nothing that round.
+    """
+    piles = {label for label in issue.labels if label.startswith(_PILE_PREFIX)}
+    if not piles:
+        return None
+    if BLOCKED_LABEL in piles:
+        return BLOCKED_LABEL
+    if YOURS_LABEL in piles:
+        return YOURS_LABEL
+    return READY_LABEL if READY_LABEL in piles else sorted(piles)[0]
 
 
 @dataclass(frozen=True)
@@ -491,8 +580,14 @@ class BlockingGraph:
 
     #: blocker → the open blocked issues waiting on it, ascending.
     waiting_on: dict[int, list[int]]
-    #: blocked items whose statement names a ruling rather than an issue.
+    #: blocked items whose statement names a ruling rather than any issue.
     on_ruling: list[int]
+    #: ``(blocked item, the text)`` where the statement carries something
+    #: reference-shaped this could not resolve to an issue here — another
+    #: repository, a pull request number, a number that is not an issue.
+    #: Reported rather than filed as owner latency: a guard that misses is
+    #: recoverable, a guard that answers the wrong bucket lies.
+    unresolved: list[tuple[int, str]]
     #: blocked items carrying no ``**Blocked on:**`` statement at all.
     unstated: list[int]
     #: ``(blocked item, the issue it waits on)`` where that issue has closed —
@@ -500,20 +595,42 @@ class BlockingGraph:
     condition_met: list[tuple[int, int]]
 
 
-def blocked_on(body: str) -> tuple[bool, int | None]:
-    """``(stated, the issue it waits on)`` for one blocked item's body.
+def blocked_on(body: str, repo: str) -> tuple[bool, list[int], str]:
+    """``(stated, the issues it names, the part that could not be read)``.
 
-    The LAST statement wins. The body is edited in place rather than appended
-    to, so a second one is a leftover and the newest is the current answer.
+    The LAST statement wins: a body is edited in place rather than appended
+    to, so a second one is a leftover. A reference resolves here only if it
+    opens the statement and its qualifier names this repository
+    (:func:`is_own_repo`); whether the NUMBER is an issue is the caller's
+    question, because only the caller has the corpus. Anything else
+    reference-shaped comes back verbatim, so the report can print the
+    spelling it did not read instead of filing it as owner latency.
     """
-    matches = list(_BLOCKED_ON.finditer(body))
+    text = without_code_blocks(body)
+    matches = list(_BLOCKED_ON_LABEL.finditer(text))
     if not matches:
-        return False, None
-    number = matches[-1].group("n")
-    return True, int(number) if number else None
+        return False, [], ""
+    # To the end of the paragraph, so a reference on the line BELOW the label
+    # still belongs to it, then to the first sentence boundary.
+    payload = text[matches[-1].end() :].split("\n\n")[0]
+    payload = _MD_LINK.sub(r"\1", payload).strip()
+    cut = _SENTENCE_END.search(payload)
+    head = payload[: cut.start()] if cut else payload
+    leading = _LEADING_REFERENCES.match(head)
+    if leading is None:
+        # No reference at the front. A reference further in is a modifier of
+        # a ruling, or a spelling this cannot read; either way, not an edge.
+        return True, [], head[:120] if _ANY_REFERENCE.search(head) else ""
+    named, unreadable = [], []
+    for reference in _ANY_REFERENCE.finditer(leading.group(0)):
+        if is_own_repo(reference.group("qual"), repo):
+            named.append(int(reference.group("n")))
+        else:
+            unreadable.append(reference.group(0))
+    return True, named, " ".join(unreadable)
 
 
-def blocking_graph(issues: Sequence[Issue]) -> BlockingGraph:
+def blocking_graph(issues: Sequence[Issue], repo: str) -> BlockingGraph:
     """The blocked pile's edges, read from the bodies and nowhere else.
 
     This is NOT the follow-up graph. A marker says an issue was *found while
@@ -527,43 +644,46 @@ def blocking_graph(issues: Sequence[Issue]) -> BlockingGraph:
     by_number = {issue.number: issue for issue in issues}
     waiting_on: dict[int, list[int]] = defaultdict(list)
     on_ruling: list[int] = []
+    unresolved: list[tuple[int, str]] = []
     unstated: list[int] = []
     condition_met: list[tuple[int, int]] = []
-    blocked = [
-        issue for issue in issues if issue.is_open and BLOCKED_LABEL in issue.labels
-    ]
+    blocked = [issue for issue in issues if pile_of(issue) == BLOCKED_LABEL]
     for issue in sorted(blocked, key=lambda i: i.number):
-        stated, number = blocked_on(issue.body)
+        stated, named, foreign = blocked_on(issue.body, repo)
+        here = [n for n in named if n in by_number]
+        elsewhere = [f"#{n}" for n in named if n not in by_number]
         if not stated:
             unstated.append(issue.number)
-        elif number is None:
-            on_ruling.append(issue.number)
+        elif here:
+            for number in here:
+                waiting_on[number].append(issue.number)
+                if not by_number[number].is_open:
+                    condition_met.append((issue.number, number))
+        elif elsewhere or foreign:
+            # Reference-shaped and unreadable: a pull request number, another
+            # repository, an issue this corpus does not carry. NOT a ruling.
+            unresolved.append((issue.number, " ".join(elsewhere + [foreign]).strip()))
         else:
-            waiting_on[number].append(issue.number)
-            target = by_number.get(number)
-            if target is not None and not target.is_open:
-                condition_met.append((issue.number, number))
+            on_ruling.append(issue.number)
     return BlockingGraph(
         waiting_on={n: sorted(v) for n, v in sorted(waiting_on.items())},
         on_ruling=on_ruling,
+        unresolved=unresolved,
         unstated=unstated,
         condition_met=condition_met,
     )
 
 
 def cited_paths(body: str) -> set[str]:
-    """Every repository path an issue body names."""
-    return set(_CITED_PATH.findall(body))
+    """Every repository FILE an issue body names outside a code block."""
+    return set(_CITED_PATH.findall(without_code_blocks(body)))
 
 
 def hot_seams(issues: Sequence[Issue], now: dt.datetime) -> dict[str, list[int]]:
-    """Paths that produced ``SEAM_ISSUES`` or more issues inside the window.
+    """Paths that ``SEAM_ISSUES`` or more issues named inside the window.
 
-    A path is a floor on a seam, never the seam itself: a seam is "all the
-    places one rule has to hold", and an issue that names its symbols rather
-    than its files contributes nothing here. Both errors run the same way —
-    a seam this misses leaves its items IN the tier — which is the direction
-    an upper bound has to fail in.
+    Information for whoever ranks, and nothing else — :func:`rule4_tier`
+    does not exclude on this. See there for why.
     """
     cutoff = now - dt.timedelta(days=SEAM_WINDOW_DAYS)
     produced: dict[str, list[int]] = defaultdict(list)
@@ -579,76 +699,106 @@ def hot_seams(issues: Sequence[Issue], now: dt.datetime) -> dict[str, list[int]]
     }
 
 
-def rule4_tier(issues: Sequence[Issue], now: dt.datetime) -> dict:
+def rule4_tier(issues: Sequence[Issue], now: dt.datetime, repo: str) -> dict:
     """The ready items holding none of picking rules 1-3, oldest first.
 
-    An UPPER BOUND, and the report says so every time. Rule 2 — "a security
-    or correctness defect reachable in a shipped configuration" — is a
-    property of the defect and is not computed, so every item holding it is
-    counted here. Rules 1 and 3 are computed and named.
+    An UPPER BOUND, and the report says so every time. Over-approximating is
+    the safe direction and the only one: the figure exists so that a tier
+    GROWING across four rounds is visible, and the reserved slot is aimed at
+    the tier's oldest member. An item wrongly left in is one the slot may
+    reach early; an item wrongly taken out is one nothing reaches at all,
+    which is the leak the slot was written to close.
 
-    Over-approximating is the safe direction and the only one: the figure
-    exists so that a tier GROWING across four rounds is visible, and the
-    reserved slot is aimed at the tier's oldest member. An item wrongly left
-    in is one the slot may reach early; an item wrongly taken out is one
-    nothing reaches at all, which is the leak the slot was written to close.
+    **Only rule 1 is computed.** Rule 2 is a property of the defect rather
+    than of a label and has no mechanical form at all. Rule 3 was computed
+    from cited paths in the first cut of this and is not any more, on two
+    measurements over the live corpus:
 
-    Blocker inheritance (*Picking*, leak B): an item exactly one blocked
-    issue waits on is ranked for what it releases — it takes that issue's
-    claim, and the earlier of the two filing dates. A blocker of two or more
-    holds rule 1 on its own.
+    * **A citation is not a production.** Of the ten items it excluded,
+      three were wrong and all three by the same mechanism — a path named
+      as a REFERENCE. #1462 (chromadb credentials) and #1463 (filter-shaped
+      routes) were unranked on ``docs/development/issue-processing.md``,
+      which they cite only because this campaign's issues quote its gates,
+      and which leads the hot list at 7 for exactly that reason. The
+      campaign's own procedure file had become a seam that silently unranked
+      unrelated work.
+    * **It would not be comparable round over round**, which is the third
+      thing #1511 asks of this figure. What the procedure file scores is a
+      function of how many issues happened to quote a gate that month, so
+      the tier would move by three for reasons with nothing to do with the
+      backlog.
+
+    So the hot seams are REPORTED, for whoever ranks to apply rule 3 by
+    reading — which is what "it sits on a seam" always required, being a
+    judgement about the issue's subject rather than about its text. The cost
+    is stated rather than hidden: false positives 0 by construction, false
+    negatives every genuine rule-3 item, which on this corpus is at least
+    the seven of those ten that were right plus the whole health-signal seam
+    (#1515, #1516, #1547, #1565, #1568 — five issues in a month, and not one
+    of them names a path).
+
+    Blocker inheritance (*Picking*, leak B): a blocked item lends the issue
+    it waits on its own claim and its own filing date, so a blocker is
+    ranked for what it releases. Unconditional, as the procedure states it —
+    a blocker of two or more already holds rule 1, so the lend changes
+    nothing there and no threshold has to be restated here.
     """
     by_number = {issue.number: issue for issue in issues}
-    ready = [issue for issue in issues if issue.is_open and READY_LABEL in issue.labels]
-    graph = blocking_graph(issues)
+    open_issues = [issue for issue in issues if issue.is_open]
+    ready = [issue for issue in open_issues if pile_of(issue) == READY_LABEL]
+    graph = blocking_graph(issues, repo)
     seams = hot_seams(issues, now)
-    hot_paths = set(seams)
 
-    def rules_held(issue: Issue) -> set[int]:
-        held = set()
-        if len(graph.waiting_on.get(issue.number, ())) >= RULE_1_DEPENDENTS:
-            held.add(1)
-        if cited_paths(issue.body) & hot_paths:
-            held.add(3)
-        return held
+    def rule_1(issue: Issue) -> bool:
+        return len(graph.waiting_on.get(issue.number, ())) >= RULE_1_DEPENDENTS
 
+    excluded: list[int] = []
+    lent_claim: list[tuple[int, int]] = []
+    lent_age: list[tuple[int, int]] = []
     tier: list[tuple[dt.datetime, int]] = []
-    held_by: dict[int, set[int]] = {}
-    inherited: list[tuple[int, int]] = []
     for issue in ready:
-        held = rules_held(issue)
+        held = rule_1(issue)
         since = issue.created
-        dependents = graph.waiting_on.get(issue.number, ())
-        if len(dependents) == 1:
-            dependent = by_number.get(dependents[0])
-            if dependent is not None:
-                from_dependent = rules_held(dependent)
-                if from_dependent - held or dependent.created < since:
-                    inherited.append((issue.number, dependent.number))
-                held |= from_dependent
-                since = min(since, dependent.created)
-        held_by[issue.number] = held
-        if not held:
+        for number in graph.waiting_on.get(issue.number, ()):
+            dependent = by_number[number]
+            if rule_1(dependent) and not held:
+                held = True
+                lent_claim.append((issue.number, number))
+            if dependent.created < since:
+                since = dependent.created
+                lent_age.append((issue.number, number))
+        if held:
+            excluded.append(issue.number)
+        else:
             tier.append((since, issue.number))
     tier.sort()
     return {
         # Told apart from an empty tier on purpose: a corpus with no pile
         # labels at all would otherwise report 0 and read as a drained tier.
         "labelled": any(
-            label.startswith("pile:") for issue in issues for label in issue.labels
+            label.startswith(_PILE_PREFIX) for issue in issues for label in issue.labels
         ),
         "ready": len(ready),
-        "rule_1": sorted(n for n, held in held_by.items() if 1 in held),
-        "rule_3": sorted(n for n, held in held_by.items() if 3 in held),
-        "inherited": inherited,
+        "excluded": sorted(excluded),
+        "lent_claim": lent_claim,
+        "lent_age": lent_age,
         "tier": [n for _, n in tier],
         "oldest": [
             (n, round((now - since).total_seconds() / _DAY)) for since, n in tier[:5]
         ],
+        "multi_labelled": sorted(
+            issue.number
+            for issue in open_issues
+            if len({la for la in issue.labels if la.startswith(_PILE_PREFIX)}) > 1
+        ),
         "seams": seams,
-        # A plain dict, so --json stays structured rather than str()-ing
-        # a dataclass into one opaque line.
-        "blocking": asdict(graph),
+        # String keys, so the in-process value and a --json round trip agree:
+        # json.dumps coerces an int key to a string and nothing coerces it
+        # back, which made the two disagree silently.
+        "blocking": {
+            **asdict(graph),
+            "waiting_on": {str(n): v for n, v in graph.waiting_on.items()},
+        },
     }
 
 
@@ -1003,7 +1153,7 @@ def compute(
         "survival": survival(issues, now),
         "open": residue_snapshot(issues, now),
         "follow_ups": follow_ups(issues, repo, pr_links),
-        "rule4": rule4_tier(issues, now),
+        "rule4": rule4_tier(issues, now, repo),
         "latency": fix_latency(issues, repo) if latency else None,
     }
 
@@ -1011,10 +1161,11 @@ def compute(
 def _rule4_text(tier: dict) -> str:
     """The rule-4 tier, as an upper bound that says it is one.
 
-    The number exists to answer one question — is the tier growing across
-    four rounds — and to name the item the reserved slot buys first. Both
-    need the bound stated: a reader who takes it for the tier itself would
-    read rule 2's whole population as unranked work.
+    The number answers one question — is the tier growing across four
+    rounds — and names the item the reserved slot buys first. The arithmetic
+    has to close, because the round is told to quote this verbatim into the
+    Queue: ``ready - tier`` is the excluded count and nothing else is
+    attributed to it.
     """
     out = ["## Rule-4 tier (ready items holding none of picking rules 1-3)\n"]
     if not tier["labelled"]:
@@ -1023,31 +1174,45 @@ def _rule4_text(tier: dict) -> str:
             "the tier is not computable here — which is not the same as empty.\n"
         )
         return "\n".join(out)
-    graph = tier["blocking"]
-    out.append(
-        f"**{len(tier['tier'])} of {tier['ready']} ready items — an UPPER "
-        'BOUND.** Rule 2 ("a security or correctness defect reachable in a '
-        'shipped configuration") is a property of the defect, not of a label, '
-        "and is not computed: every item holding it is counted here. Rule 1 "
-        f"excludes {len(tier['rule_1'])} and rule 3 excludes "
-        f"{len(tier['rule_3'])}"
-        + (
-            f", of which {len(tier['inherited'])} by inheriting the claim of the "
-            "one blocked item waiting on them"
-            if tier["inherited"]
-            else ""
+    if not tier["ready"]:
+        out.append(
+            "No `pile:ready` issue is open, so there is no tier to measure — "
+            "which is not the same as a drained one.\n"
         )
-        + ".\n"
-    )
+    else:
+        out.append(
+            f"**{len(tier['tier'])} of {tier['ready']} ready items — an UPPER "
+            f"BOUND.** Only rule 1 is computed, and it excludes "
+            f"{len(tier['excluded'])}"
+            + (
+                f" (of which {len(tier['lent_claim'])} by inheriting the claim "
+                "of a blocked item waiting on them)"
+                if tier["lent_claim"]
+                else ""
+            )
+            + '. Rule 2 ("a security or correctness defect reachable in a '
+            'shipped configuration") is a property of the defect, not of a '
+            "label; rule 3 is reported below rather than applied, because a "
+            "path an issue CITES is not the seam that produced it. Every item "
+            "holding either is counted here.\n"
+        )
+    if tier["lent_age"]:
+        out.append(
+            "Ranked earlier than their own filing date by the lend: "
+            + ", ".join(f"#{a} (from #{b})" for a, b in tier["lent_age"])
+            + ".\n"
+        )
     if tier["oldest"]:
         out.append(
             "Oldest in the tier, which is what the round's reserved slot buys "
-            "first (a candidate to read, not a verdict — it may hold rule 2): "
+            "first (candidates to read, not a verdict — the oldest may hold "
+            "rule 2 or rule 3): "
             + ", ".join(f"#{n} ({age}d)" for n, age in tier["oldest"])
             + ".\n"
         )
-    else:
-        out.append("The tier is empty: every ready item holds rule 1 or rule 3.\n")
+    elif tier["ready"]:
+        out.append("The tier is empty: every ready item holds rule 1.\n")
+    graph = tier["blocking"]
     edges = sum(len(v) for v in graph["waiting_on"].values())
     out.append(
         f"Blocking graph: {edges} edge(s) from the blocked pile — "
@@ -1056,6 +1221,13 @@ def _rule4_text(tier: dict) -> str:
         "(`**Blocked on:**` is what is read; a statement left in a comment is "
         "not).\n"
     )
+    if graph["unresolved"]:
+        out.append(
+            "**Stated but unreadable** — reference-shaped and not an issue "
+            "here, so neither an edge nor owner latency: "
+            + ", ".join(f"#{n} (`{text}`)" for n, text in graph["unresolved"])
+            + ".\n"
+        )
     if graph["condition_met"]:
         out.append(
             "**Condition met, still blocked:** "
@@ -1065,17 +1237,21 @@ def _rule4_text(tier: dict) -> str:
             )
             + " — these move to ready at the next sort.\n"
         )
-    if tier["seams"]:
+    if tier["multi_labelled"]:
         out.append(
-            f"Hot seams (>={SEAM_ISSUES} issues citing one path in "
-            f"{SEAM_WINDOW_DAYS}d), a floor because an issue naming symbols "
-            "rather than files contributes none: "
-            + ", ".join(
-                f"`{path}` ({len(nums)})"
-                for path, nums in sorted(
-                    tier["seams"].items(), key=lambda kv: (-len(kv[1]), kv[0])
-                )[:6]
-            )
+            "**Carrying more than one `pile:` label** (read as blocked, so out "
+            "of the tier and undispatchable): "
+            + ", ".join(f"#{n}" for n in tier["multi_labelled"])
+            + ".\n"
+        )
+    if tier["seams"]:
+        ranked = sorted(tier["seams"].items(), key=lambda kv: (-len(kv[1]), kv[0]))
+        out.append(
+            f"Hot seams for rule 3, to APPLY BY READING (>={SEAM_ISSUES} issues "
+            f"citing one file in {SEAM_WINDOW_DAYS}d; a floor, because an issue "
+            "naming symbols rather than files contributes none): "
+            + ", ".join(f"`{path}` ({len(nums)})" for path, nums in ranked[:6])
+            + (f", and {len(ranked) - 6} more" if len(ranked) > 6 else "")
             + ".\n"
         )
     return "\n".join(out)

@@ -181,16 +181,27 @@ row that matches:
 | none | before the first round | step 1 |
 | a **result** or a **withdrawal** | between rounds | step 1 |
 | a **proposal**, with an owner comment after it | answered | step 3, take the answers |
-| a **proposal**, no owner comment after it, but its *Building* items have lane pull requests | approved out of band and already built | post the approval as a `## Note —` so the next reader need not re-derive it, then step 4 (whose dispatch predicate skips what is built) and step 5 |
+| a **proposal**, no owner comment after it, but its *Building* items have lane pull requests, open or merged | approved out of band, and its work is built | post the approval as a `## Note —` so the next reader need not re-derive it, then step 4 — whose dispatch predicate skips a lane branch whose pull request is **open or merged**, which is what stops a fresh lane being sent over work already on `main` — and step 5 |
 | a **proposal**, no owner comment after it, and no lane pull requests | waiting on the owner | report what it is waiting for, and stop. Do not re-propose |
 
 ```bash
 # "its Building items have lane pull requests": the step-4 branch convention,
-# over the proposal's own numbers, state ALL — an unposted result is exactly
-# the case where those pull requests are already merged.
-gh pr list --state all --limit 200 --json number,url,headRefName,state \
-  --jq '.[] | select(.headRefName | test("/(1450|1511|1512)-"))'   # the round's numbers
+# asked PER NUMBER so nothing depends on a page size — a repo-wide `--limit`
+# page is exactly what the historical case this row exists for rolls off.
+for n in 1450 1511 1512; do                       # the proposal's own numbers
+  gh pr list --state all --search "head:fix/$n-" \
+    --json number,headRefName,state --jq ".[] | select(.state != \"CLOSED\")"
+done
 ```
+
+**This row does not skip settlement; it defers it to the step that does it.**
+Step 5 posts the result these pull requests were missing, and the *next*
+invocation reads that result and settles every issue it names — including
+the one whose merged pull request said `Refs #<n>` and left it open, which
+is the case step 1 exists for and the case that left #1447 and #918 to be
+closed by hand. Settling here instead is not possible: step 1 takes its
+issue↔pull-request pairs from a result table that, by the definition of this
+row, has not been written yet.
 
 The last two rows are one question — *was this round approved?* — asked of
 the narration first and of the facts second. Round 3 was approved in a
@@ -306,10 +317,11 @@ has to list anyway:
   moves to ready (`--add-label pile:ready`, then `--remove-label
   pile:blocked`) — nothing else notices, because closing #N writes no label
   on anything waiting for it;
-- an item carrying **no** `**Blocked on:**` line gets one now: you are about
-  to phrase its question for the proposal, and that line is the phrasing
-  written down. `scripts/backlog_metrics.py` counts these, so the gap is
-  visible rather than merely present;
+- an item carrying **no** `**Blocked on:**` line, or one the metrics report
+  as *stated but unreadable*, gets a readable one now: you are about to
+  phrase its question for the proposal, and that line is the phrasing
+  written down. The script counts both, so the gap is visible rather than
+  merely present;
 - an item **ruled and deferred** is re-read against its condition and moves
   to ready the round the condition holds.
 
@@ -326,7 +338,9 @@ blocker of exactly one holds no rule at all and the blocked item's only exit
 is unreachable — #1513 waited six rounds on #1294 with no rule broken. Not
 counted under rule 1, because rule 1 outranks a live security defect and a
 blocker of one has not earned that; inheritance gives it the priority of
-what it is holding up and no more.
+what it is holding up and no more. Lend from every dependent, not only
+where there is one: a count here would restate rule 1's threshold, and the
+two would disagree the first time it moved.
 
 **The first thing the round's capacity buys is the oldest rule-4 item** —
 the oldest ready issue holding none of picking rules 1-3 — ahead of rules
@@ -335,9 +349,11 @@ Rules 1-3 outrank that tier every time, so without the reserved place its
 drain rate is zero. It does not bound the wait, so the size is reported:
 `scripts/backlog_metrics.py` computes the tier under *Rule-4 tier* and names
 its oldest members, which is this slot's candidate list. **Read the
-candidate before ranking it.** The figure is an upper bound — rule 2 is a
-property of the defect and is not computed, so an item holding it is still
-counted in the tier, and the oldest member may be one.
+candidate before ranking it.** The figure is an upper bound — only rule 1 is
+computed, and an item holding rule 2 or rule 3 is still counted in the tier,
+so the oldest member may be one. The same section lists the **hot seams**
+for you to apply rule 3 by reading; it does not apply them itself, because
+the path an issue cites is not the seam that produced it.
 
 **Then check the premise of the items you are about to list under
 *Building* — whatever their age, and before you write the comment.** `git
@@ -378,14 +394,17 @@ and never omitted, or they leave every pile.
 ### Measurement
 <python scripts/backlog_metrics.py --weeks 8>
 Piles: ready <n> · blocked <n> · yours <n>
-Rule-4 tier: <the script's figure> (last round: <n>) — an upper bound
-Carrying more than one pile label: <none, or the numbers>
+Rule-4 tier: <the script's figure> (last round: <n, or "n/a — first
+  computed figure">) — an upper bound
+Carrying more than one pile label: <the script's line, or none>
 ```
 
 The rule-4 line is **quoted from the script's own *Rule-4 tier* section**,
 never estimated and never derived from labels: the proxy that was used for
 nine rounds read 59 of 62 and was measuring the wrong thing. Compare it only
-against the same script's figure from an earlier round.
+against the same script's figure from an earlier round — and where there is
+no earlier one, write `n/a — first computed figure` rather than reaching for
+the retired proxy, which the sentence above forbids comparing against.
 
 Write the `Queue` body per *The Queue*: **the ranked head in order**, this
 round's timestamp, and the three counts as a snapshot. This is the only step
@@ -429,13 +448,22 @@ Dispatch them in the order the ranked head gives,
 **skipping any the ready query does not return, any it returns that carries a
 second `pile:` label, and any this step has already built** — the ready query
 being `gh issue list --state open --label pile:ready`, and "already built"
-being an open pull request on this item's lane branch:
+being a pull request on this item's lane branch that is **open or merged**:
 
 ```bash
 # the <prefix>/<n>-<slug> branch convention this step mandates, below
-gh pr list --state open --json number,url,headRefName \
-  --jq '.[] | select(.headRefName | test("/<n>-"))'
+gh pr list --state all --search "head:fix/<n>-" \
+  --json number,url,headRefName,state \
+  --jq '.[] | select(.state != "CLOSED")'
 ```
+
+**Merged, not only open.** Step 1 will not start a round while a previous
+round's pull request is open, so within a normal round "already built" and
+"open" coincide — but step 0's out-of-band row is reached *precisely* when
+they are merged, and an `--state open` test finds nothing there and
+dispatches a fresh lane over work already on `main`. Closed-unmerged is
+excluded because the owner abandoned it, which step 1 turns into a blocked
+item; it would not be in the ready query either.
 
 Three conditions, because the query expresses only the first: an item mid-move
 carries both labels and `--label pile:ready` still returns it, and an item
@@ -448,11 +476,14 @@ dispatchable: a pull earlier in this step or in a previous invocation of it
 (the item gained `pile:blocked`, and between the two label commands it carries
 **both** — still `pile:ready`, and still not dispatchable), an item delivered
 and closed by a previous round (labels survive closing, so only `--state open`
-excludes it), and an item a lane has already built this round — which the open
-pull request identifies because step 1 does not let a round start while a
-previous round's is still open. **Skipped for that third reason is not
-dropped**: the item joins the verify-and-review pass below carrying the pull
-request it has, exactly as a returned lane would. (A feature lane opens none,
+excludes it), and an item a lane has already built — which its lane pull
+request identifies whether that pull request is still open or has since been
+merged. **Skipped for that third reason is not dropped**: the item joins the
+verify-and-review pass below carrying the pull request it has, exactly as a
+returned lane would — except that a pull request the owner has already
+merged is *reported* as merged rather than re-reviewed, because a review
+after the merge changes nothing and the worktree it was built in may be
+gone. It still gets its row, which is what the next settlement reads. (A feature lane opens none,
 so this does not reach one — its spec is a comment, which a re-run can no more
 recognise as its own than the abandonment comment, and one duplicate is the
 price.)
