@@ -43,8 +43,8 @@ recording the p95 it was anchored from. That file is the source of truth —
 this guide deliberately does not restate 50 numbers, because the copy is
 what goes stale.
 
-The A/B gate's two thresholds (below) are the third and last place a
-number lives: the `ab-regression` job's `env:` block in
+The A/B gate's single threshold (below) is the third and last place a
+number lives: `FM_AB_SUITE` in the `ab-regression` job's `env:` block in
 `.github/workflows/benchmarks.yml`. There is no separate baseline file —
 `.github/benchmark_baselines/baseline_v1.json` and the "Baseline
 Management" recipe that pointed at it were deleted by #1567. Nothing had
@@ -500,6 +500,46 @@ rediscovered: a regression confined to a minority of the suite. A quarter
 of these benchmarks 30% slower moves the median to about 1.05. That class
 stays with the absolute budgets, exactly as it was before this job
 existed.
+
+**The comparison has to cover the suite before its median means
+anything.** Both benchmark steps are `continue-on-error` — a benchmark
+over its absolute budget is the other job's verdict, not this one's — so
+a head-side crash does not red its own step. It arrives as a handful of
+matched rows, and without a floor that is a green job whose "suite
+median" is those rows' noise. Probed on the comparator, base 50 / head 1
+returned `ok=True, median=1.0`. So:
+
+| what the counts say | outcome |
+|---|---|
+| the base recorded nothing | **fail** — an empty A/B is not a pass |
+| the head recorded < 50% of the base's rows | **fail** — either the run did not complete or the suite was mostly removed; the message names both |
+| both sides measured, but < 50% of keys match | **not gated**, reported prominently — the suite was renamed or moved |
+| otherwise | gated on the median |
+
+The last two are told apart by the head's own row count, not by the
+matched count, which is what separates a crash from a rename. A rename
+is reported rather than failed for the same reason a single deleted
+benchmark is: failing it would leave the pull request no exit. That is an
+**acknowledged escape** — a pull request that renames the whole benchmark
+suite is not gated by this job — and the report says `NOT GATED` in so
+many words rather than showing a green tick. The 50% floor is not sized
+to catch an ordinary deletion: the five modules hold 15, 13, 9, 7 and 6
+of the 50 rows, so deleting the largest leaves 0.70 and is still gated.
+
+**The order the two sides run in is measured, not assumed.** The job
+always runs base first and head second, so any systematic earlier-versus-
+later offset does not cancel. From the same null data, restricted to
+forward pairs only (the shipped direction): the later run is
+**1.038x slower** by geometric mean (forward 1.0379, reverse 0.9636).
+That offset is already inside the distribution the threshold was chosen
+against — the worst null observation, 1.216, is itself a forward pair,
+and forward-only gives **0 red of 66** at 1.30 — and it biases toward
+false positives rather than misses. What the null does **not** include is
+the `pip install` between the two runs on a runner; reasoning rather than
+measurement, the base run is the one following a full multi-gigabyte
+install and the head run follows an incremental one, so the residual
+should push the ratio down rather than up. The gate prints its own median
+on every run, which is how that gets bounded from real data.
 
 **‼ Read a red here for what it is.** These benchmarks are SQLite CRUD
 against an in-memory database at single-digit milliseconds, while

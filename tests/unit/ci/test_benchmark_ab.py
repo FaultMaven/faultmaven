@@ -48,14 +48,17 @@ What it holds down, and why each one:
 from __future__ import annotations
 
 import ast
+import builtins
 import json
+import math
 import os
+import re
 from pathlib import Path
 
 import pytest
 import yaml
 
-from tests.wallclock import ab, record
+from tests.wallclock import ab, calibration, record
 from tests.wallclock.assertions import (
     assert_latency_within,
     assert_throughput_at_least,
@@ -67,9 +70,65 @@ WORKFLOW = REPO_ROOT / ".github" / "workflows" / "benchmarks.yml"
 AB_MODULE = REPO_ROOT / "tests" / "wallclock" / "ab.py"
 AB_JOB = "ab-regression"
 
+#: A producer piped into a short-circuiting reader. ``grep -q`` exits on
+#: its first match and closes the pipe; the producer then dies with
+#: SIGPIPE, and under ``set -o pipefail`` the whole pipeline reports 141.
+#: Measured: ``yes | grep -q y`` under pipefail exits 141.
+PIPED_INTO_QUIET_GREP = re.compile(r"\|\s*(?:\\\s*\n\s*)?grep\b[^\n|]*\s-[A-Za-z]*q")
+
+
+def _shell_code(run: str) -> str:
+    """The step's script with whole-line comments removed.
+
+    ‼ The scan's own input. Without this the rule below flags the
+    COMMENT that explains the rule, and an author's obvious fix is to
+    delete the explanation — which is the one thing that must survive.
+    Only whole-line comments are dropped, so a trailing `#` inside a
+    quoted string is left alone rather than guessed at.
+    """
+    return "\n".join(
+        line for line in run.splitlines() if not line.lstrip().startswith("#")
+    )
+
 
 @pytest.fixture
-def recorder(tmp_path, monkeypatch):
+def pinned_calibration():
+    """Pin the machine correction at exactly 1.0 for this test.
+
+    ‼ Without it, every probe here that calls the real
+    `assert_latency_within` is comparing against `budget * scale`, and
+    the scale is how fast the box is. The margins below are chosen for a
+    readable failure message, not to survive a slow machine: measured on
+    the development box the scale sat at 3.40x-3.79x against an
+    effective limit of 9, so the probes pass here and would fail on a
+    box a little over twice as slow. `test_benchmark_calibration.py`
+    pins `_measured` for the same reason.
+
+    ‼ It does NOT take `monkeypatch`, and the reason is in that file's
+    `_clean_calibration` docstring: fixtures finalize in reverse order
+    of setup, so a monkeypatch-based undo would run after this restore
+    and put the pin back. It also restores `_scale_used`, which is
+    SESSION state the terminal-summary hook reads — resetting it
+    without restoring erases, for the whole run, the fact that some
+    earlier suite asserted a scaled budget.
+    """
+    state = calibration.calibration_state()
+    previous = os.environ.pop(calibration.ABSOLUTE_MODE_ENV, None)
+    calibration.reset_calibration_cache()
+    calibration._measured = calibration.CALIBRATION_REFERENCE_SECONDS
+    try:
+        yield
+    finally:
+        calibration.reset_calibration_cache()
+        calibration.restore_calibration_state(state)
+        if previous is None:
+            os.environ.pop(calibration.ABSOLUTE_MODE_ENV, None)
+        else:
+            os.environ[calibration.ABSOLUTE_MODE_ENV] = previous
+
+
+@pytest.fixture
+def recorder(tmp_path, monkeypatch, pinned_calibration):
     """Point the recorder at a fresh file and hand back a reader."""
     path = tmp_path / "records.jsonl"
     monkeypatch.setenv(record.RECORD_ENV, str(path))
@@ -104,11 +163,68 @@ def _throughput(regression: float = 100.0) -> ThroughputBudget:
 
 
 class TestTheRecorder:
-    def test_it_is_inert_when_the_variable_is_unset(self, tmp_path, monkeypatch):
+    def test_it_is_inert_when_the_variable_is_unset(
+        self, tmp_path, monkeypatch, pinned_calibration
+    ):
+        """‼ Asserted by spying on `open`, not by checking a path.
+
+        The first version of this test asserted that a tmp_path file the
+        recorder was never told about did not exist — true whatever the
+        recorder did, so it passed vacuously. What has to hold is that
+        NOTHING is written: an ordinary `pytest tests/benchmarks/`, a
+        developer's run and both required CI gates all run with the
+        variable unset, and a recorder that wrote anyway would be a new
+        file appearing in everyone's working tree.
+        """
         monkeypatch.delenv(record.RECORD_ENV, raising=False)
-        path = tmp_path / "nothing.jsonl"
+        monkeypatch.chdir(tmp_path)
+        opened = []
+        real_open = builtins.open
+
+        def spy(file, mode="r", *args, **kwargs):
+            if "w" in mode or "a" in mode or "+" in mode:
+                opened.append((str(file), mode))
+            return real_open(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", spy)
         assert_latency_within(0.1, _latency(), "quiet")
-        assert not path.exists()
+        assert_throughput_at_least(500.0, _throughput(), "quiet rate")
+        monkeypatch.setattr(builtins, "open", real_open)
+        assert opened == [], opened
+        assert list(tmp_path.iterdir()) == []
+
+    def test_the_spy_would_have_seen_a_write(self, tmp_path, monkeypatch):
+        """The positive control for the test above.
+
+        A spy that never fires is indistinguishable from a recorder that
+        never writes, so the same spy is pointed at a recorder that IS
+        switched on and must see the append.
+        """
+        path = tmp_path / "records.jsonl"
+        monkeypatch.setenv(record.RECORD_ENV, str(path))
+        record.reset_for_testing()
+        opened = []
+        real_open = builtins.open
+
+        def spy(file, mode="r", *args, **kwargs):
+            if "a" in mode:
+                opened.append(str(file))
+            return real_open(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", spy)
+        try:
+            record.record_comparison(
+                metric=ab.LATENCY_METRIC,
+                label="control",
+                observed=0.1,
+                budget=1.0,
+                kind="regression budget",
+                scale=1.0,
+            )
+        finally:
+            monkeypatch.setattr(builtins, "open", real_open)
+            record.reset_for_testing()
+        assert opened == [str(path)], opened
 
     def test_a_latency_comparison_is_recorded(self, recorder):
         assert_latency_within(0.25, _latency(1.0), "Case creation latency")
@@ -298,15 +414,60 @@ class TestTheDecisionRule:
         assert verdict.compared[0].ratio == pytest.approx(100.0 / 140.0)
         assert verdict.ok
 
-    def test_nothing_in_common_is_a_failure_not_a_pass(self):
-        """‼ The one outcome a relative gate must never call green."""
-        verdict = ab.compare(
-            _rows(("gone", ab.LATENCY_METRIC, 0.01)),
-            _rows(("new", ab.LATENCY_METRIC, 0.01)),
-            suite_threshold=1.2,
-        )
+    def test_a_head_that_lost_the_suite_is_a_failure_not_a_pass(self):
+        """‼ The gate narrowing in silence — the outcome it must never
+        call green.
+
+        Both benchmark steps are `continue-on-error`, so a head-side
+        crash does not red its own step: it arrives here as a handful of
+        matched rows whose "suite median" is their own noise. Probed on
+        the real comparator before this rule existed, base 50 / head 1
+        returned `ok=True` with `median=1.0`.
+        """
+        base = _suite(lambda i: 1.0)
+        head = dict(list(base.items())[:1])
+        verdict = ab.compare(base, head, suite_threshold=1.30)
         assert not verdict.ok
-        assert "nothing was compared" in verdict.failures[0]
+        assert not verdict.gated
+        assert "1 benchmarks against the base's 50" in verdict.failures[0]
+
+    def test_a_reorganised_suite_is_reported_and_not_gated(self):
+        """‼ The same collapse from a legitimate cause, told apart.
+
+        A renamed or moved benchmark file changes every `nodeid` at
+        once, so nothing matches — but the head still MEASURED the
+        suite. Failing that would leave the pull request no exit, which
+        is the reason a single deleted benchmark is already reported
+        rather than failed. The discriminator is the head's own row
+        count, not the matched count.
+        """
+        base = _suite(lambda i: 1.0)
+        head = {
+            (f"moved/{k[0]}", k[1], k[2]): r._replace(key=(f"moved/{k[0]}", k[1], k[2]))
+            for k, r in base.items()
+        }
+        verdict = ab.compare(base, head, suite_threshold=1.30)
+        assert verdict.ok
+        # ‼ Green is not the claim. The claim is that it says so.
+        assert not verdict.gated
+        assert "NOT GATED" in verdict.notes[0]
+        rendered = ab.render(
+            verdict, base_label="b", head_label="h", suite_threshold=1.30
+        )
+        assert "not gated" in rendered and "NOT GATED" in rendered
+
+    def test_deleting_one_module_still_gates(self):
+        """The floor is not sized to catch an ordinary deletion.
+
+        The five benchmark modules hold 15, 13, 9, 7 and 6 of the 50
+        rows, so deleting the largest leaves 0.70 of the base — well
+        above the floor, and still gated.
+        """
+        base = _suite(lambda i: 1.0)
+        head = dict(list(base.items())[:35])
+        verdict = ab.compare(base, head, suite_threshold=1.30)
+        assert verdict.gated and verdict.ok
+        assert verdict.coverage == pytest.approx(0.70)
 
     def test_an_empty_base_is_a_failure_not_a_pass(self):
         verdict = ab.compare(
@@ -339,15 +500,25 @@ class TestTheDecisionRule:
 
     @pytest.mark.parametrize("bad", [0.0, -1.0, float("inf"), float("nan")])
     def test_an_unusable_observation_is_reported_not_ratioed(self, bad):
-        verdict = ab.compare(
-            _rows(("x", ab.LATENCY_METRIC, bad)),
-            _rows(("x", ab.LATENCY_METRIC, 0.01)),
-            suite_threshold=1.2,
-        )
-        assert [row.label for row, _ in verdict.unusable] == ["x"]
-        # Nothing comparable is left, so the verdict is the empty-comparison
-        # failure rather than a green.
-        assert not verdict.ok
+        """One broken row is dropped from the ratio and named, and the
+        other forty-nine still decide."""
+        base = _suite(lambda i: 1.0)
+        victim = list(base)[0]
+        base = dict(base)
+        base[victim] = base[victim]._replace(observed=bad)
+        verdict = ab.compare(base, _suite(lambda i: 1.0), suite_threshold=1.30)
+        assert [row.label for row, _ in verdict.unusable] == ["b00"]
+        assert len(verdict.compared) == 49
+        assert verdict.gated and verdict.ok
+
+    @pytest.mark.parametrize("bad", [0.0, -1.0, float("inf"), float("nan")])
+    def test_a_suite_of_unusable_observations_is_not_a_pass(self, bad):
+        """‼ And when they are ALL broken, the gate does not report a
+        clean run: nothing is comparable, so nothing was gated."""
+        base = {k: r._replace(observed=bad) for k, r in _suite(lambda i: 1.0).items()}
+        verdict = ab.compare(base, _suite(lambda i: 1.0), suite_threshold=1.30)
+        assert len(verdict.unusable) == 50
+        assert not verdict.gated
 
     def test_a_metric_that_changed_kind_is_not_compared(self):
         verdict = ab.compare(
@@ -364,6 +535,7 @@ class TestLoading:
 
     def _row(self, **overrides):
         row = {
+            "v": record.RECORD_FORMAT_VERSION,
             "nodeid": "t.py::test_a",
             "label": "l",
             "occurrence": 0,
@@ -392,6 +564,48 @@ class TestLoading:
         self._write(b, [self._row(metric=ab.THROUGHPUT_METRIC, observed=90.0)])
         (row,) = ab.load([a, b]).values()
         assert row.observed == pytest.approx(120.0)
+
+    def test_the_reduction_does_not_depend_on_argv_order(self, tmp_path):
+        """‼ A detector whose answer depends on its command line.
+
+        `min`/`max` are not order-invariant across a NaN — `min(nan, x)`
+        is `nan` and `min(x, nan)` is `x` — so before this was fixed the
+        same two record files reduced to a usable number or an unusable
+        one depending only on which was passed first.
+        """
+        a, b = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
+        self._write(a, [self._row(observed=float("nan"))])
+        self._write(b, [self._row(observed=0.011)])
+        forward = list(ab.load([a, b]).values())[0].observed
+        backward = list(ab.load([b, a]).values())[0].observed
+        assert forward == backward == pytest.approx(0.011)
+
+    def test_an_all_non_finite_key_survives_as_unusable(self):
+        """Dropping the non-finite values must not drop the ROW: a key
+        that vanishes reads as a missing benchmark, and a missing
+        benchmark is not reported the same way a broken one is."""
+        assert math.isnan(ab._better(ab.LATENCY_METRIC, float("nan"), float("nan")))
+
+    def test_an_unsupported_format_version_is_refused(self, tmp_path):
+        """‼ The base side is an arbitrary commit on `main`.
+
+        A base that carries the recorder but writes an older row shape
+        must be SKIPPED by the workflow, not parsed. This is the
+        backstop for when it is not: refuse loudly rather than
+        mis-reading a renamed field as a missing one.
+        """
+        path = tmp_path / "a.jsonl"
+        self._write(path, [self._row(v=99)])
+        with pytest.raises(ValueError, match="record format version"):
+            ab.load([path])
+
+    def test_a_record_with_no_version_is_refused(self, tmp_path):
+        path = tmp_path / "a.jsonl"
+        row = self._row()
+        del row["v"]
+        self._write(path, [row])
+        with pytest.raises(ValueError, match="record format version"):
+            ab.load([path])
 
     def test_a_malformed_line_raises_rather_than_being_skipped(self, tmp_path):
         """Skipping it would report a broken recorder as a missing
@@ -442,6 +656,18 @@ class TestLoading:
             ab.LATENCY_METRIC,
             ab.THROUGHPUT_METRIC,
         }
+
+
+def test_the_comparator_reads_what_the_recorder_writes():
+    """‼ The two halves of the version handshake, pinned to each other.
+
+    `record.py` stamps `RECORD_FORMAT_VERSION` on every row and
+    `ab.py` lists what it can read. Bumping one without the other makes
+    the workflow skip every comparison (green, silent, gate off) or the
+    comparator refuse every row (red, every pull request). Neither is
+    discoverable from either file alone.
+    """
+    assert record.RECORD_FORMAT_VERSION in ab.SUPPORTED_RECORD_VERSIONS
 
 
 def test_the_metric_names_are_the_same_on_both_sides():
@@ -521,8 +747,16 @@ class TestWorkflowWiring:
     def test_it_does_not_set_absolute_mode(self):
         """The product targets are the nightly's question. Setting them
         here would fail most benchmarks on both sides and measure nothing
-        new."""
-        for step in self._job()["steps"]:
+        new.
+
+        ‼ Job level AND step level. GitHub merges the two, so a guard
+        that reads only `steps[].env` is blind to the place someone would
+        most naturally put it — `FM_AB_SUITE` already lives in this job's
+        `env:` block, so that is the block a reader reaches for.
+        """
+        job = self._job()
+        assert "FM_BENCHMARK_ABSOLUTE" not in (job.get("env") or {})
+        for step in job["steps"]:
             assert "FM_BENCHMARK_ABSOLUTE" not in (step.get("env") or {})
 
     def test_the_threshold_is_declared_once_and_is_clear_of_the_noise(self):
@@ -545,10 +779,97 @@ class TestWorkflowWiring:
         (step,) = [
             step
             for step in self._job()["steps"]
-            if "tests.wallclock.ab" in (step.get("run") or "")
+            if "python -m tests.wallclock.ab" in (step.get("run") or "")
         ]
         assert "--suite-threshold" in step["run"]
         assert "FM_AB_SUITE" in step["run"]
+
+    def test_no_step_pipes_into_a_quiet_grep(self):
+        """‼ `set -o pipefail` plus `| grep -q` can turn a gate off and
+        report green.
+
+        `grep -q` exits on its first match and closes the pipe; the
+        producer dies with SIGPIPE and pipefail propagates 141, so an
+        `if` around it silently takes the ELSE branch. Measured:
+        `yes | grep -q y` under pipefail exits 141.
+
+        The base-comparability probe was written that way. Measured on
+        this repository with the real producer, `git show <blob> |
+        grep -q .`:
+
+            tests/wallclock/record.py      6.0 KB   rc=0    (12/12)
+            .../case_repository.py        65.2 KB   rc=0
+            .../modules/auth/api/auth.py  74.4 KB   rc=141  (12/12)
+            .../investigation/schemas.py  80.8 KB   rc=0    (12/12)
+            docs/reference/api/openapi.json  501 KB rc=141
+
+        So it does not fire at today's 6 KB, it does fire well within
+        the size an ordinary source file reaches, and it is **not
+        predictable from size** — 74 KB fires every time and 81 KB never
+        does. Banned outright rather than reasoned about per site for
+        exactly that reason: the failure mode is the worst on offer —
+        every pull request reports "the base predates the recorder", the
+        job is green, and the gate is off with nobody told — and no
+        author can tell locally whether their own site is one of the
+        ones that fires.
+        """
+        scanned, offenders = [], []
+        for job_name, job in self._workflow()["jobs"].items():
+            for step in job["steps"]:
+                code = _shell_code(step.get("run") or "")
+                # Scoped to the hazard's actual condition. Without
+                # `pipefail` a SIGPIPE producer does not decide the
+                # pipeline's status, so `| grep -q` there is safe — and
+                # `benchmarks / Parse benchmark results` uses exactly
+                # that form. Banning it everywhere would have cost one
+                # correct site and taught the next reader to widen the
+                # allowlist instead of the rule.
+                if "pipefail" not in code:
+                    continue
+                scanned.append((job_name, step.get("name")))
+                if PIPED_INTO_QUIET_GREP.search(code):
+                    offenders.append((job_name, step.get("name")))
+        # A scan that looked nowhere reports a clean workflow exactly
+        # like a clean workflow does.
+        assert scanned, "no step in this workflow sets pipefail — scan looked nowhere"
+        assert not offenders, (
+            "these steps pipe into `grep -q`, which exits 141 under pipefail "
+            f"once the producer outruns the pipe buffer: {offenders}"
+        )
+
+    @pytest.mark.parametrize(
+        "script",
+        [
+            "git show x | grep -q 'y'",
+            "cat f \\\n  | grep -q needle",
+            "printf x | grep -qE 'a|b'",
+            "cat f | grep -i -q needle",
+        ],
+    )
+    def test_the_quiet_grep_scan_finds_what_it_is_for(self, script):
+        """‼ The positive control.
+
+        A scan whose vocabulary has drifted reports a clean workflow
+        exactly like a clean workflow does — and this one has to survive
+        line continuations and clustered flags, which is how the
+        original was written.
+        """
+        assert PIPED_INTO_QUIET_GREP.search(script), script
+
+    @pytest.mark.parametrize(
+        "script",
+        [
+            "grep -q needle file",
+            "git show x > f\ngrep -q needle f",
+            "cat f | grep -c needle > /dev/null",
+            "cat f | grep needle | head -1",
+        ],
+    )
+    def test_the_quiet_grep_scan_leaves_the_safe_forms_alone(self, script):
+        """The over-approximation's cost, counted rather than assumed:
+        an unpiped `grep -q`, a file read, and a counting grep are all
+        safe and must not be flagged."""
+        assert not PIPED_INTO_QUIET_GREP.search(script), script
 
     def test_the_verdict_survives_the_reporting_steps(self):
         """‼ The comparison step must not abort the job before the summary
@@ -557,7 +878,9 @@ class TestWorkflowWiring:
         a later step instead."""
         steps = self._job()["steps"]
         names = [step.get("name") for step in steps]
-        compare = next(s for s in steps if "tests.wallclock.ab" in (s.get("run") or ""))
+        compare = next(
+            s for s in steps if "python -m tests.wallclock.ab" in (s.get("run") or "")
+        )
         verdict = next(s for s in steps if s.get("name") == "Verdict")
         assert "status=" in compare["run"] and "GITHUB_OUTPUT" in compare["run"]
         assert "exit 1" in verdict["run"]
@@ -593,14 +916,25 @@ class TestWorkflowWiring:
         # And it runs whatever happened above it, or the skip is silent.
         assert report["if"] == "always()"
 
-    def test_a_base_without_the_recorder_is_detected_not_assumed(self):
-        """A base that predates the recorder produces an empty file, which
-        is indistinguishable from "nothing regressed". The workflow decides
-        by INSPECTING the base tree, before spending twenty minutes of
-        runner time on a comparison it cannot make."""
+    def test_a_base_that_cannot_take_part_is_detected_not_assumed(self):
+        """A base that cannot produce readable records yields an empty
+        file, which is indistinguishable from "nothing regressed". The
+        workflow decides by INSPECTING the base tree, before spending
+        twenty minutes of runner time on a comparison it cannot make.
+
+        ‼ It tests the record FORMAT, not a function name. A base can
+        carry `record_comparison` and still write a shape this head
+        cannot parse — the comparator then hard-fails, and every pull
+        request is red until `main` catches up. That is the same
+        mis-report this probe exists to prevent, pointing the other way.
+        """
         (step,) = [step for step in self._job()["steps"] if step.get("id") == "base"]
-        assert "record_comparison" in step["run"]
+        assert "RECORD_FORMAT_VERSION" in step["run"]
+        assert "SUPPORTED_RECORD_VERSIONS" in step["run"]
         assert "comparable=false" in step["run"]
+        # Both skip causes carry their own reason, because printing one
+        # of them for the other is how a reader stops trusting the line.
+        assert step["run"].count("reason=") == 2
         # And every expensive step is gated on that answer.
         for name in ("Install dependencies (base)", "Run benchmarks at base"):
             gated = next(s for s in self._job()["steps"] if s.get("name") == name)

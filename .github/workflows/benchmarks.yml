@@ -24,8 +24,9 @@ on:
         default: false
         type: boolean
 
-# Default-deny for the GITHUB_TOKEN. The benchmarks job overrides this with
-# the writes it needs to post its PR comment; the other two only read.
+# Default-deny for the GITHUB_TOKEN. Two jobs override it with the writes
+# they need to post their pull-request comment — `benchmarks` and
+# `ab-regression`; `nightly-absolute` and `memory-benchmarks` only read.
 permissions:
   contents: read
 
@@ -294,6 +295,13 @@ jobs:
       # median, so re-anchor from ~20 green `main` runs the way
       # `tests/benchmarks/budgets.py` was anchored.
       #
+      # The job always runs base first, so an earlier-versus-later
+      # offset does not cancel. Measured on the same null, forward
+      # pairs only: the later run is 1.038x slower by geometric mean.
+      # That is already inside the distribution above — the worst
+      # observation, 1.216x, IS a forward pair, and forward-only is 0
+      # red of 66 — and it biases toward false positives, not misses.
+      #
       # Two more sensitive-looking rules were measured on the same data
       # and rejected by their own numbers — a per-test residual rule
       # (null range 1.18x-3.38x, so a clean threshold is ~3.5x, which
@@ -344,12 +352,43 @@ jobs:
           # reported as skipped rather than mis-reported as either. It
           # also saves the twenty minutes of runner time a comparison
           # that cannot happen would otherwise spend.
-          if git show "${BASE_SHA}:tests/wallclock/assertions.py" 2>/dev/null \
-               | grep -q 'record_comparison'; then
+          #
+          # ‼ Read the base's file into a FILE and grep the file. Never
+          # `git show ... | grep -q` here: this step runs under
+          # `pipefail`, `grep -q` exits on its first match and closes the
+          # pipe, the producer dies with SIGPIPE, and pipefail propagates
+          # 141 — so the `if` takes the else branch and the gate reports
+          # "the base predates the recorder" on EVERY pull request, green
+          # and silent. Measured on this repository with the real
+          # producer: `git show <blob> | grep -q .` returns 141 for a
+          # 74 KB source file (12 of 12 runs) and 0 for today's 6 KB
+          # `record.py`. It is not predictable from size either — an
+          # 81 KB file returned 0 every time — so no author can tell
+          # locally whether their own site is one of the ones that
+          # fires. `tests/unit/ci/test_benchmark_ab.py` bans the form.
+          #
+          # ‼ And test the record FORMAT, not a function name. The base
+          # is an arbitrary commit on `main`, so a base that carries the
+          # recorder but writes an older row shape is a hard parse
+          # failure in the comparator — every pull request red until main
+          # catches up, which is the same mis-report this probe exists to
+          # prevent, in the other direction.
+          base_record="${RUNNER_TEMP}/base_record.py"
+          git show "${BASE_SHA}:tests/wallclock/record.py" > "${base_record}" \
+            2>/dev/null || : > "${base_record}"
+          base_version="$(sed -n \
+            's/^RECORD_FORMAT_VERSION *= *\([0-9][0-9]*\).*/\1/p' \
+            "${base_record}" | head -n 1)"
+          if [ -z "${base_version}" ]; then
+            echo 'comparable=false' >> "$GITHUB_OUTPUT"
+            echo "reason=The base commit \`${BASE_SHA}\` predates the A/B recorder, so it produces no measurements to compare against. This clears itself once the base branch carries \`tests/wallclock/record.py\`; a pull request branched from an older \`main\` clears it by merging \`main\` in." >> "$GITHUB_OUTPUT"
+            echo "base ${BASE_SHA} predates the A/B recorder" >&2
+          elif python -c 'import sys; from tests.wallclock.ab import SUPPORTED_RECORD_VERSIONS; sys.exit(0 if int(sys.argv[1]) in SUPPORTED_RECORD_VERSIONS else 1)' "${base_version}"; then
             echo 'comparable=true' >> "$GITHUB_OUTPUT"
           else
             echo 'comparable=false' >> "$GITHUB_OUTPUT"
-            echo "base ${BASE_SHA} predates the A/B recorder" >&2
+            echo "reason=The base commit \`${BASE_SHA}\` writes record format v${base_version}, which this head's comparator does not read. A record-schema change skips the comparison for the commits between it and the next base that carries the new shape, rather than failing them." >> "$GITHUB_OUTPUT"
+            echo "base ${BASE_SHA} writes record format v${base_version}" >&2
           fi
 
       - name: Install dependencies (base)
@@ -438,6 +477,12 @@ jobs:
         # first for the second would explain away a broken job.
         env:
           COMPARABLE: ${{ steps.base.outputs.comparable }}
+          # Why it cannot take part, decided where it was detected. A
+          # skip has more than one cause now (a base older than the
+          # recorder, a base writing a record format this head cannot
+          # read) and printing one cause for the other is how a reader
+          # stops trusting the line.
+          SKIP_REASON: ${{ steps.base.outputs.reason }}
         run: |
           {
             if [ "${COMPARABLE}" = 'true' ]; then
@@ -446,11 +491,7 @@ jobs:
             elif [ "${COMPARABLE}" = 'false' ]; then
               echo '### Benchmark A/B against the merge base'
               echo
-              echo "**Skipped.** The base commit \`${BASE_SHA}\` predates the"
-              echo 'A/B recorder, so it produces no measurements to compare'
-              echo 'against. This clears itself once the base branch carries'
-              echo '`tests/wallclock/record.py`; a pull request branched from'
-              echo 'an older `main` clears it by merging `main` in.'
+              echo "**Skipped.** ${SKIP_REASON}"
             else
               echo '### Benchmark A/B against the merge base'
               echo

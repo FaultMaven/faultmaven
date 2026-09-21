@@ -12,7 +12,9 @@ provenance is the set of runs it was measured from.
 ``record.py`` hangs off the same single comparison site: under
 ``FM_WALLCLOCK_RECORD`` it writes every comparison's measured statistic to
 a JSONL file, which is what the benchmark workflow's A/B job (#1567)
-compares between the base and the head. Unset, it does nothing.
+compares between the base and the head. Unset, it does nothing. Both
+suites write; only ``tests/benchmarks/`` is compared, because that is the
+tree the A/B job runs.
 """
 
 from .assertions import assert_latency_within, assert_throughput_at_least

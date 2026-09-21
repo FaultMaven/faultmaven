@@ -63,6 +63,21 @@ from typing import Dict, Tuple
 #: Names the JSONL file each comparison is appended to. Unset = inert.
 RECORD_ENV = "FM_WALLCLOCK_RECORD"
 
+#: The row schema's version, written into every record as ``v``.
+#:
+#: ‼ Bump this whenever a field is renamed, removed, or changes meaning.
+#: The A/B job compares a HEAD checkout against a BASE checkout that may
+#: be any commit on ``main``, and the two trees' ``record.py`` files are
+#: therefore different files. Without a version the base can carry the
+#: recorder and still write a shape the head's comparator cannot read —
+#: which arrives as a hard parse failure and reds every pull request
+#: until ``main`` catches up. The workflow reads this constant out of the
+#: BASE tree and skips the comparison when the head cannot read it, so a
+#: schema change costs a few skipped comparisons instead of a red wall.
+#: ``tests/wallclock/ab.py``'s ``SUPPORTED_RECORD_VERSIONS`` is the other
+#: half, and a test pins them to each other.
+RECORD_FORMAT_VERSION = 1
+
 #: ``observed`` is a duration in seconds; smaller is better.
 LATENCY_METRIC = "latency_seconds"
 
@@ -137,6 +152,7 @@ def record_comparison(
         occurrence = _occurrences.get(key, 0)
         _occurrences[key] = occurrence + 1
         row = {
+            "v": RECORD_FORMAT_VERSION,
             "nodeid": nodeid,
             "label": label,
             "occurrence": occurrence,

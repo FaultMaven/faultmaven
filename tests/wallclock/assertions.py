@@ -17,8 +17,15 @@ if a further spelling appears.
 
 Being the one site is also what makes #1567's A/B possible without a
 per-suite vocabulary: each function records the statistic it was handed
-(``record.py``) before asserting it, so the base/head comparison sees
-every timed site in both suites and cannot fall behind a new test.
+(``record.py``) before asserting it, so nothing has to teach the
+recorder a suite's spellings and it cannot fall behind a new test.
+
+‼ Recorded is not compared. Both suites write records, but the A/B job
+runs ``pytest tests/benchmarks/`` only, so ``tests/performance/``'s
+comparisons are recorded under ``FM_WALLCLOCK_RECORD`` and no job ever
+diffs them. Pointing the A/B at that tree as well is a separate decision
+— it would widen what the median is taken over, which the #1567 null
+experiment measured at 50 benchmarks a side.
 """
 
 from typing import Tuple
