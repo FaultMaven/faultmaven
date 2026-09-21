@@ -43,6 +43,18 @@ recording the p95 it was anchored from. That file is the source of truth —
 this guide deliberately does not restate 50 numbers, because the copy is
 what goes stale.
 
+The A/B gate's two thresholds (below) are the third and last place a
+number lives: the `ab-regression` job's `env:` block in
+`.github/workflows/benchmarks.yml`. There is no separate baseline file —
+`.github/benchmark_baselines/baseline_v1.json` and the "Baseline
+Management" recipe that pointed at it were deleted by #1567. Nothing had
+ever read the file, its numbers had drifted out of agreement with
+`budgets.py` (it claimed a 200 ms target for case creation where the
+asserted product target is 1000 ms), and the mechanism it sketched —
+tracked history plus a change-point test — is not the one that got built.
+The A/B compares against the base commit, which is current by
+construction and needs nothing stored.
+
 Memory thresholds are the exception: they are plain assertions in
 `test_memory_usage.py`, never calibrated and never re-anchored, because
 megabytes do not move with machine throughput.
@@ -373,11 +385,12 @@ the gate quietly weakens. Err high.
 
 ## CI Integration
 
-`.github/workflows/benchmarks.yml` has three jobs:
+`.github/workflows/benchmarks.yml` has four jobs:
 
 | Job | Runs on | Asserts |
 |-----|---------|---------|
 | `Run Performance Benchmarks` | every PR to main, every push to main, manual dispatch | **calibrated regression anchors** (2-3x measured cost) |
+| `A/B Against the Merge Base` | every PR to main | this head **against its own base**, measured on one runner (#1567) |
 | `Absolute Wall-Clock Targets (nightly)` | the 02:00 UTC schedule, or a manual dispatch with `absolute_targets` | the **raw product targets** (`FM_BENCHMARK_ABSOLUTE=1`) |
 | `Memory Usage Benchmarks` | all of the above | megabytes, never scaled |
 
@@ -395,9 +408,107 @@ Results are:
 - Commented on PRs with summary
 - Reported in GitHub Actions summary, with the calibration line
 
+### The A/B against the merge base (#1567)
+
+The three absolute jobs above share a ceiling, and #1567 measured it:
+against the 50 re-anchored budgets, **none** fails on a 30% regression and
+the smallest regression any of them catches is about **115%**. #1556 moved
+the median headroom from roughly 38x to 2.6x — real work — and that is
+still an order of magnitude short of the 30% the gate was asked for.
+
+Tightening the numbers cannot close it. These are absolute budgets on a
+shared runner whose run-to-run variance is itself tens of percent (#908
+measured the whole pytest process scaling 1.28x between two runs of
+*identical code*), so a budget tight enough to fail at 30% would flake —
+and a flaky performance gate gets muted, which is how #908 began.
+
+`ab-regression` asks a different question. It checks the **base commit out
+beside the head in the same job**, runs the same suite twice on the same
+runner minutes apart, and compares. Machine speed, co-tenant load and
+thermal state are shared by both sides and cancel; what is left is the
+code.
+
+**How a number gets from a benchmark into the comparison.**
+`assert_latency_within` / `assert_throughput_at_least` — the single
+comparison site both suites go through — append the statistic they were
+handed to `$FM_WALLCLOCK_RECORD` as JSONL, *before* the assertion, so a
+benchmark already over its absolute budget still contributes. The variable
+is unset everywhere else, so an ordinary run is byte-for-byte unaffected.
+`tests/wallclock/ab.py` joins the two files on
+`(nodeid, label, occurrence)`.
+
+**The rule.** Every matched benchmark yields a ratio in which above 1.0 is
+worse (head/base for a latency, base/head for a rate). The gate is the
+**median** of those ratios, and `FM_AB_SUITE` is where the threshold
+lives. That answers one question — *did the data layer get slower
+overall* — which is #908's uniform scaling measured directly instead of
+corrected for.
+
+**The threshold comes from a null experiment**, not from the number in the
+issue title: 12 full runs of the suite on one box with identical code on
+both sides, 132 ordered pairs, so every ratio measured was pure noise.
+That median ranged **0.822x to 1.216x**. The shipped 1.30 clears the worst
+of that by 7% and was red on 0 of the 132.
+
+**Detection is probabilistic**, because the noise is on the same scale as
+the signal. Injecting a uniform regression into all 132 real pairs:
+
+| threshold | red on a clean pair | +25% | +30% | +40% | +50% | +60% |
+|---|---|---|---|---|---|---|
+| 1.20 | 1/132 | 69% | 85% | 98% | 100% | 100% |
+| 1.25 | 0/132 | 50% | 69% | 92% | 99% | 100% |
+| **1.30 (shipped)** | **0/132** | **31%** | **50%** | **83%** | **97%** | **100%** |
+| 1.40 | 0/132 | 8% | 17% | 50% | 80% | 96% |
+
+So this is where a uniform slowdown became **detectable at all**, not
+where it became certain: the absolute budgets need **+147%** for the same
+call. 1.30 rather than 1.25 because a flaky performance gate gets muted
+and 1.25 sits 3% from the worst thing measured. Tightening it is a
+re-anchoring, not a tweak: every run prints its own median, so take the
+step down from ~20 green `main` runs the way `tests/benchmarks/budgets.py`
+was anchored, not from an argument.
+
+**Two more sensitive-looking rules were measured on the same data and
+rejected by their own numbers**, and that is worth knowing before anyone
+proposes them again:
+
+| rejected rule | its null noise | its signal | verdict |
+|---|---|---|---|
+| per-test: max of `ratio / median` | 1.18x-3.38x | a clean threshold is ~3.5x | every absolute budget already fails between 2.47x and 3.58x, so it is dominated |
+| count: "K of 50 at least R times slower" | at R=1.30, up to **19** of 50 | slowing **half** the suite by 30% gives **15** | signal below noise; no K separates them |
+
+So the per-test residual is printed and the table is ranked by it — that
+is how you read a red median — but it gates nothing.
+
+**What the median cannot see**, stated rather than left to be
+rediscovered: a regression confined to a minority of the suite. A quarter
+of these benchmarks 30% slower moves the median to about 1.05. That class
+stays with the absolute budgets, exactly as it was before this job
+existed.
+
+**‼ Read a red here for what it is.** These benchmarks are SQLite CRUD
+against an in-memory database at single-digit milliseconds, while
+FaultMaven's user-perceived latency is dominated by LLM calls measured in
+seconds — a 30% regression here is about 1.7 ms inside a multi-second
+turn. This is a **code-health detector**: it answers "did this change make
+the data layer do more work". It does not answer "did this change make the
+product slower for anyone", and nothing in this file does.
+
+**A base that predates the recorder cannot take part.** The job detects
+that by reading the base tree, reports the comparison as skipped, and
+spends no runner time on it. A pull request branched from an older `main`
+clears it by merging `main` in.
+
 ## Regression Detection
 
-If a benchmark fails:
+**If the A/B job fails**, every benchmark moved together — that is the
+only thing it fails on. Look for something added to a path they all share:
+an ORM event listener, a logging or tracing hook, a validator on every
+write. The table in the job summary is ranked worst-first and will usually
+point at it. The other side of the comparison is the base commit, already
+green on `main`, so the difference is this pull request's.
+
+**If a benchmark fails its absolute budget:**
 
 1. **Read the calibration line first**: on the nightly-absolute job a raw
    ratio well above 1.0 means the runner, not the code. On the calibrated
@@ -454,29 +565,6 @@ pip install py-spy
 py-spy record -o profile.svg -- python your_script.py
 ```
 
-## Baseline Management
-
-Baselines are stored in `.github/benchmark_baselines/baseline_v1.json`.
-
-### Updating Baselines
-
-When legitimate changes affect performance:
-
-1. Run benchmarks: `pytest tests/benchmarks/ -m benchmark -v`
-2. Verify new results are acceptable
-3. Update baseline file with new values
-4. Commit with explanation:
-   ```
-   git commit -m "perf: update baselines after X feature
-
-   - Case creation now includes Y, adding ~10ms
-   - Memory usage increased due to Z caching"
-   ```
-
-### Baseline Version History
-
-- `baseline_v1.json`: Initial baseline (pre-shim integration)
-
 ## Test Database
 
 Benchmarks use SQLite in-memory for consistency:
@@ -489,7 +577,7 @@ benchmarks against a PostgreSQL container for production validation.
 
 ## Future Enhancements
 
-- [ ] Automated regression detection (compare to baselines in CI)
+- [x] Automated regression detection — A/B against the merge base (#1567)
 - [ ] Performance dashboard (Grafana/Prometheus)
 - [ ] Database query profiling
 - [ ] Network latency simulation

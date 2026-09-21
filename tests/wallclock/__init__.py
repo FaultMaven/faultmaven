@@ -8,6 +8,11 @@ to the same rule.
 
 Each suite keeps its own ``budgets.py`` table, because a budget's
 provenance is the set of runs it was measured from.
+
+``record.py`` hangs off the same single comparison site: under
+``FM_WALLCLOCK_RECORD`` it writes every comparison's measured statistic to
+a JSONL file, which is what the benchmark workflow's A/B job (#1567)
+compares between the base and the head. Unset, it does nothing.
 """
 
 from .assertions import assert_latency_within, assert_throughput_at_least
@@ -32,12 +37,21 @@ from .calibration import (
     restore_calibration_state,
     scale_was_used,
 )
+from .record import (
+    LATENCY_METRIC,
+    RECORD_ENV,
+    THROUGHPUT_METRIC,
+    record_comparison,
+)
 
 __all__ = [
     "ABSOLUTE_MODE_ENV",
     "CALIBRATION_REFERENCE_SECONDS",
+    "LATENCY_METRIC",
     "MAX_REGRESSION_MULTIPLE",
     "MIN_REGRESSION_MULTIPLE",
+    "RECORD_ENV",
+    "THROUGHPUT_METRIC",
     "Budget",
     "LatencyBudget",
     "ThroughputBudget",
@@ -50,6 +64,7 @@ __all__ = [
     "collect_budgets",
     "describe_calibration",
     "measured_calibration",
+    "record_comparison",
     "reset_calibration_cache",
     "restore_calibration_state",
     "scale_was_used",
