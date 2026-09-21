@@ -226,9 +226,27 @@ class TestTheRecorder:
             record.reset_for_testing()
         assert opened == [str(path)], opened
 
+    def test_the_calibration_is_actually_pinned(self, recorder):
+        """‼ The fix for an unpinned calibration needs its own check.
+
+        `pinned_calibration` is what stops the probes here comparing
+        against `budget * how-fast-this-box-is`. If it ever stopped
+        pinning, every margin below would quietly go back to being
+        machine-dependent and nothing would say so — which is the defect
+        it was added to remove. The recorder writes the scale it used,
+        so the pin is observable.
+        """
+        assert_latency_within(0.25, _latency(1.0), "pinned")
+        (row,) = recorder()
+        assert row["scale"] == pytest.approx(1.0), (
+            "pinned_calibration did not pin; every margin in this file is "
+            "then a function of the machine"
+        )
+
     def test_a_latency_comparison_is_recorded(self, recorder):
         assert_latency_within(0.25, _latency(1.0), "Case creation latency")
         (row,) = recorder()
+        assert row["scale"] == pytest.approx(1.0)
         assert row["metric"] == ab.LATENCY_METRIC
         assert row["observed"] == pytest.approx(0.25)
         assert row["budget"] == pytest.approx(1.0)
