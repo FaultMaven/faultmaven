@@ -602,6 +602,9 @@ class LogsAndErrorsExtractor:
     # Username extraction lives in ``preprocessing/log_usernames.py`` so the
     # entity-registry extractor applies the same rule rather than a second
     # copy of it (fm#522). Only the rendering below is this class's business.
+    # That includes the multiplicity: a username counts once per line, not
+    # once per regex match, so an account seen only as ``invalid user`` no
+    # longer outranks one seen as ``Accepted password for <name>`` (fm#1574).
 
     # Port matchers. A port number is a numeric token that needs *structural*
     # context on the left: either an explicit `port` keyword, or a

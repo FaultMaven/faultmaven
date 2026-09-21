@@ -36,7 +36,11 @@ from faultmaven.modules.preprocessing.entities.registry import (
 from faultmaven.modules.preprocessing.extractors.logs_extractor import (
     LogsAndErrorsExtractor,
 )
-from faultmaven.modules.preprocessing.log_usernames import is_username
+from faultmaven.modules.preprocessing.log_usernames import (
+    USER_FIELD_RE,
+    USER_FOR_RE,
+    is_username,
+)
 
 _USER_ROW = re.compile(r"^ {4}(\S.*?): (\d+) mentions")
 
@@ -441,12 +445,15 @@ def test_real_usernames_still_captured(line: str, expected: str) -> None:
 def test_both_paths_agree_on_a_mixed_auth_log() -> None:
     """The two implementations became one; their answers must not diverge.
 
-    Membership must match exactly. Multiplicity is asserted per path with
-    explicit counts rather than compared between them, because the two
-    deliberately differ: the profile counts *matches* (its long-standing
-    semantics, fm#1574) and the registry counts *lines* (what it counted
-    before fm#522 moved it onto the shared rule). A set comparison here
-    discarded multiplicity entirely and let a doubling regression through.
+    Membership *and* multiplicity now match, because fm#1574 settled both
+    paths to the same semantics at the extraction root: a mention is a LINE.
+    Until then they deliberately differed — the profile counted *matches* and
+    the registry counted lines — and this case is where that showed.
+
+    The counts are pinned explicitly as well as compared between the paths.
+    A between-paths comparison alone passes when both drift the same way, and
+    a set comparison discards multiplicity entirely, which is how a doubling
+    regression got through once already.
     """
     content = "\n".join(
         [
@@ -467,10 +474,14 @@ def test_both_paths_agree_on_a_mixed_auth_log() -> None:
     )
     profile, registry = both_paths(content + "\n")
     assert set(profile) == set(registry) == {"root", "cyrus", "test"}
-    # "Failed password for invalid user test" matches on both branches, so the
-    # profile counts it twice and the registry once.
-    assert Counter(profile) == {"root": 1, "cyrus": 1, "test": 2}, profile
-    assert Counter(registry) == {"root": 1, "cyrus": 1, "test": 1}, registry
+    # "Failed password for invalid user test" matches on BOTH branches —
+    # USER_FIELD_RE on "user test", USER_FOR_RE on "for invalid user test".
+    # The profile rendered "test: 2 mentions" until fm#1574; one line is now
+    # one mention on both paths, so the two dicts are the same dict.
+    expected = {"root": 1, "cyrus": 1, "test": 1}
+    assert Counter(profile) == expected, profile
+    assert Counter(registry) == expected, registry
+    assert Counter(profile) == Counter(registry)
 
 
 # ---------------------------------------------------------------------------
@@ -597,21 +608,58 @@ def test_registry_now_records_the_account_not_the_word_user(
             {"admin": 1},
             id="invalid-user-admin",
         ),
+        # The two branches reaching the same name through two GENUINELY
+        # different fields — a "for" clause and a "user=" field — not the
+        # "invalid user" overlap. Per-line semantics counts it once; see
+        # ``test_one_line_is_one_mention_even_across_different_fields``.
+        pytest.param(
+            "Dec 10 09:33:00 LabSZ sshd[3]: Failed password for alice from "
+            "1.2.3.4 port 2222 ssh2 user=alice",
+            {"alice": 1},
+            id="same-user-in-two-different-fields",
+        ),
+        # De-duplication must be by VALUE, not a blanket one-per-line: two
+        # different accounts named on one line are two mentions.
+        pytest.param(
+            "Dec 10 09:34:00 LabSZ sshd[4]: Failed password for bob from "
+            "1.2.3.4 port 22 ssh2 user=alice",
+            {"alice": 1, "bob": 1},
+            id="two-different-users-one-line",
+        ),
+        # And it must be PER LINE, not per file: the same account on two
+        # lines is two mentions. A ``dict.fromkeys`` hoisted out of the
+        # per-line call would floor every account at 1 and this is what
+        # notices.
+        pytest.param(
+            "Dec 10 09:35:00 LabSZ sshd[5]: Failed password for carol from "
+            "1.2.3.4 port 22 ssh2\n"
+            "Dec 10 09:35:01 LabSZ sshd[6]: Failed password for carol from "
+            "1.2.3.4 port 22 ssh2",
+            {"carol": 2},
+            id="same-user-on-two-lines-accumulates",
+        ),
     ],
 )
-def test_registry_mention_counts_are_distinct_per_line(
+def test_mention_counts_are_per_line_on_both_paths(
     line: str, expected: dict[str, int]
 ) -> None:
-    """One line, one mention — what the registry path counted before fm#522.
+    """One line, one mention — on the registry path AND the entity profile.
 
     Both branches match the same token on an ``invalid user`` line, so the
-    shared rule returns it twice. That is the entity profile's long-standing
-    semantics and is left alone there, but on the registry path it would be a
-    new doubling, and ``mention_count`` is not cosmetic: ``list_top_entities``
-    orders by ``SUM(mention_count) DESC`` and ``fetch_entity_highlights``
-    prints the top five with their counts into the investigation prompt. A
-    scanner-sprayed ``invalid user`` account would outrank a real one 2:1.
-    See fm#1574 for the profile path's separate counting question.
+    concatenation used to return it twice. fm#522 had to stop that reaching
+    the registry, where it was a fresh doubling; fm#1574 settled the profile
+    the same way and folded the de-duplication into ``extract_usernames``, so
+    the expectation below is now one expectation for both paths.
+
+    ``expected`` is what each path reports: ``{"test": 1}`` on the line the
+    profile used to render as ``test: 2 mentions``.
+
+    The count is not cosmetic on either path. On the registry it is
+    ``mention_count``: ``list_top_entities`` orders by
+    ``SUM(mention_count) DESC`` and ``fetch_entity_highlights`` prints the
+    top five with their counts into the investigation prompt. On the profile
+    it orders the rendered ``Distinct usernames`` list. Either way a
+    scanner-sprayed ``invalid user`` account outranked a real one 2:1.
     """
     obs = {
         o.entity_value: o.mention_count
@@ -619,6 +667,48 @@ def test_registry_mention_counts_are_distinct_per_line(
         if o.entity_type == EntityType.USER
     }
     assert obs == expected
+    assert Counter(profile_usernames(line + "\n")) == expected
+
+
+@pytest.mark.unit
+def test_one_line_is_one_mention_even_across_different_fields() -> None:
+    """The judgement call fm#1574 made, written down so it is not incidental.
+
+    ``Failed password for invalid user test`` is the easy case: one *event*,
+    named once, captured twice because the two branches overlap. Nobody wants
+    that counted as two.
+
+    This line is the case someone will eventually ask about — the same
+    account reached through two fields that are not an overlap at all, a
+    ``for`` clause and a ``user=`` field::
+
+        Failed password for alice from 10.0.0.1 port 2222 ssh2 user=alice
+
+    A mention is a LINE, so it counts **once**. A line is one event, and one
+    event is one mention of each account it names; how many times that line's
+    own syntax repeats the name is a property of the log format, not of the
+    account's activity. Counting it twice is what let a scanner-sprayed
+    account outrank a real one, and that is true whichever pair of fields
+    produced the repeat.
+
+    What this does NOT do: collapse two different accounts on one line, or
+    collapse the same account across lines. Both are pinned as parameters of
+    ``test_mention_counts_are_per_line_on_both_paths``.
+    """
+    line = (
+        "Dec 10 09:33:00 LabSZ sshd[3]: Failed password for alice from "
+        "1.2.3.4 port 2222 ssh2 user=alice\n"
+    )
+
+    # Both branches do reach the name — the de-duplication is what makes it
+    # one, not a gap in the patterns. Without this the test would pass on a
+    # line that simply never matched twice.
+    assert USER_FIELD_RE.findall(line) == ["alice"]
+    assert USER_FOR_RE.findall(line) == ["alice"]
+
+    profile, registry = both_paths(line)
+    assert Counter(profile) == {"alice": 1}, profile
+    assert Counter(registry) == {"alice": 1}, registry
 
 
 @pytest.mark.unit

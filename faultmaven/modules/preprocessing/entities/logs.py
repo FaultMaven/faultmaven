@@ -25,7 +25,7 @@ from collections import Counter
 
 from faultmaven.modules.case.contracts import EntityType
 from faultmaven.modules.preprocessing.entities.protocol import EntityObservation
-from faultmaven.modules.preprocessing.log_usernames import distinct_usernames
+from faultmaven.modules.preprocessing.log_usernames import extract_usernames
 
 # Regexes mirror ``logs_extractor.py``. Kept local so this module can
 # evolve independently if the logs extractor's formatting changes
@@ -94,9 +94,10 @@ class LogsEntityExtractor:
                 if is_err:
                     ip_error[ip] += 1
 
-            # Distinct per line: this path counts lines, the entity profile
-            # counts matches. See ``distinct_usernames``.
-            for user in distinct_usernames(line):
+            # One mention per line per account — the shared rule
+            # de-duplicates (fm#1574), so this path and the entity profile
+            # count the same thing.
+            for user in extract_usernames(line):
                 user_total[user] += 1
                 if is_err:
                     user_error[user] += 1

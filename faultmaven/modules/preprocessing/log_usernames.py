@@ -33,6 +33,11 @@ A username candidate survives when all of the following hold:
    client offered, so a scanner offering a host-shaped name reaches the
    username branch.
 4. It does not start with a digit and does not end in punctuation.
+
+Multiplicity is decided here too, and the same way for both consumers: a
+mention is a LINE. The two branches overlap on ``for invalid user <name>``,
+and counting each match ranked a scanner-sprayed account above a real one
+(fm#1574).
 """
 
 from __future__ import annotations
@@ -159,28 +164,34 @@ def is_username(candidate: str) -> bool:
 
 
 def extract_usernames(line: str) -> list[str]:
-    """Return the username mentions in one log line, in match order.
+    """Return the usernames mentioned in one log line, each once.
 
-    Duplicates are kept: ``Failed password for invalid user test`` matches on
-    both branches and counts as two mentions, which is what the entity
-    profile has always reported. Callers that count *lines* rather than
-    matches want :func:`distinct_usernames`.
+    **A mention is a LINE, not a match** (fm#1574). The two branches overlap
+    on the shape a scanner produces most — ``Failed password for invalid user
+    test`` is captured by ``USER_FIELD_RE`` (``user test``) *and* by
+    ``USER_FOR_RE`` (``for invalid user test``) — so counting matches ranked
+    an account that only ever appears as ``invalid user`` at twice the weight
+    of one appearing as ``Accepted password for <name>``. That ranking is not
+    cosmetic in either consumer: it orders the entity profile's ``Distinct
+    usernames`` list, and on the registry path it is ``mention_count``, which
+    ``list_top_entities`` sums (``SUM(mention_count) DESC``) and the Phase 4c
+    highlights block prints into the investigation prompt.
+
+    The same name reached twice on one line through genuinely different
+    fields (``Failed password for alice … user=alice``) therefore counts
+    once too. That is the deliberate reading of "per line": a line is one
+    event, and one event is one mention of each account it names. Multiple
+    lines still accumulate.
+
+    De-duplication lives here rather than in either caller because this is
+    where the two branches are concatenated — the only point at which "per
+    line" is expressible once. There is deliberately no second,
+    non-de-duplicating entry point: ``distinct_usernames`` was that, for the
+    one release in which the two paths disagreed, and it is retired.
+
+    Order is first match, so the caller still sees the line's own ordering.
     """
     candidates = USER_FIELD_RE.findall(line)
     if AUTH_CONTEXT_RE.search(line):
         candidates += USER_FOR_RE.findall(line)
-    return [c for c in candidates if is_username(c)]
-
-
-def distinct_usernames(line: str) -> list[str]:
-    """The usernames in one log line, each once, in first-match order.
-
-    The entity registry counts a line, not a match. Keeping the two
-    multiplicities apart is deliberate: an ``invalid user`` line matches on
-    both branches, and folding that doubling into the registry would change
-    what ``list_top_entities`` orders by (``SUM(mention_count) DESC``) and
-    what the Phase 4c highlights block prints into the prompt — ranking a
-    scanner-sprayed account above a real one. The entity profile's own
-    semantics are a separate, open question (fm#1574).
-    """
-    return list(dict.fromkeys(extract_usernames(line)))
+    return list(dict.fromkeys(c for c in candidates if is_username(c)))
