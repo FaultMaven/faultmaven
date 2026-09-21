@@ -56,6 +56,18 @@ _PROBE_TIMEOUT_SECONDS = 3.0
 #: sweep) and still inside the 5s startup timeout.
 _ALL_COMPONENTS_TIMEOUT_SECONDS = 4.0
 
+#: Minimum seconds between WARNING lines about the same component's
+#: ``component_health_status`` publish failing.
+#:
+#: The publisher's caller runs on every Kubernetes liveness probe (~10s), so
+#: an unthrottled warning is several lines every ten seconds for the whole
+#: length of an outage — which is why the original only logged at ``debug``,
+#: a level the deployment does not emit. The cost of that was the failure
+#: mode being *the series disappears and nothing says why* (#1568). Five
+#: minutes keeps both properties: twelve lines an hour for a sustained fault,
+#: and an immediate line the first time it happens.
+_GAUGE_PUBLISH_WARN_INTERVAL_SECONDS = 300.0
+
 #: Probes run their blocking work HERE, never on ``asyncio.to_thread``'s
 #: default executor.
 #:
@@ -167,6 +179,12 @@ class ComponentHealthMonitor:
         # record of component state — the state is read from
         # ``component_health`` at publish time, every time.
         self._published_gauge_labels: Dict[str, Tuple[str, str]] = {}
+        # Per component: ``(monotonic time of the last WARNING, failures
+        # suppressed since)``. Absent means "warn immediately", and a
+        # successful publish removes the entry — so a fault that clears and
+        # returns is announced again rather than silently rate-limited
+        # against the previous outage.
+        self._gauge_publish_warn_state: Dict[str, Tuple[float, int]] = {}
         self._initialize_default_components()
 
     @property
@@ -1351,14 +1369,71 @@ class ComponentHealthMonitor:
                 fatal=labels[0],
                 fails_per_replica=labels[1],
             ).set(_HEALTH_STATUS_GAUGE_VALUES[health.status])
+            self._gauge_publish_warn_state.pop(health.component_name, None)
         except Exception as e:
-            # debug, not warning: the caller runs on every Kubernetes liveness
-            # probe, so a persistent fault here would be several lines every
-            # ten seconds for the life of the outage. The cost is that a
-            # vanished series says nothing in the log — filed, not fixed here.
+            # TWO channels, because they answer different questions. ``debug``
+            # keeps every occurrence for whoever turns it on; the rate-limited
+            # ``warning`` is what a deployment actually emits.
+            #
+            # ``debug`` alone was the original choice and its reasoning was
+            # sound — the caller runs on every Kubernetes liveness probe, so
+            # an unthrottled warning is an outage-long flood. What it cost is
+            # that the failure mode became *the series disappears and nothing
+            # says why*: absence reading as fine, which is the shape this
+            # whole metric exists to argue against (#1568 item 3).
+            #
+            # A COUNTER was the other candidate and is the worse one here. It
+            # would be published through the same metrics registry that just
+            # refused the gauge, so it is unrecordable in exactly the case it
+            # exists to record — and it would then need a consumer of its own,
+            # which is the defect #1547 was filed about. The log is already
+            # read by the operator asking why a series vanished.
+            #
+            # Nothing retries: if ``set()`` raised on the same call as a label
+            # flip, the old child is gone and the new one was never made, so
+            # the series is absent until the next publish ~10s later. One
+            # scrape wide, which is why this announces rather than repairs.
             self.logger.debug(
                 f"Could not publish health gauge for {health.component_name}: {e}"
             )
+            self._warn_about_gauge_publish_failure(health.component_name, e)
+
+    def _warn_about_gauge_publish_failure(
+        self, component_name: str, error: BaseException
+    ) -> None:
+        """WARN that a component's gauge is not being published, rate-limited.
+
+        Immediately the first time for a component, then at most once per
+        ``_GAUGE_PUBLISH_WARN_INTERVAL_SECONDS``, carrying how many failures
+        were suppressed in between so the throttle cannot hide the scale.
+
+        Called only from ``_publish_component_health_gauge``'s ``except``,
+        which is the last thing between a metrics fault and ``/health``
+        dropping to its fallback body — so this is two dict operations and a
+        clock read, and touches nothing that can fail.
+        """
+        now = time.monotonic()
+        last_warned, suppressed = self._gauge_publish_warn_state.get(
+            component_name, (None, 0)
+        )
+        if (
+            last_warned is not None
+            and now - last_warned < _GAUGE_PUBLISH_WARN_INTERVAL_SECONDS
+        ):
+            self._gauge_publish_warn_state[component_name] = (
+                last_warned,
+                suppressed + 1,
+            )
+            return
+
+        since = f" ({suppressed} further failures suppressed)" if suppressed else ""
+        self.logger.warning(
+            f"component_health_status is not being published for "
+            f"{component_name}: {error}{since}. The series is absent or stale "
+            f"until a publish succeeds, so any alert selecting on it is "
+            f"reading nothing rather than reading health."
+        )
+        self._gauge_publish_warn_state[component_name] = (now, 0)
 
     def publish_health_gauges(self) -> None:
         """Refresh ``component_health_status`` for a ``/metrics`` scrape.

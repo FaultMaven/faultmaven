@@ -19,6 +19,7 @@ sweep budget, where the body's component map said `unhealthy` and its own
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, Dict
 
 import pytest
@@ -29,6 +30,10 @@ from faultmaven.infrastructure.health import (
 from faultmaven.infrastructure.health.component_monitor import (
     ComponentHealthMonitor,
     HealthStatus,
+)
+from tests.unit.infrastructure.health.probe_deadlines import (
+    probe_that_ignores_cancellation,
+    shipped_ratio,
 )
 
 pytestmark = pytest.mark.unit
@@ -285,42 +290,6 @@ def test_the_page_rule_fires_for_a_shared_fatal_dependency(published):
 # --------------------------------------------------------------------------
 
 
-def _shipped_ratio(monkeypatch, *, probe: float = 0.15, sweep: float = 0.30) -> None:
-    """Scale both deadlines while KEEPING the shipped ordering, probe < sweep.
-
-    Setting only the sweep budget — to 0.05, against a per-probe deadline left
-    at 3.0 — inverts what ships (4.0 > 3.0) and proves the arm in a
-    configuration that cannot occur. Magnitude is scaled so the test is fast;
-    the ordering is the thing under test and is preserved.
-    """
-    assert probe < sweep, "the shipped ordering is per-probe deadline < sweep budget"
-    monkeypatch.setattr(component_monitor_module, "_PROBE_TIMEOUT_SECONDS", probe)
-    monkeypatch.setattr(
-        component_monitor_module, "_ALL_COMPONENTS_TIMEOUT_SECONDS", sweep
-    )
-
-
-def _probe_that_ignores_cancellation(monitor, monkeypatch, name: str) -> None:
-    """`name`'s probe swallows its first cancellation; everything else is fine.
-
-    The only route to the sweep-budget arm at the shipped ratio, and the case
-    `check_all_components`' own docstring names the budget a backstop for: "a
-    probe that does not observe cancellation promptly". The per-probe deadline
-    fires first and is ignored, so the task is still pending when the sweep
-    budget expires.
-    """
-
-    async def _probe(component_name: str) -> Dict[str, Any]:
-        if component_name == name:
-            try:
-                await asyncio.sleep(3600)
-            except asyncio.CancelledError:
-                await asyncio.sleep(3600)  # the sweep's cancel ends this one
-        return {"status": HealthStatus.HEALTHY, "metadata": {}}
-
-    monkeypatch.setattr(monitor, "_perform_health_check", _probe)
-
-
 def test_the_shipped_constants_keep_this_arm_a_backstop():
     """If these ever invert, the sweep arm becomes a live path — say so here.
 
@@ -341,9 +310,9 @@ async def test_a_probe_outliving_the_sweep_budget_is_written_back(monkeypatch):
     No gauge: this is the half about `/health` agreeing with itself, and it
     must run on the standalone leg where `prometheus-client` is absent.
     """
-    _shipped_ratio(monkeypatch)
+    shipped_ratio(monkeypatch)
     monitor = ComponentHealthMonitor()
-    _probe_that_ignores_cancellation(monitor, monkeypatch, "database")
+    probe_that_ignores_cancellation(monitor, monkeypatch, "database")
 
     results = await monitor.check_all_components()
     status, summary = monitor.get_overall_health_status()
@@ -365,9 +334,9 @@ async def test_a_probe_outliving_the_sweep_budget_reaches_the_gauge(
     published, monkeypatch
 ):
     """...and the metric says what the body says."""
-    _shipped_ratio(monkeypatch)
+    shipped_ratio(monkeypatch)
     monitor = ComponentHealthMonitor()
-    _probe_that_ignores_cancellation(monitor, monkeypatch, "database")
+    probe_that_ignores_cancellation(monitor, monkeypatch, "database")
 
     await monitor.check_all_components()
     _, summary = monitor.get_overall_health_status()
@@ -450,7 +419,7 @@ async def _overlapping_sweeps(monitor, monkeypatch):
 
 async def test_a_stale_sweep_does_not_clobber_a_newer_success(monkeypatch):
     """Measured before the guard: `unhealthy`, and the page fired, while up."""
-    _shipped_ratio(monkeypatch)
+    shipped_ratio(monkeypatch)
     monitor = ComponentHealthMonitor()
 
     await _overlapping_sweeps(monitor, monkeypatch)
@@ -465,7 +434,7 @@ async def test_a_stale_sweep_does_not_clobber_a_newer_success(monkeypatch):
 
 async def test_a_stale_sweep_does_not_fire_the_page_rule(published, monkeypatch):
     """The same run, read off the gauge: nothing pages while the primary is up."""
-    _shipped_ratio(monkeypatch)
+    shipped_ratio(monkeypatch)
     monitor = ComponentHealthMonitor()
 
     await _overlapping_sweeps(monitor, monkeypatch)
@@ -482,9 +451,9 @@ async def test_the_first_sweep_to_abandon_still_records(monkeypatch):
     Without this the fix could be "never record anything" and every test above
     that asserts the arm works would have to be wrong for it to show.
     """
-    _shipped_ratio(monkeypatch)
+    shipped_ratio(monkeypatch)
     monitor = ComponentHealthMonitor()
-    _probe_that_ignores_cancellation(monitor, monkeypatch, "database")
+    probe_that_ignores_cancellation(monitor, monkeypatch, "database")
 
     await monitor.check_all_components()
 
@@ -647,3 +616,237 @@ def test_every_health_status_has_a_gauge_value():
     assert values[HealthStatus.DEGRADED] < values[HealthStatus.HEALTHY]
     # UNKNOWN is not UNHEALTHY: "could not tell" must be separable (#1524).
     assert values[HealthStatus.UNKNOWN] != values[HealthStatus.UNHEALTHY]
+
+
+# --------------------------------------------------------------------------
+# `/health`'s fallback arm — the one place the body and the gauge can diverge
+# --------------------------------------------------------------------------
+
+
+async def test_no_component_failure_shape_reaches_the_health_fallback_body(
+    monkeypatch,
+):
+    """Drive `/health` itself, not `check_all_components` (#1568 item 2).
+
+    `health_check`'s `except Exception` returns a body with no `summary`, no
+    `components` and no `fatal_unhealthy` while `/metrics` keeps serving the
+    last sweep's per-component verdict — so it is the single arrangement in
+    which the two disagree, and the claim "they cannot" is only as good as
+    that arm being unreachable.
+
+    Each shape below is a way a dependency, a probe or the metrics registry
+    actually fails; none of them must reach it. A direct call to
+    `check_all_components` would prove the monitor's logic and say nothing
+    about the endpoint's `try`, which is what the disagreement lives in — so
+    this drives the endpoint function.
+    """
+    from faultmaven import main as main_module
+    from faultmaven.infrastructure.health import component_monitor as cm_module
+
+    monitor = ComponentHealthMonitor()
+    monkeypatch.setattr(cm_module, "component_monitor", monitor)
+
+    def _reached_the_fallback(body: Dict[str, Any]) -> bool:
+        return body.get("error") == "Enhanced health monitoring unavailable"
+
+    class _NotAnException(BaseException):
+        """Past `check_component_health`'s `except Exception`, deliberately."""
+
+    async def _raises(_name: str) -> Dict[str, Any]:
+        raise RuntimeError("dependency down")
+
+    async def _raises_base(_name: str) -> Dict[str, Any]:
+        raise _NotAnException("not an Exception")
+
+    async def _healthy(_name: str) -> Dict[str, Any]:
+        return {"status": HealthStatus.HEALTHY, "metadata": {}}
+
+    class _RefusingRegistry:
+        def labels(self, **_kwargs):
+            raise RuntimeError("metrics registry broken")
+
+        def remove(self, *_args):
+            raise RuntimeError("metrics registry broken")
+
+    # 1. every probe raises — `check_component_health` catches and writes back.
+    monkeypatch.setattr(monitor, "_perform_health_check", _raises)
+    body = await main_module.health_check()
+    assert not _reached_the_fallback(body), "a probe raising Exception"
+    assert body["summary"]["component_counts"]["unhealthy"] == len(
+        monitor.component_health
+    )
+
+    # 2. a probe raises past that `except` — the sweep's own `task.exception()`
+    #    arm handles it, and `_record_abandoned_probe` writes back.
+    monkeypatch.setattr(monitor, "_perform_health_check", _raises_base)
+    body = await main_module.health_check()
+    assert not _reached_the_fallback(body), "a probe raising BaseException"
+    assert body["summary"]["fatal_unhealthy"] == ["database"]
+
+    # 3. the metrics registry refuses the publish — the publisher swallows it,
+    #    so `/health` still answers from the same read the gauge failed on.
+    monkeypatch.setattr(monitor, "_perform_health_check", _healthy)
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.shims.component_health_status",
+        _RefusingRegistry(),
+        raising=False,
+    )
+    body = await main_module.health_check()
+    assert not _reached_the_fallback(body), "the gauge publish raising"
+    assert body["status"] == HealthStatus.HEALTHY.value
+
+    # POSITIVE CONTROL. Without it every assertion above could hold because
+    # the arm is unreachable from this test rather than from production —
+    # a probe that cannot fail reads exactly like a probe that passed.
+    async def _sweep_explodes() -> Dict[str, Any]:
+        raise RuntimeError("the sweep itself failed")
+
+    monkeypatch.setattr(monitor, "check_all_components", _sweep_explodes)
+    body = await main_module.health_check()
+    assert _reached_the_fallback(body), "control: the arm must be reachable"
+    assert "summary" not in body and "components" not in body
+
+
+# --------------------------------------------------------------------------
+# A failed publish must not be silent (#1568 item 3)
+#
+# `debug` was the original and only channel, and the deployment does not emit
+# it — so the failure mode was "the series disappears and nothing says why",
+# which is the absence-reads-as-fine shape the whole metric argues against.
+# The flood argument against `warning` is real (the caller runs on every
+# liveness probe), so the answer is a rate limit, not a level change.
+# --------------------------------------------------------------------------
+
+
+class _RefusingRegistry:
+    """A metrics export that rejects every publish, switchably."""
+
+    def __init__(self, failing: bool = True):
+        self.failing = failing
+
+    def labels(self, **_kwargs):
+        if self.failing:
+            raise RuntimeError("metrics registry broken")
+        return self
+
+    def set(self, _value):
+        return None
+
+    def remove(self, *_args):
+        if self.failing:
+            raise RuntimeError("metrics registry broken")
+
+
+def _install_registry(monkeypatch, registry) -> None:
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.shims.component_health_status",
+        registry,
+        raising=False,
+    )
+
+
+def _publish_records(caplog) -> list:
+    return [
+        record
+        for record in caplog.records
+        if "component_health_status is not being published" in record.getMessage()
+    ]
+
+
+def _publish_warnings(caplog) -> list:
+    return [record.getMessage() for record in _publish_records(caplog)]
+
+
+def test_a_failed_publish_warns_immediately_then_is_rate_limited(monkeypatch, caplog):
+    """First failure at WARNING; the rest of the interval is quiet.
+
+    Immediately, because a fault that clears before the interval elapses
+    would otherwise never be reported at all — and one scrape of a missing
+    series is exactly the hole this announces.
+    """
+    monitor = ComponentHealthMonitor()
+    _install_registry(monkeypatch, _RefusingRegistry())
+
+    with caplog.at_level(logging.WARNING, logger=component_monitor_module.__name__):
+        monitor.get_overall_health_status()
+        first = _publish_records(caplog)
+        assert len(first) == len(monitor.component_health)
+        # The level is the point of the change, so assert it rather than the
+        # text: `debug` alone is what made a vanished series silent.
+        assert {record.levelname for record in first} == {"WARNING"}
+
+        caplog.clear()
+        for _ in range(3):
+            monitor.get_overall_health_status()
+        assert _publish_warnings(caplog) == []
+
+        # Once the interval elapses the next failure reports again, and says
+        # how many it swallowed — a throttle that hides the scale is a second
+        # way for the log to understate what happened.
+        monkeypatch.setattr(
+            component_monitor_module, "_GAUGE_PUBLISH_WARN_INTERVAL_SECONDS", 0.0
+        )
+        monitor.get_overall_health_status()
+        again = _publish_warnings(caplog)
+        assert len(again) == len(monitor.component_health)
+        assert all("(3 further failures suppressed)" in message for message in again)
+
+
+def test_the_warn_interval_stays_between_flood_and_silence():
+    """The interval is the whole compromise, so pin the range it lives in.
+
+    Zero re-creates the flood the original `debug` choice was avoiding — the
+    publisher runs on every liveness probe, so an unthrottled warning is
+    several lines every ten seconds for the length of an outage. An hour or
+    more re-creates the silence: a fault shorter than the interval would be
+    reported once and then look resolved. Neither bound is arbitrary, and
+    neither is visible from any other test here: the suppression test passes
+    for any positive value at all.
+    """
+    interval = component_monitor_module._GAUGE_PUBLISH_WARN_INTERVAL_SECONDS
+    assert 0 < interval <= 3600
+
+
+def test_a_recovered_publish_rearms_the_immediate_warning(monkeypatch, caplog):
+    """A second outage is announced without waiting out the first's interval.
+
+    A rate limit keyed only on "when did we last warn" would stay quiet for
+    five minutes after a fault that had already healed — reporting the second
+    outage late, or not at all if it were shorter than the remainder.
+    """
+    monitor = ComponentHealthMonitor()
+    registry = _RefusingRegistry()
+    _install_registry(monkeypatch, registry)
+
+    with caplog.at_level(logging.WARNING, logger=component_monitor_module.__name__):
+        monitor.get_overall_health_status()
+        assert len(_publish_warnings(caplog)) == len(monitor.component_health)
+
+        caplog.clear()
+        registry.failing = False
+        monitor.get_overall_health_status()
+        assert _publish_warnings(caplog) == []
+        assert monitor._gauge_publish_warn_state == {}
+
+        registry.failing = True
+        monitor.get_overall_health_status()
+        assert len(_publish_warnings(caplog)) == len(monitor.component_health)
+
+
+def test_the_warning_still_cannot_reach_the_caller(monkeypatch):
+    """The announcement runs inside the publisher's `except`, so it is the
+    last thing between a metrics fault and `/health`'s fallback body.
+
+    `test_a_broken_gauge_never_costs_the_health_read` pins the same property
+    for the publish itself; this pins it for the code added to report the
+    publish failing, which runs on exactly the path that test does not reach
+    past.
+    """
+    monitor = ComponentHealthMonitor()
+    _install_registry(monkeypatch, _RefusingRegistry())
+    monitor.component_health["database"].status = HealthStatus.UNHEALTHY
+
+    status, summary = monitor.get_overall_health_status()
+
+    assert status is HealthStatus.UNHEALTHY
+    assert summary["fatal_unhealthy"] == ["database"]

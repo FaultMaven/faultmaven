@@ -81,6 +81,19 @@ Notes for whoever writes the rule (it lives in `faultmaven-enterprise-infra`):
   series means "not scraped", never "fine".
 - Values are refreshed at scrape from the last probe sweep; the liveness probe
   runs that sweep far more often than the scrape interval.
+- **A publish that fails says so in the log.** If the metrics export refuses a
+  write, that component's series can be absent for one scrape — and a missing
+  series is the one thing a rule cannot see. The API logs
+  `component_health_status is not being published for <component>` at WARNING,
+  immediately the first time and then at most once every five minutes per
+  component, carrying how many failures it suppressed in between (#1568). Grep
+  for it before concluding a gap in the series was a scrape problem.
+
+The rule itself lives in `faultmaven-enterprise-infra`, in
+`kubernetes/platform/monitoring/rules/faultmaven-workload-rules.yaml` under
+the `faultmaven.workload.dependencies` group — the alert is
+`FaultMavenSharedDependencyDown`, with promtool unit tests beside it in
+`rules/tests/`.
 
 ## Overview
 
