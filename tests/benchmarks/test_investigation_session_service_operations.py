@@ -11,6 +11,12 @@ Benchmarks for investigation session service operations with performance targets
 - Add execution to session: target <150ms p95
 - Check budget exceeded: target <100ms p95
 - Get statistics (100 sessions): target <500ms p95
+
+The ``Target:`` figures above and in each test docstring are the **product
+targets**, and only the ``FM_BENCHMARK_ABSOLUTE`` nightly asserts them. A
+pull request is gated on the far smaller **regression anchor** beside each
+one in ``budgets.py`` — a round number 2-3x that operation's measured cost
+on CI (#1556). Read a budget there, not here.
 """
 
 import asyncio
@@ -27,11 +33,7 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
 )
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.models.investigation_session import InvestigationSession, SessionState
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
-    InvestigationStrategy,
-)
+from faultmaven.modules.case.domain.models import Case, CaseState, InvestigationStrategy
 from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
 )
@@ -39,6 +41,18 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
     SQLiteCaseRepository,
 )
 
+from .budgets import (
+    SESSION_SERVICE_CHECK_BUDGET,
+    SESSION_SERVICE_COMPLETE,
+    SESSION_SERVICE_CREATE,
+    SESSION_SERVICE_GET,
+    SESSION_SERVICE_LIST_50,
+    SESSION_SERVICE_PAUSE,
+    SESSION_SERVICE_RESUME,
+    SESSION_SERVICE_STATISTICS,
+    SESSION_SERVICE_UPDATE,
+    LatencyBudget,
+)
 from .conftest import assert_latency_within
 
 # ============================================================
@@ -164,8 +178,8 @@ def calculate_p95(timings: List[float]) -> float:
     return sorted_timings[min(index, len(sorted_timings) - 1)]
 
 
-def report_benchmark(name: str, timings: List[float], target_p95_ms: float) -> None:
-    """Print the distribution, then assert the p95 against its target.
+def report_benchmark(name: str, timings: List[float], budget: LatencyBudget) -> None:
+    """Print the distribution, then assert the p95 against its budget.
 
     The one comparison site in this module. It used to RETURN a bool that
     each of the nine call sites then re-asserted with its own message, so
@@ -191,9 +205,13 @@ def report_benchmark(name: str, timings: List[float], target_p95_ms: float) -> N
     print(f"\n{name}:")
     print(f"  Mean: {mean:.2f}ms")
     print(f"  P50: {p50:.2f}ms")
-    print(f"  P95: {p95:.2f}ms (target: {target_p95_ms}ms)")
+    print(
+        f"  P95: {p95:.2f}ms (regression budget: "
+        f"{budget.regression * 1000:.0f}ms, product target: "
+        f"{budget.product_target * 1000:.0f}ms)"
+    )
 
-    assert_latency_within(p95 / 1000.0, target_p95_ms / 1000.0, f"{name} p95")
+    assert_latency_within(p95 / 1000.0, budget, f"{name} p95")
 
 
 # ============================================================
@@ -234,7 +252,7 @@ class TestCreateSessionBenchmarks:
             )
             timings.append(duration)
 
-        report_benchmark("Create Session", timings, 200)
+        report_benchmark("Create Session", timings, SESSION_SERVICE_CREATE)
 
 
 # ============================================================
@@ -267,7 +285,7 @@ class TestGetSessionBenchmarks:
             )
             timings.append(duration)
 
-        report_benchmark("Get Session", timings, 100)
+        report_benchmark("Get Session", timings, SESSION_SERVICE_GET)
 
 
 # ============================================================
@@ -301,7 +319,7 @@ class TestUpdateSessionBenchmarks:
             )
             timings.append(duration)
 
-        report_benchmark("Update Session", timings, 150)
+        report_benchmark("Update Session", timings, SESSION_SERVICE_UPDATE)
 
 
 # ============================================================
@@ -347,7 +365,7 @@ class TestPauseResumeSessionBenchmarks:
             )
             timings.append(duration)
 
-        report_benchmark("Pause Session", timings, 150)
+        report_benchmark("Pause Session", timings, SESSION_SERVICE_PAUSE)
 
     @pytest.mark.asyncio
     async def test_benchmark_resume_session(
@@ -389,7 +407,7 @@ class TestPauseResumeSessionBenchmarks:
             )
             timings.append(duration)
 
-        report_benchmark("Resume Session", timings, 150)
+        report_benchmark("Resume Session", timings, SESSION_SERVICE_RESUME)
 
 
 # ============================================================
@@ -436,7 +454,7 @@ class TestCompleteSessionBenchmarks:
             )
             timings.append(duration)
 
-        report_benchmark("Complete Session", timings, 150)
+        report_benchmark("Complete Session", timings, SESSION_SERVICE_COMPLETE)
 
 
 # ============================================================
@@ -477,7 +495,7 @@ class TestListSessionsBenchmarks:
             )
             timings.append(duration)
 
-        report_benchmark("List Sessions (50)", timings, 300)
+        report_benchmark("List Sessions (50)", timings, SESSION_SERVICE_LIST_50)
 
 
 # ============================================================
@@ -511,7 +529,7 @@ class TestCheckBudgetBenchmarks:
             )
             timings.append(duration)
 
-        report_benchmark("Check Budget Exceeded", timings, 100)
+        report_benchmark("Check Budget Exceeded", timings, SESSION_SERVICE_CHECK_BUDGET)
 
 
 # ============================================================
@@ -553,4 +571,6 @@ class TestGetStatisticsBenchmarks:
             )
             timings.append(duration)
 
-        report_benchmark("Get Statistics (100 sessions)", timings, 500)
+        report_benchmark(
+            "Get Statistics (100 sessions)", timings, SESSION_SERVICE_STATISTICS
+        )

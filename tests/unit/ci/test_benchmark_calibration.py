@@ -20,7 +20,19 @@ What it holds down, and why each one:
   scale of 1.0 — which is every developer machine.
 * **Discrimination.** A uniform slowdown across every test cancels; a
   regression in one path does not. Asserted as the two columns, because a
-  scheme that only passes the first has disabled the benchmarks.
+  scheme that only passes the first has disabled the benchmarks. #1556
+  re-anchored the budgets to 2-3x measured cost, so the second column is
+  now a GROSS regression and the 30%-detection column asserts that it does
+  NOT fire — the trade, pinned rather than left to be rediscovered.
+* **The budget table (#1556).** Every anchor in `tests/benchmarks/budgets.py`
+  sits 2-3x above the p95 that module records for it, every anchor is the
+  stricter of that budget's two numbers, and every entry is used by a test
+  that exists. The band is enforced at import time by the dataclasses too;
+  here it is visible as a test.
+* **Which number is asserted.** A pull request compares the regression
+  anchor, scaled; `FM_BENCHMARK_ABSOLUTE` compares the raw product target,
+  unscaled. Driven through the helper, because the split being described
+  correctly in three docstrings is not the same as it working.
 * **Single comparison site.** An AST scan of `tests/benchmarks/` fails if a
   latency or throughput threshold is compared anywhere but the two helpers.
   Before #908 the same rule was written three ways in three modules, which
@@ -42,8 +54,10 @@ from typing import List, Tuple
 import pytest
 import yaml
 
+from tests.benchmarks import budgets as budget_table
 from tests.benchmarks import calibration
 from tests.benchmarks import conftest as bench_conftest
+from tests.benchmarks.budgets import LatencyBudget, ThroughputBudget
 from tests.benchmarks.conftest import (
     assert_latency_within,
     assert_throughput_at_least,
@@ -67,6 +81,35 @@ def _pin_calibration(monkeypatch, seconds: float) -> None:
     """Pretend this machine measured ``seconds`` per calibration repetition."""
     calibration.reset_calibration_cache()
     monkeypatch.setattr(calibration, "_measured", seconds)
+
+
+def _latency(regression: float, product_target: float = None) -> LatencyBudget:
+    """A throwaway latency budget for exercising the comparison itself.
+
+    ``reference`` is derived so the budget sits in the middle of the band
+    ``LatencyBudget`` enforces; these probes are about the comparison, not
+    about any shipped anchor.
+    """
+    if product_target is None:
+        product_target = regression * 10
+    return LatencyBudget(
+        "probe",
+        regression=regression,
+        product_target=product_target,
+        reference=regression / 2.5,
+    )
+
+
+def _throughput(regression: float, product_target: float = None) -> ThroughputBudget:
+    """Throughput counterpart of ``_latency``."""
+    if product_target is None:
+        product_target = regression / 10
+    return ThroughputBudget(
+        "probe",
+        regression=regression,
+        product_target=product_target,
+        reference=regression * 2.5,
+    )
 
 
 # ---------------------------------------------------------------- the scale
@@ -144,7 +187,7 @@ class TestCalibrationScale:
         # Describing is not using: only an asserted budget flips the flag
         # the terminal summary keys on.
         assert calibration.scale_was_used() is False
-        assert_latency_within(0.001, 1.0, "probe")
+        assert_latency_within(0.001, _latency(1.0), "probe")
         assert calibration.scale_was_used() is True
 
     def test_the_description_says_so_in_absolute_mode(self, monkeypatch):
@@ -215,88 +258,263 @@ class TestTheWorkloadItself:
 class TestLatencyBudget:
     def test_passes_under_the_target_at_scale_one(self, monkeypatch):
         _pin_calibration(monkeypatch, calibration.CALIBRATION_REFERENCE_SECONDS)
-        assert_latency_within(0.150, 0.200, "probe")
+        assert_latency_within(0.150, _latency(0.200), "probe")
 
     def test_fails_over_the_target_at_scale_one(self, monkeypatch):
         _pin_calibration(monkeypatch, calibration.CALIBRATION_REFERENCE_SECONDS)
         with pytest.raises(AssertionError) as excinfo:
-            assert_latency_within(0.250, 0.200, "probe")
-        assert "200ms target" in str(excinfo.value)
+            assert_latency_within(0.250, _latency(0.200), "probe")
+        assert "200ms regression budget" in str(excinfo.value)
         assert "1.00 calibration" in str(excinfo.value)
 
     def test_the_budget_moves_with_the_scale(self, monkeypatch):
         _pin_calibration(monkeypatch, calibration.CALIBRATION_REFERENCE_SECONDS * 1.5)
-        assert_latency_within(0.250, 0.200, "probe")  # 250ms < 200 * 1.5
+        assert_latency_within(0.250, _latency(0.200), "probe")  # 250ms < 200 * 1.5
         with pytest.raises(AssertionError):
-            assert_latency_within(0.310, 0.200, "probe")
+            assert_latency_within(0.310, _latency(0.200), "probe")
 
     def test_the_failure_message_carries_the_detail(self, monkeypatch):
         _pin_calibration(monkeypatch, calibration.CALIBRATION_REFERENCE_SECONDS)
         with pytest.raises(AssertionError) as excinfo:
-            assert_latency_within(0.9, 0.1, "probe", "min 900.0ms (n=5)")
+            assert_latency_within(0.9, _latency(0.1), "probe", "min 900.0ms (n=5)")
         assert "min 900.0ms (n=5)" in str(excinfo.value)
+
+    def test_a_throughput_budget_is_refused(self, monkeypatch):
+        # Both budgets are a pair of floats, and handing one to the wrong
+        # helper inverts the direction in silence: a throughput floor
+        # multiplied by the scale would TIGHTEN on a slow runner, and the
+        # numbers are plausible enough that nothing else would notice.
+        _pin_calibration(monkeypatch, calibration.CALIBRATION_REFERENCE_SECONDS)
+        with pytest.raises(TypeError):
+            assert_latency_within(0.150, _throughput(50.0), "probe")
 
 
 class TestThroughputFloor:
     def test_passes_above_the_floor_at_scale_one(self, monkeypatch):
         _pin_calibration(monkeypatch, calibration.CALIBRATION_REFERENCE_SECONDS)
-        assert_throughput_at_least(60.0, 50.0, "probe")
+        assert_throughput_at_least(60.0, _throughput(50.0), "probe")
 
     def test_fails_below_the_floor_at_scale_one(self, monkeypatch):
         _pin_calibration(monkeypatch, calibration.CALIBRATION_REFERENCE_SECONDS)
         with pytest.raises(AssertionError):
-            assert_throughput_at_least(40.0, 50.0, "probe")
+            assert_throughput_at_least(40.0, _throughput(50.0), "probe")
 
     def test_a_slower_machine_gets_a_LOWER_floor_not_a_higher_one(self, monkeypatch):
         # The direction guard. Throughput is 1/latency; multiplying by the
         # scale here would demand MORE work per second from a machine that
         # was just measured to be slower.
         _pin_calibration(monkeypatch, calibration.CALIBRATION_REFERENCE_SECONDS * 2)
-        assert_throughput_at_least(26.0, 50.0, "probe")  # floor is now 25/s
+        assert_throughput_at_least(26.0, _throughput(50.0), "probe")  # floor 25/s
         with pytest.raises(AssertionError):
-            assert_throughput_at_least(24.0, 50.0, "probe")
+            assert_throughput_at_least(24.0, _throughput(50.0), "probe")
+
+    def test_a_latency_budget_is_refused(self, monkeypatch):
+        _pin_calibration(monkeypatch, calibration.CALIBRATION_REFERENCE_SECONDS)
+        with pytest.raises(TypeError):
+            assert_throughput_at_least(60.0, _latency(0.200), "probe")
+
+
+# -------------------------------------------- the two numbers, and the split
+
+
+class TestTheBudgetTable:
+    """The shipped anchors, checked against the ruling that set them (#1556).
+
+    The table is data, so these are the assertions that keep it honest. The
+    band is also enforced by the dataclasses at import time — which is the
+    check that cannot be skipped — and re-asserted here so the property is
+    visible as a test rather than only as a constructor side effect.
+    """
+
+    def test_every_budget_in_the_suite_is_in_the_table(self):
+        # 50 latency/throughput budgets, the number #1556 measured. The
+        # memory assertions are deliberately NOT among them: megabytes do
+        # not scale with machine throughput and #1556 re-anchored nothing
+        # there.
+        assert len(budget_table.ALL_BUDGETS) == 50
+
+    @pytest.mark.parametrize("name", sorted(budget_table.ALL_BUDGETS))
+    def test_the_anchor_is_2_to_3x_its_measured_reference(self, name):
+        budget = budget_table.ALL_BUDGETS[name]
+        if isinstance(budget, ThroughputBudget):
+            multiple = budget.reference / budget.regression
+        else:
+            multiple = budget.regression / budget.reference
+        assert (
+            budget_table.MIN_REGRESSION_MULTIPLE
+            <= multiple
+            <= budget_table.MAX_REGRESSION_MULTIPLE
+        ), f"{name} is {multiple:.2f}x its reference"
+
+    @pytest.mark.parametrize("name", sorted(budget_table.ALL_BUDGETS))
+    def test_the_per_pull_request_anchor_is_the_stricter_of_the_two(self, name):
+        # The structural fact behind "the nightly is where a product target
+        # is asserted": on every budget the per-PR anchor is TIGHTER than
+        # the product target, so a green pull request implies the product
+        # target held too, and the nightly's job is the wall clock rather
+        # than the regression.
+        budget = budget_table.ALL_BUDGETS[name]
+        if isinstance(budget, ThroughputBudget):
+            assert budget.regression >= budget.product_target
+        else:
+            assert budget.regression <= budget.product_target
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            # anchor far above the band: a re-anchor that moved `regression`
+            # and forgot `reference`
+            dict(regression=0.100, product_target=1.0, reference=0.001),
+            # anchor inside the band but looser than the product target
+            dict(regression=2.0, product_target=1.0, reference=0.8),
+            dict(regression=0.0, product_target=1.0, reference=0.001),
+        ],
+    )
+    def test_a_budget_outside_the_ruling_cannot_be_constructed(self, kwargs):
+        with pytest.raises(ValueError):
+            LatencyBudget("probe", **kwargs)
+
+    def test_a_throughput_budget_checks_the_band_the_other_way_round(self):
+        # reference / regression, because a throughput floor DIVIDES. Using
+        # the latency formula here would accept a floor 2.5x ABOVE the
+        # measured rate, which fails every run, and reject the correct one.
+        ThroughputBudget("probe", regression=80, product_target=50, reference=200)
+        with pytest.raises(ValueError):
+            ThroughputBudget("probe", regression=200, product_target=50, reference=80)
+
+    def test_the_table_names_tests_that_exist(self):
+        """A budget pointing at a renamed test is a budget nobody applies."""
+        sources = "\n".join(
+            path.read_text() for path in sorted(BENCHMARK_DIR.glob("test_*.py"))
+        )
+        missing = [
+            budget.test
+            for budget in budget_table.ALL_BUDGETS.values()
+            if f"async def {budget.test}(" not in sources
+        ]
+        assert not missing, missing
+
+    @pytest.mark.parametrize("name", sorted(budget_table.ALL_BUDGETS))
+    def test_every_entry_is_actually_used_by_the_suite(self, name):
+        """An unused entry is a number that looks enforced and is not."""
+        sources = "\n".join(
+            path.read_text() for path in sorted(BENCHMARK_DIR.glob("test_*.py"))
+        )
+        assert name in sources, f"{name} is in the table but no benchmark uses it"
+
+
+class TestWhichNumberIsAsserted:
+    """The #1556 split, driven through the helper rather than described."""
+
+    _BUDGET = LatencyBudget(
+        "probe", regression=0.050, product_target=0.500, reference=0.020
+    )
+
+    def test_a_pull_request_asserts_the_regression_anchor(self, monkeypatch):
+        _pin_calibration(monkeypatch, calibration.CALIBRATION_REFERENCE_SECONDS)
+        assert_latency_within(0.049, self._BUDGET, "probe")
+        with pytest.raises(AssertionError) as excinfo:
+            # Comfortably inside the 500ms product target, and still red:
+            # that is the whole point of re-anchoring.
+            assert_latency_within(0.100, self._BUDGET, "probe")
+        assert "50ms regression budget" in str(excinfo.value)
+
+    def test_the_nightly_asserts_the_raw_product_target(self, monkeypatch):
+        monkeypatch.setenv(calibration.ABSOLUTE_MODE_ENV, "1")
+        # 100ms is over the regression anchor and under the product target.
+        assert_latency_within(0.100, self._BUDGET, "probe")
+        with pytest.raises(AssertionError) as excinfo:
+            assert_latency_within(0.600, self._BUDGET, "probe")
+        assert "500ms product target" in str(excinfo.value)
+
+    def test_the_nightly_target_is_never_scaled(self, monkeypatch):
+        # The scale is pinned at 1.0 in absolute mode, so a slow nightly
+        # runner gets no relief — which is what makes it a wall-clock
+        # question. Pin a 3x machine and check the product target holds.
+        monkeypatch.setenv(calibration.ABSOLUTE_MODE_ENV, "1")
+        monkeypatch.setattr(
+            calibration, "_measured", calibration.CALIBRATION_REFERENCE_SECONDS * 3
+        )
+        with pytest.raises(AssertionError):
+            assert_latency_within(0.600, self._BUDGET, "probe")
+
+    def test_the_throughput_floor_splits_the_same_way(self, monkeypatch):
+        budget = ThroughputBudget(
+            "probe", regression=80, product_target=50, reference=200
+        )
+        _pin_calibration(monkeypatch, calibration.CALIBRATION_REFERENCE_SECONDS)
+        with pytest.raises(AssertionError):
+            assert_throughput_at_least(60.0, budget, "probe")  # under 80/s
+        monkeypatch.setenv(calibration.ABSOLUTE_MODE_ENV, "1")
+        assert_throughput_at_least(60.0, budget, "probe")  # over 50/s
 
 
 class TestDiscrimination:
-    """The two columns #908 must be judged on, run rather than argued.
+    """What each comparison can and cannot see, run rather than argued.
 
-    ``_TARGETS`` is the real budget table of the suite, and ``_HEALTHY`` the
-    worst (relative) utilisation each one was measured at. A uniform
-    slowdown must clear all of them; a single-path regression must fail its
-    own and nothing else.
+    #908's version of this class pinned a **30% regression** against a
+    synthetic budget at 95% utilisation, because 95% was the suite's
+    thinnest margin then. #1556 re-anchored every budget to 2-3x its
+    measured cost, so no budget sits at 95% any more and 30% sensitivity is
+    not a property the per-PR gate has. Below are the properties it does
+    have — plus the one it gave up, asserted rather than left to be
+    rediscovered.
+
+    ``_ANCHOR`` is the shipped shape: a budget 2.5x its measured reference.
     """
 
-    # name -> (target seconds, healthy observed seconds)
-    _CASES = {
-        "thin_margin": (0.200, 0.190),  # 95% of budget: the canary
-        "typical": (0.150, 0.060),
-        "roomy": (1.000, 0.020),
-    }
+    _ANCHOR = 2.5
+    _REFERENCE = 0.020
+    _BUDGET = LatencyBudget(
+        "probe",
+        regression=_REFERENCE * _ANCHOR,
+        product_target=0.500,
+        reference=_REFERENCE,
+    )
 
     def test_a_uniform_1_3x_slowdown_fails_nothing(self, monkeypatch):
+        # Unchanged from #908 and still the point: the whole process being
+        # 1.3x slower cancels, because the budget moves with it.
         _pin_calibration(monkeypatch, calibration.CALIBRATION_REFERENCE_SECONDS * 1.3)
-        for name, (target, healthy) in self._CASES.items():
-            assert_latency_within(healthy * 1.3, target, name)
+        assert_latency_within(self._REFERENCE * 1.3, self._BUDGET, "uniform")
 
-    def test_a_30_percent_regression_in_one_path_fails_that_path(self, monkeypatch):
-        # Same 1.3x machine, so the two columns differ only in WHERE the
-        # 1.3 is applied. The regressed path is over budget; its siblings,
-        # measured on the same slow machine, are not.
+    def test_a_gross_regression_fails_its_own_path(self, monkeypatch):
+        # 3x: an N+1, a lost index, a sync call on an async path. Measured
+        # on the same 1.3x machine, so the two columns differ only in WHERE
+        # the extra cost is.
         _pin_calibration(monkeypatch, calibration.CALIBRATION_REFERENCE_SECONDS * 1.3)
-        target, healthy = self._CASES["thin_margin"]
         with pytest.raises(AssertionError):
-            assert_latency_within(healthy * 1.3 * 1.3, target, "thin_margin")
-        for name in ("typical", "roomy"):
-            t, h = self._CASES[name]
-            assert_latency_within(h * 1.3, t, name)
+            assert_latency_within(self._REFERENCE * 1.3 * 3.0, self._BUDGET, "gross")
 
-    def test_a_30_percent_regression_on_a_reference_machine_also_fails(
+    def test_a_30_percent_regression_does_NOT_fire_per_pull_request(self):
+        # ‼ The trade #1556 made, asserted so it cannot be forgotten or
+        # quietly claimed back. At 2-3x a path must get 100-200% slower to
+        # trip. The alternative was a 1.3-1.5x threshold, and the calibrated
+        # noise floor measured 1.07x typical / 1.33x worst — so that
+        # threshold would flake, which is how #908 started.
+        assert_latency_within(self._REFERENCE * 1.3, self._BUDGET, "drift")
+
+    def test_the_absolute_comparison_keeps_its_30_percent_sensitivity(
         self, monkeypatch
     ):
-        _pin_calibration(monkeypatch, calibration.CALIBRATION_REFERENCE_SECONDS)
-        target, healthy = self._CASES["thin_margin"]
+        # Where 30% detection went: the nightly, against a raw target, on a
+        # quiet runner. This pins the COMPARISON — a budget at 95% of its
+        # product target does catch a 30% regression there, with no scale to
+        # absorb it.
+        #
+        # ‼ It does not claim the shipped suite has that sensitivity. The
+        # product targets sit 3.6x to 172x above measured cost, median 35x
+        # (``product_target / reference`` per row of the table), so getting
+        # 30% out of the nightly means tightening a product target — an
+        # owner decision #908's ruling reserved and #1556 did not reopen.
+        monkeypatch.setenv(calibration.ABSOLUTE_MODE_ENV, "1")
+        tight = LatencyBudget(
+            "probe", regression=0.100, product_target=0.200, reference=0.040
+        )
+        healthy = 0.190  # 95% of the product target
+        assert_latency_within(healthy, tight, "at the wall")
         with pytest.raises(AssertionError):
-            assert_latency_within(healthy * 1.3, target, "thin_margin")
+            assert_latency_within(healthy * 1.3, tight, "at the wall")
 
 
 # ------------------------------------------------- the terminal-summary hook
@@ -332,7 +550,7 @@ class TestTerminalSummary:
 
     def test_it_reports_the_scale_once_a_budget_was_asserted(self, monkeypatch):
         _pin_calibration(monkeypatch, calibration.CALIBRATION_REFERENCE_SECONDS * 2)
-        assert_latency_within(0.001, 1.0, "probe")
+        assert_latency_within(0.001, _latency(1.0), "probe")
         reporter = _FakeReporter()
         bench_conftest.pytest_terminal_summary(reporter, 0, None)
         assert any("2.00x" in line for line in reporter.lines), reporter.lines
@@ -350,7 +568,7 @@ class TestTerminalSummary:
             return calibration.CALIBRATION_REFERENCE_SECONDS * 1.5
 
         monkeypatch.setattr(calibration, "measure_calibration", _count)
-        assert_latency_within(0.001, 1.0, "probe")
+        assert_latency_within(0.001, _latency(1.0), "probe")
         assert calls == [], "the scale must not measure in absolute mode"
 
         reporter = _FakeReporter()
@@ -500,6 +718,10 @@ class TestOneComparisonSite:
         """A guard that watched the wrong directory would be green forever."""
         modules = sorted(p.name for p in BENCHMARK_DIR.glob("*.py"))
         assert "conftest.py" in modules
+        # budgets.py carries 50 numeric thresholds (#1556). It is in scope
+        # for the same reason conftest.py is: a hand-rolled comparison
+        # would be just as invisible there.
+        assert "budgets.py" in modules
         assert len([m for m in modules if m.startswith("test_")]) >= 7
 
     def test_no_benchmark_compares_a_threshold_outside_the_helpers(self):

@@ -10,6 +10,12 @@ Performance Targets:
 - Get active session: < 100ms
 - CASCADE delete (session → executions): < 500ms
 
+The ``Target:`` figures above and in each test docstring are the **product
+targets**, and only the ``FM_BENCHMARK_ABSOLUTE`` nightly asserts them. A
+pull request is gated on the far smaller **regression anchor** beside each
+one in ``budgets.py`` — a round number 2-3x that operation's measured cost
+on CI (#1556). Read a budget there, not here.
+
 Every wall-clock assertion here goes through ``measure_min_latency`` (warm-up
 call, then N samples, compare the MINIMUM). See that helper's docstring for
 why the minimum rather than a single sample or a small-n p95.
@@ -36,6 +42,23 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
     SQLiteCaseRepository,
 )
 
+from .budgets import (
+    SESSION_COMPLETION_UPDATE,
+    SESSION_COUNT,
+    SESSION_CREATE,
+    SESSION_CREATE_THROUGHPUT,
+    SESSION_CREATE_WITH_METADATA,
+    SESSION_DELETE,
+    SESSION_GET_ACTIVE,
+    SESSION_LIFECYCLE_WORKLOAD,
+    SESSION_LIST_BY_CASE,
+    SESSION_LIST_BY_USER,
+    SESSION_LIST_FILTERED,
+    SESSION_PAUSE_RESUME_WORKLOAD,
+    SESSION_RETRIEVE,
+    SESSION_STATUS_UPDATE,
+    SESSION_TOKEN_USAGE_UPDATE,
+)
 from .conftest import (
     assert_latency_within,
     assert_throughput_at_least,
@@ -122,7 +145,7 @@ class TestSessionCreationPerformance:
 
         assert measured.result is not None
         assert_latency_within(
-            measured.best, 0.200, "Session creation latency", measured.report()
+            measured.best, SESSION_CREATE, "Session creation latency", measured.report()
         )
         print(f"\n  Session creation latency: {measured.report()}")
 
@@ -156,7 +179,7 @@ class TestSessionCreationPerformance:
         assert measured.result.metadata is not None
         assert_latency_within(
             measured.best,
-            0.200,
+            SESSION_CREATE_WITH_METADATA,
             "Session with metadata creation latency",
             measured.report(),
         )
@@ -209,7 +232,10 @@ class TestSessionCreationPerformance:
 
         throughput = batch_size / measured.best
         assert_throughput_at_least(
-            throughput, 20, "Session creation throughput", measured.report()
+            throughput,
+            SESSION_CREATE_THROUGHPUT,
+            "Session creation throughput",
+            measured.report(),
         )
         print(
             f"\n  Batch creation throughput: {throughput:.1f} sessions/sec "
@@ -243,7 +269,10 @@ class TestSessionRetrievalPerformance:
 
         assert measured.result is not None
         assert_latency_within(
-            measured.best, 0.100, "Session retrieval latency", measured.report()
+            measured.best,
+            SESSION_RETRIEVE,
+            "Session retrieval latency",
+            measured.report(),
         )
         print(f"\n  Session retrieval latency: {measured.report()}")
 
@@ -270,7 +299,10 @@ class TestSessionRetrievalPerformance:
         assert measured.result is not None
         assert measured.result.state == SessionState.ACTIVE
         assert_latency_within(
-            measured.best, 0.100, "Get active session latency", measured.report()
+            measured.best,
+            SESSION_GET_ACTIVE,
+            "Get active session latency",
+            measured.report(),
         )
         print(f"\n  Get active session latency: {measured.report()}")
 
@@ -298,7 +330,10 @@ class TestSessionRetrievalPerformance:
 
         assert len(measured.result) == 100
         assert_latency_within(
-            measured.best, 0.200, "List sessions latency", measured.report()
+            measured.best,
+            SESSION_LIST_BY_CASE,
+            "List sessions latency",
+            measured.report(),
         )
         print(
             f"\n  List sessions latency: {measured.report()} "
@@ -341,7 +376,10 @@ class TestSessionRetrievalPerformance:
 
         assert len(measured.result) == 50
         assert_latency_within(
-            measured.best, 0.150, "Filtered list latency", measured.report()
+            measured.best,
+            SESSION_LIST_FILTERED,
+            "Filtered list latency",
+            measured.report(),
         )
         print(
             f"\n  Filtered list latency: {measured.report()} "
@@ -383,7 +421,10 @@ class TestSessionRetrievalPerformance:
 
         assert len(measured.result) == 50
         assert_latency_within(
-            measured.best, 0.200, "List by user latency", measured.report()
+            measured.best,
+            SESSION_LIST_BY_USER,
+            "List by user latency",
+            measured.report(),
         )
         print(
             f"\n  List by user latency: {measured.report()} "
@@ -423,7 +464,10 @@ class TestSessionUpdatePerformance:
         assert measured.result is not None
         assert measured.result.state == SessionState.PAUSED
         assert_latency_within(
-            measured.best, 0.150, "Status update latency", measured.report()
+            measured.best,
+            SESSION_STATUS_UPDATE,
+            "Status update latency",
+            measured.report(),
         )
         print(f"\n  Session state update latency: {measured.report()}")
 
@@ -454,7 +498,10 @@ class TestSessionUpdatePerformance:
         assert measured.result is not None
         assert measured.result.state == SessionState.COMPLETED
         assert_latency_within(
-            measured.best, 0.150, "Completion update latency", measured.report()
+            measured.best,
+            SESSION_COMPLETION_UPDATE,
+            "Completion update latency",
+            measured.report(),
         )
         print(f"\n  Session completion update latency: {measured.report()}")
 
@@ -490,7 +537,10 @@ class TestSessionUpdatePerformance:
         assert measured.result.total_token_usage == 2250
         assert measured.result.total_agent_executions == 3
         assert_latency_within(
-            measured.best, 0.150, "Token usage update latency", measured.report()
+            measured.best,
+            SESSION_TOKEN_USAGE_UPDATE,
+            "Token usage update latency",
+            measured.report(),
         )
         print(f"\n  Token usage update latency: {measured.report()}")
 
@@ -527,7 +577,7 @@ class TestSessionDeletePerformance:
 
         assert measured.result is True
         assert_latency_within(
-            measured.best, 0.150, "Session delete latency", measured.report()
+            measured.best, SESSION_DELETE, "Session delete latency", measured.report()
         )
         print(f"\n  Session delete latency: {measured.report()}")
 
@@ -558,7 +608,9 @@ class TestSessionCountPerformance:
         )
 
         assert measured.result == 50
-        assert_latency_within(measured.best, 0.050, "Count latency", measured.report())
+        assert_latency_within(
+            measured.best, SESSION_COUNT, "Count latency", measured.report()
+        )
         print(
             f"\n  Count sessions latency: {measured.report()} "
             f"({measured.result} items)"
@@ -610,7 +662,10 @@ class TestSessionMixedWorkloadPerformance:
 
         assert measured.result.state == SessionState.COMPLETED
         assert_latency_within(
-            measured.best, 0.600, "Lifecycle workload latency", measured.report()
+            measured.best,
+            SESSION_LIFECYCLE_WORKLOAD,
+            "Lifecycle workload latency",
+            measured.report(),
         )
         print(f"\n  Session lifecycle workload latency: {measured.report()}")
 
@@ -663,6 +718,9 @@ class TestSessionMixedWorkloadPerformance:
 
         assert measured.result.state == SessionState.COMPLETED
         assert_latency_within(
-            measured.best, 0.900, "Pause/resume workload latency", measured.report()
+            measured.best,
+            SESSION_PAUSE_RESUME_WORKLOAD,
+            "Pause/resume workload latency",
+            measured.report(),
         )
         print(f"\n  Pause/resume workload latency: {measured.report()}")
