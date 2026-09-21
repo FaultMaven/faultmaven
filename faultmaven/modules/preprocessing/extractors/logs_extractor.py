@@ -16,6 +16,7 @@ from faultmaven.modules.preprocessing.extractors.utils import (
     extract_timestamp,
     has_content,
     has_yearless_timestamps,
+    split_log_lines,
 )
 from faultmaven.modules.preprocessing.log_usernames import extract_usernames
 
@@ -123,7 +124,7 @@ class LogsAndErrorsExtractor:
         if not has_content(content):
             return ExtractResult(file_extract=EMPTY_CONTENT_RESPONSE)
 
-        lines = content.split("\n")
+        lines = split_log_lines(content)
         total_lines = len(lines)
 
         # 1. Find all errors with severity
@@ -602,9 +603,12 @@ class LogsAndErrorsExtractor:
     # Username extraction lives in ``preprocessing/log_usernames.py`` so the
     # entity-registry extractor applies the same rule rather than a second
     # copy of it (fm#522). Only the rendering below is this class's business.
-    # That includes the multiplicity: a username counts once per line, not
-    # once per regex match, so an account seen only as ``invalid user`` no
-    # longer outranks one seen as ``Accepted password for <name>`` (fm#1574).
+    #
+    # The MULTIPLICITY is decided there too, not here: ``extract_usernames``
+    # returns each account at most once per line, so the counter below counts
+    # LINES (fm#1574). Do not re-derive that here — a local re-implementation
+    # is what #522 cost, and the rendering states the unit so the two cannot
+    # drift apart silently.
 
     # Port matchers. A port number is a numeric token that needs *structural*
     # context on the left: either an explicit `port` keyword, or a
@@ -906,7 +910,7 @@ class LogsAndErrorsExtractor:
         bgl_nodes: set[str] = set()
         bgl_line_count = 0
 
-        lines = content.split("\n")
+        lines = split_log_lines(content)
         for i, line in enumerate(lines):
             is_error = i in error_lines
             line_ips = self._IPV4_RE.findall(line)
@@ -1236,11 +1240,17 @@ class LogsAndErrorsExtractor:
 
         if user_all_counts:
             total_distinct = len(user_all_counts)
-            parts.append(f"  Distinct usernames ({total_distinct} total):")
+            parts.append(
+                f"  Distinct usernames ({total_distinct} total)"
+                "  [search: pass the username to search_file;"
+                " count = LINES the account appears on, not text occurrences —"
+                " a line naming it twice (e.g. 'for invalid user X') counts"
+                " once, so search_file may return more hits than the count]:"
+            )
             for user, total in user_all_counts.most_common():
                 error_n = user_error_counts.get(user, 0)
                 annotation = f"  ({error_n} on error lines)" if error_n else ""
-                parts.append(f"    {user}: {total} mentions{annotation}")
+                parts.append(f"    {user}: {total} lines{annotation}")
 
         if port_counts:
             parts.append(f"  Distinct Ports: {len(port_counts)}")

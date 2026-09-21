@@ -37,7 +37,8 @@ A username candidate survives when all of the following hold:
 Multiplicity is decided here too, and the same way for both consumers: a
 mention is a LINE. The two branches overlap on ``for invalid user <name>``,
 and counting each match ranked a scanner-sprayed account above a real one
-(fm#1574).
+(fm#1574). Both patterns are ``re.IGNORECASE``, so the de-duplication key is
+case-folded as well — ``for Alice … user=alice`` is one account, once.
 """
 
 from __future__ import annotations
@@ -189,9 +190,40 @@ def extract_usernames(line: str) -> list[str]:
     non-de-duplicating entry point: ``distinct_usernames`` was that, for the
     one release in which the two paths disagreed, and it is retired.
 
-    Order is first match, so the caller still sees the line's own ordering.
+    **The key is case-folded; the value keeps the account's own spelling.**
+    Both patterns are ``re.IGNORECASE``, so the two branches routinely
+    disagree on case — ``Failed password for Alice … user=alice`` is one
+    account on one line, and a case-sensitive key counted it twice, which is
+    the very doubling this function exists to remove. Which spelling
+    survives is **the first candidate in branch order**: ``USER_FIELD_RE``'s
+    matches are considered before ``USER_FOR_RE``'s, so a ``user=`` field
+    beats a ``for`` clause. That is deliberate rather than incidental — the
+    field is the structured, canonical form, while the ``for`` clause echoes
+    whatever the client offered.
+
+    Two limits worth stating, because both are visible in the prompt:
+
+    * Order is **branch order, not the line's left-to-right offsets**:
+      ``for bob … user=alice`` returns ``['alice', 'bob']``. No caller
+      depends on order today — both accumulate into a ``Counter`` — and the
+      rendered profile sorts by count.
+    * Case folding is **within one line only**. Across lines the spelling is
+      the entity identity, so ``Alice`` on one line and ``alice`` on another
+      remain two rows in ``case_entities``. Unifying them is a question about
+      account identity (POSIX says they differ, Active Directory says they do
+      not) and about a persisted key, not about this line's arithmetic.
     """
     candidates = USER_FIELD_RE.findall(line)
     if AUTH_CONTEXT_RE.search(line):
         candidates += USER_FOR_RE.findall(line)
-    return list(dict.fromkeys(c for c in candidates if is_username(c)))
+    seen: set[str] = set()
+    usernames: list[str] = []
+    for candidate in candidates:
+        if not is_username(candidate):
+            continue
+        key = candidate.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        usernames.append(candidate)
+    return usernames

@@ -39,10 +39,13 @@ from faultmaven.modules.preprocessing.extractors.logs_extractor import (
 from faultmaven.modules.preprocessing.log_usernames import (
     USER_FIELD_RE,
     USER_FOR_RE,
+    extract_usernames,
     is_username,
 )
 
-_USER_ROW = re.compile(r"^ {4}(\S.*?): (\d+) mentions")
+# The rendered row states its unit — "lines", not "mentions" — because the
+# count is lines and the neighbouring IP block counts occurrences (fm#1574).
+_USER_ROW = re.compile(r"^ {4}(\S.*?): (\d+) lines")
 
 
 def profile_usernames(content: str) -> list[str]:
@@ -709,6 +712,184 @@ def test_one_line_is_one_mention_even_across_different_fields() -> None:
     profile, registry = both_paths(line)
     assert Counter(profile) == {"alice": 1}, profile
     assert Counter(registry) == {"alice": 1}, registry
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "line,expected,winner",
+    [
+        pytest.param(
+            "Dec 10 09:34:00 h sshd[4]: Failed password for Alice from "
+            "1.2.3.4 port 22 ssh2 user=alice",
+            {"alice": 1},
+            "alice",
+            id="for-clause-uppercase-field-lowercase",
+        ),
+        pytest.param(
+            "Dec 10 09:34:00 h sshd[4]: Failed password for alice from "
+            "1.2.3.4 port 22 ssh2 user=Alice",
+            {"Alice": 1},
+            "Alice",
+            id="for-clause-lowercase-field-uppercase",
+        ),
+        pytest.param(
+            "Dec 10 09:34:00 h sshd[4]: Failed password for invalid user "
+            "TEST from 1.2.3.4 port 22 ssh2",
+            {"TEST": 1},
+            "TEST",
+            id="the-overlap-shape-preserves-its-own-case",
+        ),
+    ],
+)
+def test_the_dedup_key_is_case_folded_and_the_field_spelling_wins(
+    line: str, expected: dict[str, int], winner: str
+) -> None:
+    """One account on one line stays one even when the branches disagree on case.
+
+    Both patterns are ``re.IGNORECASE``, so ``for Alice … user=alice`` reaches
+    the concatenation as two candidates that differ only in case. A
+    case-sensitive key counted that as two mentions — the exact doubling
+    fm#1574 exists to remove, surviving the fix. The ``for`` clause echoing a
+    different case from the ``user=`` field is the normal shape in
+    application and Windows-style auth logs.
+
+    Which spelling survives is pinned, because it is what the prompt shows:
+    the **first candidate in branch order**, and ``USER_FIELD_RE`` is
+    considered before ``USER_FOR_RE``, so the structured ``user=`` field
+    beats the ``for`` clause whichever way round the cases fall. Both
+    directions are parametrized so the test cannot pass by accident on a
+    rule that simply prefers lowercase.
+    """
+    assert extract_usernames(line) == [winner]
+    profile, registry = both_paths(line + "\n")
+    assert Counter(profile) == expected, profile
+    assert Counter(registry) == expected, registry
+
+
+@pytest.mark.unit
+def test_case_folding_does_not_reach_across_lines() -> None:
+    """The declared limit of the rule above, pinned so a widening is deliberate.
+
+    Within a line the key is case-folded. ACROSS lines the spelling is the
+    entity identity — ``case_entities`` is keyed on ``entity_value`` — and
+    whether ``Alice`` and ``alice`` are one account is a question about
+    POSIX versus Active Directory semantics and about a persisted key, not
+    about this line's arithmetic. Two rows, one each.
+    """
+    content = (
+        "Dec 10 09:34:00 h sshd[1]: Failed password for Alice from 1.2.3.4 "
+        "port 22 ssh2\n"
+        "Dec 10 09:35:00 h sshd[2]: Failed password for alice from 1.2.3.4 "
+        "port 22 ssh2\n"
+    )
+    profile, registry = both_paths(content)
+    assert Counter(profile) == {"Alice": 1, "alice": 1}, profile
+    assert Counter(registry) == {"Alice": 1, "alice": 1}, registry
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "ending",
+    [
+        pytest.param("\n", id="LF"),
+        pytest.param("\r", id="CR"),
+        pytest.param("\r\n", id="CRLF"),
+    ],
+)
+def test_a_line_is_a_line_under_every_line_ending(ending: str) -> None:
+    """Per-line counting is only as right as what the caller calls a line.
+
+    Both callers split on ``content.split("\\n")``, which reads a bare-``\r``
+    file — classic Mac endings, and what some exporters still emit — as ONE
+    physical line. Counting matches papered over that (five records gave 5);
+    counting lines exposed it (five records gave **1**), destroying on that
+    input the very ranking fm#1574 exists to protect.
+
+    Five records naming one account must be five mentions under all three
+    endings. The error-line annotation is asserted too, because the profile's
+    line index has to stay in step with the error-line set that
+    ``extract()`` computes — splitting the two loops differently would give
+    the right count with the wrong ``(N on error lines)`` beside it.
+    """
+    record = (
+        "Dec 10 09:3{i}:00 h sshd[{i}]: error: Failed password for alice "
+        "from 1.2.3.4 port 22 ssh2"
+    )
+    content = ending.join(record.format(i=i) for i in range(5)) + ending
+
+    profile, registry = both_paths(content)
+    assert Counter(profile) == {"alice": 5}, (ending, profile)
+    assert Counter(registry) == {"alice": 5}, (ending, registry)
+
+    rendered = LogsAndErrorsExtractor().extract(content)
+    blob = (rendered.file_extract or "") + "\n" + (rendered.search_map or "")
+    assert "alice: 5 lines  (5 on error lines)" in blob, blob
+
+
+@pytest.mark.unit
+def test_the_rendered_username_block_states_its_unit() -> None:
+    """The count changed unit, so the search map has to say so.
+
+    This block is a search map: the number sets the model's expectation for
+    what ``search_file`` will return. It now counts LINES while the
+    ``Distinct IPs`` block beside it counts occurrences, and on
+    ``invalid user test`` it reports 1 where the text holds two occurrences.
+    An unlabelled number next to a differently-labelled one is a trap.
+    """
+    content = (
+        "Jul 27 14:4{i}:00 combo sshd[264{i}]: Failed password for invalid "
+        "user test from 211.72.151.162 port 555{i}8 ssh2"
+    )
+    blob = str(
+        LogsAndErrorsExtractor()
+        .extract("\n".join(content.format(i=i) for i in range(5)) + "\n")
+        .search_map
+    )
+    assert "count = LINES the account appears on, not text occurrences" in blob
+    assert "test: 5 lines" in blob
+    assert "test: 5 mentions" not in blob
+
+
+@pytest.mark.unit
+def test_file_summary_root_login_attempts_counts_lines() -> None:
+    """``Includes N root login attempts.`` is the one ABSOLUTE number affected.
+
+    Every other consumer of this count uses it as a rank. ``_build_summary``
+    prints it as a quantity the model may quote directly, and it reads the
+    same ``user_all_counts`` the ranking does — so it moved with fm#1574 and
+    nothing covered it. Five ``Failed password for invalid user root`` lines:
+    ``main`` rendered **10** (both branches matched each line), this renders
+    **5**.
+    """
+    record = (
+        "Jul 27 14:4{i}:00 combo sshd(pam_unix)[264{i}]: Failed password for "
+        "invalid user root from 211.72.151.162 port 555{i}8 ssh2"
+    )
+    summary = str(
+        LogsAndErrorsExtractor()
+        .extract("\n".join(record.format(i=i) for i in range(5)) + "\n")
+        .file_extract
+    )
+    assert "Includes 5 root login attempts." in summary, summary
+    assert "Includes 10 root login attempts." not in summary
+
+
+@pytest.mark.unit
+def test_returned_order_is_branch_order_not_text_order() -> None:
+    """The docstring's order contract, pinned because it reads as the other one.
+
+    ``USER_FIELD_RE``'s matches come before ``USER_FOR_RE``'s, so the list is
+    NOT the line's left-to-right ordering: ``for bob … user=alice`` yields
+    ``['alice', 'bob']``. No caller depends on it — both accumulate into a
+    ``Counter``, and the profile renders by count — but it is the contract
+    the next caller reads, and it is what decides the case tie-break above.
+    """
+    line = (
+        "Dec 10 09:34:00 h sshd[4]: Failed password for bob from 1.2.3.4 "
+        "port 22 ssh2 user=alice"
+    )
+    assert line.index("bob") < line.index("alice")
+    assert extract_usernames(line) == ["alice", "bob"]
 
 
 @pytest.mark.unit
