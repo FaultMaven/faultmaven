@@ -826,11 +826,14 @@ class LogsAndErrorsExtractor:
     def _build_entity_profile(
         self,
         content: str,
-        error_lines: set[int] = None,
+        error_lines: set[int] | None = None,
         top_n: int = 20,
         warn_only: bool = False,
-    ) -> str:
+    ) -> tuple[str, str]:
         """Scan the full file for key entities and produce a frequency summary.
+
+        Returns ``(file_summary, profile_body)`` — the one-line summary that
+        heads ``file_extract`` and the body that goes into ``search_map``.
 
         All IP and username counts reflect the complete file — not just
         severity-keyword lines. Entities are ranked by total mentions so the

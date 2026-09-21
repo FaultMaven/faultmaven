@@ -23,6 +23,7 @@ import ast
 import pathlib
 import re
 import warnings
+from collections import Counter
 
 import pytest
 
@@ -35,12 +36,18 @@ from faultmaven.modules.preprocessing.entities.registry import (
 from faultmaven.modules.preprocessing.extractors.logs_extractor import (
     LogsAndErrorsExtractor,
 )
+from faultmaven.modules.preprocessing.log_usernames import is_username
 
 _USER_ROW = re.compile(r"^ {4}(\S.*?): (\d+) mentions")
 
 
 def profile_usernames(content: str) -> list[str]:
-    """Usernames as ``LogsAndErrorsExtractor.extract()`` renders them."""
+    """Usernames as ``LogsAndErrorsExtractor.extract()`` renders them.
+
+    Expanded by the rendered mention count, for the same reason
+    ``registry_usernames`` is: collecting one entry per row silently caps
+    every count at 1 and makes a multiplicity assertion unfailable.
+    """
     result = LogsAndErrorsExtractor().extract(content)
     blob = (result.file_extract or "") + "\n" + (result.search_map or "")
     found: list[str] = []
@@ -54,17 +61,21 @@ def profile_usernames(content: str) -> list[str]:
             if match is None:
                 grabbing = False
                 continue
-            found.append(match.group(1))
+            found.extend([match.group(1)] * int(match.group(2)))
     return found
 
 
 def registry_usernames(content: str) -> list[str]:
-    """USER rows as ``extract_entities_for_data_type`` emits them."""
-    return [
-        obs.entity_value
-        for obs in extract_entities_for_data_type(DataType.LOGS_AND_ERRORS, content)
-        if obs.entity_type == EntityType.USER
-    ]
+    """USER rows as ``extract_entities_for_data_type`` emits them.
+
+    Expanded by ``mention_count`` so multiplicity survives into the
+    comparison; a bare list of values hides a counting regression.
+    """
+    found: list[str] = []
+    for obs in extract_entities_for_data_type(DataType.LOGS_AND_ERRORS, content):
+        if obs.entity_type == EntityType.USER:
+            found.extend([obs.entity_value] * obs.mention_count)
+    return found
 
 
 def both_paths(content: str) -> tuple[list[str], list[str]]:
@@ -142,6 +153,37 @@ def test_field_names_are_never_usernames() -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param(
+            "Sep 21 10:00:00 h sshd[1]: pam_unix(sshd:auth): authentication "
+            "failure; logname= uid=0 user rhost=mail.example.com",
+            id="bare-user-then-rhost",
+        ),
+        pytest.param(
+            "Sep 21 10:00:00 h sshd[1]: pam_unix(sshd:auth): authentication "
+            "failure; user logname=x rhost=1.2.3.4",
+            id="bare-user-then-logname",
+        ),
+    ],
+)
+def test_bare_user_token_does_not_capture_the_next_key(line: str) -> None:
+    """Guard: the ``(?![\\w.\\-]*=)`` lookahead after the capture.
+
+    The ``(?<![\\w=])`` lookbehind only closed the ``=user`` door. A *bare*
+    ``user`` token still satisfied the whitespace alternative, and the capture
+    then ran to the next field's name and stopped at its ``=`` — so ``rhost``
+    was still read as a login account, which is fm#522's title. The sibling
+    test above passed throughout, because it only ever exercised the
+    ``ruser=user`` value-position shape.
+    """
+    profile, registry = both_paths(line + "\n")
+    assert profile == [], profile
+    assert registry == [], registry
+
+
+@pytest.mark.unit
 def test_empty_user_field_does_not_capture_the_next_key() -> None:
     """Guard: ``(?:=|[ \\t]+)`` in place of ``[= ]+``.
 
@@ -153,6 +195,86 @@ def test_empty_user_field_does_not_capture_the_next_key() -> None:
         "failure; logname= uid=0 euid=0 tty=ssh user= rhost=mail.example.com\n"
     )
     profile, registry = both_paths(content)
+    assert profile == [], profile
+    assert registry == [], registry
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        pytest.param("user=alice", id="tight"),
+        pytest.param("user= alice", id="space-after"),
+        pytest.param("user=  alice", id="two-spaces-after"),
+        pytest.param("user = alice", id="spaces-both-sides"),
+        pytest.param("user alice", id="no-equals"),
+        pytest.param("user  alice", id="two-spaces-no-equals"),
+    ],
+)
+def test_every_user_field_spelling_still_yields_the_account(spelling: str) -> None:
+    """The delimiter is left exactly as fm#522 found it, and this says why.
+
+    The first attempt at the empty-``user=`` case narrowed ``[= ]+`` to
+    ``(?:=[ \\t]*|[ \\t]+)``. That silently cost ``user= alice`` and
+    ``user = alice`` — both real — and closed nothing the lookahead does not
+    close, which the mutation matrix showed by killing no test when the
+    narrowing was reverted. These are the spellings that narrowing broke.
+    """
+    line = (
+        "Sep 21 11:00:20 web01 sshd[1]: pam_unix(sshd:auth): authentication "
+        f"failure; {spelling}"
+    )
+    profile, registry = both_paths(line + "\n")
+    assert profile == ["alice"], profile
+    assert registry == ["alice"], registry
+
+
+@pytest.mark.unit
+def test_value_position_user_is_never_the_key() -> None:
+    """Guard: the ``(?<![\\w=])`` lookbehind, isolated.
+
+    Once the lookahead landed, every *realistic* input that the lookbehind
+    used to hold was also held by the lookahead — re-running the mutation
+    matrix showed the lookbehind killing nothing, which is a guard the next
+    change can delete in silence. This input isolates it: a value-position
+    ``user`` followed by a bare token rather than another ``key=``. No
+    producer measured here emits that shape (PAM's stream is all
+    ``key=value``), so this pins the rule's intent — a ``user`` in value
+    position is never the key — rather than a measured symptom.
+    """
+    line = (
+        "Sep 21 11:00:09 web01 sudo: pam_unix(sudo:auth): authentication "
+        "failure; logname=user tty=pts/0 ruser=user root"
+    )
+    profile, registry = both_paths(line + "\n")
+    assert profile == [], profile
+    assert registry == [], registry
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param(
+            "Sep 21 11:00:10 web01 sshd[1]: pam_unix(sshd:auth): "
+            "authentication failure for logname=alice",
+            id="for-logname",
+        ),
+        pytest.param(
+            "Sep 21 11:00:11 web01 sshd[2]: Failed password for rhost=1.2.3.4",
+            id="for-rhost",
+        ),
+    ],
+)
+def test_for_branch_does_not_capture_a_field_name(line: str) -> None:
+    """Guard: the same ``(?![\\w.\\-]*=)`` lookahead, on the ``for`` branch.
+
+    "A username is not a field name" is a property of the rule, not of
+    whichever branch captured the token, so both patterns carry it. Isolated
+    for the same reason as the test above — without these two inputs the
+    ``for``-branch copy killed nothing in the matrix.
+    """
+    profile, registry = both_paths(line + "\n")
     assert profile == [], profile
     assert registry == [], registry
 
@@ -317,7 +439,15 @@ def test_real_usernames_still_captured(line: str, expected: str) -> None:
 
 @pytest.mark.unit
 def test_both_paths_agree_on_a_mixed_auth_log() -> None:
-    """The two implementations became one; their answers must not diverge."""
+    """The two implementations became one; their answers must not diverge.
+
+    Membership must match exactly. Multiplicity is asserted per path with
+    explicit counts rather than compared between them, because the two
+    deliberately differ: the profile counts *matches* (its long-standing
+    semantics, fm#1574) and the registry counts *lines* (what it counted
+    before fm#522 moved it onto the shared rule). A set comparison here
+    discarded multiplicity entirely and let a doubling regression through.
+    """
     content = "\n".join(
         [
             "Jun 14 15:16:01 combo sshd(pam_unix)[19939]: authentication failure; "
@@ -336,8 +466,184 @@ def test_both_paths_agree_on_a_mixed_auth_log() -> None:
         ]
     )
     profile, registry = both_paths(content + "\n")
-    assert set(profile) == {"root", "cyrus", "test"}, profile
-    assert set(registry) == {"root", "cyrus", "test"}, registry
+    assert set(profile) == set(registry) == {"root", "cyrus", "test"}
+    # "Failed password for invalid user test" matches on both branches, so the
+    # profile counts it twice and the registry once.
+    assert Counter(profile) == {"root": 1, "cyrus": 1, "test": 2}, profile
+    assert Counter(registry) == {"root": 1, "cyrus": 1, "test": 1}, registry
+
+
+# ---------------------------------------------------------------------------
+# The registry path's before/after, pinned as data rather than prose.
+# ---------------------------------------------------------------------------
+
+# fm#522 moved ``entities/logs.py`` onto the shared rule, which newly applied
+# the auth-context gate to that path. These are lines the registry path
+# recorded BEFORE that move, taken from ``origin/main``'s local ``_USER_RE``.
+# Each must still be recorded, or the move silently cost the entity registry
+# usernames it used to have. Three of them regressed on the first attempt and
+# were only found because this table was written out.
+REGISTRY_MUST_STILL_RECORD = [
+    pytest.param(
+        "Dec 10 07:10:00 LabSZ sshd[1]: error: maximum authentication attempts "
+        "exceeded for root from 1.2.3.4 port 22 ssh2 [preauth]",
+        ["root"],
+        id="maximum-authentication-attempts",
+    ),
+    pytest.param(
+        "Dec 10 07:10:01 LabSZ sshd[2]: Postponed publickey for alice from "
+        "1.2.3.4 port 22 ssh2 [preauth]",
+        ["alice"],
+        id="postponed-publickey",
+    ),
+    pytest.param(
+        "Dec 10 07:10:02 LabSZ sshd[3]: Failed publickey for bob from 1.2.3.4 "
+        "port 22 ssh2",
+        ["bob"],
+        id="failed-publickey",
+    ),
+    pytest.param(
+        "Dec 10 07:10:04 LabSZ sshd[4]: Failed none for invalid user carol "
+        "from 1.2.3.4 port 22 ssh2",
+        ["carol"],
+        id="failed-none",
+    ),
+    pytest.param(
+        "Dec 10 07:10:05 LabSZ sshd[5]: Failed keyboard-interactive/pam for "
+        "dave from 1.2.3.4 port 22 ssh2",
+        ["dave"],
+        id="failed-keyboard-interactive",
+    ),
+    pytest.param(
+        "Sep 21 10:00:00 h sshd[6]: pam_unix(sshd:session): session closed for "
+        "user frank",
+        ["frank"],
+        id="session-closed-for-user",
+    ),
+    pytest.param(
+        "Sep 21 10:00:01 h sshd[7]: pam_unix(sshd:auth): authentication "
+        "failure; user=svc_",
+        ["svc_"],
+        id="trailing-underscore-account",
+    ),
+    pytest.param(
+        "Sep 21 10:00:02 h sshd[8]: pam_unix(sshd:auth): authentication "
+        "failure; user=  alice",
+        ["alice"],
+        id="spaces-after-equals",
+    ),
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("line,expected", REGISTRY_MUST_STILL_RECORD)
+def test_registry_path_still_records_what_it_recorded_before(
+    line: str, expected: list[str]
+) -> None:
+    """Applying the auth gate to the registry path must not cost it usernames."""
+    assert registry_usernames(line + "\n") == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "line,was,now",
+    [
+        pytest.param(
+            "Jun 15 04:06:18 combo su(pam_unix)[1]: session opened for user "
+            "cyrus by (uid=0)",
+            "user",
+            "cyrus",
+            id="session-opened",
+        ),
+        pytest.param(
+            "Sep 21 10:00:00 h sshd[2]: pam_unix(sshd:session): session closed "
+            "for user frank",
+            "user",
+            "frank",
+            id="session-closed",
+        ),
+    ],
+)
+def test_registry_now_records_the_account_not_the_word_user(
+    line: str, was: str, now: str
+) -> None:
+    """A deliberate registry-path improvement, pinned so it is not incidental.
+
+    ``origin/main``'s local pattern was a single alternation: on
+    ``session opened for user cyrus`` its ``for`` branch matched first,
+    consumed ``for user``, returned the literal ``user`` — and scanning
+    resumed past ``cyrus``, so the real account was never seen. The shared
+    rule runs the two branches separately, so ``cyrus`` is captured by the
+    field branch and the literal ``user`` is dropped by ``PROTOCOL_TERMS``.
+    """
+    found = registry_usernames(line + "\n")
+    assert found == [now], found
+    assert was not in found
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        pytest.param(
+            "Jul 27 14:41:59 combo sshd[1]: Failed password for invalid user "
+            "test from 211.72.151.162 port 55568 ssh2",
+            {"test": 1},
+            id="failed-password-invalid-user",
+        ),
+        pytest.param(
+            "Dec 10 09:32:20 LabSZ sshd[2]: Failed password for invalid user "
+            "admin from 1.2.3.4 port 22 ssh2",
+            {"admin": 1},
+            id="invalid-user-admin",
+        ),
+    ],
+)
+def test_registry_mention_counts_are_distinct_per_line(
+    line: str, expected: dict[str, int]
+) -> None:
+    """One line, one mention — what the registry path counted before fm#522.
+
+    Both branches match the same token on an ``invalid user`` line, so the
+    shared rule returns it twice. That is the entity profile's long-standing
+    semantics and is left alone there, but on the registry path it would be a
+    new doubling, and ``mention_count`` is not cosmetic: ``list_top_entities``
+    orders by ``SUM(mention_count) DESC`` and ``fetch_entity_highlights``
+    prints the top five with their counts into the investigation prompt. A
+    scanner-sprayed ``invalid user`` account would outrank a real one 2:1.
+    See fm#1574 for the profile path's separate counting question.
+    """
+    obs = {
+        o.entity_value: o.mention_count
+        for o in extract_entities_for_data_type(DataType.LOGS_AND_ERRORS, line + "\n")
+        if o.entity_type == EntityType.USER
+    }
+    assert obs == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "candidate,accepted",
+    [
+        pytest.param("svc_", True, id="trailing-underscore-is-legal-posix"),
+        pytest.param("root", True, id="plain"),
+        pytest.param("host-187-141-143-180-sta.mx", False, id="reverse-dns"),
+        pytest.param("unknown", False, id="protocol-term"),
+        pytest.param("9abc", False, id="leading-digit"),
+        pytest.param("truncated.", False, id="trailing-dot-from-truncation"),
+        pytest.param("truncated-", False, id="trailing-hyphen-from-truncation"),
+        pytest.param("", False, id="empty"),
+    ],
+)
+def test_is_username_predicate(candidate: str, accepted: bool) -> None:
+    """``is_username`` is public, so its contract is tested directly.
+
+    Two of its clauses are unreachable through the two patterns, whose capture
+    groups both start ``[a-zA-Z_]`` and so can never yield a leading digit or
+    an empty string. Without this test the mutation matrix would read as
+    complete while saying nothing about them.
+    """
+    assert is_username(candidate) is accepted
 
 
 # ---------------------------------------------------------------------------
@@ -354,24 +660,13 @@ _MUST_SCAN = (
     pathlib.Path("faultmaven/modules/preprocessing/entities"),
 )
 
-
-def _repo_root() -> pathlib.Path:
-    """Anchor on the imported package, not on cwd.
-
-    An editable install can resolve ``faultmaven`` to a different checkout
-    than the test file lives in; scanning the tree that was *imported* is
-    the only anchor that cannot disagree with what the other tests measured.
-    """
-    return _PACKAGE_ROOT.parent
-
-
-# The scan must see every shape this codebase actually writes a regex in,
-# not just the one the rule happens to use. Measured on the tree at the time
-# it was written: 205 ``re.compile`` sites, 191 inline ``re.<method>(pattern,
-# ...)`` sites, 6 ``re.compile(<module-level const>)`` sites and 2
-# ``regex.<method>`` sites. A scan that watched only ``re.compile`` with a
-# literal would have missed 199 of them, including the inline form, which is
-# the house idiom. Widening to all of them costs **zero** false positives.
+# The scan must see every shape this codebase actually writes a regex in, not
+# just the one the rule happens to use. Measured on the tree when it was
+# written: 205 ``re.compile`` sites, 191 inline ``re.<method>(pattern, ...)``
+# sites, 6 ``re.compile(<module-level const>)`` sites, 2 ``regex.<method>``
+# sites and 1 ``import re as _re``. A scan watching only ``re.compile`` with a
+# literal misses 199 of them, including the inline form, which is the house
+# idiom.
 _RE_MODULES = frozenset({"re", "regex"})
 _RE_FUNCTIONS = frozenset(
     {
@@ -386,6 +681,43 @@ _RE_FUNCTIONS = frozenset(
         "split",
     }
 )
+_CALL_SPELLINGS = tuple(f"{name}(" for name in sorted(_RE_FUNCTIONS))
+
+# Patterns mentioning "user" that are NOT implementations of the rule. Read
+# individually and kept by exact text, so a rewrite of one has to come back
+# through here. The scan fails when an entry stops matching anything, because
+# a stale allowlist is how a guard goes quiet.
+#
+# There is deliberately no "has a capture group" test. ``re.findall`` and
+# ``re.finditer`` return group 0 when a pattern has none, so
+# ``re.findall(r"(?<=\buser=)[a-zA-Z_][\w.\-]{0,31}", line)`` is a complete
+# second implementation with no group at all — and a group test also fired
+# spuriously on escaped parens (``user\(id\)``). Allowlisting three read
+# exceptions is the cheaper and more honest trade.
+_NOT_THE_RULE = {
+    (
+        "faultmaven/modules/preprocessing/extractors/command_output_extractor.py",
+        r"PID\s+USER\s+%CPU\s+%MEM\s+VSZ\s+RSS",
+    ): "matches the ps(1) header row, extracts no name",
+    (
+        "faultmaven/modules/preprocessing/extractors/logs_extractor.py",
+        r"invalid user",
+    ): "presence test for the event counter, extracts no name",
+    (
+        "faultmaven/modules/preprocessing/extractors/logs_extractor.py",
+        r"sshd[^:]*:\s*session opened for user",
+    ): "event matcher for the session counter, extracts no name",
+}
+
+
+def _repo_root() -> pathlib.Path:
+    """Anchor on the imported package, not on cwd.
+
+    An editable install can resolve ``faultmaven`` to a different checkout
+    than the test file lives in; scanning the tree that was *imported* is
+    the only anchor that cannot disagree with what the other tests measured.
+    """
+    return _PACKAGE_ROOT.parent
 
 
 def _pattern_text(node: ast.AST, consts: dict[str, str] | None = None) -> str:
@@ -409,24 +741,53 @@ def _pattern_text(node: ast.AST, consts: dict[str, str] | None = None) -> str:
     return "".join(parts)
 
 
-def _module_string_constants(tree: ast.AST) -> dict[str, str]:
-    """``PATTERN = r"..."`` bindings, so ``re.compile(PATTERN)`` is not a blind spot."""
-    found: dict[str, str] = {}
+def _collect(
+    tree: ast.AST,
+) -> tuple[dict[str, str], set[str], set[str], list[ast.Call]]:
+    """One walk: constants, re-module bindings, and every call node.
+
+    Three separate ``ast.walk`` passes cost about as much as the parse does;
+    the scan is already the slowest test in this file and there is no reason
+    to pay for the tree three times.
+
+    ``import re as _re`` exists once in this codebase and ``from re import
+    search`` does not, but both cost one branch to cover and a scan keyed on
+    the literal name ``re`` is defeated by either.
+    """
+    consts: dict[str, str] = {}
+    modules: set[str] = set()
+    functions: set[str] = set()
+    calls: list[ast.Call] = []
     for node in ast.walk(tree):
-        if (
+        if isinstance(node, ast.Call):
+            calls.append(node)
+        elif (
             isinstance(node, ast.Assign)
             and len(node.targets) == 1
             and isinstance(node.targets[0], ast.Name)
         ):
             text = _pattern_text(node.value)
             if text:
-                found[node.targets[0].id] = text
-    return found
+                consts[node.targets[0].id] = text
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in _RE_MODULES:
+                    modules.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module in _RE_MODULES:
+            for alias in node.names:
+                if alias.name in _RE_FUNCTIONS:
+                    functions.add(alias.asname or alias.name)
+    return consts, modules, functions, calls
 
 
-def _has_capture_group(pattern: str) -> bool:
-    stripped = re.sub(r"\(\?[:=!<#aiLmsux]", "", pattern)
-    return "(" in stripped
+def _regex_pattern_arg(node: ast.Call) -> ast.AST | None:
+    """The pattern argument, positional or as the ``pattern=`` keyword."""
+    if node.args:
+        return node.args[0]
+    for keyword in node.keywords:
+        if keyword.arg == "pattern":
+            return keyword.value
+    return None
 
 
 def _parse(path: pathlib.Path) -> ast.AST | None:
@@ -449,32 +810,61 @@ def test_exactly_one_implementation_of_the_username_rule() -> None:
     ``entities/logs.py`` carried a second username regex written from the
     first and never given any of the guards it grew. Before this scan
     existed, N was 2 and only one copy was correct.
+
+    Declared blind spots, measured rather than assumed: a pattern assembled
+    at runtime from non-literal parts (``re.compile("|".join(parts))``)
+    flattens to the empty string and is invisible — 1 such site exists in
+    ``faultmaven/`` and it is a URL redactor. And the scan keys on the
+    literal token ``user``, so a rule spelled around ``acct=`` or ``login=``
+    is out of reach; widening to a vocabulary of account-ish keys has not
+    been measured and is not guessed at here.
     """
     root = _repo_root()
     scanned: list[pathlib.Path] = []
     offenders: list[str] = []
+    allowlist_seen: set[tuple[str, str]] = set()
 
     for path in sorted((root / "faultmaven").rglob("*.py")):
         scanned.append(path)
+        source = path.read_text(encoding="utf-8", errors="replace")
+        # A file holding a username regex must mention "user" AND spell one of
+        # the re call names. Both are necessary conditions of the thing being
+        # looked for, so the prefilter loses no reach; it takes 478 files to
+        # 82 and the parse from 3.2s to 1.1s. Every file that currently holds
+        # a "user" pattern survives it.
+        if "user" not in source.lower() or not any(
+            call in source for call in _CALL_SPELLINGS
+        ):
+            continue
         tree = _parse(path)
         if tree is None:  # pragma: no cover - defensive
             continue
-        consts = _module_string_constants(tree)
-        for node in ast.walk(tree):
-            if not (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id in _RE_MODULES
-                and node.func.attr in _RE_FUNCTIONS
-                and node.args
-            ):
+        consts, modules, functions, calls = _collect(tree)
+        relative = str(path.relative_to(root))
+        for node in calls:
+            func = node.func
+            if isinstance(func, ast.Attribute):
+                qualifies = (
+                    isinstance(func.value, ast.Name)
+                    and func.value.id in modules
+                    and func.attr in _RE_FUNCTIONS
+                )
+            elif isinstance(func, ast.Name):
+                qualifies = func.id in functions
+            else:
+                qualifies = False
+            if not qualifies:
                 continue
-            pattern = _pattern_text(node.args[0], consts)
-            if "user" not in pattern.lower() or not _has_capture_group(pattern):
+            arg = _regex_pattern_arg(node)
+            if arg is None:  # pragma: no cover - defensive
                 continue
-            relative = path.relative_to(root)
-            if relative == _RULE_HOME:
+            pattern = _pattern_text(arg, consts)
+            if "user" not in pattern.lower():
+                continue
+            if pathlib.Path(relative) == _RULE_HOME:
+                continue
+            if (relative, pattern) in _NOT_THE_RULE:
+                allowlist_seen.add((relative, pattern))
                 continue
             offenders.append(f"{relative}:{node.lineno}  {pattern!r}")
 
@@ -484,25 +874,13 @@ def test_exactly_one_implementation_of_the_username_rule() -> None:
             str(p.relative_to(root)).startswith(str(directory)) for p in scanned
         ), f"scan never visited {directory}"
 
-    assert not offenders, (
-        "a username-capturing regex lives outside "
-        f"{_RULE_HOME}; import extract_usernames instead:\n  " + "\n  ".join(offenders)
+    stale = set(_NOT_THE_RULE) - allowlist_seen
+    assert not stale, (
+        "allowlisted patterns no longer exist; delete them so the list stays "
+        f"honest: {sorted(stale)}"
     )
 
-
-@pytest.mark.unit
-@pytest.mark.architecture
-def test_both_consumers_import_the_shared_rule() -> None:
-    """The scan above only forbids a second regex; this pins the first is used."""
-    root = _repo_root()
-    for relative in (
-        "faultmaven/modules/preprocessing/extractors/logs_extractor.py",
-        "faultmaven/modules/preprocessing/entities/logs.py",
-    ):
-        source = (root / relative).read_text(encoding="utf-8")
-        assert (
-            "from faultmaven.modules.preprocessing.log_usernames import" in source
-        ), f"{relative} does not import the shared username rule"
-        assert (
-            "extract_usernames(" in source
-        ), f"{relative} imports the rule but never calls it"
+    assert not offenders, (
+        "a username regex lives outside "
+        f"{_RULE_HOME}; import from it instead:\n  " + "\n  ".join(offenders)
+    )
