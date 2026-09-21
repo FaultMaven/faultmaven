@@ -320,8 +320,11 @@ so the pack comes from the audited `kb_seed` job — not from a restart.
   deletes**, so the two cannot disagree and a Redis shared with another
   application does not make verification unpassable.
 
-  Both presets are swept regardless of this process's `ENVIRONMENT`, because the
-  keys were written by whichever preset was live when they were written. That
+  Both presets are swept regardless of this process's `PROTECTION_PROFILE` or
+  `ENVIRONMENT`, because the keys were written by whichever preset was live when
+  they were written — and fm#985 item 15 moved the standalone default from
+  `faultmaven_dev` to `faultmaven_prod`, so an upgraded box has keys under
+  both. That
   need not be the one the command resolves: the wipe runs with the API scaled
   down, so it runs in a one-off pod or a shell rather than the API pod, and
   `ENVIRONMENT` defaults to `development`. Matching only the resolved preset

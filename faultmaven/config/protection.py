@@ -3,13 +3,17 @@ Protection configuration for FaultMaven
 
 **The rate limits, deduplication TTLs and timeouts are code, not configuration.**
 They live in the two presets below — development and production — and
-``setup_protection_middleware`` chooses between them by environment name. No
+``setup_protection_middleware`` chooses between them by the **protection
+profile** (``resolve_protection_profile``), never by environment name. No
 environment variable sets a limit, a TTL or a timeout; the loader that once read
 per-field variables was unreachable on every healthy deployment and was removed
 rather than left looking configurable (fm#1023).
 
-Exactly two environment keys reach these presets:
+Exactly three environment keys reach these presets:
 
+* ``PROTECTION_PROFILE`` — WHICH preset is installed, read by
+  ``resolve_protection_profile``. Defaults to ``hardened``; only an explicit
+  ``development`` selects the permissive preset and its bypass headers.
 * ``PROTECTION_RATE_LIMIT_FAIL_OPEN`` — the Redis degrade policy, read by
   ``_fail_open_default``. Honoured by the development preset; the production
   preset pins fail-*closed* and ignores it.
@@ -22,6 +26,7 @@ Changing anything else means changing the preset.
 
 import logging
 import os
+from enum import Enum
 from typing import Any, Dict
 
 from ..models.protection import (
@@ -63,6 +68,118 @@ ALL_REDIS_KEY_PREFIXES = (
     PRODUCTION_REDIS_KEY_PREFIX,
     STAGING_REDIS_KEY_PREFIX,
 )
+
+
+#: The environment variable ``resolve_protection_profile`` reads. Named rather
+#: than spelled inline because the deployment wipe's sibling constants above are
+#: named for the same reason: a second spelling is a second source of truth.
+PROTECTION_PROFILE_ENV_VAR = "PROTECTION_PROFILE"
+
+
+class ProtectionProfile(str, Enum):
+    """Which protection preset this deployment installs.
+
+    **This is the axis, and it is the only one.** It answers one question —
+    *is this a development checkout of the code, or a deployment of the
+    product?* — and nothing else answers it.
+
+    Before fm#985 item 15 the question was answered by ``ENVIRONMENT``, which
+    conflates two things that are not the same: ``development`` describes who
+    is editing the code, ``standalone`` describes how the product is deployed.
+    One value answered both, and the answer that is right for a contributor's
+    checkout — live ``X-Dev-Bypass`` / ``X-Test-Bypass`` headers, where the
+    mere PRESENCE of either skips all rate limiting — was wrong for every
+    self-hosted operator following the quickstart, because ``ENVIRONMENT`` is
+    unset there and falls to the settings default ``development``.
+
+    ``HARDENED`` is the default, so a deployment nobody classified is protected
+    rather than opt-out.
+
+    The two members map onto the two preset constructors below —
+    ``HARDENED`` → ``get_production_protection_settings``, ``DEVELOPMENT`` →
+    ``get_development_protection_settings``. The constructors keep their names
+    because that is what the numbers in them are: production's. The *profile*
+    is named ``hardened`` rather than ``production`` deliberately — it is a
+    posture, and calling it ``production`` would re-import the environment
+    vocabulary this axis exists to separate from.
+    """
+
+    HARDENED = "hardened"
+    DEVELOPMENT = "development"
+
+
+def resolve_protection_profile(environment: Any = None) -> ProtectionProfile:
+    """The one reader of ``PROTECTION_PROFILE``, and the one selector of a preset.
+
+    One reader for the same reason ``_fail_open_default`` and
+    ``get_trusted_proxies`` are one reader each: no two consumers may disagree
+    about the posture the deployment asked for. Here that matters more than for
+    either of those, because the thing being decided is whether a header anyone
+    can send switches the rate limiter off.
+
+    **The default is ``hardened`` and an unrecognised value is ``hardened``.**
+    Loosening has to be asked for by name; a typo, an empty string or a value
+    nobody anticipated all fail safe, which is the same direction fm#1023 chose
+    one layer up.
+
+    ``ENVIRONMENT`` still participates, but **only to refuse** — it can never
+    select the permissive preset, which is the whole of the decoupling. A
+    development profile asked for on a deployed environment (``staging``,
+    ``production``, or any value that is not ``development``) is refused and
+    logged. The relation is monotone on purpose: every input can harden the
+    result and none can loosen it, so no combination of the two keys is less
+    protected than ``PROTECTION_PROFILE`` alone says.
+
+    ``environment`` is the value the composition root already resolved
+    (``settings.server.environment``), passed in rather than re-read here, so
+    the veto cannot disagree with the environment the rest of the application
+    ran with. ``None`` — a caller that named no environment — is treated as
+    deployed, which is the same fail-safe default
+    ``setup_protection_middleware`` gives its own parameter.
+
+    A cloud deployment is covered transitively: a cloud overlay names its
+    environment (``production``, and ``staging`` on the flip-rehearsal
+    overlay), so the veto fires there without this function needing to import
+    settings to read ``DEPLOYMENT_MODE``.
+    """
+    requested = os.getenv(PROTECTION_PROFILE_ENV_VAR, "").strip().lower()
+
+    if not requested:
+        return ProtectionProfile.HARDENED
+
+    try:
+        profile = ProtectionProfile(requested)
+    except ValueError:
+        logger.warning(
+            "%s=%r is not a recognised protection profile (%s); installing the "
+            "hardened preset. Rate limiting stays on and no bypass header is "
+            "honoured.",
+            PROTECTION_PROFILE_ENV_VAR,
+            requested,
+            "/".join(member.value for member in ProtectionProfile),
+        )
+        return ProtectionProfile.HARDENED
+
+    if profile is ProtectionProfile.HARDENED:
+        return profile
+
+    # ``Environment`` subclasses ``str`` but ``str(member)`` renders
+    # "Environment.DEVELOPMENT", so unwrap ``.value`` first — the shape that
+    # once reached an append-only audit column (#827).
+    named = str(getattr(environment, "value", environment) or "").strip().lower()
+    if named != "development":
+        logger.error(
+            "%s=development was requested on ENVIRONMENT=%r. Refusing: the "
+            "development preset carries live bypass headers (X-Dev-Bypass / "
+            "X-Test-Bypass), whose mere presence skips all rate limiting, and "
+            "that is a development-checkout affordance rather than a "
+            "deployment one. Installing the hardened preset instead.",
+            PROTECTION_PROFILE_ENV_VAR,
+            named or None,
+        )
+        return ProtectionProfile.HARDENED
+
+    return profile
 
 
 def _fail_open_default() -> bool:
@@ -143,9 +260,13 @@ def get_development_protection_settings() -> ProtectionSettings:
       open). Production pins fail-closed instead — see
       ``get_production_protection_settings``.
 
-    Reached only when ``ENVIRONMENT`` is exactly ``development``: every other
-    value, including ``staging`` and anything unrecognised, routes to the
-    production preset (fm#1023).
+    **Reached only when ``PROTECTION_PROFILE=development`` is set explicitly**,
+    and only on a box that also names ``ENVIRONMENT=development`` (or leaves it
+    unset). ``ENVIRONMENT`` alone no longer reaches here: a standalone
+    deployment is a deployment shape, not a development environment, and the
+    quickstart leaves ``ENVIRONMENT`` unset — which used to land every
+    self-hosted operator on these bypass headers (fm#985 item 15). See
+    ``resolve_protection_profile``.
     """
     return ProtectionSettings(
         # General
@@ -186,7 +307,9 @@ def get_development_protection_settings() -> ProtectionSettings:
     )
 
 
-def get_production_protection_settings() -> ProtectionSettings:
+def get_production_protection_settings(
+    *, for_deployed_environment: bool = True
+) -> ProtectionSettings:
     """
     Get protection settings optimized for production
 
@@ -196,14 +319,18 @@ def get_production_protection_settings() -> ProtectionSettings:
     - **Fails closed** on a Redis error, and does not read
       ``PROTECTION_RATE_LIMIT_FAIL_OPEN`` — see below
 
-    **This is the default preset, not just production's.** Only
-    ``ENVIRONMENT=development`` selects the other one; ``staging`` and any
-    unrecognised value land here, so a deployment nobody classified is protected
-    rather than unprotected (fm#1023). Read the numbers below as the floor every
-    non-development deployment runs on.
+    **This is the default preset, not just production's.** Only an explicit
+    ``PROTECTION_PROFILE=development`` selects the other one; every other
+    value, and every deployment that sets nothing — including the standalone
+    quickstart, whatever ``ENVIRONMENT`` says — lands here, so a deployment
+    nobody classified is protected rather than unprotected (fm#1023, fm#985
+    item 15). Read the numbers below as the floor every deployment runs on.
 
-    Production is the one preset that pins the degrade policy rather than
-    honouring the key, and it pins it *closed*.
+    On a **deployed** environment this is the one preset that pins the degrade
+    policy rather than honouring the key, and it pins it *closed*. On a
+    development environment it honours the key exactly as the development
+    preset does — see ``for_deployed_environment`` below, and read everything
+    that follows as being about the deployed audience.
 
     Defaulting it open rests on the claim that the fail-open rung is nearly
     unreachable, because the ladder is shared Redis → per-replica FakeRedis →
@@ -236,16 +363,43 @@ def get_production_protection_settings() -> ProtectionSettings:
     how the pinned path reports itself, and an argument for fixing the report —
     not for unpinning.
 
-    The development preset does honour ``PROTECTION_RATE_LIMIT_FAIL_OPEN``;
-    production opts out explicitly rather than by omission.
+    The development preset does honour ``PROTECTION_RATE_LIMIT_FAIL_OPEN``,
+    and so does this one on a development environment; a deployed environment
+    opts out explicitly rather than by omission.
     ``PROTECTION_TRUSTED_PROXIES`` is *not* pinned here — unlike the
     degrade policy, no value for it is right for every deployment, and the
     empty default is already the safe one. It is, however, the one preset that
     warns when it is left empty: see below.
+
+    ``for_deployed_environment`` exists because this preset acquired a second
+    audience. Since fm#985 item 15 it is also what a box running
+    ``ENVIRONMENT=development`` installs — the standalone quickstart, a
+    contributor's checkout, the test suite — none of which reached it before.
+    Two of the things in here are right for a deployed environment and wrong
+    for that one, so the caller says which audience it is building for and the
+    set of boxes each behaviour applies to is **unchanged** by item 15:
+
+    1. **The degrade policy.** A deployed environment keeps the pin argued at
+       length above: fail-*closed*, ignoring ``PROTECTION_RATE_LIMIT_FAIL_OPEN``.
+       A development environment keeps ``_fail_open_default()``, which is what
+       the development preset gave it before. This is not cosmetic — the flag
+       reaches ``RedisRateLimiter.fallback_enabled``, so fail-closed also
+       **disables the per-replica stand-in rung**: a limiter whose client stops
+       answering does not recover onto FakeRedis, it refuses. That is a
+       deliberate production posture and deciding it for the self-hosted single
+       user was never item 15's to decide.
+    2. **The empty-trusted-proxies warning.** A single-user box has nothing in
+       front of it, so an empty list there is not merely safe but correct, and
+       "empty in production" would be a false statement sending an operator to
+       configure a proxy they do not run.
+
+    One parameter rather than two, because it is one question — *is this the
+    audience this preset was written for?* — and two booleans computed from the
+    same predicate is how the third such behaviour gets missed.
     """
     trusted_proxies = get_trusted_proxies()
 
-    if not trusted_proxies:
+    if for_deployed_environment and not trusted_proxies:
         # Production is by definition a deployment behind something. Empty here
         # is safe but coarse: every external client resolves to the proxy's own
         # address and shares a single `global` bucket, so one caller crossing
@@ -269,7 +423,12 @@ def get_production_protection_settings() -> ProtectionSettings:
     return ProtectionSettings(
         # General
         enabled=True,
-        fail_open_on_redis_error=False,
+        # Pinned closed for a deployed environment; a development environment
+        # keeps the policy the development preset gave it before fm#985 item 15
+        # (see ``for_deployed_environment`` in the docstring).
+        fail_open_on_redis_error=(
+            False if for_deployed_environment else _fail_open_default()
+        ),
         protection_bypass_headers=[],  # No bypasses in production
         trusted_proxies=trusted_proxies,
         # Redis: resolve centrally via RedisClientFactory.
@@ -395,11 +554,12 @@ def validate_protection_settings(settings: ProtectionSettings) -> Dict[str, Any]
                 "LLM call timeout is very short, may cause premature failures"
             )
 
-    # Production recommendations
-    if not settings.fail_open_on_redis_error:
-        if not settings.protection_bypass_headers:
-            validation["recommendations"].append(
-                "Consider adding emergency bypass headers for production debugging"
-            )
+    # No "consider adding emergency bypass headers" recommendation. It used to
+    # live here, fired on every fail-closed deployment, and was the opposite of
+    # the posture: ``RateLimitMiddleware._should_bypass`` keys on header
+    # PRESENCE, so an armed header name is an unauthenticated opt-out of the
+    # entire limiter for anyone who learns it. fm#985 item 15 disarms those
+    # headers everywhere but a declared development checkout; advice to add
+    # them back does not belong next to that.
 
     return validation

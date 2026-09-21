@@ -118,11 +118,17 @@ which reads the middleware stack. See
 [client-protection.md](client-protection.md) for the same list from the
 operator's side.
 
-Two keys do still reach the presets, and only these two:
+Three keys do still reach the presets, and only these three:
 
-1. `PROTECTION_RATE_LIMIT_FAIL_OPEN` — the Redis degrade policy. Read by the
-   development preset; the production preset pins fail-*closed* and ignores it.
-2. `PROTECTION_TRUSTED_PROXIES` — which proxies' `X-Forwarded-For` may be
+1. `PROTECTION_PROFILE` — WHICH preset is installed. `hardened` (the default,
+   and what anything unrecognised resolves to) or `development`. One reader,
+   `config.protection.resolve_protection_profile`.
+2. `PROTECTION_RATE_LIMIT_FAIL_OPEN` — the Redis degrade policy. Read on a
+   development environment (whichever preset that box installs); a deployed
+   environment pins fail-*closed* and ignores it. Keyed on `ENVIRONMENT`, not
+   on `PROTECTION_PROFILE` — item 15 moved the limits and the bypass headers,
+   not the degrade policy.
+3. `PROTECTION_TRUSTED_PROXIES` — which proxies' `X-Forwarded-For` may be
    believed. Honoured by both presets; empty by default.
 
 Changing a limit, a TTL or a timeout means editing the preset.
@@ -149,9 +155,18 @@ class ProtectionSettings(BaseModel):
 
 **Bypass headers exist only in the development preset.** It sets
 `["X-Dev-Bypass", "X-Test-Bypass"]`, and the mere *presence* of either header on
-a request skips rate limiting entirely — which is why an unset `ENVIRONMENT` on
-an internet-facing box is a hole rather than a default. The production preset
-pins the list **empty**, and no environment variable can add to it.
+a request skips rate limiting entirely. The hardened preset pins the list
+**empty**, and no environment variable can add to it.
+
+Which preset is installed is decided by `PROTECTION_PROFILE` alone, and it
+defaults to `hardened` — so a deployment that configures nothing, the
+standalone quickstart included, honours no bypass header (fm#985 item 15). It
+used to be decided by `ENVIRONMENT`, which the quickstart leaves unset and
+which falls to `development`, so the hole was the default rather than an
+oversight. `setup_protection_middleware` additionally **strips** bypass headers
+from whatever settings it installs unless the profile is `development`, so a
+caller supplying its own `ProtectionSettings` cannot arm them either — the
+guarantee is "unreachable", not "absent from the preset".
 
 ## Error Handling Strategy
 

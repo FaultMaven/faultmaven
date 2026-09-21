@@ -13,10 +13,16 @@ Three properties are pinned:
 1. **Coverage.** Every ``Environment`` member — iterated, not enumerated, so a
    fourth member is covered the day it is added — plus a string that is not an
    ``Environment`` at all, installs both middlewares.
-2. **Semantics.** Only ``development`` gets the permissive preset. Staging and
-   unknown names get production's, which is fail-*closed* on a Redis error —
-   the discriminator that separates this fix from one that merely routed
-   staging somewhere that happened to install middleware.
+2. **Semantics.** *No* environment gets the permissive preset any more —
+   fm#985 item 15 moved that decision onto ``PROTECTION_PROFILE``, because
+   ``ENVIRONMENT`` is unset on the standalone quickstart and fell to
+   ``development``. Every environment, including ``development``, gets
+   production's preset: fail-*closed* on a Redis error and no bypass header.
+   That is still the discriminator that separates fm#1023's fix from one that
+   merely routed staging somewhere that happened to install middleware, and it
+   is now also the discriminator for item 15 — see
+   ``tests/unit/api/test_protection_bypass_is_unreachable.py`` for the axis
+   that *can* loosen it.
 3. **Fail closed on setup failure.** A preset that raises — or settings that do
    not validate — propagates rather than leaving a bare app behind, which is the
    same unprotected state arrived at from a different direction, and it says so
@@ -96,23 +102,24 @@ def test_every_environment_installs_both_middlewares(environment):
     [Environment.DEVELOPMENT, "development"],
     ids=["enum_member", "plain_string"],
 )
-def test_development_still_gets_the_development_preset(environment):
-    """The one value that may loosen protection, asserted explicitly.
+def test_development_no_longer_selects_the_permissive_preset(environment):
+    """``ENVIRONMENT`` cannot loosen protection at all (fm#985 item 15).
 
-    Otherwise a fix that routed *everything* to production would pass the sweep
-    above while quietly removing the development bypass headers and the roomier
-    limits that make local iteration workable.
+    This test used to assert the opposite — that ``development`` selects the
+    permissive preset — and that assertion was the defect written down. The
+    standalone quickstart leaves ``ENVIRONMENT`` unset, the settings default is
+    ``development``, and so every self-hosted operator ran a limiter that any
+    request could switch off by carrying ``X-Dev-Bypass``.
 
-    Both spellings, because the discriminator is the ``Environment`` member:
-    ``Environment`` subclasses ``str``, so a caller holding a plain string must
-    still land here rather than be quietly hardened into production's preset.
+    Both spellings, because a caller may hold a plain string: ``Environment``
+    subclasses ``str``, and neither form may reach the permissive branch.
     """
     app, setup_info = _install(environment)
 
-    assert setup_info["settings_source"] == "development_defaults"
+    assert setup_info["settings_source"] == "production_defaults"
     settings = _resolved_settings(app)
-    assert settings.protection_bypass_headers == ["X-Dev-Bypass", "X-Test-Bypass"]
-    assert settings.rate_limits["global"].requests == 5000
+    assert settings.protection_bypass_headers == []
+    assert settings.rate_limits["global"].requests == 500
     assert _installed(app) == {RateLimitMiddleware, DeduplicationMiddleware}
 
 
@@ -132,6 +139,66 @@ def test_staging_gets_production_semantics(environment):
     assert settings.fail_open_on_redis_error is False
     assert settings.protection_bypass_headers == []
     assert settings.rate_limits["global"].requests == 500
+
+
+@pytest.mark.parametrize(
+    "environment,key,expected_fail_open",
+    [
+        # A development environment keeps the policy the DEVELOPMENT preset
+        # gave it before fm#985 item 15, including honouring the key both ways.
+        (Environment.DEVELOPMENT, None, True),
+        (Environment.DEVELOPMENT, "true", True),
+        (Environment.DEVELOPMENT, "false", False),
+        ("development", None, True),
+        # Every deployed environment keeps production's pin and ignores the key.
+        (Environment.STAGING, None, False),
+        (Environment.STAGING, "true", False),
+        (Environment.PRODUCTION, None, False),
+        (Environment.PRODUCTION, "true", False),
+        (UNKNOWN_ENVIRONMENT, "true", False),
+    ],
+)
+@pytest.mark.parametrize("profile", [None, "hardened", "development"])
+def test_the_degrade_policy_is_keyed_on_the_environment_not_the_profile(
+    monkeypatch, environment, key, expected_fail_open, profile
+):
+    """fm#985 item 15 moved the limits and the bypass headers. Not this.
+
+    Written because it *did* move this, and CI caught it: 81 integration
+    failures on ``Test Cloud`` and ``Test PostgreSQL Integration``, all
+    ``503 service_unavailable`` behind ``RuntimeError: Event loop is closed``.
+    Standalone arriving on the hardened preset took production's fail-CLOSED
+    pin with it, and that flag is not only about refusing — it feeds
+    ``RedisRateLimiter.fallback_enabled``, so it also **disables the
+    per-replica stand-in rung**. A limiter whose client stops answering then
+    refuses instead of recovering. Measured: flipping this one flag back, with
+    the hardened limits and the disarmed headers untouched, took
+    ``tests/integration/api/test_sessions_api.py`` from 20 failed / 20 passed
+    to 40 passed under the cloud shape (real Redis + the hiredis parser).
+
+    So the policy is pinned per ENVIRONMENT, across every profile, exactly as
+    it was before the item: a development environment honours
+    ``PROTECTION_RATE_LIMIT_FAIL_OPEN`` in both directions, and a deployed one
+    ignores it. Parametrised over the profile as well to say the quiet part
+    out loud — ``PROTECTION_PROFILE`` chooses limits and bypass headers and has
+    no vote here, so a future change that routes the degrade policy through
+    the new axis fails rather than shipping.
+    """
+    monkeypatch.delenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", raising=False)
+    monkeypatch.delenv("PROTECTION_PROFILE", raising=False)
+    if key is not None:
+        monkeypatch.setenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", key)
+    if profile is not None:
+        monkeypatch.setenv("PROTECTION_PROFILE", profile)
+
+    app, _ = _install(environment)
+
+    assert _resolved_settings(app).fail_open_on_redis_error is expected_fail_open, (
+        f"the Redis degrade policy for ENVIRONMENT={environment!r} moved. It is "
+        f"not item 15's to move: fail-closed also disables the per-replica "
+        f"stand-in, so a limiter that loses its client refuses instead of "
+        f"recovering."
+    )
 
 
 def test_an_unknown_environment_gets_production_not_a_permissive_branch():
@@ -177,7 +244,7 @@ def test_a_failing_preset_refuses_to_boot_rather_than_serve_unprotected(monkeypa
     """
     monkeypatch.setattr(
         "faultmaven.api.protection.get_production_protection_settings",
-        lambda: (_ for _ in ()).throw(RuntimeError("preset exploded")),
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("preset exploded")),
     )
 
     app = FastAPI()

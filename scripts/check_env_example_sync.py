@@ -50,6 +50,14 @@ ALLOWLIST = {
     # os.environ (env_prefix="opik_") and main.py's load_dotenv() puts .env there
     # first. Mirroring it as a settings field would shadow the SDK's default.
     "OPIK_TRACK_DISABLE",
+    # Read via os.getenv in config/protection.py
+    # (``resolve_protection_profile``), the one reader that decides which
+    # protection preset a deployment installs. Not mirrored as a settings
+    # field for the same reason as the two below — it populates
+    # ProtectionSettings, a plain BaseModel — and additionally because a
+    # settings field would invite a second reader: the whole point of the key
+    # is that nothing can disagree about whether the bypass headers are armed.
+    "PROTECTION_PROFILE",
     # Read via os.getenv in config/protection.py (``_fail_open_default``), which
     # builds ProtectionSettings — a plain BaseModel, not a BaseSettings section.
     # Deliberately NOT mirrored as a settings field: the adjacent

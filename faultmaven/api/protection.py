@@ -15,9 +15,12 @@ from typing import Any, Dict, Optional, Union
 from fastapi import FastAPI
 
 from ..config.protection import (
+    PROTECTION_PROFILE_ENV_VAR,
     STAGING_REDIS_KEY_PREFIX,
+    ProtectionProfile,
     get_development_protection_settings,
     get_production_protection_settings,
+    resolve_protection_profile,
     validate_protection_settings,
 )
 from ..config.settings import Environment
@@ -39,26 +42,39 @@ def setup_protection_middleware(
     This function is intentionally synchronous so it can be called at import-time
     (module initialization) before lifespan/startup executes.
 
-    **Only ``development`` is special; everything else gets production.**
-    ``Environment`` has a third member, ``staging``, and this used to route it —
-    along with every unrecognised string — to a settings-driven loader gated on
-    ``basic_protection_enabled``, whose default was ``False``. A deployment with
-    ``ENVIRONMENT=staging`` therefore installed no rate limiting and no
-    deduplication at all, silently (fm#1023) — and staging is a deployed
-    configuration, not a hypothetical one.
+    **The preset is chosen by the protection profile, not by the environment.**
+    ``resolve_protection_profile`` is the whole of that decision, and it
+    defaults to ``hardened``: loosening protection has to be *asked for* by
+    setting ``PROTECTION_PROFILE=development``. ``ENVIRONMENT`` reaches this
+    function for exactly two other purposes — the profile's veto (it can refuse
+    a development profile, never select one) and staging's Redis namespace
+    below — so no value of it can install a bypass header.
 
-    The routing is now fail-safe in both directions: the default argument is
-    ``Environment.PRODUCTION``, and an environment name nobody anticipated lands
-    on the strict preset rather than on the permissive one. Loosening protection
-    has to be *asked for* by naming ``development`` exactly, which is the only
-    value for which the looser numbers and the bypass headers are appropriate.
+    That is fm#985 item 15: ``ENVIRONMENT`` used to be the discriminator, and
+    it is unset on the standalone quickstart — the path every self-hosted
+    operator follows — where it falls to the settings default ``development``
+    and armed ``X-Dev-Bypass`` / ``X-Test-Bypass``, whose mere *presence* skips
+    all rate limiting. ``development`` describes who is editing the code;
+    ``standalone`` describes how the product is deployed, and one value cannot
+    answer both.
 
-    The discriminator is the ``Environment`` member rather than a bare literal:
-    ``main.py`` passes ``settings.server.environment``, which is an
-    ``Environment``, and a rename of the member's value would otherwise leave a
-    stale string here that silently stops matching — sending development to the
-    production preset. ``Environment`` subclasses ``str``, so plain strings from
-    other callers still compare equal.
+    Before that, this routing was fail-safe in one direction only: it used to
+    send ``staging`` — along with every unrecognised string — to a
+    settings-driven loader gated on ``basic_protection_enabled``, whose default
+    was ``False``, so ``ENVIRONMENT=staging`` installed no rate limiting and no
+    deduplication at all, silently (fm#1023). The sweep in
+    ``tests/unit/api/test_protection_environment_routing.py`` still pins that
+    every environment installs both middlewares.
+
+    **Bypass headers are stripped here, not merely absent from the preset.**
+    Whatever the settings came from — either preset, or a caller's own object —
+    they are installed carrying no bypass header unless the profile is
+    ``development``. Selection alone would only have moved the default: a
+    caller handing in a ``ProtectionSettings`` of its own would still have
+    armed the headers, and this is the single place every installation of
+    ``RateLimitMiddleware`` in the application passes through
+    (``tests/unit/api/test_protection_bypass_is_unreachable.py`` ships the scan
+    that says so).
 
     **Fail-closed here is not fail-closed everywhere.** This function refuses —
     it raises on settings that do not validate, and it re-raises anything the
@@ -70,21 +86,35 @@ def setup_protection_middleware(
     Read the guarantee as "every deployed environment refuses", not "nothing ever
     boots unprotected".
     """
+    profile = resolve_protection_profile(environment)
+
     setup_info: Dict[str, Any] = {
         "protection_enabled": False,
         "middleware_added": [],
         "settings_source": "none",
+        "protection_profile": profile.value,
         "validation": None,
     }
 
     try:
         # Load settings if not provided
         if settings is None:
-            if environment == Environment.DEVELOPMENT:
+            if profile is ProtectionProfile.DEVELOPMENT:
                 settings = get_development_protection_settings()
                 setup_info["settings_source"] = "development_defaults"
             else:
-                settings = get_production_protection_settings()
+                # This preset is now also what a development-environment box
+                # installs — the standalone quickstart included. Two of the
+                # things in it are written for a DEPLOYED environment (the
+                # fail-closed degrade pin, the empty-trusted-proxies warning)
+                # and are wrong for a single-user box, so the preset is told
+                # which audience it is being built for. Item 15 moves which
+                # LIMITS and which BYPASS HEADERS a standalone box gets; it
+                # deliberately moves neither of those two, which keeps the
+                # blast radius the ruling asked for.
+                settings = get_production_protection_settings(
+                    for_deployed_environment=(environment != Environment.DEVELOPMENT)
+                )
                 setup_info["settings_source"] = "production_defaults"
                 if environment == Environment.STAGING:
                     # Staging runs production's *semantics* — strict limits, no
@@ -112,6 +142,35 @@ def setup_protection_middleware(
                     settings.redis_key_prefix = STAGING_REDIS_KEY_PREFIX
         else:
             setup_info["settings_source"] = "provided"
+
+        if profile is not ProtectionProfile.DEVELOPMENT and (
+            settings.protection_bypass_headers
+        ):
+            # The choke point. ``_should_bypass`` checks header PRESENCE, so a
+            # single armed header name is an unauthenticated opt-out of the
+            # whole limiter — which makes "the preset does not set them" too
+            # weak a guarantee to rest on. Anything that reaches an install
+            # with headers on a non-development profile is disarmed here.
+            #
+            # Copied rather than mutated: the presets return a fresh object on
+            # every call, but caller-supplied settings belong to the caller and
+            # a silent in-place edit of them is a side effect nobody asked for.
+            # ``model_copy(update=...)`` applies the update (unlike the
+            # ``deep=True`` form, which shares the dict it was handed).
+            disarmed = list(settings.protection_bypass_headers)
+            settings = settings.model_copy(update={"protection_bypass_headers": []})
+            setup_info["bypass_headers_disarmed"] = disarmed
+            logger.warning(
+                "Disarmed protection bypass headers %s: this deployment runs "
+                "the '%s' protection profile. Header presence alone skips all "
+                "rate limiting, so the headers are honoured only under "
+                "%s=development on a development environment.",
+                disarmed,
+                profile.value,
+                PROTECTION_PROFILE_ENV_VAR,
+            )
+
+        setup_info["bypass_headers"] = list(settings.protection_bypass_headers)
 
         validation = validate_protection_settings(settings)
         setup_info["validation"] = validation
