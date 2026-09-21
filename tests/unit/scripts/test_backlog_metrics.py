@@ -916,14 +916,26 @@ def test_a_blocked_item_whose_issue_has_closed_is_reported(metrics):
     assert graph.condition_met == [(701, 700)]
 
 
+# Every path below is SHAPED like this repository's but names nothing in it,
+# and that is load-bearing rather than tidiness. The docs-only CI classifier
+# harvests string literals from `tests/` and treats each as a pin — "a test
+# reads this document, so a change to it must run the suite" — walking
+# `ast.Constant`, which includes docstrings. Naming the real procedure
+# document here killed the docs-only fast path for the one file this campaign
+# edits every round. These tests do not READ any document; the path is sample
+# text for `cited_paths`, so a real one is a pin nobody meant to write. The
+# top-level directory must still be one `_CITED_PATH` admits, or the sample
+# stops exercising the pattern.
+
+
 def test_a_cited_path_does_not_take_an_item_out_of_the_tier(metrics):
     """Rule 3 is reported, never applied — a citation is not a production.
 
     #1462 (chromadb credentials) and #1463 (filter-shaped routes) were
-    unranked on `docs/development/issue-processing.md`, which they cite only
-    because this campaign's issues quote its gates.
+    unranked on the procedure document, which they cite only because this
+    campaign's issues quote its gates.
     """
-    gates = "docs/development/issue-processing.md"
+    gates = "docs/development/sample-procedure.md"
     issues = metrics.load_issues(
         [
             _issue(800, 20, body=f"Per the *Building* gates in `{gates}`."),
@@ -939,18 +951,18 @@ def test_a_cited_path_does_not_take_an_item_out_of_the_tier(metrics):
 
 
 def test_a_seam_is_a_file_outside_a_code_block(metrics):
-    """#1351 was unranked on `alembic/versions`, a bare directory pasted
-    inside an `op.drop_table` sample among fifteen other paths."""
-    fenced = "```\nop.drop_table('x')  # alembic/versions/041_drop.py\n```"
+    """#1351 was unranked on a bare migrations directory, pasted inside an
+    `op.drop_table` sample among fifteen other paths."""
+    fenced = "```\nop.drop_table('x')  # alembic/sample-versions/041_drop.py\n```"
     assert metrics.cited_paths(fenced) == set()
-    assert metrics.cited_paths("see alembic/versions for the baseline") == set()
-    assert metrics.cited_paths("`scripts/backlog_metrics.py:894` is the site") == {
-        "scripts/backlog_metrics.py"
+    assert metrics.cited_paths("see alembic/sample-versions for the base") == set()
+    assert metrics.cited_paths("`scripts/sample_metrics.py:894` is the site") == {
+        "scripts/sample_metrics.py"
     }
 
 
 def test_a_seam_needs_three_issues_inside_the_window(metrics):
-    path = "faultmaven/api/middleware/rate_limiting.py"
+    path = "faultmaven/api/middleware/sample_limiter.py"
     # LATER is 2026-10-02, so the 30-day window opens on 2026-09-02.
     outside = [_issue(n, 1, body=f"`{path}`") for n in (1, 2)]
     inside = [_issue(3, 10, body=f"`{path}`")]
