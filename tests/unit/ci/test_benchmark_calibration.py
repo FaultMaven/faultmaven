@@ -470,8 +470,8 @@ class TestTheBudgetTable:
         named = {budget.test for budget in _table_for(directory).values()}
         unjudged = sorted(
             name
-            for path, name, _ in _timed_tests(directory)
-            if name not in named and (path.name, name) not in UNJUDGED_TIMED_TESTS
+            for _path, name, module in _timed_tests(directory)
+            if name not in named and (module, name) not in UNJUDGED_TIMED_TESTS
         )
         assert not unjudged, unjudged
 
@@ -707,34 +707,49 @@ OPERATOR_COMPARISONS = ("lt", "le", "gt", "ge")
 #: a duration, and none may become one: megabytes and object counts do not
 #: scale with machine throughput, so the calibration must NOT be applied to
 #: them. If a duration ever needs an entry, the right answer is a budget.
+#: ‼ Keyed on the REPO-RELATIVE path, not the basename. Both guarded
+#: directories contain a ``budgets.py``, and ``tests/performance/`` could
+#: grow a ``conftest.py`` tomorrow — a basename key would then exempt the
+#: same comparison in a file nobody reviewed.
+_BENCH = "tests/benchmarks"
+_PERF = "tests/performance"
 THRESHOLD_ALLOWLIST = {
-    ("test_memory_usage.py", "rss_mb < 1500"): "resident memory, megabytes",
-    ("test_memory_usage.py", "final_memory < 2000"): "resident memory, megabytes",
-    ("test_memory_usage.py", "memory_delta < 100"): "resident memory, megabytes",
     (
-        "test_context_overhead.py",
+        f"{_BENCH}/test_memory_usage.py",
+        "rss_mb < 1500",
+    ): "resident memory, megabytes",
+    (
+        f"{_BENCH}/test_memory_usage.py",
+        "final_memory < 2000",
+    ): "resident memory, megabytes",
+    (
+        f"{_BENCH}/test_memory_usage.py",
+        "memory_delta < 100",
+    ): "resident memory, megabytes",
+    (
+        f"{_BENCH}/conftest.py",
+        "samples < 1",
+    ): "argument validation on measure_min_latency, not a measurement",
+    (
+        f"{_PERF}/test_context_overhead.py",
         "cleanup_percentage > 80",
     ): "share of contexts the GC reclaimed; a lifetime property",
     (
-        "test_context_overhead.py",
+        f"{_PERF}/test_context_overhead.py",
         "memory_per_worker < 100",
     ): "objects allocated per async worker; an object count",
     (
-        "test_context_overhead.py",
+        f"{_PERF}/test_context_overhead.py",
         "memory_ratio <= count_ratio * 2",
     ): "memory growth against data growth; a ratio of object counts",
     (
-        "test_logging_overhead.py",
+        f"{_PERF}/test_logging_overhead.py",
         "object_growth < 1000",
     ): "objects surviving a create/destroy cycle; an object count",
     (
-        "test_logging_overhead.py",
+        f"{_PERF}/test_logging_overhead.py",
         "timing_count <= expected_combinations",
     ): "distinct (layer, operation) keys recorded; a count against 4 x 50",
-    (
-        "conftest.py",
-        "samples < 1",
-    ): "argument validation on measure_min_latency, not a measurement",
 }
 
 #: Tests that take a clock reading and deliberately judge nothing, with the
@@ -745,17 +760,17 @@ THRESHOLD_ALLOWLIST = {
 #: `tests/performance/budgets.py` for the measurement.
 UNJUDGED_TIMED_TESTS = {
     (
-        "test_context_overhead.py",
+        f"{_PERF}/test_context_overhead.py",
         "test_async_context_propagation_overhead",
     ): "expected work computed serially for concurrent tasks; the figure "
     "came out at -1250% and the comparison could not fail",
     (
-        "test_logging_overhead.py",
+        f"{_PERF}/test_logging_overhead.py",
         "test_operation_context_manager_overhead",
     ): "74% of the reported overhead is asyncio.sleep granularity "
     "(19.4ms of 26.3ms, measured)",
     (
-        "test_logging_overhead.py",
+        f"{_PERF}/test_logging_overhead.py",
         "test_high_frequency_operations",
     ): "92% of the reported overhead is asyncio.sleep granularity "
     "(97.3ms of 106ms, measured)",
@@ -923,6 +938,11 @@ def _planted_source(statements=None) -> str:
     return "def test_x(self):\n" + "".join(f"    {line}\n" for line in body)
 
 
+def _key(path: Path) -> str:
+    """This file's identity in the allowlists: its repo-relative path."""
+    return path.relative_to(REPO_ROOT).as_posix()
+
+
 def _modules_in(directory: Path) -> List[Path]:
     """‼ RECURSIVE on purpose.
 
@@ -937,7 +957,7 @@ def _scan_directory(directory: Path) -> List[Tuple[str, str, str]]:
     """Every threshold comparison in ``directory``, allowlist NOT applied."""
     hits: List[Tuple[str, str, str]] = []
     for path in _modules_in(directory):
-        hits.extend(_threshold_comparisons(path.read_text(), path.name))
+        hits.extend(_threshold_comparisons(path.read_text(), _key(path)))
     return hits
 
 
@@ -1041,9 +1061,17 @@ class TestOneComparisonSite:
         assert len(THRESHOLD_ALLOWLIST) == 9
 
     @pytest.mark.parametrize("directory", GUARDED_DIRS, ids=lambda d: d.name)
-    def test_the_scan_reads_subdirectories_too(self, directory, tmp_path):
-        """A nested module is where the next one of these will land."""
-        nested = directory / "_scan_recursion_probe"
+    def test_the_scan_reads_subdirectories_too(self, directory):
+        """A nested module is where the next one of these will land.
+
+        The first draft of ``_modules_in`` used a non-recursive ``glob``,
+        and a threshold in ``tests/performance/sub/test_x.py`` walked past
+        both checks with nothing to show for it.
+        """
+        # Named per process so two xdist workers cannot collide on it, and
+        # removed in a `finally` so a failure does not leave a module in
+        # the tree that every later run then reports as a violation.
+        nested = directory / f"_scan_recursion_probe_{os.getpid()}"
         nested.mkdir()
         try:
             (nested / "test_probe.py").write_text("def test_x():\n    assert e < 0.2\n")
@@ -1085,7 +1113,7 @@ def _call_graph(directories) -> Tuple[dict, list]:
     tests: list = []
     for directory in directories:
         for path in _modules_in(directory):
-            tree = ast.parse(path.read_text(), filename=path.name)
+            tree = ast.parse(path.read_text(), filename=_key(path))
             for node in ast.walk(tree):
                 if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
@@ -1104,9 +1132,9 @@ def _call_graph(directories) -> Tuple[dict, list]:
                             calls.add("perf_counter")
                     elif isinstance(func, ast.Name):
                         calls.add(func.id)
-                definitions[(path.name, node.name)] = calls
+                definitions[(_key(path), node.name)] = calls
                 if node.name.startswith("test_"):
-                    tests.append((path, node.name, path.name))
+                    tests.append((path, node.name, _key(path)))
     return definitions, tests
 
 
