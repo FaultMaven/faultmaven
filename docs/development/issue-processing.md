@@ -96,9 +96,15 @@ is **absent** needs the facts instead: round 3 was approved in a working
 session rather than as a reply, and its result was never posted, so two of
 the three rows were false at once and a fully built round read as unstarted.
 So a proposal with no owner comment after it is not yet *waiting* — the step
-also asks whether the round's lane branches carry pull requests, because an
-approval nobody wrote down is still visible in what it authorised. Where
-they do, the round was approved out of band: the agent transcribes the
+also asks whether any of the round's lane branches carries a pull request
+**opened after that proposal**, because an approval nobody wrote down is
+still visible in what it authorised. The date is not a detail: an item
+delivered under `Refs #<n>` stays open and can be ranked into the next
+round, so its previous round's merged pull request would otherwise stand in
+as evidence for an approval nobody gave, and the step would then build the
+rest of that round unapproved — against this document's own rule that no
+item with an unanswered question is built. Where such a pull request does
+exist, the round was approved out of band: the agent transcribes the
 approval onto the board as a note, so the next reader need not re-derive it,
 and continues from the work rather than from the prose. Writing that note
 twice is the whole cost of a stop in the middle of it: a note is not a
@@ -248,8 +254,11 @@ which nothing else was watching.
   owner latency. #1513 spent six rounds counted against the owner while
   waiting on #1294. Say which at the moment the label goes on, as a line
   reading `**Blocked on:** #N …` or `**Blocked on:** <the ruling> …` — the
-  issue reference first, so that a ruling which merely cites an issue for
-  context is not read as a dependency on it. **In the body, not in a
+  issue reference **first**, because that is what separates a dependency
+  from a ruling that merely mentions an issue. A reference anywhere else is
+  read as neither: `**Blocked on:** an owner ruling on #1294's shape` comes
+  back as *stated but unreadable* and is reported for rewording, rather than
+  being guessed either way. **In the body, not in a
   comment:** the statement is a current value, re-read every round by
   whoever sorts and by *Picking*'s promotion rule, and a comment thread
   holds a history instead — scanning one for the newest statement is the

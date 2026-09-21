@@ -647,7 +647,14 @@ def blocking_graph(issues: Sequence[Issue], repo: str) -> BlockingGraph:
     unresolved: list[tuple[int, str]] = []
     unstated: list[int] = []
     condition_met: list[tuple[int, int]] = []
-    blocked = [issue for issue in issues if pile_of(issue) == BLOCKED_LABEL]
+    # OPEN, as :class:`BlockingGraph` says: a closed blocked item is not
+    # waiting on anything. Counting one would exclude its blocker from the
+    # tier under rule 1, so the reserved slot would never reach an item
+    # whose blockers are already resolved — the direction this measurement
+    # cannot afford. `ready` and `multi_labelled` filter it too.
+    blocked = [
+        issue for issue in issues if issue.is_open and pile_of(issue) == BLOCKED_LABEL
+    ]
     for issue in sorted(blocked, key=lambda i: i.number):
         stated, named, foreign = blocked_on(issue.body, repo)
         here = [n for n in named if n in by_number]

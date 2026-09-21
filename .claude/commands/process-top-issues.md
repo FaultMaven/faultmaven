@@ -57,10 +57,11 @@ that held at 12 for six rounds and then lost ten of twelve in one reading:
 
   The body rather than a comment, because this is a current value that
   *Picking*'s promotion rule and `scripts/backlog_metrics.py` both read
-  every round, and a thread holds a history. The reference first, because
-  `**Blocked on:** an owner ruling on #1294's shape` is owner latency and
-  must not read as a dependency. The metrics report how many blocked items
-  state nothing, so a missing line is counted rather than invisible.
+  every round, and a thread holds a history. The reference **first**: a
+  reference anywhere else is read as neither a dependency nor a ruling, so
+  `**Blocked on:** an owner ruling on #1294's shape` comes back as *stated
+  but unreadable* and is reported for you to reword. The metrics count that
+  and the items that state nothing, so neither gap is invisible.
 - **A blocked item whose named issue has closed goes to ready as you sort** —
   `--add-label pile:ready`, then `--remove-label pile:blocked`. Closing #N
   writes no label on anything waiting for it, so nothing else will notice.
@@ -181,18 +182,40 @@ row that matches:
 | none | before the first round | step 1 |
 | a **result** or a **withdrawal** | between rounds | step 1 |
 | a **proposal**, with an owner comment after it | answered | step 3, take the answers |
-| a **proposal**, no owner comment after it, but its *Building* items have lane pull requests, open or merged | approved out of band, and its work is built | post the approval as a `## Note —` so the next reader need not re-derive it, then step 4 — whose dispatch predicate skips a lane branch whose pull request is **open or merged**, which is what stops a fresh lane being sent over work already on `main` — and step 5 |
-| a **proposal**, no owner comment after it, and no lane pull requests | waiting on the owner | report what it is waiting for, and stop. Do not re-propose |
+| a **proposal**, no owner comment after it, but **any** of its *Building* items has a lane pull request opened **after that proposal**, open or merged | approved out of band, and some of its work is built | post the approval as a `## Note —` so the next reader need not re-derive it, then step 4 — whose dispatch predicate skips a lane branch that already has such a pull request, which is what stops a fresh lane being sent over work already on `main` — and step 5 |
+| a **proposal**, no owner comment after it, and no lane pull request opened after it | waiting on the owner | report what it is waiting for, and stop. Do not re-propose |
 
 ```bash
-# "its Building items have lane pull requests": the step-4 branch convention,
-# asked PER NUMBER so nothing depends on a page size — a repo-wide `--limit`
-# page is exactly what the historical case this row exists for rolls off.
-for n in 1450 1511 1512; do                       # the proposal's own numbers
-  gh pr list --state all --search "head:fix/$n-" \
-    --json number,headRefName,state --jq ".[] | select(.state != \"CLOSED\")"
-done
+# One query, bounded by THIS PROPOSAL'S timestamp rather than by a page
+# size, then filtered on the <prefix>/<n>-<slug> branch tail.
+gh pr list --state all --limit 100 --search "created:>=<this proposal's timestamp>" \
+  --json number,headRefName,state \
+  --jq '.[] | select(.state != "CLOSED")
+            | select(.headRefName | test("/(1450|1511|1512)-"))'  # the round's numbers
 ```
+
+**Both halves of that query are load-bearing, and each replaces something
+that was measurably wrong.**
+
+- **Bounded by the proposal, not by a count.** A repo-wide `--limit` page is
+  what the historical case this row exists for rolls off. Worse, without the
+  date bound the row fires on a pull request from a *previous* round: an item
+  delivered under `Refs #<n>` stays open, is re-ranked into the next round,
+  and its old merged pull request then matches — so the row would transcribe
+  an approval nobody gave and step 4 would dispatch every other item in that
+  round, unapproved. That breaks this file's own *Never build an item with an
+  unanswered question*. A round opens a handful of pull requests in a few
+  hours, so the window is small and nothing can roll off it.
+- **Matched on the branch TAIL, not on a prefix.** Over the last 200 pull
+  requests the numbered lane branches run `fix/` 110, `feat/` 7, `docs/` 6,
+  `demo/` 5, `chore/` 1 — so a `head:fix/<n>-` search misses 19 of 129 and
+  answers 0 for #1554, whose branch was `chore/1554-remove-dead-session-deps`.
+  For those items step 4 would dispatch over merged work while this row read
+  the round as unanswered: both halves of the failure, on 15% of branches.
+
+**Any**, not all: one such pull request is the evidence that the round was
+approved. Step 4 then dispatches whatever has none, which is the part that
+was approved and never built.
 
 **This row does not skip settlement; it defers it to the step that does it.**
 Step 5 posts the result these pull requests were missing, and the *next*
@@ -448,13 +471,14 @@ Dispatch them in the order the ranked head gives,
 **skipping any the ready query does not return, any it returns that carries a
 second `pile:` label, and any this step has already built** — the ready query
 being `gh issue list --state open --label pile:ready`, and "already built"
-being a pull request on this item's lane branch that is **open or merged**:
+being a pull request on this item's lane branch that is **open or merged**
+and was opened **after this round's proposal** — step 0's query, unchanged:
 
 ```bash
-# the <prefix>/<n>-<slug> branch convention this step mandates, below
-gh pr list --state all --search "head:fix/<n>-" \
+gh pr list --state all --limit 100 --search "created:>=<this round's proposal>" \
   --json number,url,headRefName,state \
-  --jq '.[] | select(.state != "CLOSED")'
+  --jq '.[] | select(.state != "CLOSED")
+            | select(.headRefName | test("/<n>-"))'   # the <prefix>/<n>-<slug> tail
 ```
 
 **Merged, not only open.** Step 1 will not start a round while a previous
@@ -463,7 +487,12 @@ round's pull request is open, so within a normal round "already built" and
 they are merged, and an `--state open` test finds nothing there and
 dispatches a fresh lane over work already on `main`. Closed-unmerged is
 excluded because the owner abandoned it, which step 1 turns into a blocked
-item; it would not be in the ready query either.
+item; it would not be in the ready query either. **After the proposal**,
+because an item delivered under `Refs #<n>` is still open and can be ranked
+again: its previous round's merged pull request would otherwise make this
+round skip it as built. Matched on the branch tail rather than a prefix,
+because `fix/` is the convention and not the whole of it — `chore/`,
+`feat/`, `docs/` and `demo/` carry 19 of the last 129 lane branches.
 
 Three conditions, because the query expresses only the first: an item mid-move
 carries both labels and `--label pile:ready` still returns it, and an item

@@ -882,6 +882,30 @@ def test_a_reference_that_is_not_an_issue_here_is_reported_not_counted(metrics):
     assert "#1543" in metrics._rule4_text(metrics.rule4_tier(issues, LATER, REPO))
 
 
+def test_a_closed_blocked_item_waits_on_nothing(metrics):
+    """`pile:blocked` survives closing, and a closed item blocks nobody.
+
+    Live: `gh issue list --state closed --label pile:blocked` returns #1477.
+    Counted, two closed dependents give their blocker rule 1 and take it out
+    of the tier, so the reserved slot never reaches an item whose blockers
+    are already resolved — the direction this measurement cannot afford.
+    """
+    issues = metrics.load_issues(
+        [
+            _ready(100, 1),
+            _issue(101, 2, 4, labels=("pile:blocked",), body="**Blocked on:** #100"),
+            _issue(102, 2, 4, labels=("pile:blocked",), body="**Blocked on:** #100"),
+        ]
+    )
+    graph = metrics.blocking_graph(issues, REPO)
+    tier = metrics.rule4_tier(issues, LATER, REPO)
+
+    assert graph.waiting_on == {}
+    assert (graph.on_ruling, graph.unstated) == ([], [])
+    assert tier["excluded"] == []
+    assert tier["tier"] == [100]
+
+
 def test_a_blocked_item_whose_issue_has_closed_is_reported(metrics):
     issues = metrics.load_issues(
         [_issue(700, 1, 4), _blocked(701, 2, body="**Blocked on:** #700")]
