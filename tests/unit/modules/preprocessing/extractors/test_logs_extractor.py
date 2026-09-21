@@ -673,7 +673,7 @@ class TestEntityProfileMergedBuckets:
 
 class TestUsernameProtocolTermFilter:
     """Step 1 (G7) — SSH/TLS protocol keywords must not be captured as
-    usernames by the 'for <word>' branch of _USER_FOR_RE."""
+    usernames by the 'for <word>' branch of log_usernames.USER_FOR_RE."""
 
     @pytest.fixture
     def extractor(self):
@@ -1215,7 +1215,7 @@ class TestYYMMDDTimestamp:
 
 
 class TestNonAuthForWordFilter:
-    """_USER_FOR_RE is only applied on lines with explicit auth-context keywords.
+    """log_usernames.USER_FOR_RE is only applied on lines with auth-context keywords.
     Kernel and service messages like 'for high-res timesource' or 'for PnP cards'
     must not pollute the username list, while 'session opened for user <name>'
     and 'Failed password for <name>' must still capture the username."""
@@ -1259,7 +1259,7 @@ class TestNonAuthForWordFilter:
         assert "guest" in _sm(result)
 
     def test_session_opened_for_user_captured(self, extractor):
-        """'session opened for user <name>' must capture the username via _USER_FIELD_RE."""
+        """'session opened for user <name>' must capture the username via log_usernames.USER_FIELD_RE."""
         log = self._make_log(
             *[
                 "Jun 15 10:00:00 host sshd(pam_unix)[999]: session opened for user cyrus by (uid=0)"
