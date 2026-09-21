@@ -1,8 +1,16 @@
-"""
-Test module for context variable performance overhead.
+"""Context-variable performance overhead.
 
-This module tests the performance impact of context variables used
-for request-scoped logging coordination.
+Measures the cost of the request-scoped context that
+``faultmaven.infrastructure.logging.coordinator`` keeps in a
+``ContextVar``.
+
+‼ Every wall-clock comparison here goes through ``assert_latency_within``
+against a row of ``budgets.py``, never against a literal. This directory is
+collected by BOTH required CI gates — unlike ``tests/benchmarks/``, which
+``-m "not benchmark"`` excludes — so an uncalibrated threshold here reds a
+required check on a diff that changed nothing (#1557). ``budgets.py``
+carries the anchors, where they were measured, and which four comparisons
+were deleted rather than re-anchored.
 """
 
 import asyncio
@@ -19,25 +27,26 @@ from faultmaven.infrastructure.logging.coordinator import (
     RequestContext,
     request_context,
 )
+from tests.wallclock import assert_latency_within
+
+from .budgets import (
+    CONCURRENT_CONTEXT_OP,
+    CONTEXT_COPY,
+    CONTEXT_COPY_EXEC,
+    CONTEXT_GET,
+    CONTEXT_SET,
+    CONTEXT_SWITCH,
+    HIGH_CONCURRENCY_OP,
+    HIGH_CONCURRENCY_TASK,
+    ISOLATED_TASK,
+    ISOLATED_TASK_OP,
+    ISOLATION_TIME_SPREAD,
+    LARGE_DATA_CHECK,
+)
 
 
 class TestContextVariablePerformance:
     """Test context variable performance overhead."""
-
-    @property
-    def performance_test_enabled(self):
-        """Check if performance tests should run.
-
-        Performance tests are disabled by default to avoid CI flakiness
-        and reduce test suite execution time. Enable by setting:
-        RUN_PERFORMANCE_TESTS=true
-
-        These tests verify that context variable operations maintain
-        acceptable performance characteristics under various load conditions.
-        """
-        import os
-
-        return os.getenv("RUN_PERFORMANCE_TESTS", "false").lower() == "true"
 
     def setup_method(self):
         """Setup for each test method."""
@@ -50,10 +59,6 @@ class TestContextVariablePerformance:
     @pytest.mark.performance
     def test_context_variable_access_speed(self):
         """Test speed of context variable access operations."""
-        if not self.performance_test_enabled:
-            pytest.skip(
-                "Performance tests disabled - set RUN_PERFORMANCE_TESTS=true to enable"
-            )
         # Set up context
         coordinator = LoggingCoordinator()
         ctx = coordinator.start_request()
@@ -83,21 +88,20 @@ class TestContextVariablePerformance:
 
         coordinator.end_request()
 
-        # Context variable operations should be very fast
-        get_time_per_op = (get_time / iterations) * 1000000  # Convert to microseconds
-        set_time_per_op = (set_time / iterations) * 1000000  # Convert to microseconds
+        get_time_per_op = get_time / iterations
+        set_time_per_op = set_time / iterations
 
-        assert get_time_per_op < 10, f"Context get too slow: {get_time_per_op:.1f}μs"
-        assert set_time_per_op < 50, f"Context set too slow: {set_time_per_op:.1f}μs"
+        print(
+            f"\nContext get: {get_time_per_op * 1e6:.3f}μs, "
+            f"set: {set_time_per_op * 1e6:.3f}μs per operation"
+        )
+        assert_latency_within(get_time_per_op, CONTEXT_GET, "Context variable get")
+        assert_latency_within(set_time_per_op, CONTEXT_SET, "Context variable set")
 
     @pytest.mark.asyncio
     @pytest.mark.performance
     async def test_async_context_propagation_overhead(self):
         """Test overhead of context propagation in async scenarios."""
-        if not self.performance_test_enabled:
-            pytest.skip(
-                "Performance tests disabled - set RUN_PERFORMANCE_TESTS=true to enable"
-            )
         coordinator = LoggingCoordinator()
         coordinator.start_request(test_id="async_propagation")
 
@@ -130,28 +134,28 @@ class TestContextVariablePerformance:
         assert len(results) == iterations
         assert all(r == "completed" for r in results)
 
-        # Calculate overhead per operation
-        expected_work_time = iterations * (max_depth + 1) * 0.001  # Expected sleep time
-        context_overhead = total_time - expected_work_time
-        overhead_percentage = (context_overhead / total_time) * 100
-
         coordinator.end_request()
 
-        # Context propagation overhead should be reasonable
-        # Adjusted threshold for CI environments and varying hardware
-        assert (
-            overhead_percentage < 1000
-        ), f"Async context propagation overhead too high: {overhead_percentage:.1f}%"
-
-        print(f"\nAsync overhead: {overhead_percentage:.1f}%, total: {total_time:.3f}s")
+        # ‼ No wall-clock assertion here, deliberately (#1557). This test
+        # used to compute `expected_work_time = iterations * (max_depth + 1)
+        # * 0.001` — the SERIAL sleep total — and subtract it from a wall
+        # clock over `asyncio.gather`, where the 20 chains run CONCURRENTLY.
+        # The result was about -1250%, so `< 1000` could not fail. Fixing
+        # the model does not produce a check either: the correct floor is
+        # `max_depth * 0.001` and a bare loop of the same sleeps with no
+        # context at all measures 34ms of timer slack over that floor,
+        # which is more than the whole quantity being attributed to context
+        # propagation. What this test verifies is that the context reaches
+        # every level of a 50-deep recursion in 20 concurrent tasks, which
+        # is asserted above. The timing is printed, not judged.
+        print(
+            f"\nAsync propagation: {total_time:.3f}s for {iterations} chains "
+            f"x {max_depth} levels"
+        )
 
     @pytest.mark.performance
     def test_context_copying_performance(self):
         """Test performance of context copying operations."""
-        if not self.performance_test_enabled:
-            pytest.skip(
-                "Performance tests disabled - set RUN_PERFORMANCE_TESTS=true to enable"
-            )
 
         coordinator = LoggingCoordinator()
         ctx = coordinator.start_request()
@@ -195,28 +199,21 @@ class TestContextVariablePerformance:
         assert len(results) == 100
         assert all(r == ctx.correlation_id for r in results)
 
-        # Context operations should be reasonably fast - adjusted for CI
-        copy_time_per_op = (copy_time / iterations) * 1000  # Convert to ms
-        exec_time_per_op = (execution_time / 100) * 1000  # Convert to ms
-
-        assert (
-            copy_time_per_op < 10.0
-        ), f"Context copying too slow: {copy_time_per_op:.3f}ms"
-        assert (
-            exec_time_per_op < 10.0
-        ), f"Context execution too slow: {exec_time_per_op:.3f}ms"
+        copy_time_per_op = copy_time / iterations
+        exec_time_per_op = execution_time / 100
 
         print(
-            f"\nContext copying: {copy_time_per_op:.3f}ms, execution: {exec_time_per_op:.3f}ms"
+            f"\nContext copying: {copy_time_per_op * 1000:.4f}ms, "
+            f"execution: {exec_time_per_op * 1000:.4f}ms"
+        )
+        assert_latency_within(copy_time_per_op, CONTEXT_COPY, "Context copy")
+        assert_latency_within(
+            exec_time_per_op, CONTEXT_COPY_EXEC, "Copied-context execution"
         )
 
     @pytest.mark.performance
     def test_concurrent_context_access(self):
         """Test concurrent context access performance."""
-        if not self.performance_test_enabled:
-            pytest.skip(
-                "Performance tests disabled - set RUN_PERFORMANCE_TESTS=true to enable"
-            )
 
         num_threads = 5  # Reduced for CI stability
         operations_per_thread = 50  # Reduced for CI stability
@@ -273,26 +270,24 @@ class TestContextVariablePerformance:
         correlation_ids = [results[0] for results in thread_results]
         assert len(set(correlation_ids)) == num_threads  # All different
 
-        # Performance should be reasonable - adjusted for CI
         total_operations = num_threads * operations_per_thread
-        time_per_operation = (total_time / total_operations) * 1000  # Convert to ms
-
-        assert (
-            time_per_operation < 100.0
-        ), f"Concurrent context access too slow: {time_per_operation:.3f}ms per op"
+        time_per_operation = total_time / total_operations
 
         print(
-            f"\nConcurrent access: {time_per_operation:.3f}ms per operation, {total_time:.3f}s total"
+            f"\nConcurrent access: {time_per_operation * 1000:.4f}ms per operation, "
+            f"{total_time:.3f}s total"
+        )
+        assert_latency_within(
+            time_per_operation,
+            CONCURRENT_CONTEXT_OP,
+            "Concurrent context access",
+            f"{num_threads} threads x {operations_per_thread} operations",
         )
 
     @pytest.mark.asyncio
     @pytest.mark.performance
     async def test_context_isolation_performance(self):
         """Test performance of context isolation between async tasks."""
-        if not self.performance_test_enabled:
-            pytest.skip(
-                "Performance tests disabled - set RUN_PERFORMANCE_TESTS=true to enable"
-            )
 
         num_tasks = 10  # Reduced for CI stability
         operations_per_task = 20  # Reduced for CI stability
@@ -317,7 +312,7 @@ class TestContextVariablePerformance:
                     assert current_ctx.attributes.get("task_id") == f"task_{task_id}"
 
                     end = time.perf_counter()
-                    operation_times.append((end - start) * 1000)  # Convert to ms
+                    operation_times.append(end - start)
 
                     # Small delay to allow context switching
                     await asyncio.sleep(0.001)
@@ -355,21 +350,17 @@ class TestContextVariablePerformance:
         for result in results:
             assert result["operations_logged"] == operations_per_task
 
-        # Calculate performance metrics
         avg_task_time = total_time / num_tasks
         total_operations = num_tasks * operations_per_task
-        avg_operation_time = (total_time / total_operations) * 1000  # Convert to ms
-
-        # Performance should be reasonable - adjusted for CI
-        assert (
-            avg_task_time < 10.0
-        ), f"Average task time too slow: {avg_task_time*1000:.1f}ms"
-        assert (
-            avg_operation_time < 50.0
-        ), f"Average operation time too slow: {avg_operation_time:.3f}ms"
+        avg_operation_time = total_time / total_operations
 
         print(
-            f"\nIsolation: {avg_task_time*1000:.1f}ms per task, {avg_operation_time:.3f}ms per op"
+            f"\nIsolation: {avg_task_time * 1000:.1f}ms per task, "
+            f"{avg_operation_time * 1000:.4f}ms per op"
+        )
+        assert_latency_within(avg_task_time, ISOLATED_TASK, "Isolated task")
+        assert_latency_within(
+            avg_operation_time, ISOLATED_TASK_OP, "Isolated task operation"
         )
 
         # Individual operation times should be consistent
@@ -378,21 +369,16 @@ class TestContextVariablePerformance:
         min_individual_avg = min(individual_avg_times)
         time_variance = max_individual_avg - min_individual_avg
 
-        # Variance in operation times should be reasonable (not excessive) - adjusted for CI
-        assert (
-            time_variance < 100.0
-        ), f"High variance in operation times: {time_variance:.3f}ms"
+        assert_latency_within(
+            time_variance,
+            ISOLATION_TIME_SPREAD,
+            "Spread between the fastest and slowest task",
+            f"{min_individual_avg * 1000:.4f}ms to {max_individual_avg * 1000:.4f}ms",
+        )
 
 
 class TestContextMemoryEfficiency:
     """Test memory efficiency of context variables."""
-
-    @property
-    def performance_test_enabled(self):
-        """Check if performance tests should run."""
-        import os
-
-        return os.getenv("RUN_PERFORMANCE_TESTS", "false").lower() == "true"
 
     def setup_method(self):
         """Setup for each test method."""
@@ -559,13 +545,6 @@ class TestContextMemoryEfficiency:
 class TestContextVariableEdgeCases:
     """Test edge cases and stress scenarios for context variables."""
 
-    @property
-    def performance_test_enabled(self):
-        """Check if performance tests should run."""
-        import os
-
-        return os.getenv("RUN_PERFORMANCE_TESTS", "false").lower() == "true"
-
     def setup_method(self):
         """Setup for each test method."""
         request_context.set(None)
@@ -604,16 +583,16 @@ class TestContextVariableEdgeCases:
             end_time = time.perf_counter()
             total_time = end_time - start_time
 
-            # Calculate performance
             total_switches = num_contexts * switches_per_context
-            time_per_switch = (
-                total_time / total_switches
-            ) * 1000000  # Convert to microseconds
+            time_per_switch = total_time / total_switches
 
-            # Rapid context switching should be fast
-            assert (
-                time_per_switch < 100
-            ), f"Context switching too slow: {time_per_switch:.1f}μs per switch"
+            print(f"\nContext switch: {time_per_switch * 1e6:.3f}μs per switch")
+            assert_latency_within(
+                time_per_switch,
+                CONTEXT_SWITCH,
+                "Context switch",
+                f"{total_switches} switches",
+            )
 
         finally:
             # Clean up all contexts
@@ -663,17 +642,20 @@ class TestContextVariableEdgeCases:
         assert len(results) == concurrent_tasks
         assert sorted(results) == list(range(concurrent_tasks))
 
-        # Performance should be reasonable even under high concurrency
-        avg_task_time = (total_time / concurrent_tasks) * 1000  # Convert to ms
+        avg_task_time = total_time / concurrent_tasks
         total_operations = concurrent_tasks * operations_per_task
-        avg_operation_time = (total_time / total_operations) * 1000000  # Convert to μs
+        avg_operation_time = total_time / total_operations
 
-        assert (
-            avg_task_time < 100
-        ), f"High concurrency task time too slow: {avg_task_time:.1f}ms"
-        assert (
-            avg_operation_time < 500
-        ), f"High concurrency operation time too slow: {avg_operation_time:.1f}μs"
+        print(
+            f"\nHigh concurrency: {avg_task_time * 1000:.3f}ms per task, "
+            f"{avg_operation_time * 1e6:.3f}μs per operation"
+        )
+        assert_latency_within(
+            avg_task_time, HIGH_CONCURRENCY_TASK, "High-concurrency task"
+        )
+        assert_latency_within(
+            avg_operation_time, HIGH_CONCURRENCY_OP, "High-concurrency operation"
+        )
 
     def test_context_with_large_data(self):
         """Test context performance with large data payloads."""
@@ -715,8 +697,12 @@ class TestContextVariableEdgeCases:
 
         coordinator.end_request()
 
-        # Even with large data, operations should be reasonably fast
-        time_per_check = (total_time / 100) * 1000  # Convert to ms
-        assert (
-            time_per_check < 10
-        ), f"Context access with large data too slow: {time_per_check:.3f}ms per check"
+        time_per_check = total_time / 100
+
+        print(f"\nLarge-data context check: {time_per_check * 1000:.4f}ms per check")
+        assert_latency_within(
+            time_per_check,
+            LARGE_DATA_CHECK,
+            "Context access with large data",
+            f"{large_operations_count} operations, {large_attributes_count} attributes",
+        )

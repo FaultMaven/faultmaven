@@ -1,8 +1,16 @@
-"""
-Test module for logging performance overhead validation.
+"""Logging-infrastructure performance overhead.
 
-This module tests that the logging infrastructure overhead is < 1% of
-request processing time and validates performance thresholds.
+Measures what ``faultmaven.infrastructure.logging`` costs on top of the
+work it instruments.
+
+‼ Every wall-clock comparison here goes through ``assert_latency_within``
+against a row of ``budgets.py``, never against a literal. This directory is
+collected by BOTH required CI gates — unlike ``tests/benchmarks/``, which
+``-m "not benchmark"`` excludes — so an uncalibrated threshold here reds a
+required check on a diff that changed nothing (#1557). ``budgets.py``
+carries the anchors, where they were measured, and which comparisons were
+deleted rather than re-anchored because they measured ``asyncio.sleep``
+granularity rather than this codebase.
 """
 
 import asyncio
@@ -24,6 +32,21 @@ from faultmaven.infrastructure.logging.coordinator import (
 )
 from faultmaven.infrastructure.logging.unified import UnifiedLogger
 from faultmaven.services.base import BaseService
+from tests.wallclock import assert_latency_within
+
+from .budgets import (
+    API_REQUEST_LOGGING_OVERHEAD,
+    CONCURRENT_REQUEST,
+    CONTEXT_VARIABLE_ITERATION,
+    COORDINATOR_CYCLE,
+    DEDUPLICATION_OP,
+    EXTERNAL_CLIENT_LOGGING_OVERHEAD,
+    LOG_ONCE_CALL,
+    REQUEST_CONTEXT_CREATE,
+    SERVICE_LOGGING_OVERHEAD,
+    TRACKER_RECORD,
+    UNIFIED_LOGGER_SET,
+)
 
 
 class TestLoggingPerformanceOverhead:
@@ -34,17 +57,6 @@ class TestLoggingPerformanceOverhead:
     Tests are conditional and disabled by default for CI stability.
     """
 
-    @property
-    def performance_test_enabled(self):
-        """Check if performance tests should run.
-
-        Performance tests are disabled by default to avoid CI flakiness.
-        Enable by setting: RUN_PERFORMANCE_TESTS=true
-        """
-        import os
-
-        return os.getenv("RUN_PERFORMANCE_TESTS", "false").lower() == "true"
-
     def setup_method(self):
         """Setup for each test method."""
         request_context.set(None)
@@ -52,11 +64,6 @@ class TestLoggingPerformanceOverhead:
     def teardown_method(self):
         """Cleanup after each test method."""
         request_context.set(None)
-
-    @property
-    def performance_test_enabled(self):
-        """Check if performance tests should run - controlled by environment"""
-        return os.environ.get("RUN_PERFORMANCE_TESTS", "false").lower() == "true"
 
     def measure_operation_robust(self, operation, iterations=1000, warmup=100):
         """Robust measurement with multiple runs for stability"""
@@ -89,10 +96,6 @@ class TestLoggingPerformanceOverhead:
     @pytest.mark.performance
     def test_request_context_creation_overhead(self):
         """Test RequestContext creation performance."""
-        if not self.performance_test_enabled:
-            pytest.skip(
-                "Performance tests disabled - set RUN_PERFORMANCE_TESTS=true to enable"
-            )
 
         iterations = 500  # Reduced for CI stability
 
@@ -103,21 +106,16 @@ class TestLoggingPerformanceOverhead:
 
         measured_time = self.measure_operation_robust(context_operation, iterations)
 
-        # Should be reasonably fast - adjusted threshold for CI
-        per_operation_time = (measured_time / iterations) * 1000  # Convert to ms
-        assert (
-            per_operation_time < 10.0
-        ), f"Context creation too slow: {per_operation_time:.3f}ms"
+        per_operation_time = measured_time / iterations
 
-        print(f"\nContext creation: {per_operation_time:.3f}ms per operation")
+        print(f"\nContext creation: {per_operation_time * 1000:.4f}ms per operation")
+        assert_latency_within(
+            per_operation_time, REQUEST_CONTEXT_CREATE, "RequestContext creation"
+        )
 
     @pytest.mark.performance
     def test_logging_coordinator_overhead(self):
         """Test LoggingCoordinator performance overhead."""
-        if not self.performance_test_enabled:
-            pytest.skip(
-                "Performance tests disabled - set RUN_PERFORMANCE_TESTS=true to enable"
-            )
 
         iterations = 500  # Reduced for CI stability
         counter = 0
@@ -134,21 +132,16 @@ class TestLoggingPerformanceOverhead:
 
         measured_time = self.measure_operation_robust(coordinator_operation, iterations)
 
-        # Should be reasonably fast - adjusted threshold for CI
-        per_cycle_time = (measured_time / iterations) * 1000  # Convert to ms
-        assert (
-            per_cycle_time < 20.0
-        ), f"Coordinator cycle too slow: {per_cycle_time:.3f}ms"
+        per_cycle_time = measured_time / iterations
 
-        print(f"\nCoordinator cycle: {per_cycle_time:.3f}ms per cycle")
+        print(f"\nCoordinator cycle: {per_cycle_time * 1000:.4f}ms per cycle")
+        assert_latency_within(
+            per_cycle_time, COORDINATOR_CYCLE, "LoggingCoordinator request cycle"
+        )
 
     @pytest.mark.performance
     def test_performance_tracker_overhead(self):
         """Test PerformanceTracker performance overhead."""
-        if not self.performance_test_enabled:
-            pytest.skip(
-                "Performance tests disabled - set RUN_PERFORMANCE_TESTS=true to enable"
-            )
 
         iterations = 500  # Reduced for CI stability
         tracker = PerformanceTracker()
@@ -164,22 +157,17 @@ class TestLoggingPerformanceOverhead:
 
         measured_time = self.measure_operation_robust(tracking_operation, iterations)
 
-        # Should be reasonably fast - adjusted threshold for CI
-        per_record_time = (measured_time / iterations) * 1000  # Convert to ms
-        assert (
-            per_record_time < 1.0
-        ), f"Performance tracking too slow: {per_record_time:.3f}ms"
+        per_record_time = measured_time / iterations
 
-        print(f"\nPerformance tracking: {per_record_time:.3f}ms per record")
+        print(f"\nPerformance tracking: {per_record_time * 1000:.4f}ms per record")
+        assert_latency_within(
+            per_record_time, TRACKER_RECORD, "PerformanceTracker.record_timing"
+        )
 
     @pytest.mark.performance
     @patch("faultmaven.infrastructure.logging.unified.get_logger")
     def test_unified_logger_overhead(self, mock_get_logger):
         """Test UnifiedLogger performance overhead."""
-        if not self.performance_test_enabled:
-            pytest.skip(
-                "Performance tests disabled - set RUN_PERFORMANCE_TESTS=true to enable"
-            )
 
         mock_logger = Mock()
         mock_get_logger.return_value = mock_logger
@@ -199,11 +187,12 @@ class TestLoggingPerformanceOverhead:
 
         coordinator.end_request()
 
-        # Should be fast - less than 5ms per set of operations
-        per_set_time = (self.measured_time / iterations) * 1000  # Convert to ms
-        assert (
-            per_set_time < 5.0
-        ), f"Unified logger operations too slow: {per_set_time:.3f}ms"
+        per_set_time = self.measured_time / iterations
+
+        print(f"\nUnified logger: {per_set_time * 1000:.4f}ms per set of 3 calls")
+        assert_latency_within(
+            per_set_time, UNIFIED_LOGGER_SET, "UnifiedLogger boundary+metric+event"
+        )
 
     @pytest.mark.asyncio
     @patch("faultmaven.infrastructure.logging.unified.get_logger")
@@ -232,15 +221,23 @@ class TestLoggingPerformanceOverhead:
 
         coordinator.end_request()
 
-        # The overhead should be minimal compared to the actual work
-        total_work_time = iterations * 0.001  # Total simulated work time
-        logging_overhead = self.measured_time - total_work_time
-        overhead_percentage = (logging_overhead / self.measured_time) * 100
-
-        # Logging overhead should be < 50% of total time (generous threshold for test environment)
-        assert (
-            overhead_percentage < 50
-        ), f"Operation context overhead too high: {overhead_percentage:.1f}%"
+        # ‼ No wall-clock assertion here, deliberately (#1557). This test
+        # used to subtract a NOMINAL `iterations * 0.001` from a measured
+        # loop of `asyncio.sleep(0.001)` and call the difference logging
+        # overhead. Timed on the same box, a bare loop of the same 100
+        # sleeps with no logging at all runs 19.4ms over nominal against a
+        # 26.3ms "overhead" — so 74% of the number was event-loop timer
+        # granularity. It was also the only comparison in this directory
+        # running anywhere near its threshold (44% of it), which made it
+        # the most likely spurious red in two REQUIRED gates. Subtracting a
+        # MEASURED baseline does not rescue it either: the real overhead is
+        # smaller than the run-to-run spread of either term. What this test
+        # verifies is that the context manager runs the operation and
+        # records it, asserted above.
+        print(
+            f"\nOperation context manager: {self.measured_time:.4f}s for "
+            f"{iterations} iterations over {iterations * 0.001:.3f}s of sleep"
+        )
 
 
 class TestServiceLoggingPerformance:
@@ -301,17 +298,22 @@ class TestServiceLoggingPerformance:
         end_time = time.perf_counter()
         total_time_without_logging = end_time - start_time
 
-        # Calculate logging overhead
+        # A MEASURED baseline, not a nominal one: the same loop without
+        # `execute_operation`. Both terms carry the same `asyncio.sleep`
+        # granularity, so it cancels and the difference is the wrapper.
         logging_overhead = total_time_with_logging - total_time_without_logging
-        if total_time_with_logging > 0:
-            overhead_percentage = (logging_overhead / total_time_with_logging) * 100
-        else:
-            overhead_percentage = 0
 
-        # Logging overhead should be reasonable (< 100% in test environment)
-        assert (
-            overhead_percentage < 100
-        ), f"Service logging overhead too high: {overhead_percentage:.1f}%"
+        print(
+            f"\nService logging overhead: {logging_overhead * 1000:.1f}ms over "
+            f"{iterations} operations ({total_time_without_logging * 1000:.1f}ms "
+            "un-logged)"
+        )
+        assert_latency_within(
+            max(logging_overhead, 0.0),
+            SERVICE_LOGGING_OVERHEAD,
+            "BaseService.execute_operation logging overhead",
+            f"{iterations} operations",
+        )
 
 
 class TestInfrastructureLoggingPerformance:
@@ -372,17 +374,20 @@ class TestInfrastructureLoggingPerformance:
         end_time = time.perf_counter()
         total_time_without_logging = end_time - start_time
 
-        # Calculate logging overhead
+        # A MEASURED baseline, as in the service test above.
         logging_overhead = total_time_with_logging - total_time_without_logging
-        if total_time_with_logging > 0:
-            overhead_percentage = (logging_overhead / total_time_with_logging) * 100
-        else:
-            overhead_percentage = 0
 
-        # Logging overhead should be reasonable for external calls
-        assert (
-            overhead_percentage < 100
-        ), f"Infrastructure logging overhead too high: {overhead_percentage:.1f}%"
+        print(
+            f"\nExternal client logging overhead: {logging_overhead * 1000:.1f}ms "
+            f"over {iterations} calls "
+            f"({total_time_without_logging * 1000:.1f}ms un-logged)"
+        )
+        assert_latency_within(
+            max(logging_overhead, 0.0),
+            EXTERNAL_CLIENT_LOGGING_OVERHEAD,
+            "BaseExternalClient.call_external logging overhead",
+            f"{iterations} calls",
+        )
 
 
 class TestConcurrentLoggingPerformance:
@@ -445,13 +450,18 @@ class TestConcurrentLoggingPerformance:
             assert result["operations_logged"] > 0
             assert f"req_{i}" in str(result)
 
-        # Average time per request should be reasonable
-        avg_time_per_request = (
-            total_time / concurrent_requests
-        ) * 1000  # Convert to ms
-        assert (
-            avg_time_per_request < 100
-        ), f"Concurrent logging too slow: {avg_time_per_request:.1f}ms per request"
+        avg_time_per_request = total_time / concurrent_requests
+
+        print(
+            f"\nConcurrent logging: {avg_time_per_request * 1000:.3f}ms per request "
+            f"across {concurrent_requests} concurrent requests"
+        )
+        assert_latency_within(
+            avg_time_per_request,
+            CONCURRENT_REQUEST,
+            "Concurrent logged request",
+            f"{concurrent_requests} concurrent",
+        )
 
     @pytest.mark.asyncio
     async def test_context_variable_performance(self):
@@ -479,11 +489,17 @@ class TestConcurrentLoggingPerformance:
         end_time = time.perf_counter()
         total_time = end_time - start_time
 
-        # Context variable operations should be fast
-        per_iteration_time = (total_time / iterations) * 1000  # Convert to ms
-        assert (
-            per_iteration_time < 5.0
-        ), f"Context variable operations too slow: {per_iteration_time:.3f}ms"
+        per_iteration_time = total_time / iterations
+
+        print(
+            f"\nContext variable cycle: {per_iteration_time * 1000:.4f}ms "
+            "per start/mark/end"
+        )
+        assert_latency_within(
+            per_iteration_time,
+            CONTEXT_VARIABLE_ITERATION,
+            "Coordinator start/mark/end cycle",
+        )
 
 
 class TestDeduplicationPerformance:
@@ -518,13 +534,22 @@ class TestDeduplicationPerformance:
                 assert ctx.has_logged(operation_key)
 
             end_time = time.perf_counter()
-            total_time = (end_time - start_time) * 1000  # Convert to ms
+            total_time = end_time - start_time
 
-            # Time should scale reasonably (not exponentially)
+            # Time should scale reasonably (not exponentially). The budget
+            # is one row applied at every size, so a superlinear cost shows
+            # up as the largest size failing while the smallest passes.
             time_per_operation = total_time / operation_count
-            assert (
-                time_per_operation < 0.1
-            ), f"Deduplication too slow at {operation_count} ops: {time_per_operation:.3f}ms per op"
+            print(
+                f"\nDeduplication at {operation_count} ops: "
+                f"{time_per_operation * 1000:.4f}ms per op"
+            )
+            assert_latency_within(
+                time_per_operation,
+                DEDUPLICATION_OP,
+                "Deduplication mark+check",
+                f"{operation_count} operations",
+            )
 
         coordinator.end_request()
 
@@ -551,11 +576,16 @@ class TestDeduplicationPerformance:
             )
 
         end_time = time.perf_counter()
-        total_time = (end_time - start_time) * 1000  # Convert to ms
+        total_time = end_time - start_time
 
-        # log_once should be fast even with many duplicates
         time_per_call = total_time / iterations
-        assert time_per_call < 0.5, f"log_once too slow: {time_per_call:.3f}ms per call"
+        print(f"\nlog_once: {time_per_call * 1000:.4f}ms per call")
+        assert_latency_within(
+            time_per_call,
+            LOG_ONCE_CALL,
+            "LoggingCoordinator.log_once",
+            f"{iterations} calls, 10 unique keys",
+        )
 
         # Should have only logged unique operations (10 unique keys)
         assert mock_logger.info.call_count == 10
@@ -691,20 +721,24 @@ class TestRealWorldPerformanceScenarios:
 
         total_time = end_time - start_time
         logging_overhead = total_time - typical_processing_time
-        overhead_percentage = (logging_overhead / total_time) * 100
 
         # Verify request was processed
         assert summary["operations_logged"] > 0
 
-        # Logging overhead should be < 50% of total request time (generous for test environment)
-        assert (
-            overhead_percentage < 50
-        ), f"API request logging overhead too high: {overhead_percentage:.1f}%"
-
-        # Absolute overhead should be small (< 50ms)
-        assert (
-            logging_overhead < 0.05
-        ), f"Absolute logging overhead too high: {logging_overhead*1000:.1f}ms"
+        # The percentage this test also asserted (`< 50` of the total) is
+        # gone (#1557): 50% OF THE WORK is exactly the 50ms below, so it
+        # was a looser second view of the same number. One 100ms sleep
+        # carries ~0.3ms of timer slack, so this difference is 83% real.
+        print(
+            f"\nAPI request logging overhead: {logging_overhead * 1000:.2f}ms over "
+            f"{typical_processing_time * 1000:.0f}ms of work"
+        )
+        assert_latency_within(
+            max(logging_overhead, 0.0),
+            API_REQUEST_LOGGING_OVERHEAD,
+            "Typical API request logging overhead",
+            "3 nested operations, 2 boundaries, 1 metric",
+        )
 
     @pytest.mark.asyncio
     @patch("faultmaven.infrastructure.logging.unified.get_logger")
@@ -744,16 +778,22 @@ class TestRealWorldPerformanceScenarios:
         end_time = time.perf_counter()
 
         total_time = end_time - start_time
-        expected_work_time = operations_count * work_per_operation
-        logging_overhead = total_time - expected_work_time
-        overhead_percentage = (logging_overhead / total_time) * 100
 
         coordinator.end_request()
 
-        # For high-frequency operations, logging overhead should still be reasonable
-        assert (
-            overhead_percentage < 100
-        ), f"High-frequency logging overhead too high: {overhead_percentage:.1f}%"
+        # ‼ No wall-clock assertion here, deliberately (#1557). This test
+        # used to subtract a NOMINAL `operations_count * work_per_operation`
+        # from a measured loop of 500 `asyncio.sleep(0.001)` calls. A bare
+        # loop of the same sleeps with no logging runs 97.3ms over nominal
+        # against a 106ms "overhead", so 92% of the number was event-loop
+        # timer granularity — and `< 100%` of the total cannot fail anyway,
+        # because the overhead is part of the total by construction. What
+        # this test verifies is that metrics and events are emitted at
+        # frequency, asserted below.
+        print(
+            f"\nHigh-frequency batch: {total_time:.4f}s for {operations_count} "
+            f"operations over {operations_count * work_per_operation:.3f}s of sleep"
+        )
 
         # Metrics and events should have been logged (via info calls)
         info_calls = mock_logger.info.call_args_list

@@ -1399,3 +1399,43 @@ def anchor_db(monkeypatch):
                 )
 
     yield seed
+
+
+# --------------------------------------------------- wall-clock calibration
+
+from tests.wallclock import (  # noqa: E402 - see the module's layout above
+    absolute_mode,
+    describe_calibration,
+    measured_calibration,
+    scale_was_used,
+)
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
+    """Put the calibration in the job log, not only in a passing test's stdout.
+
+    ``benchmark_output.txt`` is what the benchmark workflow tees,
+    summarises and comments on a pull request, and pytest does not show a
+    passing test's stdout there. Without this line a red run gives a reader
+    no way to tell a slow runner from a real regression without downloading
+    a 90-day artifact — which is the habit #908 is about breaking. It is
+    registered HERE rather than in ``tests/benchmarks/conftest.py`` because
+    ``tests/performance/`` asserts calibrated budgets too (#1557) and is
+    collected by both required CI gates, where that suite's conftest is the
+    only one guaranteed loaded. Registering it in two conftests would print
+    the line twice on a full run.
+
+    ``scale_was_used()`` gates the whole thing, so a run that asserts no
+    budget — including the ordinary CI invocation's collect-and-deselect of
+    ``tests/benchmarks/`` — pays nothing, and nothing is measured. Where a
+    budget WAS asserted, absolute mode takes the measurement here even
+    though it will not apply it: the nightly job is the one run that
+    asserts raw wall-clock, so it is the one that most needs a number to
+    read a red against. ~0.8 s on a nightly.
+    """
+    if not scale_was_used():
+        return
+    if absolute_mode():
+        measured_calibration()  # report only; the scale stays pinned at 1.0
+    terminalreporter.write_sep("-", "benchmark calibration")
+    terminalreporter.write_line(describe_calibration())

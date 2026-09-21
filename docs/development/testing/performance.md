@@ -53,6 +53,61 @@ megabytes do not move with machine throughput.
 | RSS under load | < 2000MB | `test_memory_usage_under_load` |
 | Growth after GC | < 100MB | `test_memory_cleanup_after_gc` |
 
+## The other timed suite: `tests/performance/`
+
+`tests/performance/` measures logging and context-variable overhead, and
+the thing to know about it is **where it runs**:
+
+| | `tests/benchmarks/` | `tests/performance/` |
+|---|---|---|
+| `Test Standalone` (`-m "not cloud and not benchmark"`) | excluded | **collected** |
+| `Test Cloud` (`-m "not benchmark"`) | excluded | **collected** |
+| its own workflow | `benchmarks.yml` | none |
+
+So a wall-clock threshold there reds a **required** check on a diff that
+changed nothing — #908's failure with the merge blocked (#1557). It
+carries its own `tests/performance/budgets.py` on the same two-number
+shape, anchored 2-3x above 29 measured runs, and the shared machinery both
+suites use lives in **`tests/wallclock/`**:
+
+| module | what it holds |
+|---|---|
+| `tests/wallclock/calibration.py` | the machine-throughput measurement (#908/#1555) |
+| `tests/wallclock/budgets.py` | the `Budget` dataclasses, the 2-3x band, `asserted_target` |
+| `tests/wallclock/assertions.py` | `assert_latency_within`, `assert_throughput_at_least` |
+
+Four of the 27 comparisons that used to be in `tests/performance/` were
+**deleted** rather than re-anchored: each subtracted a nominal
+`asyncio.sleep` total from a measured one, and a bare loop of the same
+sleeps with no instrumentation accounts for 74-100% of the result.
+`tests/performance/budgets.py` carries that measurement.
+
+There is no `RUN_PERFORMANCE_TESTS` flag any more. It skipped nine of
+these tests to avoid CI flakiness; the calibration is what it was standing
+in for, and a skipped test is a budget nobody applies.
+
+## Keeping the comparison in one place
+
+Two checks in `tests/unit/ci/test_benchmark_calibration.py` hold both
+directories to the helpers, and they fail on different things:
+
+1. **A shape scan.** Any ordering comparison against a bound — literal on
+   either side, a named constant, a chain, negated, `assertLess`,
+   `operator.lt`, or `if … : raise` — is a hand-rolled threshold unless it
+   is in `THRESHOLD_ALLOWLIST`, which has nine entries and a reason on
+   each. It keys on the shape rather than on variable names because the
+   name-based version scored **0 against 27 live violations** the first
+   time it was pointed at `tests/performance/`.
+2. **A reachability check.** Every test that takes a clock reading must
+   reach `assert_latency_within` / `assert_throughput_at_least` through
+   the call graph, by any route. This is the one a new spelling cannot
+   walk past, and `UNJUDGED_TIMED_TESTS` names the three deliberate
+   exceptions with their measurements.
+
+Known limit, measured: both watch two directories. **59 timed tests in 18
+other files under `tests/` carry 50 threshold comparisons** that neither
+reaches, and they run in the same two required gates.
+
 ## Load Testing
 
 ### Local Load Test
@@ -130,7 +185,7 @@ process scaled with machine throughput, and the thinnest-margin test was
 whichever happened to be closest to its number that week.
 
 So the thresholds stayed (#908's ruling: they encode product targets) and
-the instrument changed. `tests/benchmarks/calibration.py` measures a fixed,
+the instrument changed. `tests/wallclock/calibration.py` measures a fixed,
 cheap, CPU-bound workload **in the same pytest process**, and every budget
 is scaled by it:
 

@@ -104,8 +104,8 @@ pytest tests/integration/ -v                         # Cross-layer workflow vali
 pytest tests/infrastructure/test_llm_registry_comprehensive.py -v    # LLM registry
 pytest tests/unit/test_container_integration_comprehensive.py -v     # Container integration
 
-# Performance testing with container overhead validation
-RUN_PERFORMANCE_TESTS=true pytest tests/performance/ -v
+# Performance overhead (calibrated budgets; no opt-in flag since #1557)
+pytest tests/performance/ -v
 ```
 
 ### Running Enhanced Tests by Category
