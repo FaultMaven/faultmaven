@@ -1,0 +1,19 @@
+# Data-extension pack: the path sanitisers CodeQL cannot see for itself.
+#
+# Picked up AUTOMATICALLY by code scanning from `.github/codeql/extensions/`.
+# No `packs:` entry, no registry publish, and — the part that reverses this
+# repository's earlier reading of the problem — no conversion from default
+# setup to advanced setup. Model packs in this directory are detected by
+# DEFAULT setup, and keep working if the repository ever does convert.
+# (GitHub docs, "Editing your configuration of default setup"; Python is
+# among the supported languages, in public preview.)
+#
+# `library: true` and no `dependencies:`: this pack contributes data rows to
+# an existing library pack, it does not define queries or QL.
+name: faultmaven/python-path-sanitizers
+version: 0.0.1
+library: true
+extensionTargets:
+  codeql/python-all: '*'
+dataExtensions:
+  - models/**/*.model.yml

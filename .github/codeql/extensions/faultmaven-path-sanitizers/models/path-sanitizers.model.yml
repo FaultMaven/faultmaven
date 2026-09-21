@@ -1,0 +1,107 @@
+# The two functions that make a caller-supplied path safe, declared to CodeQL.
+#
+# WHY THIS FILE EXISTS
+#
+# `py/path-injection` has raised FOUR alerts over ONE guarded write —
+# #60, #61, #65 and #66, all `write_runbook_file` — and every one was triaged,
+# by execution, as correct-and-guarded. (A fifth, #59, is a different sink in
+# the checker itself; see below.) Three were dismissed; the fourth was raised
+# anyway, on the SAME LINE as an already-dismissed alert (#66 on
+# `runbook_id.py:525`, where #61 sits), because an alert's fingerprint takes the
+# surrounding context and not just the line. So there is no edit discipline that
+# preserves those dismissals: a comment-only change to an unrelated file re-raised
+# the alert and reddened a pull request's CodeQL check (#1423). A fifth dismissal
+# would buy nothing. Telling the analysis what the guard does ends it.
+#
+# WHAT IS BEING ASSERTED, AND WHERE IT IS CHECKED
+#
+# A `barrierModel` row is a CLAIM about a function. `py/path-injection` consumes
+# it directly — `PathInjectionCustomizations.qll` declares
+# `class SanitizerFromModel extends Sanitizer { ModelOutput::barrierNode(this,
+# "path-injection") }` and the query's `isBarrier` is `node instanceof Sanitizer`
+# — so a wrong row silences a real vulnerability. Both claims below are pinned by
+# tests that drive the function with hostile input:
+#
+#   resolve_within_root   tests/unit/utils/test_path_containment.py
+#   safe_path_component   tests/unit/utils/test_runbook_id_consolidation.py
+#                         tests/unit/modules/knowledge/test_upload_document_scope_gate.py
+#
+# and `tests/unit/ci/test_codeql_config.py` fails if a row here names
+# a function that no longer exists, or that no longer routes through the check.
+#
+# WHAT IT CLOSES, MEASURED
+#
+# CodeQL 2.27.0 (the version this repository's analyses run), the `default`
+# Python suite, over this tree plus three probe endpoints written to have known
+# verdicts. Counts are alerts, not flows:
+#
+#                                          no model   with model
+#   runbook_id.py:525   guarded write          1           0   <- #61, #66
+#   runbook_id.py:539   guarded write          1           0   <- #65
+#   probe: write the caller's path             1           1   <- must stay
+#   probe: check, then write the ORIGINAL      1           1   <- must stay
+#   probe: write the resolved path             1           0
+#   path_containment.py:144                    1           1   <- see below
+#   every other rule in the suite             16          16
+#
+# The two probes that stay are the point: the barrier is a NODE, so a flow that
+# reaches the filesystem without passing through it is untouched — including the
+# shape that calls the checker and then uses the unchecked value anyway, which is
+# the mistake a model like this could plausibly hide.
+#
+# `path_containment.py:144` (alert #59) is NOT closed and is not meant to be. It
+# is `Path(path).resolve()` INSIDE the checker — the sink is the check itself,
+# upstream of the barrier by construction. Closing it would mean marking the
+# PARAMETER as a barrier, which asserts "nothing untrusted reaching this function
+# can be a path-injection problem" — true today, and a claim that would go on
+# holding if someone later added a read to the function. It stays dismissed, with
+# the narrower reason that it is the containment check and not a use of the path.
+#
+# WHY ONLY TWO ROWS
+#
+# `resolve_runbook_path` is NOT modelled, though it is the function the alerts
+# point at. It is a four-line delegation to `resolve_within_root`, and taint
+# stops at the barrier inside its body, so the alert clears anyway — measured,
+# not assumed. Modelling it as well would assert containment for a function that
+# does not implement containment, and would keep asserting it if the delegation
+# were ever removed. The same argument keeps `write_runbook_file` and
+# `runbook_filename` out: a model should name the function that enforces the
+# rule, so that deleting the enforcement deletes the claim with it.
+
+extensions:
+  # `resolve_within_root(path, *, root, ...)` -> the resolved path, GUARANTEED
+  # to be strictly inside `root`. It resolves both sides (so a symlink pointing
+  # out of the tree is refused, which is the property a substring check cannot
+  # have), refuses the root itself, and turns every failure to resolve at all —
+  # symlink loop, permission error, name too long, embedded NUL — into a raised
+  # `PathEscape` rather than a returned path. There is no branch that returns an
+  # uncontained value, which is what makes the return value, rather than a
+  # guard, the right thing to model.
+  #
+  # This is the one implementation of the rule: the runbook tree, the evidence
+  # blob tree and the shipped KB pack all reach the filesystem through it
+  # (#1235). Modelling it therefore covers the wrappers without asserting
+  # anything about them.
+  - addsTo:
+      pack: codeql/python-all
+      extensible: barrierModel
+    data:
+      - ['faultmaven.utils.path_containment!', 'Member[resolve_within_root].ReturnValue', 'path-injection']
+
+  # `safe_path_component(value, *, fallback)` -> ONE path segment matching
+  # `[a-z0-9]+(-[a-z0-9]+)*`, never empty. It is `re.sub(r"[^a-z0-9]+", "-",
+  # value.lower()).strip("-")[:60] or fallback`: an allowlist, so a separator, a
+  # `..`, a NUL, a drive letter and a leading dot are all gone by construction
+  # rather than by enumeration of what to strip. The `or fallback` is load-bearing
+  # — without it an input that filters to nothing would return `""` and the
+  # interpolation `f"team_{...}"` would silently lose its discriminator.
+  #
+  # Modelled separately from containment because it guards a different thing: the
+  # DIRECTORY the write lands in. #1213 showed containment is worthless when the
+  # directory has already escaped — an `owner_id` of `../../../../escaped` sent
+  # the write outside the tree while every filename-level guard passed.
+  - addsTo:
+      pack: codeql/python-all
+      extensible: barrierModel
+    data:
+      - ['faultmaven.utils.runbook_id!', 'Member[safe_path_component].ReturnValue', 'path-injection']
