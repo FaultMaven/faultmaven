@@ -411,10 +411,13 @@ Results are:
 ### The A/B against the merge base (#1567)
 
 The three absolute jobs above share a ceiling, and #1567 measured it:
-against the 50 re-anchored budgets, **none** fails on a 30% regression and
-the smallest regression any of them catches is about **115%**. #1556 moved
-the median headroom from roughly 38x to 2.6x — real work — and that is
-still an order of magnitude short of the 30% the gate was asked for.
+against the 50 re-anchored budgets, **none** fails on a 30% regression.
+The smallest regression any of them catches is about **115%** measured
+against each budget's anchoring p95, or **+147% to +258%** measured
+against the median of nine green `main` runs — two statistics of one
+fact, and neither is near 30%. #1556 moved the median headroom from
+roughly 38x to 2.6x, which was real work, and it is still an order of
+magnitude short of what the gate was asked for.
 
 Tightening the numbers cannot close it. These are absolute budgets on a
 shared runner whose run-to-run variance is itself tens of percent (#908

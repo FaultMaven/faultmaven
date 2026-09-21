@@ -7,7 +7,10 @@ What this exists to do that a budget cannot
 #1556 pulled them from ~38x measured cost down to 2.6x, which was real
 work, and #1567 measured what that buys: of 50 budgets, **none** fails on
 a 30% regression, and the smallest regression any of them catches is about
-115%. Tightening further is not available — run-to-run variance on a
+115% — that figure is against each budget's anchoring p95, and against
+the MEDIAN of nine green ``main`` runs the same budgets need 2.47x-3.58x
+(+147% to +258%). Two statistics of one fact; neither is near 30%.
+Tightening further is not available — run-to-run variance on a
 shared runner is itself tens of percent (#908 measured the whole pytest
 process scaling 1.28x between two runs of identical code), so a budget
 tight enough to fail at 30% would flake, and a flaky performance gate gets
@@ -36,11 +39,9 @@ benchmarks each) and both were rejected by their own numbers:
   relative to the rest of the suite". Its statistic is the maximum over
   50 residuals, an extreme-order statistic over 50 draws, and on the null
   it ranged **1.18x to 3.38x**. A threshold with no false positives is
-  therefore about 3.5x, and every one of the 50 absolute budgets in
-  ``tests/benchmarks/budgets.py`` already fails between 2.47x and 3.58x
-  (median 2.93x, measured against nine green ``main`` runs). A per-test
-  A/B rule is dominated by the budgets it would sit beside, so it is not
-  a gate. The residual is still computed and printed, because it is how
+  therefore about 3.5x, which is above the 2.47x-3.58x band the absolute
+  budgets already fire in. A per-test A/B rule is dominated by the
+  budgets it would sit beside, so it is not a gate. The residual is still computed and printed, because it is how
   you read a red median.
 * **A count rule** — "fail if K of the 50 are at least R times slower".
   At R = 1.30 the null count reached **19 of 50**, while a regression
