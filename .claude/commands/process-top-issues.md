@@ -60,8 +60,14 @@ that held at 12 for six rounds and then lost ten of twelve in one reading:
   every round, and a thread holds a history. The reference **first**: a
   reference anywhere else is read as neither a dependency nor a ruling, so
   `**Blocked on:** an owner ruling on #1294's shape` comes back as *stated
-  but unreadable* and is reported for you to reword. The metrics count that
-  and the items that state nothing, so neither gap is invisible.
+  but unreadable* and is reported for you to reword. A line naming an issue
+  **and** something it cannot resolve — `**Blocked on:** #1294 and #9999` —
+  is reported as both, so the half it could not read is never dropped. The
+  label with nothing after it, or with `TBD`, counts as **stating nothing**
+  rather than as a ruling: *Needs your call* lists the ruling bucket, and an
+  entry there with no question in it is a round spent waiting on an answer
+  nobody was asked for. The metrics count all three, so no gap is
+  invisible.
 - **A blocked item whose named issue has closed goes to ready as you sort** —
   `--add-label pile:ready`, then `--remove-label pile:blocked`. Closing #N
   writes no label on anything waiting for it, so nothing else will notice.
@@ -173,6 +179,20 @@ of those four headings, or the next reader cannot tell your note from an
 answer; five of the first ten rounds posted a note, and the one that closed
 round 9 is what made round 10's step 0 guess.
 
+**Write `##`; match `#` or `##`.** One hash or two, on all four — the rest
+of the heading is exact. This is not politeness to the owner: it is the
+producer half of this rule, which lives in prose and in another file while
+the consumer here is a grammar. Every result the board carries — rounds 7,
+8, 9 and 10 — was posted as `# Round <N> — result`, matched nothing, and so
+read as *the owner answering the proposal above it*. On a finished and fully
+merged round that sends the next reader to step 3, hunting rulings in its
+own result comment. Both directions of this rule are stated below; that one
+is the unsafe one and the one that has happened, because it needs only the
+agent to forget a character, while the safe one needs the owner to type a
+heading they have no reason to type. No other comment kind opens with
+`Round <N> — <state>`, so the tolerance introduces no ambiguity, and it
+makes ten rounds of history readable (#1585).
+
 Now scan back to the **newest comment of a recognised kind** — past notes,
 past owner comments, however many — and read what follows it. Take the first
 row that matches:
@@ -240,9 +260,18 @@ had no heading to say so.
 The transcription note is **safe to write twice**: a note is not a
 recognised kind, so a re-run reads the same proposal, finds the same lane
 branches and takes the same row. One duplicate comment, the same price the
-abandonment comment carries. The one case this cannot see is an **owner**
-comment opening with one of the four headings, which would read as yours and
-leave the round waiting — the safe direction, and reported as such.
+abandonment comment carries.
+
+**The one case this still cannot see** is an **owner** comment opening with
+one of the four headings, which reads as yours and leaves the round waiting.
+That is the safe direction and it is reported as such: the round stops
+naming what it waits for, and the owner says in their next comment that the
+one above was theirs — the exit is a human word, and there is no mechanical
+one, because nothing distinguishes the two authors. Widening the match to
+`#` or `##` widens this case by exactly the owner comments headed with a
+single hash; the trade is deliberate, because the direction it closes ends
+in a round being built on rulings nobody wrote and this one ends in a round
+asking.
 
 Never re-post a proposal that is merely unanswered. An unanswered question
 is not a failure and repeating it is noise; it already appears in the next
@@ -340,11 +369,12 @@ has to list anyway:
   moves to ready (`--add-label pile:ready`, then `--remove-label
   pile:blocked`) — nothing else notices, because closing #N writes no label
   on anything waiting for it;
-- an item carrying **no** `**Blocked on:**` line, or one the metrics report
-  as *stated but unreadable*, gets a readable one now: you are about to
-  phrase its question for the proposal, and that line is the phrasing
-  written down. The script counts both, so the gap is visible rather than
-  merely present;
+- an item carrying **no** `**Blocked on:**` line, one whose line is empty or
+  `TBD` (the script counts those two together as *stating nothing*), or one
+  the metrics report as *stated but unreadable*, gets a readable one now:
+  you are about to phrase its question for the proposal, and that line is
+  the phrasing written down. The script counts them, so the gap is visible
+  rather than merely present;
 - an item **ruled and deferred** is re-read against its condition and moves
   to ready the round the condition holds.
 
@@ -512,10 +542,10 @@ verify-and-review pass below carrying the pull request it has, exactly as a
 returned lane would — except that a pull request the owner has already
 merged is *reported* as merged rather than re-reviewed, because a review
 after the merge changes nothing and the worktree it was built in may be
-gone. It still gets its row, which is what the next settlement reads. (A feature lane opens none,
-so this does not reach one — its spec is a comment, which a re-run can no more
-recognise as its own than the abandonment comment, and one duplicate is the
-price.)
+gone. It still gets its row, which is what the next settlement reads. (A
+feature lane opens none, so this does not reach one — its spec is a comment,
+which a re-run can no more recognise as its own than the abandonment
+comment, and one duplicate is the price.)
 
 One subagent per approved item, each with a self-contained prompt carrying:
 the issue and its full text, the ruling if it had one, what "done" means, and
@@ -622,7 +652,11 @@ Waiting on you: merge the pull requests above.
 
 The `## Round <N> — result` heading is load-bearing, not decoration: it is
 what step 0 scans back to, and a result posted under any other heading reads
-as the owner answering the proposal above it.
+as the owner answering the proposal above it. **Two hashes, and the rest of
+the string exactly as written above** — step 0 matches one hash or two and
+nothing else, and the four results already on the board were each posted
+with one, which is the drift this literal exists to stop. Copy it; do not
+retype it from memory.
 
 Then stop. The round ends when the owner merges.
 
@@ -640,9 +674,10 @@ Then stop. The round ends when the owner merges.
   merges. A reviewer reports findings and says which of its checks it did
   not reach; it does not wait on `Test Standalone` / `Test Cloud`. Three
   review lanes in one round stalled on exactly this.
-- **Never post to the `Queue` without one of step 0's four headings.** A
-  comment with any other heading is read as the owner speaking, so an
-  unlabelled note of your own answers your own proposal.
+- **Never post to the `Queue` without one of step 0's four headings**, and
+  copy the heading rather than retyping it. A comment with any other heading
+  is read as the owner speaking, so an unlabelled note of your own answers
+  your own proposal — and so does a result whose heading is a character out.
 - **Never start a round over an unfinished one.**
 - **Never ask a question mid-build.** Pull the item instead.
 - **Never build an item with an unanswered question.**
