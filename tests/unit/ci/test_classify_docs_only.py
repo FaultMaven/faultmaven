@@ -22,7 +22,12 @@ What each group here holds down:
   nothing rather than shrug and classify;
 * the bare-directory decision (#1539): a directory a test builds with
   `pathlib`'s `/` is recovered when the literals are WALKED, and a bare
-  directory literal still pins nothing.
+  directory literal still pins nothing;
+* the fail-closed arm for the probe's GRAMMAR (#1549): a documentation path a
+  test builds in a shape the walk cannot read forces the suites instead of
+  going unpinned -- with the control that decides whether that is affordable,
+  an unreadable expression naming no document, and the measurement that it
+  costs nothing on this tree today.
 
 ‼ This module names no document in a bare string literal, and
 `test_this_module_pins_no_document_of_its_own` enforces that. The pin probe
@@ -36,13 +41,14 @@ collects the blob, not the paths inside it.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
 import subprocess
 import sys
 import textwrap
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -55,6 +61,8 @@ WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci-cd.yml"
 _FIXTURE = json.loads((Path(__file__).parent / "docs_only_cases.json").read_text())
 CASES = _FIXTURE["cases"]
 PATHS = _FIXTURE["paths"]
+UNREADABLE_CASES = _FIXTURE["unreadable_cases"]
+JOIN_CASES = _FIXTURE["join_cases"]
 
 # A synthetic tests/ tree has to satisfy the classifier's own positive control
 # before it can answer anything, so most fixture trees start from this.
@@ -74,9 +82,15 @@ def mod():
 
 
 @pytest.fixture(scope="module")
-def real_literals(mod):
+def real_probe(mod):
+    """The whole pin probe run over this repository's own tests/."""
+    return mod.probe(REPO_ROOT / "tests")
+
+
+@pytest.fixture(scope="module")
+def real_literals(real_probe):
     """Every literal the pin probe finds on this repository's own tests/."""
-    return mod.collect_literals(REPO_ROOT / "tests")
+    return real_probe.literals
 
 
 def _tests_tree(root: Path, sources: dict) -> Path:
@@ -383,3 +397,132 @@ def test_the_gate_still_fires_on_this_repository(real_literals, mod):
     own puzzle. This one says the gate is dead.
     """
     assert mod.decide([PATHS["docs_only_diff"]], real_literals, log=_silent) == "true"
+
+
+# --------------------------------------------------------------------------
+# The refusal: what the probe cannot read, it will not classify (#1549)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "case", UNREADABLE_CASES, ids=[c["id"] for c in UNREADABLE_CASES]
+)
+def test_unreadable_reference_table(case, mod, tmp_path):
+    """Every shape #1549 enumerated, and the controls that bound the scope.
+
+    Run through `probe()` over a synthetic tests/ tree rather than by calling
+    the detector, because what is being asserted is the CI answer -- a shape
+    that "is detected" but then gets discharged costs a pipeline run all the
+    same, and a shape that fires only when the detector is called directly
+    protects nothing.
+
+    The controls are not padding. The trigger has to be *a test builds a
+    DOCUMENTATION path the probe cannot read*, not *the probe cannot read an
+    expression*: the second is most of the test tree, and refusing on it
+    would force the full suite on every docs-only diff -- deleting the
+    feature this hardens. Four of the controls are shapes measured live on
+    this repository.
+    """
+    tree = _tests_tree(
+        tmp_path / case["id"],
+        {"t0.py": CONTROL_SOURCE, "t1.py": case["source"]},
+    )
+    result = mod.probe(tree)
+    assert (
+        bool(result.unreadable) is case["fires"]
+    ), f"{case['why']} -- probe reported {[str(r) for r in result.unreadable]}"
+
+
+def test_an_unreadable_reference_forces_the_suites_through_the_script(tmp_path):
+    """The refusal, end to end, on a diff that is otherwise docs-only.
+
+    Asserted through the process for the reason the `RESOLVED` arm is: the
+    CI answer is the one line written to `$GITHUB_OUTPUT`, and a detector
+    that fires into a variable nobody reads skips every suite exactly like
+    no detector at all. Paired with the positive control below, which is the
+    SAME diff against the SAME tree minus the planted module -- without it
+    this passes on any harness that answers `false` to everything.
+    """
+    _tests_tree(
+        tmp_path,
+        {"t0.py": CONTROL_SOURCE, "t1.py": PATHS["unreadable_planted_source"]},
+    )
+    proc, written = _run(tmp_path, PATHS["docs_only_diff"] + "\n", "true")
+    assert proc.returncode == 0, proc.stderr
+    assert written == "docs_only=false\n"
+    assert "cannot be read by the pin probe" in proc.stdout
+
+
+def test_the_same_diff_is_docs_only_without_the_unreadable_reference(tmp_path):
+    """Positive control for the test above."""
+    _tests_tree(tmp_path, {"t0.py": CONTROL_SOURCE})
+    proc, written = _run(tmp_path, PATHS["docs_only_diff"] + "\n", "true")
+    assert proc.returncode == 0, proc.stderr
+    assert written == "docs_only=true\n"
+
+
+def test_no_reference_on_this_repository_is_unreadable(real_probe):
+    """The acceptance test for the scope, measured rather than assumed.
+
+    A refusal scoped one notch too wide answers `false` for every docs-only
+    diff, which is indistinguishable from a correct `false` in CI and would
+    delete #1532 rather than harden it. This is the only place that can say
+    the difference, and it is also how the cost stays visible: a test that
+    writes one of these shapes fails HERE, with the expression named, rather
+    than quietly making every later documentation change run the suites.
+    """
+    assert [str(reference) for reference in real_probe.unreadable] == []
+
+
+def test_the_refusal_looked_at_this_repositorys_documentation_references(real_probe):
+    """A guard that looks nowhere is green for the same reason a clean one is.
+
+    `examined` counts the documentation references the refusal checked and
+    discharged, so zero here means the walk above passed over the real
+    `docs/` references entirely and the assertion it pairs with proved
+    nothing.
+    """
+    assert real_probe.examined > 0
+
+
+def test_the_discharge_is_what_keeps_the_real_tree_quiet(real_probe, mod):
+    """The one live shape, and the mutation that turns it back into a refusal.
+
+    `tests/unit/architecture/test_architecture_boundaries.py` joins an
+    unknown filename onto `docs/architecture`. It is silent only because
+    that directory is spelled whole somewhere, so `pinned_by` covers the
+    whole subtree -- take the literal away and the same file must refuse.
+    Without this, "zero refusals on the real tree" is equally consistent
+    with a detector that never fires on real code at all.
+    """
+    walker = REPO_ROOT / PATHS["architecture_walker"]
+    tree = ast.parse(walker.read_text(encoding="utf-8"))
+
+    quiet, examined = mod.unreadable_references(tree, real_probe.literals, str(walker))
+    assert quiet == [] and examined > 0
+
+    without = set(real_probe.literals) - {PATHS["pinned_documentation_directory"]}
+    noisy, _ = mod.unreadable_references(tree, without, str(walker))
+    assert (
+        noisy
+    ), "removing the pinning literal changed nothing -- the discharge is not what is keeping this file quiet"
+
+
+@pytest.mark.parametrize("case", JOIN_CASES, ids=[c["joined"] for c in JOIN_CASES])
+def test_division_is_joined_the_way_pathlib_joins_it(mod, case):
+    """Mis-recovery, which is worse than non-recovery because it is silent.
+
+    A trailing slash used to make `docs//guides`, a literal matching nothing,
+    and a component with whitespace used to be stripped into the name of a
+    directory that does not exist, while the one that does went unpinned.
+    Both answers looked like successful recoveries.
+
+    Asserted twice: against the expectation written down, and against
+    `pathlib` itself -- which is the thing the test being READ will do, and
+    the only oracle that cannot drift the same way the implementation does.
+    """
+    expected = PurePosixPath(case["spelled"][0])
+    for component in case["spelled"][1:]:
+        expected = expected / component
+    assert mod._join_constants(case["spelled"]) == case["joined"], case["why"]
+    assert mod._join_constants(case["spelled"]) == str(expected), case["why"]
