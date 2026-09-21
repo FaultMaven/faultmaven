@@ -1329,6 +1329,14 @@ def setup_middleware():
         protection_info = setup_protection_middleware(
             app,
             environment=settings.server.environment,
+            # ADR-004's single source of truth for "am I standalone or cloud?",
+            # and since fm#1566 the axis the Redis degrade policy keys on: a
+            # cloud fleet pins fail-closed, a self-hosted deployment fails open
+            # and keeps its per-replica FakeRedis stand-in rung. Passed from
+            # the resolved settings rather than re-read from the environment,
+            # so protection cannot disagree with auth, storage and tenancy
+            # about which deployment this is.
+            is_cloud_deployment=settings.is_cloud,
         )
         if logging_enabled:
             if protection_info.get("protection_enabled"):
@@ -1492,18 +1500,51 @@ def setup_middleware():
     # special-case or its own copy of the CORS configuration. Two CORS
     # authorities can disagree; one cannot.
     #
-    # Use configurable origins from settings - production should specify
-    # specific extension IDs instead of wildcards (e.g., chrome-extension://abc123)
+    # ⚠️ ACCEPTED, NOT OVERLOOKED: preflight OPTIONS are therefore UNMETERED and
+    # invisible in-process — no rate limiting, no request log line, no metric
+    # (fm#985 item 10). The disposition is deliberate: a preflight touches no
+    # application code, the ingress in front of a deployed box already sees and
+    # can limit it, and a second meter for a request class the application
+    # never executes is cost with no consumer. A deployment that needs preflight
+    # visibility gets it from the ingress. Stated for operators in
+    # docs/operations/security/client-protection.md § "Preflight OPTIONS are
+    # not metered in-process".
+    #
+    # Use configurable origins from settings - deployed environments should
+    # specify concrete origins (e.g. chrome-extension://abc123) rather than
+    # wildcards.
     cors_origins = list(settings.security.cors_allow_origins)
 
-    # SECURITY: Fail-fast validation - no wildcards allowed in production
-    from faultmaven.config.settings import Environment
+    # Which CORS policy a box runs is decided by ONE question — is this a
+    # deployed environment? — and `settings.is_development()` is the whole of
+    # it. The three branches below used to ask `== Environment.PRODUCTION`
+    # instead, the "only production is special" pattern fm#1023 removed from
+    # protection routing. `ENVIRONMENT=staging` therefore ran production's
+    # strict fail-closed rate limits AND development's CORS at the same time:
+    # a wildcard origin accepted, localhost appended, and the RFC1918
+    # `allow_origin_regex` installed with `allow_credentials` on — so any host
+    # on any private network could make credentialed calls to a deployed box
+    # (fm#985 item 17). Staging is classified as deployed, the same as
+    # production.
+    #
+    # Phrased as "not development" rather than "in (staging, production)" for
+    # the same fail-safe reason fm#1023 chose: a fourth `Environment` member
+    # added later is deployed until someone says otherwise.
+    deployed = not settings.is_development()
 
-    if settings.server.environment == Environment.PRODUCTION:
+    # SECURITY: Fail-fast validation - no wildcards allowed on a deployed box
+    if deployed:
         wildcard_origins = [o for o in cors_origins if "://*" in o]
         if wildcard_origins:
+            # Unwrapped: `server.environment` holds the Enum member, and a bare
+            # str() would put "Environment.STAGING" in front of an operator
+            # (#827) — in the one message that tells them what to fix.
+            named_environment = getattr(
+                settings.server.environment, "value", settings.server.environment
+            )
             raise RuntimeError(
-                f"SECURITY ERROR: Wildcard CORS origins are not allowed in production: {wildcard_origins}. "
+                f"SECURITY ERROR: Wildcard CORS origins are not allowed on a deployed "
+                f"environment (ENVIRONMENT={named_environment}): {wildcard_origins}. "
                 "Configure CORS_ALLOW_ORIGINS with specific extension IDs "
                 "(e.g., chrome-extension://abc123def456)."
             )
@@ -1512,8 +1553,8 @@ def setup_middleware():
     if "https://faultmaven.ai" not in cors_origins:
         cors_origins.append("https://faultmaven.ai")
 
-    # In non-production, support dynamic CORS for local network access
-    if settings.server.environment != Environment.PRODUCTION:
+    # Development only: dynamic CORS for local network access
+    if not deployed:
         # Add common development origins if not already present
         for dev_origin in [
             "http://localhost:3333",
@@ -1551,7 +1592,8 @@ def setup_middleware():
             logger.info(f"   Allowed origins: {cors_origins}")
             logger.info(f"   Local network pattern: {local_network_regex}")
     else:
-        # Production: strict origin checking only (no regex patterns)
+        # Deployed (staging and production): strict origin checking only, no
+        # regex patterns and no appended localhost origins.
         app.add_middleware(
             CORSMiddleware,
             allow_origins=cors_origins,
@@ -2367,9 +2409,7 @@ async def health_check():
     # so this is only ever degraded in the explicit ALLOW_TOOLLESS_INVESTIGATION
     # opt-in — surface it so the degraded state stays visible, not just in logs.
     try:
-        from .config.investigation_capability import (
-            resolve_investigation_capability,
-        )
+        from .config.investigation_capability import resolve_investigation_capability
         from .config.settings import get_settings
         from .infrastructure.llm.providers.registry import get_registry
 

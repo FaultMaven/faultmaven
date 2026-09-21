@@ -11,12 +11,15 @@ rather than left looking configurable (fm#1023).
 
 Exactly three environment keys reach these presets:
 
-* ``PROTECTION_PROFILE`` — WHICH preset is installed, read by
-  ``resolve_protection_profile``. Defaults to ``hardened``; only an explicit
-  ``development`` selects the permissive preset and its bypass headers.
+* ``PROTECTION_PROFILE`` — WHICH preset is installed *and* which degrade policy
+  it runs, read by ``resolve_protection_profile``. Defaults to ``hardened``;
+  only an explicit ``development`` selects the permissive preset and its bypass
+  headers, and ``cloud`` (also implied by ``DEPLOYMENT_MODE=cloud``) is the
+  multi-replica fleet posture.
 * ``PROTECTION_RATE_LIMIT_FAIL_OPEN`` — the Redis degrade policy, read by
-  ``_fail_open_default``. Honoured by the development preset; the production
-  preset pins fail-*closed* and ignores it.
+  ``_fail_open_default`` and applied by ``resolve_rate_limit_fail_open``.
+  Honoured on the ``development`` and ``hardened`` profiles; the ``cloud``
+  profile pins fail-*closed* and ignores it (fm#1566).
 * ``PROTECTION_TRUSTED_PROXIES`` — which proxies' forwarding headers may be
   believed, read by ``get_trusted_proxies``. Honoured by both presets, empty by
   default.
@@ -95,20 +98,53 @@ class ProtectionProfile(str, Enum):
     ``HARDENED`` is the default, so a deployment nobody classified is protected
     rather than opt-out.
 
-    The two members map onto the two preset constructors below —
-    ``HARDENED`` → ``get_production_protection_settings``, ``DEVELOPMENT`` →
-    ``get_development_protection_settings``. The constructors keep their names
-    because that is what the numbers in them are: production's. The *profile*
-    is named ``hardened`` rather than ``production`` deliberately — it is a
-    posture, and calling it ``production`` would re-import the environment
-    vocabulary this axis exists to separate from.
+    **Three members, two presets.** ``DEVELOPMENT`` →
+    ``get_development_protection_settings``; ``HARDENED`` and ``CLOUD`` both →
+    ``get_production_protection_settings``, with the same limits, the same
+    namespace and no bypass header on either. What separates them is the one
+    property fm#1566 moved onto this axis: the **Redis degrade policy**. The
+    constructors keep their names because that is what the numbers in them are:
+    production's. The *profile* is named ``hardened`` rather than ``production``
+    deliberately — it is a posture, and calling it ``production`` would
+    re-import the environment vocabulary this axis exists to separate from.
+
+    ``CLOUD`` is the multi-replica fleet, and it is what pins fail-*closed*.
+    ``HARDENED`` is the self-hosted deployment — one replica, one tenant, no
+    fleet to shed onto — and it defaults fail-*open*, whatever ``ENVIRONMENT``
+    says. That is fm#1566: ``api/protection.py`` used to compute the degrade
+    policy as ``environment != Environment.DEVELOPMENT``, so a self-hosted
+    operator who set ``ENVIRONMENT=production`` — the natural thing to do — was
+    silently moved to fail-closed, which also disables the per-replica FakeRedis
+    stand-in rung (``RedisRateLimiter.fallback_enabled``) and turns a Redis blip
+    into a 503 on every request for a single user with nothing to shed onto.
+
+    **The members are ordered by strictness** — ``DEVELOPMENT`` < ``HARDENED``
+    < ``CLOUD`` — and ``resolve_protection_profile`` takes the *maximum* of what
+    the key asks for and what the deployment shape implies. So every input can
+    harden the result and none can loosen it, which is the same monotonicity
+    ``ENVIRONMENT``'s veto has: no combination of keys is less protected than
+    ``PROTECTION_PROFILE`` alone says.
     """
 
     HARDENED = "hardened"
     DEVELOPMENT = "development"
+    CLOUD = "cloud"
 
 
-def resolve_protection_profile(environment: Any = None) -> ProtectionProfile:
+#: Strictness order for the monotone resolution in ``resolve_protection_profile``.
+#: A dict rather than the member order, because ``Enum`` declaration order is
+#: not a promise and reordering the members above must not silently reorder the
+#: postures.
+_PROFILE_STRICTNESS = {
+    ProtectionProfile.DEVELOPMENT: 0,
+    ProtectionProfile.HARDENED: 1,
+    ProtectionProfile.CLOUD: 2,
+}
+
+
+def resolve_protection_profile(
+    environment: Any = None, *, is_cloud_deployment: bool = False
+) -> ProtectionProfile:
     """The one reader of ``PROTECTION_PROFILE``, and the one selector of a preset.
 
     One reader for the same reason ``_fail_open_default`` and
@@ -137,15 +173,37 @@ def resolve_protection_profile(environment: Any = None) -> ProtectionProfile:
     deployed, which is the same fail-safe default
     ``setup_protection_middleware`` gives its own parameter.
 
-    A cloud deployment is covered transitively: a cloud overlay names its
-    environment (``production``, and ``staging`` on the flip-rehearsal
-    overlay), so the veto fires there without this function needing to import
-    settings to read ``DEPLOYMENT_MODE``.
+    ``is_cloud_deployment`` is the **deployment-shape floor**, and it is
+    ``settings.is_cloud`` — ADR-004's single source of truth for "am I
+    standalone or cloud?" — passed in rather than re-read here, for the same
+    reason ``environment`` is. It can only raise the result: a cloud deployment
+    resolves to ``CLOUD`` however the key is spelled, so a fleet cannot end up
+    on the self-hosted degrade posture (fm#1566) and cannot arm the bypass
+    headers by also naming ``ENVIRONMENT=development`` — a hole the veto alone
+    left open, since the veto reads ``ENVIRONMENT`` and a cloud deployment is
+    free to name any environment it likes.
+
+    It defaults to ``False`` deliberately, and that is the same default
+    ``DeploymentMode`` itself carries: a deployment that has not declared
+    itself cloud is not treated as cloud for auth, storage, tenancy or the
+    coherence gate either, and giving this one property a *different* answer to
+    "am I a cloud deployment" is the conflation ADR-004 exists to prevent. A
+    self-hosted fleet that wants the cloud degrade posture without claiming
+    cloud mode says so directly with ``PROTECTION_PROFILE=cloud``.
     """
+    floor = (
+        ProtectionProfile.CLOUD
+        if is_cloud_deployment
+        else ProtectionProfile.DEVELOPMENT
+    )
+
+    def _hardest(*candidates: ProtectionProfile) -> ProtectionProfile:
+        return max(candidates, key=_PROFILE_STRICTNESS.__getitem__)
+
     requested = os.getenv(PROTECTION_PROFILE_ENV_VAR, "").strip().lower()
 
     if not requested:
-        return ProtectionProfile.HARDENED
+        return _hardest(ProtectionProfile.HARDENED, floor)
 
     try:
         profile = ProtectionProfile(requested)
@@ -158,10 +216,10 @@ def resolve_protection_profile(environment: Any = None) -> ProtectionProfile:
             requested,
             "/".join(member.value for member in ProtectionProfile),
         )
-        return ProtectionProfile.HARDENED
+        return _hardest(ProtectionProfile.HARDENED, floor)
 
-    if profile is ProtectionProfile.HARDENED:
-        return profile
+    if profile is not ProtectionProfile.DEVELOPMENT:
+        return _hardest(profile, floor)
 
     # ``Environment`` subclasses ``str`` but ``str(member)`` renders
     # "Environment.DEVELOPMENT", so unwrap ``.value`` first — the shape that
@@ -177,9 +235,99 @@ def resolve_protection_profile(environment: Any = None) -> ProtectionProfile:
             PROTECTION_PROFILE_ENV_VAR,
             named or None,
         )
-        return ProtectionProfile.HARDENED
+        return _hardest(ProtectionProfile.HARDENED, floor)
 
-    return profile
+    if floor is ProtectionProfile.CLOUD:
+        logger.error(
+            "%s=development was requested on a cloud deployment "
+            "(DEPLOYMENT_MODE=cloud). Refusing for the same reason a deployed "
+            "ENVIRONMENT refuses it — the preset arms X-Dev-Bypass / "
+            "X-Test-Bypass, whose mere presence skips all rate limiting. "
+            "Installing the cloud preset instead.",
+            PROTECTION_PROFILE_ENV_VAR,
+        )
+
+    return _hardest(profile, floor)
+
+
+def resolve_rate_limit_fail_open(profile: ProtectionProfile) -> bool:
+    """The one decider of the Redis degrade policy (fm#1566).
+
+    **The profile owns this axis**, the same axis fm#985 item 15 gave the limits
+    and the bypass headers. ``ENVIRONMENT`` does not participate: it used to, as
+    ``for_deployed_environment=(environment != Environment.DEVELOPMENT)`` in
+    ``api/protection.setup_protection_middleware``, and the consequence was that
+    a self-hosted operator setting ``ENVIRONMENT=production`` — the natural
+    thing to do on a production install of a self-hosted product — was silently
+    moved from fail-open to fail-closed on a **single replica**, where the
+    argument for fail-closed barely applies.
+
+    ``fail_open_on_redis_error`` is not only about refusing. It also feeds
+    ``RedisRateLimiter.fallback_enabled``, so fail-closed **disables the
+    per-replica FakeRedis stand-in rung**: a limiter whose client stops
+    answering refuses instead of recovering. Measured during fm#1563's review —
+    flipping that one flag took ``tests/integration/api/test_sessions_api.py``
+    from 20 failed / 20 passed to 40 passed under the cloud shape. Fail-closed
+    is a recovery posture, not only a refusal posture, which is why it belongs
+    to the deployment shape rather than to an environment name.
+
+    Two answers, one per posture:
+
+    * ``CLOUD`` pins fail-**closed** and does not read the key. Unchanged by
+      fm#1566 and deliberately out of its scope: rung 2 is per-replica, so
+      during a shared-Redis outage a fleet of N replicas enforces N independent
+      copies of a limit whose configured value only means anything when it is
+      shared, and the trade a fleet wants is a 503 over a hole in a control that
+      is both a security and a cost boundary. The full argument is in
+      ``get_production_protection_settings``' docstring.
+    * ``HARDENED`` and ``DEVELOPMENT`` honour ``PROTECTION_RATE_LIMIT_FAIL_OPEN``
+      (default ``true``), so a self-hosted operator who wants the other posture
+      sets one key rather than lying about their profile.
+
+    One decider, for the same reason ``_fail_open_default`` is one reader and
+    ``resolve_protection_profile`` is one selector: no two producers of a
+    ``ProtectionSettings`` may disagree about the posture the deployment asked
+    for.
+    """
+    if profile is ProtectionProfile.CLOUD:
+        if _fail_open_key() is not None:
+            # Never silently ignored. A key that is read on two of three
+            # profiles and inert on the third is exactly the "left looking
+            # configurable" class fm#985 items 12 and 16 closed; the cheapest
+            # correction is to say so where the operator is looking.
+            logger.warning(
+                "%s is set but ignored on the "
+                "'%s' protection profile, which pins the rate limiter "
+                "fail-CLOSED: a multi-replica fleet's degraded rung is "
+                "per-replica, so it is a floor rather than a substitute. "
+                "Remove the key, or run the 'hardened' profile if this "
+                "deployment is a single self-hosted replica.",
+                FAIL_OPEN_ENV_VAR,
+                profile.value,
+            )
+        return False
+
+    return _fail_open_default()
+
+
+#: The environment variable ``_fail_open_key`` reads, named for the same reason
+#: ``PROTECTION_PROFILE_ENV_VAR`` is: a second spelling is a second source.
+FAIL_OPEN_ENV_VAR = "PROTECTION_RATE_LIMIT_FAIL_OPEN"
+
+
+def _fail_open_key() -> "str | None":
+    """The ONE read of ``PROTECTION_RATE_LIMIT_FAIL_OPEN``. ``None`` means unset.
+
+    Separated from ``_fail_open_default`` because two callers need two
+    different things from the same key — the policy, and whether the operator
+    stated one at all (``resolve_rate_limit_fail_open`` warns when the
+    ``cloud`` profile is about to ignore a value somebody set). Reading
+    ``os.getenv`` twice would be the second reader this module spends its
+    docstrings forbidding, and the architecture sweep in
+    ``tests/unit/architecture/test_configuration_compliance.py`` counts the
+    calls, so it is also the second reader the build refuses.
+    """
+    return os.getenv(FAIL_OPEN_ENV_VAR)
 
 
 def _fail_open_default() -> bool:
@@ -188,19 +336,22 @@ def _fail_open_default() -> bool:
     ``PROTECTION_RATE_LIMIT_FAIL_OPEN`` (default ``true``) governs the
     rate-limiting and deduplication degrade policy, and nothing else.
 
+    This is the key's one *interpretation* — ``_fail_open_key`` above is the
+    one read. Whether a given deployment's policy comes from the key at all is
+    ``resolve_rate_limit_fail_open``'s decision: the ``cloud`` profile pins
+    fail-closed and never gets here.
+
     It is deliberately *not* ``PROTECTION_FAIL_OPEN``: that key binds to
     ``settings.protection.fail_open`` and governs PII-redaction fail-open
     (#654, default ``false``). The two policies are independent and must stay
     that way — an operator hardening redaction to fail closed must not thereby
     turn a Redis blip into a 503 on every request.
 
-    One reader, so no producer of a ``ProtectionSettings`` can disagree with
-    another about what the deployment asked for.
-
-    ``get_production_protection_settings`` deliberately does *not* call this: it
-    pins fail-closed, for the reason given in its docstring.
+    One interpretation, so no producer of a ``ProtectionSettings`` can
+    disagree with another about what the deployment asked for.
     """
-    return os.getenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", "true").lower() == "true"
+    raw = _fail_open_key()
+    return (raw if raw is not None else "true").lower() == "true"
 
 
 def get_trusted_proxies() -> list:
@@ -257,8 +408,8 @@ def get_development_protection_settings() -> ProtectionSettings:
     - Shorter timeouts for faster feedback
     - Bypass headers enabled
     - Redis degrade policy from ``PROTECTION_RATE_LIMIT_FAIL_OPEN`` (default
-      open). Production pins fail-closed instead — see
-      ``get_production_protection_settings``.
+      open), via ``resolve_rate_limit_fail_open``. Only the ``cloud`` profile
+      pins fail-closed — see that function and fm#1566.
 
     **Reached only when ``PROTECTION_PROFILE=development`` is set explicitly**,
     and only on a box that also names ``ENVIRONMENT=development`` (or leaves it
@@ -271,7 +422,12 @@ def get_development_protection_settings() -> ProtectionSettings:
     return ProtectionSettings(
         # General
         enabled=True,
-        fail_open_on_redis_error=_fail_open_default(),
+        # Through the one decider rather than the one reader, so this preset
+        # cannot disagree with the production preset about what a profile means
+        # (fm#1566). For ``DEVELOPMENT`` the decider IS ``_fail_open_default()``.
+        fail_open_on_redis_error=resolve_rate_limit_fail_open(
+            ProtectionProfile.DEVELOPMENT
+        ),
         protection_bypass_headers=["X-Dev-Bypass", "X-Test-Bypass"],
         trusted_proxies=get_trusted_proxies(),
         # Redis: resolve centrally via RedisClientFactory.
@@ -308,7 +464,9 @@ def get_development_protection_settings() -> ProtectionSettings:
 
 
 def get_production_protection_settings(
-    *, for_deployed_environment: bool = True
+    *,
+    for_deployed_environment: bool = True,
+    fail_open_on_redis_error: bool = False,
 ) -> ProtectionSettings:
     """
     Get protection settings optimized for production
@@ -316,8 +474,8 @@ def get_production_protection_settings(
     - Strict rate limits
     - Long timeouts for reliability
     - No bypass headers
-    - **Fails closed** on a Redis error, and does not read
-      ``PROTECTION_RATE_LIMIT_FAIL_OPEN`` — see below
+    - Degrade policy supplied by the caller, defaulting to fail-**closed** —
+      see ``fail_open_on_redis_error`` below
 
     **This is the default preset, not just production's.** Only an explicit
     ``PROTECTION_PROFILE=development`` selects the other one; every other
@@ -326,11 +484,14 @@ def get_production_protection_settings(
     nobody classified is protected rather than unprotected (fm#1023, fm#985
     item 15). Read the numbers below as the floor every deployment runs on.
 
-    On a **deployed** environment this is the one preset that pins the degrade
-    policy rather than honouring the key, and it pins it *closed*. On a
-    development environment it honours the key exactly as the development
-    preset does — see ``for_deployed_environment`` below, and read everything
-    that follows as being about the deployed audience.
+    **The degrade policy is no longer decided here** (fm#1566). It arrives as
+    ``fail_open_on_redis_error`` from ``resolve_rate_limit_fail_open``, which
+    keys it on the protection profile: ``cloud`` pins fail-closed, ``hardened``
+    and ``development`` honour ``PROTECTION_RATE_LIMIT_FAIL_OPEN``. The
+    argument for the cloud pin is below and is unchanged; what changed is that
+    ``ENVIRONMENT`` no longer selects it, so a self-hosted operator setting
+    ``ENVIRONMENT=production`` is not moved to fail-closed on a single replica.
+    Read everything that follows as being about the **cloud** audience.
 
     Defaulting it open rests on the claim that the fail-open rung is nearly
     unreachable, because the ladder is shared Redis → per-replica FakeRedis →
@@ -363,39 +524,36 @@ def get_production_protection_settings(
     how the pinned path reports itself, and an argument for fixing the report —
     not for unpinning.
 
-    The development preset does honour ``PROTECTION_RATE_LIMIT_FAIL_OPEN``,
-    and so does this one on a development environment; a deployed environment
-    opts out explicitly rather than by omission.
+    The ``development`` and ``hardened`` profiles both honour
+    ``PROTECTION_RATE_LIMIT_FAIL_OPEN``; only ``cloud`` opts out of it, and it
+    does so by naming a posture rather than by naming an environment.
     ``PROTECTION_TRUSTED_PROXIES`` is *not* pinned here — unlike the
     degrade policy, no value for it is right for every deployment, and the
     empty default is already the safe one. It is, however, the one preset that
     warns when it is left empty: see below.
 
-    ``for_deployed_environment`` exists because this preset acquired a second
-    audience. Since fm#985 item 15 it is also what a box running
-    ``ENVIRONMENT=development`` installs — the standalone quickstart, a
-    contributor's checkout, the test suite — none of which reached it before.
-    Two of the things in here are right for a deployed environment and wrong
-    for that one, so the caller says which audience it is building for and the
-    set of boxes each behaviour applies to is **unchanged** by item 15:
+    **Two parameters, because there are now two questions.** They were one —
+    ``for_deployed_environment``, computed as ``environment !=
+    Environment.DEVELOPMENT`` — while both answers came from the environment
+    name. fm#1566 moved one of them onto the protection profile, so the two
+    predicates genuinely differ and collapsing them again would re-key the
+    degrade policy on ``ENVIRONMENT`` by the back door:
 
-    1. **The degrade policy.** A deployed environment keeps the pin argued at
-       length above: fail-*closed*, ignoring ``PROTECTION_RATE_LIMIT_FAIL_OPEN``.
-       A development environment keeps ``_fail_open_default()``, which is what
-       the development preset gave it before. This is not cosmetic — the flag
+    1. ``fail_open_on_redis_error`` — **the degrade policy**, decided by the
+       *profile* (``resolve_rate_limit_fail_open``). Not cosmetic: the flag
        reaches ``RedisRateLimiter.fallback_enabled``, so fail-closed also
-       **disables the per-replica stand-in rung**: a limiter whose client stops
-       answering does not recover onto FakeRedis, it refuses. That is a
-       deliberate production posture and deciding it for the self-hosted single
-       user was never item 15's to decide.
-    2. **The empty-trusted-proxies warning.** A single-user box has nothing in
-       front of it, so an empty list there is not merely safe but correct, and
-       "empty in production" would be a false statement sending an operator to
-       configure a proxy they do not run.
-
-    One parameter rather than two, because it is one question — *is this the
-    audience this preset was written for?* — and two booleans computed from the
-    same predicate is how the third such behaviour gets missed.
+       **disables the per-replica stand-in rung** — a limiter whose client
+       stops answering does not recover onto FakeRedis, it refuses. The default
+       here is ``False`` (fail-closed) so that a caller who names nothing gets
+       the strict posture; every caller in the application names it.
+    2. ``for_deployed_environment`` — **the empty-trusted-proxies warning**
+       only, and still decided by the *environment*, because that is the
+       question it asks: is there something in front of this box whose
+       forwarding headers we are declining to believe? A single-user box has
+       nothing in front of it, so an empty list there is not merely safe but
+       correct, and "empty in production" would be a false statement sending an
+       operator to configure a proxy they do not run. The set of boxes this
+       warning fires on is **unchanged** by fm#1566.
     """
     trusted_proxies = get_trusted_proxies()
 
@@ -423,12 +581,9 @@ def get_production_protection_settings(
     return ProtectionSettings(
         # General
         enabled=True,
-        # Pinned closed for a deployed environment; a development environment
-        # keeps the policy the development preset gave it before fm#985 item 15
-        # (see ``for_deployed_environment`` in the docstring).
-        fail_open_on_redis_error=(
-            False if for_deployed_environment else _fail_open_default()
-        ),
+        # Decided by the PROFILE and handed in (fm#1566). Defaults to
+        # fail-closed for a caller that names nothing.
+        fail_open_on_redis_error=fail_open_on_redis_error,
         protection_bypass_headers=[],  # No bypasses in production
         trusted_proxies=trusted_proxies,
         # Redis: resolve centrally via RedisClientFactory.

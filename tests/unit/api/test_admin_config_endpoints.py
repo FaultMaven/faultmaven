@@ -156,6 +156,16 @@ def mock_settings():
     settings.tools.web_search_api_key = None
     settings.tools.web_search_engine_id = None
     settings.is_cloud = False  # standalone (canonical DEPLOYMENT_MODE, ADR-004)
+    # Explicit for the same reason as the fields above, and this one is a
+    # NEAR-MISS rather than merely unset: ``settings.protection.fail_open`` is
+    # PII-redaction fail-open (``PROTECTION_FAIL_OPEN``, shipped default
+    # False), NOT the rate limiter's degrade policy
+    # (``PROTECTION_RATE_LIMIT_FAIL_OPEN``) — a confusion
+    # ``config/protection._fail_open_default`` warns about in as many words.
+    # That confusion is the settings-only stand-in for
+    # ``request_protection_fails_open``, so the fixture must carry the real
+    # default and not a truthy MagicMock.
+    settings.protection.fail_open = False
     settings.server.environment = MagicMock(value="development")
     # Explicit for the same reason as ``kb_prefetch_enabled`` above: the fixture
     # models "configures nothing", and an auto-created MagicMock attribute is
@@ -948,6 +958,69 @@ class TestGetEnvConfigStatus:
         assert result.rate_limit_enabled is False
 
     @pytest.mark.asyncio
+    async def test_the_degrade_posture_is_reported_from_the_installed_limiter(
+        self, mock_admin_user, mock_settings, monkeypatch
+    ):
+        """fm#1566 moved this posture; the ruling's standing condition is that
+        a moved posture be readable from the running system.
+
+        Both answers are exercised through the real install path, because the
+        point of reading it off ``user_middleware`` is that it cannot disagree
+        with what runs: the ``cloud`` profile ignores
+        ``PROTECTION_RATE_LIMIT_FAIL_OPEN``, so a report derived from the key
+        would say "fails open" about a fleet that refuses.
+        """
+        from faultmaven.api.protection import setup_protection_middleware
+
+        monkeypatch.delenv("PROTECTION_PROFILE", raising=False)
+        monkeypatch.setenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", "true")
+
+        self_hosted = FastAPI()
+        setup_protection_middleware(self_hosted, environment=Environment.PRODUCTION)
+
+        fleet = FastAPI()
+        setup_protection_middleware(
+            fleet, environment=Environment.PRODUCTION, is_cloud_deployment=True
+        )
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            self_hosted_result = await get_env_config_status(
+                request=_request_for(self_hosted), current_user=mock_admin_user
+            )
+            fleet_result = await get_env_config_status(
+                request=_request_for(fleet), current_user=mock_admin_user
+            )
+
+        open_posture = self_hosted_result.features["request_protection_fails_open"]
+        assert open_posture.enabled is True
+        assert "fakeredis" in open_posture.description.lower()
+
+        closed_posture = fleet_result.features["request_protection_fails_open"]
+        assert closed_posture.enabled is False, (
+            "a cloud fleet was reported as failing open while its installed "
+            "limiter pins fail-closed — the key was reported, not the limiter"
+        )
+        assert "503" in closed_posture.description
+
+    @pytest.mark.asyncio
+    async def test_the_degrade_posture_is_not_reported_open_with_no_limiter(
+        self, mock_admin_user, mock_settings, unprotected_app
+    ):
+        """No limiter is not "fails open"; it is "there is nothing to degrade".
+
+        ``enabled`` is False in both cases, so the description is what
+        separates them — the same call ``request_protection_hardened`` makes.
+        """
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(unprotected_app), current_user=mock_admin_user
+            )
+
+        posture = result.features["request_protection_fails_open"]
+        assert posture.enabled is False
+        assert "no rate limiter" in posture.description.lower()
+
+    @pytest.mark.asyncio
     async def test_consent_skip_reports_inactive_when_no_redirect_is_pinned(
         self, mock_admin_user, mock_settings, oauth_mounted_app
     ):
@@ -1628,6 +1701,16 @@ def _pure_settings_answer(feature: str, settings) -> bool:
         # the one deployment where it was false.
         environment = getattr(settings.server, "environment", None)
         return str(getattr(environment, "value", environment)) != "development"
+    if feature == "request_protection_fails_open":
+        # The obvious version, and the one the key's own docstring warns
+        # about: read ``settings.protection.fail_open``. That field is
+        # PROTECTION_FAIL_OPEN — PII redaction — one letter-group away from
+        # PROTECTION_RATE_LIMIT_FAIL_OPEN, on the same settings section, with
+        # the opposite default. It reports a posture nobody configured, it
+        # cannot see that the ``cloud`` profile ignores the rate-limit key
+        # outright, and it reports something at all on a process carrying no
+        # limiter.
+        return bool(settings.protection.fail_open)
     if feature == "debug_endpoints":
         # The obvious version: echo the flag. It reports True for every
         # deployment with ENABLE_DEBUG_ENDPOINTS set — which is what the
@@ -2291,6 +2374,46 @@ def _scenario_request_protection_hardened(settings, app, monkeypatch, reality):
         ]
 
 
+def _scenario_request_protection_fails_open(settings, app, monkeypatch, reality):
+    """The runtime fact withheld here is the degrade policy the limiter HOLDS.
+
+    fm#1566 moved that policy from ``ENVIRONMENT`` onto the protection profile,
+    and the profile is resolved from two inputs an operator cannot combine by
+    eye (``PROTECTION_PROFILE`` and ``DEPLOYMENT_MODE``) — after which the
+    ``cloud`` profile ignores ``PROTECTION_RATE_LIMIT_FAIL_OPEN`` entirely. So
+    no configuration read answers "what will this limiter do when Redis goes
+    away"; only the ``ProtectionSettings`` the middleware was installed with
+    does.
+
+    ``settings.protection.fail_open`` is set in BOTH arms, because it is the
+    near-miss a settings-only implementation would reach for and the point is
+    that it stays wrong in the arm where it happens to agree.
+
+    Both arms reinstall through the real path with the key cleared, so the
+    result is a function of the profile rather than of the box's own ``.env``.
+    """
+    from faultmaven.api.middleware import DeduplicationMiddleware, RateLimitMiddleware
+    from faultmaven.api.protection import setup_protection_middleware
+
+    settings.protection.fail_open = True
+    monkeypatch.delenv("PROTECTION_PROFILE", raising=False)
+    monkeypatch.delenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", raising=False)
+
+    app.user_middleware = [
+        entry
+        for entry in app.user_middleware
+        if entry.cls not in (RateLimitMiddleware, DeduplicationMiddleware)
+    ]
+    # reality=True is the self-hosted deployment (hardened: recovers onto the
+    # per-replica FakeRedis stand-in); reality=False is the cloud fleet, which
+    # pins fail-closed and refuses.
+    setup_protection_middleware(
+        app,
+        environment=Environment.PRODUCTION,
+        is_cloud_deployment=not reality,
+    )
+
+
 FEATURE_SCENARIOS = {
     "debug_endpoints": _scenario_debug_endpoints,
     "kb_prefetch": _scenario_kb_prefetch,
@@ -2300,6 +2423,7 @@ FEATURE_SCENARIOS = {
     "suggestion_store_worker_safe": _scenario_suggestion_store_worker_safe,
     "token_revocation_durable": _scenario_token_revocation_durable,
     "request_protection_hardened": _scenario_request_protection_hardened,
+    "request_protection_fails_open": _scenario_request_protection_fails_open,
 }
 
 

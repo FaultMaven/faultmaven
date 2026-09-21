@@ -17,12 +17,19 @@ Three properties are pinned:
    fm#985 item 15 moved that decision onto ``PROTECTION_PROFILE``, because
    ``ENVIRONMENT`` is unset on the standalone quickstart and fell to
    ``development``. Every environment, including ``development``, gets
-   production's preset: fail-*closed* on a Redis error and no bypass header.
-   That is still the discriminator that separates fm#1023's fix from one that
-   merely routed staging somewhere that happened to install middleware, and it
-   is now also the discriminator for item 15 — see
+   production's preset: production's limits and no bypass header. That is
+   still the discriminator that separates fm#1023's fix from one that merely
+   routed staging somewhere that happened to install middleware, and it is now
+   also the discriminator for item 15 — see
    ``tests/unit/api/test_protection_bypass_is_unreachable.py`` for the axis
    that *can* loosen it.
+
+   The degrade policy is no longer part of "production's semantics" as far as
+   the environment is concerned: fm#1566 moved it onto the profile too, so a
+   self-hosted box naming ``ENVIRONMENT=production`` keeps its per-replica
+   FakeRedis stand-in rung and only a ``cloud`` profile pins fail-closed. The
+   tests that pin THAT axis are below, and they sweep every environment in
+   order to say "none of them decides it".
 3. **Fail closed on setup failure.** A preset that raises — or settings that do
    not validate — propagates rather than leaving a bare app behind, which is the
    same unprotected state arrived at from a different direction, and it says so
@@ -60,13 +67,15 @@ UNKNOWN_ENVIRONMENT = "weird-env"
 ALL_ENVIRONMENTS = list(Environment) + [UNKNOWN_ENVIRONMENT]
 
 
-def _install(environment=None):
+def _install(environment=None, *, is_cloud_deployment=None):
     """Install on a *fresh* app, never the ``main.py`` singleton."""
     app = FastAPI()
-    if environment is None:
-        setup_info = setup_protection_middleware(app)
-    else:
-        setup_info = setup_protection_middleware(app, environment=environment)
+    kwargs = {}
+    if environment is not None:
+        kwargs["environment"] = environment
+    if is_cloud_deployment is not None:
+        kwargs["is_cloud_deployment"] = is_cloud_deployment
+    setup_info = setup_protection_middleware(app, **kwargs)
     return app, setup_info
 
 
@@ -129,60 +138,56 @@ def test_staging_gets_production_semantics(environment):
 
     This is the mutation-observable discriminator: routing staging to the
     development preset still installs both middlewares and still passes the
-    sweep, but hands it a fail-*open* degrade policy and the bypass headers.
+    sweep, but hands it the bypass headers and the roomy limits.
+
+    The degrade policy is NOT asserted here any more. fm#1566 moved it onto
+    the protection profile, so it is no longer a function of the environment
+    at all and asserting it here would pin the axis that was removed — see
+    ``test_the_degrade_policy_is_keyed_on_the_profile_not_the_environment``.
     """
     app, setup_info = _install(environment)
 
     assert setup_info["settings_source"] == "production_defaults"
 
     settings = _resolved_settings(app)
-    assert settings.fail_open_on_redis_error is False
     assert settings.protection_bypass_headers == []
     assert settings.rate_limits["global"].requests == 500
 
 
 @pytest.mark.parametrize(
-    "environment,key,expected_fail_open",
-    [
-        # A development environment keeps the policy the DEVELOPMENT preset
-        # gave it before fm#985 item 15, including honouring the key both ways.
-        (Environment.DEVELOPMENT, None, True),
-        (Environment.DEVELOPMENT, "true", True),
-        (Environment.DEVELOPMENT, "false", False),
-        ("development", None, True),
-        # Every deployed environment keeps production's pin and ignores the key.
-        (Environment.STAGING, None, False),
-        (Environment.STAGING, "true", False),
-        (Environment.PRODUCTION, None, False),
-        (Environment.PRODUCTION, "true", False),
-        (UNKNOWN_ENVIRONMENT, "true", False),
-    ],
+    "environment",
+    ALL_ENVIRONMENTS,
+    ids=[str(getattr(e, "value", e)) for e in ALL_ENVIRONMENTS],
 )
-@pytest.mark.parametrize("profile", [None, "hardened", "development"])
-def test_the_degrade_policy_is_keyed_on_the_environment_not_the_profile(
+@pytest.mark.parametrize(
+    "key,expected_fail_open", [(None, True), ("true", True), ("false", False)]
+)
+@pytest.mark.parametrize("profile", [None, "hardened"])
+def test_the_degrade_policy_is_keyed_on_the_profile_not_the_environment(
     monkeypatch, environment, key, expected_fail_open, profile
 ):
-    """fm#985 item 15 moved the limits and the bypass headers. Not this.
+    """fm#1566: ``ENVIRONMENT`` no longer decides whether the limiter fails open.
 
-    Written because it *did* move this, and CI caught it: 81 integration
-    failures on ``Test Cloud`` and ``Test PostgreSQL Integration``, all
-    ``503 service_unavailable`` behind ``RuntimeError: Event loop is closed``.
-    Standalone arriving on the hardened preset took production's fail-CLOSED
-    pin with it, and that flag is not only about refusing — it feeds
-    ``RedisRateLimiter.fallback_enabled``, so it also **disables the
-    per-replica stand-in rung**. A limiter whose client stops answering then
-    refuses instead of recovering. Measured: flipping this one flag back, with
-    the hardened limits and the disarmed headers untouched, took
-    ``tests/integration/api/test_sessions_api.py`` from 20 failed / 20 passed
-    to 40 passed under the cloud shape (real Redis + the hiredis parser).
+    This test used to assert the opposite, in as many words — it was named
+    ``..._is_keyed_on_the_environment_not_the_profile`` and its docstring said
+    "a future change that routes the degrade policy through the new axis fails
+    rather than shipping". That was the correct guard for fm#985 item 15, which
+    deliberately moved the limits and the bypass headers and NOT this. fm#1566
+    is the owner ruling that moves this too, so the guard is inverted rather
+    than deleted: the axis it pins is now the profile.
 
-    So the policy is pinned per ENVIRONMENT, across every profile, exactly as
-    it was before the item: a development environment honours
-    ``PROTECTION_RATE_LIMIT_FAIL_OPEN`` in both directions, and a deployed one
-    ignores it. Parametrised over the profile as well to say the quiet part
-    out loud — ``PROTECTION_PROFILE`` chooses limits and bypass headers and has
-    no vote here, so a future change that routes the degrade policy through
-    the new axis fails rather than shipping.
+    **The row the issue was filed about is ``ENVIRONMENT=production`` with no
+    profile named** — a self-hosted operator doing the natural thing on a
+    production install of a self-hosted product. It used to resolve fail-CLOSED
+    on a single replica, where there is no fleet to shed onto and where the
+    same flag disables ``RedisRateLimiter.fallback_enabled``, so the limiter
+    refuses instead of recovering onto FakeRedis. It is now fail-open like
+    every other non-cloud deployment, and ``PROTECTION_RATE_LIMIT_FAIL_OPEN``
+    is honoured in both directions on every one of them.
+
+    Swept over every ``Environment`` member plus a string that is not one, so
+    the claim is "no environment decides this" rather than "the three we
+    thought of do not".
     """
     monkeypatch.delenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", raising=False)
     monkeypatch.delenv("PROTECTION_PROFILE", raising=False)
@@ -194,11 +199,71 @@ def test_the_degrade_policy_is_keyed_on_the_environment_not_the_profile(
     app, _ = _install(environment)
 
     assert _resolved_settings(app).fail_open_on_redis_error is expected_fail_open, (
-        f"the Redis degrade policy for ENVIRONMENT={environment!r} moved. It is "
-        f"not item 15's to move: fail-closed also disables the per-replica "
-        f"stand-in, so a limiter that loses its client refuses instead of "
-        f"recovering."
+        f"ENVIRONMENT={environment!r} decided the Redis degrade policy. Since "
+        f"fm#1566 it decides nothing here: the profile does, and a self-hosted "
+        f"box that names a deployed environment must keep its per-replica "
+        f"FakeRedis stand-in rung."
     )
+
+
+@pytest.mark.parametrize(
+    "environment",
+    ALL_ENVIRONMENTS,
+    ids=[str(getattr(e, "value", e)) for e in ALL_ENVIRONMENTS],
+)
+@pytest.mark.parametrize("key", [None, "true", "false"])
+def test_a_cloud_deployment_pins_fail_closed_whatever_the_environment_and_key_say(
+    monkeypatch, environment, key
+):
+    """The posture fm#1566 left alone, pinned so that leaving it alone is checked.
+
+    A multi-replica fleet keeps fail-closed: its degraded rung is per replica,
+    so N replicas enforce N independent copies of a limit whose configured
+    value only means anything when it is shared. That is a floor, not a
+    substitute, and the trade a fleet wants is the 503.
+
+    Two selectors reach it and both are swept: ``DEPLOYMENT_MODE=cloud``
+    (``is_cloud_deployment=True``, ADR-004's single source of truth) and an
+    explicit ``PROTECTION_PROFILE=cloud`` — the latter being how a self-hosted
+    deployment that *does* run several replicas asks for the fleet posture
+    without claiming cloud mode.
+    """
+    monkeypatch.delenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", raising=False)
+    monkeypatch.delenv("PROTECTION_PROFILE", raising=False)
+    if key is not None:
+        monkeypatch.setenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", key)
+
+    by_deployment_mode, info = _install(environment, is_cloud_deployment=True)
+    assert info["protection_profile"] == "cloud"
+    assert _resolved_settings(by_deployment_mode).fail_open_on_redis_error is False
+
+    monkeypatch.setenv("PROTECTION_PROFILE", "cloud")
+    by_profile_key, info = _install(environment, is_cloud_deployment=False)
+    assert info["protection_profile"] == "cloud"
+    assert _resolved_settings(by_profile_key).fail_open_on_redis_error is False
+
+
+def test_a_cloud_deployment_cannot_arm_the_bypass_headers_by_naming_development(
+    monkeypatch,
+):
+    """The veto reads ENVIRONMENT, and a cloud deployment may name any it likes.
+
+    ``resolve_protection_profile``'s veto refuses ``PROTECTION_PROFILE=development``
+    on a deployed ``ENVIRONMENT``. It says nothing about ``DEPLOYMENT_MODE``, so
+    a cloud deployment that also set ``ENVIRONMENT=development`` satisfied the
+    veto and armed ``X-Dev-Bypass`` / ``X-Test-Bypass`` — presence alone skipping
+    all rate limiting on a multi-tenant fleet.
+
+    fm#1566's deployment-shape floor closes it: the resolution is the strictest
+    of what the key asks for and what the shape implies, so cloud wins.
+    """
+    monkeypatch.setenv("PROTECTION_PROFILE", "development")
+
+    app, info = _install(Environment.DEVELOPMENT, is_cloud_deployment=True)
+
+    assert info["protection_profile"] == "cloud"
+    assert _resolved_settings(app).protection_bypass_headers == []
+    assert _resolved_settings(app).fail_open_on_redis_error is False
 
 
 def test_an_unknown_environment_gets_production_not_a_permissive_branch():
@@ -211,8 +276,8 @@ def test_an_unknown_environment_gets_production_not_a_permissive_branch():
 
     assert setup_info["settings_source"] == "production_defaults"
     settings = _resolved_settings(app)
-    assert settings.fail_open_on_redis_error is False
     assert settings.protection_bypass_headers == []
+    assert settings.rate_limits["global"].requests == 500
     assert _installed(app) == {RateLimitMiddleware, DeduplicationMiddleware}
 
 
@@ -225,7 +290,8 @@ def test_the_default_environment_argument_is_production():
     app, setup_info = _install()
 
     assert setup_info["settings_source"] == "production_defaults"
-    assert _resolved_settings(app).fail_open_on_redis_error is False
+    assert _resolved_settings(app).protection_bypass_headers == []
+    assert _resolved_settings(app).rate_limits["global"].requests == 500
     assert _installed(app) == {RateLimitMiddleware, DeduplicationMiddleware}
 
 

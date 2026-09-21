@@ -525,6 +525,64 @@ def _installed_bypass_headers(app) -> Optional[List[str]]:
     return headers
 
 
+def _installed_fail_open_on_redis_error(app) -> Optional[bool]:
+    """Does the installed limiter fail OPEN when Redis is unreachable?
+
+    ``None`` means no ``RateLimitMiddleware`` is installed at all, the same
+    distinction ``_installed_bypass_headers`` draws.
+
+    Read off the ``ProtectionSettings`` the middleware was installed with, not
+    from ``PROTECTION_PROFILE`` or ``PROTECTION_RATE_LIMIT_FAIL_OPEN``, for the
+    reason ``_rate_limiting_installed`` gives: a key states an intention and
+    this states what is running. Three things can make them differ — the
+    ``cloud`` profile ignores the key, a caller-supplied ``ProtectionSettings``
+    bypasses both, and the profile itself is resolved from two inputs
+    (``PROTECTION_PROFILE`` and ``DEPLOYMENT_MODE``) that an operator reading
+    one of them cannot combine by eye.
+
+    Reported because fm#1566 moved this posture onto a new axis and the owner's
+    standing requirement for such a move is that the running answer be
+    readable: a degrade policy that can only be inferred from configuration is
+    the "manifests say configured, not happening" shape. It also decides more
+    than refusal — the same flag feeds ``RedisRateLimiter.fallback_enabled``,
+    so fail-closed removes the per-replica FakeRedis stand-in rung.
+    """
+    from faultmaven.api.middleware import RateLimitMiddleware
+
+    policy: Optional[bool] = None
+    for middleware in getattr(app, "user_middleware", []):
+        if middleware.cls is not RateLimitMiddleware:
+            continue
+        installed = getattr(middleware, "kwargs", {}).get("settings", None)
+        value = getattr(installed, "fail_open_on_redis_error", None)
+        if value is None:
+            continue
+        # Any installed limiter that fails CLOSED makes the deployment's answer
+        # "closed": the strictest installed policy is the one a request meets.
+        policy = bool(value) if policy is None else (policy and bool(value))
+    return policy
+
+
+def _degrade_posture_description(fail_open: Optional[bool]) -> str:
+    """One sentence naming the degrade posture and what it costs."""
+    if fail_open is None:
+        return (
+            "No rate limiter is installed on this process, so there is no "
+            "degrade policy to report."
+        )
+    if fail_open:
+        return (
+            "On a Redis outage the limiter falls back to an in-process "
+            "FakeRedis stand-in, which still enforces every limit but PER "
+            "REPLICA; requests are served rather than refused."
+        )
+    return (
+        "On a Redis outage the limiter refuses: the per-replica FakeRedis "
+        "stand-in is disabled and requests are answered 503 (liveness and "
+        "readiness probes are exempt)."
+    )
+
+
 def _bypass_posture_description(headers: Optional[List[str]]) -> str:
     """One sentence naming the state, including the headers when there are any.
 
@@ -837,9 +895,10 @@ async def get_env_config_status(
         # Build feature status
         from faultmaven.api.models import FeatureStatus
 
-        # Read once: two fields below describe the same installed limiter and
+        # Read once: the fields below describe the same installed limiter and
         # must not be able to disagree about it.
         bypass_headers = _installed_bypass_headers(request.app)
+        fail_open_on_redis_error = _installed_fail_open_on_redis_error(request.app)
 
         # Only surface features that require user-provided configuration.
         # Core capabilities (interpreted search, semantic search) that work
@@ -936,6 +995,32 @@ async def get_env_config_status(
                     "ENVIRONMENT=development (or leaves it unset). No other "
                     "value of ENVIRONMENT, and no deployment that sets "
                     "nothing, can arm them"
+                ),
+            ),
+            # The Redis degrade posture, reported for the reason fm#985 item
+            # 15's ruling gave for the profile axis and fm#1566 inherits:
+            # "a posture that cannot be read from the running system" is the
+            # failure this campaign keeps finding. It is also the posture that
+            # changed — before fm#1566 any ENVIRONMENT but `development` failed
+            # closed; now only the `cloud` profile does.
+            #
+            # `enabled` is worded so True is the AVAILABILITY-preserving state
+            # rather than the "safe" one, because unlike the bypass headers
+            # there is no universally safe answer here: a single self-hosted
+            # replica wants open (it recovers onto FakeRedis), a multi-replica
+            # fleet wants closed (its degraded rung is per-replica and
+            # therefore a floor, not a substitute). The description says which
+            # one this deployment is running, in words.
+            "request_protection_fails_open": FeatureStatus(
+                enabled=bool(fail_open_on_redis_error),
+                description=_degrade_posture_description(fail_open_on_redis_error),
+                config_hint=(
+                    "Decided by the protection profile (fm#1566), not by "
+                    "ENVIRONMENT: the 'cloud' profile — PROTECTION_PROFILE="
+                    "cloud, or DEPLOYMENT_MODE=cloud — pins fail-closed and "
+                    "ignores the key; 'hardened' (the self-hosted default) and "
+                    "'development' honour PROTECTION_RATE_LIMIT_FAIL_OPEN, "
+                    "which defaults to true"
                 ),
             ),
             "llm_tracing": FeatureStatus(

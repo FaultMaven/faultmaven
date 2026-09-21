@@ -21,6 +21,7 @@ from ..config.protection import (
     get_development_protection_settings,
     get_production_protection_settings,
     resolve_protection_profile,
+    resolve_rate_limit_fail_open,
     validate_protection_settings,
 )
 from ..config.settings import Environment
@@ -35,6 +36,7 @@ def setup_protection_middleware(
     app: FastAPI,
     settings: Optional[ProtectionSettings] = None,
     environment: Union[str, Environment] = Environment.PRODUCTION,
+    is_cloud_deployment: bool = False,
 ) -> Dict[str, Any]:
     """Setup protection middleware (sync).
 
@@ -42,13 +44,33 @@ def setup_protection_middleware(
     This function is intentionally synchronous so it can be called at import-time
     (module initialization) before lifespan/startup executes.
 
-    **The preset is chosen by the protection profile, not by the environment.**
-    ``resolve_protection_profile`` is the whole of that decision, and it
-    defaults to ``hardened``: loosening protection has to be *asked for* by
-    setting ``PROTECTION_PROFILE=development``. ``ENVIRONMENT`` reaches this
-    function for exactly two other purposes — the profile's veto (it can refuse
-    a development profile, never select one) and staging's Redis namespace
-    below — so no value of it can install a bypass header.
+    **The preset AND the degrade policy are chosen by the protection profile,
+    not by the environment.** ``resolve_protection_profile`` is the whole of
+    that decision, and it defaults to ``hardened``: loosening protection has to
+    be *asked for* by setting ``PROTECTION_PROFILE=development``.
+    ``ENVIRONMENT`` reaches this function for exactly three other purposes —
+    the profile's veto (it can refuse a development profile, never select one),
+    staging's Redis namespace below, and the empty-trusted-proxies warning — so
+    no value of it can install a bypass header and, since fm#1566, no value of
+    it decides whether the limiter fails open.
+
+    fm#1566 is the second half of the conflation item 15 named. The degrade
+    policy used to be computed here as
+    ``for_deployed_environment=(environment != Environment.DEVELOPMENT)``, so a
+    self-hosted operator who set ``ENVIRONMENT=production`` — the natural thing
+    to do on a production install of a self-hosted product — was silently moved
+    to fail-closed on a **single replica**, which also disables the per-replica
+    FakeRedis stand-in rung. ``resolve_rate_limit_fail_open`` now answers it
+    from the profile, and ``is_cloud_deployment`` (``settings.is_cloud``,
+    ADR-004) is what tells a fleet apart from a self-hosted box.
+
+    Note the asymmetry with the bypass-header disarm below, which is
+    deliberate: a caller-supplied ``ProtectionSettings`` is **disarmed** of its
+    bypass headers but keeps its own ``fail_open_on_redis_error``. The header
+    is an unauthenticated opt-out of the whole limiter and no caller may hold
+    one on a deployed profile; the degrade policy is a posture, and a caller
+    handing in a settings object has stated it. Unchanged by fm#1566, which
+    only moved which axis decides it for the presets.
 
     That is fm#985 item 15: ``ENVIRONMENT`` used to be the discriminator, and
     it is unset on the standalone quickstart — the path every self-hosted
@@ -86,7 +108,9 @@ def setup_protection_middleware(
     Read the guarantee as "every deployed environment refuses", not "nothing ever
     boots unprotected".
     """
-    profile = resolve_protection_profile(environment)
+    profile = resolve_protection_profile(
+        environment, is_cloud_deployment=is_cloud_deployment
+    )
 
     setup_info: Dict[str, Any] = {
         "protection_enabled": False,
@@ -103,17 +127,22 @@ def setup_protection_middleware(
                 settings = get_development_protection_settings()
                 setup_info["settings_source"] = "development_defaults"
             else:
-                # This preset is now also what a development-environment box
-                # installs — the standalone quickstart included. Two of the
-                # things in it are written for a DEPLOYED environment (the
-                # fail-closed degrade pin, the empty-trusted-proxies warning)
-                # and are wrong for a single-user box, so the preset is told
-                # which audience it is being built for. Item 15 moves which
-                # LIMITS and which BYPASS HEADERS a standalone box gets; it
-                # deliberately moves neither of those two, which keeps the
-                # blast radius the ruling asked for.
+                # This preset is what every non-development profile installs —
+                # the standalone quickstart, a self-hosted deployment and a
+                # cloud fleet alike. Its two audience-dependent behaviours are
+                # now decided by two DIFFERENT questions, and are passed in
+                # separately so that neither can be re-keyed onto the other's
+                # axis by accident:
+                #
+                #   * the degrade policy, from the PROFILE (fm#1566) — a
+                #     self-hosted box fails open and keeps its per-replica
+                #     FakeRedis stand-in; only a cloud fleet pins fail-closed.
+                #   * the empty-trusted-proxies warning, from the ENVIRONMENT,
+                #     because "is something proxying this box" is what it asks.
+                #     Unchanged by fm#1566: the same set of boxes warns.
                 settings = get_production_protection_settings(
-                    for_deployed_environment=(environment != Environment.DEVELOPMENT)
+                    for_deployed_environment=(environment != Environment.DEVELOPMENT),
+                    fail_open_on_redis_error=resolve_rate_limit_fail_open(profile),
                 )
                 setup_info["settings_source"] = "production_defaults"
                 if environment == Environment.STAGING:
