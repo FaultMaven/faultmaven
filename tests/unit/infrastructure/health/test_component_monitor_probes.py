@@ -976,40 +976,155 @@ async def test_a_cancellable_hang_is_abandoned_by_the_PROBE_arm_inside_a_sweep(
     assert results["database"].status is HealthStatus.HEALTHY
 
 
+#: The two module constants whose ORDERING the sweep-budget reasoning rests on.
+_DEADLINE_NAMES = ("_PROBE_TIMEOUT_SECONDS", "_ALL_COMPONENTS_TIMEOUT_SECONDS")
+
+#: Every shape this repository's tests actually use to rebind a module
+#: attribute, each one able to re-introduce #1565 on its own. Counted over
+#: `tests/` when this was written: `monkeypatch.setattr(` 1000+,
+#: `patch.object(` 235, `patch("` 209. These are house idioms, not exotica —
+#: the first version of this guard matched the literal spelling `setattr(`
+#: and so caught the first of the five and none of the rest.
+_REINTRODUCTION_SHAPES = (
+    'monkeypatch.setattr(component_monitor_module, "_ALL_COMPONENTS_TIMEOUT_SECONDS", 0.05)',
+    'patch.object(component_monitor_module, "_PROBE_TIMEOUT_SECONDS", 0.05)',
+    'mocker.patch("faultmaven.infrastructure.health.component_monitor'
+    '._ALL_COMPONENTS_TIMEOUT_SECONDS", 0.05)',
+    "component_monitor_module._ALL_COMPONENTS_TIMEOUT_SECONDS = 0.05",
+    'with patch("faultmaven.infrastructure.health.component_monitor'
+    '._PROBE_TIMEOUT_SECONDS", 9):\n    pass',
+)
+
+
+def _deadline_rebind_sites(source: str) -> list:
+    """Every place `source` rebinds a deadline constant, by AST not by text.
+
+    Two rules, neither keyed on a patching API's spelling — the point of the
+    rewrite is that `setattr`, `patch.object`, `mocker.patch` and a bare
+    attribute assignment are one hazard, and a guard that knows only the
+    first is a guard for the shape nobody will use next:
+
+    1. an assignment whose target is `<anything>.<CONSTANT>`;
+    2. ANY call carrying a string argument whose last dotted segment is one
+       of the constants — which is how every mock/patch API in use names its
+       target, including ones not invented yet.
+
+    An AST walk also fixes the other half of the text scan: a docstring or a
+    comment quoting the forbidden call is a string constant or nothing at
+    all, never a Call or an Assign, so it cannot false-positive. (The old
+    `re.DOTALL` was inert besides — the pattern contained no `.`.)
+
+    Out of reach, stated rather than implied: a name assembled at runtime
+    (`setattr(mod, NAME_VAR, x)` or `"_PROBE" + "_TIMEOUT_SECONDS"`). Nothing
+    in this repository does that, and an AST cannot see it.
+    """
+    import ast
+    import warnings
+
+    with warnings.catch_warnings():
+        # Parsing every file under `tests/` re-runs the compiler over source
+        # this guard does not own. At least one module carries a non-raw
+        # `\s`, and its SyntaxWarning would otherwise be attributed to this
+        # scan on every run — a guard that adds noise to the suite is a guard
+        # someone silences.
+        warnings.simplefilter("ignore", DeprecationWarning)
+        warnings.simplefilter("ignore", SyntaxWarning)
+        tree = ast.parse(source)
+
+    sites = []
+    for node in ast.walk(tree):
+        targets = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+            targets = [node.target]
+        for target in targets:
+            if isinstance(target, ast.Attribute) and target.attr in _DEADLINE_NAMES:
+                sites.append(f"line {node.lineno}: assignment to .{target.attr}")
+
+        if isinstance(node, ast.Call):
+            named = list(node.args) + [keyword.value for keyword in node.keywords]
+            for argument in named:
+                if not isinstance(argument, ast.Constant):
+                    continue
+                if not isinstance(argument.value, str):
+                    continue
+                if argument.value.rsplit(".", 1)[-1] in _DEADLINE_NAMES:
+                    sites.append(f"line {node.lineno}: call naming {argument.value!r}")
+    return sites
+
+
+def test_the_deadline_scan_catches_every_shape_this_repo_writes():
+    """State the guard's REACH, measured, rather than its answer today.
+
+    The brief for a pull request that ships a guard is "what can be
+    re-introduced without this noticing?", and the answer for the first
+    version of the scan below was: four of the five shapes in
+    `_REINTRODUCTION_SHAPES`. It matched the literal text `setattr(`, so
+    `patch.object`, `mocker.patch`, a `with patch(...)` block and a plain
+    attribute assignment all sailed through — and a new test using any of
+    them would put the two converted tests straight back to proving the
+    sweep-budget arm at a configuration the product cannot be in.
+
+    So the reach is asserted here, shape by shape, and the negative controls
+    are asserted too: reading the constant (which the two ordering pins do)
+    and quoting the forbidden call in a docstring must NOT be findings.
+    """
+    for shape in _REINTRODUCTION_SHAPES:
+        assert _deadline_rebind_sites(shape), f"MISSED: {shape}"
+
+    reads_only = (
+        "assert component_monitor_module._PROBE_TIMEOUT_SECONDS < 5.0\n"
+        "budget = component_monitor_module._ALL_COMPONENTS_TIMEOUT_SECONDS\n"
+        "shipped_ratio(monkeypatch, probe=0.15, sweep=0.30)\n"
+    )
+    assert _deadline_rebind_sites(reads_only) == []
+
+    quoted_in_prose = (
+        "def f():\n"
+        '    """Never write monkeypatch.setattr(mod, "_PROBE_TIMEOUT_SECONDS", 9)."""\n'
+        '    # nor patch.object(mod, "_ALL_COMPONENTS_TIMEOUT_SECONDS", 9)\n'
+        "    return None\n"
+    )
+    assert _deadline_rebind_sites(quoted_in_prose) == []
+
+
 def test_nothing_reaches_these_deadlines_except_through_shipped_ratio():
     """Ship the scan, not just the fix (#1565).
 
     The defect was two test sites setting the sweep budget BELOW the
     per-probe deadline — an ordering the product cannot be in — and it
     survived because nothing said a test may not do that. `shipped_ratio` is
-    the one place that asserts `probe < sweep`; a direct `monkeypatch.setattr`
-    of either constant re-opens the hole with no failure anywhere.
+    the one place that asserts `probe < sweep`; any other rebinding of either
+    constant re-opens the hole with no failure anywhere.
 
     Scanned over the WHOLE test tree rather than this directory, because the
     constants are importable from anywhere and the next copy will not be
-    filed next to the first. At the time of writing the scan finds zero sites
-    outside the helper; the two it was written for were `:734` and `:910` of
-    this file.
+    filed next to the first. Over-approximation cost, counted rather than
+    assumed: at the time of writing the widened scan reports ZERO sites
+    outside the helper — no false positives to read, and no allowlist to rot.
+    The two sites it was written for were `:734` and `:910` of this file.
     """
     import pathlib
-    import re
 
     tests_root = pathlib.Path(__file__).resolve().parents[3]
     assert tests_root.name == "tests", tests_root
     helper = tests_root / "unit" / "infrastructure" / "health" / "probe_deadlines.py"
     assert helper.is_file(), "the one place allowed to set these"
+    assert _deadline_rebind_sites(
+        helper.read_text(encoding="utf-8")
+    ), "the exemption must be earning itself — the helper does rebind them"
 
-    setattr_pattern = re.compile(
-        r"setattr\([^)]*?_(?:PROBE|ALL_COMPONENTS)_TIMEOUT_SECONDS", re.DOTALL
-    )
-    offenders = [
-        str(path.relative_to(tests_root))
-        for path in tests_root.rglob("*.py")
-        if path != helper and setattr_pattern.search(path.read_text(encoding="utf-8"))
-    ]
-    assert offenders == [], (
-        "these set a probe deadline directly instead of through "
-        f"probe_deadlines.shipped_ratio, which is what asserts probe < sweep: {offenders}"
+    offenders = {}
+    for path in sorted(tests_root.rglob("*.py")):
+        if path == helper:
+            continue
+        sites = _deadline_rebind_sites(path.read_text(encoding="utf-8"))
+        if sites:
+            offenders[str(path.relative_to(tests_root))] = sites
+    assert offenders == {}, (
+        "these rebind a probe deadline instead of going through "
+        f"probe_deadlines.shipped_ratio, which asserts probe < sweep: {offenders}"
     )
 
 

@@ -56,16 +56,25 @@ _PROBE_TIMEOUT_SECONDS = 3.0
 #: sweep) and still inside the 5s startup timeout.
 _ALL_COMPONENTS_TIMEOUT_SECONDS = 4.0
 
-#: Minimum seconds between WARNING lines about the same component's
-#: ``component_health_status`` publish failing.
+#: Minimum seconds between log lines about the same component's
+#: ``component_health_status`` publish — failures AND the recovery.
 #:
-#: The publisher's caller runs on every Kubernetes liveness probe (~10s), so
-#: an unthrottled warning is several lines every ten seconds for the whole
-#: length of an outage — which is why the original only logged at ``debug``,
-#: a level the deployment does not emit. The cost of that was the failure
-#: mode being *the series disappears and nothing says why* (#1568). Five
-#: minutes keeps both properties: twelve lines an hour for a sustained fault,
-#: and an immediate line the first time it happens.
+#: The publisher's caller runs on every Kubernetes liveness probe, so an
+#: unthrottled warning is several lines per probe period for the whole length
+#: of an outage — which is why the original only logged at ``debug``, a level
+#: the deployment does not emit. The cost of that was the failure mode being
+#: *the series disappears and nothing says why* (#1568). Five minutes keeps
+#: both properties: twelve lines an hour for a sustained fault, and an
+#: immediate line the first time it happens.
+#:
+#: ‼ It bounds lines per component, NOT failures per component, and that is
+#: the difference between a throttle and a re-armable one. A first version
+#: cleared the whole bookkeeping entry on a successful publish, so a registry
+#: refusing writes on ALTERNATING sweeps re-armed the immediate warning every
+#: cycle: measured at 80 lines over 20 sweeps against 8 for a continuously
+#: failing one — the outage-long flood this exists to prevent, reached by an
+#: intermittent fault instead of a sustained one. A success now clears the
+#: COUNTER and keeps the window.
 _GAUGE_PUBLISH_WARN_INTERVAL_SECONDS = 300.0
 
 #: Probes run their blocking work HERE, never on ``asyncio.to_thread``'s
@@ -179,11 +188,10 @@ class ComponentHealthMonitor:
         # record of component state — the state is read from
         # ``component_health`` at publish time, every time.
         self._published_gauge_labels: Dict[str, Tuple[str, str]] = {}
-        # Per component: ``(monotonic time of the last WARNING, failures
-        # suppressed since)``. Absent means "warn immediately", and a
-        # successful publish removes the entry — so a fault that clears and
-        # returns is announced again rather than silently rate-limited
-        # against the previous outage.
+        # Per component: ``(monotonic time of the last line logged about this
+        # component's publish, failed publishes not yet reported)``. Absent
+        # means "report immediately". A successful publish does NOT remove the
+        # entry — see ``_GAUGE_PUBLISH_WARN_INTERVAL_SECONDS``.
         self._gauge_publish_warn_state: Dict[str, Tuple[float, int]] = {}
         self._initialize_default_components()
 
@@ -1369,7 +1377,7 @@ class ComponentHealthMonitor:
                 fatal=labels[0],
                 fails_per_replica=labels[1],
             ).set(_HEALTH_STATUS_GAUGE_VALUES[health.status])
-            self._gauge_publish_warn_state.pop(health.component_name, None)
+            self._report_gauge_publish_outcome(health.component_name, None)
         except Exception as e:
             # TWO channels, because they answer different questions. ``debug``
             # keeps every occurrence for whoever turns it on; the rate-limited
@@ -1396,43 +1404,80 @@ class ComponentHealthMonitor:
             self.logger.debug(
                 f"Could not publish health gauge for {health.component_name}: {e}"
             )
-            self._warn_about_gauge_publish_failure(health.component_name, e)
+            self._report_gauge_publish_outcome(health.component_name, e)
 
-    def _warn_about_gauge_publish_failure(
-        self, component_name: str, error: BaseException
+    def _report_gauge_publish_outcome(
+        self, component_name: str, error: Optional[BaseException]
     ) -> None:
-        """WARN that a component's gauge is not being published, rate-limited.
+        """Announce this component's publish outcome, at most once per window.
 
-        Immediately the first time for a component, then at most once per
-        ``_GAUGE_PUBLISH_WARN_INTERVAL_SECONDS``, carrying how many failures
-        were suppressed in between so the throttle cannot hide the scale.
+        ``error`` is the exception a publish raised, or ``None`` for a
+        success. ONE state machine for both, because the flood and the
+        silence are two readings of the same counter and splitting them is
+        how the first version lost both:
 
-        Called only from ``_publish_component_health_gauge``'s ``except``,
+        * **First failure** — nothing reported yet, so report at once. A
+          fault that clears inside the window would otherwise never be
+          reported at all, and the hole a failed publish leaves is only one
+          scrape wide.
+        * **Further failures inside the window** — count them, say nothing.
+        * **A failure once the window has passed** — report, carrying
+          ``(N further failures suppressed)`` so the throttle cannot hide
+          the scale.
+        * **A success with failures outstanding** — the fault has cleared;
+          report that, naming how many publishes it swallowed, and only once
+          the window allows. A success with nothing outstanding says nothing.
+
+        ‼ A success clears the COUNTER and keeps the window. Discarding the
+        window re-arms the immediate warning, which turns an intermittent
+        fault into the flood the throttle exists to prevent; discarding the
+        count loses the scale of what was hidden. The first version did both,
+        because it simply popped the entry.
+
+        Reached from ``_publish_component_health_gauge`` on BOTH paths — the
+        success one inside its ``try``, the failure one inside its ``except``,
         which is the last thing between a metrics fault and ``/health``
-        dropping to its fallback body — so this is two dict operations and a
-        clock read, and touches nothing that can fail.
+        dropping to its fallback body. So this is dict operations and a clock
+        read, and touches nothing that can fail.
         """
         now = time.monotonic()
-        last_warned, suppressed = self._gauge_publish_warn_state.get(
+        last_reported, pending = self._gauge_publish_warn_state.get(
             component_name, (None, 0)
         )
-        if (
-            last_warned is not None
-            and now - last_warned < _GAUGE_PUBLISH_WARN_INTERVAL_SECONDS
-        ):
-            self._gauge_publish_warn_state[component_name] = (
-                last_warned,
-                suppressed + 1,
-            )
+
+        if error is not None:
+            pending += 1
+        elif pending == 0:
+            # Publishing is working and nothing is outstanding. The common
+            # case by far, and it must cost nothing and say nothing — note
+            # that it also leaves ``last_reported`` alone, so a genuinely NEW
+            # outage a window later is reported at once.
             return
 
-        since = f" ({suppressed} further failures suppressed)" if suppressed else ""
-        self.logger.warning(
-            f"component_health_status is not being published for "
-            f"{component_name}: {error}{since}. The series is absent or stale "
-            f"until a publish succeeds, so any alert selecting on it is "
-            f"reading nothing rather than reading health."
-        )
+        if (
+            last_reported is not None
+            and now - last_reported < _GAUGE_PUBLISH_WARN_INTERVAL_SECONDS
+        ):
+            self._gauge_publish_warn_state[component_name] = (last_reported, pending)
+            return
+
+        if error is not None:
+            suppressed = pending - 1
+            since = f" ({suppressed} further failures suppressed)" if suppressed else ""
+            self.logger.warning(
+                f"component_health_status is not being published for "
+                f"{component_name}: {error}{since}. The series is absent or "
+                f"frozen at its last value until a publish succeeds, so an "
+                f"alert selecting on it is reading neither nothing nor health."
+            )
+        else:
+            self.logger.warning(
+                f"component_health_status publishing recovered for "
+                f"{component_name} after {pending} failed publish(es); the "
+                f"series is current again. Reported at WARNING because the "
+                f"line it closes is, and a deployment that emits one must "
+                f"emit the other."
+            )
         self._gauge_publish_warn_state[component_name] = (now, 0)
 
     def publish_health_gauges(self) -> None:

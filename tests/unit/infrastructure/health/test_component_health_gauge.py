@@ -757,6 +757,21 @@ def _publish_warnings(caplog) -> list:
     return [record.getMessage() for record in _publish_records(caplog)]
 
 
+def _recovery_warnings(caplog) -> list:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if "component_health_status publishing recovered" in record.getMessage()
+    ]
+
+
+def _window_has_passed(monkeypatch) -> None:
+    """Make the next report unthrottled, without sleeping five minutes."""
+    monkeypatch.setattr(
+        component_monitor_module, "_GAUGE_PUBLISH_WARN_INTERVAL_SECONDS", 0.0
+    )
+
+
 def test_a_failed_publish_warns_immediately_then_is_rate_limited(monkeypatch, caplog):
     """First failure at WARNING; the rest of the interval is quiet.
 
@@ -783,70 +798,202 @@ def test_a_failed_publish_warns_immediately_then_is_rate_limited(monkeypatch, ca
         # Once the interval elapses the next failure reports again, and says
         # how many it swallowed — a throttle that hides the scale is a second
         # way for the log to understate what happened.
-        monkeypatch.setattr(
-            component_monitor_module, "_GAUGE_PUBLISH_WARN_INTERVAL_SECONDS", 0.0
-        )
+        _window_has_passed(monkeypatch)
         monitor.get_overall_health_status()
         again = _publish_warnings(caplog)
         assert len(again) == len(monitor.component_health)
         assert all("(3 further failures suppressed)" in message for message in again)
 
 
+#: The shipped `livenessProbe.periodSeconds` for faultmaven-api, which is what
+#: calls `/health` in steady state and therefore what drives the publisher
+#: (`faultmaven-enterprise-infra`, `base/faultmaven-api/deployment.yaml`).
+#: `/health/dependencies` and the startupProbe add to that rate; none of them
+#: lower it.
+_LIVENESS_PROBE_PERIOD_SECONDS = 30.0
+
+
 def test_the_warn_interval_stays_between_flood_and_silence():
     """The interval is the whole compromise, so pin the range it lives in.
 
-    Zero re-creates the flood the original `debug` choice was avoiding — the
-    publisher runs on every liveness probe, so an unthrottled warning is
-    several lines every ten seconds for the length of an outage. An hour or
-    more re-creates the silence: a fault shorter than the interval would be
-    reported once and then look resolved. Neither bound is arbitrary, and
-    neither is visible from any other test here: the suppression test passes
-    for any positive value at all.
+    Both bounds are anchored, because `0 < interval <= 3600` — the first
+    version of this assertion — bites at NEITHER end:
+
+    * At `interval = 1.0` it passes, and since the publisher runs once per
+      liveness probe every failure is already more than an interval apart.
+      Every failure then warns: the unthrottled flood, with the guard green.
+      So the lower bound has to be anchored to the CALL RATE, not to zero —
+      an interval at or below the probe period throttles nothing.
+    * At `3600.0` it passes while the docstring calls an hour "the silence".
+      `<=` admitting the value a bound exists to exclude is the same defect
+      this PR tightened one file over, in
+      `test_the_sweep_budget_fits_inside_the_startup_probe_timeout`.
     """
     interval = component_monitor_module._GAUGE_PUBLISH_WARN_INTERVAL_SECONDS
-    assert 0 < interval <= 3600
+    assert interval >= 2 * _LIVENESS_PROBE_PERIOD_SECONDS, (
+        "an interval at or near the publisher's call rate is not a throttle: "
+        "every failure would be more than an interval apart and warn"
+    )
+    assert interval < 3600.0, (
+        "an hour or more is the silence the WARNING channel exists to end — "
+        "a shorter fault would be reported once and then look resolved"
+    )
 
 
-def test_a_recovered_publish_rearms_the_immediate_warning(monkeypatch, caplog):
-    """A second outage is announced without waiting out the first's interval.
+def test_an_intermittent_fault_is_throttled_like_a_sustained_one(monkeypatch, caplog):
+    """A success clears the COUNTER, never the window.
 
-    A rate limit keyed only on "when did we last warn" would stay quiet for
-    five minutes after a fault that had already healed — reporting the second
-    outage late, or not at all if it were shorter than the remainder.
+    The first version popped the whole bookkeeping entry on a successful
+    publish, which re-armed the immediate warning. A registry refusing writes
+    on ALTERNATING sweeps therefore warned on every failing sweep. Measured
+    over 20 sweeps against the eight shipped components: **80** lines
+    intermittent against **8** continuous — and the publisher runs once per
+    liveness probe, so that is the outage-long flood the throttle exists to
+    prevent, reached by the fault mode nobody tested.
+
+    The bound is lines per component per window, whatever the fault does in
+    between. 40 sweeps here rather than 20, so the failure is not a near miss.
     """
     monitor = ComponentHealthMonitor()
     registry = _RefusingRegistry()
     _install_registry(monkeypatch, registry)
 
     with caplog.at_level(logging.WARNING, logger=component_monitor_module.__name__):
-        monitor.get_overall_health_status()
-        assert len(_publish_warnings(caplog)) == len(monitor.component_health)
+        for sweep in range(40):
+            registry.failing = sweep % 2 == 0
+            monitor.get_overall_health_status()
 
+    assert len(_publish_warnings(caplog)) == len(monitor.component_health)
+    assert _recovery_warnings(caplog) == []
+
+
+def test_a_recovery_reports_how_many_publishes_the_throttle_hid(monkeypatch, caplog):
+    """Clearing the counter must not DISCARD it.
+
+    The first version popped the entry, so a recovery dropped the pending
+    count on the floor: 50 failing sweeps, one success and one failure
+    produced 16 lines and not one `(N further failures suppressed)` — while
+    the docstring and the operations README both promised the count travels
+    "so the throttle cannot hide the scale". The recovery is where that
+    promise has to be kept, because a fault that heals is the case in which
+    nothing else will ever report it.
+
+    The recovery line is a WARNING like the one it closes: a deployment that
+    emits the opening line and not the closing one is worse informed than one
+    that emits neither.
+    """
+    monitor = ComponentHealthMonitor()
+    registry = _RefusingRegistry()
+    _install_registry(monkeypatch, registry)
+
+    with caplog.at_level(logging.WARNING, logger=component_monitor_module.__name__):
+        for _ in range(4):  # one reported, three suppressed
+            monitor.get_overall_health_status()
         caplog.clear()
+
         registry.failing = False
+        _window_has_passed(monkeypatch)
         monitor.get_overall_health_status()
+
+    recovered = _recovery_warnings(caplog)
+    assert len(recovered) == len(monitor.component_health)
+    assert all("after 3 failed publish(es)" in message for message in recovered)
+    assert {record.levelname for record in caplog.records} == {"WARNING"}
+    assert _publish_warnings(caplog) == []
+
+
+def test_a_healthy_publisher_says_nothing_and_keeps_no_backlog(monkeypatch, caplog):
+    """The common case costs nothing — and a NEW outage is still immediate.
+
+    Keeping the window across a success is what fixes the intermittent
+    flood; the risk it introduces is the opposite one, a genuinely new outage
+    being throttled against a window nothing has touched for hours. It is not,
+    because a success with nothing outstanding leaves the window alone.
+    """
+    monitor = ComponentHealthMonitor()
+    registry = _RefusingRegistry(failing=False)
+    _install_registry(monkeypatch, registry)
+
+    with caplog.at_level(logging.WARNING, logger=component_monitor_module.__name__):
+        for _ in range(5):
+            monitor.get_overall_health_status()
         assert _publish_warnings(caplog) == []
+        assert _recovery_warnings(caplog) == []
         assert monitor._gauge_publish_warn_state == {}
 
         registry.failing = True
         monitor.get_overall_health_status()
-        assert len(_publish_warnings(caplog)) == len(monitor.component_health)
+
+    assert len(_publish_warnings(caplog)) == len(monitor.component_health)
 
 
-def test_the_warning_still_cannot_reach_the_caller(monkeypatch):
-    """The announcement runs inside the publisher's `except`, so it is the
-    last thing between a metrics fault and `/health`'s fallback body.
+def test_the_reporter_cannot_reach_the_caller_on_either_path(monkeypatch):
+    """Neither arm of `_report_gauge_publish_outcome` may escape.
 
-    `test_a_broken_gauge_never_costs_the_health_read` pins the same property
-    for the publish itself; this pins it for the code added to report the
-    publish failing, which runs on exactly the path that test does not reach
-    past.
+    ⚠️ The failing half OVERLAPS `test_a_broken_gauge_never_costs_the_health_read`
+    above — same registry, same two assertions. An earlier docstring here
+    justified the duplication by claiming that test "does not reach past the
+    publish", which is false: it drives the same `except`. What is genuinely
+    new is the SECOND half below, because the reporter is now called from the
+    success path too, INSIDE the publisher's `try` — so a fault in the
+    bookkeeping would be caught by the publisher's own `except` and reported
+    as a failed publish that never happened.
     """
     monitor = ComponentHealthMonitor()
-    _install_registry(monkeypatch, _RefusingRegistry())
+    registry = _RefusingRegistry()
+    _install_registry(monkeypatch, registry)
     monitor.component_health["database"].status = HealthStatus.UNHEALTHY
 
     status, summary = monitor.get_overall_health_status()
-
     assert status is HealthStatus.UNHEALTHY
     assert summary["fatal_unhealthy"] == ["database"]
+
+    # The success path, which the publish itself cannot exercise.
+    registry.failing = False
+    status, summary = monitor.get_overall_health_status()
+    assert status is HealthStatus.UNHEALTHY
+    assert summary["fatal_unhealthy"] == ["database"]
+
+
+def test_a_refused_publish_freezes_the_series_rather_than_removing_it(
+    published, monkeypatch
+):
+    """The fact the operations README now states, pinned as a measurement.
+
+    It is the most consequential thing about this whole metric and the least
+    obvious: a metrics export that refuses writes does not make the series
+    vanish, it leaves the child at whatever it last held. So during a fatal
+    outage the page rule reads `3` and does not fire, and there is no gap for
+    an operator to notice — which is why the log line says "absent or frozen"
+    and why the README tells them to grep for it instead of hunting a hole.
+
+    The narrow label-flip case IS a removal, and that is the only one.
+    """
+    monitor = ComponentHealthMonitor()
+    _all(monitor, HealthStatus.HEALTHY)
+    monitor.get_overall_health_status()
+    assert _grades(published())["database"] == 3.0
+
+    # The `published` fixture reads its own registry directly, so replacing
+    # the shim's export below does not hide what the real gauge still holds.
+    class _RefusingWrapper:
+        def labels(self, **_kwargs):
+            raise RuntimeError("metrics registry broken")
+
+        def remove(self, *_args):
+            raise RuntimeError("metrics registry broken")
+
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.shims.component_health_status",
+        _RefusingWrapper(),
+        raising=False,
+    )
+    monitor.component_health["database"].status = HealthStatus.UNHEALTHY
+    status, summary = monitor.get_overall_health_status()
+
+    # `/health` is right about the outage...
+    assert status is HealthStatus.UNHEALTHY
+    assert summary["fatal_unhealthy"] == ["database"]
+    # ...and the gauge is still serving `healthy` off the same registry.
+    assert _grades(published())["database"] == 3.0
+    assert _fatal_and_down(published()) == set(), "the page rule does not fire"
