@@ -632,3 +632,190 @@ def test_main_refuses_contradictory_flags(metrics, tmp_path):
     # --offline says "never call gh"; without a dump there is nothing to read.
     with pytest.raises(SystemExit):
         metrics.main(["--offline", "--weeks", "2"])
+
+
+# --------------------------------------------------------------------------
+# The rule-4 tier (#1511)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "body, expected",
+    [
+        ("**Blocked on:** #1294 — the arithmetic moves with it", (True, 1294)),
+        ("**Blocked on**: #1294", (True, 1294)),
+        ("- **Blocked on:** #1294", (True, 1294)),
+        # A ruling: stated, but no edge.
+        (
+            "**Blocked on:** an owner ruling on which axis owns the degrade "
+            "policy. Not blocked on another issue.",
+            (True, None),
+        ),
+        # The reference must be the FIRST thing after the colon, or prose that
+        # merely cites an issue would read as a dependency.
+        ("**Blocked on:** an owner ruling on #1294's shape", (True, None)),
+        # The live shape that must never produce an edge, wherever it wraps to.
+        ("Not blocked on another issue.", (False, None)),
+        ("Refs #1294, #1287.", (False, None)),
+        # Edited in place, so a leftover above the current statement loses.
+        ("**Blocked on:** #10\n\n**Blocked on:** an owner ruling", (True, None)),
+    ],
+)
+def test_blocked_on_separates_an_edge_from_a_ruling_from_silence(
+    metrics, body, expected
+):
+    assert metrics.blocked_on(body) == expected
+
+
+def _ready(number, day, body=""):
+    return _issue(number, day, labels=("pile:ready",), body=body)
+
+
+def _blocked(number, day, body=""):
+    return _issue(number, day, labels=("pile:blocked",), body=body)
+
+
+def test_rule_1_is_read_from_the_blocked_pile_not_from_follow_up_markers(metrics):
+    """A follow-up marker is provenance, not dependency.
+
+    Measured on this repository's own corpus: of the six children the three
+    highest-in-degree ready items have, five had ALREADY CLOSED while the
+    supposed blocker was still open — so an in-edge count would put items
+    that unblock nobody at rule 1, the top rank. The tier is an upper bound,
+    and an item wrongly taken out of it is the one error it cannot afford.
+    """
+    issues = metrics.load_issues(
+        [
+            _ready(100, 1),
+            # Two follow-ups naming #100 — and both closed while it is open.
+            _issue(101, 2, 3, body="Found while working on #100."),
+            _issue(102, 2, 3, body="Found while working on #100."),
+        ]
+    )
+    tier = metrics.rule4_tier(issues, LATER)
+
+    assert tier["rule_1"] == []
+    assert tier["tier"] == [100]
+
+    # The same item, with two blocked issues that SAY they wait on it.
+    issues = metrics.load_issues(
+        [
+            _ready(100, 1),
+            _blocked(101, 2, body="**Blocked on:** #100"),
+            _blocked(102, 2, body="**Blocked on:** #100"),
+        ]
+    )
+    tier = metrics.rule4_tier(issues, LATER)
+
+    assert tier["rule_1"] == [100]
+    assert tier["tier"] == []
+
+
+def test_a_blocker_of_exactly_one_inherits_its_dependents_claim(metrics):
+    """Leak B: rule 1 needs two, so a blocker of one held no rank at all."""
+    hot = "faultmaven/infrastructure/llm/router.py"
+    issues = metrics.load_issues(
+        [
+            # Three issues inside the window put that path on a hot seam.
+            _issue(1, 20, body=f"`{hot}` misroutes."),
+            _issue(2, 21, body=f"`{hot}` again."),
+            _issue(3, 22, body=f"See {hot}."),
+            _ready(200, 23, body="The ladder splits in two."),
+            _blocked(201, 24, body=f"**Blocked on:** #200\n\nIn `{hot}`."),
+            # A blocker of nothing, on no seam, stays in the tier.
+            _ready(202, 23, body="Unrelated."),
+        ]
+    )
+    tier = metrics.rule4_tier(issues, LATER)
+
+    assert tier["rule_3"] == [200]
+    assert tier["inherited"] == [(200, 201)]
+    assert 200 not in tier["tier"]
+    assert 202 in tier["tier"]
+
+
+def test_a_blocker_of_exactly_one_inherits_its_dependents_age(metrics):
+    """The other half of the inheritance: the pair is as old as its older end.
+
+    #1513 waited six rounds on #1294 with no rule broken at any step, because
+    the reserved slot is oldest-first and the blocker's own filing date is
+    all the tier had to order it by.
+    """
+    issues = metrics.load_issues(
+        [
+            _ready(300, 20),  # young, and the only exit #301 has
+            _blocked(301, 3, body="**Blocked on:** #300"),
+            _ready(302, 10),  # older than #300, younger than #301
+        ]
+    )
+    tier = metrics.rule4_tier(issues, LATER)
+
+    assert tier["tier"] == [300, 302]
+    assert tier["inherited"] == [(300, 301)]
+    # Without the inheritance the order is the blockers' own dates.
+    plain = metrics.rule4_tier(
+        metrics.load_issues([_ready(300, 20), _ready(302, 10)]), LATER
+    )
+    assert plain["tier"] == [302, 300]
+
+
+def test_a_seam_needs_three_issues_inside_the_window(metrics):
+    path = "faultmaven/api/middleware/rate_limiting.py"
+    # LATER is 2026-10-02, so the 30-day window opens on 2026-09-02.
+    outside = [_issue(n, 1, body=f"`{path}`") for n in (1, 2)]
+    inside = [_issue(3, 10, body=f"`{path}`")]
+    ready = _ready(400, 11, body=f"Also `{path}`.")
+
+    # Two inside the window — the ready item is itself one of them — is not a
+    # seam however many older issues cite the same path.
+    two_inside = metrics.rule4_tier(
+        metrics.load_issues(outside + inside + [ready]), LATER
+    )
+    assert two_inside["seams"] == {}
+    assert two_inside["tier"] == [400]
+
+    inside.append(_issue(4, 12, body=f"`{path}`"))
+    three_inside = metrics.rule4_tier(
+        metrics.load_issues(outside + inside + [ready]), LATER
+    )
+    assert list(three_inside["seams"]) == [path]
+    assert three_inside["rule_3"] == [400]
+    assert three_inside["tier"] == []
+
+
+def test_a_blocked_item_whose_issue_has_closed_is_reported(metrics):
+    issues = metrics.load_issues(
+        [_issue(500, 1, 4), _blocked(501, 2, body="**Blocked on:** #500")]
+    )
+    graph = metrics.blocking_graph(issues)
+
+    assert graph.waiting_on == {500: [501]}
+    assert graph.condition_met == [(501, 500)]
+
+
+def test_an_unlabelled_corpus_is_not_an_empty_tier(metrics):
+    """A zero here would read as a drained tier; it means 'not measured'."""
+    unlabelled = metrics.rule4_tier(metrics.load_issues([_issue(1, 1)]), LATER)
+    assert unlabelled["labelled"] is False
+    assert unlabelled["tier"] == []
+    text = metrics._rule4_text(unlabelled)
+    assert "not computable here" in text
+    assert "UPPER BOUND" not in text
+
+    drained = metrics.rule4_tier(
+        metrics.load_issues([_blocked(1, 1, body="**Blocked on:** a ruling")]), LATER
+    )
+    assert drained["labelled"] is True
+    assert "The tier is empty" in metrics._rule4_text(drained)
+
+
+def test_the_report_states_the_bound_and_names_the_slots_candidates(metrics):
+    issues = metrics.load_issues(
+        [_ready(1, 1), _ready(2, 5), _blocked(3, 6, body="**Blocked on:** a ruling")]
+    )
+    text = metrics.report(metrics.compute(issues, LATER, "o/r"), weeks=4)
+
+    assert "## Rule-4 tier" in text
+    assert "**2 of 2 ready items — an UPPER BOUND.**" in text
+    assert "#1 (30d), #2 (26d)" in text
+    assert "1 item(s) waiting on a ruling, 0 stating nothing" in text

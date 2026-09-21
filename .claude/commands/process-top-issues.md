@@ -42,12 +42,29 @@ An issue's pile is a **label on that issue**, not a list in a shared blob:
 Create any that is missing before you use one; `gh issue edit` fails the
 **whole** edit on a label the repository does not have.
 
-Two rules when you apply `pile:blocked`, both from a pile that held at 12 for
-six rounds and then lost ten of twelve in one reading:
+Three rules when you apply `pile:blocked`, the first and last from a pile
+that held at 12 for six rounds and then lost ten of twelve in one reading:
 
-- **Say what it is blocked ON**, in a comment, as you label it. "Needs an
-  owner ruling" and "needs #N to land" look identical in a label and only the
-  first is owner latency (#1513 was miscounted for six rounds).
+- **Say what it is blocked ON, in the issue BODY, in one form**, as you
+  label it. "Needs an owner ruling" and "needs #N to land" look identical in
+  a label and only the first is owner latency (#1513 was miscounted for six
+  rounds). One line, the reference first:
+
+  ```
+  **Blocked on:** #1294 — the arithmetic moves when that ladder splits.
+  **Blocked on:** an owner ruling on which axis owns the degrade policy.
+  ```
+
+  The body rather than a comment, because this is a current value that
+  *Picking*'s promotion rule and `scripts/backlog_metrics.py` both read
+  every round, and a thread holds a history. The reference first, because
+  `**Blocked on:** an owner ruling on #1294's shape` is owner latency and
+  must not read as a dependency. The metrics report how many blocked items
+  state nothing, so a missing line is counted rather than invisible.
+- **A blocked item whose named issue has closed goes to ready as you sort** —
+  `--add-label pile:ready`, then `--remove-label pile:blocked`. Closing #N
+  writes no label on anything waiting for it, so nothing else will notice.
+  The metrics name these under *Rule-4 tier*.
 - **Split a mixed issue as you label it.** Any part needing a ruling blocks
   the whole issue, so one design question freezes the mechanical work beside
   it — #985 held seven items its own text called "no design needed" since
@@ -111,9 +128,11 @@ gh issue list --state open --label tracking --search "Queue in:title" \
 ```
 
 Create it if absent (`gh issue create --title Queue --label tracking`, then
-`gh issue pin`) and say so in the report. Its **last comment** is where the
-round has got to. Its **body** holds what a label cannot: the **ranked head**
-in order, the **round timestamp**, and a stamped snapshot of the three counts.
+`gh issue pin`) and say so in the report. Its **newest comment of a
+recognised kind** is where the round has got to — step 0 says which kinds
+those are, and the last comment is not one of them by virtue of being last.
+Its **body** holds what a label cannot: the **ranked head** in order, the
+**round timestamp**, and a stamped snapshot of the three counts.
 
 **Step 2 is the only writer of that body.** Membership is labels, so the
 settlement and a pull change piles without touching it — which is what lets
@@ -131,17 +150,65 @@ back; `gh issue edit` can fail silently.
 - **The timestamp is step 2's.** It is what "what arrived since the last
   round" is measured from.
 - **The rule-4 tier is not written down** — oldest-first is recoverable from
-  `createdAt`.
+  `createdAt`, and `scripts/backlog_metrics.py` recomputes the tier and names
+  its oldest members on every run.
 
 ## 0. Locate the round
 
-Read the last comment on the `Queue` issue and continue from what it is:
+**Every comment on the `Queue` is authored by the same account** — the agent
+posts with the owner's credential — so a state cannot be read off who wrote
+one. It is read off the heading, and the agent gives its own writes exactly
+four:
 
-| last comment | state | do |
+| heading the agent writes | what it is |
+|---|---|
+| `## Round <N> — proposal` | a recognised kind: a round proposed |
+| `## Round <N> — result` | a recognised kind: a round reported |
+| `## Round <N> — withdrawn` | a recognised kind: a round ended with nothing to report |
+| `## Note — <what>` | never a state: a migration record, a handover, a checkpoint |
+
+Anything else is **the owner speaking**. Write every board comment under one
+of those four headings, or the next reader cannot tell your note from an
+answer; five of the first ten rounds posted a note, and the one that closed
+round 9 is what made round 10's step 0 guess.
+
+Now scan back to the **newest comment of a recognised kind** — past notes,
+past owner comments, however many — and read what follows it. Take the first
+row that matches:
+
+| the newest recognised comment, and what follows it | state | do |
 |---|---|---|
-| none, or a round **result** | between rounds | step 1 |
-| a **proposal**, no owner reply after it | waiting on the owner | report what it is waiting for, and stop. Do not re-propose |
-| a **proposal** with an owner reply after it | answered | step 3, take the answers |
+| none | before the first round | step 1 |
+| a **result** or a **withdrawal** | between rounds | step 1 |
+| a **proposal**, with an owner comment after it | answered | step 3, take the answers |
+| a **proposal**, no owner comment after it, but its *Building* items have lane pull requests | approved out of band and already built | post the approval as a `## Note —` so the next reader need not re-derive it, then step 4 (whose dispatch predicate skips what is built) and step 5 |
+| a **proposal**, no owner comment after it, and no lane pull requests | waiting on the owner | report what it is waiting for, and stop. Do not re-propose |
+
+```bash
+# "its Building items have lane pull requests": the step-4 branch convention,
+# over the proposal's own numbers, state ALL — an unposted result is exactly
+# the case where those pull requests are already merged.
+gh pr list --state all --limit 200 --json number,url,headRefName,state \
+  --jq '.[] | select(.headRefName | test("/(1450|1511|1512)-"))'   # the round's numbers
+```
+
+The last two rows are one question — *was this round approved?* — asked of
+the narration first and of the facts second. Round 3 was approved in a
+working session rather than as a reply **and** its result was never posted,
+so the narration said "unanswered" about a round whose work was merged. An
+approval nobody wrote down is still visible in what it authorised.
+
+`withdrawn` is written out of band, when a round is abandoned before it is
+built. The heading exists so the next reader lands between rounds instead of
+on a proposal that no longer stands — round 4 was withdrawn exactly once and
+had no heading to say so.
+
+The transcription note is **safe to write twice**: a note is not a
+recognised kind, so a re-run reads the same proposal, finds the same lane
+branches and takes the same row. One duplicate comment, the same price the
+abandonment comment carries. The one case this cannot see is an **owner**
+comment opening with one of the four headings, which would read as yours and
+leave the round waiting — the safe direction, and reported as such.
 
 Never re-post a proposal that is merely unanswered. An unanswered question
 is not a failure and repeating it is noise; it already appears in the next
@@ -183,7 +250,7 @@ and merged is settled as merged even where the round reported that item
 | the row | what you do |
 |---|---|
 | the issue is closed | nothing |
-| the issue is open, its pull request merged | close #<n> if every part it named is now delivered or re-filed, citing this pull request and the re-filings; otherwise edit #<n> down to the part that still stands — title and body — then `--add-label pile:ready` and `--remove-label pile:blocked`, because a round that reported this item `pulled` already moved it and "leave it ready" would leave it blocked. An item edited down also **leaves the ranked head**: step 2 writes that body and does not carry the name into it, so the proposal compares it against the current candidates like any other arrival. There is no third outcome |
+| the issue is open, its pull request merged | close #<n> if every part it named is now delivered or re-filed, citing this pull request and the re-filings; otherwise edit #<n> down to the part that still stands — title and body — and **place the remainder by *What escalates***: `pile:ready` when nothing left in it needs a ruling, `pile:blocked` when something does (record the question in the `**Blocked on:**` form, or the next *Needs your call* has nothing to phrase), `pile:yours` when the work itself is the owner's. Write it with the two label edits in whichever direction it goes; writing *a* pile is what repairs a label a `pulled` round already moved, and that property is not particular to `pile:ready`. An item edited down also **leaves the ranked head**: step 2 writes that body and does not carry the name into it, so the proposal compares it against the current candidates like any other arrival. The parent still either closes or gets smaller — what is chosen here is only where the smaller one goes |
 | the round reported it `pulled` | `--add-label pile:blocked`, then `--remove-label pile:ready`. The pull did this when it happened; doing it again is a no-op, and doing it *now* is what repairs a label the pull failed to write. Say nothing more — the pull already recorded what stopped it. The row may name no pull request at all, because a lane pulled mid-build opened none |
 | the issue is open, its pull request closed unmerged | the owner abandoned it — comment that the work was built and the pull request closed unmerged, link it, then the same two label edits; the next proposal asks whether to build it another way or close it. Do not guess why |
 
@@ -231,16 +298,46 @@ backlog. Losing does not have to be undone — the item keeps its place and the
 pile drains past it. Move one up only if a trigger fired: a new priority
 label, another issue on the same seam, a citation.
 
+**Then re-read the blocked pile, which is the one pile a query cannot
+settle.** Three checks, all cheap, all on items the next *Needs your call*
+has to list anyway:
+
+- an item whose `**Blocked on:**` line names an issue that has **closed**
+  moves to ready (`--add-label pile:ready`, then `--remove-label
+  pile:blocked`) — nothing else notices, because closing #N writes no label
+  on anything waiting for it;
+- an item carrying **no** `**Blocked on:**` line gets one now: you are about
+  to phrase its question for the proposal, and that line is the phrasing
+  written down. `scripts/backlog_metrics.py` counts these, so the gap is
+  visible rather than merely present;
+- an item **ruled and deferred** is re-read against its condition and moves
+  to ready the round the condition holds.
+
 The piles need no rebuilding: each is a query over open issues, so an item
 the owner closed — a *yours* item they ran, a blocked item closed by a "leave
 it" ruling — leaves by itself, and no number is ever carried forward.
+
+**Rank a blocker for what it releases.** Before the four rules are applied,
+every `pile:blocked` item whose `**Blocked on:**` line names an issue lends
+that issue its claim: the blocker is ranked by the best rule holding for it
+*or* for anything waiting on it, and in the rule-4 tier it takes the earlier
+of the two filing dates. Rule 1 needs two dependents, so without this a
+blocker of exactly one holds no rule at all and the blocked item's only exit
+is unreachable — #1513 waited six rounds on #1294 with no rule broken. Not
+counted under rule 1, because rule 1 outranks a live security defect and a
+blocker of one has not earned that; inheritance gives it the priority of
+what it is holding up and no more.
 
 **The first thing the round's capacity buys is the oldest rule-4 item** —
 the oldest ready issue holding none of picking rules 1-3 — ahead of rules
 1-3, unless the tier is empty or the pinned items left no capacity at all.
 Rules 1-3 outrank that tier every time, so without the reserved place its
-drain rate is zero. It does not bound the wait: report the tier's size in
-*Measurement* so a tier growing across rounds is visible.
+drain rate is zero. It does not bound the wait, so the size is reported:
+`scripts/backlog_metrics.py` computes the tier under *Rule-4 tier* and names
+its oldest members, which is this slot's candidate list. **Read the
+candidate before ranking it.** The figure is an upper bound — rule 2 is a
+property of the defect and is not computed, so an item holding it is still
+counted in the tier, and the oldest member may be one.
 
 **Then check the premise of the items you are about to list under
 *Building* — whatever their age, and before you write the comment.** `git
@@ -281,9 +378,14 @@ and never omitted, or they leave every pile.
 ### Measurement
 <python scripts/backlog_metrics.py --weeks 8>
 Piles: ready <n> · blocked <n> · yours <n>
-Rule-4 tier: <n> ready items holding none of rules 1-3 (last round: <n>)
+Rule-4 tier: <the script's figure> (last round: <n>) — an upper bound
 Carrying more than one pile label: <none, or the numbers>
 ```
+
+The rule-4 line is **quoted from the script's own *Rule-4 tier* section**,
+never estimated and never derived from labels: the proxy that was used for
+nine rounds read 59 of 62 and was measuring the wrong thing. Compare it only
+against the same script's figure from an earlier round.
 
 Write the `Queue` body per *The Queue*: **the ranked head in order**, this
 round's timestamp, and the three counts as a snapshot. This is the only step
@@ -458,6 +560,10 @@ Filed on the way: …
 Waiting on you: merge the pull requests above.
 ```
 
+The `## Round <N> — result` heading is load-bearing, not decoration: it is
+what step 0 scans back to, and a result posted under any other heading reads
+as the owner answering the proposal above it.
+
 Then stop. The round ends when the owner merges.
 
 ## Rules
@@ -474,6 +580,9 @@ Then stop. The round ends when the owner merges.
   merges. A reviewer reports findings and says which of its checks it did
   not reach; it does not wait on `Test Standalone` / `Test Cloud`. Three
   review lanes in one round stalled on exactly this.
+- **Never post to the `Queue` without one of step 0's four headings.** A
+  comment with any other heading is read as the owner speaking, so an
+  unlabelled note of your own answers your own proposal.
 - **Never start a round over an unfinished one.**
 - **Never ask a question mid-build.** Pull the item instead.
 - **Never build an item with an unanswered question.**

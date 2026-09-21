@@ -73,6 +73,47 @@ built on a guess.
 
 ### 0. Settle the last round
 
+**First locate the round, and locate it by kind rather than by position.**
+Where a round has got to is read off the `Queue`'s comments, and for nine
+rounds that meant "read the last one". The last one is not a state. When
+round 10 started, the newest comment was a handover note, which no row
+covered: read strictly it fell through to no state at all, read loosely to
+*waiting on the owner*, and it would have stopped a round that was fully
+merged. The board is the natural place for such a note — five of the first
+ten rounds posted one — so this recurs.
+
+Nor can the reader fall back on who wrote it. **The agent posts with the
+owner's credential**, so proposal, result, note and answer are all authored
+by the same account and authorship separates nothing. What the agent can do
+is label its own writes, so it does: a proposal, a result and a withdrawal
+each carry a heading naming which they are, anything else the agent posts to
+the board is headed `## Note — …`, and **a comment carrying none of those
+four headings is the owner speaking**. Locating is then a scan back to the
+newest comment of a recognised kind, which makes a note free.
+
+That is the case where the narration is merely cluttered. The case where it
+is **absent** needs the facts instead: round 3 was approved in a working
+session rather than as a reply, and its result was never posted, so two of
+the three rows were false at once and a fully built round read as unstarted.
+So a proposal with no owner comment after it is not yet *waiting* — the step
+also asks whether the round's lane branches carry pull requests, because an
+approval nobody wrote down is still visible in what it authorised. Where
+they do, the round was approved out of band: the agent transcribes the
+approval onto the board as a note, so the next reader need not re-derive it,
+and continues from the work rather than from the prose. Writing that note
+twice is the whole cost of a stop in the middle of it: a note is not a
+recognised kind, so a re-run reads the same proposal, finds the same lane
+branches and continues the same way — free-form prose a re-run cannot
+recognise as its own, priced here exactly as the abandonment comment is.
+
+What this cannot tell apart is an **owner** comment that happens to open
+with one of the four headings, which would read as the agent's and leave the
+round waiting. The headings are the agent's marks and the owner has no
+reason to type one; the failure is the safe direction — the round stops and
+says what it is waiting for — and the fact check catches it wherever lanes
+have already run. `.claude/commands/process-top-issues.md` carries the
+table.
+
 No unmerged pull request from the previous round. If there is one, this
 round does not start: report what is outstanding and stop. This is what
 bounds work in progress, and it is why nothing here tracks pull requests
@@ -103,14 +144,28 @@ its own state:
   approved a premise now partly dead. The owning agent closes it when every
   remaining part is delivered or re-filed, citing the pull request and the
   re-filings; when a part still stands and was not re-filed, the agent edits
-  the parent down to that part — title and body — and returns it to the
-  ready pile as an arrival: it leaves the ranked head, which only the
-  *Propose* that follows writes, so that pass compares it against the
-  current candidates like any other arrival instead of leaving it at a rank
-  the larger claim earned. There is no third outcome:
-  the parent either closes or gets smaller. Round 1 merged two of these,
-  #1467 and #1468, and both parents — #1447 and #918 — had to be noticed
-  and closed by hand.
+  the parent down to that part — title and body — and then **places the
+  remainder by *What escalates***, like any other item whose contents have
+  just been re-read: ready when nothing left in it needs a ruling, blocked
+  when something does, yours when the work itself is the owner's. Either way
+  it leaves the ranked head, which only the *Propose* that follows writes,
+  so that pass compares it against the current candidates like any other
+  arrival instead of leaving it at a rank the larger claim earned. The
+  parent still either closes or gets smaller; what changed is where the
+  smaller one goes. Round 1 merged two of these, #1467 and #1468, and both
+  parents — #1447 and #918 — had to be noticed and closed by hand.
+
+  This row used to write `pile:ready` unconditionally, and the reason was
+  sound but narrower than the rule it produced: writing *a* pile is what
+  repairs a label a **pull** failed to write, and a partly-delivered issue
+  was never pulled. Round 10 hit the gap. #1563 delivered item 15 of #985
+  and left three owner rulings behind; the letter would have moved all three
+  into ready, where *Needs your call* — which lists **blocked** items only —
+  would never have re-asked them, and three questions would have gone quiet
+  with nothing recording that they had. Placing the remainder keeps the
+  repair, because a pile is still written whichever way it goes. A remainder
+  that lands in blocked carries its question in the `**Blocked on:**` form
+  below, or the next proposal has nothing to phrase.
 - **Open, and its pull request closed unmerged** — the owner abandoned it.
   Why is theirs to say, so the agent does not guess: it records that the
   work was built and the pull request closed unmerged, links it, and returns
@@ -181,15 +236,34 @@ Each pile is then a query over open issues, which is why nothing here has a
 rule about carrying a closed number forward: a closed issue is not in the
 answer.
 
-Two rules keep `pile:blocked` from silting up, both learned the expensive
-way — the pile held at 12 for six rounds, and when it was finally read in one
-pass, **ten of the twelve moved**: one closed, eight ruled, one split.
+Three rules keep `pile:blocked` from silting up. The first and the last were
+learned the expensive way — the pile held at 12 for six rounds, and when it
+was finally read in one pass, **ten of the twelve moved**: one closed, eight
+ruled, one split. The middle one is the exit that a closed blocker leaves,
+which nothing else was watching.
 
-- **`pile:blocked` records what it is blocked ON.** "Blocked on a ruling from
-  the owner" and "blocked on issue #N landing" are different states that look
-  identical in a label, and the second is not owner latency. #1513 spent six
-  rounds counted against the owner while waiting on #1294. Say which, in a
-  comment on the issue, at the moment the label goes on.
+- **`pile:blocked` records what it is blocked ON, in the body, in one form.**
+  "Blocked on a ruling from the owner" and "blocked on issue #N landing" are
+  different states that look identical in a label, and the second is not
+  owner latency. #1513 spent six rounds counted against the owner while
+  waiting on #1294. Say which at the moment the label goes on, as a line
+  reading `**Blocked on:** #N …` or `**Blocked on:** <the ruling> …` — the
+  issue reference first, so that a ruling which merely cites an issue for
+  context is not read as a dependency on it. **In the body, not in a
+  comment:** the statement is a current value, re-read every round by
+  whoever sorts and by *Picking*'s promotion rule, and a comment thread
+  holds a history instead — scanning one for the newest statement is the
+  same "read the narration" that labels replaced everywhere else here. It is
+  also what makes the rule computable: `scripts/backlog_metrics.py` reads
+  that line and nothing else, and reports how many blocked items state
+  nothing, so the gap is counted rather than assumed away. **An item already
+  in the pile without one gets it the next time you sort** — that pass has
+  to phrase its question for *Needs your call* anyway, so the statement is
+  the phrasing written down.
+- **A blocked item whose named issue has closed moves to ready as you
+  sort.** Its condition is met and nothing else will notice — the label is
+  the pile, and closing #N writes no label on anything waiting for it. The
+  metrics name these, so the check costs a read.
 - **Split a mixed issue when you label it, not later.** An issue is blocked
   if *any* part of it needs a ruling, so one design question freezes
   everything beside it. #985 carried thirteen items, of which its own text
@@ -338,6 +412,40 @@ no position in the order, so nothing for a round to reach. That is most of
 what review produces: five of the thirteen issues round 1 filed hold none of
 rules 1-3.
 
+**A blocker is ranked for what it releases, not only for itself.** Rule 1
+needs two or more dependents, so an issue that exactly one blocked item
+waits on holds no rule for that at all: it falls to the rule-4 tier, where
+the reserved slot reaches one item a round, oldest first. #1513 has waited
+six rounds on #1294 for precisely that reason and **no rule was broken at
+any step** — the blocked item's only exit depended on an issue the ranking
+had no reason to reach. So before the four rules are applied, every
+`pile:blocked` item whose `**Blocked on:**` line names an issue **lends that
+issue its own claim**: the blocker is ranked by the best rule holding for it
+*or* for anything waiting on it, and inside the rule-4 tier it takes the
+earlier of the two filing dates.
+
+Inheritance, rather than counting a blocker-of-one under rule 1, because
+rule 1 is the top rank and the threshold of two is what earns it that place:
+a blocker of one would otherwise outrank a live security defect on strictly
+less leverage than rule 1 was written for. Inheritance gives it exactly the
+priority of the thing it is holding up and no more. If the blocked item
+would have been a rule-2 defect, its blocker ranks there; if the blocked
+item would itself have sat in the tier, the pair sits in the tier at the
+older of the two dates, which is the half #1513 was missing — a blocker is
+usually the *newer* of the pair, so its own filing date is the worst
+possible key for an item whose job is to release an old one. A blocker of
+two or more still holds rule 1 on its own, unchanged. The relation is a
+query over the blocked pile's bodies, so it costs no bookkeeping and
+disappears by itself the round the blocked item moves.
+
+**The lend is one hop, and that is enough.** Where A waits on B and B waits
+on C, only B's own claim reaches C, because the lend is applied to the ready
+pile and B is not in it. The chain still terminates: C is built, B moves to
+ready the round its named issue closes, B is built, A moves. One link a
+round, which is a queue rather than a stall — and a transitive lend would
+rank C for a claim two removes away that may be settled by the time it
+arrives.
+
 The ranking fills whatever capacity the pinned items leave. It decides
 *order*, not size; size is the judgement above.
 
@@ -360,9 +468,28 @@ round that a slot drains one from. No rule written here can serve a queue
 faster than it arrives, so the claim is the modest one — an item in the tier
 has a rank and a non-zero rate, which is a queue, where before it had no
 position at all, which was a leak. Whether the queue is fast enough is a
-measurement rather than a rule: the proposal reports the tier's size beside
-the residue, a tier growing across four rounds says so, and the lever in the
-meantime is the one that already exists — the owner pins.
+measurement rather than a rule: `scripts/backlog_metrics.py` computes the
+tier and the proposal reports its size beside the residue, a tier growing
+across four rounds says so, and the lever in the meantime is the one that
+already exists — the owner pins.
+
+**That measurement did not exist for the first nine rounds, so the slot's
+own defence had never been tested.** The proxy to hand was "ready items
+carrying no priority label", which #1511 measured at 59 of 62 and called
+plainly wrong, because rule 2 is a property of the defect and not of a
+label. What is computed now is rules 1 and 3 — rule 1 from the blocked
+pile's `**Blocked on:**` lines, rule 3 from the repository paths issues
+cite — and **the figure is published as an upper bound**, because
+everything holding rule 2 is still counted inside it. Upward is the only
+direction it may err in: an item wrongly left in the tier is one the slot
+may reach early, while an item wrongly taken out is one nothing reaches at
+all, which is the leak the slot exists to close. Both approximations fail
+that way by construction — a seam named by its symbols rather than its
+files contributes no path, and a dependency stated anywhere but the
+`**Blocked on:**` line contributes no edge; each such miss leaves its items
+*in*. The same section names the tier's oldest members, which is the slot's
+candidate list — a list to read rather than a verdict, since the oldest may
+be exactly the rule-2 item the computation cannot see.
 
 **Size is bounded by review capacity, not by lane capacity.** Lanes are
 cheap and parallel; review is neither, because a fix written to answer a
@@ -642,7 +769,10 @@ Three signals that this document is wrong rather than the work:
 - Items pulled in *Build* more often than they are built, which would mean
   *Propose* is not finding the questions before the work starts.
 - The rule-4 tier growing across four rounds, which means the reserved slot
-  is drawing from it slower than review is filling it.
+  is drawing from it slower than review is filling it. The tier is what
+  `scripts/backlog_metrics.py` prints under *Rule-4 tier*, an upper bound by
+  construction; compare it against that same figure from an earlier round
+  and never against a proxy, because the two move for different reasons.
 
 **A round raising the open count is not one of them.** Round 1 closed five
 issues and filed thirteen, so the open set rose over the round, and nine of
@@ -657,12 +787,15 @@ failing, not succeeding.
 prose.** For each state an issue can be in, name what moves it out and who
 does it. A state with no exit is a leak, and it is invisible when the same
 text is read as description: four survived three review rounds of an earlier
-draft and were found only this way, and two more, just as old, were found
-only on the second such read. **Then read the result the same way before
-shipping it.** A pass that closes leaks writes new states: the pass that
-added the blocking-finding exception under *Building* created the first
-state here that the round itself could not leave, and its own first fix for
-that left the merely-too-hard case with no exit either. The read that counts
+draft and were found only this way, two more — just as old — were found only
+on the second such read, and the third read found two more again, both of
+them live at the time: a partly-delivered remainder with nowhere to go, and
+a blocker of exactly one with no promotion path. Three reads, eight leaks,
+and not one of them found by reading the prose. **Then read the result the
+same way before shipping it.** A pass that closes leaks writes new states:
+the pass that added the blocking-finding exception under *Building* created
+the first state here that the round itself could not leave, and its own
+first fix for that left the merely-too-hard case with no exit either. The read that counts
 is of the text after the edits, not of the edits.
 
 ## Words used here
