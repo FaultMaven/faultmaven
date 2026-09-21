@@ -8,8 +8,8 @@ What this exists to do that a budget cannot
 work, and #1567 measured what that buys: of 50 budgets, **none** fails on
 a 30% regression, and the smallest regression any of them catches is about
 115% — that figure is against each budget's anchoring p95, and against
-the MEDIAN of nine green ``main`` runs the same budgets need 2.47x-3.58x
-(+147% to +258%). Two statistics of one fact; neither is near 30%.
+the MEDIAN of eight green ``main`` runs the same budgets need 2.46x-3.57x
+(+146% to +257%). Two statistics of one fact; neither is near 30%.
 Tightening further is not available — run-to-run variance on a
 shared runner is itself tens of percent (#908 measured the whole pytest
 process scaling 1.28x between two runs of identical code), so a budget
@@ -39,7 +39,7 @@ benchmarks each) and both were rejected by their own numbers:
   relative to the rest of the suite". Its statistic is the maximum over
   50 residuals, an extreme-order statistic over 50 draws, and on the null
   it ranged **1.18x to 3.38x**. A threshold with no false positives is
-  therefore about 3.5x, which is above the 2.47x-3.58x band the absolute
+  therefore about 3.5x, which is above the 2.46x-3.57x band the absolute
   budgets already fire in. A per-test A/B rule is dominated by the
   budgets it would sit beside, so it is not a gate. The residual is still computed and printed, because it is how
   you read a red median.

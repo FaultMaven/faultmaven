@@ -218,8 +218,8 @@ class TestTheDecisionRule:
         green. That is deliberate: #1567 measured the per-test residual
         on identical code at 1.18x-3.38x, so a rule on it would need a
         ~3.5x threshold, and every absolute budget in
-        `tests/benchmarks/budgets.py` already fails between 2.47x and
-        3.58x. The single-path class belongs to those budgets. What this
+        `tests/benchmarks/budgets.py` already fails between 2.46x and
+        3.57x. The single-path class belongs to those budgets. What this
         gate owes it is visibility, so the benchmark must still come out
         top of the table.
         """
@@ -252,7 +252,7 @@ class TestTheDecisionRule:
         """‼ The class this gate exists for.
 
         Every benchmark 30% slower moves the median to 1.30. Absolute
-        budgets need 2.47x for the same call, so before this gate a
+        budgets need 2.46x for the same call, so before this gate a
         uniform +30% — an ORM event listener, a logging or tracing hook,
         a validator on every write — was invisible on every runner.
         """

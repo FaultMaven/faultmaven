@@ -286,7 +286,7 @@ jobs:
       #     +30% -> caught on  50%      +50% -> caught on  97%
       #     +40% -> caught on  83%      +60% -> caught on 100%
       #
-      # The absolute budgets next door need +147% for the same call, on
+      # The absolute budgets next door need +146% for the same call, on
       # every runner, so this is where a uniform slowdown became
       # detectable at all rather than where it became certain. 1.25 is
       # the next step down (also 0/132 red, +30% caught on 69%) and is
@@ -297,7 +297,7 @@ jobs:
       # Two more sensitive-looking rules were measured on the same data
       # and rejected by their own numbers — a per-test residual rule
       # (null range 1.18x-3.38x, so a clean threshold is ~3.5x, which
-      # every absolute budget already beats at 2.47x-3.58x) and a count
+      # every absolute budget already beats at 2.46x-3.57x) and a count
       # rule (at 1.30x the null count reached 19 of 50 while slowing HALF
       # the suite by 30% produced 15). `tests/wallclock/ab.py`'s
       # docstring carries both. #1567 has the method and how contended

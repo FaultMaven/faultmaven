@@ -413,8 +413,8 @@ Results are:
 The three absolute jobs above share a ceiling, and #1567 measured it:
 against the 50 re-anchored budgets, **none** fails on a 30% regression.
 The smallest regression any of them catches is about **115%** measured
-against each budget's anchoring p95, or **+147% to +258%** measured
-against the median of nine green `main` runs — two statistics of one
+against each budget's anchoring p95, or **+146% to +257%** measured
+against the median of eight green `main` runs — two statistics of one
 fact, and neither is near 30%. #1556 moved the median headroom from
 roughly 38x to 2.6x, which was real work, and it is still an order of
 magnitude short of what the gate was asked for.
@@ -430,6 +430,18 @@ beside the head in the same job**, runs the same suite twice on the same
 runner minutes apart, and compares. Machine speed, co-tenant load and
 thermal state are shared by both sides and cancel; what is left is the
 code.
+
+**Both sides in one job is the load-bearing part**, and it is measured.
+Across eight green `main` runs of this workflow — different runners, same
+question — the whole-suite factor between two runs spans **0.442x to
+2.261x**, and their in-process CPU calibration spans **528-1064 us/rep
+(2.01x)**, which is the same term seen twice. Same box, one job, that
+factor spans **1.48x** even on a contended development machine. Two jobs
+on two runners would reintroduce exactly what the comparison exists to
+cancel. (A ninth `main` run was excluded from that measurement: it
+predates #1556 and its `test_get_statistics_performance` reports a 20 ms
+p95 against 121-171 ms afterwards, so it measures different code, not a
+slower runner.)
 
 **How a number gets from a benchmark into the comparison.**
 `assert_latency_within` / `assert_throughput_at_least` — the single
@@ -464,7 +476,7 @@ the signal. Injecting a uniform regression into all 132 real pairs:
 | 1.40 | 0/132 | 8% | 17% | 50% | 80% | 96% |
 
 So this is where a uniform slowdown became **detectable at all**, not
-where it became certain: the absolute budgets need **+147%** for the same
+where it became certain: the absolute budgets need **+146%** for the same
 call. 1.30 rather than 1.25 because a flaky performance gate gets muted
 and 1.25 sits 3% from the worst thing measured. Tightening it is a
 re-anchoring, not a tweak: every run prints its own median, so take the
@@ -477,7 +489,7 @@ proposes them again:
 
 | rejected rule | its null noise | its signal | verdict |
 |---|---|---|---|
-| per-test: max of `ratio / median` | 1.18x-3.38x | a clean threshold is ~3.5x | every absolute budget already fails between 2.47x and 3.58x, so it is dominated |
+| per-test: max of `ratio / median` | 1.18x-3.38x | a clean threshold is ~3.5x | every absolute budget already fails between 2.46x and 3.57x, so it is dominated |
 | count: "K of 50 at least R times slower" | at R=1.30, up to **19** of 50 | slowing **half** the suite by 30% gives **15** | signal below noise; no K separates them |
 
 So the per-test residual is printed and the table is ranked by it — that
