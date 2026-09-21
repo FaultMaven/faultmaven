@@ -270,20 +270,42 @@ jobs:
     #   45  set 2026-09-15, after green runs reached 25m15s / 25m32s / 25m51s
     #       / 28m11s and then CANCELLED at 30m — on main, not only on a branch
     #
+    # RE-MEASURED 2026-09-21 over the same 18 main runs the Test Cloud block
+    # below tabulates: this job is now 18 green at 23m26s .. 36m09s, 28% above
+    # the 2026-09-15 anchor above and still inside 45 — but by 24%, which is
+    # the SMALLER of the two margins under equal caps (Cloud clears its worst
+    # completed run by 73%). Under 45/45 this is the job that reaches the cap
+    # first, so this is the number to watch, not Cloud's.
+    #
     # A cancelled job reports as a FAILED required check with no diagnostic, so
     # it reads as "this branch broke something" and costs an investigation per
     # occurrence. Raising the cap buys margin; it does not make the job faster,
     # and the trend is still upward.
     #
     # What actually costs the time, measured with --durations on this exact
-    # selection: tests/integration/test_main_app.py is ~9 minutes of it — 25
-    # tests, each opening `with TestClient(app)`, so each pays a full lifespan
-    # (container composition, migrations, KB bootstrap). Several of those tests
-    # are ABOUT startup and legitimately need their own; the rest could share
-    # one. That is the real lever and it is tracked in #1450, not done here.
+    # selection (run 35567183959, pytest phase 27m20s):
     #
-    # Standalone is the slower of the two jobs despite running the smaller
-    # selection (`not cloud`), so it reaches its cap first.
+    #   - The single most expensive test in BOTH jobs is
+    #     tests/integration/test_fresh_install_boots.py::TestAFirstEverInstallBoots
+    #     ::test_a_clean_machine_boots_and_serves — 44.2s here, 54.0s on Cloud.
+    #   - tests/integration/test_main_app.py is 10 entries totalling 99.8s
+    #     (6.1%). Its other 15 tests are each BELOW the reported floor, so the
+    #     whole file is bounded above by ~3m50s — NOT the "~9 minutes" this
+    #     comment claimed before the flag existed to check it. On Cloud the
+    #     file contributes one entry, at 7.95s.
+    #   - Four fifths of the phase is outside the top entries entirely:
+    #     ~15,600 tests averaging ~0.1s. The growth is broad, not a few tests.
+    #
+    # The per-test `with TestClient(app)` lifespan (container composition,
+    # migrations, KB bootstrap) is still a real lever and is tracked in #1569,
+    # not done here — but at 6-15% of this job rather than a third of it, and
+    # #1569 records that the distribution favours pytest-xdist ahead of it.
+    #
+    # Standalone is the slower of the two jobs at the MEDIAN despite running
+    # the smaller selection (`not cloud`). Their tails overlap, though, and
+    # Test Cloud cancelled first while this one passed, because the two caps
+    # had drifted apart (45 here, 30 there). They are equal again — see the
+    # measurement under Test Cloud below.
     timeout-minutes: 45
     name: Test Standalone
 
@@ -317,11 +339,30 @@ jobs:
 
       - name: Run Tests (Standalone)
         run: |
+          # Attribute the wall clock. Until #1450 nothing ever did, so every
+          # discussion of why this job got slower was an argument rather than
+          # a measurement.
+          #
+          # `--durations=0 --durations-min=1.0`, NOT `--durations=N`. A top-N
+          # report attributes only what makes the cut — measured at 19.5% of
+          # this job's phase for N=25 — so any total summed from it is a LOWER
+          # BOUND presented as a value, which is how "test_main_app.py is ~9
+          # minutes" survived above this line for months. A floor reports every
+          # entry at or over a second, so per-file and per-directory totals are
+          # real numbers, and pytest footers the count it hid. If the log proves
+          # noisier than wanted, `--durations-min` is the knob; raising N is not.
+          #
+          # It prints only when the run FINISHES, so a cancelled job yields no
+          # attribution at all — which is why the cap above has to clear the
+          # cost for any of this to be worth anything, and why the two shipped
+          # together.
           pytest tests/ \
             --cov=faultmaven \
             --cov-report=xml \
             --cov-report=term-missing \
             -m "not cloud and not benchmark" \
+            --durations=0 \
+            --durations-min=1.0 \
             -v
         env:
           # Standalone configuration - optional (cloud) features disabled
@@ -385,11 +426,50 @@ jobs:
       && needs.code-quality.result == 'success'
       && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
-    # Anchored to the measured healthy cost, not aspiration: the last green
-    # main runs took 19m20s and 18m39s, so 20 was within ~3% of the healthy
-    # path and a slow runner cancelled the job at 98% with 9,403 tests passed
-    # and none failed (PR #1025). 30 clears the measured cost by ~55%.
-    timeout-minutes: 30
+    # Anchored to the measured cost, like Test Standalone above, and RAISED
+    # when the suite grew into the previous anchor. History (#1450):
+    #
+    #   20  set when green main runs took 19m20s / 18m39s, then a slow runner
+    #       cancelled the job at 98% with 9,403 passed and none failed (#1025)
+    #   30  set when that left ~3% of margin
+    #   45  set 2026-09-21, after this job CANCELLED TWICE in 25 hours on
+    #       main — d9d3f0c77 (run 35499506884, 30m17s) and d9e81534d (run
+    #       35550555597, 30m18s). On main, not only on a branch, and both
+    #       times the run's `build` job was skipped as collateral.
+    #
+    # The measurement, all 18 consecutive main runs 2026-09-20 03:05Z to
+    # 2026-09-21 01:54Z:
+    #
+    #   Test Cloud       16 green, 19m38s .. 26m04s; 2 CANCELLED at the cap,
+    #                    30m17s and 30m18s — an 11% (2/18) failure rate at 30,
+    #                    not a one-off. Both are CENSORED: the true cost of
+    #                    those runs is unknown and strictly greater than the
+    #                    cap they hit.
+    #   Test Standalone  18 green, 23m26s .. 36m09s   <- same suite, same
+    #                                                    runner class
+    #
+    # 45 is Standalone's cap and it is deliberately the same number. The tail
+    # is set by runner variance, not by selection: Cloud runs the STRICTLY
+    # LARGER selection (`not benchmark` vs `not cloud and not benchmark`) and
+    # is merely cheaper at the median, while the two distributions already
+    # overlap. So the cost to clear is the worst observed cost of this suite
+    # on this runner class — 36m09s — which 45 clears by 24%. Against Cloud's
+    # own worst COMPLETED run (26m04s) that is 73%. Against either censored
+    # cancellation it is AT MOST ~48%, never at least: if the true cost T
+    # exceeds 30m17s then 45/T - 1 < 48%, so a censored observation bounds the
+    # headroom from ABOVE. Those two runs prove a ceiling on the margin, not a
+    # floor, which is why the anchor is the 36m09s completed worst case and
+    # not them. Equal caps also retire the question
+    # of which job is binding this week: with 45/30 the slower job passed and
+    # the faster one was cancelled, which is what made main red.
+    #
+    # Raising the cap buys margin; it does not make the job faster, and the
+    # trend is still upward. `--durations=0 --durations-min=1.0` on the run
+    # step below is what attributes the growth from here on — and it only
+    # prints on a run that FINISHES, so a cap that clears the cost is what
+    # makes the attribution exist at all. The structural lever (the per-test
+    # `TestClient(app)` lifespan) is #1569.
+    timeout-minutes: 45
     name: Test Cloud
 
     services:
@@ -452,11 +532,17 @@ jobs:
 
       - name: Run Tests (Cloud)
         run: |
+          # Same flags as Test Standalone, including the floor rather than a
+          # top-N. See the note there for why. This job's selection is the
+          # larger of the two, so its report is the one that also covers the
+          # `cloud`-marked tests.
           pytest tests/ \
             --cov=faultmaven \
             --cov-report=xml \
             --cov-report=term-missing \
             -m "not benchmark" \
+            --durations=0 \
+            --durations-min=1.0 \
             -v
         env:
           # Cloud configuration - optional features enabled (external services mocked)
