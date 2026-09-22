@@ -11,11 +11,15 @@ from collections import Counter
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
+    PID_MAX,
+    distinct_on_line,
     extract_time_range,
     extract_time_range_ts,
     extract_timestamp,
     has_content,
     has_yearless_timestamps,
+    is_pid,
+    is_port,
     split_log_lines,
 )
 from faultmaven.modules.preprocessing.log_usernames import extract_usernames
@@ -641,8 +645,10 @@ class LogsAndErrorsExtractor:
     _PID_BRACKET_RE = re.compile(r"\[(\d{1,7})\]")
     # Absolute ceiling matching the current kernel maximum. Anything above
     # this is almost certainly not a PID (timestamp ns, request byte count,
-    # etc.) and is filtered at count time.
-    _PID_MAX = 4_194_304
+    # etc.) and is filtered at count time. SHARED with the entity registry
+    # path (``extractors.utils.PID_MAX``, via ``is_pid``) — a ceiling raised
+    # here alone would have ``case_entities`` index a PID this profile drops.
+    _PID_MAX = PID_MAX
     _HTTP_PATH_RE = re.compile(r"\b(?:GET|POST|PUT|DELETE|PATCH)\s+(/[^\s\?]*)\b")
 
     # SSH event type patterns for semantic counting
@@ -913,8 +919,12 @@ class LogsAndErrorsExtractor:
         lines = split_log_lines(content)
         for i, line in enumerate(lines):
             is_error = i in error_lines
-            line_ips = self._IPV4_RE.findall(line)
-            for ip in line_ips + self._IPV6_RE.findall(line):
+            # One line = one mention, for every entity type in this
+            # profile (fm#1587). ``line_ips`` stays IPv4-only because the
+            # auth breakdown below has always correlated IPv4 addresses;
+            # widening it to IPv6 is a different change.
+            line_ips = distinct_on_line(line, self._IPV4_RE)
+            for ip in line_ips + distinct_on_line(line, self._IPV6_RE):
                 ip_all_counts[ip] += 1
                 if is_error:
                     ip_error_counts[ip] += 1
@@ -924,17 +934,17 @@ class LogsAndErrorsExtractor:
                 user_all_counts[user] += 1
                 if is_error:
                     user_error_counts[user] += 1
-            for port_str in self._PORT_KEYWORD_RE.findall(
-                line
-            ) + self._HOST_PORT_RE.findall(line):
-                if port_str.isdigit() and 0 < int(port_str) <= 65535:
+            for port_str in distinct_on_line(
+                line, self._PORT_KEYWORD_RE, self._HOST_PORT_RE
+            ):
+                if is_port(port_str):
                     port_counts[port_str] += 1
-            for pid_str in self._PID_KEYWORD_RE.findall(
-                line
-            ) + self._PID_BRACKET_RE.findall(line):
-                if pid_str.isdigit() and 0 < int(pid_str) <= self._PID_MAX:
+            for pid_str in distinct_on_line(
+                line, self._PID_KEYWORD_RE, self._PID_BRACKET_RE
+            ):
+                if is_pid(pid_str):
                     pid_counts[pid_str] += 1
-            for path in self._HTTP_PATH_RE.findall(line):
+            for path in distinct_on_line(line, self._HTTP_PATH_RE):
                 path_counts[path] += 1
             # Syslog service breakdown — extract base service name from
             # "service[PID]:" and "service(module)[PID]:" patterns.
@@ -1030,6 +1040,14 @@ class LogsAndErrorsExtractor:
                 # Per-IP per-event-type counts — correlate IPs with events on the
                 # same line so the agent can answer "how many auth attempts did X make"
                 # directly from the extract rather than chaining search_file calls.
+                # ``line_ips`` is per-line distinct (fm#1587), so an IP written
+                # twice on one line no longer counts its event twice. The
+                # SECOND defect in this block is untouched and is its own
+                # issue (fm#1596): one line matching two event categories is
+                # added into
+                # ``auth total`` once per category, so a single
+                # "Failed password for invalid user" line still reports an
+                # auth total of 2.
                 for ip in line_ips:
                     if ip not in ip_event_counts:
                         ip_event_counts[ip] = Counter()
@@ -1252,20 +1270,25 @@ class LogsAndErrorsExtractor:
                 annotation = f"  ({error_n} on error lines)" if error_n else ""
                 parts.append(f"    {user}: {total} lines{annotation}")
 
+        # "lines", not "mentions"/"requests": every ENTITY count in this
+        # profile is the number of LINES the value appears on (fm#1587), the
+        # same unit the username block above states in full. The three
+        # non-entity tallies below (KB packages, HRESULTs, mod_jk states) are
+        # per match by design and say "occurrences".
         if port_counts:
             parts.append(f"  Distinct Ports: {len(port_counts)}")
             for port, count in port_counts.most_common(top_n):
-                parts.append(f"    {port}: {count} mentions")
+                parts.append(f"    {port}: {count} lines")
 
         if pid_counts:
             parts.append(f"  Distinct PIDs: {len(pid_counts)}")
             for pid, count in pid_counts.most_common(top_n):
-                parts.append(f"    {pid}: {count} mentions")
+                parts.append(f"    {pid}: {count} lines")
 
         if path_counts:
             parts.append(f"  HTTP Paths: {len(path_counts)}")
             for path, count in path_counts.most_common(top_n):
-                parts.append(f"    {path}: {count} requests")
+                parts.append(f"    {path}: {count} lines")
 
         # BGL RAS alert flag column (ISS-015). Surface distinct flag values
         # with line counts so the agent reads the structured first column
@@ -1315,10 +1338,13 @@ class LogsAndErrorsExtractor:
         # exact magnitudes.
         if mod_jk_state_counts:
             distinct_states = len(mod_jk_state_counts)
-            total_state_lines = sum(mod_jk_state_counts.values())
+            # Occurrences, not lines: ``mod_jk_state_counts`` is one of the
+            # three deliberately per-match tallies (fm#1587), so a line
+            # carrying two state codes contributed two.
+            total_state_matches = sum(mod_jk_state_counts.values())
             parts.append(
                 f"  mod_jk worker error states ({distinct_states} distinct,"
-                f" {total_state_lines} lines total — Apache → Tomcat connector"
+                f" {total_state_matches} occurrences total — Apache → Tomcat connector"
                 f" failure modes; specific state-code meanings are not"
                 f" documented in the log itself):"
             )
@@ -1641,7 +1667,11 @@ class LogsAndErrorsExtractor:
         # Top source IP
         if ip_counts:
             top_ip, top_count = ip_counts.most_common(1)[0]
-            sentences.append(f"Top source: {top_ip} ({top_count} mentions).")
+            # "lines", like every other entity count (fm#1587). This one
+            # sits in FILE SUMMARY, which survives context truncation when
+            # the ENTITY PROFILE does not, so a stale unit here is the most
+            # expensive one to leave.
+            sentences.append(f"Top source: {top_ip} ({top_count} lines).")
 
         # Key absences the agent can confidently answer without searching
         absent = []

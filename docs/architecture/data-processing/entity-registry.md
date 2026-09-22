@@ -49,11 +49,110 @@ CREATE INDEX idx_case_entities_by_evidence ON case_entities(evidence_id);
 | `case_id`, `evidence_id` | Both cascade on delete. Case or evidence deletion sweeps registry rows without a separate cleanup job. |
 | `entity_type` | Controlled vocabulary (see below). |
 | `entity_value` | Raw string as extracted. Case-sensitive. Capped at 255 chars; anything longer is truncated before insert (lossless truncation is the extractor's job, not the registry's). |
-| `mention_count` | How often the entity appeared in this specific evidence. Aggregated across evidence by `list_top_entities`. |
+| `mention_count` | **The number of distinct lines of this evidence that contain the entity** — one line = one mention. Uniform across every entity type, with one declared exception: `STRUCTURED_CONFIG` counts matches over the whole document. Aggregated across evidence by `list_top_entities`. See *The mention unit* below. |
 | `in_error_context` | True when the entity appeared primarily in error/warning lines. Lets the agent distinguish *"IP X was involved in an error"* from *"IP X showed up in ambient traffic"*. Per-evidence, not global. |
 | `first_seen_ts` | Populated from the evidence's `coverage_start_ts` (Phase 3a) when the evidence is time-bound, else NULL. Lets the registry answer temporal questions without re-opening the evidence. |
 
 The composite primary key makes the write path **idempotent** — re-extracting an evidence (Phase 1.5 reclassification, Phase 2 retry) upserts by the full tuple rather than appending duplicates.
+
+### The mention unit
+
+`mention_count` is **the number of lines the entity appears on**, and it means
+the same thing for every `entity_type` in every extractor over time-ordered
+evidence — logs, command output, traces (fm#1587). A value named twice on one
+line is **one** mention; the same value on two lines is two.
+
+This is not a formatting detail. `list_top_entities` ranks with
+`SUM(mention_count) DESC` and the top rows are auto-injected into the
+investigation prompt, so the unit has to be comparable across types or the
+ranking is meaningless. It was not, for one release: fm#1574 moved `user` to
+per-line counting and left `ip`, `port`, `pid` and `path` counting regex
+matches, so one column carried two units and a log format with a redundant IP
+field could outrank a genuinely dominant username.
+
+The consequence worth stating explicitly, because it was the argument against
+the ruling and is settled: **an IP that is both source and destination on one
+line is one mention.** A mention answers *"in how many log events did this
+entity appear?"*, and one line is one event. Anyone who later needs
+source-versus-destination back needs a **field**, not a count — overloading
+`mention_count` to carry role information would reintroduce exactly the
+divergence above.
+
+#### The one exception: STRUCTURED_CONFIG counts matches
+
+`ConfigEntityExtractor` counts **matches over the whole document**, via
+`entities.line_tally.tally_document_matches` rather than `tally_entity_lines`.
+This is a declared exception, not an oversight, and it is open: the scope
+question is with the owner.
+
+The per-line unit's justification is *a line is one event*, and **a config has
+no events** — it is a structure. Flow-style YAML, minified JSON and single-line
+`key=v key=v` blocks are ordinary config evidence and put a whole config on one
+physical line. Counting lines there flattens every value to 1 and the ranking
+degenerates. Measured on the same bytes:
+
+```
+per line       ONE physical line   db1.internal 1, 5432 1, pgbouncer 1, db2.internal 1, 6432 1   <- flat tie
+               newline-separated   db1.internal 2, 5432 2, pgbouncer 1, db2.internal 1, 6432 1
+
+per document   either form         db1.internal 2, 5432 2, pgbouncer 1, db2.internal 1, 6432 1
+```
+
+`SUM(mention_count) DESC` over the tie is insertion-ordered, so the five
+entities reaching the prompt would be arbitrary — strictly worse than the match
+count it would have replaced. Until the unit has an argument that reaches
+declarative evidence, configs keep match counting, and that fact is here rather
+than implicit. The guard pins the exception by name
+(`test_every_fixture_declares_a_known_scope`), so a *second* data type going
+document-scoped fails rather than passing quietly.
+
+#### Also not per line
+
+- The logs extractor's Windows Update KB, Windows CBS HRESULT and Apache
+  mod_jk worker-state tallies are *occurrence* counts rendered as prose in the
+  structural index; they render "occurrences", not "lines", and none of them
+  reaches this table. A line carrying two HRESULTs recorded two events.
+- The `IP auth breakdown` block's `auth total` sums per-event-category counts,
+  so one line matching two categories is added twice. That is a separate
+  defect, tracked as fm#1596.
+
+#### Rows written before fm#1587
+
+⚠️ `mention_count` values already in `case_entities` when fm#1587 lands carry
+**match** counts for `ip`, `port`, `pid` and `path`. `list_top_entities` sums
+across all of a case's evidence, so a long-lived case spanning the change mixes
+match counts with line counts — the same "one column, two units" the section
+above declares fixed, across *time* rather than across type. Nothing migrates
+them: the counts are derived, and re-extracting the evidence is what corrects a
+row. Treat pre-fm#1587 rows as approximate, or clear `case_entities` and
+re-upload, until the affected cases are closed.
+
+#### Where the rule lives
+
+The unit is implemented once, at the point matches are produced, not at each
+consumer:
+
+- `extractors.utils.distinct_values` — the rule. **Every** producer goes
+  through it, regex rules and non-regex matchers alike (`user` comes from
+  `log_usernames.extract_usernames`), so a normalisation added here cannot
+  reach some entity types and not others.
+- `extractors.utils.distinct_on_line` — `distinct_values` over what a set of
+  patterns matched on one line. Beside `split_log_lines`, which decides what a
+  line *is*, and `is_port` / `is_pid` / `PID_MAX`, which both entity paths
+  share so a raised ceiling cannot land on one of them only.
+- `entities.line_tally.tally_entity_lines` — the one scanning loop, for the
+  three per-line `EntityExtractor` implementations;
+  `tally_document_matches` for the config exception.
+- `LogsAndErrorsExtractor._build_entity_profile` takes the rule directly; it
+  has fifteen other things to do per line and keeps its own loop.
+
+Guard: `tests/unit/modules/preprocessing/test_mention_unit_is_one_line.py`. It
+feeds every registered extractor a line naming each of its entity types twice
+and checks the count against that type's *declared* scope; it fails if an
+extractor is registered without such a line, if a fixture stops matching, if a
+data type's scope changes, if the registry and the rendered profile disagree on
+any entity type, or if a new loop anywhere in `entities/` iterates a raw
+`findall` result.
 
 ## Entity type vocabulary
 
@@ -82,11 +181,13 @@ Initial set — defined in `faultmaven.modules.case.domain.models.EntityType`:
 
 `EntityExtractor` is a `Protocol` in `faultmaven.modules.preprocessing.entities.protocol`. One implementation per data type; the dispatch table is `registry.extract_entities_for_data_type(data_type, content, error_line_indices)`.
 
+An implementation declares a table of `EntityRule` — which patterns (or non-regex matcher) find a type on a line, an optional validity test, whether it records `in_error_context` — and `entities.line_tally` does the scanning: `tally_entity_lines` for the three per-line extractors, `tally_document_matches` for the config exception above. The extractors own their vocabulary; they do not own the unit (fm#1587), and an extractor that hand-rolls its own `findall` loop fails the census in `tests/unit/modules/preprocessing/test_mention_unit_is_one_line.py`. A pattern with more than one capture group is refused when the rule is constructed, i.e. at import — the per-scan check would surface as "this evidence produced no entities at all", because `PreprocessingService` degrades any extraction exception to `[]`.
+
 | Data type | Extractor | Entities emitted |
 | --- | --- | --- |
 | `LOGS_AND_ERRORS` | `LogsEntityExtractor` | `ip`, `user`, `port`, `pid`, `path` — with `in_error_context` derived from the logs extractor's severity scan. |
 | `COMMAND_OUTPUT` | `CommandOutputEntityExtractor` | `ip`, `pid`, `port`, `path`. No error-context discrimination — command output doesn't have a stable severity signal. |
-| `STRUCTURED_CONFIG` | `ConfigEntityExtractor` | `hostname`, `port`, `service`, `path`, `ip`. Key/value pairs only; the regex uses `[ \t]*` (not `\s*`) between key and value so nested YAML can't leak a keyword into the next key's value. |
+| `STRUCTURED_CONFIG` | `ConfigEntityExtractor` | `hostname`, `port`, `service`, `path`, `ip`. Key/value pairs only; the regex uses `[ \t]*` (not `\s*`) between key and value so nested YAML can't leak a keyword into the next key's value. **The one document-scoped extractor** — counts matches over the whole file, not lines; see *The mention unit*. |
 | `TRACE_DATA` | `TraceEntityExtractor` | `service`, `hostname`, `path`, `ip`. Handles both JSON (`"service.name":"x"`) and OTLP attribute (`service.name=x`) wire formats. `error=true` / `status.code: ERROR` trigger `in_error_context`. |
 | `METRICS_AND_PERFORMANCE`, `UNSTRUCTURED_TEXT`, `SOURCE_CODE`, `VISUAL_EVIDENCE`, `UNANALYZABLE`, `DOCUMENTATION`, `ERROR_REPORT`, `PROFILING_DATA` | — | No registered extractor. `extract_entities_for_data_type` returns `[]`. |
 

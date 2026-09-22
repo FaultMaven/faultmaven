@@ -20,9 +20,12 @@ how operators eyeball trace dumps.
 from __future__ import annotations
 
 import re
-from collections import Counter
 
 from faultmaven.modules.case.contracts import EntityType
+from faultmaven.modules.preprocessing.entities.line_tally import (
+    EntityRule,
+    tally_entity_lines,
+)
 from faultmaven.modules.preprocessing.entities.protocol import EntityObservation
 
 # Keys in trace dumps come both as JSON (``"key":"value"``) and as
@@ -57,6 +60,17 @@ _ERROR_LINE_RE = re.compile(
 class TraceEntityExtractor:
     """Extractor for TRACE_DATA content."""
 
+    #: Rule order is the emission order. Every type records
+    #: ``error_context`` here — ``error=true`` / ``status.code: ERROR``
+    #: is the trace world's severity signal and it applies to the whole
+    #: span, not to one attribute of it.
+    _RULES = (
+        EntityRule(EntityType.SERVICE, patterns=(_SERVICE_RE,), error_context=True),
+        EntityRule(EntityType.HOSTNAME, patterns=(_HOSTNAME_RE,), error_context=True),
+        EntityRule(EntityType.PATH, patterns=(_URL_PATH_RE,), error_context=True),
+        EntityRule(EntityType.IP, patterns=(_IPV4_RE,), error_context=True),
+    )
+
     @property
     def data_type_name(self) -> str:
         return "trace_data"
@@ -68,72 +82,9 @@ class TraceEntityExtractor:
     ) -> list[EntityObservation]:
         if not content:
             return []
-
         # Per-line scan so we can tag error-context hits.
-        service_total: Counter = Counter()
-        service_error: Counter = Counter()
-        hostname_total: Counter = Counter()
-        hostname_error: Counter = Counter()
-        path_total: Counter = Counter()
-        path_error: Counter = Counter()
-        ip_total: Counter = Counter()
-        ip_error: Counter = Counter()
-
-        for line in content.split("\n"):
-            is_err = bool(_ERROR_LINE_RE.search(line))
-
-            for value in _SERVICE_RE.findall(line):
-                service_total[value] += 1
-                if is_err:
-                    service_error[value] += 1
-            for value in _HOSTNAME_RE.findall(line):
-                hostname_total[value] += 1
-                if is_err:
-                    hostname_error[value] += 1
-            for value in _URL_PATH_RE.findall(line):
-                path_total[value] += 1
-                if is_err:
-                    path_error[value] += 1
-            for ip in _IPV4_RE.findall(line):
-                ip_total[ip] += 1
-                if is_err:
-                    ip_error[ip] += 1
-
-        observations: list[EntityObservation] = []
-        for value, count in service_total.items():
-            observations.append(
-                EntityObservation(
-                    entity_type=EntityType.SERVICE,
-                    entity_value=value,
-                    mention_count=count,
-                    in_error_context=service_error.get(value, 0) > 0,
-                )
-            )
-        for value, count in hostname_total.items():
-            observations.append(
-                EntityObservation(
-                    entity_type=EntityType.HOSTNAME,
-                    entity_value=value,
-                    mention_count=count,
-                    in_error_context=hostname_error.get(value, 0) > 0,
-                )
-            )
-        for value, count in path_total.items():
-            observations.append(
-                EntityObservation(
-                    entity_type=EntityType.PATH,
-                    entity_value=value,
-                    mention_count=count,
-                    in_error_context=path_error.get(value, 0) > 0,
-                )
-            )
-        for value, count in ip_total.items():
-            observations.append(
-                EntityObservation(
-                    entity_type=EntityType.IP,
-                    entity_value=value,
-                    mention_count=count,
-                    in_error_context=ip_error.get(value, 0) > 0,
-                )
-            )
-        return observations
+        return tally_entity_lines(
+            content,
+            self._RULES,
+            is_error=lambda _index, line: bool(_ERROR_LINE_RE.search(line)),
+        )

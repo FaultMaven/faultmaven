@@ -15,11 +15,35 @@ single regex set handles both.
 from __future__ import annotations
 
 import re
-from collections import Counter
 
 from faultmaven.modules.case.contracts import EntityType
+from faultmaven.modules.preprocessing.entities.line_tally import (
+    EntityRule,
+    is_port,
+    tally_document_matches,
+)
 from faultmaven.modules.preprocessing.entities.protocol import EntityObservation
 
+# ``mention_count`` here counts MATCHES over the whole document, not
+# lines — the one entity extractor that does, and the exception is
+# deliberate (fm#1587). The per-line unit's argument is "a line is one
+# event"; a config has no events, it is a structure, and flow-style YAML,
+# minified JSON and single-line ``key=v key=v`` blocks put a whole config
+# on one physical line. Counting lines there flattens every value to 1
+# and the ``SUM(mention_count) DESC`` ranking that picks the top five
+# entities for the prompt degenerates into an insertion-ordered tie.
+# Measured on the same bytes:
+#
+#   ONE physical line   db1.internal 1, 5432 1, pgbouncer 1, db2.internal 1
+#   newline-separated   db1.internal 2, 5432 2, pgbouncer 1, db2.internal 1
+#
+# — strictly worse than the match count it would have replaced, which
+# ranks both forms identically. So configs keep match counting until the
+# owner rules otherwise; see ``entity-registry.md`` §*The mention unit*.
+# ‼ There is no line split here on purpose: the separators below cannot
+# cross a line ending in any of its three spellings, so document-scope
+# matching needs no notion of a line at all.
+#
 # Separator regexes use ``[ \t]*`` instead of ``\s*`` on purpose: a
 # key/value pair like ``host:\n  port: 5432`` must *not* be interpreted
 # as host=port — which is what ``\s*`` allowed, because the value
@@ -55,6 +79,16 @@ _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 class ConfigEntityExtractor:
     """Extractor for STRUCTURED_CONFIG content."""
 
+    #: Rule order is the emission order. Configs are declarative and
+    #: carry no error lines, so no rule records ``error_context``.
+    _RULES = (
+        EntityRule(EntityType.HOSTNAME, patterns=(_HOST_RE,)),
+        EntityRule(EntityType.PORT, patterns=(_PORT_RE,), keep=is_port),
+        EntityRule(EntityType.SERVICE, patterns=(_SERVICE_RE,)),
+        EntityRule(EntityType.PATH, patterns=(_PATH_RE,)),
+        EntityRule(EntityType.IP, patterns=(_IPV4_RE,)),
+    )
+
     @property
     def data_type_name(self) -> str:
         return "structured_config"
@@ -66,64 +100,4 @@ class ConfigEntityExtractor:
     ) -> list[EntityObservation]:
         if not content:
             return []
-
-        host_total: Counter = Counter()
-        port_total: Counter = Counter()
-        service_total: Counter = Counter()
-        path_total: Counter = Counter()
-        ip_total: Counter = Counter()
-
-        for match in _HOST_RE.findall(content):
-            host_total[match] += 1
-        for match in _PORT_RE.findall(content):
-            if match.isdigit() and 0 < int(match) <= 65535:
-                port_total[match] += 1
-        for match in _SERVICE_RE.findall(content):
-            service_total[match] += 1
-        for match in _PATH_RE.findall(content):
-            path_total[match] += 1
-        for ip in _IPV4_RE.findall(content):
-            ip_total[ip] += 1
-
-        observations: list[EntityObservation] = []
-        for value, count in host_total.items():
-            observations.append(
-                EntityObservation(
-                    entity_type=EntityType.HOSTNAME,
-                    entity_value=value,
-                    mention_count=count,
-                )
-            )
-        for value, count in port_total.items():
-            observations.append(
-                EntityObservation(
-                    entity_type=EntityType.PORT,
-                    entity_value=value,
-                    mention_count=count,
-                )
-            )
-        for value, count in service_total.items():
-            observations.append(
-                EntityObservation(
-                    entity_type=EntityType.SERVICE,
-                    entity_value=value,
-                    mention_count=count,
-                )
-            )
-        for value, count in path_total.items():
-            observations.append(
-                EntityObservation(
-                    entity_type=EntityType.PATH,
-                    entity_value=value,
-                    mention_count=count,
-                )
-            )
-        for value, count in ip_total.items():
-            observations.append(
-                EntityObservation(
-                    entity_type=EntityType.IP,
-                    entity_value=value,
-                    mention_count=count,
-                )
-            )
-        return observations
+        return tally_document_matches(content, self._RULES)
