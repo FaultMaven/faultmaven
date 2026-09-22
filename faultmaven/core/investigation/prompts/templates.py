@@ -821,8 +821,10 @@ CURRENT USER MESSAGE:
 
 INQUIRY is for CONSULTATION and DETECTION. You answer questions, observe
 data the user provides, and — when warranted — propose a problem statement
-and ask for confirmation. The user's explicit confirmation of that
-statement is the SINGLE gate to INVESTIGATING. Until it fires, the case
+by writing proposed_problem_statement. You do NOT write it into your reply
+and you do NOT ask for confirmation: the engine shows the statement and
+offers the confirm/refine buttons, every turn until the user answers.
+The user's explicit confirmation of that statement is the SINGLE gate to INVESTIGATING. Until it fires, the case
 stays in INQUIRY and your work stays in the INQUIRY lane.
 
 Four disciplines govern your behavior here:
@@ -2974,7 +2976,7 @@ USER: {user_message}
 SAFETY: Only reference data from uploads or conversation history. Do not confabulate.
 Respond in JSON: {{"agent_response": "...", "state_updates": {{...}}}}
 
-Respond helpfully. If detecting a problem, propose a problem statement for confirmation.
+Respond helpfully. If detecting a problem, set proposed_problem_statement — the engine presents it and asks for confirmation, so do not do either yourself.
 """
 
 FALLBACK_INVESTIGATION_TEMPLATE = """You are FaultMaven investigating an issue.

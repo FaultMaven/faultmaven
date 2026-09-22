@@ -952,39 +952,110 @@ class TestGate1PresentsItsStatement:
         assert "Yes, let's investigate" in labels
 
     @pytest.mark.asyncio
-    async def test_revising_and_confirming_in_one_turn_is_refused(
+    async def test_click_consent_does_not_adopt_a_same_turn_reword(
         self, mock_llm, mock_repo, inquiry_case
     ):
-        """Consent applies only to wording the user has already seen.
+        """The click path binds consent to the wording the user clicked on.
 
-        A statement existed at turn start, so the old guard (which asked only
-        "did something stand?") admitted this. The user never saw the revision.
+        Section 0c commits Gate 1 BEFORE the LLM call, and the turn still
+        renders an InquiryResponse. Without a guard the model's same-turn
+        rewording replaced the statement after consent, and the transition
+        copied the new text into ``case.description`` — framing the whole
+        investigation on wording the user never saw.
         """
-        inquiry_case.inquiry.proposed_problem_statement = "API is slow"
+        seen = "Checkout API returns 503 for all users since 14:00 UTC"
+        inquiry_case.inquiry.proposed_problem_statement = seen
         inquiry_case.inquiry.problem_statement_confirmed = False
 
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
         mock_llm.generate.return_value = json.dumps(
             {
-                "agent_response": "Updated and confirmed.",
+                "agent_response": "Starting the investigation.",
                 "state_updates": {
-                    "proposed_problem_statement": "Checkout API returns 503 for all users",
+                    "proposed_problem_statement": "Checkout is broken somehow",
+                },
+            }
+        )
+
+        result = await engine.process_turn(
+            inquiry_case,
+            "Yes, that's correct. Let's investigate.",
+            intent_type="confirmation",
+            intent_data={"value": True},
+        )
+        updated = result["case_updated"]
+
+        assert updated.inquiry.proposed_problem_statement == seen
+        assert updated.description == seen
+
+    @pytest.mark.asyncio
+    async def test_reword_on_a_consent_turn_is_dropped_not_adopted(
+        self, mock_llm, mock_repo, inquiry_case
+    ):
+        """Consent commits against the wording the user saw; the reword is lost.
+
+        A model relaying a plain "yes" may re-emit ``proposed_problem_statement``
+        with cosmetic edits — it is a required-feeling field. REFUSING the
+        consent there would be worse than useless: the engine re-presents the
+        reword, the user says yes again, the model rewords again, and the case
+        never leaves INQUIRY. The turn's reword is dropped instead, and the
+        consent commits against the text it was actually given for.
+        """
+        seen = "Checkout API returns 503 for all users since 14:00 UTC"
+        inquiry_case.inquiry.proposed_problem_statement = seen
+        inquiry_case.inquiry.problem_statement_confirmed = False
+        inquiry_case.current_turn = 2
+
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        mock_llm.generate.return_value = json.dumps(
+            {
+                "agent_response": "Confirmed — starting the investigation.",
+                "state_updates": {
+                    "proposed_problem_statement": (
+                        "Checkout API is returning 503s for all users since 14:00 UTC"
+                    ),
                     "user_confirmed_investigation": True,
                 },
             }
         )
 
-        result = await engine.process_turn(inquiry_case, "yes that's right")
+        result = await engine.process_turn(inquiry_case, "yes, that's right")
+        updated = result["case_updated"]
+
+        assert updated.inquiry.problem_statement_confirmed is True
+        assert updated.inquiry.proposed_problem_statement == seen
+        assert updated.description == seen
+
+    @pytest.mark.asyncio
+    async def test_first_write_with_consent_keeps_the_statement_and_refuses(
+        self, mock_llm, mock_repo, inquiry_case
+    ):
+        """Writing and confirming in one shot: statement kept, consent refused.
+
+        Nothing stood for the user to have seen, so the consent cannot bind —
+        but the statement must persist, or the next turn has nothing to present
+        and the model has to rediscover it.
+        """
+        inquiry_case.inquiry.proposed_problem_statement = None
+        inquiry_case.inquiry.problem_statement_confirmed = False
+
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        mock_llm.generate.return_value = json.dumps(
+            {
+                "agent_response": "Let's investigate.",
+                "state_updates": {
+                    "proposed_problem_statement": "Checkout API returns 503",
+                    "user_confirmed_investigation": True,
+                },
+            }
+        )
+
+        result = await engine.process_turn(inquiry_case, "please investigate")
         updated = result["case_updated"]
 
         assert updated.state == CaseState.INQUIRY
         assert updated.inquiry.problem_statement_confirmed is False
-        # The revised wording stands and is presented, so the user can answer it.
-        assert (
-            updated.inquiry.proposed_problem_statement
-            == "Checkout API returns 503 for all users"
-        )
-        assert "Checkout API returns 503 for all users" in result["agent_response"]
+        assert updated.inquiry.proposed_problem_statement == "Checkout API returns 503"
 
 
 class TestEngineOwnedGate1OnFirstDetect:
@@ -1267,3 +1338,92 @@ class TestProblemStatementSingleWriter:
             f"_apply_inquiry_updates, found {len(writes)} "
             f"at lines {[w.lineno for w in writes]}"
         )
+
+
+@pytest.mark.unit
+class TestGate1ConsentPredicate:
+    """``gate1_statement_is_confirmable`` — the one rule, and its three callers."""
+
+    @pytest.mark.parametrize(
+        "statement,expected",
+        [
+            (None, False),  # nothing stood — written this turn, if at all
+            ("", False),
+            ("   ", False),  # whitespace is not a statement
+            ("\n\t ", False),
+            ("A problem", True),
+            ("  A problem  ", True),
+        ],
+    )
+    def test_truth_table(self, statement, expected):
+        from faultmaven.core.investigation.milestone_engine import (
+            gate1_statement_is_confirmable,
+        )
+
+        assert gate1_statement_is_confirmable(statement) is expected
+
+    def test_agrees_with_the_gate_predicate_on_emptiness(self):
+        """Both must judge a whitespace-only statement the same way.
+
+        If ``_gate1_is_pending`` called it a statement and this did not, Gate 1
+        would pend forever: an empty block quote above buttons whose every
+        click is refused.
+        """
+        from faultmaven.core.investigation.milestone_engine import (
+            _gate1_is_pending,
+            gate1_statement_is_confirmable,
+        )
+
+        case = Case(
+            case_id="case_1234567890ab",
+            title="Test",
+            state=CaseState.INQUIRY,
+            user_id="user_123",
+            enterprise_id="org_123",
+            description="",
+            inquiry=InquiryData(
+                thread_id="thread_123",
+                proposed_problem_statement="   ",
+                problem_statement_confirmed=False,
+            ),
+        )
+
+        assert _gate1_is_pending(case) is False
+        assert gate1_statement_is_confirmable("   ") is False
+
+    def test_all_three_consent_sites_call_the_predicate(self):
+        """Source-level pin: the three sites share one rule.
+
+        They held three different bars before — two of them bare truthiness —
+        so a resolver-minted "yes" could commit on a statement the LLM-path
+        guard would have refused (fm#918). Nothing stopped them drifting apart
+        again, and a site reverting to ``bool(statement)`` would break no test.
+        This is that test.
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+        from faultmaven.modules.agent.domain.services.investigation_service import (
+            InvestigationService,
+        )
+
+        def calls_predicate(func) -> bool:
+            tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+            return any(
+                isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Name)
+                and n.func.id == "gate1_statement_is_confirmable"
+                for n in ast.walk(tree)
+            )
+
+        assert calls_predicate(
+            MilestoneEngine._apply_inquiry_updates
+        ), "the LLM consent path no longer routes through the shared predicate"
+        assert calls_predicate(
+            MilestoneEngine._process_turn_impl
+        ), "the DECIDE click path (section 0c) no longer routes through it"
+        assert calls_predicate(
+            InvestigationService._minted_intent_swallows_gate_consent
+        ), "the resolver-minted path no longer routes through it"

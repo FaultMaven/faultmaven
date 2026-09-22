@@ -31,22 +31,6 @@ def assert_case_status(case: Case, expected: CaseState, context: str = "") -> No
     assert case.state == expected, msg
 
 
-def assert_handshake_deferred_at(case: Case, expected_turn: int) -> None:
-    """Assert the same-turn-confirmation guard fired on the expected turn.
-
-    This is the structural signature of an INV-01 guard fire: the engine
-    captured the deferral by writing ``case.inquiry.handshake_deferred_at_turn``.
-    """
-    actual = case.inquiry.handshake_deferred_at_turn
-    assert actual == expected_turn, (
-        f"Expected handshake_deferred_at_turn={expected_turn}, got {actual}. "
-        f"This usually means the LLM did not emit "
-        f"user_confirmed_investigation=True on the test turn — the guard "
-        f"only fires when both fields are set in one shot. Inspect the "
-        f"raw LLM response to confirm the test scenario was reproduced."
-    )
-
-
 def assert_has_confirmation_suggestions(follow_ups: Iterable[dict[str, Any]]) -> None:
     """Assert the response includes a clickable confirmation pair.
 

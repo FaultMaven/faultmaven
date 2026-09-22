@@ -30,7 +30,7 @@ from faultmaven.core.investigation.kb_push import visible_kb_context
 from faultmaven.core.investigation.milestone_engine import (
     MilestoneEngine,
     _evidence_coverage,
-    gate1_consent_is_admissible,
+    gate1_statement_is_confirmable,
     score_progress,
 )
 from faultmaven.core.investigation.prompts.context_builder import (
@@ -3268,21 +3268,22 @@ class InvestigationService:
         # one (#1464): a declining mint commits nothing there, so it commits
         # nothing to guard here. Deliberately says NOTHING about ``pending``:
         # 0c is reached with one or without one.
+        # The SAME predicate the engine's two consent sites use. Both arguments
+        # are the standing statement because this site runs before any of this
+        # turn's updates are applied — nothing can have revised it yet, so the
+        # rule degrades to "a statement stands, and it is not just whitespace".
+        # That is deliberately NOT a claim to detect the revise-and-confirm
+        # shape here: no turn-start snapshot exists at this site to compare
+        # against. What routing through the shared predicate buys is that the
+        # three sites cannot come to disagree about what counts as a statement.
+        _standing_statement = getattr(
+            getattr(case, "inquiry", None), "proposed_problem_statement", None
+        )
         commits_gate_one = (
             minted.type == IntentType.CONFIRMATION
             and minted.confirmation_value is True
             and case.state == CaseState.INQUIRY
-            # The SAME predicate the engine's own two consent sites use. This
-            # was bare truthiness, so a minted "yes" could commit Gate 1 on a
-            # statement the LLM-path guard would have refused.
-            and gate1_consent_is_admissible(
-                getattr(
-                    getattr(case, "inquiry", None), "proposed_problem_statement", None
-                ),
-                getattr(
-                    getattr(case, "inquiry", None), "proposed_problem_statement", None
-                ),
-            )
+            and gate1_statement_is_confirmable(_standing_statement)
         )
 
         commits_gate = confirms_pending_transition or commits_gate_one

@@ -98,15 +98,23 @@ Confirmations reduce errors but create friction. Use conditional logic:
 - Turn N+1: User clicks [Yes] or types confirmation
 - Turn N+1 response: Agent transitions status
 
-**Refused consent (when the LLM tries to collapse the handshake)**:
+**Consent arriving with a statement write** — two different shapes, two
+different answers (INV-01):
 
-- Turn N: LLM emits `proposed_problem_statement` — newly written, or a REVISION
-  of the standing one — AND `user_confirmed_investigation=True` in one shot
-- Engine: `gate1_consent_is_admissible` refuses (see INV-01). Consent applies
-  only to wording that stood, unchanged, since the turn began
-- Turn N+1: nothing special happens, which is the point. Gate 1 is still
+- *First write + confirm in one shot.* Nothing stood for the user to have
+  seen, so the consent is **refused** by `gate1_statement_is_confirmable`. The
+  statement is kept, because the next turn needs something to present.
+  Turn N+1 then does nothing special, which is the point: Gate 1 is still
   pending, so the engine composes the statement and offers the pair exactly as
-  it does on every pending turn
+  it does on every pending turn.
+- *Revision + confirm in one shot.* A statement the user saw already stood, so
+  the consent is honoured — against **that** wording. The revision is
+  **dropped**, not applied. Refusing here instead would loop: the engine would
+  re-present the reword, the user would say yes again, and a model that
+  re-emits the field with cosmetic edits would reword again, forever. This is
+  also what protects the DECIDE click, where section 0c commits Gate 1 *before*
+  the LLM call and the same-turn rewording would otherwise reach
+  `case.description` through `_transition_to_investigating`.
 
 There is no recovery FLAG and no recovery turn. `handshake_deferred_at_turn`
 existed to tell the following turn to re-present — a proxy for "the user has
@@ -871,7 +879,7 @@ If a statement stands, the **engine** presents it for confirmation (INV-01) — 
 branch does not depend on the LLM doing so. If none stands, none is invented: the
 agent asks what is failing, Gate 1 stays shut, and no confirmation affordance is
 offered. When `user_confirmed_investigation=True` arrives on a later turn, gated by
-`gate1_consent_is_admissible`, the transition fires via `_check_automatic_transitions`.
+`gate1_statement_is_confirmable`, the transition fires via `_check_automatic_transitions`.
 
 **→ CLOSED (from INQUIRY or INVESTIGATING)**: the engine calls `propose_transition`
 directly, returns a closure-readiness summary plus the canonical Yes/No confirmation
