@@ -21,8 +21,10 @@ import pytest
 
 from faultmaven.api.middleware.rate_limiting import RateLimitMiddleware
 from faultmaven.config.protection import (
+    ProtectionProfile,
     get_development_protection_settings,
     get_production_protection_settings,
+    resolve_rate_limit_fail_open,
     validate_protection_settings,
 )
 from faultmaven.infrastructure.redis_client import RedisClientFactory
@@ -248,23 +250,40 @@ def test_the_general_loaders_honour_the_fail_open_key_in_both_directions(
     assert loader().fail_open_on_redis_error is expected
 
 
-@pytest.mark.parametrize("env_value", ["true", "false", None])
-def test_production_fails_closed_whatever_the_key_says(
-    cloud_discrete_credentials, monkeypatch, env_value
+@pytest.mark.parametrize(
+    "env_value,expected", [(None, False), ("false", False), ("true", True)]
+)
+def test_the_cloud_profile_defaults_fail_closed_and_the_key_overrides_it(
+    cloud_discrete_credentials, monkeypatch, env_value, expected
 ):
-    """Production pins fail-closed, and no environment value opens it.
+    """A multi-replica fleet DEFAULTS fail-closed; an explicit key overrides.
 
-    The argument for defaulting production open was that rungs 1 and 2 of the
-    degrade ladder enforce limits first, making the fail-open rung nearly
-    unreachable. That is false while the sliding window counts seconds rather
-    than requests (``ZADD key current_time current_time`` — score and member are
-    the same integer second, so ``ZCARD`` cannot exceed the window in seconds and
-    every ``global`` limit is unreachable). ``global`` is the only limit that
-    applies to unauthenticated traffic, so under that defect fail-open is the
-    whole ladder rather than its floor.
+    **This test used to assert a different thing and went on passing through
+    the change that made it wrong.** It was
+    ``test_production_fails_closed_whatever_the_key_says``, it called
+    ``get_production_protection_settings()`` with no arguments, and its
+    docstring said "a loader that quietly started reading the key again would
+    fail on ``true``". fm#1566 moved the degrade policy off the preset
+    entirely: the preset now takes it as a parameter defaulting to ``False``,
+    so all three legs kept passing by reading that default while the shipped
+    ``hardened`` path — the one every self-hosted install runs — honours the
+    key and answers ``True``. A guard that survives the reversal it was written
+    to catch is measuring a constant.
 
-    Swept over both explicit values and absence: a loader that quietly started
-    reading the key again would fail on ``"true"``.
+    Re-pointed at the resolved posture, which is where the decision now lives.
+    ``cloud`` is the profile that keeps the fail-closed DEFAULT, and the reason
+    is unchanged: rung 2 of the degrade ladder is the in-process FakeRedis
+    stand-in, so N replicas enforce N independent copies of a limit whose
+    configured value only means anything when it is shared. A floor, not a
+    substitute.
+
+    The ``"true"`` leg is the correction to a first implementation that
+    ignored the key here entirely. Since ``DEPLOYMENT_MODE=cloud`` can raise a
+    profile to ``cloud`` on its own, an unoverridable pin left a cloud-mode
+    process with no shared Redis unable to obtain a working limiter by any
+    configuration — it answered 503 to everything, which is how it was found.
+    The ``None`` leg is what keeps "the cloud posture is unchanged" true: every
+    cloud deployment that sets nothing still fails closed.
     """
     if env_value is None:
         monkeypatch.delenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", raising=False)
@@ -272,10 +291,35 @@ def test_production_fails_closed_whatever_the_key_says(
         monkeypatch.setenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", env_value)
     reset_settings()
 
-    assert get_production_protection_settings().fail_open_on_redis_error is False, (
-        "production honoured PROTECTION_RATE_LIMIT_FAIL_OPEN; the fail-open rung "
-        "is not justifiable while the sliding window counts seconds"
+    assert resolve_rate_limit_fail_open(ProtectionProfile.CLOUD) is expected, (
+        "the cloud profile's degrade policy moved: it defaults fail-closed "
+        "because a fleet's degraded rung is per-replica and therefore a floor "
+        "rather than a substitute, and an explicitly set "
+        "PROTECTION_RATE_LIMIT_FAIL_OPEN is what overrides that default"
     )
+
+
+@pytest.mark.parametrize(
+    "env_value,expected", [("true", True), ("false", False), (None, True)]
+)
+def test_the_hardened_profile_honours_the_key_in_both_directions(
+    cloud_discrete_credentials, monkeypatch, env_value, expected
+):
+    """The other half, and the half the shipped default actually runs (fm#1566).
+
+    Without this leg the pair above says only "cloud is pinned" and nothing at
+    all about the profile every standalone quickstart and every self-hosted
+    install resolves to — which is precisely where the old guard's silence let
+    the reversal through. Both directions, so a profile that pinned the
+    *default* open fails too.
+    """
+    if env_value is None:
+        monkeypatch.delenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", raising=False)
+    else:
+        monkeypatch.setenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", env_value)
+    reset_settings()
+
+    assert resolve_rate_limit_fail_open(ProtectionProfile.HARDENED) is expected
 
 
 def test_hardening_pii_redaction_does_not_make_rate_limiting_fail_closed(

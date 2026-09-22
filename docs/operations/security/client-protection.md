@@ -142,7 +142,8 @@ a standalone box included, which since fm#985 item 15 no longer writes under
 `faultmaven_dev`. Nothing is orphaned by that move: `fm-wipe-deployment`
 enumerates all three prefixes (`ALL_REDIS_KEY_PREFIXES`) rather than the one
 the current configuration selects. Staging runs the hardened *preset* — strict
-limits, no bypass headers, fail-closed on a Redis error — but is given its own
+limits and no bypass headers; its degrade policy follows the profile like
+everyone else's since fm#1566 — but is given its own
 *namespace*, because sharing production's
 would mean a staging load test consuming production's quota and an identical
 request submitted in both being answered `409` in the second. Staging installed
@@ -356,32 +357,47 @@ class AgentTimeoutManager:
 These are read on every deployment:
 
 ```bash
-# Which preset the protection middleware is installed from. THE axis, and the
-# only one — see ``config/protection.resolve_protection_profile``.
+# Which preset the protection middleware is installed from, AND which Redis
+# degrade policy it runs. THE axis, and the only one — see
+# ``config/protection.resolve_protection_profile``.
 #
 # Absent, or anything unrecognised -> `hardened`: tight limits, no bypass
-#                                     headers, fail-closed on a Redis outage.
+#                                     headers, fail-OPEN on a Redis outage.
+#                                     The self-hosted posture. (`cloud`, if
+#                                     DEPLOYMENT_MODE=cloud — see below.)
 # `development`                    -> the permissive preset, with `X-Dev-Bypass`
 #                                     and `X-Test-Bypass` LIVE: the mere
 #                                     presence of either header skips all rate
 #                                     limiting. A contributor's checkout only.
+# `cloud`                          -> hardened's preset, fail-CLOSED on a Redis
+#                                     outage. The multi-replica fleet posture.
+#                                     Implied by DEPLOYMENT_MODE=cloud.
 #
 # `development` is additionally REFUSED, with an ERROR line, unless ENVIRONMENT
-# is `development` or unset. So no deployed box can arm the bypass headers, and
-# no deployment that sets nothing can either.
+# is `development` or unset AND the deployment is not cloud. So no deployed box
+# can arm the bypass headers, and no deployment that sets nothing can either.
+#
+# The three are ordered development < hardened < cloud and the strictest input
+# wins, so no combination of keys is looser than this one alone says.
+# DEPLOYMENT_MODE=cloud can therefore raise what you write here — including an
+# explicit `hardened` — and never lower it. It warns when it does.
 #
 # No value installs an empty protection stack; the choice is which preset, not
 # whether.
 PROTECTION_PROFILE=hardened
 
 # Deployment environment. Selects staging's Redis key namespace, vetoes a
-# development protection profile, and gates the debug router — it does NOT
-# choose the preset.
+# development protection profile, gates the debug router, decides whether a
+# protection SETUP failure refuses the boot, and decides the CORS policy —
+# `staging` counts as deployed, and so does any DEPLOYMENT_MODE=cloud box
+# whatever it names its environment. It does NOT choose the preset and, since
+# fm#1566, does NOT choose the Redis degrade policy.
 ENVIRONMENT=production
 
 # Degrade policy for rate limiting and deduplication when Redis is
 # unreachable. Governs nothing else — in particular not PII redaction.
-# The production preset pins this closed and does not read the key.
+# The profile sets the default (`cloud` closed, the other two open); this key
+# overrides it on all three, and overriding `cloud` is logged at WARNING.
 PROTECTION_RATE_LIMIT_FAIL_OPEN=true
 
 # Proxies whose X-Forwarded-For may be believed when deciding which client a
@@ -421,12 +437,81 @@ stale `.env` or manifest still carrying one is dropped rather than rejected.
 Changing the limits a deployment actually runs on means changing the preset in
 `faultmaven/config/protection.py`.
 
+### The Redis degrade policy is a deployment-shape question
+
+`PROTECTION_RATE_LIMIT_FAIL_OPEN` decides what a request meets when the shared
+Redis is unreachable, and which posture is right depends on how many replicas
+there are — not on what the box calls its environment.
+
+| Deployment | Profile | `fail_open` | What a Redis outage does |
+|---|---|---|---|
+| Standalone quickstart (`ENVIRONMENT` unset) | `hardened` | `true` | Falls back to the in-process FakeRedis stand-in; limits still enforced, requests still served |
+| Contributor checkout (`PROTECTION_PROFILE=development`) | `development` | `true` | Same |
+| Self-hosted install, `ENVIRONMENT=production` | `hardened` | `true` | Same |
+| Multi-replica fleet (`DEPLOYMENT_MODE=cloud`, or `PROTECTION_PROFILE=cloud`) | `cloud` | `false` | Refuses: `503` on every request but the liveness and readiness probes |
+
+Until fm#1566 the policy was `environment != development`, so the third row
+failed **closed** — a single self-hosted replica, with nothing to shed load
+onto, answering 503 to its one user because its operator had truthfully set
+`ENVIRONMENT=production`. The flag is not only about refusing: it also feeds
+`RedisRateLimiter.fallback_enabled`, so fail-closed **removes the per-replica
+stand-in rung** as well. Fail-closed is a recovery posture, not only a refusal
+posture.
+
+A fleet keeps fail-closed because its degraded rung is per replica: N replicas
+running FakeRedis enforce N independent copies of a limit whose configured
+value only means anything when it is shared. That is a floor, not a substitute.
+A **self-hosted deployment that runs more than one replica** is in the same
+position and should say so, with either `PROTECTION_PROFILE=cloud` or
+`PROTECTION_RATE_LIMIT_FAIL_OPEN=false`.
+
+The table gives each profile's **default**. `PROTECTION_RATE_LIMIT_FAIL_OPEN`,
+when set, overrides it on any of the three — including `cloud`, which logs the
+override at WARNING. That hatch matters because `DEPLOYMENT_MODE=cloud` raises
+the profile on its own: without it, a cloud-mode process with no reachable
+Redis has no configuration at all that yields a serving limiter, and answers
+`503` to everything.
+
+### Preflight OPTIONS are not metered in-process
+
+`CORSMiddleware` is the outermost layer, so it answers a preflight `OPTIONS`
+and returns before rate limiting, deduplication, logging or metrics see it.
+Preflights therefore consume **no rate-limit quota**, produce **no request log
+line** and appear in **no application metric**.
+
+**This is accepted, not an oversight** (fm#985 item 10). A preflight executes
+no application code: it reaches no route, touches no database and calls no LLM,
+so the resource it is supposed to protect is not at risk from it, and metering
+it would spend a Redis round trip per request to defend nothing. What a
+preflight *can* do is consume connections and bandwidth, and that is an edge
+concern: the ingress in front of any deployed box already sees every preflight
+and can rate limit it there. A deployment that needs preflight visibility or
+preflight limits configures them on the ingress.
+
+The one thing this costs is that a client hammering `OPTIONS` alone is
+invisible in the application's own logs. Look for it at the ingress.
+
+Moving the meter inside CORS would also re-create the defect that put CORS
+outermost: with rate limiting outside, a client whose limit had already tripped
+had its *preflight* refused with a `429`, so the browser never sent the real
+request and the limit could not report itself — the caller saw an opaque
+network error instead of "you are being rate limited".
+
 ### Checking whether a deployment is rate limited
 
 `GET /admin/config/status` reports `rate_limit_enabled`, and the dashboard draws
 it as the **Rate Limiting** row. It answers one question — is
 `RateLimitMiddleware` installed on this app — read from the running middleware
 stack rather than from configuration.
+
+Two `features` rows beside it report the **posture** of that limiter, read the
+same way — off the `ProtectionSettings` it was installed with, not off the
+environment keys, so a caller-supplied settings object and a profile resolved
+from two inputs are both reported honestly:
+
+- `request_protection_hardened` — true when no bypass header skips the limiter.
+- `request_protection_fails_open` — true when a Redis outage falls back to the
+  per-replica stand-in rather than answering `503`.
 
 Beside it, `features.request_protection_hardened` answers the second question:
 whether any header can switch that limiter off. `true` means no bypass header
@@ -454,9 +539,9 @@ only by accident:
   decides whether the limiter is installed.
 
 An installed limiter that is degrading on a Redis outage still reports
-`true`. That is deliberate: the degrade is transient, and production pins
-fail-closed so the condition surfaces as a `503` rather than as silence. This
-field is about what is installed, not about what Redis is doing this second.
+`true`. That is deliberate: the degrade is transient, and this field is about
+what is installed, not about what Redis is doing this second. Which way it
+degrades is the separate `request_protection_fails_open` row above.
 
 Note that the fail-*open* degrade is genuinely quiet — it emits no
 `X-RateLimit-*` headers at all, and their absence is indistinguishable from a
@@ -506,12 +591,15 @@ PROTECTION_METRICS = {
 
 1. **Redis Unavailable**: the limiter walks a ladder — the shared application
    Redis client, then a client built by the central factory, then (only when
-   `PROTECTION_RATE_LIMIT_FAIL_OPEN=true`, the default) an in-process FakeRedis
-   stand-in, which still enforces every limit but **per replica**, so the
-   effective ceiling is the configured limit times the replica count. There is
-   no separate in-memory limiter. With `PROTECTION_RATE_LIMIT_FAIL_OPEN=false`
-   the limiter refuses the stand-in and requests are answered `503` instead
-   (liveness and readiness probes are exempt — a 503'd probe kills the pod).
+   the resolved policy is fail-open) an in-process FakeRedis stand-in, which
+   still enforces every limit but **per replica**, so the effective ceiling is
+   the configured limit times the replica count. There is no separate
+   in-memory limiter. When the resolved policy is fail-closed the limiter
+   refuses the stand-in and requests are answered `503` instead (liveness and
+   readiness probes are exempt — a 503'd probe kills the pod). The policy is
+   `PROTECTION_RATE_LIMIT_FAIL_OPEN` (default `true`) on the `development` and
+   `hardened` profiles, and pinned closed on `cloud` — see "The Redis degrade
+   policy is a deployment-shape question" above.
 2. **Timeout Service Down**: Continue with warnings
 3. **High System Load**: Increase rate limit strictness
 

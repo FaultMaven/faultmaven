@@ -67,18 +67,18 @@ to least preferred:
    fail-closed gets a refusal rather than a per-replica approximation.
 3. **Fail open** — requests pass unlimited. Governed by
    `fail_open_on_redis_error`, sourced from `PROTECTION_RATE_LIMIT_FAIL_OPEN`
-   (default `true`) on a **development environment** — `ENVIRONMENT=development`
-   or unset, whichever protection preset that box installs. A **deployed**
-   environment (staging, production, anything unrecognised) does not read the
-   key: it pins fail-**closed** (see "Production fails closed" below).
+   (default `true`) on the **`development` and `hardened` profiles**. The
+   **`cloud`** profile does not read the key: it pins fail-**closed** (see "The
+   cloud profile fails closed" below).
 
-   The audience is keyed on `ENVIRONMENT`, not on `PROTECTION_PROFILE`. fm#985
-   item 15 moved which *limits* and which *bypass headers* a standalone box
-   gets and deliberately left its degrade policy alone, because the pin also
-   disables the per-replica stand-in rung (`fallback_enabled`) — a limiter
-   whose client stops answering then refuses rather than recovering, which is
-   a deliberate production posture and not one to hand a single-user
-   self-hosted box as a side effect.
+   The audience is keyed on `PROTECTION_PROFILE`, not on `ENVIRONMENT`
+   (fm#1566). It used to be the environment, so a self-hosted operator who set
+   `ENVIRONMENT=production` was silently moved to fail-closed on a **single
+   replica** — where the pin also disables the per-replica stand-in rung
+   (`fallback_enabled`), so the limiter refuses rather than recovering. That
+   is the multi-replica fleet's posture, and it now belongs to the profile that
+   names that shape: `PROTECTION_PROFILE=cloud`, which `DEPLOYMENT_MODE=cloud`
+   selects on its own.
 
 `fail_open_on_redis_error` governs *policy*, never *reporting*.
 `RedisRateLimiter.initialize` returning normally always means a usable client
@@ -95,12 +95,15 @@ unavailable. The two policies are independent and their defaults differ
 would mean an operator hardening redaction silently converts a Redis blip into a
 service-wide 503 — a coupling neither policy asked for.
 
-### Production fails closed
+### The cloud profile fails closed
 
-`get_production_protection_settings` pins `fail_open_on_redis_error=False` and
-does not read `PROTECTION_RATE_LIMIT_FAIL_OPEN`. It is the only preset that
-pins the policy, and the one every deployment other than
-`ENVIRONMENT=development` runs.
+`resolve_rate_limit_fail_open` returns `False` for `ProtectionProfile.CLOUD`
+when `PROTECTION_RATE_LIMIT_FAIL_OPEN` is unset — which is every cloud
+deployment that has not said otherwise. It is the only profile whose default
+is closed, and it is selected by `PROTECTION_PROFILE=cloud` or by
+`DEPLOYMENT_MODE=cloud` — a multi-replica fleet, not merely a box that calls
+itself production. An explicitly set key overrides that default, and the
+override is logged at WARNING.
 
 Defaulting production open would rest on the claim that rung 3 is nearly
 unreachable because rungs 1 and 2 enforce limits first. **That claim is false
@@ -122,9 +125,10 @@ a security *and* cost control, and the trade-off against a total API outage is
 only answerable once the intermediate rungs limit anything. Revisit this pin
 then — not before.
 
-The development preset does honour `PROTECTION_RATE_LIMIT_FAIL_OPEN` (default
-`true`), which is what removes the hardcode; production opts out explicitly
-rather than by omission.
+The `development` and `hardened` profiles default to fail-open, which is what
+removes the hardcode; `cloud` defaults the other way, explicitly rather than
+by omission. All three read `PROTECTION_RATE_LIMIT_FAIL_OPEN` when it is set,
+and an override of the `cloud` default says so at WARNING.
 
 **Initialization latches in neither direction.** A failed
 `RateLimitMiddleware._initialize` leaves `_initialized` false so a later

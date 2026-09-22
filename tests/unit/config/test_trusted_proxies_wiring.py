@@ -290,12 +290,36 @@ def caplog_at_warning():
         logger.setLevel(previous)
 
 
-def test_production_still_pins_fail_closed():
-    """#927 clears the last stated blocker on unpinning; the pin stays anyway.
+def test_the_cloud_profile_still_pins_fail_closed():
+    """#927 cleared the last stated blocker on unpinning; the pin stays anyway.
 
-    Both defects that made the fail-open argument false have now been fixed, so
-    nothing mechanical prevents flipping this. It remains a deliberate posture
-    decision — pinned here so that clearing a blocker does not quietly become
-    permission to reverse it.
+    **This guard stayed green through the reversal it was written to catch.**
+    It was ``test_production_still_pins_fail_closed``, it asserted
+    ``get_production_protection_settings().fail_open_on_redis_error is False``,
+    and it said "pinned here so that clearing a blocker does not quietly become
+    permission to reverse it". fm#1566 reversed it for the ``hardened``
+    profile, and the assertion went on passing — because the preset stopped
+    deciding the policy at all and the no-argument call was reading the new
+    parameter's fail-safe default rather than any deployment's posture.
+
+    What survived the reversal, and is what this now asserts, is the *fleet*
+    pin: only a multi-replica deployment refuses rather than recovering onto
+    the per-replica stand-in. Read from ``resolve_rate_limit_fail_open``, which
+    is where the decision moved, so a future unpinning has to edit this file.
     """
-    assert get_production_protection_settings().fail_open_on_redis_error is False
+    import os
+
+    from faultmaven.config.protection import (
+        ProtectionProfile,
+        resolve_rate_limit_fail_open,
+    )
+
+    assert os.getenv("PROTECTION_RATE_LIMIT_FAIL_OPEN") is None, (
+        "this asserts the DEFAULT, so the key must be unset; an ambient value "
+        "would make both legs below measure the override instead"
+    )
+    assert resolve_rate_limit_fail_open(ProtectionProfile.CLOUD) is False
+
+    # And the half that DID move, asserted beside it so this file states the
+    # whole posture rather than the surviving corner of it.
+    assert resolve_rate_limit_fail_open(ProtectionProfile.HARDENED) is True

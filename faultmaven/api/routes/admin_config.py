@@ -525,6 +525,87 @@ def _installed_bypass_headers(app) -> Optional[List[str]]:
     return headers
 
 
+def _installed_fail_open_on_redis_error(app) -> Optional[bool]:
+    """Does the installed limiter fail OPEN when Redis is unreachable?
+
+    ``None`` means the policy could not be read — **not** that no limiter is
+    installed. Whether one is installed is a separate question with its own
+    reader, and the caller asks it there: the first draft of this function
+    folded the two together and returned ``None`` for both, so a limiter whose
+    settings object did not carry the attribute was reported to the operator as
+    *"no rate limiter is installed on this process"* while the sibling field
+    ``request_protection_hardened``, reading the same stack, reported it
+    present. Two adjacent fields on one response disagreeing about whether a
+    limiter exists is worse than either answer alone, and this is the only
+    surface where the degrade posture is readable at all.
+
+    Read off the ``ProtectionSettings`` the middleware was installed with, not
+    from ``PROTECTION_PROFILE`` or ``PROTECTION_RATE_LIMIT_FAIL_OPEN``, for the
+    reason ``_rate_limiting_installed`` gives: a key states an intention and
+    this states what is running. Three things can make them differ — the
+    ``cloud`` profile has the opposite default, a caller-supplied ``ProtectionSettings``
+    bypasses both, and the profile itself is resolved from two inputs
+    (``PROTECTION_PROFILE`` and ``DEPLOYMENT_MODE``) that an operator reading
+    one of them cannot combine by eye.
+
+    Reported because fm#1566 moved this posture onto a new axis and the owner's
+    standing requirement for such a move is that the running answer be
+    readable: a degrade policy that can only be inferred from configuration is
+    the "manifests say configured, not happening" shape. It also decides more
+    than refusal — the same flag feeds ``RedisRateLimiter.fallback_enabled``,
+    so fail-closed removes the per-replica FakeRedis stand-in rung.
+    """
+    from faultmaven.api.middleware import RateLimitMiddleware
+
+    policy: Optional[bool] = None
+    for middleware in getattr(app, "user_middleware", []):
+        if middleware.cls is not RateLimitMiddleware:
+            continue
+        installed = getattr(middleware, "kwargs", {}).get("settings", None)
+        value = getattr(installed, "fail_open_on_redis_error", None)
+        if value is None:
+            continue
+        # Any installed limiter that fails CLOSED makes the deployment's answer
+        # "closed": the strictest installed policy is the one a request meets.
+        policy = bool(value) if policy is None else (policy and bool(value))
+    return policy
+
+
+def _degrade_posture_description(
+    fail_open: Optional[bool], limiter_installed: bool
+) -> str:
+    """One sentence naming the degrade posture and what it costs.
+
+    ``limiter_installed`` comes from ``_installed_bypass_headers``' own answer
+    rather than from ``fail_open`` being ``None``, so this field and
+    ``request_protection_hardened`` cannot disagree about whether a limiter
+    exists — they are the same observation, read once.
+    """
+    if not limiter_installed:
+        return (
+            "No rate limiter is installed on this process, so there is no "
+            "degrade policy to report."
+        )
+    if fail_open is None:
+        return (
+            "A rate limiter is installed, but the degrade policy could not be "
+            "read off it — treat this as unknown rather than as fail-closed. "
+            "No preset produces this; it means a caller supplied a settings "
+            "object without a fail_open_on_redis_error."
+        )
+    if fail_open:
+        return (
+            "On a Redis outage the limiter falls back to an in-process "
+            "FakeRedis stand-in, which still enforces every limit but PER "
+            "REPLICA; requests are served rather than refused."
+        )
+    return (
+        "On a Redis outage the limiter refuses: the per-replica FakeRedis "
+        "stand-in is disabled and requests are answered 503 (liveness and "
+        "readiness probes are exempt)."
+    )
+
+
 def _bypass_posture_description(headers: Optional[List[str]]) -> str:
     """One sentence naming the state, including the headers when there are any.
 
@@ -837,9 +918,10 @@ async def get_env_config_status(
         # Build feature status
         from faultmaven.api.models import FeatureStatus
 
-        # Read once: two fields below describe the same installed limiter and
+        # Read once: the fields below describe the same installed limiter and
         # must not be able to disagree about it.
         bypass_headers = _installed_bypass_headers(request.app)
+        fail_open_on_redis_error = _installed_fail_open_on_redis_error(request.app)
 
         # Only surface features that require user-provided configuration.
         # Core capabilities (interpreted search, semantic search) that work
@@ -933,9 +1015,45 @@ async def get_env_config_status(
                     "X-Dev-Bypass / X-Test-Bypass, whose mere presence skips "
                     "all rate limiting — is installed only by an explicit "
                     "PROTECTION_PROFILE=development on a box that also runs "
-                    "ENVIRONMENT=development (or leaves it unset). No other "
-                    "value of ENVIRONMENT, and no deployment that sets "
-                    "nothing, can arm them"
+                    "ENVIRONMENT=development (or leaves it unset) and is not a "
+                    "cloud deployment. No other value of ENVIRONMENT, no "
+                    "deployment that sets nothing, and no deployment running "
+                    "DEPLOYMENT_MODE=cloud can arm them — a cloud deployment "
+                    "resolves to the 'cloud' profile however PROTECTION_PROFILE "
+                    "is spelled"
+                ),
+            ),
+            # The Redis degrade posture, reported for the reason fm#985 item
+            # 15's ruling gave for the profile axis and fm#1566 inherits:
+            # "a posture that cannot be read from the running system" is the
+            # failure this campaign keeps finding. It is also the posture that
+            # changed — before fm#1566 any ENVIRONMENT but `development` failed
+            # closed; now only the `cloud` profile does.
+            #
+            # `enabled` is worded so True is the AVAILABILITY-preserving state
+            # rather than the "safe" one, because unlike the bypass headers
+            # there is no universally safe answer here: a single self-hosted
+            # replica wants open (it recovers onto FakeRedis), a multi-replica
+            # fleet wants closed (its degraded rung is per-replica and
+            # therefore a floor, not a substitute). The description says which
+            # one this deployment is running, in words.
+            "request_protection_fails_open": FeatureStatus(
+                enabled=bool(fail_open_on_redis_error),
+                description=_degrade_posture_description(
+                    fail_open_on_redis_error,
+                    # The SAME observation the field above reports, not a
+                    # second walk of the stack: ``_installed_bypass_headers``
+                    # returns None iff no limiter is installed.
+                    limiter_installed=bypass_headers is not None,
+                ),
+                config_hint=(
+                    "Decided by the protection profile (fm#1566), not by "
+                    "ENVIRONMENT: the 'cloud' profile — PROTECTION_PROFILE="
+                    "cloud, or DEPLOYMENT_MODE=cloud — defaults to "
+                    "fail-closed, 'hardened' (the self-hosted default) and "
+                    "'development' to fail-open. An explicitly set "
+                    "PROTECTION_RATE_LIMIT_FAIL_OPEN overrides the default on "
+                    "any of the three"
                 ),
             ),
             "llm_tracing": FeatureStatus(
