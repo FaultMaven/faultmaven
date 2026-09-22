@@ -2494,7 +2494,11 @@ class TestModJkWorkerStateSurfacing:
         text = _all(result)
         assert "mod_jk worker error states" in text
         assert "5 distinct" in text
-        assert "539 lines total" in text
+        # "occurrences", not "lines": ``mod_jk_state_counts`` is one of the
+        # three per-MATCH tallies the fm#1587 sweep deliberately left alone,
+        # so the total is matches. It coincides with 539 lines only because
+        # this fixture puts one state code on each line (fm#1587 review).
+        assert "539 occurrences total" in text
         assert "state 6: 369" in text
         assert "state 7: 101" in text
         assert "state 10: 5" in text

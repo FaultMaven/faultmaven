@@ -20,15 +20,29 @@ from faultmaven.modules.case.contracts import EntityType
 from faultmaven.modules.preprocessing.entities.line_tally import (
     EntityRule,
     is_port,
-    tally_entity_lines,
+    tally_document_matches,
 )
 from faultmaven.modules.preprocessing.entities.protocol import EntityObservation
 
-# Scanning is per line, like every other entity extractor — one line is
-# one mention (fm#1587). It used to run ``findall`` over the whole file,
-# which counted a key repeated on ONE line twice; the regexes below never
-# crossed a newline anyway (see the next paragraph), so per-line matching
-# finds exactly the same values.
+# ``mention_count`` here counts MATCHES over the whole document, not
+# lines — the one entity extractor that does, and the exception is
+# deliberate (fm#1587). The per-line unit's argument is "a line is one
+# event"; a config has no events, it is a structure, and flow-style YAML,
+# minified JSON and single-line ``key=v key=v`` blocks put a whole config
+# on one physical line. Counting lines there flattens every value to 1
+# and the ``SUM(mention_count) DESC`` ranking that picks the top five
+# entities for the prompt degenerates into an insertion-ordered tie.
+# Measured on the same bytes:
+#
+#   ONE physical line   db1.internal 1, 5432 1, pgbouncer 1, db2.internal 1
+#   newline-separated   db1.internal 2, 5432 2, pgbouncer 1, db2.internal 1
+#
+# — strictly worse than the match count it would have replaced, which
+# ranks both forms identically. So configs keep match counting until the
+# owner rules otherwise; see ``entity-registry.md`` §*The mention unit*.
+# ‼ There is no line split here on purpose: the separators below cannot
+# cross a line ending in any of its three spellings, so document-scope
+# matching needs no notion of a line at all.
 #
 # Separator regexes use ``[ \t]*`` instead of ``\s*`` on purpose: a
 # key/value pair like ``host:\n  port: 5432`` must *not* be interpreted
@@ -86,4 +100,4 @@ class ConfigEntityExtractor:
     ) -> list[EntityObservation]:
         if not content:
             return []
-        return tally_entity_lines(content, self._RULES)
+        return tally_document_matches(content, self._RULES)

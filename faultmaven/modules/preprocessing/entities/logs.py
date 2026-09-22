@@ -33,16 +33,23 @@ from faultmaven.modules.preprocessing.entities.protocol import EntityObservation
 from faultmaven.modules.preprocessing.log_usernames import extract_usernames
 
 # Regexes mirror ``logs_extractor.py``. Kept local so this module can
-# evolve independently if the logs extractor's formatting changes
-# (e.g. if it dropped the entity profile). The cost is a second compile
-# — negligible. What is NOT mirrored is anything that decides a count:
-# the username rule, because a second copy of it cost fm#522; the line
-# split, because a per-line count is only as right as what it calls a line
-# — ``split("\n")`` read a bare-``\r`` file as one line and floored every
-# count at 1 (fm#1574 review); and the mention unit itself, because one
-# copy per extractor is exactly how USER ended up counting something
-# different from IP (fm#1587). Those live in ``line_tally`` /
-# ``extractors.utils``.
+# evolve independently if the logs extractor's formatting changes (e.g. if
+# it dropped the entity profile). The cost is a second compile —
+# negligible.
+#
+# ‼ The copies are NOT identical, and the difference decides which values
+# exist at all, which decides every count derived from them: the two
+# modules' IPv4/IPv6 shapes disagree, so ``4.10.300.999`` is registry-only
+# and ``2001:db8::`` is profile-only. That divergence is **fm#1573**, filed
+# and not fixed here.
+#
+# What IS shared, deliberately, is everything that decides how a value is
+# COUNTED once found: the username rule (a second copy of it cost fm#522),
+# the line split (``split("\n")`` read a bare-``\r`` file as one line and
+# floored every count at 1 — fm#1574 review), the port/PID limits, and the
+# mention unit itself, because one copy per extractor is exactly how USER
+# ended up counting something different from IP (fm#1587). Those live in
+# ``line_tally`` / ``extractors.utils``.
 _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 # Private-network detection is noisy in practice; we index every IP we
 # see and let the agent/context-builder decide relevance.
