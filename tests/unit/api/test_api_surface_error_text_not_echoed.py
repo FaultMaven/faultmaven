@@ -153,6 +153,23 @@ _ALLOWED: dict[tuple[str, str, str], str] = {
         "middleware reads into a body."
     ),
     (
+        "faultmaven/api/routes/admin_config.py",
+        "check_llm_connection",
+        "LLMConnectionTestResponse(provider=provider_name, connected=False, "
+        "response_time_ms=elapsed_ms, error_message=f'Connection test failed "
+        "({type(e).__name__})', timestamp=datetime.now(timezone.utc))",
+    ): (
+        "The exception's CLASS, not its message. Safe because a class name is "
+        "a literal in the SDK's source, chosen at import time and never "
+        "assembled from a URL, a `host:port`, a key fragment or an upstream "
+        "body — the analysis reports it only because shape D cannot know that "
+        "`type` is safe. Kept rather than redacted because the Dashboard's LLM "
+        "Config page renders `error_message` verbatim (ProviderCard.tsx:293) "
+        "with no other channel, so a constant string makes a wrong key, a "
+        "wrong base URL, a rate limit and a DNS failure identical on the one "
+        "endpoint whose purpose is to say which."
+    ),
+    (
         "faultmaven/modules/knowledge/api/conversion_routes.py",
         "convert_document",
         "JSONResponse(status_code=status, content={'detail': str(e), "

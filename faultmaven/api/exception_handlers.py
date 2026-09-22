@@ -648,13 +648,25 @@ async def service_error_handler(
 #:
 #: Deliberately its own constant rather than `to_json_safe`'s default. That
 #: default (512) is tuned for bounding an *echoed request body* in a 422 — a
-#: different job with a different right answer — and borrowing it silently
-#: truncated admin and LLM error text where callers previously got the whole
-#: message. The twenty `str(e)` details in `admin.py` and `admin_config.py`
-#: that this used to name are gone (#1400 replaced them with static
-#: sentences), but the bound is not theirs: `_detail_text` bounds EVERY
-#: detail, and the ones that still carry a variable-length message — the LLM
-#: classifier's, and the domain 4xx handlers' `str(exc)` — clear 512 easily.
+#: different job with a different right answer — and borrowing it would
+#: silently truncate error text where callers previously got the whole
+#: message.
+#:
+#: This used to name "twenty `str(e)` details in `admin.py` and
+#: `admin_config.py`" as the population, and those were 5xx arms that #1400
+#: replaced with static sentences. Naming them was always the weaker
+#: statement: `_detail_text` runs on every explicitly raised
+#: `HTTPException`'s `detail` (`http_exception_handler` is the only caller),
+#: so the bound is a property of that whole surface rather than of any file.
+#: What carries a variable-length message there now is the typed-domain 4xx
+#: family — `detail=str(e)` on a `ValidationException`, `NotFoundError`,
+#: `ConflictError` or `InvalidGrantError` arm, which #866/#966 keep on
+#: purpose because that message is written FOR the caller.
+#:
+#: Note what is NOT in scope, since the old wording implied it: the domain
+#: handlers below (`not_found_exception_handler` and its siblings) build
+#: their bodies as dicts and return them directly, never through
+#: `_detail_text`, so this constant does not bound them.
 #:
 #: Retuning the echo bound for echo reasons must not move error-message length
 #: with it, which is exactly what sharing the constant would have done, with
