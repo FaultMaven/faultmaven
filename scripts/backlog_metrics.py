@@ -38,11 +38,11 @@ flow, survival and open-set numbers come from GitHub metadata and never from
 reading issue text. Two sections do read bodies, each through one stated
 grammar: the follow-up count reads the lane marker ("found while working on
 #N"), and the rule-4 tier reads the blocked pile's ``**Blocked on:**``
-statement and the repository files an issue cites outside a code block. An
-open
-issue younger than the residue threshold is reported as *pending*, not as
-residue, so the newest week's row is comparable to the same row on a later
-run. A saved dump is replayed with ``--as-of <the time it was taken>``; ages
+statement and the repository files an issue cites outside a code block. Each
+body is parsed once per run, into a :class:`BodyFacts` every consumer shares.
+An open issue younger than the residue threshold is reported as *pending*,
+not as residue, so the newest week's row is comparable to the same row on a
+later run. A saved dump is replayed with ``--as-of <the time it was taken>``; ages
 are measured from that instant, not from when the file is re-read.
 ``--offline`` makes a replay a no-network run (parent markers naming a PR
 then stay unresolved).
@@ -389,26 +389,41 @@ def parent_of(issue: Issue, repo: str) -> int | None:
     used to suppress a real marker later in the same body, which made the
     answer depend on the order the two were written in.
 
+    A marker inside a code block is an illustration, exactly as a cited path
+    is: an issue quoting another's body would otherwise be attributed as its
+    follow-up and inflate the parent count the campaign is judged by. The
+    two reference grammars in this file read the same stripped text (#1580).
+
     This is the ONE place the marker grammar lives; every reader calls here.
     """
-    for match in _PARENT_MARKER.finditer(issue.body):
+    return _parent_in_text(without_code_blocks(issue.body), issue.number, repo)
+
+
+def _parent_in_text(text: str, number: int, repo: str) -> int | None:
+    """:func:`parent_of` over a body whose code blocks are already blanked."""
+    for match in _PARENT_MARKER.finditer(text):
         if not is_own_repo(match.group("qual"), repo):
             continue  # another repository
-        number = int(match.group("n"))
-        if number != issue.number:
-            return number
+        found = int(match.group("n"))
+        if found != number:
+            return found
     return None
 
 
-def marker_numbers(issues: Sequence[Issue], repo: str) -> list[int]:
+def marker_numbers(
+    issues: Sequence[Issue], repo: str, facts: dict[int, BodyFacts] | None = None
+) -> list[int]:
     """Every number a parent marker names that is not an issue here."""
+    facts = facts if facts is not None else read_bodies(issues, repo)
     known = {issue.number for issue in issues}
-    found = {parent_of(issue, repo) for issue in issues} - known - {None}
-    return sorted(found)
+    return sorted({facts[issue.number].parent for issue in issues} - known - {None})
 
 
 def follow_ups(
-    issues: Sequence[Issue], repo: str, pr_links: dict[int, list[int]] | None = None
+    issues: Sequence[Issue],
+    repo: str,
+    pr_links: dict[int, list[int]] | None = None,
+    facts: dict[int, BodyFacts] | None = None,
 ) -> dict:
     """Issues that name a parent they were found while working on.
 
@@ -429,12 +444,13 @@ def follow_ups(
     cannot be read from metadata and is classified by hand in the campaign
     report.
     """
+    facts = facts if facts is not None else read_bodies(issues, repo)
     known = {issue.number for issue in issues}
     children: dict[int, list[int]] = defaultdict(list)
     unresolved = 0
     via_pr = 0
     for issue in issues:
-        parent = parent_of(issue, repo)
+        parent = facts[issue.number].parent
         if parent is None:
             continue
         resolved_via_pr = False
@@ -478,14 +494,24 @@ RULE_1_DEPENDENTS = 2
 SEAM_WINDOW_DAYS = 30
 SEAM_ISSUES = 3
 
-#: A fenced code block. Stripped before any body is read, because a path or
-#: a reference inside a code sample is an illustration of something rather
-#: than a statement about this issue: #1351 was excluded from the tier on
-#: ``alembic/versions``, which appears only in a pasted `op.drop_table` line,
-#: and a body quoting the two `**Blocked on:**` examples out of
-#: `.claude/commands/process-top-issues.md` would otherwise parse as the
-#: quote.
-_CODE_FENCE = re.compile(r"^[ \t]*(```|~~~).*?^[ \t]*\1[ \t]*$", re.M | re.S)
+#: A code fence, opening or closing: three or more backticks or tildes.
+#: Indent is permissive rather than CommonMark's three spaces, because an
+#: indented fence inside a list is still a fence and stripping it is the
+#: safe direction. The CLOSING fence must repeat the opening character at
+#: least as many times with nothing after it, which is GitHub's rule and
+#: what makes ```` ```` ```` inside a ``` block content rather than an end.
+_FENCE = re.compile(r"^[ \t]*(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+
+#: A line of an INDENTED code block: four spaces or a tab. GitHub renders
+#: such a run as code, so a path in one is an illustration exactly as a
+#: fenced one is.
+_INDENTED_CODE = re.compile(r"^(?: {4}|\t)")
+
+#: A list marker. An indented run under one is the list item's own content,
+#: not a code block — CommonMark's rule, and the reason this is checked at
+#: all: blanking a wrapped bullet would delete a real ``**Blocked on:**``
+#: statement, which is the one direction this guard must not fail in.
+_LIST_MARKER = re.compile(r"^[ \t]*(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)")
 
 #: The ``**Blocked on:**`` statement every ``pile:blocked`` item carries in
 #: its body. This matches only the LABEL; what follows it is resolved by
@@ -538,21 +564,136 @@ _LEADING_REFERENCES = re.compile(
 #: see #1294 for background" is owner latency and the #1294 is context.
 _SENTENCE_END = re.compile(r"[.;:!?]")
 
-#: A repository path cited in an issue body, used as a stand-in for a seam.
-#: The top-level names are this repository's own, which is what makes the
-#: match a path rather than any token with a slash in it, and the required
-#: extension is what makes it a FILE: ``alembic/versions`` is a region, and
-#: a region is not a seam.
-_CITED_PATH = re.compile(
-    r"(?<![\w/.-])"
-    r"((?:faultmaven|tests|scripts|docs|alembic|\.github|\.claude)"
-    r"/[\w./-]*\.[A-Za-z]\w*)"
+#: The top-level directories a cited path may start with, when the tree
+#: cannot be read (a saved dump replayed outside a checkout). A FALLBACK,
+#: pinned by a test against the tracked tree rather than maintained by hand:
+#: it went four directories stale — ``demo``, ``requirements``, ``resources``
+#: and ``.githooks`` — and nothing failed, because an unlisted directory
+#: simply contributes no citation (#1576).
+_FALLBACK_TOP_LEVEL = (
+    ".claude",
+    ".githooks",
+    ".github",
+    "alembic",
+    "demo",
+    "docs",
+    "faultmaven",
+    "requirements",
+    "resources",
+    "scripts",
+    "tests",
 )
 
 
+def tracked_top_level(root: Path = REPO_ROOT) -> tuple[str, ...]:
+    """The repository's own top-level directories, from the tracked tree.
+
+    ``git ls-tree`` rather than ``iterdir`` on purpose: the working copy
+    also holds ``.venv``, ``data``, ``htmlcov`` and the caches, and admitting
+    those would make a pasted traceback out of ``site-packages`` read as a
+    citation of this repository. Anything that is not a checkout — a saved
+    dump replayed elsewhere, a tarball, no ``git`` on PATH — falls back to
+    :data:`_FALLBACK_TOP_LEVEL`.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "ls-tree", "--name-only", "-d", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=root,
+        )
+    except (OSError, ValueError):
+        return _FALLBACK_TOP_LEVEL
+    names = (
+        tuple(n for n in result.stdout.split("\n") if n)
+        if not result.returncode
+        else ()
+    )
+    return names or _FALLBACK_TOP_LEVEL
+
+
+def _cited_path_pattern(top_level: Sequence[str]) -> re.Pattern:
+    """A repository path cited in an issue body, as a stand-in for a seam.
+
+    The top-level names are this repository's own, which is what makes the
+    match a path rather than any token with a slash in it, and the required
+    extension is what makes it a FILE: ``alembic/versions`` is a region, and
+    a region is not a seam.
+    """
+    names = "|".join(
+        re.escape(name) for name in sorted(top_level, key=len, reverse=True)
+    )
+    return re.compile(r"(?<![\w/.-])((?:" + names + r")/[\w./-]*\.[A-Za-z]\w*)")
+
+
+_CITED_PATH = _cited_path_pattern(tracked_top_level())
+
+
 def without_code_blocks(body: str) -> str:
-    """``body`` with fenced code blocks blanked, line count preserved."""
-    return _CODE_FENCE.sub(lambda m: "\n" * m.group(0).count("\n"), body)
+    """``body`` with every code block blanked, line for line.
+
+    Four shapes, because the guard's purpose is to keep an illustration from
+    reading as a statement and only one of them used to be covered (#1580):
+    a fence may be **unclosed** (the commonest shape for a pasted log, and
+    GitHub renders it as code to the end of the body), it may use **four or
+    more** backticks, a block may be **indented** rather than fenced, and any
+    of them may arrive with **CRLF** line endings — which the corpus does not
+    carry today only because every issue so far was filed through ``gh``, and
+    which GitHub returns for any body edited in the web UI.
+
+    Line count is preserved, so nothing that reads the result has to know a
+    block was there.
+    """
+    lines = body.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    out: list[str] = []
+    fence: tuple[str, int] | None = None
+    indented = False
+    blank_before = True  # the start of the body opens a block like a blank line
+    in_list = False
+    for line in lines:
+        if fence is not None:
+            out.append("")
+            match = _FENCE.match(line)
+            if (
+                match
+                and match.group("fence")[0] == fence[0]
+                and len(match.group("fence")) >= fence[1]
+                and not match.group("info").strip()
+            ):
+                fence = None
+            continue
+        # A continuation of an indented block is checked BEFORE the fence, or
+        # a fence pasted inside one would open a state that runs to the end.
+        if indented and _INDENTED_CODE.match(line):
+            out.append("")
+            continue
+        match = _FENCE.match(line)
+        if match:
+            fence = (match.group("fence")[0], len(match.group("fence")))
+            out.append("")
+            indented, blank_before = False, False
+            continue
+        if not line.strip():
+            out.append(line)
+            indented, blank_before = False, True
+            continue
+        if blank_before and not in_list and _INDENTED_CODE.match(line):
+            out.append("")
+            indented, blank_before = True, False
+            continue
+        # A content line. Whether a list is open decides what an indented
+        # run after the next blank line means, and a list stays open across
+        # its own wrapped lines and further paragraphs: only a fresh block
+        # at column 0 that is not itself a list item closes it. Resetting
+        # per line instead read a bullet's SECOND line as the end of the
+        # list, so a wrapped bullet's indented statement was blanked.
+        out.append(line)
+        if _LIST_MARKER.match(line):
+            in_list = True
+        elif blank_before and not line[:1].isspace():
+            in_list = False
+        indented, blank_before = False, False
+    return "\n".join(out)
 
 
 def pile_of(issue: Issue) -> str | None:
@@ -563,15 +704,32 @@ def pile_of(issue: Issue) -> str | None:
     it as ready would put it in the tier — where it would be named as the
     reserved slot's next buy and then refused by the dispatch predicate, so
     the slot drains nothing that round.
+
+    The precondition is the COUNT, not which labels are present: any second
+    pile label makes the move half-finished, whether or not this file knows
+    the label's name. ``multi_labelled`` in the report keys on the same
+    count, so the two cannot name the same item as the slot's buy and as
+    undispatchable (#1581).
+
+    Which pile it lands in is the rule's own second clause, read in that
+    order — blocked when blocked is among them, **yours otherwise**.
+    Defaulting to blocked instead put an item carrying no blocked label
+    into the blocked pile, where a body with no ``**Blocked on:**`` line
+    reported it as *stating nothing* as well as as a half-finished move:
+    two repairs for one item, one of them for a statement it was never
+    asked to write.
     """
     piles = {label for label in issue.labels if label.startswith(_PILE_PREFIX)}
     if not piles:
         return None
-    if BLOCKED_LABEL in piles:
-        return BLOCKED_LABEL
-    if YOURS_LABEL in piles:
-        return YOURS_LABEL
-    return READY_LABEL if READY_LABEL in piles else sorted(piles)[0]
+    if len(piles) == 1:
+        return piles.pop()
+    # MORE THAN ONE, which is the rule's own precondition. Reading the set
+    # label by label instead put `pile:ready` plus any FOURTH pile label back
+    # in the tier, where the reserved slot names it and step 4's dispatch
+    # predicate — "any it returns that carries a second `pile:` label" —
+    # then refuses it, so the slot drains nothing (#1581).
+    return BLOCKED_LABEL if BLOCKED_LABEL in piles else YOURS_LABEL
 
 
 @dataclass(frozen=True)
@@ -588,11 +746,45 @@ class BlockingGraph:
     #: Reported rather than filed as owner latency: a guard that misses is
     #: recoverable, a guard that answers the wrong bucket lies.
     unresolved: list[tuple[int, str]]
-    #: blocked items carrying no ``**Blocked on:**`` statement at all.
+    #: blocked items that state nothing: no ``**Blocked on:**`` label at
+    #: all, or one with only a placeholder after it. Both are the same
+    #: repair — write the question — and step 2's blocked-pile check reads
+    #: this bucket to ask for it.
     unstated: list[int]
     #: ``(blocked item, the issue it waits on)`` where that issue has closed —
     #: the condition has been met and nothing has moved the item.
     condition_met: list[tuple[int, int]]
+
+
+#: A payload that says nothing. An agent that writes the required label and
+#: forgets the question used to fall through to *owner latency* and appear
+#: under "Needs your call" with no question to answer, while ``unstated`` —
+#: the bucket that exists for stating nothing, and the one step 2's
+#: blocked-pile check keys on — stayed empty, so the gap was never repaired
+#: (#1580). Emphasis and backticks are stripped before the comparison.
+_UNSTATED_PAYLOADS = frozenset(
+    {
+        "",
+        "-",
+        "--",
+        "–",
+        "—",
+        "?",
+        "??",
+        "tbd",
+        "tba",
+        "todo",
+        "n/a",
+        "na",
+        "unknown",
+        "xxx",
+    }
+)
+
+#: How much of an unreadable statement the report prints. Long enough to
+#: recognise the spelling, short enough not to paste a paragraph onto the
+#: board.
+_UNREADABLE_CLIP = 120
 
 
 def blocked_on(body: str, repo: str) -> tuple[bool, list[int], str]:
@@ -605,8 +797,29 @@ def blocked_on(body: str, repo: str) -> tuple[bool, list[int], str]:
     question, because only the caller has the corpus. Anything else
     reference-shaped comes back verbatim, so the report can print the
     spelling it did not read instead of filing it as owner latency.
+
+    ``stated`` is "a statement was made", not "the label is present": a
+    label with nothing but a placeholder after it answers ``False`` and
+    lands in ``unstated``, which is the bucket that gets repaired.
     """
-    text = without_code_blocks(body)
+    return _blocked_on_text(without_code_blocks(body), repo)
+
+
+def _unstated(payload: str) -> bool:
+    """Whether a statement's payload says nothing at all.
+
+    The WHOLE payload, never the part before the first sentence boundary:
+    ``:`` and ``;`` are boundaries, so ``TBD: the owner's call on #1294``
+    clipped to ``TBD`` and a written question — reference and all — was
+    filed as *stating nothing*, whose repair is to write the question that
+    is already there. Sentence punctuation is stripped from the ENDS so
+    ``TBD.`` still answers yes.
+    """
+    return payload.strip(" \t*_`~.;:!?").lower() in _UNSTATED_PAYLOADS
+
+
+def _blocked_on_text(text: str, repo: str) -> tuple[bool, list[int], str]:
+    """:func:`blocked_on` over a body whose code blocks are already blanked."""
     matches = list(_BLOCKED_ON_LABEL.finditer(text))
     if not matches:
         return False, [], ""
@@ -614,23 +827,77 @@ def blocked_on(body: str, repo: str) -> tuple[bool, list[int], str]:
     # still belongs to it, then to the first sentence boundary.
     payload = text[matches[-1].end() :].split("\n\n")[0]
     payload = _MD_LINK.sub(r"\1", payload).strip()
+    if _unstated(payload):
+        return False, [], ""
     cut = _SENTENCE_END.search(payload)
     head = payload[: cut.start()] if cut else payload
     leading = _LEADING_REFERENCES.match(head)
     if leading is None:
         # No reference at the front. A reference further in is a modifier of
         # a ruling, or a spelling this cannot read; either way, not an edge.
-        return True, [], head[:120] if _ANY_REFERENCE.search(head) else ""
+        return True, [], _clip(head) if _ANY_REFERENCE.search(head) else ""
     named, unreadable = [], []
     for reference in _ANY_REFERENCE.finditer(leading.group(0)):
         if is_own_repo(reference.group("qual"), repo):
             named.append(int(reference.group("n")))
         else:
             unreadable.append(reference.group(0))
+    # Past the leading run the reference is a modifier rather than an edge,
+    # and saying so is the point: "#1294 (see also #1300)" used to report
+    # #1300 in no bucket at all, which is the blocked-state-with-no-detector
+    # the unreadable bucket exists for (#1580).
+    unreadable += [m.group(0) for m in _ANY_REFERENCE.finditer(head[leading.end() :])]
     return True, named, " ".join(unreadable)
 
 
-def blocking_graph(issues: Sequence[Issue], repo: str) -> BlockingGraph:
+def _clip(text: str) -> str:
+    """``text`` bounded for the report, saying so when it was cut."""
+    return text if len(text) <= _UNREADABLE_CLIP else text[:_UNREADABLE_CLIP] + "…"
+
+
+@dataclass(frozen=True)
+class BodyFacts:
+    """Everything the report reads out of ONE issue body, parsed once.
+
+    Four consumers used to scan each body for themselves — the follow-up
+    graph twice, the hot seams, and the blocking graph — so every body was
+    stripped of its code blocks and re-matched four times a run, and two
+    readers of the same body could drift apart without anything saying so
+    (#1577). Now :func:`read_bodies` produces this record once and every
+    consumer takes it.
+    """
+
+    #: The issue a lane marker names, resolved to this repository, or ``None``.
+    parent: int | None
+    #: Every repository FILE the body names outside a code block.
+    cited: frozenset[str]
+    #: Whether a ``**Blocked on:**`` statement was made at all.
+    stated: bool
+    #: The issue numbers that statement names, in order.
+    named: tuple[int, ...]
+    #: The reference-shaped part of it this could not resolve, verbatim.
+    unreadable: str
+
+
+def read_bodies(issues: Sequence[Issue], repo: str) -> dict[int, BodyFacts]:
+    """One :class:`BodyFacts` per issue, code blocks stripped once each."""
+    facts = {}
+    for issue in issues:
+        text = without_code_blocks(issue.body)
+        stated, named, unreadable = _blocked_on_text(text, repo)
+        facts[issue.number] = BodyFacts(
+            parent=_parent_in_text(text, issue.number, repo),
+            cited=frozenset(_CITED_PATH.findall(text)),
+            stated=stated,
+            named=tuple(named),
+            unreadable=unreadable,
+        )
+    return facts
+
+
+def blocking_graph(
+    issues: Sequence[Issue], repo: str, facts: dict[int, BodyFacts] | None = None
+) -> BlockingGraph:
     """The blocked pile's edges, read from the bodies and nowhere else.
 
     This is NOT the follow-up graph. A marker says an issue was *found while
@@ -640,7 +907,13 @@ def blocking_graph(issues: Sequence[Issue], repo: str) -> BlockingGraph:
     would therefore rank items that unblock nobody, and rule 1 is the top
     rank — so the edge is read from the statement the procedure requires
     instead of inferred from prose that means something else.
+
+    An edge and an unreadable reference are not exclusive. ``**Blocked on:**
+    #100 and #9999`` used to take the edge and DISCARD the rest, so #9999 —
+    a blocked state with no detector, which is the whole reason the
+    unreadable bucket exists — appeared nowhere (#1580).
     """
+    facts = facts if facts is not None else read_bodies(issues, repo)
     by_number = {issue.number: issue for issue in issues}
     waiting_on: dict[int, list[int]] = defaultdict(list)
     on_ruling: list[int] = []
@@ -656,24 +929,45 @@ def blocking_graph(issues: Sequence[Issue], repo: str) -> BlockingGraph:
         issue for issue in issues if issue.is_open and pile_of(issue) == BLOCKED_LABEL
     ]
     for issue in sorted(blocked, key=lambda i: i.number):
-        stated, named, foreign = blocked_on(issue.body, repo)
-        here = [n for n in named if n in by_number]
-        elsewhere = [f"#{n}" for n in named if n not in by_number]
-        if not stated:
+        body = facts[issue.number]
+        if not body.stated:
             unstated.append(issue.number)
-        elif here:
-            for number in here:
-                waiting_on[number].append(issue.number)
-                if not by_number[number].is_open:
-                    condition_met.append((issue.number, number))
-        elif elsewhere or foreign:
+            continue
+        here, leftover, seen = [], [], set()
+        for number in body.named:
+            # ``#100 and #100`` is one dependency stated twice. Counted
+            # twice it gives a SINGLE blocked item enough in-edges to trip
+            # rule 1, which excludes its blocker from the tier — "the leak
+            # the slot was written to close" — and prints the
+            # condition-met line twice.
+            if number in seen:
+                continue
+            seen.add(number)
+            if number == issue.number:
+                # :func:`parent_of` refuses a self-citation for the same
+                # reason; without it here a self-edge inflates the printed
+                # edge count and a closed self prints "#N waits on #N,
+                # which has closed" (#1580).
+                leftover.append(f"#{number} (itself)")
+            elif number in by_number:
+                here.append(number)
+            else:
+                leftover.append(f"#{number}")
+        for number in here:
+            waiting_on[number].append(issue.number)
+            if not by_number[number].is_open:
+                condition_met.append((issue.number, number))
+        text = " ".join([*leftover, body.unreadable]).strip()
+        if text:
             # Reference-shaped and unreadable: a pull request number, another
             # repository, an issue this corpus does not carry. NOT a ruling.
-            unresolved.append((issue.number, " ".join(elsewhere + [foreign]).strip()))
-        else:
+            unresolved.append((issue.number, text))
+        elif not here:
             on_ruling.append(issue.number)
     return BlockingGraph(
-        waiting_on={n: sorted(v) for n, v in sorted(waiting_on.items())},
+        # Already ascending: the loop above visits the blocked items in
+        # number order, so each blocker's list is built in that order.
+        waiting_on=dict(sorted(waiting_on.items())),
         on_ruling=on_ruling,
         unresolved=unresolved,
         unstated=unstated,
@@ -686,7 +980,9 @@ def cited_paths(body: str) -> set[str]:
     return set(_CITED_PATH.findall(without_code_blocks(body)))
 
 
-def hot_seams(issues: Sequence[Issue], now: dt.datetime) -> dict[str, list[int]]:
+def hot_seams(
+    issues: Sequence[Issue], now: dt.datetime, facts: dict[int, BodyFacts] | None = None
+) -> dict[str, list[int]]:
     """Paths that ``SEAM_ISSUES`` or more issues named inside the window.
 
     Information for whoever ranks, and nothing else — :func:`rule4_tier`
@@ -697,7 +993,10 @@ def hot_seams(issues: Sequence[Issue], now: dt.datetime) -> dict[str, list[int]]
     for issue in issues:
         if issue.created < cutoff:
             continue
-        for path in cited_paths(issue.body):
+        cited = (
+            facts[issue.number].cited if facts is not None else cited_paths(issue.body)
+        )
+        for path in cited:
             produced[path].append(issue.number)
     return {
         path: sorted(numbers)
@@ -706,7 +1005,12 @@ def hot_seams(issues: Sequence[Issue], now: dt.datetime) -> dict[str, list[int]]
     }
 
 
-def rule4_tier(issues: Sequence[Issue], now: dt.datetime, repo: str) -> dict:
+def rule4_tier(
+    issues: Sequence[Issue],
+    now: dt.datetime,
+    repo: str,
+    facts: dict[int, BodyFacts] | None = None,
+) -> dict:
     """The ready items holding none of picking rules 1-3, oldest first.
 
     An UPPER BOUND, and the report says so every time. Over-approximating is
@@ -750,11 +1054,12 @@ def rule4_tier(issues: Sequence[Issue], now: dt.datetime, repo: str) -> dict:
     a blocker of two or more already holds rule 1, so the lend changes
     nothing there and no threshold has to be restated here.
     """
+    facts = facts if facts is not None else read_bodies(issues, repo)
     by_number = {issue.number: issue for issue in issues}
     open_issues = [issue for issue in issues if issue.is_open]
     ready = [issue for issue in open_issues if pile_of(issue) == READY_LABEL]
-    graph = blocking_graph(issues, repo)
-    seams = hot_seams(issues, now)
+    graph = blocking_graph(issues, repo, facts)
+    seams = hot_seams(issues, now, facts)
 
     def rule_1(issue: Issue) -> bool:
         return len(graph.waiting_on.get(issue.number, ())) >= RULE_1_DEPENDENTS
@@ -766,6 +1071,13 @@ def rule4_tier(issues: Sequence[Issue], now: dt.datetime, repo: str) -> dict:
     for issue in ready:
         held = rule_1(issue)
         since = issue.created
+        # The SOURCE of the age it ends up ranked at, recorded after the
+        # loop and only if the item is in the tier: the append used to sit
+        # inside the improvement test, so three successively older
+        # dependents printed three lines for one item — and printed them
+        # for an item rule 1 had excluded, claiming a rank in a tier it has
+        # no place in (#1581).
+        lent_from: int | None = None
         for number in graph.waiting_on.get(issue.number, ()):
             dependent = by_number[number]
             if rule_1(dependent) and not held:
@@ -773,12 +1085,15 @@ def rule4_tier(issues: Sequence[Issue], now: dt.datetime, repo: str) -> dict:
                 lent_claim.append((issue.number, number))
             if dependent.created < since:
                 since = dependent.created
-                lent_age.append((issue.number, number))
+                lent_from = number
         if held:
             excluded.append(issue.number)
         else:
             tier.append((since, issue.number))
+            if lent_from is not None:
+                lent_age.append((issue.number, lent_from))
     tier.sort()
+    lent_age.sort()
     return {
         # Told apart from an empty tier on purpose: a corpus with no pile
         # labels at all would otherwise report 0 and read as a drained tier.
@@ -1149,8 +1464,10 @@ def compute(
     with events from another.
     """
     issues = snapshot_at(issues, now)
+    # ONE parse of every body, shared by all four readers of them (#1577).
+    facts = read_bodies(issues, repo)
     pr_links = (
-        pr_closing_issues(marker_numbers(issues, repo), repo)
+        pr_closing_issues(marker_numbers(issues, repo, facts), repo)
         if resolve_parents
         else None
     )
@@ -1159,10 +1476,33 @@ def compute(
         "weekly": weekly_flow(issues, now),
         "survival": survival(issues, now),
         "open": residue_snapshot(issues, now),
-        "follow_ups": follow_ups(issues, repo, pr_links),
-        "rule4": rule4_tier(issues, now, repo),
+        "follow_ups": follow_ups(issues, repo, pr_links, facts),
+        "rule4": rule4_tier(issues, now, repo, facts),
         "latency": fix_latency(issues, repo) if latency else None,
     }
+
+
+def _inline_code(text: str) -> str:
+    """``text`` as a markdown code span, whatever backticks it contains.
+
+    The statement is a raw slice of an issue body, so it may hold backticks
+    of its own — "the owner's call on whether `kb_qa` should see #1294" — and
+    a fixed single-backtick span around one emits unbalanced markdown onto
+    the `Queue`, which the round pastes this section into verbatim (#1581).
+    The fence is one backtick longer than the longest run inside, and a span
+    whose content starts or ends with a backtick is padded, both per
+    CommonMark. Whitespace is collapsed first, because a code span cannot
+    span a line.
+    """
+    # One line, always: a statement is bounded by a blank line, so it can
+    # carry newlines, and a span broken across lines leaves each of them
+    # with an odd number of backtick runs — the very breakage this exists
+    # to prevent, on the common shape of a wrapped `**Blocked on:**` line.
+    text = " ".join(text.split())
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    fence = "`" * (longest + 1)
+    pad = " " if not text or text.startswith("`") or text.endswith("`") else ""
+    return f"{fence}{pad}{text}{pad}{fence}"
 
 
 def _rule4_text(tier: dict) -> str:
@@ -1230,9 +1570,11 @@ def _rule4_text(tier: dict) -> str:
     )
     if graph["unresolved"]:
         out.append(
-            "**Stated but unreadable** — reference-shaped and not an issue "
-            "here, so neither an edge nor owner latency: "
-            + ", ".join(f"#{n} (`{text}`)" for n, text in graph["unresolved"])
+            "**Stated but unreadable** — reference-shaped and not resolved to "
+            "an issue here, so not an edge (the statement may carry edges too): "
+            + ", ".join(
+                f"#{n} ({_inline_code(text)})" for n, text in graph["unresolved"]
+            )
             + ".\n"
         )
     if graph["condition_met"]:
@@ -1246,8 +1588,10 @@ def _rule4_text(tier: dict) -> str:
         )
     if tier["multi_labelled"]:
         out.append(
-            "**Carrying more than one `pile:` label** (read as blocked, so out "
-            "of the tier and undispatchable): "
+            "**Carrying more than one `pile:` label** — a half-finished move, "
+            "read as blocked (or as yours where blocked is not among them), so "
+            "out of the tier, and undispatchable either way because step 4 "
+            "skips any ready item carrying a second `pile:` label: "
             + ", ".join(f"#{n}" for n in tier["multi_labelled"])
             + ".\n"
         )

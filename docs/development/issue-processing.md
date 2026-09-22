@@ -91,6 +91,19 @@ the board is headed `## Note — …`, and **a comment carrying none of those
 four headings is the owner speaking**. Locating is then a scan back to the
 newest comment of a recognised kind, which makes a note free.
 
+**Write two hashes; read one or two.** The consumer was specified exactly
+and the producer was left to prose in another file, so every result the
+board carried — rounds 7, 8, 9 and 10 — was written `# Round <N> — result`
+and matched nothing. Read strictly, the newest recognised comment was then
+the *proposal* above it and the result after it read as **the owner
+answering**, which routes a finished, fully merged round to step 3 to
+extract rulings from its own result. That is the unsafe direction of this
+rule, and it is the one that occurs: the safe direction below needs the
+owner to type a heading they have no reason to type, while this one needs
+only the agent to forget a character. The tolerance costs nothing — no other
+comment kind opens with `Round <N> — result` — and it makes the ten rounds
+already on the board readable (#1585).
+
 That is the case where the narration is merely cluttered. The case where it
 is **absent** needs the facts instead: round 3 was approved in a working
 session rather than as a reply, and its result was never posted, so two of
@@ -117,8 +130,13 @@ with one of the four headings, which would read as the agent's and leave the
 round waiting. The headings are the agent's marks and the owner has no
 reason to type one; the failure is the safe direction — the round stops and
 says what it is waiting for — and the fact check catches it wherever lanes
-have already run. `.claude/commands/process-top-issues.md` carries the
-table.
+have already run. Its exit is a human word: the owner says in the next
+comment that the one above was theirs, because nothing mechanical can tell
+two comments from one account apart. Reading one hash as well as two widens
+this case by exactly the owner comments headed with a single hash, and the
+trade is deliberate: the other direction ends in a round built on rulings
+nobody wrote, and this one ends in a round asking.
+`.claude/commands/process-top-issues.md` carries the table.
 
 No unmerged pull request from the previous round. If there is one, this
 round does not start: report what is outstanding and stop. This is what
@@ -268,10 +286,16 @@ which nothing else was watching.
   nothing, so the gap is counted rather than assumed away — and reports a
   statement it can see but cannot read as **neither**, rather than filing it
   as owner latency: a measurement that misses can be fixed, one that answers
-  the wrong bucket recreates the miscount this line exists to end. **An item
-  already in the pile without a readable one gets it the next time you
-  sort** — that pass has to phrase its question for *Needs your call*
-  anyway, so the statement is the phrasing written down.
+  the wrong bucket recreates the miscount this line exists to end. The label
+  with nothing after it, or with `TBD`, counts as stating nothing rather
+  than as a ruling, for the same reason: it is the bucket that gets asked to
+  write the question, and *Needs your call* would otherwise list an item
+  with no question in it. A statement that names an issue **and** something
+  it cannot resolve is reported as both, so the part it could not read is
+  never silently dropped. **An item already in the pile without a readable
+  one gets it the next time you sort** — that pass has to phrase its
+  question for *Needs your call* anyway, so the statement is the phrasing
+  written down.
 - **A blocked item whose named issue has closed moves to ready as you
   sort.** Its condition is met and nothing else will notice — the label is
   the pile, and closing #N writes no label on anything waiting for it. The
@@ -401,10 +425,17 @@ where it happened, and not this.
 
 ### 5. Close out
 
-Post the result on the proposal comment: what merged, what was pulled and
-what stopped it, what was filed along the way. Then the next round can start
-— and it is that round's *Settle the last round* that does it, because this
-report is written before the owner has merged any of them.
+Post the result on the proposal comment **under the heading `## Round <N> —
+result`**, spelled exactly: what merged, what was pulled and what stopped
+it, what was filed along the way. Then the next round can start — and it is
+that round's *Settle the last round* that does it, because this report is
+written before the owner has merged any of them.
+
+The heading is the one string the next round's *Settle the last round*
+classifies on, and it is stated here as well as there because this is where
+it gets written. Every result for ten rounds was headed with one hash and
+therefore read as the owner speaking; the reader now takes one hash or two,
+and this step is what keeps the producer from drifting again.
 
 ## Picking
 
@@ -832,8 +863,8 @@ and not one of them found by reading the prose. **Then read the result the
 same way before shipping it.** A pass that closes leaks writes new states:
 the pass that added the blocking-finding exception under *Building* created
 the first state here that the round itself could not leave, and its own
-first fix for that left the merely-too-hard case with no exit either. The read that counts
-is of the text after the edits, not of the edits.
+first fix for that left the merely-too-hard case with no exit either. The
+read that counts is of the text after the edits, not of the edits.
 
 ## Words used here
 

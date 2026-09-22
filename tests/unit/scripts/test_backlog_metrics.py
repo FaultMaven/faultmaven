@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime as dt
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -1068,3 +1069,453 @@ def test_the_blocking_graph_survives_a_json_round_trip(metrics, tmp_path):
         json.loads(json.dumps(results, default=str))["rule4"]["blocking"]["waiting_on"]
         == in_process
     )
+
+
+# --------------------------------------------------------------------------
+# The reference grammar and the rule-4 report (#1576, #1577, #1580, #1581)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "shape, body",
+    [
+        ("closed LF fence", "```\ndocs/sample-note.md\n```"),
+        # The commonest shape for a pasted log or traceback, and GitHub
+        # renders it as code to the end of the body.
+        ("unclosed fence", "```\ndocs/sample-note.md\n"),
+        # A fence around content that itself contains a fence.
+        ("four backticks", "````\n```\ndocs/sample-note.md\n```\n````"),
+        ("tilde fence", "~~~\ndocs/sample-note.md\n~~~"),
+        ("indented block", "A paragraph.\n\n    docs/sample-note.md\n"),
+        # GitHub returns CRLF for any body authored or edited in the web UI.
+        ("CRLF", "```\r\ndocs/sample-note.md\r\n```\r\n"),
+        ("CRLF unclosed", "```\r\ndocs/sample-note.md\r\n"),
+    ],
+)
+def test_a_code_block_hides_a_path_in_every_shape_github_renders(metrics, shape, body):
+    """The guard's purpose is to keep an illustration from reading as a
+    statement, and for four of these it did not (#1580)."""
+    assert metrics.cited_paths(body) == set(), shape
+
+
+def test_an_indented_run_under_a_list_is_content_not_a_code_block(metrics):
+    """The one direction this guard must not fail in.
+
+    Blanking a wrapped bullet's continuation would delete a real
+    `**Blocked on:**` statement, which is worse than leaving an
+    illustration in: the item would be reported as stating nothing.
+    """
+    # A list stays open across its own wrapped lines and its further
+    # paragraphs. Reset per line, only the first of these survived.
+    for listed in (
+        "- a bullet\n\n    **Blocked on:** #99 landing\n",
+        "- a bullet\n  wrapped continuation\n\n    **Blocked on:** #99 landing\n",
+        "- a bullet\n\n    first paragraph\n\n    **Blocked on:** #99 landing\n",
+        "1. a step\n   wrapped\n\n    **Blocked on:** #99 landing\n",
+    ):
+        assert metrics.blocked_on(listed, REPO) == (True, [99], ""), listed
+    assert metrics.cited_paths("1. step\n\n    docs/sample-note.md\n") == {
+        "docs/sample-note.md"
+    }
+    # …and a block after the list has closed is still a block.
+    assert (
+        metrics.cited_paths(
+            "- a bullet\n\na fresh paragraph\n\n    docs/sample-note.md\n"
+        )
+        == set()
+    )
+
+
+def test_crlf_does_not_erase_a_blocked_on_edge(metrics):
+    """The same root as the code-block guard, in the direction that lies.
+
+    The closing anchor could not cross the `\\r` and the paragraph split
+    never fired, so the quoted example inside the fence won "last
+    statement" and the real edge disappeared — the #1513 miscount by a
+    different door.
+    """
+    body = "**Blocked on:** #99\n\n```\n**Blocked on:** an owner ruling\n```\n"
+
+    assert metrics.blocked_on(body, REPO) == (True, [99], "")
+    assert metrics.blocked_on(body.replace("\n", "\r\n"), REPO) == (True, [99], "")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # The paragraph break is what bounds the statement, and in CRLF it
+        # is `\r\n\r\n` — so without normalising, the payload runs on into
+        # the paragraph below and a reference there is read as part of the
+        # statement. The first of these changes the BUCKET (a ruling becomes
+        # "stated but unreadable"), which is the failure the buckets exist
+        # to prevent; the second keeps the edge and invents a second finding.
+        "**Blocked on:** an owner ruling\n\n#1234 tracks the follow-up\n",
+        "**Blocked on:** #99\n\n#1234 tracks the follow-up\n",
+        "**Blocked on:** #99\n\n```\n**Blocked on:** an owner ruling\n```\n",
+        "**Blocked on:** #99 landing\n\n    docs/sample-note.md\n",
+    ],
+)
+def test_a_body_reads_the_same_in_crlf_as_in_lf(metrics, body):
+    """The corpus is 100% LF only because every issue so far was filed by an
+    agent through `gh`; GitHub returns CRLF for any body edited in the web
+    UI, so the first human edit to a blocked issue arms this."""
+    assert metrics.blocked_on(body.replace("\n", "\r\n"), REPO) == metrics.blocked_on(
+        body, REPO
+    )
+    assert metrics.cited_paths(body.replace("\n", "\r\n")) == metrics.cited_paths(body)
+
+
+def test_the_statement_ends_at_its_paragraph(metrics):
+    """A blank line bounds the statement, so a reference in the paragraph
+    below is not part of it.
+
+    Blanking a code block has to preserve the line count for that to hold:
+    collapse the blanked lines away and the paragraph break goes with them,
+    the payload runs on, and a ruling is reported as *stated but
+    unreadable* — the wrong bucket, which is the failure the buckets exist
+    to keep apart.
+    """
+    assert metrics.blocked_on(
+        "**Blocked on:** an owner ruling\n\n#1234 tracks the follow-up\n", REPO
+    ) == (True, [], "")
+    assert metrics.blocked_on(
+        "**Blocked on:** #99\n\n#1234 tracks the follow-up\n", REPO
+    ) == (True, [99], "")
+    # The property that makes it hold, asserted where it lives.
+    fenced = "one\n\n```\ntwo\nthree\n```\n\nfour\n"
+    assert metrics.without_code_blocks(fenced).count("\n") == fenced.count("\n")
+    assert metrics.without_code_blocks("a\n\n    indented\n\nb").count("\n") == 4
+
+
+def test_a_long_unreadable_statement_says_it_was_cut(metrics):
+    body = "**Blocked on:** the owner's call, " + "which is long " * 20 + "see #1294"
+    stated, named, text = metrics.blocked_on(body, REPO)
+
+    assert (stated, named) == (True, [])
+    assert len(text) == 121 and text.endswith("…")
+
+
+def test_a_marker_inside_a_code_block_is_an_illustration(metrics):
+    """The two reference grammars in the file now read the same text.
+
+    `parent_of` refuses a self-citation but read the raw body, so an issue
+    quoting another's body inside a fence was attributed as its follow-up
+    and inflated the parent count the campaign is judged by.
+    """
+    quoted, real = metrics.load_issues(
+        [
+            _issue(500, 1, body="```\nFound while working on #400\n```\n"),
+            _issue(501, 1, body="Found while working on #400."),
+        ]
+    )
+
+    assert metrics.parent_of(quoted, REPO) is None
+    assert metrics.parent_of(real, REPO) == 400
+
+
+@pytest.mark.parametrize(
+    "payload",
+    # Emphasis and backticks are stripped before the comparison: the label
+    # is written `**Blocked on:**`, so whatever follows it is being written
+    # in a line that is already marked up.
+    ["", " ", " TBD", " tbd.", " n/a", " ?", " —", " `TBD`", " **TBD**", " _tbd_"],
+)
+def test_a_label_with_no_question_after_it_states_nothing(metrics, payload):
+    """Not owner latency: nobody was asked anything.
+
+    All of these used to fall through to `on_ruling` and be listed under
+    *Needs your call* with no question to answer, while `unstated` — the
+    bucket step 2's blocked-pile check reads to ask for one — stayed empty,
+    so the gap was never repaired.
+    """
+    assert metrics.blocked_on(f"**Blocked on:**{payload}", REPO) == (False, [], "")
+    issues = metrics.load_issues([_blocked(1, 1, body=f"**Blocked on:**{payload}")])
+    graph = metrics.blocking_graph(issues, REPO)
+
+    assert (graph.unstated, graph.on_ruling, graph.unresolved) == ([1], [], [])
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        # `:` and `;` are sentence boundaries, so reading the CLIPPED head
+        # made a written question — reference and all — disappear into the
+        # bucket whose repair is "write the question".
+        " todo: ask the owner whether the ladder splits",
+        " TBD: the owner's call on the shape of #1294",
+        " tbd pending the ruling on #1294",
+        " an owner ruling",
+    ],
+)
+def test_a_payload_that_says_something_is_stated(metrics, payload):
+    stated, _, _ = metrics.blocked_on(f"**Blocked on:**{payload}", REPO)
+
+    assert stated is True
+    issues = metrics.load_issues([_blocked(1, 1, body=f"**Blocked on:**{payload}")])
+
+    assert metrics.blocking_graph(issues, REPO).unstated == []
+
+
+def test_a_statement_naming_both_an_edge_and_an_unreadable_reference(metrics):
+    """`elif here:` computed the rest and threw it away.
+
+    #9999 was neither an edge nor reported — the blocked-state-with-no-
+    detector the unreadable bucket was added for.
+    """
+    issues = metrics.load_issues(
+        [_ready(100, 1), _blocked(101, 2, body="**Blocked on:** #100 and #9999")]
+    )
+    graph = metrics.blocking_graph(issues, REPO)
+
+    assert graph.waiting_on == {100: [101]}
+    assert graph.unresolved == [(101, "#9999")]
+    assert graph.on_ruling == []
+
+
+def test_a_reference_past_the_leading_run_is_reported(metrics):
+    """ "#1294 (see also #1300)" resolved #1294 and dropped #1300 entirely."""
+    assert metrics.blocked_on("**Blocked on:** #1294 (see also #1300)", REPO) == (
+        True,
+        [1294],
+        "#1300",
+    )
+
+
+def test_an_item_does_not_wait_on_itself(metrics):
+    """`parent_of` refuses a self-citation; this grammar did not.
+
+    A self-edge inflates the printed edge count, and a closed self would
+    print "#N waits on #N, which has closed".
+    """
+    issues = metrics.load_issues([_blocked(1513, 1, body="**Blocked on:** #1513")])
+    graph = metrics.blocking_graph(issues, REPO)
+
+    assert graph.waiting_on == {}
+    assert graph.on_ruling == []
+    assert graph.unresolved == [(1513, "#1513 (itself)")]
+
+
+def test_the_lend_records_one_source_per_item_and_only_in_the_tier(metrics):
+    """The append sat inside the improvement test, so it fired per
+    improvement — and for items rule 1 had excluded, claiming a rank in a
+    tier they have no place in."""
+    three_dependents = metrics.load_issues(
+        [
+            _ready(200, 20),
+            _blocked(201, 15, body="**Blocked on:** #200"),
+            _blocked(202, 10, body="**Blocked on:** #200"),
+            _blocked(203, 5, body="**Blocked on:** #200"),
+        ]
+    )
+    excluded = metrics.rule4_tier(three_dependents, LATER, REPO)
+
+    assert excluded["excluded"] == [200]  # rule 1: three dependents
+    assert excluded["lent_age"] == []  # so no rank to claim
+    assert "Ranked earlier" not in metrics._rule4_text(excluded)
+
+    one_dependent = metrics.load_issues(
+        [_ready(300, 20), _blocked(301, 5, body="**Blocked on:** #300")]
+    )
+    in_tier = metrics.rule4_tier(one_dependent, LATER, REPO)
+
+    assert in_tier["tier"] == [300]
+    assert in_tier["lent_age"] == [(300, 301)]
+    assert "#300 (from #301)" in metrics._rule4_text(in_tier)
+
+
+def test_a_fourth_pile_label_is_a_half_finished_move_too(metrics):
+    """`pile_of` read the set label by label and `multi_labelled` read its
+    size, so one item was named as the reserved slot's first buy AND as
+    undispatchable — and step 4's predicate then drained the slot of
+    nothing, which is the failure `pile_of` exists to prevent."""
+    issues = metrics.load_issues(
+        [_issue(900, 1, labels=("pile:ready", "pile:needs-triage")), _ready(901, 5)]
+    )
+    tier = metrics.rule4_tier(issues, LATER, REPO)
+    text = metrics._rule4_text(tier)
+
+    assert tier["tier"] == [901]
+    assert tier["multi_labelled"] == [900]
+    assert "#900" not in text.split("Oldest in the tier")[1].split("\n")[0]
+    # "blocked, or yours if blocked is not among them" — the rule's own words.
+    mixed, both, single = metrics.load_issues(
+        [
+            _issue(902, 1, labels=("pile:ready", "pile:yours")),
+            _issue(903, 1, labels=("pile:ready", "pile:blocked")),
+            _issue(904, 1, labels=("pile:ready",)),
+        ]
+    )
+    assert metrics.pile_of(mixed) == metrics.YOURS_LABEL
+    assert metrics.pile_of(both) == metrics.BLOCKED_LABEL
+    assert metrics.pile_of(single) == metrics.READY_LABEL
+
+
+def test_every_multi_labelled_item_is_out_of_the_tier(metrics):
+    """The invariant behind the sentence above: the two readings of a pile
+    label set cannot disagree about one item, whatever the extra label is."""
+    extras = ("pile:blocked", "pile:yours", "pile:needs-triage", "pile:zzz")
+    issues = metrics.load_issues(
+        [
+            _issue(n, 1, labels=("pile:ready", extra))
+            for n, extra in enumerate(extras, start=1)
+        ]
+    )
+    tier = metrics.rule4_tier(issues, LATER, REPO)
+
+    assert tier["multi_labelled"] == [1, 2, 3, 4]
+    assert tier["tier"] == []
+    assert tier["ready"] == 0
+
+
+def test_a_half_finished_move_gets_ONE_repair(metrics):
+    """Which pile a multi-labelled item lands in is the rule's second
+    clause — blocked when blocked is among them, yours otherwise.
+
+    Defaulting to blocked put an item carrying no blocked label into the
+    blocked pile, where a body with no `**Blocked on:**` line reported it
+    as *stating nothing* as well as as a half-finished move: two repairs
+    for one item, one of them for a statement it was never asked to write.
+    """
+    issues = metrics.load_issues(
+        [_issue(900, 1, labels=("pile:ready", "pile:needs-triage"))]
+    )
+    tier = metrics.rule4_tier(issues, LATER, REPO)
+    text = metrics._rule4_text(tier)
+
+    assert metrics.pile_of(issues[0]) == metrics.YOURS_LABEL
+    assert tier["multi_labelled"] == [900]
+    assert tier["blocking"]["unstated"] == []
+    assert "0 stating nothing" in text
+    assert "Carrying more than one" in text
+
+
+def test_one_dependency_stated_twice_is_one_edge(metrics):
+    """Counted twice, a SINGLE blocked item trips rule 1 and excludes its
+    blocker from the tier — the leak the reserved slot was written to
+    close — and the condition-met line prints twice."""
+    issues = metrics.load_issues(
+        [_ready(100, 1), _blocked(101, 2, body="**Blocked on:** #100 and #100")]
+    )
+    graph = metrics.blocking_graph(issues, REPO)
+    tier = metrics.rule4_tier(issues, LATER, REPO)
+
+    assert graph.waiting_on == {100: [101]}
+    assert tier["tier"] == [100] and tier["excluded"] == []
+
+    closed = metrics.load_issues(
+        [_issue(100, 1, 4), _blocked(101, 2, body="**Blocked on:** #100 and #100")]
+    )
+    assert metrics.blocking_graph(closed, REPO).condition_met == [(101, 100)]
+
+
+def _assert_spans_close(metrics, text, tier):
+    """Every quoted statement in the report is a code span that closes.
+
+    Stated from the RAW statement rather than from `_inline_code`'s own
+    output, or a fence bug would define itself as correct.
+    """
+    for number, raw in tier["blocking"]["unresolved"]:
+        entry = text.split(f"#{number} (", 1)[1]
+        fence = re.match(r"`+", entry).group(0)
+        inside = max(
+            (len(run) for run in re.findall(r"`+", " ".join(raw.split()))), default=0
+        )
+        assert len(fence) > inside, (fence, raw)
+        assert f"{fence})" in entry.split("\n")[0], entry.split("\n")[0]
+
+
+def test_an_unreadable_statement_never_emits_broken_markdown(metrics):
+    """The round pastes this section into the `Queue` verbatim, so a
+    backtick in the quoted statement would break the board's markdown."""
+    body = "**Blocked on:** the owner's call on whether `kb_qa` should see #1294"
+    issues = metrics.load_issues([_blocked(777, 1, body=body)])
+    text = metrics._rule4_text(metrics.rule4_tier(issues, LATER, REPO))
+    span = text.split("#777 (")[1].split(").")[0]
+
+    assert span.startswith("``") and span.endswith("``")
+    assert "`kb_qa`" in span
+    _assert_spans_close(metrics, text, metrics.rule4_tier(issues, LATER, REPO))
+
+    # A statement is bounded by a blank line, so the common shape — one
+    # `**Blocked on:**` line wrapped at 72-80 columns — carries a newline,
+    # and a span cannot cross one.
+    wrapped = metrics.load_issues(
+        [
+            _blocked(
+                778,
+                1,
+                body="**Blocked on:** the owner's call on whether the ladder\n"
+                "splits, which also decides #1294's shape\n",
+            )
+        ]
+    )
+    tier = metrics.rule4_tier(wrapped, LATER, REPO)
+    text = metrics._rule4_text(tier)
+
+    assert "#778 (`" in text
+    _assert_spans_close(metrics, text, tier)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["plain", "a `span`", "``double``", "`leading", "trailing`", "two\nlines", ""],
+)
+def test_inline_code_fences_any_content(metrics, text):
+    rendered = metrics._inline_code(text)
+    fence = re.match(r"`+", rendered).group(0)
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+
+    # The fence is what makes the span close, so it must be strictly longer
+    # than every run inside it — the property, not merely "it differs".
+    # Counting backtick RUNS is not that property: `` `leading `` is a valid
+    # span whose runs are odd, so a parity check would fail on correct
+    # markdown and tempt the next reader to loosen the real rule.
+    assert len(fence) == longest + 1
+    assert rendered.startswith(fence) and rendered.endswith(fence)
+    assert fence not in rendered[len(fence) : -len(fence)]
+    assert "\n" not in rendered
+
+
+def test_the_cited_path_pattern_covers_every_tracked_top_level_directory(metrics):
+    """Hand-written, it went four directories stale in silence (#1576).
+
+    The fallback is what a replay outside a checkout uses, so it is the
+    half that can still drift; the derived set cannot.
+    """
+    tracked = metrics.tracked_top_level()
+
+    assert "faultmaven" in tracked and "tests" in tracked  # a real checkout
+    missing = [
+        name
+        for name in tracked
+        if not metrics._cited_path_pattern(metrics._FALLBACK_TOP_LEVEL).search(
+            f"{name}/sample.py"
+        )
+    ]
+    assert missing == [], f"fallback list is stale: {missing}"
+
+
+def test_the_cited_path_pattern_falls_back_outside_a_checkout(metrics, tmp_path):
+    assert metrics.tracked_top_level(tmp_path) == metrics._FALLBACK_TOP_LEVEL
+
+
+def test_every_body_is_parsed_once_per_run(metrics, monkeypatch):
+    """Four readers used to strip each body for themselves, which is the
+    place two readings of one body could drift apart (#1577)."""
+    seen = []
+    original = metrics.without_code_blocks
+    monkeypatch.setattr(
+        metrics,
+        "without_code_blocks",
+        lambda body: (seen.append(body), original(body))[1],
+    )
+    issues = metrics.load_issues(
+        [
+            _ready(1, 1, body="Found while working on #9. `scripts/sample_a.py`"),
+            _blocked(2, 2, body="**Blocked on:** #1 — `scripts/sample_b.py`"),
+            _issue(3, 3, body="unlabelled, `docs/sample-note.md`"),
+        ]
+    )
+    metrics.compute(issues, LATER, REPO, resolve_parents=False)
+
+    assert len(seen) == len(issues)
