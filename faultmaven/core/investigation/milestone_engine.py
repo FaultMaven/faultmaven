@@ -1753,14 +1753,13 @@ def _gate1_statement_presentation(case: "Case") -> str:
     """
     statement = (case.inquiry.proposed_problem_statement or "").strip()
     quoted = "\n".join(f"> {line}" if line else ">" for line in statement.split("\n"))
-    # Worded as a STANDING OPTION, not a question. This block is composed on
-    # every pending turn, including the turn right after the user clicks
-    # "Not quite, let me clarify" — and re-asking "Is that right?" one message
-    # after they answered it is the same transcript/state contradiction the
-    # composition exists to prevent. Phrased this way it reads correctly the
-    # first time, after a decline, and on every repeat.
+    # States the status and asks nothing. This block is re-composed on EVERY
+    # Gate-1-pending turn, including the one right after the user clicks
+    # "Not quite, let me clarify", so a question here is one the user may have
+    # answered a message earlier. "Awaiting your confirmation" stays true on
+    # the first presentation, after a decline, and on every repeat.
     return (
-        "The problem statement on the table is:\n\n"
+        "Here is the problem statement awaiting your confirmation:\n\n"
         f"{quoted}\n\n"
         "Confirm it to start the focused investigation, or tell me what to "
         "change."

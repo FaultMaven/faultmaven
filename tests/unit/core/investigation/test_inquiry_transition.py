@@ -951,6 +951,44 @@ class TestGate1PresentsItsStatement:
         }
         assert "Yes, let's investigate" in labels
 
+    def test_presentation_states_status_and_asks_no_question(self):
+        """The frame states what is being asked for, and asks nothing.
+
+        This block is composed on EVERY Gate-1-pending turn, including the one
+        right after the user clicks "Not quite, let me clarify". A question in
+        the frame is therefore one the user may have answered a message
+        earlier — the transcript/state contradiction the composition exists to
+        prevent. The status line is pinned alongside it, so the frame cannot
+        drift into wording that never says what is being asked for.
+        """
+        from faultmaven.core.investigation.milestone_engine import (
+            _gate1_statement_presentation,
+        )
+
+        case = Case(
+            case_id="case_1234567890ab",
+            title="Test",
+            state=CaseState.INQUIRY,
+            user_id="user_123",
+            enterprise_id="org_123",
+            description="",
+            inquiry=InquiryData(
+                thread_id="thread_123",
+                proposed_problem_statement="Checkout API returns 503 for all users",
+                problem_statement_confirmed=False,
+            ),
+        )
+
+        block = _gate1_statement_presentation(case)
+
+        assert "awaiting your confirmation" in block.lower()
+        # The statement under test contains no "?", so any "?" here is the
+        # frame asking one.
+        assert "?" not in block, (
+            "the Gate-1 frame asks a question; it is re-composed after a "
+            "decline, so it would re-ask what the user just answered"
+        )
+
     @pytest.mark.asyncio
     async def test_click_consent_does_not_adopt_a_same_turn_reword(
         self, mock_llm, mock_repo, inquiry_case
