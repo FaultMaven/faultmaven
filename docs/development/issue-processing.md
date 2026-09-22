@@ -192,11 +192,14 @@ its own state:
   below, or the next proposal has nothing to phrase.
 - **Open, and its pull request closed unmerged** — the owner abandoned it.
   Why is theirs to say, so the agent does not guess: it records that the
-  work was built and the pull request closed unmerged, links it, and returns
-  the item to the **blocked** pile, where the next proposal puts the
-  question back — build it another way, or close it? Left in ready it sits
-  at the rank that selected it with nothing to move it, so the next round
-  dispatches a lane to build the same fix again.
+  work was built and the pull request closed unmerged, links it, and
+  **places the item by *What escalates*** — with nothing recorded since,
+  the **blocked** pile, where the next proposal puts the question back —
+  build it another way, or close it? Left in ready it sits at the rank
+  that selected it with nothing to move it, so the next round dispatches a
+  lane to build the same fix again. Placing on a ruling the owner *did*
+  record is not guessing why, and it is the only reading under which this
+  and the pulled case below write the same pile.
 
 **Every one of those is safe to repeat**, and it is the medium rather than
 the prose that makes it so. A pile is a **label on the issue**, so a move is
@@ -236,13 +239,26 @@ rather than wrong.
 **A pull request the agent closed is told from one the owner abandoned by
 the result table**, which reports that issue's outcome as `pulled`. It
 decides whether the settlement posts an abandonment comment, and nothing
-else: the pile move runs either way, so the row that reads it is not a skip,
-and losing the report costs one comment too many rather than an item in the
-wrong pile. An earlier draft objected to reading the round's result at all,
-on the ground that it rested on a format that pass had just introduced. That
-objection is spent — the table is already where the settlement gets its
-pairs — and it would not matter here in any case, because no state rides on
-the answer.
+else: both place the item by *What escalates*, so the row that reads it is
+not a skip, and losing the report costs one comment too many rather than an
+item in the wrong pile. An earlier draft objected to reading the round's
+result at all, on the ground that it rested on a format that pass had just
+introduced. That objection is spent — the table is already where the
+settlement gets its pairs — and it would not matter here in any case,
+because no state rides on the answer.
+
+**Both of those used to force `pile:blocked`, and round 12 hit the gap on
+the pulled one**, where the reason to place is sharper than the merged
+row's. A pulled item's question is carried by the very next proposal, so
+the owner's answer routinely lands between the round's result and this
+settlement: by the time it runs, the ruling has been recorded and the item
+placed, and the forced label moves it straight back to where *Needs your
+call* re-asks a question that has been answered. Round 11 pulled #512, the
+owner ruled Option 1, and round 12's settlement would have returned it to
+blocked; it was left in ready and the departure recorded on the issue.
+Unanswered, the placement is still blocked — a pull enters that pile by its
+own door, which *What escalates* says itself — so the repair the forced
+label existed for is untouched.
 
 ### 1. Propose
 
@@ -419,9 +435,10 @@ all four: review clean on the final head, every required context green on
 that head, the merge base green by commit, and the head unchanged since the
 review. A round is not
 over until every one is merged or explicitly abandoned — abandoned meaning
-the owner closed it unmerged, which *Settle the last round* turns back into
-a blocked item. A pull request the agent closed itself is a pull, settled
-where it happened, and not this.
+the owner closed it unmerged, which *Settle the last round* places again,
+in the blocked pile unless a ruling has since said otherwise. A pull
+request the agent closed itself is a pull, settled where it happened, and
+not this.
 
 ### 5. Close out
 

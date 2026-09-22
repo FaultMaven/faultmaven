@@ -314,8 +314,8 @@ and merged is settled as merged even where the round reported that item
 |---|---|
 | the issue is closed | nothing |
 | the issue is open, its pull request merged | close #<n> if every part it named is now delivered or re-filed, citing this pull request and the re-filings; otherwise edit #<n> down to the part that still stands — title and body — and **place the remainder by *What escalates***: `pile:ready` when nothing left in it needs a ruling, `pile:blocked` when something does (record the question in the `**Blocked on:**` form, or the next *Needs your call* has nothing to phrase), `pile:yours` when the work itself is the owner's. Write it with the two label edits in whichever direction it goes; writing *a* pile is what repairs a label a `pulled` round already moved, and that property is not particular to `pile:ready`. An item edited down also **leaves the ranked head**: step 2 writes that body and does not carry the name into it, so the proposal compares it against the current candidates like any other arrival. The parent still either closes or gets smaller — what is chosen here is only where the smaller one goes |
-| the round reported it `pulled` | `--add-label pile:blocked`, then `--remove-label pile:ready`. The pull did this when it happened; doing it again is a no-op, and doing it *now* is what repairs a label the pull failed to write. Say nothing more — the pull already recorded what stopped it. The row may name no pull request at all, because a lane pulled mid-build opened none |
-| the issue is open, its pull request closed unmerged | the owner abandoned it — comment that the work was built and the pull request closed unmerged, link it, then the same two label edits; the next proposal asks whether to build it another way or close it. Do not guess why |
+| the round reported it `pulled` | **place it by *What escalates***, in the same two label edits and for the reason the row above gives. With nothing recorded on the issue since the pull that is `pile:blocked` — a pull enters that pile by its own door — and doing it again is a no-op. With a ruling recorded it is wherever that ruling sent it: `pile:ready`, `pile:blocked` again for a deferral, `pile:yours`; a ruling implying no work closed the issue, which matched the **first** row and never reached this one. **An answer arriving before this step is the normal path, not an edge case** — the proposal carrying a pulled item's question is the very next one, so by the time the settlement walks the row the owner has usually ruled and step 3 has placed it, and forcing `pile:blocked` moves it back to where *Needs your call* re-asks a question that has been answered (#512, round 11 → 12). Say nothing more — the pull already recorded what stopped it, which is the only thing this row does differently from the one below. The row may name no pull request at all, because a lane pulled mid-build opened none |
+| the issue is open, its pull request closed unmerged | the owner abandoned it — comment that the work was built and the pull request closed unmerged, link it, then **place it by *What escalates*** the same way; with nothing recorded that is `pile:blocked`, and the next proposal asks whether to build it another way or close it. Do not guess why — placing on a ruling the owner *did* record is the opposite of guessing, and the two rows have to compute the same pile or the reserved `pulled` value starts carrying state |
 
 A row matching none of them — open, naming no pull request, and not `pulled` —
 is a malformed result. Say so under *Settled from last round* rather than
@@ -641,8 +641,8 @@ issue-to-pull-request pairs, and an issue missing from it is never settled.
 A pulled issue gets a row too. `outcome` is free text with **one reserved
 value** — `pulled`, lower case, which nothing but a pull may carry and which
 is the only value the next settlement reads. It decides whether that
-settlement posts an abandonment comment, and nothing else: the pile is the
-label either way. A mid-build pull's row names no pull request, because none
+settlement posts an abandonment comment, and nothing else: the pile is
+placed by *What escalates* either way. A mid-build pull's row names no pull request, because none
 was opened. The line below carries what stopped it.
 
 Pulled: #N — <the question, or what stopped the lane>
